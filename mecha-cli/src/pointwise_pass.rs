@@ -150,10 +150,17 @@ fn provenance_at(
 
 /// Walk the sessions `scan` admits and gather every point in a clean
 /// session with a readable surface; the rest are counted, not drawn.
+///
+/// `model`, when given, keeps only sessions recorded under it — a harness
+/// candidate's point pool is scoped as its whole-session draw is
+/// (`harness_probe::draw_episodes`: model-matched, workspace-scoped,
+/// recency-bounded), or the two halves of one measurement read different
+/// corpora (found on review).
 pub fn collect(
     dir: &Path,
     scan: &mecha_core::runlog::Scan,
     limit: Option<usize>,
+    model: Option<&str>,
     drafts: &[OutboxItem],
     surfaces: Option<&SurfaceStore>,
     tally: &mut Tally,
@@ -164,6 +171,9 @@ pub fn collect(
     for (meta, path) in listed {
         if limit.is_some_and(|n| tally.sessions_read >= n) {
             break;
+        }
+        if model.is_some_and(|m| meta.model != m) {
+            continue;
         }
         if !scan.admits(&meta) {
             if scan.hides_test(&meta) {
@@ -397,7 +407,7 @@ pub fn point_comparison(
 
 /// Take a background seat, waiting up to [`SEAT_WAIT`]. `None` when the
 /// pool stayed full.
-async fn take_seat(
+pub(crate) async fn take_seat(
     pool: &mecha_core::permit::Permits,
     what: &str,
 ) -> Result<Option<mecha_core::permit::Held>> {
@@ -503,6 +513,7 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
         &Session::default_dir()?,
         &scan,
         opts.limit,
+        None,
         &drafts,
         surfaces.as_ref(),
         &mut tally,
@@ -693,6 +704,287 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// What a harness candidate's point-wise comparison found (row 2d-2), for
+/// its measurement.
+#[derive(Debug, Default)]
+pub struct CandidateEvidence {
+    pub tally: mecha_core::candidate::PointwiseTally,
+    /// Why nothing was compared, when nothing was — or why the pass
+    /// stopped short of its budget.
+    pub not_run: Option<String>,
+    /// The comparison-store rows counted, driven now or reused.
+    pub comparisons: Vec<String>,
+    /// The outbox could not be fully read, so draft points were missing
+    /// from the pool — a finding, not an empty queue.
+    pub outbox_unreadable: bool,
+}
+
+/// What a candidate's point pool is scoped to: the same workspace and
+/// recency bound as its whole-session draw, and the model measured.
+pub struct CandidateScope<'a> {
+    pub workspace: Option<&'a Path>,
+    /// Newest sessions read, at most — the whole-session draw's pool size.
+    pub sessions: usize,
+}
+
+/// The two arms a candidate is compared under at a point: the run's
+/// recorded config, and the same with the change applied. Both carry the
+/// recorded prompt, so both carry the recorded rules hash — the arms differ
+/// by role, and the stored comparison names the candidate in
+/// `Pointers::proposal_id`.
+fn candidate_arms(prep: &ProbePrep) -> [(Role, Option<String>); 2] {
+    let policy = prep.recorded_rules_hash();
+    [
+        (Role::WithoutIntervention, policy.clone()),
+        (Role::Candidate, policy),
+    ]
+}
+
+/// The change an arm runs under, by its role: the candidate arm alone
+/// carries it. Asked by role, never by position, so reordering the arms
+/// cannot invert every verdict with every test still green.
+fn change_for(
+    role: Role,
+    change: &mecha_core::harness::ConfigChange,
+) -> Option<&mecha_core::harness::ConfigChange> {
+    (role == Role::Candidate).then_some(change)
+}
+
+/// The (baseline, candidate) outcomes of a candidate's comparison, by role.
+fn outcomes_of(c: &Comparison) -> Option<(Outcome, Outcome)> {
+    let of = |role| c.arms.iter().find(|a| a.role == role).map(|a| a.outcome);
+    Some((of(Role::WithoutIntervention)?, of(Role::Candidate)?))
+}
+
+/// A candidate's comparison at one point, keyed and pointed like any other,
+/// with the candidate named.
+fn candidate_comparison(
+    prep: &ProbePrep,
+    point: &Point,
+    arms: Vec<Arm>,
+    model: &str,
+    candidate: &str,
+) -> Result<Comparison> {
+    let mut c = point_comparison(prep, point, arms, model)?;
+    c.pointers.proposal_id = Some(candidate.to_string());
+    Ok(c)
+}
+
+/// Count a candidate's comparison already on record at this point, if
+/// there is one — a re-measurement pays for no point twice. A reused point
+/// is a point compared, so it spends the same budget a driven one does:
+/// `POINTS_PER_CANDIDATE` is a ceiling on the evidence as much as on the
+/// cost, and a re-measurement that reused eight and drove eight more would
+/// decide on sixteen (found on review).
+fn reuse(
+    on_record: &[Comparison],
+    skeleton: &Comparison,
+    out: &mut CandidateEvidence,
+    budget: &mut usize,
+) -> bool {
+    let Some(row) = pointwise::on_record(on_record, skeleton) else {
+        return false;
+    };
+    if let Some((baseline, candidate)) = outcomes_of(row) {
+        out.tally.count(baseline, candidate);
+        out.comparisons.push(row.id.clone());
+    }
+    *budget = budget.saturating_sub(1);
+    true
+}
+
+/// Why a candidate's point-wise pass compared nothing, when it did not —
+/// each cause in its own words.
+fn empty_reason(out: &CandidateEvidence, seats_held: bool, lost_to_arms: usize) -> Option<String> {
+    if out.tally.decided + out.tally.undecided > 0 {
+        // Evidence, but perhaps less than the budget allowed: a pass cut
+        // short by held seats must not read like a thin corpus.
+        return seats_held.then(|| {
+            format!(
+                "stopped short: every background seat stayed held after {} point(s)",
+                out.tally.decided + out.tally.undecided
+            )
+        });
+    }
+    Some(if seats_held {
+        "every background seat stayed held, so no point was driven".into()
+    } else if lost_to_arms > 0 {
+        format!("{lost_to_arms} point(s) were driven and each lost an arm that could not be driven")
+    } else {
+        "no posed point this machine could drive".into()
+    })
+}
+
+/// R26's point-wise half for a harness candidate, as R36 sizes it: up to
+/// [`mecha_core::candidate::POINTS_PER_CANDIDATE`] posed points drawn
+/// uniformly with `seed` (the measurement's own), each driven twice — the
+/// recorded config and the same with `change` applied — a short horizon
+/// from the point, on one background seat per point, and graded by the
+/// owner's recorded verdict. Every comparison is stored through the
+/// store's door; one already on record for this candidate at this point is
+/// reused, not re-driven.
+///
+/// **Never evidence by default.** A provider off this machine (R29), no
+/// drawable point, points that cannot run here (an owner-bound check point
+/// needs hooks, the outbox and messages off — the nightly line has none of
+/// them, so those points are skipped), a seat that never frees: each leaves
+/// the tally short, and a short tally is `Undecided`, which hands the
+/// verdict back to today's numeric gate.
+pub async fn compare_candidate(
+    prepared: &Prepared,
+    provider_cfg: &ProviderConfig,
+    model: &str,
+    change: &mecha_core::harness::ConfigChange,
+    candidate: &str,
+    seed: u64,
+    scope: CandidateScope<'_>,
+) -> Result<CandidateEvidence> {
+    let mut out = CandidateEvidence::default();
+    if !pointwise::on_this_machine(provider_cfg.base_url.as_deref()) {
+        out.not_run = Some(
+            "the measurement provider is not on this machine, and a point-wise arm resubmits \
+             a recorded transcript (R29)"
+                .into(),
+        );
+        return Ok(out);
+    }
+    let store = ComparisonStore::open_default()?;
+    let mut on_record = store.comparisons()?;
+    let drafts = match mecha_core::outbox::OutboxStore::open_existing_default() {
+        None => Vec::new(),
+        Some(o) => match o.items_counting() {
+            Ok((items, skipped)) => {
+                out.outbox_unreadable = skipped > 0;
+                items
+            }
+            Err(_) => {
+                out.outbox_unreadable = true;
+                Vec::new()
+            }
+        },
+    };
+    let by_id: BTreeMap<String, &OutboxItem> = drafts.iter().map(|i| (i.id.clone(), i)).collect();
+    let surfaces = SurfaceStore::open_default();
+    let scan = mecha_core::runlog::Scan {
+        workspace: scope.workspace.map(Path::to_path_buf),
+        include_experiments: mecha_core::experiment::in_experiment_home(),
+        ..Default::default()
+    };
+    let mut tally = Tally::default();
+    let pool = collect(
+        &Session::default_dir()?,
+        &scan,
+        Some(
+            scope
+                .sessions
+                .saturating_mul(crate::harness_probe::POOL_MULTIPLE)
+                .max(scope.sessions),
+        ),
+        Some(model),
+        &drafts,
+        surfaces.as_ref(),
+        &mut tally,
+    )?;
+    let seats = crate::commands::tasks::permits()?;
+    let mut budget = mecha_core::candidate::POINTS_PER_CANDIDATE;
+    // Why a pass may come back empty, kept apart: "the seats never freed"
+    // and "every arm failed" are machine facts, "no point to compare" is a
+    // fact about the corpus, and a reader months later must not take one
+    // for another (found on review).
+    let mut seats_held = false;
+    let mut lost_to_arms = 0usize;
+    for Drawable { path, point } in pointwise::draw(pool, seed, |d| &d.point) {
+        if budget == 0 {
+            break;
+        }
+        // Only a point a structural validator poses can decide anything.
+        let Plan::Posed(prep) = plan(&point, &path, &by_id, surfaces.as_ref())? else {
+            continue;
+        };
+        if prep.provenance().admit().is_err()
+            || prep.unrunnable_under(prepared).is_some()
+            || !prep
+                .lost_recorded_tools(prepared.agent.registry())
+                .is_empty()
+        {
+            continue;
+        }
+        let arms = candidate_arms(&prep);
+        let skeleton = candidate_comparison(
+            &prep,
+            &point,
+            arms.iter()
+                .map(|(r, p)| Arm::new(*r, p.clone(), Outcome::Unknown))
+                .collect(),
+            model,
+            candidate,
+        )?;
+        if reuse(&on_record, &skeleton, &mut out, &mut budget) {
+            continue;
+        }
+        let what = format!("compare candidate {candidate} {}", point.kind.as_str());
+        let Some(_seat) = take_seat(&seats, &what).await? else {
+            eprintln!("the background seats stayed held; the point-wise comparison stops short");
+            seats_held = true;
+            break;
+        };
+        budget -= 1;
+        let mut outcomes = Vec::new();
+        for (role, policy) in arms.iter() {
+            let driven = probe::drive_arm_under(
+                prepared,
+                provider_cfg,
+                model,
+                &prep,
+                prep.system_as_recorded(),
+                Some(pointwise::HORIZON_TURNS),
+                change_for(*role, change),
+            )
+            .await?;
+            match driven {
+                Ok(v) => outcomes.push(Arm::new(*role, policy.clone(), Outcome::from(&v))),
+                Err(why) => {
+                    eprintln!(
+                        "· {} {}: the {} arm could not be driven: {why}",
+                        point.session_id,
+                        point.kind.as_str(),
+                        mecha_core::appraisal::enum_name(role)
+                    );
+                    // Which arm, counted apart: a change that breaks its own
+                    // arm censors the candidate side only.
+                    if *role == Role::Candidate {
+                        out.tally.lost_candidate += 1;
+                    } else {
+                        out.tally.lost_baseline += 1;
+                    }
+                    break;
+                }
+            }
+        }
+        if outcomes.len() != arms.len() {
+            lost_to_arms += 1;
+            continue;
+        }
+        let comparison = candidate_comparison(&prep, &point, outcomes, model, candidate)?;
+        let written = tally.stored.written;
+        store_one(
+            &store,
+            prep.provenance(),
+            comparison.clone(),
+            &mut on_record,
+            &mut tally,
+        )?;
+        if tally.stored.written > written {
+            if let Some((baseline, candidate)) = outcomes_of(&comparison) {
+                out.tally.count(baseline, candidate);
+                out.comparisons.push(comparison.id);
+            }
+        }
+    }
+    out.not_run = empty_reason(&out, seats_held, lost_to_arms);
+    Ok(out)
 }
 
 /// Drive every arm of one point, in order, on the one seat the caller
@@ -1006,6 +1298,7 @@ mod tests {
             &home.join("sessions"),
             &scan(),
             None,
+            None,
             drafts,
             surfaces.as_ref(),
             &mut tally,
@@ -1312,6 +1605,217 @@ mod tests {
         let mut at: Vec<Option<usize>> = offered.iter().map(|c| c.pointers.message_index).collect();
         at.sort();
         assert_eq!(at, vec![Some(2), Some(4)]);
+    }
+
+    /// A harness candidate's comparison at a point names the candidate and
+    /// carries the recorded config against the change; stored, it is found
+    /// again by the same point, arms and candidate — and counted rather
+    /// than re-driven — but never for a different candidate.
+    #[test]
+    fn a_candidates_comparison_is_stored_named_and_reused() {
+        let guard = crate::testenv::HomeGuard::new("pointwise-candidate");
+        let home = guard.dir.clone();
+        let id = session(&home, false);
+        let path = Session::find(&home.join("sessions"), &id).unwrap();
+        let transcript = Session::read(&path).unwrap();
+        let steer = pointwise::points_in(&id, &transcript.convo.messages, &[])
+            .into_iter()
+            .find(|p| p.kind == PointKind::Steer)
+            .unwrap();
+        let Plan::Posed(prep) = plan(&steer, &path, &BTreeMap::new(), None).unwrap() else {
+            panic!("a steer is posed");
+        };
+        let arms: Vec<Arm> = candidate_arms(&prep)
+            .into_iter()
+            .zip([Outcome::Fail, Outcome::Pass])
+            .map(|((r, p), o)| Arm::new(r, p, o))
+            .collect();
+        assert_eq!(
+            arms.iter().map(|a| a.role).collect::<Vec<_>>(),
+            vec![Role::WithoutIntervention, Role::Candidate]
+        );
+        assert_eq!(arms[0].policy, arms[1].policy, "one prompt, two configs");
+        let c = candidate_comparison(&prep, &steer, arms, "scripted", "hc-ledger").unwrap();
+        assert_eq!(c.pointers.proposal_id.as_deref(), Some("hc-ledger"));
+        let store = ComparisonStore::open_default().unwrap();
+        let mut written = Vec::new();
+        store_one(
+            &store,
+            prep.provenance(),
+            c.clone(),
+            &mut written,
+            &mut Tally::default(),
+        )
+        .unwrap();
+        let rows = ComparisonStore::open_default()
+            .unwrap()
+            .comparisons()
+            .unwrap();
+        assert_eq!(rows, vec![c.clone()]);
+
+        let skeleton = |candidate: &str| {
+            candidate_comparison(
+                &prep,
+                &steer,
+                candidate_arms(&prep)
+                    .into_iter()
+                    .map(|(r, p)| Arm::new(r, p, Outcome::Unknown))
+                    .collect(),
+                "scripted",
+                candidate,
+            )
+            .unwrap()
+        };
+        let mut out = CandidateEvidence::default();
+        let mut budget = mecha_core::candidate::POINTS_PER_CANDIDATE;
+        assert!(reuse(&rows, &skeleton("hc-ledger"), &mut out, &mut budget));
+        assert_eq!((out.tally.decided, out.tally.candidate_only), (1, 1));
+        assert_eq!(out.comparisons, vec![c.id]);
+        assert_eq!(
+            budget,
+            mecha_core::candidate::POINTS_PER_CANDIDATE - 1,
+            "a reused point spends the budget a driven one does"
+        );
+        let mut other = CandidateEvidence::default();
+        assert!(
+            !reuse(&rows, &skeleton("hc-quarter"), &mut other, &mut budget),
+            "another candidate's verdict at the same point is not this one's"
+        );
+        assert_eq!(budget, mecha_core::candidate::POINTS_PER_CANDIDATE - 1);
+    }
+
+    /// A re-measurement that finds every point on record reuses exactly the
+    /// budget's worth and stops — never eight reused and eight more driven.
+    #[test]
+    fn a_re_measurement_reuses_no_more_than_the_budget() {
+        let guard = crate::testenv::HomeGuard::new("pointwise-reuse-budget");
+        let home = guard.dir.clone();
+        let id = session(&home, false);
+        let path = Session::find(&home.join("sessions"), &id).unwrap();
+        let transcript = Session::read(&path).unwrap();
+        let steer = pointwise::points_in(&id, &transcript.convo.messages, &[])
+            .into_iter()
+            .find(|p| p.kind == PointKind::Steer)
+            .unwrap();
+        let Plan::Posed(prep) = plan(&steer, &path, &BTreeMap::new(), None).unwrap() else {
+            panic!("a steer is posed");
+        };
+        let stored = candidate_comparison(
+            &prep,
+            &steer,
+            candidate_arms(&prep)
+                .into_iter()
+                .map(|(r, p)| Arm::new(r, p, Outcome::Pass))
+                .collect(),
+            "scripted",
+            "hc-ledger",
+        )
+        .unwrap();
+        let rows = vec![stored.clone()];
+        let mut out = CandidateEvidence::default();
+        let mut budget = mecha_core::candidate::POINTS_PER_CANDIDATE;
+        let mut reused = 0;
+        // The loop's own guard, over more on-record points than the budget.
+        for _ in 0..(2 * mecha_core::candidate::POINTS_PER_CANDIDATE) {
+            if budget == 0 {
+                break;
+            }
+            if reuse(&rows, &stored, &mut out, &mut budget) {
+                reused += 1;
+            }
+        }
+        assert_eq!(reused, mecha_core::candidate::POINTS_PER_CANDIDATE);
+        assert_eq!(
+            out.tally.decided,
+            mecha_core::candidate::POINTS_PER_CANDIDATE
+        );
+    }
+
+    /// A candidate's point pool is scoped as its whole-session draw is: a
+    /// session recorded under another model, or outside the workspace the
+    /// night was scoped to, contributes no point (found on review).
+    #[test]
+    fn a_candidates_pool_is_scoped_to_the_model_and_workspace_measured() {
+        let guard = crate::testenv::HomeGuard::new("pointwise-scope");
+        let home = guard.dir.clone();
+        session(&home, false);
+        let pool = |model: Option<&str>, workspace: Option<std::path::PathBuf>| {
+            let scan = mecha_core::runlog::Scan {
+                include_tests: true,
+                workspace,
+                ..Default::default()
+            };
+            collect(
+                &home.join("sessions"),
+                &scan,
+                None,
+                model,
+                &[],
+                None,
+                &mut Tally::default(),
+            )
+            .unwrap()
+            .len()
+        };
+        assert_eq!(pool(Some("scripted"), None), 4, "its own model's points");
+        assert_eq!(pool(Some("another-model"), None), 0);
+        assert_eq!(pool(None, Some(home.clone())), 4, "inside the workspace");
+        assert_eq!(pool(None, Some(home.join("elsewhere"))), 0);
+    }
+
+    /// The change goes to the candidate arm, and outcomes are read by role:
+    /// a comparison stored with its arms in the other order still counts
+    /// the baseline as the baseline.
+    #[test]
+    fn the_change_and_the_outcomes_follow_the_role_not_the_position() {
+        let change = mecha_core::harness::parse_change("effort=low").unwrap();
+        assert_eq!(change_for(Role::Candidate, &change), Some(&change));
+        assert_eq!(change_for(Role::WithoutIntervention, &change), None);
+        let swapped = Comparison::new(
+            mecha_core::comparison::Kind::PointSteer,
+            None,
+            None,
+            None,
+            vec![
+                Arm::new(Role::Candidate, None, Outcome::Pass),
+                Arm::new(Role::WithoutIntervention, None, Outcome::Fail),
+            ],
+            Validator::StructuralSteer,
+            Default::default(),
+            "scripted",
+        );
+        assert_eq!(outcomes_of(&swapped), Some((Outcome::Fail, Outcome::Pass)));
+        let mut t = mecha_core::candidate::PointwiseTally::default();
+        let (b, c) = outcomes_of(&swapped).unwrap();
+        t.count(b, c);
+        assert_eq!(
+            t.candidate_only, 1,
+            "the candidate passed where the baseline failed"
+        );
+    }
+
+    /// An empty pass says why: a held seat, arms that could not be driven,
+    /// and an empty corpus are three findings, never one.
+    #[test]
+    fn an_empty_candidate_pass_names_its_cause() {
+        let empty = CandidateEvidence::default();
+        let why = |seats, lost| empty_reason(&empty, seats, lost).unwrap();
+        assert!(why(true, 0).contains("seat"));
+        assert!(why(false, 3).contains("3 point(s) were driven"));
+        assert!(why(false, 0).contains("no posed point"));
+        let mut some = CandidateEvidence::default();
+        some.tally.count(Outcome::Pass, Outcome::Pass);
+        assert_eq!(
+            empty_reason(&some, false, 2),
+            None,
+            "evidence is not an empty pass"
+        );
+        assert!(
+            empty_reason(&some, true, 0)
+                .unwrap()
+                .contains("stopped short"),
+            "a pass cut short by held seats says so"
+        );
     }
 
     /// A check an owner-bound criterion graded, in a recording that carries

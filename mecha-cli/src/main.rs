@@ -8,6 +8,7 @@ mod editor;
 mod exe;
 mod harness_probe;
 mod interrupt;
+mod lesson_pass;
 mod logs;
 mod pointwise_pass;
 mod probe;
@@ -241,6 +242,11 @@ pub struct GlobalOpts {
     /// forced off by `mecha eval` with the rest of the set.
     #[arg(long, global = true)]
     pub no_situation_brief: bool,
+
+    /// Serve no past appraisal through `goal_context`, whatever `[agent]
+    /// past_appraisals` says (`Lever::PastAppraisals`).
+    #[arg(long, global = true)]
+    pub no_past_appraisals: bool,
 
     /// Don't route any tools through the outbox — configured [outbox] tools
     /// execute directly under the usual gates instead of being staged.

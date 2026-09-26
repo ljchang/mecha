@@ -93,7 +93,7 @@ The current consumers have different jobs:
 | Project closure | Labels and separate positive/negative sums across task-linked sessions, including counts of unreadable or undelegated tasks. |
 | Distillation | Signed errors and resolved goal pointers in episode metadata; goal sentences and the owner's answers stay in mecha. |
 | Harness replay selection | Among candidates tied on metric headroom, prefer evidence attributed to a higher-ranked charter line. This does not optimize the affect label. |
-| Harness diagnosis | Homeostat and anticipated-guilt readings enter the diagnostic brief unless `[agent] sensors_in_brief` is disabled (it is on by default). They do not directly alter permissions or budgets. |
+| Harness diagnosis | Homeostat and anticipated-guilt readings enter the diagnostic brief unless `[agent] sensors_in_brief` is disabled (it is on by default). So do the clean text appraisals of the sessions a nightly candidate may be selected from — never those of the held-out sessions that confirm it — unless `[agent] appraisals_in_brief` is disabled (also on by default). They shape what is proposed, never what is accepted, and they do not directly alter permissions or budgets. |
 
 A draft sent unchanged already contributes positive appraisal evidence. Learning
 writing rules from that positive signal is still separate open work; the
@@ -213,6 +213,21 @@ as empty or zero. `mecha sessions health` reports how complete the recorded
 briefs are, field by field, and counts the runs that recorded none by surface
 (`situation_brief` in `--json`). The TUI, `mecha chat`, Slack, and voice turns
 that are not spoken into a web chat do not record a brief yet.
+
+### Past appraisals
+
+With `past_appraisals` on, the `goal_context` tool also returns up to three
+earlier appraisals of runs in the same situation toward the same goal, newest
+first, when the model asks for its goal's context. Only appraisals of runs that
+read no third-party content are ever returned. Each is shown as what it is:
+an interpretation a model wrote after an earlier run, not a fact about this
+one. Nothing is added to the prompt, and the setting ships off while it is
+measured:
+
+```toml
+[agent]
+past_appraisals = true   # off by default
+```
 
 ### Anticipated guilt, and why it reads only mecha's own stores
 
@@ -434,7 +449,9 @@ mecha sessions appraise --days 30 --kind web --json
 | `tests_hidden`, `experiments_hidden` | Development data excluded from the population. |
 | `probe` | Results of the optional paid pass; `null` when it did not run. |
 | `appraiser` | Always `null`: the counts-only appraiser is retired. Kept so a reader of the old shape still finds the key. |
-| `text_appraisals` | Counts from the [text-appraisal store](#text-appraisals): records, sessions, how many are `clean` and `not_clean`, claims kept and dropped by grounding (`dropped_by`, by reason), records carrying an expected act (`with_expected_act`), judgment goals that did not resolve (`goals_unresolved`), and whether the store was fully read. |
+| `predictions` | Anticipation's predictions scored (store-wide): per response and per concern kind, `predictions`, `scored`, `materialized`, `clean`, the reasons the rest are not yet a point (`unscored`), and `materialized_rate`, which is `null` when nothing was scored; plus `total`, `unreadable`, and whether the outbox was fully `read`. See [anticipation](/docs/features/appraisal/anticipation#how-well-the-predictions-held-up). |
+| `expectations` | The appraisals' own predictions (their expected act) checked against what you did: `with_expectation`, `scored`, `hits`, `surprises` (and `clean_surprises`), `pending` (the waiting period is still open), `unknown` (a store, the board or the patience could not be read), `board_not_read` (task outputs this readout cannot window, because it reads no board; `mecha distill` scores them), and `hit_rate`, which is `null` over no scores. `read: false` when the store could not be read. |
+| `text_appraisals` | Counts from the [text-appraisal store](#text-appraisals): records, sessions, how many are `clean` and `not_clean`, claims kept and dropped by grounding (`dropped_by`, by reason), records carrying an expected act (`with_expected_act`), judgment goals that did not resolve (`goals_unresolved`), [counterfactual reflections](#what-a-losing-arm-taught) from losing arms (`counterfactuals`, and `counterfactuals_not_clean`), and whether the store was fully read. |
 
 The signed errors, valence and label above are derived when read and never
 stored. This scan is per **session**, while `sessions health` reports per-run
@@ -451,7 +468,7 @@ one appears, is part of the prose. They are kept in
 `~/.mecha/appraisals/appraisals.jsonl`, one per session, written by
 [`mecha distill`](/docs/features/memory/distillation#the-same-pass-writes-the-sessions-appraisal)
 in a follow-up question on the episode's own conversation, on the local model
-only. Nothing reads them yet except you.
+only.
 
 Beside the prose prediction, a record carries an **expected act**. This is
 what the appraiser expects you to do with this kind of output next time — one
@@ -471,9 +488,12 @@ Three rules hold for every record:
   be read.
 - **Only appraisals of clean sessions go further.** Learning, memory and rule
   tenure will read only appraisals of sessions with no third-party content.
-  The rest are stored for you to read and go nowhere else. The one reader
-  today is the appraiser itself: a session's appraisal is shown up to three
-  earlier clean appraisals of the same situation and goal.
+  The rest are stored for you to read and go nowhere else. Two readers use
+  them today. The appraiser itself is shown up to three earlier clean
+  appraisals of the same situation and goal. The nightly harness
+  diagnostician is shown the clean appraisals of the sessions its candidate
+  may be selected from, never the held-out ones that confirm it (see
+  [the diagnostic stage](/docs/features/learning/run-quality#the-diagnostic-stage)).
 - **A goal is named only if mecha holds it.** A judgment's goal must be a
   charter line, a task or project on the board, a trigger or a front-door
   request that exists. Anything else is recorded as no goal and counted.
@@ -491,10 +511,73 @@ act and the lessons, under a label saying whether the appraisal is clean.
 records. Control characters are stripped from every field, because the prose is
 a model's reading of a session that may have held a stranger's text.
 
+#### Checking the prediction
+
+Each appraisal's expected act is checked against what you actually did with
+the session's output. That means a draft you released as written, edited or
+rejected, or a task or workflow you closed, reopened or cancelled; a cancel
+counts as `rejected`. Your first act is the one that counts. Nothing you do
+changes or adds to it.
+
+- **"No act" becomes the answer only after a waiting period.** The clock
+  starts when the session ends. If the session staged drafts, the wait is
+  the outbox's patience: your charter line on the outbox, or 48 hours if you
+  have none.
+- **A task runs to its due date.** When the session's output is a task, the
+  wait runs to the task's due date on your board. A date with no time
+  counts through the end of that day in your timezone. If the task has no
+  due date, or it had already passed when the session ended, the wait is
+  48 hours.
+- **Anything else waits 48 hours**, including a workflow. An act after the
+  wait does not count.
+- **A board that can't be read leaves the answer unknown.** Task due dates
+  come from `mecha distill`'s read of the board. `mecha sessions appraise`
+  does not read the board, so it lists those outputs as awaiting that read.
+- **An unreadable store is never read as "no act".** If the outbox, the
+  closure record, the workflows, or the charter the patience comes from
+  cannot be read, the answer stays unknown.
+- **A wrong prediction is recorded as a surprise.** `mecha distill` records
+  each answer once, in `~/.mecha/appraisals/scores.jsonl`. A later
+  learning step can use the surprises to decide what to look at again.
+  Nothing uses them yet.
+- **`mecha sessions appraise` shows coverage:** scored, hits, surprises,
+  waiting and unknown. The hit rate appears only once something has been
+  scored.
+
 ```bash
 mecha sessions appraise 20260925T1131     # one session's appraisal
 mecha sessions appraise --text -n 5       # the five newest
 ```
+
+#### What a losing arm taught
+
+[`mecha sessions compare`](/docs/features/learning#mecha-sessions-compare--policies-at-the-moments-you-decided)
+replays a moment you already decided — a steer, a refusal, a draft you
+rewrote or rejected — under a few policies, and checks each against what you
+did. When the check separates them, the policy that did what you refused
+**lost**, and that is worth keeping. The next `mecha distill` pass adds it to
+the session's appraisal as a **counterfactual reflection**:
+
+```text
+counterfactual reflection cfr-… · comparison:cmp-… · dereferences · clean
+  │ Counterfactual at a draft the owner rejected (message 6, call 2). Lost: under today's deployed rules (rules 9f8e7d6c5b4a), the arm drafted the text the owner rejected. Won: under no rules (no rules block), the arm ended without drafting. Decided by the rejected-draft validator against the owner's recorded verdict; comparison cmp-….
+```
+
+- **Only a decided comparison writes one.** A moment the check could not
+  decide, or one with no check that can pose it (a surprise, a check the
+  agent set itself), writes nothing, and so does a moment where every
+  policy did the same thing.
+- **mecha writes every word, from the comparison's record.** No model writes
+  it, and neither your text nor a draft's text is in it.
+- **It points at its comparison.** `mecha sessions appraise <session>` checks
+  that the comparison is still on record and still says what the reflection
+  quotes, and says `DOES NOT DEREFERENCE` when it is not.
+- **It carries its appraisal's taint.** A reflection on a session that read
+  third-party content is marked as such, like the appraisal it belongs to.
+- **Each comparison is added once**, in
+  `~/.mecha/appraisals/counterfactuals.jsonl`; the appraisal itself is never
+  rewritten. A comparison of a session that has no appraisal yet waits for the
+  pass after it has one. Nothing reads these yet except you.
 
 ### The finding: most runs had no label, and why the gate moved
 

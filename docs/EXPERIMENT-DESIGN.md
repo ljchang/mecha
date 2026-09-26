@@ -714,10 +714,13 @@ and a manifest refuses it in either direction). Later additions:
 `predictive_compaction` and `carried_state` got their switches, and
 `situation_brief` (`APPRAISAL-WIRING-DESIGN.md` 3a) delivers the recorded
 situation brief into the run's first user turn — it ships off, so its arm is
-`levers_on = ["situation_brief"]` against a control that leaves it off. `plan_reinjection`,
+`levers_on = ["situation_brief"]` against a control that leaves it off;
+`past_appraisals` (2c-2) likewise ships off and is measured as
+`levers_on = ["past_appraisals"]`, over an environment whose `appraisals/`
+directory is seeded into each home. `plan_reinjection`,
 `declared_checks` and `appraiser` are not levers until their switch
 exists. The stage levers as built are `reflect`, `learn`, `validate`,
-`retire`, `ruminate` and `sensors_in_brief` (`experiment::StageLever`).
+`retire`, `ruminate`, `sensors_in_brief` and `appraisals_in_brief` (`experiment::StageLever`; the last since `APPRAISAL-WIRING-DESIGN.md` 2f).
 
 Loop-stage levers, `lifetime` only:
 
@@ -730,6 +733,7 @@ Loop-stage levers, `lifetime` only:
 | `followup_staging` | `tasks set` → `worth_a_follow_up` | the board item after a closure |
 | `prioritised_replay` | unbuilt | the \|valence\| ordering; the arm without it draws uniformly, which is `sample.rs` as it stands |
 | `sensors_in_brief` | **none** | the homeostat's and guilt's entry into `diagnose::Evidence` |
+| `appraisals_in_brief` | **none** | the clean appraisals' entry into `diagnose::Evidence` — the appraisal-off preset's reach into `harness ruminate` (2f) |
 
 **"The whole system off" is the bare arm, and it already exists** — it is
 what `mecha eval` runs. The appraisal *readout* is a pure function of the

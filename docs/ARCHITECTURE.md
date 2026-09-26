@@ -889,7 +889,8 @@ The same pass also writes the session's **text appraisal**, in a follow-up
 turn on the episode call's own conversation. It runs on the local model only
 and in shadow; an appraisal that fails never touches the episode's push or
 its ledger. The invariants are in the goal-system section's text-appraisal
-paragraph.
+paragraph. After it, each pass writes decided comparisons' losing arms into
+their sessions' appraisals ("The losing arm teaches", with no model call).
 
 The distiller also reports **corrections** — moments the user said the graph
 holds something wrong — as `meta.corrections`, `[{wrong, right?, about?,
@@ -2247,6 +2248,86 @@ whole rather than half a new one. `voice_clone` refuses an existing name with
 an `exists()` check ahead of the rename, not an exclusive create, so it does
 not hold against two concurrent uploads of one name.
 
+## Incognito chat
+
+`serve/incognito.rs` and `chat.rs`'s `Recording` (`docs/INCOGNITO-DESIGN.md`
+is the authority: rulings R1–R6, the audit, the build order). A web session is
+`Recording::Kept(session)` or `Recording::Incognito(room)`, and **an incognito
+chat has no transcript by type**: every write that records matches on the
+variant, so the compiler found each one — the per-turn message and rewrite,
+the outcome and taint records, the workflow run, the outbox route's session id
+— and an incognito turn has nowhere to write. The titler and the situation
+brief (which reads the board through the graph server) do not run.
+
+- **Its own door.** `POST /api/incognito` mints `incognito-<22 hex>`; the
+  ordinary door refuses the prefix, so a closed incognito key can never come
+  back as a recorded chat. `POST /api/incognito/{key}/end` closes one;
+  `…/alive` is the open page's ping. The doors that act on a chat — open,
+  send, mode, upload, end, alive — answer a closed key `410 Gone`
+  (`incognito::Closed`) rather than a 500 the page would retry; the reads
+  (the transcript, the file routes) answer 404, as for any unknown key.
+- **Local only, refused rather than degraded.** The door opens only when the
+  chat provider is a loopback server with no `fallbacks` — a `Failover`
+  would re-send the conversation to a cloud provider on a transient local
+  error, and a locked model chip would not stop it.
+- **The room is in RAM.** `$XDG_RUNTIME_DIR/mecha-incognito/<home>/<key>/`
+  holds the jail and, beside it, the spill directory (never inside: the
+  jail's spill exception must point where the model cannot write). The
+  runtime directory is `statfs`-checked for tmpfs, and the `<home>` level
+  keeps a second `serve` against another home from sweeping this one's rooms
+  (the level's name escapes every other byte reversibly, so two homes never
+  share it). Against the *same* home, each room carries its opener's pid
+  (`owner`) and the start-up sweep removes only rooms whose owner is gone —
+  a mistaken second start, even one that then dies on a taken port, closes
+  nobody's chat. The jail is `<room>/<key>`: `WebAsker`
+  routes an `ask_user` card by the jail's directory name, which must be the
+  session key.
+- **`shell` only in a sealed sandbox** (`incognito::shell_is_sealed`): `bwrap`
+  or `docker`, no extra `writable` or `readable` path, no network. `fs_*` are
+  jailed by `ToolCtx::resolve`; `shell` only by the sandbox. Writes: `none`
+  and `landlock` (shared `/tmp`) could leave what `Room::remove` never sees.
+  Reads and network: where it runs, `shell` registers in the room
+  (`<room>/shells`, `ToolCtx::shell_registry`), not the mecha home, so the
+  closure check reads its commands as unregistered and one that clears
+  `MECHA_RUN_POSTURE` would pass as the owner — harmless only because the
+  board is reached through the graph server, which a command that can read
+  no config and call no network cannot find. Elsewhere `shell` is withheld.
+- **A deny-gate hook refuses the door** (`pre_tool`, `pre_task_close`). No hook runs in an incognito chat
+  (a hook's log is a trace); an observer is simply not run, but a deny gate
+  skipped would widen the chat past what the owner allowed, so its presence
+  refuses the chat the way a cloud provider does (`incognito::hooks_allow`).
+- **It reaches an allowlist.** `withheld` is filled with the complement of a
+  few builtins, search, and the mail server's read-only, un-routed tools —
+  against the live registry, so a tool added tomorrow is withheld without
+  anyone remembering. Withholding is checked before dispatch *and* before
+  outbox staging, so a routed tool cannot even stage a draft. The graph is
+  out (it logs every read's query text) and so is `image_generate` until the
+  image server's temp copies are removed per room.
+- **No hooks, no voice.** `pre_tool`/`post_tool` receive tool input and
+  output; the voice worker logs what it hears.
+- **Closing** — End, 30 minutes with no turn and no ping from an open page
+  (the reaper, once a minute; the owner's ruling is that an open page is
+  use), or `serve` stopping — cancels a run in flight, forgets the todo plan, and removes the
+  room; a run still finishing removes it again on its way out, so a late
+  spill cannot leave a directory behind. `ChatState::build` sweeps leftover
+  rooms before the door opens, for a `serve` that died.
+- Every incognito route answers `Cache-Control: no-store`, and the page
+  keeps nothing either: `web/test/no-storage.mjs` fails on any storage API in
+  `web/src` or any module it imports (`voice-core.js`'s own preference keys the
+  one argued allowance), and a generated picture is not a link in an incognito chat
+  (opening it in a tab writes its address into the browser's history).
+- **The page** (`Chat.svelte`): a second new-chat button beside **+**, a banner
+  that does not scroll away and carries the search notice, **End**, no voice
+  call, and — on End or a `410` — a screen saying the chat is gone, with the
+  conversation dropped from the tab's memory too: the event stream closes,
+  and an event already in flight is dropped rather than drawn.
+
+The end-to-end test drives the real routes: a turn and an upload carrying a
+canary, a scan of the whole mecha home (nothing while open, nothing after),
+the room gone on End, the key dead on both doors — and the same turn in an
+ordinary chat, which must find the canary, so the scan is known to look where
+a trace would be.
+
 ## Voice preferences in the browser
 
 **One preference store, read and written only through `voice-core.js`.**
@@ -2449,7 +2530,9 @@ now makes the move one recorded event:
   authors can press it (the tap is a gated, signed owner, SLACK-ACTIONS §3).
   **`--only-open` is the store-state guard SLACK-ACTIONS §5 asks of every
   tap:** a card composed while the task was open, tapped after it was closed
-  elsewhere, is refused with nothing changed — Drop on a `done` task would
+  elsewhere, is refused with the row unchanged and no closure recorded for
+  it (an earlier uncertain move of the same task may still be settled
+  first: `settle_uncertain` runs before `only_if_open`) — Drop on a `done` task would
   otherwise flip the verdict with no record (it crosses no line), and Next
   would reopen it, which signs −1.0 against the session that did the work.
   **The reply carries the readout from the record**, not from the child:
@@ -3592,12 +3675,49 @@ Two rules are structural rather than instructed:
   a corpus of them cannot be an injection surface the way tool output would
   be. `frontdoor::Record::for_privileged_run` in a second setting — the safety
   property is a function signature, not a rule someone remembers.
+  **One kind of text is admitted, by type (row 2f, R38): clean appraisals.**
+  `Evidence::with_appraisals` takes a `CleanRead`, the store's clean door,
+  and the episode ids of the nightly draw's remainder. That remainder is
+  the pool minus its uniform holdout, never the holdout, so the slice that
+  confirms a change is one its author never read about.
+  - Only a `Clean` becomes an `AppraisalNote`: its fields are private and
+    its one constructor takes `&Clean`.
+  - A note carries the appraiser's words (interpretation, good/bad per goal,
+    lessons). It never carries a claim's quote, which is the appraised run's
+    content, and never a number (R21).
+  - It is bounded: 6 notes, newest first, one per session; interpretation
+    cut at 600 characters, at most 2 lessons of 240, and at most 4 per-goal
+    bearings of 120 (each re-bounded on read: the ledger is a wire format).
+    That is at most about 1,700 characters a note and under 11,000 in all
+    (about 2.8k tokens). A cut is flagged, notes past the cap are counted, and
+    an unreadable store, or unparseable lines of one, are said. Every piece is
+    flattened to one line first, so a note cannot emit a line that reads as
+    the brief's own findings.
+  - **A brief carrying a note opens the conversation `private`**
+    (`Evidence::conversation`), and `Taint::arm_for_content` re-arms it off the
+    transcript by the section's stem (`diagnose::APPRAISAL_STEM`) at every run
+    start, so a caller rendering the brief itself cannot open it clean. Fail-closed: a clean run may have read the
+    owner's files, and its appraisal can say so. On those nights the
+    diagnostician's first fetched page arms the interlock, and it researches
+    on blind `web_search` only (the owner's ruling; `TRIFECTA.md`).
+  - `mecha diagnose` run by hand has no draw and carries none.
+    `[agent] appraisals_in_brief` is the lifetime stage lever (on).
+  - **The brief is the only door.** The diagnostician's run is narrowed off
+    past appraisals (`no_past_appraisals`, beside `no_learned_rules`), so
+    `goal_context` — a second reader of the store with no holdout filter —
+    cannot serve it a held-out episode's appraisal on demand.
+  - Nothing in a note reaches the gate. `judge_drawn` and `combine` read
+    replay pairs and the point-wise tally, and the class comes from the
+    proposal's own text.
 - **The proposal never quotes its evidence.** The diagnostician may read the
   source, these documents and the web; `carries_over` rejects a proposal that
   reproduces eight consecutive words from anything it read. An instruction
   lifted from a page cannot survive that; a conclusion drawn from one can.
   Eight because shorter runs collide on ordinary technical prose, and a check
   that fires on honest proposals gets turned off and protects nothing.
+  The appraisal notes in the brief are sources too. `diagnose::lifted`
+  checks a proposal against the tool results and the notes as one list,
+  through the same `carries_over`, with no second checker.
 - **The class is derived from the change, never taken on trust.** The class is
   what decides whether a human ever sees a proposal — `Security` is never
   measured and never auto-applied, while `Config` inside the closed override
@@ -3746,11 +3866,24 @@ config plus the candidate change, recorded tool results both times, whole
 trajectory, `RunStats` as the label; the pool is four times the wanted count
 and the draw is `judge_drawn`'s two slices, not a hash partition) → judge →
 dispose. A config change that wins on selection, is confirmed on the holdout,
-and holds the work guardrail **auto-accepts** (§13.3, the owner ruling);
+and holds the work guardrail **auto-accepts** (§13.3, the owner ruling) —
+unless the point-wise comparison below decides, for or against (R26, R36);
 everything else stages for review or is rejected with the evidence attached.
 
 The decisions that carry it, each a bug if undone:
 
+- **The draw is split in two phases on one seed, and the holdout is fixed
+  before the diagnosis** (row 2f, R38). `ruminate` mints the candidate id
+  (the seed, `seed_of`) before diagnosing, and a night with no candidate
+  discards it. It then draws the eligible pool and its uniform holdout
+  (`harness_probe::draw_pool`), neither of which reads the metric, and the
+  diagnostician's brief carries the clean appraisals of `Pool::remainder`
+  only. After the proposal, `Pool::select` ranks the remainder by the
+  predicted metric's headroom exactly as the single-phase draw did.
+  `the_split_draw_is_the_single_phase_draw` holds the two against the old
+  body, verbatim, element for element and in order, so moving the phase
+  changed when the draw happens and never what is measured. The pool walk
+  (no model call) is paid every night, proposal or not.
 - **A configured knob must affect the selected adapter.**
   `ConfigChange::ensure_supported` checks `Provider::supports_effort` before
   spending replay budget. The local compatible adapter accepts the config field
@@ -4022,8 +4155,200 @@ through the store above (a `point-*` `Kind` per point kind).
   then the rest of the pass deferred and counted — never the owner's
   reserved seat. **Local model only** (R29): `pointwise::on_this_machine`
   refuses a provider whose endpoint is not loopback before anything is read.
-- Not here: accepting a candidate from these comparisons (2d-2, R26), and
-  writing a losing arm into the session's appraisal (2d-3, O3).
+- A decided point's losing arm is written into the session's appraisal by
+  `mecha distill`, not here — see "The losing arm teaches" below.
+
+### A candidate is accepted point-wise, guarded by the numbers
+
+`APPRAISAL-WIRING-DESIGN.md` R26, completed by R36; row 2d-2. Harness
+rumination's measurement (`commands/harness.rs::measure`, the one path that
+auto-accepts) now asks two questions of a config candidate, and
+`candidate::combine` — pure, beside the rest of the gate — answers from both:
+
+- **The point-wise half** (`pointwise_pass::compare_candidate`): up to
+  `candidate::POINTS_PER_CANDIDATE` (8) posed points, drawn with the
+  measurement's own seed from a pool **scoped as the whole-session draw
+  is** (`CandidateScope`: the measured model, `--from-workspace`, the same
+  newest-sessions bound) — or the two halves of one measurement read
+  different corpora and out-of-scope evidence could promote a candidate
+  (found on review) — each driven twice — the recorded config
+  (`WithoutIntervention`) and the same with the change applied
+  (`Candidate`, through `probe::drive_arm_under`) — under the recorded
+  prompt, a `HORIZON_TURNS` horizon from the point, one background seat per
+  point. The horizon binds *after* the change (`probe::within_horizon`), so
+  a `max_turns` candidate cannot lengthen an arm, and a `compact_at_tokens`
+  one reaches the run context the way the whole-session arm's does. Each
+  comparison is stored with the candidate in `Pointers::proposal_id` — two
+  candidates share every rules hash at a point, so the dedup key
+  (`pointwise::on_record`) includes it — and a re-measurement reuses a
+  stored verdict rather than paying for it again — a reused point spends
+  the same budget a driven one does, so the ceiling holds on the evidence
+  as well as the cost (found on review). A point lost to an arm that could
+  not be driven is counted **by arm** (`PointwiseTally::lost_candidate` /
+  `lost_baseline`) and printed by `harness show`: the change rides on the
+  candidate arm alone, so its losses censor asymmetrically — the survivors
+  are the points where it did nothing unusual — and a point-wise win over
+  any candidate-arm loss proposes rather than auto-accepts (found on
+  review, the whole-session half's 2026-09-01 lesson). When the numbers already rejected
+  on a regression (`candidate::pointwise_can_change`) every point-wise
+  outcome keeps the rejection, so the pass is not run at all. The tally
+  (`candidate::PointwiseTally`) decides **for** at `MIN_DECIDED_POINTS` (4)
+  decided points and strictly more candidate-only passes than
+  baseline-only, **against** symmetrically, and is otherwise **undecided**.
+- **The numeric half, typed as a guard** (`Judgement::guard`,
+  `candidate::Guard`), apart from its disposition: `Regressed` — work below
+  `WORK_FLOOR`, the predicted metric worse in either slice, an unpredicted
+  metric past `REGRESSION_CEILING` — vetoes; `NewCost` (a cost from
+  nothing) and `Unmeasured` (a slice below its floor) reach a person;
+  `Held` includes "did not beat the original", which is a missing win and
+  never a regression — and so is a holdout with too little of the metric to
+  confirm a gain (`MIN_INFORMATIVE_HOLDOUT`): it can still find a loss, so it
+  guards; confirming is the point-wise half's job. The guard is computed
+  whatever the disposition, so a
+  breach on numbers that did not carry the candidate still vetoes a
+  point-wise win.
+- **The rule** (R36): for + held → `Accept` when `ChangeClass` allows
+  auto-accept at all (a `Security` or `Architecture` change still stages —
+  a lane must not promote itself); for + anything else → the guard's reject
+  or proposal; **against → `Reject` whatever the numbers**; **undecided →
+  the numeric verdict unchanged**, recorded `Basis::NumericOnly` — the
+  2026-08-22 auto-accept stands for every candidate the short horizon
+  cannot see. The basis, tally, reused and driven comparison ids, and any
+  reason nothing ran go on `Measurement::pointwise`; `harness show` prints
+  them, and a record from before reads "not recorded", never "numeric only".
+- **A pass that could not run is never evidence** — and a pass that failed
+  (an unwritable store, a provider that will not build) is recorded as why
+  nothing was compared, never allowed to discard the whole-session
+  measurement already paid for (found on review). A provider off this
+  machine (R29), no drawable point, a seat that never frees, and an
+  owner-bound check point (it needs hooks, the outbox and messages off;
+  the nightly line sets none) all leave the tally short, and a short tally
+  is undecided — the numbers decide as they always did. The "do nothing"
+  policy that wins every rejected-draft point is what the guard exists
+  for: it wins point-wise by attempting less, and `WORK_FLOOR` refuses it.
+
+### The losing arm teaches
+
+`APPRAISAL-WIRING-DESIGN.md` O3, row 2d-3. A decided point-wise
+comparison's losing arm is written into its session's text appraisal as
+**counterfactual reflection** (`appraisal_store::Counterfactual`), by
+`AppraisalStore::teach`, which `mecha distill` runs on every writing pass
+after the appraisals and the scores — no model call, and quiet nights
+included, because a comparison is drawn from a session *after* it was
+distilled. Five decisions, each a bug if undone:
+
+- **A side record, never a rewrite.** Reflections go to
+  `~/.mecha/appraisals/counterfactuals.jsonl`, joined to the appraisal by
+  `appraisal_id` — `scores.jsonl`'s shape. The appraisal stays one record
+  per session, untouched. An amendment row in `appraisals.jsonl` was the
+  alternative, and it would load in every earlier build as a *second*
+  appraisal of the session (that reader defaults every field but `id` and
+  `at`), whose `on_record` would then refuse the real one as
+  `AlreadyOnRecord`. One reflection per comparison id, checked under the
+  store's lock; a comparison whose session has no appraisal yet waits
+  (`awaiting_appraisal`) and is taught by the pass after the appraisal
+  lands.
+- **Only a structural decision teaches** (R27). The comparison must be
+  point-wise (a `point-*` kind), `Separated`, by a structural validator
+  (`StructuralSteer`, `StructuralDenial`, `ReleasedDraft`, `RejectedDraft`,
+  `ArtifactGold` — never `Judge`, `Unposed` or an unread one), and its
+  stored verdict must equal `Verdict::of` over its arms, derived again
+  rather than believed. Inconclusive, unposed, an unread verdict and a tie
+  write nothing; each is counted by why (`Taught`), and a tie is kept apart
+  from undecided — it decided, and no arm lost.
+- **The text is the harness's.** `reflection` is rendered by one function
+  from the comparison's typed record — its kind, validator, arms (role,
+  rules hash, outcome) and pointers — which holds closed sets and ids
+  only, so neither a model's words nor the owner's can ride in it. Steer
+  probes, validation and gate pairs are 1g's, not O1's, and teach nothing.
+- **It rests on its comparison, by a pointer that dereferences.**
+  `Pointer::Comparison` (`comparison:<id>`) is the new pointer kind — an
+  earlier build reads it as `Pointer::Unread`, verbatim. The record quotes
+  the comparison's verdict line (`comparison_referent`: every arm's role,
+  rules hash and outcome) and `Counterfactual::dereference` admits it into
+  the comparison store through `grounding::admit` — before it is written
+  (a refusal is counted, nothing written) and again by the owner's readout,
+  which marks one whose comparison is gone. An appraiser's own claim citing
+  a comparison is dropped as `comparison_pointer`: a comparison is not
+  something the run received.
+- **It inherits the appraisal's provenance, and the clean door is
+  unchanged.** `origin` and `taint` are copied from the appraisal, so a
+  tainted session's reflection is as tainted as its appraisal
+  (`written_not_clean`); `is_clean` is the appraisal's predicate. The clean
+  door (`AppraisalStore::clean`, `Clean`) does not serve reflections at all:
+  today only the owner reads them (`sessions appraise <session>`, and
+  `counterfactuals` per record in `--json`, each with `dereferences`). A
+  later reader takes one only beside a `Clean` appraisal.
+
+### The reflector's lessons against the appraisal's
+
+`APPRAISAL-WIRING-DESIGN.md` L2, row 2e-1 — R25's gate for folding the
+reflector into the appraisal (2a-4): `mecha learn --compare-sources`
+(`lesson_pass.rs`, over `mecha_core::lesson_source`). **Shadow, measurement
+only**: a lesson from either source reaches one probe arm's system prompt and
+nothing else. The pass branches before `learn` opens or locks the learning
+store, reads it and never writes it — no rule, no proposal, and no
+validation-ledger row, since a ledger row charges rule ids and neither lesson
+is a rule; its one write is a comparison per intervention through the 1g
+door above (`Kind::LessonSource`). Letting either source's lessons *learn* is
+2e-2, a lever.
+
+- **The unit is an intervention the reflector reflected on**, and only a
+  steer or a denial: the two a structural validator grades (R27). A followup
+  is judge-graded, an edit or a rejection has no replayable point, a
+  mismatch is graded against the owner's artifact — each is excluded and
+  counted (`Exclusion::NotTraceGraded`), never judged.
+- **Three arms, one probe, one seed.** `probe::prepare_probe` over the
+  reflection, then `probe::drive_arm` — `validate`'s probe, branched at the
+  intervention, `Stop` mode, the recording's own turn ceiling — under one
+  provider config: the recorded prompt with its rules removed
+  (`Role::RulesFree`), and the same with only the reflector's lesson
+  (`ReflectorLesson`) or only the session appraisal's lessons
+  (`AppraisalLesson`) as its rules block, both rendered by
+  `lesson_source::lesson_block` in the learned-rules frame under the
+  reflection's domain, one collapsed line per lesson, so the arms differ in
+  the lessons and nothing else. Two arms under an identical prompt are driven
+  once and share the outcome (`arms_shared`): two samples of one prompt are
+  noise, not a difference in lessons.
+- **Clean on both sides, and the reflector's own words.** The reflection
+  passes `Reflexion::learnable` — `learn`'s gate, unchanged — in a run domain
+  (a `triage` lesson must not ride in front of a tool-having probe, as
+  `RuleSurface::load` argues), and is neither dropped nor owner-edited: an
+  edited lesson is the owner's, and `provenance()` promotes it to clean,
+  which would credit the reflector with the owner's words. The appraisal's
+  lessons come only through `AppraisalStore::clean` (R19); whether a withheld
+  one exists is asked of `clean_with_sessions` (one read of the ledger), ids only, so its text is never
+  held. An intervention clean for one source and not the other is excluded
+  as `CleanForReflectorOnly` / `CleanForAppraisalOnly`, apart from
+  `CleanForNeither` and `NoAppraisal`. The store's own door is then asked
+  before any seat is taken, as `sessions compare` asks it.
+- **Seats and draws are `sessions compare`'s**: one background seat per
+  intervention for its three arms (`pointwise_pass::take_seat`), local model
+  only (R29, before anything is read), a uniform draw with a printed seed,
+  `--interventions` (8) counting driven interventions. An intervention whose
+  lessons *as they stand* are on record under this model
+  (`lesson_source::on_record`: the reflection, the kind, the model and the
+  three (role, policy hash) arms) is not driven again, so a rewritten lesson
+  is measured afresh.
+- **The report is re-read from the stores** (`lesson_source::report`), per
+  intervention region — `Situation::key` of the reflection's recorded
+  situation, the key a validation row's region folds on; `None` is unknown,
+  never standing. Each source's rate is passes over the **decided** set,
+  the interventions where every arm graded, so the two sources' rates are
+  over the same interventions; beneath it pass, fail, improved and regressed
+  against the rules-free arm, and the arm's inconclusive count. Beside them:
+  eligible, compared, inconclusive, unmeasured (eligible with nothing on
+  record), unavailable (a pass's own count — `None` in the free readout,
+  since nothing keeps it) and excluded by reason. A rate over nothing is
+  `None`. `sessions appraise` prints the same report every call
+  (`lesson_sources` in `--json`), for the model of the newest lesson
+  comparison, counting rows under other models apart; in text, regions with
+  nothing eligible fold into one line of exclusions (`--json` keeps each).
+- **Its limit, named:** the appraisal writes up to three lessons per session
+  and the reflector one per intervention, so the appraisal's arm carries the
+  session's whole set at each of that session's interventions. That is each
+  source as it would be learned from, which is what R25 asks about; it is not
+  a per-lesson attribution.
 
 ## The goal system
 
@@ -4769,7 +5094,37 @@ future schemas. `prepare_probe_in`, `mismatch::validate_recording`,
 `harness_probe::prepare_episode` (every recorded configuration), and replay
 refuse unsupported evidence-bearing runs until reconstruction is implemented.
 Silently dropping evidence would turn a different decision context into a false
-counterfactual result. Forecast calibration and efficacy remain unmeasured.
+counterfactual result. Efficacy remains unmeasured.
+
+**Every resolved prediction is a calibration point, and coverage comes before
+any rate** (`APPRAISAL-WIRING-DESIGN.md` X5, row 2b-1).
+`anticipation::Calibration::of` scores each prediction in the outbox by the
+response its assessment chose and by each concern kind it named.
+
+- **Only an owner-evidenced prediction is a forecast.** Staging writes a
+  `Source::Harness` placeholder from empty evidence on every model-authored
+  message. It always reads `clarify` and encodes nothing about the draft, so
+  it is counted in `harness_placeholders` and in no row. Pooled, it doubled
+  the coverage denominator, and a draft released without `outbox anticipate`
+  scored its placeholder as a `clarify` point (found on review of #319).
+- **A prediction is a point only when an outcome resolves it.** That means
+  `prediction_resolution` is `Observed` — the prediction the draft was
+  released under — and the active outcome names it.
+- **A materialised concern needs no further check.** An exposed error, a harm
+  or a missed expectation is the owner seeing it.
+- **A clean outcome needs a confirmed delivery** (`OutboxItem::delivery_confirmed`:
+  sent, and the last attempt `Delivered` by the release's acknowledgement or
+  by `outbox reconcile`). Without one, it is counted `delivery_unconfirmed`
+  and is not a point.
+- **Every other prediction is counted by why it is not yet a point**, by its
+  `Resolution`, so "no outcome yet" is coverage and never a calibration of
+  zero.
+- **`materialized_rate` is `None` over no points**, and every response and
+  kind is always present.
+- **The readout is store-wide.** `sessions appraise` prints the line and
+  carries `predictions` in `--json`, whatever `--days` narrowed the sessions
+  to, because an outcome can arrive long after its session. A short outbox
+  read marks every count a floor.
 
 **Anticipated guilt reads only stores mecha itself writes.** An expectation is a
 *recorded* commitment (`outbox`, `questions`, the front door's requests waiting
@@ -5049,6 +5404,42 @@ recorded clean taint and matching tools/workspace/surface. A startup snapshot
 examines at most 32 recent transcripts of at most 2 MB each and keeps 64 examples.
 It does not add unsolicited lesson delivery. Missing context is never a success.
 
+**Past clean appraisals are served through `goal_context`, on demand, and
+only behind their lever** (`APPRAISAL-WIRING-DESIGN.md` I2, built as 2c-2).
+`Lever::PastAppraisals` (`[agent] past_appraisals`, `--no-past-appraisals`)
+**ships off**: retrieved memory can cost more than it returns, so it is the
+lever stage of the design's shadow → measure → arm (§1 decision 7), `mecha
+eval` forces it off, and an experiment measures it as `levers_on =
+["past_appraisals"]` against a control; the environment directory's
+`appraisals/` is seeded into each trial home (`experiment::SEEDED`) so the
+two arms are two conditions. On, `setup::build` selects
+`appraisal_store::PastAppraisals` — only `Clean` values, so a tainted run's
+appraisal cannot be held, let alone served — keyed exactly as the run record
+will key this run (the `RulesCarried` it matched: tools, workspace, surface,
+goal; tools alone when the learned-rules lever is off, as the record then
+says). **The tool set is re-selected at run start** against the registry
+the loop carries (`PastAppraisals::for_registry` in `Agent::run_in`),
+because `tasks work` and a question continuation withhold `kg_task_update`
+after the block is rendered and the run record names the registry without
+it; keyed on the build's registry, a delegated task was never served a
+past run of the same task (found building it). The tool serves up to three,
+newest first, only to a request toward the goal they were selected for, as
+bounded prose (interpretation, prediction, three lessons, the count of
+grounded claims) beside `APPRAISAL_LIMIT`, which frames them as a model's
+interpretation of an earlier run — hearsay about the past, never a verified
+fact about this run and never an instruction. **Nothing reaches the
+prefix**: the tool's description and schema are unchanged, the answer with
+the lever off is the bytes it was before, and a test pins the tools and
+system prompt byte-identical on and off. **Taint:** the result is not
+`external` — a clean appraisal is a model's prose over a run that read no
+third-party content — and `goal_context` is already `private`, which is
+what a clean run's appraisal may carry (it may have read the owner's mail;
+R19 lets it reach retrieval; R35's reasoning, harness-delivered private
+words arm private, holds). An unreadable store is said in the answer
+(`past_appraisals_unread`), never served as none. A resumed session that
+was appraised may be served its own earlier appraisal, which is of the same
+situation and goal by construction.
+
 **A text appraisal is grounded before it is kept, carries its run's taint,
 and only the owner reads a tainted one** (`APPRAISAL-WIRING-DESIGN.md` I1,
 R18, R19; row 2a-1 the store, row 2a-2 its producer). An appraisal is
@@ -5156,8 +5547,59 @@ call per session). Its invariants:
   prints the prose with its taint label, control characters stripped line
   by line. Without an id it prints the store's counts, never its prose
   (`text_appraisals` in `--json`).
-- **`expected_act`** is R16's closed set beside the prose prediction, for
-  2b-2 to score against the owner's recorded act. It is lenient on load.
+- **`expected_act`** is R16's closed set beside the prose prediction (R33).
+  It is lenient on load.
+
+**The appraisal's prediction is scored against the owner's act, and only
+the owner's** (row 2b-2, R33, R37).
+
+- **The act, read by the harness.** `appraisal_store::observe` reads the act
+  on the appraised session's output from the stores that record it: the
+  session's model-authored drafts (released unchanged, edited, rejected),
+  closure records naming the session (closed, reopened), and workflow owner
+  dispositions for it (closed, reopened; a cancel reads as rejected). The
+  first act by time is the act.
+- **"No act" needs R37's window to close.** The window opens at the
+  session's end — `session_ended_at`, the transcript's last write taken at
+  the appraiser's read, or `at` for an older row, which can only close the
+  window late. It lasts the output's store patience
+  (`doctor::Patience::for_store` on `outbox_age` when the session staged
+  drafts, else `NO_STORE_PATIENCE_HOURS`). An act after the window is not
+  the act.
+- **Unknown is never "no act".** Each of these makes the answer `Unknown`,
+  and nothing is written:
+  - an unreadable outbox, closure or workflow store;
+  - an unreadable charter where the outbox's patience is needed;
+  - a resolved draft with no readable time;
+  - a closure naming the session whose move this build cannot read (an act
+    seen and not read, found on review of #324);
+  - an appraisal naming no session.
+
+  A closure by an actor this build cannot read is not taken as the owner's.
+  An unreadable appraisal line is counted (`appraisals_unreadable`), so the
+  coverage says it is a floor.
+- **Each resolved score is written once**, under the store's lock, to
+  `scores.jsonl`, fixed at resolution: a later charter edit does not
+  re-score it. A miss is `surprise: true` beside the appraisal's `clean`,
+  situation and anchor, so a reader that acts (2e-6's priority) can take
+  clean ones only.
+- **A task output runs to its due date** (R37, refined by the owner). With
+  no drafts staged, a session whose output is a task gets a window from its
+  end to the task's `due_at`. The task is the anchor, else the task a
+  closure naming the session moved.
+  - `due_at` comes from `mecha distill`'s harness-side board read. A date
+    without a time ends at the end of that day in the owner's zone.
+  - An undated task keeps the constant, and so does a `due_at` already past
+    at the session's end.
+  - An unreadable board, an unparseable date, or a missing row is `Unknown`,
+    never the constant.
+  - The read-only readout reads no board, so it counts such outputs as
+    `board_not_read` (`ObservedAct::NeedsBoard`).
+  - Workflow outputs keep the constant for now.
+- **Who writes and who reads.** `mecha distill` scores what has resolved
+  on every writing pass — even one with nothing to distill or with the
+  graph down, since windows close on quiet nights — with no model call. `sessions appraise` reads coverage
+  (`expectations` in `--json`), and `hit_rate` is `None` over no scores.
 
 **The counts-only appraiser is retired into it** (row 2a-3, R25). Before,
 `appraise_with_model` ran a quarantined pass over `AppraiserEvidence` behind

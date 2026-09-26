@@ -132,7 +132,32 @@ async fn ruminate(
         return Ok(());
     };
     let cfg = mecha_core::config::Config::load_global()?;
-    let evidence = evidence_for(&model, &slice, harness_history().unwrap_or_default(), &cfg);
+
+    // **The draw's first phase comes before the diagnosis** (row 2f, R38).
+    // The candidate id is the seed, so it is minted now — and discarded on a
+    // night with no candidate. The pool and its uniform holdout read no
+    // metric, so they are fixed here exactly as the single-phase draw fixed
+    // them after the proposal; the diagnostician is handed the clean
+    // appraisals of the pool minus the holdout and never the holdout, so the
+    // slice that confirms a change is one its author never read about.
+    let id = HarnessStore::mint_id();
+    let pool = harness_probe::draw_pool(
+        &Session::default_dir()?,
+        &model,
+        sessions,
+        holdout_in,
+        seed_of(&id),
+        from_workspace.as_deref(),
+    )?;
+    let evidence = with_draw_appraisals(
+        evidence_for(&model, &slice, harness_history().unwrap_or_default(), &cfg),
+        &pool.remainder(),
+        cfg.agent.appraisals_in_brief,
+        || {
+            mecha_core::appraisal_store::AppraisalStore::open_existing_default()
+                .map(|store| store.clean())
+        },
+    );
 
     let diagnosis = run_diagnostician(global, &evidence).await?;
     let proposal = match diagnosis.outcome {
@@ -176,7 +201,7 @@ async fn ruminate(
 
     let now = chrono::Utc::now().to_rfc3339();
     let mut cand = HarnessCandidate {
-        id: HarnessStore::mint_id(),
+        id,
         created_at: now.clone(),
         class: proposal.class,
         change: proposal.change.clone(),
@@ -310,8 +335,8 @@ async fn ruminate(
                         change,
                         &model,
                         DrawSpec {
+                            pool,
                             sessions,
-                            holdout_in,
                             workspace: from_workspace.as_deref(),
                         },
                     )
@@ -321,6 +346,44 @@ async fn ruminate(
         },
     }
     Ok(())
+}
+
+/// The draw's seed, off the candidate id rather than the clock: re-measuring
+/// the same candidate must draw the same holdout, or "confirmed on unseen
+/// work" means something different every night. Printed with the draw,
+/// because a sample nobody can redraw is a sample nobody can check.
+fn seed_of(candidate_id: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in candidate_id.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
+/// The brief with the clean appraisals of `remainder` — the draw's pool
+/// minus its holdout — beside the counters (row 2f).
+///
+/// `store` reads the appraisal store's clean door: `None` when no store
+/// exists (nothing is on file, and nothing is said), `Some(Err)` when one
+/// exists and cannot be read (said in the brief, never read as "none"). `on`
+/// is `[agent] appraisals_in_brief`, the stage lever; off withholds the
+/// section by omission, as `sensors_in_brief` does, and reads nothing — an
+/// appraisal-off arm does not pay the read it ablates.
+fn with_draw_appraisals(
+    evidence: mecha_core::diagnose::Evidence,
+    remainder: &[String],
+    on: bool,
+    store: impl FnOnce() -> Option<Result<mecha_core::appraisal_store::CleanRead>>,
+) -> mecha_core::diagnose::Evidence {
+    if !on {
+        return evidence;
+    }
+    match store() {
+        None => evidence,
+        Some(Ok(read)) => evidence.with_appraisals(&read, remainder),
+        Some(Err(e)) => evidence.appraisals_unread(format!("{e:#}")),
+    }
 }
 
 /// Compose the `reason` a staged candidate carries, note first.
@@ -360,6 +423,54 @@ enum Verdict {
     Measure,
 }
 
+/// One line for `harness show`: what the point-wise half of R26 found, and
+/// whether it or the numbers alone decided. A measurement from before the
+/// field says so — unknown, not "numeric only".
+/// The points a candidate's pass paid for and lost to an arm, by arm — the
+/// censoring a clean tally beside it would otherwise hide.
+fn lost_line(t: &mecha_core::candidate::PointwiseTally) -> String {
+    if t.lost_baseline + t.lost_candidate == 0 {
+        return String::new();
+    }
+    format!(
+        "; lost to an arm that could not be driven: {} candidate, {} baseline",
+        t.lost_candidate, t.lost_baseline
+    )
+}
+
+fn pointwise_line(p: Option<&mecha_core::harness::PointwiseEvidence>) -> String {
+    let Some(p) = p else {
+        // Two causes, and the record cannot say which: a measurement from
+        // before the field, or one where nothing paired and the pass never
+        // ran (found on review) — so it names neither.
+        return "not recorded".into();
+    };
+    let t = &p.tally;
+    format!(
+        "{} candidate-only, {} baseline-only over {} decided point(s), {} undecided — {:?}; \
+         decided by {}{}",
+        t.candidate_only,
+        t.baseline_only,
+        t.decided,
+        t.undecided,
+        t.verdict(),
+        match p.basis {
+            mecha_core::candidate::Basis::Pointwise => "the point-wise comparison",
+            mecha_core::candidate::Basis::NumericOnly => "the numbers alone",
+            mecha_core::candidate::Basis::Unknown => "a basis this build cannot read",
+        },
+        p.not_run
+            .as_deref()
+            .map(|why| format!(" ({why})"))
+            .unwrap_or_default()
+    ) + &lost_line(t)
+        + if p.outbox_unreadable {
+            "; the outbox could not be fully read, so draft points may be missing"
+        } else {
+            ""
+        }
+}
+
 /// Decide, as a function of the two facts and nothing else.
 ///
 /// Split out from the arm that writes the candidate because **the ordering is
@@ -393,8 +504,10 @@ fn measurement_verdict(runs: usize, no_headroom: bool) -> Verdict {
 /// list crossed clippy's threshold in the same edit. Bundling the ones that
 /// must agree is the fix; an `allow` would have been the other one.
 struct DrawSpec<'a> {
+    /// The draw's first phase, taken before the diagnosis (row 2f): the pool
+    /// and its uniform holdout, seeded off the candidate's id.
+    pool: harness_probe::Pool,
     sessions: usize,
-    holdout_in: u64,
     /// Scoped identically to the diagnosis, or the two halves of one night
     /// disagree about what they are talking about.
     workspace: Option<&'a std::path::Path>,
@@ -410,8 +523,8 @@ async fn measure(
     draw_spec: DrawSpec<'_>,
 ) -> Result<()> {
     let DrawSpec {
+        pool,
         sessions,
-        holdout_in,
         workspace,
     } = draw_spec;
     // The live registry, for tool specs the replay registry mirrors. Built
@@ -427,28 +540,10 @@ async fn measure(
         return Ok(());
     }
 
-    let sessions_dir = Session::default_dir()?;
-    // Seeded off the candidate id rather than the clock: re-measuring the same
-    // candidate must draw the same holdout, or "confirmed on unseen work"
-    // means something different every night. Printed, because a sample nobody
-    // can redraw is a sample nobody can check.
-    let seed = {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for b in cand.id.as_bytes() {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100_0000_01b3);
-        }
-        h
-    };
-    let draw = harness_probe::draw_episodes(
-        &sessions_dir,
-        model,
-        cand.metric,
-        sessions,
-        holdout_in,
-        seed,
-        workspace,
-    )?;
+    // The second phase: the selection ranked from the pool's remainder by the
+    // metric the proposal named. The first phase was drawn before the
+    // diagnosis, seeded off this candidate's id (`seed_of`, row 2f).
+    let draw = pool.select(cand.metric);
     let unusable = draw.skipped;
     if draw.selection.is_empty() && draw.holdout.is_empty() {
         cand.reason = Some(format!(
@@ -682,7 +777,71 @@ async fn measure(
         metric: cand.metric,
         rationale: cand.rationale.clone(),
     };
-    let judgement = judge_drawn(cand.class, &prediction, &selection_pairs, &holdout_pairs);
+    let numeric = judge_drawn(cand.class, &prediction, &selection_pairs, &holdout_pairs);
+    // R26 as R36 refines it (row 2d-2): the owner's own decision points,
+    // driven under the recorded config and under the change, decide; the
+    // numbers above guard. Undecided hands the verdict back to `numeric`
+    // unchanged, recorded as numeric only. Seeded like the draw, so a
+    // re-measurement draws the same points and reuses their comparisons —
+    // and not paid for at all when no point-wise outcome could change the
+    // verdict (a numeric rejection on a regression).
+    let evidence = if mecha_core::candidate::pointwise_can_change(&numeric) {
+        // **A point-wise pass that fails is not a failed measurement.** The
+        // whole-session replay above is already paid for; an unwritable
+        // comparison store or a provider that will not build must not
+        // discard it with no `Measurement` stored (found on review — the
+        // shape of the nothing-paired early return above). The error is
+        // recorded as why nothing was compared, the tally is empty, and an
+        // empty tally is undecided: the numbers decide, as they always did.
+        match crate::pointwise_pass::compare_candidate(
+            &prepared,
+            provider_cfg,
+            model,
+            &change,
+            &cand.id,
+            draw.seed,
+            crate::pointwise_pass::CandidateScope {
+                workspace,
+                sessions,
+            },
+        )
+        .await
+        {
+            Ok(evidence) => evidence,
+            Err(e) => {
+                eprintln!("point-wise comparison failed: {e:#}");
+                crate::pointwise_pass::CandidateEvidence {
+                    not_run: Some(format!("the point-wise pass failed: {e:#}")),
+                    ..Default::default()
+                }
+            }
+        }
+    } else {
+        crate::pointwise_pass::CandidateEvidence {
+            not_run: Some(
+                "the numbers already rejected it on a regression, which every point-wise \
+                 outcome would keep"
+                    .into(),
+            ),
+            ..Default::default()
+        }
+    };
+    let (judgement, basis) = mecha_core::candidate::combine(cand.class, numeric, &evidence.tally);
+    eprintln!(
+        "point-wise: {} candidate-only, {} baseline-only over {} decided point(s) \
+         ({} undecided) — {:?}; decided by {:?}{}",
+        evidence.tally.candidate_only,
+        evidence.tally.baseline_only,
+        evidence.tally.decided,
+        evidence.tally.undecided,
+        evidence.tally.verdict(),
+        basis,
+        evidence
+            .not_run
+            .as_deref()
+            .map(|why| format!(" ({why})"))
+            .unwrap_or_default()
+    );
     let episodes: Vec<String> = selection_pairs
         .iter()
         .chain(holdout_pairs.iter())
@@ -707,6 +866,13 @@ async fn measure(
 
     if let Some(measurement) = cand.measurement.as_mut() {
         measurement.arm_receipts = arm_receipts;
+        measurement.pointwise = Some(mecha_core::harness::PointwiseEvidence {
+            tally: evidence.tally,
+            basis,
+            not_run: evidence.not_run,
+            comparisons: evidence.comparisons,
+            outbox_unreadable: evidence.outbox_unreadable,
+        });
     }
 
     println!(
@@ -850,6 +1016,7 @@ fn show(id: &str) -> Result<()> {
         println!("selection:  {}", m.selection);
         println!("holdout:    {}", m.holdout);
         println!("work:       {} → {}", m.work_baseline, m.work_candidate);
+        println!("point-wise: {}", pointwise_line(m.pointwise.as_ref()));
         // Named by slice, because "which episodes confirmed this" is the
         // question a reader of a measurement actually has.
         let held: std::collections::HashSet<&str> =
@@ -1091,6 +1258,31 @@ mod tests {
     use super::*;
     use mecha_core::candidate::MIN_MEASURABLE_RUNS as FLOOR;
 
+    /// `harness show` names a censored pass beside its tally, by arm, and
+    /// says nothing of a record it cannot know about.
+    #[test]
+    fn the_point_wise_line_names_lost_arms_and_never_guesses_a_missing_record() {
+        use mecha_core::candidate::{Basis, PointwiseTally};
+        let evidence = mecha_core::harness::PointwiseEvidence {
+            tally: PointwiseTally {
+                decided: 4,
+                candidate_only: 3,
+                baseline_only: 1,
+                undecided: 0,
+                lost_baseline: 0,
+                lost_candidate: 4,
+            },
+            basis: Basis::Pointwise,
+            not_run: None,
+            comparisons: Vec::new(),
+            outbox_unreadable: true,
+        };
+        let line = pointwise_line(Some(&evidence));
+        assert!(line.contains("4 candidate, 0 baseline"), "{line}");
+        assert!(line.contains("outbox could not be fully read"), "{line}");
+        assert_eq!(pointwise_line(None), "not recorded");
+    }
+
     #[test]
     fn a_mislabel_survives_into_the_record_a_reviewer_actually_opens() {
         // The note was on the nightly's stdout and not in the store, so the
@@ -1143,5 +1335,119 @@ mod tests {
     fn enough_corpus_and_a_metric_with_room_is_measured() {
         assert_eq!(measurement_verdict(FLOOR, false), Verdict::Measure);
         assert_eq!(measurement_verdict(236, false), Verdict::Measure);
+    }
+
+    // ── Row 2f: the diagnostician reads the draw's remainder ────────────
+
+    /// A clean appraisal row for `session`, as the store writes one.
+    fn appraisal_line(session: &str, at: &str) -> String {
+        serde_json::json!({
+            "id": format!("apr-{session}"),
+            "at": at,
+            "session_id": session,
+            "origin": "clean",
+            "taint": {"private": true, "untrusted": false},
+            "model": "local-model",
+            "interpretation": format!("Appraisal of {session}: the run retried a failed read."),
+        })
+        .to_string()
+    }
+
+    /// R38's required test, its brief half: every episode in the pool has a
+    /// clean appraisal on file, and the brief `ruminate` builds carries
+    /// those of the remainder and **none of the holdout's** — for several
+    /// seeds, so the holdout is a different set each time.
+    #[test]
+    fn the_holdouts_appraisals_never_reach_the_brief() {
+        mecha_core::session::ignore_kind_env_for_tests();
+        let home = crate::testenv::HomeGuard::new("ruminate-2f");
+        let dir = home.dir.join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ids: Vec<String> = (0..9u32)
+            .map(|i| format!("20260101T0000{i:02}-a{i:02}"))
+            .collect();
+        for (i, id) in ids.iter().enumerate() {
+            harness_probe::fixture_session(&dir, id, i as u32, None);
+        }
+        let store_dir = home.dir.join("appraisals");
+        std::fs::create_dir_all(&store_dir).unwrap();
+        let ledger: String = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| appraisal_line(id, &format!("2026-09-{:02}T00:00:00Z", 10 + i)) + "\n")
+            .collect();
+        std::fs::write(store_dir.join("appraisals.jsonl"), ledger).unwrap();
+        let store = mecha_core::appraisal_store::AppraisalStore::open(&store_dir).unwrap();
+
+        for candidate in ["hc-a", "hc-b", "hc-c", "hc-d"] {
+            let pool = harness_probe::draw_pool(&dir, "m", 6, 3, seed_of(candidate), None).unwrap();
+            let held = pool.holdout_ids();
+            assert_eq!(held.len(), 2, "{candidate}");
+            let evidence = with_draw_appraisals(
+                mecha_core::diagnose::Evidence::default(),
+                &pool.remainder(),
+                true,
+                || Some(store.clean()),
+            );
+            let brief = evidence.brief();
+            for id in &held {
+                assert!(
+                    !brief.contains(id.as_str()),
+                    "{candidate}: {id} is held out:\n{brief}"
+                );
+            }
+            let shown: Vec<&str> = evidence.appraisals.iter().map(|n| n.session_id()).collect();
+            assert!(!shown.is_empty(), "{candidate}");
+            assert!(shown
+                .iter()
+                .all(|s| pool.remainder().iter().any(|r| r == s)));
+            // Not vacuous: the holdout's appraisals are on file and clean.
+            let clean = store.clean().unwrap();
+            assert!(held
+                .iter()
+                .all(|h| clean.appraisals.iter().any(|c| &c.session_id == h)));
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The lever off withholds the section by omission; an unreadable store
+    /// is said, never read as "none on file"; no store says nothing.
+    #[test]
+    fn the_lever_and_an_unreadable_store_are_each_said_their_own_way() {
+        let remainder = vec!["s-1".to_string()];
+        let base = mecha_core::diagnose::Evidence::default;
+        let off = with_draw_appraisals(base(), &remainder, false, || {
+            panic!("the lever off reads nothing — the read is what it ablates")
+        });
+        assert!(off.appraisals_unread.is_none() && off.appraisals.is_empty());
+        let none = with_draw_appraisals(base(), &remainder, true, || None);
+        assert_eq!(none.brief(), base().brief());
+        let unread = with_draw_appraisals(base(), &remainder, true, || {
+            Some(Err(anyhow::anyhow!(
+                "reading appraisals.jsonl: permission denied"
+            )))
+        });
+        let brief = unread.brief();
+        assert!(
+            brief.contains("could not be read (reading appraisals.jsonl"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains("not the same as none being on file"),
+            "{brief}"
+        );
+        assert!(
+            !unread.conversation("x").taint.private,
+            "nothing private rode"
+        );
+    }
+
+    /// The seed is the candidate id's, as it was when `measure` computed it:
+    /// minting the id earlier moves when it is drawn, never what.
+    #[test]
+    fn the_seed_is_the_candidate_ids_fnv_hash() {
+        assert_eq!(seed_of(""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(seed_of("a"), 0xaf63_dc4c_8601_ec8c);
+        assert_ne!(seed_of("hc-a"), seed_of("hc-b"));
     }
 }

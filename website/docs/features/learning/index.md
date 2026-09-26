@@ -467,6 +467,56 @@ Only clean sessions are drawn, as for learning; each point holds one of the
 background model seats while its arms run, and the pass refuses a provider
 that is not on this machine.
 
+When a point is decided, the policy that lost is not thrown away: the next
+`mecha distill` adds it to the session's appraisal as a [counterfactual
+reflection](/docs/features/appraisal/reference#what-a-losing-arm-taught),
+pointing at the comparison.
+
+## `mecha learn --compare-sources` — lessons by source
+
+Two things write lessons about a session: the reflector, about each moment you
+corrected the run, and the session's [text appraisal](/docs/features/appraisal).
+Before the reflector's job is folded into the appraisal, the appraisal's
+lessons have to do at least as well on the same moments. This pass measures
+that, and learns nothing from it.
+
+At each steer or denial the reflector reflected on, the recorded history is
+replayed three times — as `mecha validate` replays it — with no rules, with
+only the reflector's lesson, and with only the appraisal's lessons, each in
+the same "learned rules" frame. An arm passes when it does what you asked for
+without being told: it goes where you steered, or never makes the call you
+refused.
+
+```bash
+mecha learn --compare-sources                      # up to 8 moments, today's seed
+mecha learn --compare-sources --interventions 20 --seed 20250 --json
+```
+
+The report is per region — the tools, surface, workspace and goal the moment
+happened in:
+
+| per source | what it is |
+|---|---|
+| rate | passes over the moments where every arm reached a verdict; `—` over none |
+| pass · fail | beneath the rate |
+| improved · regressed | against the no-rules arm at the same moment |
+| inconclusive | moments where this arm could not be graded |
+
+and, for the region: moments compared, not yet measured, unavailable this
+pass, and excluded, by reason. A moment is compared only when **both** sides
+are clean — the reflection passes the same provenance gate `mecha learn`
+applies and is still the reflector's own words (not one you dropped or
+rewrote), and the appraisal comes from a session with no third-party content.
+A session clean for one side and not the other is excluded and counted.
+Followups are excluded too: only a model could grade them, and a model never
+decides here.
+
+Each verdict is stored as a comparison, so `mecha sessions appraise` prints the
+same report from the stores without replaying anything. A moment whose lessons
+are already measured as they stand is not replayed again. Each moment holds one
+background model seat while its arms run, and the pass refuses a provider that
+is not on this machine.
+
 ## `mecha rules` — tallies, retirement, restore
 
 ```bash
