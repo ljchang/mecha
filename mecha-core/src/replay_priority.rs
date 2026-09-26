@@ -385,8 +385,8 @@ pub struct Recurrence {
     /// Admitted sessions in the window past [`RECURRENCE_SCAN_CAP`], the
     /// oldest: not walked, so their regions' counts are floors too.
     pub beyond_cap: usize,
-    /// Each walked session's run situation (`Situation::of_record` of its
-    /// last run record) — what a rule's scope is matched against when row
+    /// Each walked session's run situations (`Situation::of_record` of
+    /// every run record) — what a rule's scope is matched against when row
     /// 2e-5c asks whether its region has gone quiet ([`Self::matching`]).
     /// Empty from [`Self::from_keys`].
     pub runs: Vec<Situation>,
@@ -438,7 +438,9 @@ impl Recurrence {
                     if let Some(key) = run.as_ref().and_then(|s| s.region_key()) {
                         *out.counts.entry(key).or_default() += 1;
                     }
-                    out.runs.extend(run);
+                    // Every run's, not the last: a rule whose region came
+                    // up in an earlier run of the session did recur.
+                    out.runs.extend(configs.iter().map(Situation::of_record));
                 }
                 Err(_) => {
                     out.unreadable += 1;

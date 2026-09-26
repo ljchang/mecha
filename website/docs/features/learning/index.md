@@ -606,11 +606,11 @@ experiment trial. The reading is the lower end of a 95% confidence interval on
 your accept rate (the Wilson bound), so a short record is not a perfect one:
 
 - **not enough owner verdicts** below 20 of them. There is no bound yet, and nothing is decided.
-- **tenured** when the bound reaches 0.65. A rule applied on probation is released
-  from it and answers to the ordinary retirement threshold of 3.
+- **tenured** when the bound reaches 0.65. In each retirement scan a rule applied
+  on probation then answers to the ordinary retirement threshold of 3, not 2.
 - **not tenured** when the bound falls short. This demotes nothing.
-- **unknown** when a session that carried the rule could not be read in full.
-  That session might hold the rejections.
+- **unknown** when a session that carried the rule could not be read in full,
+  a compacted one included. That session might hold the rejections.
 
 Tenure never takes a rule out of your prompt and never keeps one in. Retirement
 still comes only from measured regressions in the validation ledger.

@@ -39,17 +39,24 @@
 //!   does not map either: it stops a class being *generated*, which for a
 //!   rule would be taking it out of the prompt, and R41 says nothing leaves
 //!   the prompt on the bound.
-//! - **Promotion only, as on the ladder.** A tenured rule is released from
-//!   probation (`Rule::probation`, the shorter retirement leash) and shown
-//!   as tenured; a low bound demotes nothing and retires nothing.
+//! - **Promotion only, as on the ladder.** A tenured rule answers to the
+//!   ordinary retirement leash in each retirement scan, where the owner's
+//!   record is re-read (`Rule::probation` is released in memory, as the
+//!   ledger's release is, and the file keeps its mark), and is shown as
+//!   tenured; a low bound demotes nothing and retires nothing.
 //!   Retirement stays on measured regressions in the validation ledger
 //!   (`DEFAULT_RETIRE_AT`, `PROBATION_RETIRE_AT`), beside this, unchanged.
 //!
 //! **Unknown is never clean.** A session that carried the rule and whose
 //! verdicts could not be read in full — the transcript does not parse, an
-//! appraisal store did not load, or a run staged drafts and recorded no
-//! outcome — makes the rule's standing [`Tenure::Unknown`], whatever the
-//! bound over the rest would say: an unread session may hold the rejects.
+//! appraisal store did not load, a run staged drafts and recorded no
+//! outcome, or a summarising compaction cut turns out of the transcript —
+//! makes the rule's standing [`Tenure::Unknown`], whatever the bound over
+//! the rest would say: an unread session may hold the rejects. Compaction
+//! is the sharp case: every turn-cited verdict (a steer, a denial, a stop)
+//! is a reject, and the accepts come from stores keyed by session, so a
+//! cut drops rejects only and would *raise* the bound (found on review of
+//! #338).
 //!
 //! **Dormancy is a report** (row 2e-5c, R41): [`Quiet`] names an active rule
 //! no admitted run in 2e-6's recurrence window was matched by. Nothing is
@@ -132,7 +139,8 @@ impl OwnerRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Tenure {
-    /// The bound reached [`TENURE_FLOOR`]: released from probation.
+    /// The bound reached [`TENURE_FLOOR`]: the ordinary leash in the
+    /// retirement scan.
     Tenured { lower_bound: f64 },
     /// Enough verdicts, and the bound fell short. Demotes nothing.
     Untenured { lower_bound: f64 },
@@ -222,7 +230,14 @@ pub fn session_verdicts(
             SessionVerdicts::Read(Vec::new())
         };
     };
-    if a.partial {
+    // A summarising compaction removed turns — and with them turn-cited
+    // verdicts, every one a reject — while the store-keyed accepts stayed:
+    // read as it stands, the session would bias the bound upward. A
+    // compaction is on the run's outcome; one whose outcome predates the cut
+    // shows as an outcome that lost its place.
+    let compacted = t.episode.as_ref().is_some_and(|e| e.compactions > 0)
+        || t.outcome_positions.iter().any(Option::is_none);
+    if a.partial || compacted {
         return SessionVerdicts::Unread;
     }
     let throughout = carried_throughout(t);
@@ -492,6 +507,51 @@ mod tests {
             rule_ids: xs.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         }
+    }
+
+    /// A compacted session is unread: the cut took its turn-cited rejects
+    /// and left its store-keyed accepts, so read as it stands it would
+    /// raise the bound. Marked either way — by the outcome's compaction
+    /// count, or by an outcome a summarising rewrite left placeless.
+    #[test]
+    fn a_compacted_session_is_unread() {
+        let dir = scratch("compacted");
+        let s = session(&dir, SessionKind::Web, &[carrying(&["r1"])]);
+        let t = Session::read(&s.path).unwrap();
+        let mut a = built(&t);
+        a.errors
+            .push(owner_error(Cite::Draft("d-kept".into()), 1.0));
+        assert!(matches!(
+            session_verdicts(&t, Some(&a), true),
+            SessionVerdicts::Read(_)
+        ));
+        s.append(&Record::Outcome(RunStats {
+            compactions: 1,
+            ..Default::default()
+        }))
+        .unwrap();
+        let t = Session::read(&s.path).unwrap();
+        assert_eq!(
+            session_verdicts(&t, Some(&a), true),
+            SessionVerdicts::Unread
+        );
+
+        let s = session(&dir, SessionKind::Web, &[carrying(&["r1"])]);
+        s.append(&Record::Rewrite {
+            messages: vec![Message::user("summary of the Northwind notes work")],
+        })
+        .unwrap();
+        let t = Session::read(&s.path).unwrap();
+        let a = built(&t);
+        assert!(
+            a.errors.iter().all(|e| !e.is_owner_verdict()),
+            "the denial went with the cut"
+        );
+        assert_eq!(
+            session_verdicts(&t, Some(&a), false),
+            SessionVerdicts::Unread
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A session: one run per config, each holding a denial by the owner

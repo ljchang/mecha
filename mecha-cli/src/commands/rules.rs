@@ -450,9 +450,14 @@ impl Standing {
             .filter(|r| r.active())
             .filter_map(|r| r.id.clone())
             .collect();
-        let recurrence = Session::default_dir()
-            .ok()
-            .and_then(|dir| Recurrence::scan(&dir, now).ok());
+        // No active learned rule, nothing to report: no walk.
+        let recurrence = if wanted.is_empty() {
+            Some(Recurrence::default())
+        } else {
+            Session::default_dir()
+                .ok()
+                .and_then(|dir| Recurrence::scan(&dir, now).ok())
+        };
         Standing {
             tally: owner_tally(&wanted),
             recurrence,
@@ -483,19 +488,21 @@ fn owner_tally(wanted: &std::collections::BTreeSet<String>) -> Tally {
 /// The roster's second line for an active learned rule: where it stands
 /// with the owner, and whether its region is quiet.
 fn standing_line(r: &Rule, standing: &Standing) -> String {
-    let Some(id) = r.id.as_deref() else {
-        return "      owner: no id, so no run record names it".to_string();
-    };
-    let record = standing.tally.record(id);
-    let tenure = standing.tally.tenure(id);
-    let released = if r.probation && tenure.is_tenured() {
-        " — releases its probation (the ordinary leash applies)"
-    } else {
-        ""
+    let owner = match r.id.as_deref() {
+        None => "no id, so no run record names it".to_string(),
+        Some(id) => {
+            let record = standing.tally.record(id);
+            let tenure = standing.tally.tenure(id);
+            let leash = if r.probation && tenure.is_tenured() {
+                " — the retirement scan gives it the ordinary leash, not probation's"
+            } else {
+                ""
+            };
+            format!("{}{leash}", tenure.describe(&record))
+        }
     };
     format!(
-        "      owner: {}{released} · region: {}",
-        tenure.describe(&record),
+        "      owner: {owner} · region: {}",
         standing.quiet(r).describe()
     )
 }
@@ -1005,8 +1012,11 @@ fn propose(
             let released =
                 mecha_core::tenure::release_probation_when_owner_tenures(&mut before, owner);
             if released > 0 {
+                // Per pass, like the ledger's release: the file keeps
+                // the mark, and the owner's record is re-read next pass.
                 println!(
-                    "{domain}: {released} rule(s) off probation on the owner's verdicts (tenured)"
+                    "{domain}: {released} probationary rule(s) tenured by the owner's verdicts \
+                     answer to the ordinary leash this pass"
                 );
             }
         }
@@ -2344,7 +2354,7 @@ mod tests {
         r.scope = Some(Situation::of_run(&["http_fetch".to_string()], None).scope());
         let line = standing_line(&r, &standing);
         assert!(line.contains("tenured: 41 of 51"), "{line}");
-        assert!(line.contains("releases its probation"), "{line}");
+        assert!(line.contains("the ordinary leash"), "{line}");
         assert!(line.contains("QUIET"), "{line}");
         assert!(r.active(), "reported, never evicted");
         let other = rule("Keep drafts short for sam@example.edu.", "r-other");
