@@ -450,9 +450,10 @@ impl Standing {
             .filter(|r| r.active())
             .filter_map(|r| r.id.clone())
             .collect();
-        // No active learned rule, nothing to report: no walk.
+        // No active learned rule, nothing to report: no walk, and no
+        // stand-in walk either — an empty one would read as evidence.
         let recurrence = if wanted.is_empty() {
-            Some(Recurrence::default())
+            None
         } else {
             Session::default_dir()
                 .ok()
@@ -677,7 +678,10 @@ fn list(
             );
         }
         match &st.recurrence {
-            None => println!("quiet regions unknown: the session store could not be walked"),
+            None if everything.iter().any(|r| r.active() && r.id.is_some()) => {
+                println!("quiet regions unknown: the session store could not be walked")
+            }
+            None => {}
             Some(rec) if rec.unreadable > rec.unreadable_in_window => println!(
                 "quiet regions: {} transcript(s) whose header could not be read have no date, \
                  so they are not counted in the window",
@@ -693,6 +697,17 @@ fn list(
         }
     }
     Ok(())
+}
+
+/// Put back the probation mark the owner's tenure lifted for this pass, on
+/// a set about to be written or staged: the release is the scan's, never
+/// the file's (row 2e-5b).
+fn restore_owner_marks(rules: &mut [Rule], released: &std::collections::BTreeSet<String>) {
+    for r in rules.iter_mut() {
+        if r.id.as_deref().is_some_and(|id| released.contains(id)) {
+            r.probation = true;
+        }
+    }
 }
 
 /// Whether `p` already proposes the *same* change to rule `id` that
@@ -1008,15 +1023,34 @@ fn propose(
         // Beside it, never instead (row 2e-5b, R41): a rule the owner's
         // verdicts have tenured answers to the ordinary leash too. The
         // retirement below is still decided by measured regressions alone.
+        //
+        // **Per pass, and the file keeps the mark.** The bound is not
+        // monotone — rejects arriving later can take a rule back under the
+        // floor — so a release written to disk would outlive the record
+        // that argued for it. The ids released here get their mark back on
+        // every set this scan writes or stages (`restore_owner_marks`);
+        // the ledger's release, whose condition only accumulates, is left
+        // as it was (found on review of #338).
+        let mut owner_released: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
         if let Some(owner) = owner {
-            let released =
-                mecha_core::tenure::release_probation_when_owner_tenures(&mut before, owner);
-            if released > 0 {
-                // Per pass, like the ledger's release: the file keeps
-                // the mark, and the owner's record is re-read next pass.
+            let on_probation: std::collections::BTreeSet<String> = before
+                .iter()
+                .filter(|r| r.probation)
+                .filter_map(|r| r.id.clone())
+                .collect();
+            mecha_core::tenure::release_probation_when_owner_tenures(&mut before, owner);
+            owner_released = before
+                .iter()
+                .filter(|r| !r.probation)
+                .filter_map(|r| r.id.clone())
+                .filter(|id| on_probation.contains(id))
+                .collect();
+            if !owner_released.is_empty() {
                 println!(
-                    "{domain}: {released} probationary rule(s) tenured by the owner's verdicts \
-                     answer to the ordinary leash this pass"
+                    "{domain}: {} probationary rule(s) tenured by the owner's verdicts \
+                     answer to the ordinary leash this pass",
+                    owner_released.len()
                 );
             }
         }
@@ -1152,6 +1186,8 @@ fn propose(
                 }
             })
             .collect();
+        let mut rules = rules;
+        restore_owner_marks(&mut rules, &owner_released);
         let retired_count = convicted.len() as u32 - narrowed_count;
         evidence_lines.push(format!(
             "deterministic ledger scan over {} record(s); threshold {min_attributed} \
@@ -1228,7 +1264,11 @@ fn propose(
             // No reflections are consumed: retirement argues from the
             // ledger, and the rules' own sources stay marked as they were.
             reflexion_ids: Vec::new(),
-            rules_before: before.clone(),
+            rules_before: {
+                let mut was = before.clone();
+                restore_owner_marks(&mut was, &owner_released);
+                was
+            },
             rules,
             evidence: evidence_lines.join("\n"),
             created_at: now,
@@ -2315,6 +2355,10 @@ mod tests {
                 find("r-tenured").active(),
                 survives,
                 "tenured keeps the ordinary leash; 19 of 19 is under the minimum"
+            );
+            assert!(
+                find("r-tenured").probation,
+                "the leash is the scan's: the file keeps the mark after --apply writes"
             );
             assert!(
                 !find("r-thrice").active(),
