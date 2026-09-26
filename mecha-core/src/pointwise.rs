@@ -378,6 +378,33 @@ pub fn draw<T>(mut items: Vec<T>, seed: u64, point: impl Fn(&T) -> &Point) -> Ve
     crate::sample::shuffled(items, seed)
 }
 
+/// `mecha sessions compare`'s draw since row 2e-6 (R39): the uniform
+/// [`draw`], then stably re-ordered by the replay priority of each point's
+/// session (`replay_priority::order_by_priority`) — so the points of the
+/// sessions carrying the most regret are compared first, and among equal
+/// priorities the seed still decides. A session `priority` has nothing for
+/// has every factor unknown.
+///
+/// **Never the harness candidate's draw.** `compare_candidate`'s points are
+/// R36's confirming sample (there is no separate holdout), and a
+/// prioritised confirming sample is a biased one (`GOAL-SYSTEM-DESIGN.md`
+/// §8.1); it keeps [`draw`] (R39).
+pub fn draw_ranked<T>(
+    items: Vec<T>,
+    seed: u64,
+    point: impl Fn(&T) -> &Point,
+    priorities: &std::collections::BTreeMap<String, crate::replay_priority::Priority>,
+) -> Vec<T> {
+    let unread = crate::replay_priority::Priority::unread();
+    let mut drawn = draw(items, seed, &point);
+    // `sort_by` is stable: equal priorities keep the shuffle's order.
+    drawn.sort_by(|a, b| {
+        let p = |t: &T| priorities.get(&point(t).session_id).unwrap_or(&unread);
+        crate::replay_priority::order_by_priority(p(a), p(b))
+    });
+    drawn
+}
+
 /// One policy a point's arms may run: its role, the rules hash it carries
 /// (`RunConfig::rules_hash`'s convention), and the system prompt it runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -718,6 +745,48 @@ mod tests {
         }
         assert_eq!(draw(points.clone(), 7, same), draw(reversed, 7, same));
         assert_ne!(draw(points.clone(), 7, same), draw(points, 8, same));
+    }
+
+    /// R39: `sessions compare` ranks the uniform draw by the replay
+    /// priority of each point's session, and among equal priorities keeps
+    /// the shuffle's order — the seed still decides between equals.
+    #[test]
+    fn the_ranked_draw_leads_with_the_regret_and_keeps_the_shuffle_among_equals() {
+        use crate::replay_priority::{Inputs, Priority};
+        let points: Vec<Point> = (0..12)
+            .map(|i| Point {
+                session_id: format!("s-{}", i % 3),
+                kind: PointKind::ALL[i % 6],
+                message_index: i,
+                locator: Locator::Step { step: i },
+                tools_before: vec!["todo".into()],
+            })
+            .collect();
+        fn same(p: &Point) -> &Point {
+            p
+        }
+        let p = |owner_gain: f64| {
+            Priority::of(&Inputs {
+                owner_gain: Some(owner_gain),
+                charter_read: true,
+                surprises: Some(0),
+                recurrence: Some(1),
+                age_days: 0.0,
+                hopeless: Some(false),
+            })
+        };
+        let priorities: std::collections::BTreeMap<String, Priority> = [
+            ("s-0".to_string(), p(0.0)),
+            ("s-1".to_string(), p(0.0)),
+            ("s-2".to_string(), p(2.0)),
+        ]
+        .into();
+        let ranked = draw_ranked(points.clone(), 7, same, &priorities);
+        let uniform = draw(points, 7, same);
+        assert!(ranked[..4].iter().all(|p| p.session_id == "s-2"));
+        let rest: Vec<&Point> = ranked[4..].iter().collect();
+        let uniform_rest: Vec<&Point> = uniform.iter().filter(|p| p.session_id != "s-2").collect();
+        assert_eq!(rest, uniform_rest, "equals keep the shuffle's order");
     }
 
     fn policy(role: Role, system: &str) -> Policy {

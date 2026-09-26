@@ -2,7 +2,9 @@
 //! points (`docs/APPRAISAL-WIRING-DESIGN.md` O1, row 2d-1).
 //!
 //! The points are found from records by `mecha_core::pointwise`, drawn
-//! uniformly with a printed seed, and each is compared under up to
+//! uniformly with a printed seed and then ranked by their sessions' replay
+//! priority (row 2e-6, R39 — a harness candidate's points stay uniform,
+//! [`candidate_draw`]), and each is compared under up to
 //! [`pointwise::ARMS_MAX`] policies — the prompt the run carried, the rules
 //! deployed today for its situation, and none — driven through
 //! [`probe::drive_arm_within`] a short horizon ([`pointwise::HORIZON_TURNS`])
@@ -117,6 +119,38 @@ impl Tally {
 pub struct Drawable {
     pub path: PathBuf,
     pub point: Point,
+}
+
+/// `mecha sessions compare`'s draw (row 2e-6, R39): uniform with `seed`,
+/// then ranked by each point's session's replay priority, so the points of
+/// the sessions carrying the most regret are compared first. The ranker is
+/// read only when there are points to order, and what it could not read is
+/// said.
+fn compare_draw(pool: Vec<Drawable>, seed: u64, sessions_dir: &Path, quiet: bool) -> Vec<Drawable> {
+    if pool.len() < 2 {
+        return pointwise::draw(pool, seed, |d| &d.point);
+    }
+    let ranker = mecha_core::replay_priority::Ranker::load(sessions_dir, chrono::Utc::now());
+    if !quiet {
+        for caveat in ranker.caveats() {
+            eprintln!("replay priority: {caveat}");
+        }
+    }
+    let priorities = ranker.of_sessions(
+        sessions_dir,
+        pool.iter().map(|d| d.point.session_id.as_str()),
+    );
+    pointwise::draw_ranked(pool, seed, |d| &d.point, &priorities)
+}
+
+/// A harness candidate's draw: **uniform, never ranked** (R39). R36 gives
+/// the point-wise half no separate holdout, so these points *are* the
+/// sample that confirms or refutes the candidate, and a prioritised
+/// confirming sample is a biased one (`GOAL-SYSTEM-DESIGN.md` §8.1) — the
+/// replay priority may choose what `sessions compare` examines, never what
+/// counts as proof. `candidate_points_ignore_the_replay_priority` pins it.
+fn candidate_draw(pool: Vec<Drawable>, seed: u64) -> Vec<Drawable> {
+    pointwise::draw(pool, seed, |d| &d.point)
 }
 
 /// The recorded surface covering message `at`: its config's tools hash and
@@ -509,8 +543,9 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
         include_experiments: mecha_core::experiment::in_experiment_home(),
     };
     let mut tally = Tally::default();
+    let sessions_dir = Session::default_dir()?;
     let pool = collect(
-        &Session::default_dir()?,
+        &sessions_dir,
         &scan,
         opts.limit,
         None,
@@ -518,7 +553,7 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
         surfaces.as_ref(),
         &mut tally,
     )?;
-    let drawn = pointwise::draw(pool, seed, |d| &d.point);
+    let drawn = compare_draw(pool, seed, &sessions_dir, opts.json);
     if !opts.json {
         eprintln!(
             "comparing up to {} of {} drawable point(s) at seed {seed} with {model} ({provider_name})",
@@ -819,7 +854,8 @@ fn empty_reason(out: &CandidateEvidence, seats_held: bool, lost_to_arms: usize) 
 
 /// R26's point-wise half for a harness candidate, as R36 sizes it: up to
 /// [`mecha_core::candidate::POINTS_PER_CANDIDATE`] posed points drawn
-/// uniformly with `seed` (the measurement's own), each driven twice — the
+/// uniformly with `seed` (the measurement's own; never ranked by replay
+/// priority, R39 — see [`candidate_draw`]), each driven twice — the
 /// recorded config and the same with `change` applied — a short horizon
 /// from the point, on one background seat per point, and graded by the
 /// owner's recorded verdict. Every comparison is stored through the
@@ -895,7 +931,7 @@ pub async fn compare_candidate(
     // for another (found on review).
     let mut seats_held = false;
     let mut lost_to_arms = 0usize;
-    for Drawable { path, point } in pointwise::draw(pool, seed, |d| &d.point) {
+    for Drawable { path, point } in candidate_draw(pool, seed) {
         if budget == 0 {
             break;
         }
@@ -1761,6 +1797,63 @@ mod tests {
         assert_eq!(pool(Some("another-model"), None), 0);
         assert_eq!(pool(None, Some(home.clone())), 4, "inside the workspace");
         assert_eq!(pool(None, Some(home.join("elsewhere"))), 0);
+    }
+
+    /// R39: `compare_candidate`'s draw is unchanged by the ranking — same
+    /// seed and pool, same points, element for element, before and after a
+    /// session's surprise raises its priority — while `sessions compare`'s
+    /// draw moves that session's points to the front. Fails if the
+    /// candidate's draw is ever ranked.
+    #[test]
+    fn candidate_points_ignore_the_replay_priority() {
+        let guard = crate::testenv::HomeGuard::new("pointwise-candidate-uniform");
+        let home = guard.dir.clone();
+        let ids: Vec<String> = (0..4).map(|_| session(&home, false)).collect();
+        let sessions_dir = home.join("sessions");
+        let pool = || {
+            let scan = mecha_core::runlog::Scan {
+                include_tests: true,
+                ..Default::default()
+            };
+            collect(
+                &sessions_dir,
+                &scan,
+                None,
+                Some("scripted"),
+                &[],
+                None,
+                &mut Tally::default(),
+            )
+            .unwrap()
+        };
+        let orders = |drawn: Vec<Drawable>| -> Vec<_> {
+            drawn.into_iter().map(|d| d.point.order()).collect()
+        };
+        let seed = 11;
+        let uniform = orders(pointwise::draw(pool(), seed, |d| &d.point));
+        let before = orders(candidate_draw(pool(), seed));
+        assert_eq!(before, uniform);
+        // The session whose points the uniform draw puts last gets a clean
+        // surprise: its priority is now the pool's highest.
+        let last = uniform.last().unwrap().0.clone();
+        assert!(ids.contains(&last));
+        std::fs::create_dir_all(home.join("appraisals")).unwrap();
+        std::fs::write(
+            home.join("appraisals/scores.jsonl"),
+            serde_json::json!({
+                "id": "scr-1", "scored_at": "2026-01-02T00:00:00Z", "appraisal_id": "apr-1",
+                "session_id": last, "expected": "released_unchanged", "actual": "rejected",
+                "hit": false, "surprise": true, "clean": true,
+            })
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+        let after = orders(candidate_draw(pool(), seed));
+        assert_eq!(after, before, "the candidate's points never move");
+        let compared = orders(compare_draw(pool(), seed, &sessions_dir, true));
+        assert_eq!(compared[0].0, last, "sessions compare leads with it");
+        assert_ne!(compared, after);
     }
 
     /// The change goes to the candidate arm, and outcomes are read by role:

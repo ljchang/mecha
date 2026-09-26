@@ -4040,10 +4040,14 @@ priority = gain × need × decay
   on it — a candidate that selected it accepted by the gate or the owner
   (`reverted` counts, it was accepted first), or a comparison preferring a
   `Candidate` arm on its session. The holdout is never "high".
-- **In the harness selection, headroom gates and the priority orders.** An
-  episode with no headroom on the predicted metric can only tie or worsen,
-  so every episode with headroom ranks first; among them the priority
-  decides, then §11.1's charter rank, then the id. The holdout is drawn
+  `Point::order` and shuffled with a printed seed (default: the day number)
+  by `pointwise::draw`, then — row 2e-6, R39 — stably re-ordered by the
+  replay priority of each point's session (`pointwise::draw_ranked`), so
+  the seed decides only among equals. **A harness candidate's points are
+  never ranked** (`candidate_draw`): R36 gives the point-wise half no
+  separate holdout, so they are the confirming sample, and a prioritised
+  confirming sample is a biased one (§8.1;
+  `candidate_points_ignore_the_replay_priority`). The holdout is drawn
   first, uniformly, from ids alone, before any priority is read
   (`the_uniform_holdout_is_unchanged_by_the_ranking`).
 - **`learn` and `validate` use the same order.** `learn::order_batches`
@@ -4214,7 +4218,13 @@ through the store above (a `point-*` `Kind` per point kind).
   only — the store's taint rule asked at collection, its surface rule asked
   of the prepared point, both before any seat is taken) is sorted by
   `Point::order` and shuffled with a printed seed (default: the day number)
-  by `pointwise::draw` until 2e-6 ranks it. `--points` (default 8) counts
+  by `pointwise::draw`, then — row 2e-6, R39 — stably re-ordered by the
+  replay priority of each point's session (`pointwise::draw_ranked`), so
+  the seed decides only among equals. **A harness candidate's points are
+  never ranked** (`candidate_draw`): R36 gives the point-wise half no
+  separate holdout, so they are the confirming sample, and a prioritised
+  confirming sample is a biased one (§8.1;
+  `candidate_points_ignore_the_replay_priority`). `--points` (default 8) counts
   driven points; unposed points cost nothing and are not charged. A point
   already on record under the same policies and model
   (`pointwise::already_compared`) is not compared again, so the nightly
