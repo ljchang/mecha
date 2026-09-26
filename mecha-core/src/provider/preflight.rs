@@ -13,9 +13,11 @@
 //!   is exactly what makes it easy to write down wrong.
 //! - **`vision`** decides whether an image is put in front of the model or
 //!   rendered as its own filename.
-//! - **`model`** decides nothing at all on this backend — llama-server
-//!   ignores the request's `model` field — but it decides what every session
-//!   record, scorecard and price calculation *says* was answering.
+//! - **`model`** decides nothing at all on a single-model server —
+//!   llama-server ignores the request's `model` field — but it decides what
+//!   every session record, scorecard and price calculation *says* was
+//!   answering. Behind a router it is the other way round: the field selects,
+//!   and the alias always matches by construction.
 //!
 //! **Warn, never refuse.** A mismatch makes a run compact at the wrong
 //! moment or quietly not send a picture; neither is a reason to refuse to
@@ -36,6 +38,12 @@ use serde::Deserialize;
 /// failure that takes the warning down with it.
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct Props {
+    /// `"router"` on llama-server's router mode, whose bare `/props` is a
+    /// placeholder (`model_alias: "llama-server"`, `n_ctx: 0`) rather than a
+    /// served model. [`fetch`] never returns that answer; the field is kept so
+    /// a caller holding one can tell.
+    #[serde(default)]
+    pub role: Option<String>,
     #[serde(default)]
     pub model_alias: Option<String>,
     #[serde(default)]
@@ -65,15 +73,42 @@ pub struct GenerationSettings {
 /// Ask a local server what it is serving. `None` when it did not answer in
 /// the shape expected — an endpoint that is not llama-server, or is not up.
 ///
+/// `model` matters only to a router (`provider::router`), which serves many:
+/// it is asked for that model's own `/props`, **with `autoload=false`**, or a
+/// probe would be what swaps the model. A model that is not resident is
+/// `None` — nothing is serving it, so there is nothing to disagree with.
+/// With no model named, a router is asked about its resident one.
+///
 /// Deliberately silent on failure: a provider that is merely not running yet
 /// must not print a warning on every start of a machine that does not use it.
-pub async fn fetch(base_url: &str) -> Option<Props> {
-    let url = format!("{}/props", base_url.trim_end_matches('/'));
+pub async fn fetch(base_url: &str, model: Option<&str>) -> Option<Props> {
+    let base = base_url.trim_end_matches('/');
+    let props = get(&format!("{base}/props"), &[]).await?;
+    if props.role.as_deref() != Some("router") {
+        return Some(props);
+    }
+    let resident;
+    let model = match model {
+        Some(m) => m,
+        None => {
+            let list = crate::provider::router::models(base).await?;
+            resident = crate::provider::router::resident(&list)?.to_string();
+            &resident
+        }
+    };
+    get(
+        &format!("{base}/props"),
+        &[("model", model), ("autoload", "false")],
+    )
+    .await
+}
+
+async fn get(url: &str, query: &[(&str, &str)]) -> Option<Props> {
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .ok()?;
-    let body = http.get(&url).send().await.ok()?;
+    let body = http.get(url).query(query).send().await.ok()?;
     if !body.status().is_success() {
         return None;
     }
@@ -165,6 +200,7 @@ mod tests {
 
     fn props(n_ctx: u64, slots: u64, vision: bool) -> Props {
         Props {
+            role: None,
             model_alias: None,
             total_slots: Some(slots),
             modalities: Modalities { vision },

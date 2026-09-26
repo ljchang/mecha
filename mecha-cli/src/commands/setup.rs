@@ -84,7 +84,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     // be noise on a command people run when something is already confusing.
     let props = if pcfg.kind == "local" {
         match pcfg.base_url.as_deref() {
-            Some(url) => mecha_core::provider::preflight::fetch(url).await,
+            Some(url) => mecha_core::provider::preflight::fetch(url, pcfg.model.as_deref()).await,
             None => None,
         }
     } else {
@@ -453,7 +453,7 @@ fn report_salvage(salvaged: Option<std::path::PathBuf>) {
 /// it is testable without a socket.
 async fn probe_for_a_local_server() -> onboarding::LocalProbe {
     for base_url in onboarding::local_probe_candidates() {
-        match mecha_core::provider::preflight::fetch(base_url).await {
+        match mecha_core::provider::preflight::fetch(base_url, None).await {
             Some(props) if onboarding::answers_like_a_model_server(&props) => {
                 return onboarding::LocalProbe::Found(onboarding::LocalServer {
                     base_url: (*base_url).to_string(),

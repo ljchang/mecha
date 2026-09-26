@@ -478,6 +478,31 @@ pub enum Command {
     /// Show or create configuration.
     #[command(subcommand)]
     Config(commands::config::Args),
+
+    /// The local model router: what it can serve, and which model it holds.
+    /// Loading one is the pick — every default run follows it, with no
+    /// restart and no setting to edit.
+    Model(commands::model::Args),
+}
+
+/// Which model the llama-server router has loaded, snapshotted once for this
+/// process so every default provider in it follows the owner's pick
+/// (`provider::router`, REMOTE-SURFACE-DESIGN §14). Best-effort by design: a
+/// config that does not load is the command's own error to report, and a
+/// router that is down leaves the default standing — one loopback round trip
+/// when it is up, nothing when nothing listens.
+async fn follow_the_loaded_model(global: &GlobalOpts) {
+    let cfg = if global.global_config_only {
+        mecha_core::config::Config::load_global()
+    } else {
+        std::env::current_dir()
+            .map_err(anyhow::Error::from)
+            .and_then(|cwd| mecha_core::config::Config::load(&cwd))
+    };
+    let Ok(cfg) = cfg else { return };
+    for warning in mecha_core::provider::router::observe(&cfg).await {
+        tracing::warn!("{warning}");
+    }
 }
 
 #[tokio::main]
@@ -505,6 +530,7 @@ async fn main() {
 
 async fn dispatch() -> Result<()> {
     let cli = Cli::parse();
+    follow_the_loaded_model(&cli.global).await;
     match cli.command {
         Command::Run(args) => commands::run::execute(&cli.global, args).await,
         Command::Chat(args) => commands::chat::execute(&cli.global, args).await,
@@ -548,5 +574,6 @@ async fn dispatch() -> Result<()> {
         Command::Charter(args) => commands::charter::execute(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
         Command::Config(args) => commands::config::execute(&cli.global, args).await,
+        Command::Model(args) => commands::model::execute(&cli.global, args).await,
     }
 }

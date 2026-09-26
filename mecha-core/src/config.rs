@@ -330,6 +330,7 @@ impl Default for Config {
                 retry_after_cap_secs: None,
                 structured_output: StructuredOutput::Disabled,
                 fallbacks: Vec::new(),
+                follow_loaded: false,
             },
         );
         Config {
@@ -449,6 +450,15 @@ pub struct ProviderConfig {
     /// different model. `mecha eval` never falls back regardless: a
     /// scorecard grades the model it names.
     pub fallbacks: Vec<String>,
+    /// This entry stands for "whatever the llama-server router at `base_url`
+    /// has loaded" (`REMOTE-SURFACE-DESIGN.md` §14, D12). When a run takes
+    /// this entry *by default* — not by name — it takes the sibling entry
+    /// (same `base_url`) whose `model` is the resident one, so the owner's
+    /// pick reaches every consumer without a restart and every record names
+    /// the model that answered. Naming an entry explicitly always pins it.
+    /// Off by default, and cleared in experiment trials: an arm names its
+    /// model. See `provider::router`.
+    pub follow_loaded: bool,
 }
 
 impl ProviderConfig {
@@ -1461,7 +1471,13 @@ impl Config {
     }
 
     pub fn provider(&self, name: Option<&str>) -> Result<(String, &ProviderConfig)> {
-        let name = name.unwrap_or(&self.default_provider).to_string();
+        // Only the default follows the router's resident model; a name the
+        // caller chose is a pin (`provider::router`).
+        let name = match name {
+            Some(n) => n.to_string(),
+            None => crate::provider::router::follow(self, &self.default_provider)
+                .unwrap_or_else(|| self.default_provider.clone()),
+        };
         let cfg = self.providers.get(&name).with_context(|| {
             format!(
                 "no provider named {name:?}. Configured: {}",

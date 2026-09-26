@@ -202,7 +202,8 @@ async fn preflight_provider(cfg: &mecha_core::config::Config, opts: &GlobalOpts)
     // request reports far better than a startup line can, and printing it
     // here would put a warning in front of every command on a machine whose
     // model is not running yet.
-    let Some(props) = mecha_core::provider::preflight::fetch(base_url).await else {
+    let Some(props) = mecha_core::provider::preflight::fetch(base_url, pcfg.model.as_deref()).await
+    else {
         return;
     };
     for line in mecha_core::provider::preflight::disagreements(&name, pcfg, &props) {
@@ -1796,9 +1797,15 @@ pub const BRIEF_BOARD_TIMEOUT_INTERACTIVE: std::time::Duration = std::time::Dura
 pub fn local_server_for_brief(
     config: &mecha_core::config::Config,
     provider: &str,
-) -> Option<String> {
+) -> Option<mecha_core::brief::LocalServer> {
     let (_, pcfg) = config.provider(Some(provider)).ok()?;
-    (pcfg.kind == "local").then(|| pcfg.base_url.clone())?
+    if pcfg.kind != "local" {
+        return None;
+    }
+    Some(mecha_core::brief::LocalServer {
+        base_url: pcfg.base_url.clone()?,
+        model: pcfg.model.clone(),
+    })
 }
 
 /// Assemble this run's situation brief and put it on the run's context —
@@ -1822,7 +1829,7 @@ pub async fn brief_run(
     // The two reads that wait on another process, taken together.
     let (board, slots) = tokio::join!(
         read_board_for_brief(agent.registry(), &cx.tools, deadline),
-        mecha_core::brief::slots_for(local.as_deref()),
+        mecha_core::brief::slots_for(local.as_ref()),
     );
     let brief = mecha_core::brief::assemble_for_run(agent, cx, convo, board, slots);
     cx.brief = Some(Arc::new(brief));
