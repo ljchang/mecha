@@ -322,7 +322,10 @@ mecha reflect --backfill-situations    # give pre-situation reflections one, no 
 
 A reflection also records which goals it bears on: the goals of the plan steps
 whose checks failed, or otherwise the goal the plan or question named at the
-moment of the intervention, never one named later.
+moment of the intervention, never one named later. Where no plan or question
+named one, it takes the goal the run was anchored to — the task a delegated
+run works, the trigger that started a scheduled one, or a goal you confirmed —
+as that run recorded it, never an anchor set later in the conversation.
 
 `--remine-untrusted` re-mines the sessions whose reflections the gate
 excluded, through the user-turns path; it is idempotent and never re-mines a

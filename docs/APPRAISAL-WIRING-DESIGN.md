@@ -362,7 +362,10 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2e-2** | **`learn` fed clean appraisals** — lessons and interpretations as material, successes included, through `Clean` only; a stage lever with `stages_off` against reflector-only learning. | L2, R19 | 2e-1 | a tainted appraisal's lesson never reaches a batch (a test on the type); the lever's arm runs |
 | **2e-3** | **Attribute a correction by what the run was given** — mecha-graph's D3 contract ported: data error, behaviour error or gap from `grounding::calls`; a behaviour rule mined only from a behaviour error; a gap a retrieval target. | L7, here §5 | 1d | fixture corrections of each class are routed to their class; no behaviour rule is mined from a data error or a gap — *built; see L7* |
 | **2e-4** | **Learn from what went right**: owner-verified positives (sent unchanged, answered, `done` and not reopened) as writing exemplars, planning success examples and contrast evidence; a staged skill draft after k successes in one region, proposed only. | L2 | 1d | a draft sent unchanged is mined as an exemplar; a success the owner later reopens is withdrawn; no skill is written without the owner |
-| **2e-5** | **Goal-stamped reflections and per-line tenure**: the anchor as the second source of `Reflexion::goals`; tenure by the Wilson lower bound of the owner-accept rate on the line's owner-verdict channels (`ladder.rs` ported); dormancy for a region that stops recurring (`decay.rs`). Appraisal-weighted tenure only behind R20's guard — the owner's verdict overrides, grounded claims from clean runs only — and as a measured lever against owner-only tenure, with a revert, before it is on. | L3, R20, here §5 | 1a, 1d; the appraisal-weighted half 2a-2 | a rule's tenure moves on owner verdicts by the bound, not a streak; an owner verdict overrides an appraisal's bad; the lever reverts |
+| **2e-5** | **Goal-stamped reflections and per-line tenure**: the anchor as the second source of `Reflexion::goals`; tenure by the Wilson lower bound of the owner-accept rate on the line's owner-verdict channels (`ladder.rs` ported); dormancy for a region that stops recurring (`decay.rs`). Appraisal-weighted tenure only behind R20's guard — the owner's verdict overrides, grounded claims from clean runs only — and as a measured lever against owner-only tenure, with a revert, before it is on. *Split in three for review (2026-09-26), the owner-verdict half only; the appraisal-weighted half stays deferred behind R20 and 2a-2:* | L3, R20, here §5 | 1a, 1d; the appraisal-weighted half 2a-2 | a rule's tenure moves on owner verdicts by the bound, not a streak; an owner verdict overrides an appraisal's bad; the lever reverts |
+| **2e-5a** | **The anchor as the second source of `Reflexion::goals`**: where no plan or question in force names a goal at the intervention, the anchor in force there (`Transcript::anchor_covering`: the anchor the run holding the message ended on, none where a question answered later in that run could have moved it) — never the session's last, never backfilled, and not the situation's goal key. | L3 | 1a | a correction in an anchored run that planned nothing is stamped with its run's anchor and `goal_lessons` serves its rule toward it — *built; see L3* |
+| **2e-5b** | **Tenure by the Wilson lower bound** of the owner-accept rate on a rule's owner-verdict channels (S3, the outbox verdicts; never a counter or a model's account), `ladder.rs` ported. *Waits on the owner's shape questions: the bound's z, floor and minimum n; whether it replaces or sits beside the ledger's attributed-regression retirement; which verdicts are a rule's (the runs that carried it by `RunConfig::rule_ids`, or its line's).* | L3, here §5 | 2e-5a, 1d | a rule's tenure moves on owner verdicts by the bound, not a streak |
+| **2e-5c** | **Dormancy for a region that stops recurring** (`decay.rs`, over 2e-6's recurrence). *Waits on the owner: ARCHITECTURE's "Acceptance is not tenure" names decay and usage-based eviction as deliberately absent ("the rarely-fired rule that must never expire"), and what a dormant rule does to its slot under the per-domain cap is unruled.* | L3, here §5 | 2e-6 | — |
 | **2e-6** | **Replay priority is gain × need**: \|signed error\| on owner-verdict channels × charter rank × how often the `Situation` region recurs (the Selector's demand term) × age decay; the hopeless demoted; the holdout still drawn uniformly first; the same order for `learn`'s batches and the validation budget; 2b-2's misses raise it. | L1, here §5 | 1g; 2b-2 for the surprise term | the uniform holdout is unchanged by the ranking; a recurring region outranks a one-off of equal error — *built under R39; see L1: the Selector's `ln(1 + touches)` ported as the need term, over runs matched in the region* |
 | **2f** | **The diagnostician reads clean appraisals** of the episodes its draw selected, beside its counters, through `Clean` only; `carries_over` covers their text as a source; `candidate::judge` still decides. *Built as 2f, under R38: the draw's first phase (pool and uniform holdout) precedes the diagnosis, and the appraisals are the remainder's, never the holdout's.* | L8, R38 | 2a-2 | a tainted appraisal never reaches `diagnose::Evidence`; a proposal lifting a run of words from an appraisal is refused — *built; see L8* |
 
@@ -1591,6 +1594,21 @@ the **Wilson lower bound** of the owner-accept rate, ported from
 mecha-graph's `ladder.rs` (inventory §5), rather than a streak. A rule whose
 region stops recurring goes dormant rather than holding its place, on the
 graph's `decay.rs` rule.
+
+*2e-5a built* (the first of three slices; `reflect::goals_for`, ARCHITECTURE
+"A reflection serves the plan's goal, else its run's anchor"). The anchor is
+the fallback, not a peer: the plan's step goals at the intervention, else the
+plan or question in force there, else the anchor in force at the
+intervention (`Transcript::anchor_covering`: the `GoalAnchor` record the
+run holding the message ended on, placed among the messages; none where an
+answered `ask_user` in that run could have moved it after the message). A
+peer would stamp two goals wherever a plan drifted from its anchor, and
+evidence local to the moment is the more specific; the anchor, the harness's
+seed or the owner's confirmation, is what remains when the run named none —
+every run since the model stopped planning. Each run's own anchor is read,
+never the session's last, and a message no recorded outcome covers stamps
+none. Not backfilled, as `goals` never was. 2e-5b (the Wilson bound) and
+2e-5c (dormancy) wait on the owner; the row says on what.
 
 #### L1. Replay priority is gain × need
 
