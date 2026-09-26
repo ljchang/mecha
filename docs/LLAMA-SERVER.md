@@ -409,7 +409,7 @@ machine from starting is one people turn off.
 model, and the request's `model` field choosing the child. `--models-max 1`,
 because memory decides it. The design and the rulings are
 `REMOTE-SURFACE-DESIGN.md` §14 (D12); mecha's side is `provider::router`.
-Measured on 2026-09-26 against `c841aee`:
+Measured on 2026-09-26 against `c841aee`, unless a bullet names another build:
 
 - **The section name is the model name.** The router overwrites `--alias`
   with it, so `[providers.*] model` must equal it — and in router mode that
