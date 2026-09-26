@@ -40,6 +40,8 @@ pub struct Seen {
     /// first request. The default provider then stands, and its first request
     /// loads it.
     pub resident: Option<String>,
+    /// The resident model's slot count (`-np`), from its own `/props`.
+    pub slots: Option<u64>,
 }
 
 /// One entry of the router's `GET /models`.
@@ -175,8 +177,16 @@ pub async fn observe(cfg: &Config) -> Vec<String> {
     let mut seen = Vec::new();
     for b in followed_bases(cfg) {
         if let Some(list) = models(&b).await {
+            let resident = resident(&list).map(str::to_string);
+            let slots = match &resident {
+                Some(m) => crate::provider::preflight::fetch(&b, Some(m))
+                    .await
+                    .and_then(|p| p.total_slots),
+                None => None,
+            };
             seen.push(Seen {
-                resident: resident(&list).map(str::to_string),
+                resident,
+                slots,
                 base_url: b,
             });
         }
@@ -186,6 +196,28 @@ pub async fn observe(cfg: &Config) -> Vec<String> {
         *slot = seen;
     }
     warnings
+}
+
+/// How many background runs may hold the model at once, under this process's
+/// snapshot (`permit.rs`; owner's ruling 2026-09-26, §14 trap 5).
+pub fn background_seats(fallback: usize) -> usize {
+    SEEN.read()
+        .map_or(fallback, |seen| seats_for(&seen, fallback))
+}
+
+/// The pure half of [`background_seats`]: one seat short of the resident
+/// model's slots, so the owner's turn does not queue — **but never fewer than
+/// one**, so on a one-slot model (Gemma, Qwen3.8) background work and the
+/// nightly passes still run on whatever is loaded, at most one at a time,
+/// and the owner waits behind at most one decode. `fallback` (sized for
+/// production's `-np 4`) when no router's slot count is known — or two
+/// routers disagree, which would be a guess.
+pub fn seats_for(seen: &[Seen], fallback: usize) -> usize {
+    let mut known = seen.iter().filter_map(|s| s.slots);
+    match (known.next(), known.next()) {
+        (Some(n), None) => (n.saturating_sub(1) as usize).max(1),
+        _ => fallback,
+    }
 }
 
 /// The provider `name` stands for right now, under this process's snapshot.
@@ -387,6 +419,7 @@ mod tests {
         vec![Seen {
             base_url: "http://127.0.0.1:8080".into(),
             resident: resident.map(Into::into),
+            slots: None,
         }]
     }
 
@@ -449,6 +482,29 @@ mod tests {
             entry("gemma-4-26b-a4b", "http://127.0.0.1:8082", false),
         );
         assert_eq!(followed(&c, "local", &seen(Some("gemma-4-26b-a4b"))), None);
+    }
+
+    #[test]
+    fn background_seats_are_one_short_of_the_resident_models_slots_but_never_zero() {
+        let at = |slots: Option<u64>| Seen {
+            base_url: "http://127.0.0.1:8080".into(),
+            resident: Some("m".into()),
+            slots,
+        };
+        assert_eq!(seats_for(&[at(Some(4))], 3), 3, "production");
+        assert_eq!(
+            seats_for(&[at(Some(1))], 3),
+            1,
+            "a one-slot model keeps one seat"
+        );
+        assert_eq!(seats_for(&[at(Some(2))], 3), 1);
+        assert_eq!(seats_for(&[at(None)], 3), 3, "unknown keeps the default");
+        assert_eq!(seats_for(&[], 3), 3);
+        assert_eq!(
+            seats_for(&[at(Some(1)), at(Some(4))], 3),
+            3,
+            "two disagree: no guess"
+        );
     }
 
     #[test]
