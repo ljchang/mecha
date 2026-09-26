@@ -669,6 +669,15 @@ fn list(
                 mecha_core::replay_priority::RECURRENCE_WINDOW_DAYS
             );
         }
+        match &st.recurrence {
+            None => println!("quiet regions unknown: the session store could not be walked"),
+            Some(rec) if rec.unreadable > rec.unreadable_in_window => println!(
+                "quiet regions: {} transcript(s) whose header could not be read have no date, \
+                 so they are not counted in the window",
+                rec.unreadable - rec.unreadable_in_window
+            ),
+            Some(_) => {}
+        }
         for c in &st.tally.caveats {
             println!("owner tenure: {c}");
         }
