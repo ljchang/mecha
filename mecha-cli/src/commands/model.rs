@@ -50,8 +50,11 @@ pub enum Cmd {
 #[derive(Serialize)]
 struct Router {
     base_url: String,
-    /// `None` when nothing is loaded.
+    /// `None` when nothing is loaded — or when `readable` is false.
     resident: Option<String>,
+    /// Whether the router's model list is one this build fully reads. When
+    /// it is not, `resident: None` means "unknown", not "nothing loaded".
+    readable: bool,
     models: Vec<Model>,
     /// Entries pointing at this router whose model it does not serve: every
     /// run on one is a 400 (`model '…' not found`).
@@ -99,8 +102,12 @@ async fn survey(cfg: &Config) -> Vec<(String, Option<Router>)> {
             .filter(|(_, p)| p.model.as_deref().is_some_and(|m| !served.contains(&m)))
             .map(|(n, _)| n.clone())
             .collect();
+        let readable = router::readable(&list);
         let r = Router {
-            resident: router::resident(&list).map(str::to_string),
+            resident: readable
+                .then(|| router::resident(&list).map(str::to_string))
+                .flatten(),
+            readable,
             models: list
                 .iter()
                 .map(|m| Model {
@@ -169,6 +176,12 @@ async fn list(cfg: &Config, json: bool) -> Result<()> {
             continue;
         };
         println!("{base}");
+        if !r.readable {
+            println!(
+                "  ! this router's model list is one this build cannot fully read (empty, or a \
+                 status it does not know) — which model is loaded is unknown"
+            );
+        }
         for m in &r.models {
             let here = if r.resident.as_deref() == Some(m.id.as_str()) {
                 "●"

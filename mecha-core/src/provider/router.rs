@@ -189,6 +189,9 @@ async fn list_on(http: &reqwest::Client, b: &str) -> Option<Vec<RouterModel>> {
     Some(body.json::<ModelList>().await.ok()?.data)
 }
 
+/// Every model status this build knows how to read (`c841aee`).
+pub const KNOWN_STATUSES: [&str; 5] = ["unloaded", "loading", "loaded", "sleeping", "downloading"];
+
 /// Whether a `/models` answer is one this can draw a conclusion from: a
 /// non-empty list whose every status is one it knows. **"Nothing resident"
 /// is a claim, and a list this does not fully understand cannot support it**
@@ -196,11 +199,10 @@ async fn list_on(http: &reqwest::Client, b: &str) -> Option<Vec<RouterModel>> {
 /// evict the owner's pick without a word. The same rule `model-idle.sh`
 /// applies to the same answer (found on review).
 pub fn readable(models: &[RouterModel]) -> bool {
-    const KNOWN: [&str; 5] = ["unloaded", "loading", "loaded", "sleeping", "downloading"];
     !models.is_empty()
         && models
             .iter()
-            .all(|m| KNOWN.contains(&m.status.value.as_str()))
+            .all(|m| KNOWN_STATUSES.contains(&m.status.value.as_str()))
 }
 
 /// The resident model, if exactly one is. `--models-max 1` means at most one;
@@ -591,6 +593,13 @@ pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
                         m.status
                             .exit_code
                             .map_or_else(|| "unknown".to_string(), |c| c.to_string())
+                    ),
+                    // A status this build does not know says nothing about
+                    // whether the load is coming: fail now rather than wait
+                    // out `wait` on it (found on review).
+                    other if !KNOWN_STATUSES.contains(&other) => bail!(
+                        "the router reports {model} as {other:?}, a status this build does not \
+                         know — `mecha model list` shows what it sees"
                     ),
                     // Unloaded and not failed: either the load has not been
                     // picked up yet (it waits for the resident model to go
