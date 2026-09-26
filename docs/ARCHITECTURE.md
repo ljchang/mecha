@@ -2261,8 +2261,10 @@ brief (which reads the board through the graph server) do not run.
 - **Its own door.** `POST /api/incognito` mints `incognito-<22 hex>`; the
   ordinary door refuses the prefix, so a closed incognito key can never come
   back as a recorded chat. `POST /api/incognito/{key}/end` closes one;
-  `…/alive` is the open page's ping. Every door answers a closed key
-  `410 Gone` (`incognito::Closed`) rather than a 500 the page would retry.
+  `…/alive` is the open page's ping. The doors that act on a chat — open,
+  send, mode, upload, end, alive — answer a closed key `410 Gone`
+  (`incognito::Closed`) rather than a 500 the page would retry; the reads
+  (the transcript, the file routes) answer 404, as for any unknown key.
 - **Local only, refused rather than degraded.** The door opens only when the
   chat provider is a loopback server with no `fallbacks` — a `Failover`
   would re-send the conversation to a cloud provider on a transient local

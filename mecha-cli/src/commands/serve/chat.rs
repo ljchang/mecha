@@ -1446,7 +1446,7 @@ pub async fn open_incognito(State(state): Chat) -> axum::response::Response {
 }
 
 /// POST /api/incognito/{key}/end — close an incognito chat now: the End
-/// button. 404 when it is not an open incognito chat.
+/// button. 410 when it is not an open incognito chat.
 pub async fn end_incognito(
     State(state): Chat,
     axum::extract::Path(key): axum::extract::Path<String>,
