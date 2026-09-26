@@ -19,14 +19,22 @@
 //! measurably hurt too. No decay, no TTL, no usage-based eviction: low
 //! usage is a review signal, only measured harm argues for retirement, and
 //! a human accepts the argument.
+//!
+//! **Tenure by the owner's verdicts sits beside that** (row 2e-5b, R41;
+//! `mecha_core::tenure`): the Wilson lower bound of the owner-accept rate on
+//! the runs that carried a rule releases it from probation and marks it
+//! tenured; it retires, narrows and evicts nothing. And a rule whose region
+//! has gone quiet is *reported* (row 2e-5c) and keeps loading.
 
 use anyhow::{bail, Context, Result};
 use mecha_core::learning::{
     judge_convicted, retire_threshold_for, rule_tallies, tally_for, LeapRun, LearningStore,
     Proposal, Rule, RuleTally, ValidationRecord, Verdict,
 };
+use mecha_core::replay_priority::Recurrence;
 use mecha_core::session::{Session, SessionKind};
 use mecha_core::situation::{BoardStatuses, GoalKey, GoalLiveness, TriggerState};
+use mecha_core::tenure::{Quiet, Tally};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -47,7 +55,9 @@ pub enum Cmd {
         /// open. For the TUI and the web settings page, which shell out to
         /// this verb under budgets an MCP start cannot fit (the TUI blocks
         /// its event loop on it; the web gives it ten seconds). Trigger
-        /// goals are still read, in place.
+        /// goals are still read, in place. The same budgets skip the
+        /// session walks behind each rule's owner tenure and whether its
+        /// region has gone quiet, which then read as not read on this path.
         #[arg(long)]
         no_board: bool,
     },
@@ -99,20 +109,40 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         no_board: false,
     }) {
         Cmd::List { json, no_board } => {
-            let goals = goals_of(global, &all_rules(&store), !no_board).await;
-            list(&store, json, &goals)
+            let everything = all_rules(&store);
+            let goals = goals_of(global, &everything, !no_board).await;
+            let standing = (!no_board).then(|| Standing::read(&everything, chrono::Utc::now()));
+            list(&store, json, &goals, standing.as_ref())
         }
         Cmd::Retire { id, reason } => retire(&store, &id, reason),
         Cmd::Restore { id } => restore(&store, &id),
         Cmd::Show { id, no_board } => {
             let (_, rules, i) = find_rule(&store, &id)?;
             let goals = goals_of(global, &[rules[i].clone()], !no_board).await;
-            show(&store, &id, &goals)
+            let standing =
+                (!no_board).then(|| Standing::read(&[rules[i].clone()], chrono::Utc::now()));
+            show(&store, &id, &goals, standing.as_ref())
         }
         Cmd::ProposeRetirements {
             min_attributed,
             apply,
-        } => propose(&store, min_attributed, apply),
+        } => {
+            // Only a probationary rule's leash can move on the owner's
+            // record, so only those rules' sessions are read.
+            let on_probation: std::collections::BTreeSet<String> = all_rules(&store)
+                .iter()
+                .filter(|r| r.active() && r.probation)
+                .filter_map(|r| r.id.clone())
+                .collect();
+            let owner = owner_tally(&on_probation);
+            for c in &owner.caveats {
+                println!("owner tenure: {c}");
+            }
+            if let Some(why) = &owner.store_unreadable {
+                println!("owner tenure: {why}; no rule is released on it this pass");
+            }
+            propose(&store, min_attributed, apply, Some(&owner))
+        }
     }
 }
 
@@ -402,7 +432,80 @@ fn presented(scope: &mecha_core::situation::Situation, presented: &Presented) ->
     })
 }
 
-fn list(store: &LearningStore, as_json: bool, goals: &Goals) -> Result<()> {
+/// Row 2e-5b and 2e-5c, per rule: its owner record over the runs that
+/// carried it, and whether its region has gone quiet. Read once per roster;
+/// `None` at the call site is a path that skipped the walk (`--no-board`),
+/// which says "not read", never a standing.
+struct Standing {
+    tally: Tally,
+    /// `None` when the session store could not be walked.
+    recurrence: Option<Recurrence>,
+    now: chrono::DateTime<chrono::Utc>,
+}
+
+impl Standing {
+    fn read(rules: &[Rule], now: chrono::DateTime<chrono::Utc>) -> Standing {
+        let wanted: std::collections::BTreeSet<String> = rules
+            .iter()
+            .filter(|r| r.active())
+            .filter_map(|r| r.id.clone())
+            .collect();
+        let recurrence = Session::default_dir()
+            .ok()
+            .and_then(|dir| Recurrence::scan(&dir, now).ok());
+        Standing {
+            tally: owner_tally(&wanted),
+            recurrence,
+            now,
+        }
+    }
+
+    fn quiet(&self, r: &Rule) -> Quiet {
+        Quiet::of(r, self.recurrence.as_ref(), self.now)
+    }
+}
+
+/// The owner's verdicts on the runs that carried each of `wanted`, over
+/// the default session store and appraisal stores.
+fn owner_tally(wanted: &std::collections::BTreeSet<String>) -> Tally {
+    if wanted.is_empty() {
+        return Tally::default();
+    }
+    match Session::default_dir() {
+        Ok(dir) => Tally::scan(&dir, &mecha_core::appraisal::Stores::load(), wanted),
+        Err(e) => Tally {
+            store_unreadable: Some(format!("the session store could not be found ({e:#})")),
+            ..Tally::default()
+        },
+    }
+}
+
+/// The roster's second line for an active learned rule: where it stands
+/// with the owner, and whether its region is quiet.
+fn standing_line(r: &Rule, standing: &Standing) -> String {
+    let Some(id) = r.id.as_deref() else {
+        return "      owner: no id, so no run record names it".to_string();
+    };
+    let record = standing.tally.record(id);
+    let tenure = standing.tally.tenure(id);
+    let released = if r.probation && tenure.is_tenured() {
+        " — releases its probation (the ordinary leash applies)"
+    } else {
+        ""
+    };
+    format!(
+        "      owner: {}{released} · region: {}",
+        tenure.describe(&record),
+        standing.quiet(r).describe()
+    )
+}
+
+fn list(
+    store: &LearningStore,
+    as_json: bool,
+    goals: &Goals,
+    standing: Option<&Standing>,
+) -> Result<()> {
     let tallies = rule_tallies(&store.validations()?);
     let everything = all_rules(store);
     let keys = presented_keys(&everything.iter().collect::<Vec<_>>());
@@ -420,6 +523,22 @@ fn list(store: &LearningStore, as_json: bool, goals: &Goals) -> Result<()> {
                 .chain(store.learned_rules(&domain)?.iter().map(|r| (r, false)))
             {
                 let tally = r.id.as_deref().and_then(|id| tallies.get(id));
+                // Row 2e-5b/2e-5c. `null` for a user rule (never on trial),
+                // and on a path that skipped the walk: not read, never
+                // "no verdicts".
+                let owner = standing.filter(|_| !mine && r.active()).and_then(|st| {
+                    let id = r.id.as_deref()?;
+                    let record = st.tally.record(id);
+                    Some(serde_json::json!({
+                        "tenure": st.tally.tenure(id),
+                        "accepted": record.accepted,
+                        "rejected": record.rejected,
+                        "unread": record.unread,
+                    }))
+                });
+                let quiet = standing
+                    .filter(|_| !mine && r.active())
+                    .map(|st| st.quiet(r));
                 out.push(serde_json::json!({
                     "id": r.id,
                     "domain": domain,
@@ -486,6 +605,8 @@ fn list(store: &LearningStore, as_json: bool, goals: &Goals) -> Result<()> {
                     }),
                     "unknown_region_graded": tally.map(|t| t.unknown_region.graded),
                     "created_at": r.created_at,
+                    "owner": owner,
+                    "quiet": quiet,
                 }));
             }
         }
@@ -528,10 +649,32 @@ fn list(store: &LearningStore, as_json: bool, goals: &Goals) -> Result<()> {
         }
         for r in &learned {
             println!("  {}", describe(r, &tallies, keys.as_ref(), goals));
+            if let Some(st) = standing.filter(|_| r.active()) {
+                println!("{}", standing_line(r, st));
+            }
         }
     }
     if !any {
         println!("no rules yet — `mecha learn` creates them");
+    }
+    if let Some(st) = standing {
+        let quiet = everything
+            .iter()
+            .filter(|r| r.active() && st.quiet(r) == Quiet::Quiet)
+            .count();
+        if quiet > 0 {
+            println!(
+                "{quiet} active rule(s) are QUIET: no run in their region in the last {} days. \
+                 Reported only; they keep loading and keep their place.",
+                mecha_core::replay_priority::RECURRENCE_WINDOW_DAYS
+            );
+        }
+        for c in &st.tally.caveats {
+            println!("owner tenure: {c}");
+        }
+        if let Some(why) = &st.tally.store_unreadable {
+            println!("owner tenure unknown for every rule: {why}");
+        }
     }
     Ok(())
 }
@@ -809,7 +952,7 @@ fn record_owner_verdict(
     .context("the rule changed, but the owner's verdict could not be recorded against it")
 }
 
-fn show(store: &LearningStore, id: &str, goals: &Goals) -> Result<()> {
+fn show(store: &LearningStore, id: &str, goals: &Goals, standing: Option<&Standing>) -> Result<()> {
     let tallies = rule_tallies(&store.validations()?);
     let (domain, rules, i) = find_rule(store, id)?;
     let keys = presented_keys(&[&rules[i]]);
@@ -817,10 +960,18 @@ fn show(store: &LearningStore, id: &str, goals: &Goals) -> Result<()> {
         "## {domain}\n{}",
         describe(&rules[i], &tallies, keys.as_ref(), goals)
     );
+    if let Some(st) = standing.filter(|_| rules[i].active()) {
+        println!("{}", standing_line(&rules[i], st));
+    }
     Ok(())
 }
 
-fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()> {
+fn propose(
+    store: &LearningStore,
+    min_attributed: u32,
+    apply: bool,
+    owner: Option<&Tally>,
+) -> Result<()> {
     let _lock = store.lock()?;
     let records = store.validations()?;
     let tallies = rule_tallies(&records);
@@ -838,6 +989,18 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
         // that release stripped the leash on the very rows that convict and
         // made PROBATION_RETIRE_AT unreachable from this scan.
         mecha_core::learning::release_probation_when_measured_clean(&mut before, &tallies);
+        // Beside it, never instead (row 2e-5b, R41): a rule the owner's
+        // verdicts have tenured answers to the ordinary leash too. The
+        // retirement below is still decided by measured regressions alone.
+        if let Some(owner) = owner {
+            let released =
+                mecha_core::tenure::release_probation_when_owner_tenures(&mut before, owner);
+            if released > 0 {
+                println!(
+                    "{domain}: {released} rule(s) off probation on the owner's verdicts (tenured)"
+                );
+            }
+        }
         let before = before;
         // Per rule: stands, narrows, or retires. Narrowing is retirement's
         // gentler sibling (`judge_convicted`): a rule convicted in one of
@@ -1149,13 +1312,13 @@ mod tests {
         }
 
         // Below threshold: nothing staged.
-        propose(&store, 4, false).unwrap();
+        propose(&store, 4, false, None).unwrap();
         assert!(store.proposals().unwrap().is_empty());
 
         // At threshold: one pending proposal that retires r-bad, keeps r-ok,
         // and consumes no reflections. The live rules must be untouched —
         // only acceptance deploys.
-        propose(&store, 3, false).unwrap();
+        propose(&store, 3, false, None).unwrap();
         let all = store.proposals().unwrap();
         assert_eq!(all.len(), 1);
         let p = &all[0];
@@ -1186,7 +1349,7 @@ mod tests {
         );
 
         // Re-running while the proposal is pending must not stage a twin.
-        propose(&store, 3, false).unwrap();
+        propose(&store, 3, false, None).unwrap();
         assert_eq!(store.proposals().unwrap().len(), 1);
 
         std::fs::remove_dir_all(store.root()).ok();
@@ -1213,11 +1376,11 @@ mod tests {
         }
 
         // Staged first, as the nightly would have before --apply existed.
-        propose(&store, 3, false).unwrap();
+        propose(&store, 3, false, None).unwrap();
         assert_eq!(store.proposals().unwrap()[0].status, "pending");
 
         // The direct path retires the rule and resolves the paper.
-        propose(&store, 3, true).unwrap();
+        propose(&store, 3, true, None).unwrap();
         let all = store.proposals().unwrap();
         assert_eq!(all.len(), 1, "no twin staged");
         assert_eq!(all[0].status, "superseded");
@@ -1258,7 +1421,7 @@ mod tests {
         }
 
         // Below threshold, --apply must be as inert as staging is.
-        propose(&store, 4, true).unwrap();
+        propose(&store, 4, true, None).unwrap();
         assert!(
             store
                 .learned_rules("behavior")
@@ -1268,7 +1431,7 @@ mod tests {
             "an unconvicted rule must survive an --apply scan"
         );
 
-        propose(&store, 3, true).unwrap();
+        propose(&store, 3, true, None).unwrap();
 
         // The live file moved, and nothing was queued for anyone to accept.
         assert!(
@@ -1366,7 +1529,7 @@ mod tests {
             ))
             .unwrap();
 
-        propose(&store, 3, true).unwrap();
+        propose(&store, 3, true, None).unwrap();
 
         let live = store.learned_rules("behavior").unwrap();
         let wide = live
@@ -1394,7 +1557,7 @@ mod tests {
 
         // The convictions that narrowed it lie outside where it now loads:
         // a second scan finds nothing against it.
-        propose(&store, 3, true).unwrap();
+        propose(&store, 3, true, None).unwrap();
         let again = store.learned_rules("behavior").unwrap();
         let wide = again
             .iter()
@@ -1984,8 +2147,8 @@ mod tests {
                 scope: None,
             })
             .unwrap();
-        propose(&store, 3, false).unwrap();
-        propose(&store, 3, false).unwrap();
+        propose(&store, 3, false, None).unwrap();
+        propose(&store, 3, false, None).unwrap();
         let proposals = store.proposals().unwrap();
         assert_eq!(
             proposals.len(),
@@ -2049,7 +2212,7 @@ mod tests {
                 .unwrap();
         }
 
-        propose(&store, mecha_core::learning::DEFAULT_RETIRE_AT, true).unwrap();
+        propose(&store, mecha_core::learning::DEFAULT_RETIRE_AT, true, None).unwrap();
 
         let live = store.learned_rules("behavior").unwrap();
         let bad = live
@@ -2074,6 +2237,110 @@ mod tests {
         );
 
         std::fs::remove_dir_all(store.root()).ok();
+    }
+
+    /// Row 2e-5b in the scan (R41): the owner's verdicts, when their Wilson
+    /// bound tenures a probationary rule, give it the ordinary leash — the
+    /// same two convictions no longer retire it — and a record under the
+    /// minimum does nothing, however clean. Retirement still runs on the
+    /// ledger: a tenured rule with three convictions retires.
+    #[test]
+    fn the_owners_tenure_lifts_the_probation_leash_and_nothing_more() {
+        use mecha_core::tenure::{OwnerRecord, Tally};
+        let owner = |accepted, rejected| {
+            let mut t = Tally::default();
+            for id in ["r-tenured", "r-thrice"] {
+                t.records.insert(
+                    id.into(),
+                    OwnerRecord {
+                        accepted,
+                        rejected,
+                        unread: 0,
+                    },
+                );
+            }
+            t
+        };
+        for (tally, survives) in [(owner(41, 10), true), (owner(19, 0), false)] {
+            let store = temp_store();
+            let mut bad = rule("Owner-vouched ungraded rule.", "r-tenured");
+            bad.probation = true;
+            let mut thrice = rule("Owner-vouched but convicted thrice.", "r-thrice");
+            thrice.probation = true;
+            store
+                .write_learned_rules("behavior", &[bad, thrice])
+                .unwrap();
+            for i in 0..3 {
+                if i < 2 {
+                    store
+                        .append_validation(&regression(
+                            "r-tenured",
+                            &format!("2026-08-3{i}T00:00:00Z"),
+                        ))
+                        .unwrap();
+                }
+                store
+                    .append_validation(&regression("r-thrice", &format!("2026-08-2{i}T00:00:00Z")))
+                    .unwrap();
+            }
+            propose(
+                &store,
+                mecha_core::learning::DEFAULT_RETIRE_AT,
+                true,
+                Some(&tally),
+            )
+            .unwrap();
+            let live = store.learned_rules("behavior").unwrap();
+            let find = |id: &str| live.iter().find(|r| r.id.as_deref() == Some(id)).unwrap();
+            assert_eq!(
+                find("r-tenured").active(),
+                survives,
+                "tenured keeps the ordinary leash; 19 of 19 is under the minimum"
+            );
+            assert!(
+                !find("r-thrice").active(),
+                "retirement stays on measured regressions, tenure or not"
+            );
+            std::fs::remove_dir_all(store.root()).ok();
+        }
+    }
+
+    /// The roster says where each rule stands with the owner and whether
+    /// its region is quiet — and the quiet rule still reads active: row
+    /// 2e-5c reports, it never evicts.
+    #[test]
+    fn the_roster_line_names_tenure_and_a_quiet_region() {
+        use mecha_core::situation::Situation;
+        use mecha_core::tenure::{OwnerRecord, Tally};
+        let now = chrono::Utc::now();
+        let mut tally = Tally::default();
+        tally.records.insert(
+            "r-lakeside".into(),
+            OwnerRecord {
+                accepted: 41,
+                rejected: 10,
+                unread: 0,
+            },
+        );
+        let mut recurrence = Recurrence::default();
+        recurrence.runs = vec![Situation::of_run(&["mail_send".to_string()], None)];
+        let standing = Standing {
+            tally,
+            recurrence: Some(recurrence),
+            now,
+        };
+        let mut r = rule("Cite the Lakeside figures.", "r-lakeside");
+        r.probation = true;
+        r.created_at = Some((now - chrono::Duration::days(60)).to_rfc3339());
+        r.scope = Some(Situation::of_run(&["http_fetch".to_string()], None).scope());
+        let line = standing_line(&r, &standing);
+        assert!(line.contains("tenured: 41 of 51"), "{line}");
+        assert!(line.contains("releases its probation"), "{line}");
+        assert!(line.contains("QUIET"), "{line}");
+        assert!(r.active(), "reported, never evicted");
+        let other = rule("Keep drafts short for sam@example.edu.", "r-other");
+        let line = standing_line(&other, &standing);
+        assert!(line.contains("not enough owner verdicts: 0 of 0"), "{line}");
     }
 
     #[test]
@@ -2138,9 +2405,15 @@ mod tests {
         store
             .write_learned_rules("behavior", &[rule("Ship the thing.", "r-show")])
             .unwrap();
-        assert!(show(&store, "r-show", &Goals::new()).is_ok());
-        assert!(show(&store, "", &Goals::new()).is_err(), "no id given");
-        assert!(show(&store, "nope", &Goals::new()).is_err(), "no such rule");
+        assert!(show(&store, "r-show", &Goals::new(), None).is_ok());
+        assert!(
+            show(&store, "", &Goals::new(), None).is_err(),
+            "no id given"
+        );
+        assert!(
+            show(&store, "nope", &Goals::new(), None).is_err(),
+            "no such rule"
+        );
         std::fs::remove_dir_all(store.root()).ok();
     }
 }

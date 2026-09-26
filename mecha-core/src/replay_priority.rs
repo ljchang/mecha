@@ -380,6 +380,11 @@ pub struct Recurrence {
     /// Admitted sessions in the window past [`RECURRENCE_SCAN_CAP`], the
     /// oldest: not walked, so their regions' counts are floors too.
     pub beyond_cap: usize,
+    /// Each walked session's run situation (`Situation::of_record` of its
+    /// last run record) — what a rule's scope is matched against when row
+    /// 2e-5c asks whether its region has gone quiet ([`Self::matching`]).
+    /// Empty from [`Self::from_keys`].
+    pub runs: Vec<Situation>,
 }
 
 impl Recurrence {
@@ -393,6 +398,7 @@ impl Recurrence {
             counts,
             unreadable: 0,
             beyond_cap: 0,
+            runs: Vec::new(),
         }
     }
 
@@ -422,18 +428,27 @@ impl Recurrence {
         for (_, path) in listed.into_iter().take(RECURRENCE_SCAN_CAP) {
             match Session::run_configs_streaming(&path) {
                 Ok(configs) => {
-                    if let Some(key) = configs
-                        .last()
-                        .map(Situation::of_record)
-                        .and_then(|s| s.region_key())
-                    {
+                    let run = configs.last().map(Situation::of_record);
+                    if let Some(key) = run.as_ref().and_then(|s| s.region_key()) {
                         *out.counts.entry(key).or_default() += 1;
                     }
+                    out.runs.extend(run);
                 }
                 Err(_) => out.unreadable += 1,
             }
         }
         Ok(out)
+    }
+
+    /// Walked runs a rule scoped to `scope` would have loaded in — the
+    /// loader's own match (`learning::carried_in`), so a widened rule counts
+    /// every run of every region it covers. A rule with no scope (it
+    /// predates scoping and loads everywhere) matches every run.
+    pub fn matching(&self, scope: Option<&Situation>) -> usize {
+        self.runs
+            .iter()
+            .filter(|r| scope.is_none_or(|s| s.matches(r)))
+            .count()
     }
 
     /// Runs in `key`'s region, at least the episode itself; `None` for a
