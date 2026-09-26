@@ -194,6 +194,28 @@ pub enum Args {
         json: bool,
     },
 
+    /// What went right, as the owner said so: drafts sent unchanged, tasks
+    /// closed `done`, workflows closed, questions answered whose session
+    /// then finished — each read from the store that owns the act, never
+    /// stored, so a success the owner later reopens is listed as withdrawn.
+    ///
+    /// Read-only and free. The drafts sent unchanged are writing exemplars,
+    /// and this readout is their only reader: nothing serves one to a run.
+    Successes {
+        /// Print each writing exemplar verbatim — the draft as it went out.
+        #[arg(long)]
+        exemplars: bool,
+
+        /// Cap each listing at this many, newest first. The counts are
+        /// always the whole set's.
+        #[arg(long, short = 'n')]
+        limit: Option<usize>,
+
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Total token usage — and cost, where prices are configured — across
     /// saved sessions, grouped by provider and model.
     Stats {
@@ -277,6 +299,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             )
             .await?
         }
+
+        Args::Successes {
+            exemplars,
+            limit,
+            json,
+        } => crate::success_readout::run(&dir, json, exemplars, limit)?,
 
         Args::Compare {
             points,
@@ -1652,6 +1680,22 @@ async fn appraise(
     // Lessons by source (row 2e-1): read from the learning, appraisal and
     // comparison stores — free, so it is read every time.
     let lesson_sources = crate::lesson_pass::on_record();
+    // Owner-verified successes (row 2e-4a): derived from the stores read
+    // above, store-wide whatever `--days` narrowed the sessions to — a
+    // task can be closed long after the session that did its work.
+    let successes = crate::success_readout::derive(
+        dir,
+        &mecha_core::success::Sources {
+            drafts: &drafts,
+            outbox_unreadable,
+            closures: &closures,
+            closures_unreadable,
+            workflows: &workflows,
+            workflows_unreadable,
+            questions: &questions,
+            questions_unreadable,
+        },
+    );
 
     if json {
         println!(
@@ -1722,6 +1766,10 @@ async fn appraise(
                 // `null` over nothing decided, and an unreadable store is
                 // `read: false`, never an empty report.
                 "lesson_sources": lesson_sources_json(&lesson_sources),
+                // Row 2e-4a: owner-verified successes by kind, derived from
+                // the stores that own each act; `exemplars.served` is
+                // `false` — nothing hands one to a run yet.
+                "successes": crate::success_readout::summary_json(&successes),
                 // Anticipation's predictions scored (row 2b-1): store-wide,
                 // whatever `--days` narrowed the sessions to — a draft's
                 // outcome can arrive long after its session. Coverage
@@ -1816,6 +1864,7 @@ async fn appraise(
         println!("  {line}");
     }
     println!();
+    println!("  {}\n", crate::success_readout::line(&successes));
     println!("  {}\n", predictions_line(&calibration, outbox_unreadable));
     println!(
         "  {}\n",

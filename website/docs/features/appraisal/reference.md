@@ -451,12 +451,47 @@ mecha sessions appraise --days 30 --kind web --json
 | `appraiser` | Always `null`: the counts-only appraiser is retired. Kept so a reader of the old shape still finds the key. |
 | `predictions` | Anticipation's predictions scored (store-wide): per response and per concern kind, `predictions`, `scored`, `materialized`, `clean`, the reasons the rest are not yet a point (`unscored`), and `materialized_rate`, which is `null` when nothing was scored; plus `total`, `unreadable`, and whether the outbox was fully `read`. See [anticipation](/docs/features/appraisal/anticipation#how-well-the-predictions-held-up). |
 | `expectations` | The appraisals' own predictions (their expected act) checked against what you did: `with_expectation`, `scored`, `hits`, `surprises` (and `clean_surprises`), `pending` (the waiting period is still open), `unknown` (a store, the board or the patience could not be read), `board_not_read` (task outputs this readout cannot window, because it reads no board; `mecha distill` scores them), and `hit_rate`, which is `null` over no scores. `read: false` when the store could not be read. |
+| `successes` | [What went right](#what-went-right), store-wide: `standing` and `by_kind`, `withdrawn` (taken back by a reopen), `unknown` (never counted), `hidden` (in development sessions), `partial` with the `unreadable` stores named, and the writing exemplars by origin, with `served: false`. |
 | `text_appraisals` | Counts from the [text-appraisal store](#text-appraisals): records, sessions, how many are `clean` and `not_clean`, claims kept and dropped by grounding (`dropped_by`, by reason), records carrying an expected act (`with_expected_act`), judgment goals that did not resolve (`goals_unresolved`), [counterfactual reflections](#what-a-losing-arm-taught) from losing arms (`counterfactuals`, and `counterfactuals_not_clean`), and whether the store was fully read. |
 
 The signed errors, valence and label above are derived when read and never
 stored. This scan is per **session**, while `sessions health` reports per-run
 counters. A session can contain several resumed runs, but its drafts and
 interventions must not be counted once for every resume.
+
+### What went right
+
+Most of what mecha learns from is a correction: you stepped in, and it asks
+what to do differently. The other half is what you accepted as it was, and
+you already say that with acts you perform anyway:
+
+- you **sent a draft as mecha wrote it**;
+- you **closed a task `done`**;
+- you **closed a workflow** after its check passed;
+- you **answered a question** mecha parked, and the work then finished.
+
+```bash
+mecha sessions successes               # the set, newest first
+mecha sessions successes --exemplars   # each draft you sent unchanged, as sent
+mecha sessions successes --json
+```
+
+Nothing is written down to make this list. It is read fresh each time from
+the outbox, the task-closure record, the workflows and the questions, so if
+you **reopen** a task or a workflow later, the success is listed as
+**withdrawn** from then on, beside the reopen that took it back. A success
+that cannot be confirmed — a closure by someone this version cannot
+identify, a question whose session is gone — is listed as unknown and never
+counted. Successes in development sessions are hidden and counted as such.
+Only your own acts count: mecha's opinion of its own work, and an
+appraisal's reading of a run, never make something a success.
+
+Each draft you sent unchanged is a **writing exemplar**: the draft itself,
+word for word, with the tool that would send it and whether third-party text
+was in the conversation when it was written. For now this list is the only
+place exemplars appear. **No run is shown them yet.** Showing them to a run
+that is drafting is a later, separate switch. When it comes, it will count
+as private data, because an exemplar is mail you sent.
 
 ### Text appraisals
 

@@ -16,6 +16,7 @@ mod render;
 mod review_policy;
 mod setup;
 mod slack;
+mod success_readout;
 #[cfg(test)]
 mod testenv;
 mod tui;
