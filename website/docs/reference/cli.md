@@ -1774,6 +1774,11 @@ mecha model [list|use] [ARGS] [--json]
 | `use` | `--wait-secs <N>` | Give up after this many seconds (default 600; a cold load measured 33–39 s). |
 | both | `--json` | Machine-readable output. An unreachable router is listed with `"reachable": false`. |
 
+Behind a router, `--model` on any command selects as well as names: `mecha run
+--model qwen3.8-27b "…"` loads that model, evicting the one that was loaded,
+and every later default run then follows it — a one-off flag changes the pick.
+`mecha model use` is the deliberate way to do the same.
+
 `use` refuses a model whose preset temperature disagrees with its provider
 entry, because mecha sends `temperature` on every request and would silently
 re-tune it. If the new model fails to come up, the one it was replacing is
