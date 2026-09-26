@@ -450,6 +450,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 .filter(|b| b.2.len() >= args.min)
                 .flat_map(|(_, _, rs)| rs.iter().map(|r| r.session_id.as_str())),
         );
+        if let Some(line) = mecha_core::replay_priority::unknown_summary(priorities.values()) {
+            eprintln!("replay priority: {line}");
+        }
         order_batches(&mut candidates, &priorities);
     }
     for (domain, region, reflexions) in candidates {

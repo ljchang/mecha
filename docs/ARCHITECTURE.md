@@ -4033,9 +4033,12 @@ priority = gain × need × decay
   with a torn line; a session with no run record or an unnameable region;
   the harness or comparison store unread. The order is by tier: fully
   known and positive, by value; then any unknown, fewer unknowns first and
-  the known part as a floor; then a known zero (no verdict, no surprise);
-  then the hopeless. The id closes every tie. Each pass prints what it
-  could not read (`Ranker::caveats`).
+  the known part as a floor (an unknown need counts as the episode alone,
+  `ln 2`, so not being read is never a promotion); then a known zero (no
+  verdict, no surprise); then the hopeless. The id closes every tie. Each
+  pass prints what it could not read: the stores (`Ranker::caveats`), and
+  how many of the priorities it ordered by had an unknown factor, by
+  factor (`replay_priority::unknown_summary`).
 - **The hopeless are demoted** (§9.2's "skip the hopeless";
   `History`): an episode that sat in a measured *selection* slice on
   `HOPELESS_NIGHTS` (3) distinct measurement dates since anything last won
