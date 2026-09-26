@@ -6,7 +6,7 @@ test_model_idle.py beside it.
 
 **Why this exists.** The helper answers "what model is this server serving,
 and what are its props" for the benchmark and replay scripts. Behind a router
-the honest answer takes three requests and one of them must say
+the honest answer takes several requests and one of them must say
 `autoload=false`, or asking would load a model — so each case below checks
 the requests actually sent, not only the answer.
 """

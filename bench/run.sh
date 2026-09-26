@@ -40,6 +40,16 @@ export MECHA_BENCH_BINARY="$(pwd)/target-musl/release/mecha"
 # Asked of the benchmarked model itself, never a router's placeholder, and
 # never in a way that loads it (scripts/served-props.sh).
 source scripts/served-props.sh
+# The scorecard is filed under MECHA_BENCH_MODEL, so the server has to be
+# serving it. A router refuses a model it is not serving (below); a
+# single-model server ignores the name, so it is compared here (found on
+# review) — the "measures whatever is on that port under the wrong name"
+# hazard the header above describes.
+served="$(served_model "http://127.0.0.1:${MODEL_PORT}")" || exit 1
+if [ "$served" != "${MODEL#*/}" ]; then
+  echo "refusing to run: :${MODEL_PORT} is serving ${served}, but MECHA_BENCH_MODEL names ${MODEL#*/}." >&2
+  exit 1
+fi
 slots=$(served_props "http://127.0.0.1:${MODEL_PORT}" "${MODEL#*/}" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_slots", 0))' || echo 0)
 if [ "$slots" != "1" ]; then

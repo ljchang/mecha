@@ -86,7 +86,6 @@ pub async fn fetch(base_url: &str, model: Option<&str>) -> Option<Props> {
     // same server) would otherwise ask `…/v1/props`, which llama-server does
     // not serve, and every check here would silently not run (found on review).
     let base = crate::provider::router::base(base_url);
-    let base = base.as_str();
     let props = get(&format!("{base}/props"), &[]).await?;
     if props.role.as_deref() != Some("router") {
         return Some(props);
@@ -95,7 +94,7 @@ pub async fn fetch(base_url: &str, model: Option<&str>) -> Option<Props> {
     let model = match model {
         Some(m) => m,
         None => {
-            let list = crate::provider::router::models(base).await?;
+            let list = crate::provider::router::models(&base).await?;
             resident = crate::provider::router::resident(&list)?.to_string();
             &resident
         }

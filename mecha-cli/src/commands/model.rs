@@ -95,11 +95,14 @@ async fn survey(cfg: &Config) -> Vec<(String, Option<Router>)> {
             continue;
         };
         let served: Vec<&str> = list.iter().map(|m| m.id.as_str()).collect();
-        // Only from a list this reads: an unreadable (say, empty) one would
-        // name every entry "not served" under the banner saying it cannot be
-        // read — two opposite claims about one answer (found on review).
+        // An *empty* list would name every entry "not served" under the banner
+        // saying it cannot be read — two opposite claims about one answer. An
+        // unknown *status* does not touch this: the ids are complete either
+        // way, and an entry the router does not serve 400s on every run
+        // (found on review, twice). `resident` below is the claim about
+        // statuses, and is gated on `readable`.
         let readable = router::readable(&list);
-        let unserved = if !readable {
+        let unserved = if list.is_empty() {
             Vec::new()
         } else {
             cfg.providers
