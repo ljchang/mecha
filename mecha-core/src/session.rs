@@ -1421,6 +1421,36 @@ pub struct Transcript {
     /// every pre-compaction stop as an abandonment cited past the end).
     pub outcomes: Vec<RunStats>,
     pub outcome_positions: Vec<Option<usize>>,
+    /// Every `GoalAnchor` record, in order, with the message count when it
+    /// was written — the anchor each `record_run` ended on, placed among the
+    /// messages the way `outcome_positions` places outcomes and repaired by
+    /// the same `Rewrite` rule (clamped in place, `None` where a summarising
+    /// compaction removed its place). Kept apart from `outcomes` because
+    /// `record_run` writes one for every run, a failed one included, where
+    /// the task and trigger front-ends record no outcome for a run that
+    /// errored — so this, not the outcome list, says which run a message
+    /// belongs to. [`Transcript::anchor_covering`] reads it.
+    pub anchors: Vec<(Option<usize>, Option<crate::goal::GoalRef>)>,
+    /// Below this index no `GoalAnchor` record says which anchor was in
+    /// force, and [`Transcript::anchor_covering`] answers `None`. Two
+    /// things raise it, both found on review of #335:
+    ///
+    /// - **A summarising `Rewrite`**, to the length it left: every message
+    ///   below is the rebuilt head or a tail carried through the compaction,
+    ///   whose run's record lost its place. Clearing those positions is not
+    ///   enough, since a later run's record keeps its place and a search
+    ///   skipping the placeless ones would read it back onto the tail.
+    /// - **An outcome with no `GoalAnchor` record since the previous one**,
+    ///   to that outcome's place: `record_run` writes the anchor before
+    ///   every `record_outcome`, so such a run predates the record, and a
+    ///   later record — `run::seed_goal_anchor`'s, written *before* the run
+    ///   it seeds, on a `--resume --goal` — would otherwise be read back
+    ///   onto it. (A transcript from before outcomes were recorded has
+    ///   neither record, and a seed on resuming one is the named residue.)
+    ///
+    /// Clamped, like every position, by a truncating rewrite. Zero when
+    /// neither happened.
+    pub anchor_floor: usize,
     /// Every recorded outcome, folded into the episode the session describes.
     pub episode: Option<RunStats>,
     /// The taint checkpoints, positioned against the loaded messages — the
@@ -1447,6 +1477,48 @@ impl Transcript {
             .zip(&self.configs)
             .rfind(|(pos, _)| **pos <= message_index)
             .map(|(_, cfg)| cfg)
+    }
+
+    /// The goal anchor in force at message `message_index`, as far as the
+    /// record can say: the anchor the run holding that message ended on —
+    /// the first `GoalAnchor` record written after it, since `record_run`
+    /// writes one after every run's messages, a failed run's included — and
+    /// only when nothing in that run could have set it *after* the message.
+    /// The other writer, `run::seed_goal_anchor`, writes one *before* the
+    /// run it seeds; at that place the previous run's own record comes
+    /// first, and a run from before the record sits below
+    /// [`Transcript::anchor_floor`], so a seed is never read back.
+    ///
+    /// The recorded anchor is the run's final value: an `ask_user` carrying
+    /// a goal pointer that the owner answers moves it mid-run
+    /// (`tool::ask`), and the record has no finer grain. So a run that
+    /// holds such a call after the message (or in the assistant turn the
+    /// message answers) says nothing about what was in force at it, and the
+    /// answer is `None` — absent, never a goal named later. One before it is
+    /// the plan-or-question source's to name (`appraisal::goal_at`), and a
+    /// run's starting anchor is the harness's seed or the one carried from
+    /// the conversation, so the final value is the one in force.
+    ///
+    /// `None` also when the run's record names no anchor, when no record
+    /// covers the message (a run in flight, or a message below
+    /// [`Transcript::anchor_floor`]: a run from before the record, or the
+    /// rebuilt head and the tail a summarising compaction carried, whose
+    /// run's record lost its place), never a later anchor read back onto it.
+    pub fn anchor_covering(&self, message_index: usize) -> Option<&crate::goal::GoalRef> {
+        if message_index < self.anchor_floor {
+            return None;
+        }
+        let (end, anchor) = self
+            .anchors
+            .iter()
+            .find_map(|(end, a)| end.filter(|end| *end > message_index).map(|end| (end, a)))?;
+        let anchor = anchor.as_ref()?;
+        let messages = &self.convo.messages;
+        let after = messages.get(message_index.saturating_sub(1)..end.min(messages.len()))?;
+        let re_anchored = crate::tool::ask::AskUserTool::goals_named(after)
+            .iter()
+            .any(|h| h.serves.is_some());
+        (!re_anchored).then_some(anchor)
     }
 }
 
@@ -1733,6 +1805,12 @@ impl Session {
         let mut meta = None;
         let mut title = None;
         let mut goal_anchor = None;
+        let mut anchors: Vec<(Option<usize>, Option<crate::goal::GoalRef>)> = Vec::new();
+        let mut anchor_floor = 0usize;
+        // Whether a `GoalAnchor` record has been written since the last
+        // outcome (or the start): an outcome without one is a run from
+        // before the record, and raises `anchor_floor`.
+        let mut anchored_since_outcome = false;
         let mut messages = Vec::new();
         let mut taint = Taint::default();
         // Built here with `TaintTimeline::from_records`'s exact state
@@ -1829,9 +1907,17 @@ impl Session {
                         for p in outcome_positions.iter_mut().flatten() {
                             *p = (*p).min(m.len());
                         }
+                        for p in anchors.iter_mut().filter_map(|(p, _)| p.as_mut()) {
+                            *p = (*p).min(m.len());
+                        }
+                        anchor_floor = anchor_floor.min(m.len());
                     } else {
                         config_positions.fill(0);
                         outcome_positions.fill(None);
+                        for (p, _) in &mut anchors {
+                            *p = None;
+                        }
+                        anchor_floor = m.len();
                     }
                     messages = m;
                     taint_checkpoints.clear();
@@ -1865,10 +1951,18 @@ impl Session {
                     configs.push(c);
                 }
                 Ok(Record::Outcome(o)) => {
+                    if !anchored_since_outcome {
+                        anchor_floor = anchor_floor.max(messages.len());
+                    }
+                    anchored_since_outcome = false;
                     outcome_positions.push(Some(messages.len()));
                     outcomes.push(o);
                 }
-                Ok(Record::GoalAnchor { goal }) => goal_anchor = goal,
+                Ok(Record::GoalAnchor { goal }) => {
+                    anchors.push((Some(messages.len()), goal.clone()));
+                    anchored_since_outcome = true;
+                    goal_anchor = goal;
+                }
                 Ok(Record::Summary { .. }) => {}
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
@@ -1899,6 +1993,8 @@ impl Session {
             episode: RunStats::fold(outcomes.iter().cloned()),
             outcomes,
             outcome_positions,
+            anchors,
+            anchor_floor,
             taint_timeline: TaintTimeline {
                 checkpoints: taint_checkpoints,
             },
@@ -3071,6 +3167,144 @@ mod tests {
             .unwrap();
         let t = Session::read(&session.path).unwrap();
         assert_eq!(t.outcome_positions, vec![None, None, Some(1)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A run from before the `GoalAnchor` record (an outcome with no
+    /// anchor record since the previous one) is covered by none, not by
+    /// the seed `run --resume --goal` writes *before* the next run, which
+    /// would otherwise be the first record after its messages (review of
+    /// #335). The resumed run's own messages take the seed.
+    #[test]
+    fn a_seed_on_resume_is_never_read_back_onto_runs_before_the_record() {
+        use crate::goal::GoalRef;
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-seeded")).unwrap();
+        // A run recorded before the anchor record existed.
+        session
+            .append_messages(&[Message::user("old"), Message::assistant(vec![])])
+            .unwrap();
+        session
+            .append(&Record::Outcome(RunStats::default()))
+            .unwrap();
+        // A resume with a goal: the seed, then the run.
+        let seeded: GoalRef = "task:t-sam".parse().unwrap();
+        session
+            .append(&Record::GoalAnchor {
+                goal: Some(seeded.clone()),
+            })
+            .unwrap();
+        session
+            .append_messages(&[Message::user("resume"), Message::assistant(vec![])])
+            .unwrap();
+        session
+            .append(&Record::GoalAnchor {
+                goal: Some(seeded.clone()),
+            })
+            .unwrap();
+        session
+            .append(&Record::Outcome(RunStats::default()))
+            .unwrap();
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(t.anchor_floor, 2);
+        assert_eq!(
+            t.anchor_covering(0),
+            None,
+            "the old run predates any record"
+        );
+        assert_eq!(t.anchor_covering(1), None);
+        assert_eq!(t.anchor_covering(2), Some(&seeded), "the resumed run's own");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `GoalAnchor` records are placed among the messages and repaired by
+    /// the outcomes' rule (row 2e-5a): clamped by a truncating rewrite, and
+    /// placeless after a summarising one, so `anchor_covering` answers
+    /// `None` for the rebuilt head rather than an anchor recorded against a
+    /// list that no longer exists.
+    #[test]
+    fn anchor_positions_survive_a_rewrite_by_the_outcomes_rule() {
+        use crate::goal::GoalRef;
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-anchors")).unwrap();
+        let first: GoalRef = "task:t-northwind".parse().unwrap();
+        let second: GoalRef = "trigger:lakeside".parse().unwrap();
+        session
+            .append_messages(&[Message::user("go"), Message::assistant(vec![])])
+            .unwrap();
+        session
+            .append(&Record::GoalAnchor {
+                goal: Some(first.clone()),
+            })
+            .unwrap();
+        session
+            .append_messages(&[Message::user("again"), Message::assistant(vec![])])
+            .unwrap();
+        session
+            .append(&Record::GoalAnchor {
+                goal: Some(second.clone()),
+            })
+            .unwrap();
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(
+            t.anchors,
+            vec![
+                (Some(2), Some(first.clone())),
+                (Some(4), Some(second.clone()))
+            ]
+        );
+        assert_eq!(t.anchor_covering(1), Some(&first));
+        assert_eq!(t.anchor_covering(2), Some(&second));
+        assert_eq!(t.anchor_covering(4), None, "no record covers it yet");
+
+        // A truncating rollback keeps the head: positions clamp.
+        session
+            .append(&Record::Rewrite {
+                messages: vec![
+                    Message::user("go"),
+                    Message::assistant(vec![]),
+                    Message::user("again"),
+                ],
+            })
+            .unwrap();
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(t.anchors[1].0, Some(3));
+        assert_eq!(t.anchor_covering(0), Some(&first));
+
+        // A summarising compaction replaces the head: every place is gone.
+        session
+            .append(&Record::Rewrite {
+                messages: vec![Message::user("summary of everything so far")],
+            })
+            .unwrap();
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(
+            t.anchors,
+            vec![(None, Some(first)), (None, Some(second.clone()))]
+        );
+        assert_eq!(t.anchor_covering(0), None);
+        assert_eq!(
+            t.convo.goal_anchor.as_ref(),
+            Some(&second),
+            "the conversation's is kept"
+        );
+        // …and stays placeless once a later run records its own: the
+        // carried head never takes the next run's anchor, while that run's
+        // own messages, appended after the compaction, do.
+        let third: GoalRef = "request:r-dana".parse().unwrap();
+        session
+            .append_messages(&[Message::user("next"), Message::assistant(vec![])])
+            .unwrap();
+        session
+            .append(&Record::GoalAnchor {
+                goal: Some(third.clone()),
+            })
+            .unwrap();
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(t.anchor_floor, 1);
+        assert_eq!(t.anchor_covering(0), None, "the rebuilt head stamps none");
+        assert_eq!(t.anchor_covering(1), Some(&third));
+        assert_eq!(t.convo.goal_anchor, Some(third), "the conversation's last");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
