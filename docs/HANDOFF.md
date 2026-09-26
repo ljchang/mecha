@@ -2816,9 +2816,10 @@ through the door: `POST /api/incognito` opened a chat that read back
 `/end` 204, a reopen 410, and the room was gone.
 
 **Installed from main, 2026-09-26 ~03:50Z, by the model-switching lane:
-`39c9f359` (#331, incognito step 4), which also carries 2f (#329).** That
-lane's install is its own to record; noted here only as the baseline for
-the two below.
+`39c9f359` (#331, incognito step 4), whose source also carries 2f
+(#329).** That lane's install is its own to record; noted here only as the
+baseline for the two below. `~/.cargo/bin/mecha` was not probed then, so
+this entry is no evidence that a `mecha` carrying 2f was running.
 `git merge-base --is-ancestor b180a2e6 39c9f359` exits 0. Files written
 then, read by mtime and not by content: `~/.cargo/bin/mecha-mail` and
 `mecha-docs` (03:50:03Z) and `~/.mecha/web/dist` as `index-jR5V3Voi.js`
