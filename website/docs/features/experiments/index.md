@@ -209,7 +209,8 @@ A case in the case file may set its own ceiling. The arm's knob wins when an
 arm moves that knob, because the arm is the treatment.
 
 **Stage levers** apply to [lifetimes](#lifetimes) only: `reflect`, `learn`,
-`validate`, `retire`, `ruminate`, `sensors_in_brief`, named in `stages_off`.
+`validate`, `retire`, `ruminate`, `sensors_in_brief`, `appraisals_in_brief`,
+named in `stages_off`.
 
 **The environment.** An arm may name its own
 [environment](#arm-environments), which is how it varies anything the list
@@ -570,9 +571,11 @@ ran under.
 
 **Stage levers** are a second closed set, beside the per-run levers, and a
 lifetime's arm may name them off in `stages_off`: `reflect`, `learn`,
-`validate`, `retire`, `ruminate`, and `sensors_in_brief` — the last is not a stage but
-the switch (`[agent] sensors_in_brief`) that hands the homeostat's and guilt's
-readings to the diagnostician's brief, which is those sensors' only reader.
+`validate`, `retire`, `ruminate`, `sensors_in_brief` and `appraisals_in_brief` — the
+last two are not stages but switches: `[agent] sensors_in_brief` hands the
+homeostat's and guilt's readings to the diagnostician's brief, which is those
+sensors' only reader, and `[agent] appraisals_in_brief` hands it the clean text
+appraisals of the sessions its candidate may be selected from.
 A `single` manifest refuses them. Stage levers off are part of a row's
 condition hash; an arm with every stage on hashes as its single-trial twin.
 

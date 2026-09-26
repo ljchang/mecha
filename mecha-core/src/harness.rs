@@ -119,8 +119,9 @@ impl OverrideKey {
 /// — it ran only under `mecha sessions appraise --appraise`, never inside a
 /// run — and it no longer runs at all (retired in row 2a-3), so there is
 /// nothing for a per-run lever to remove;
-/// and `sensors_in_brief` is a *stage* lever (a `ruminate` input), recorded
-/// on a trial's manifest rather than on a run, and waits for that store.
+/// and `sensors_in_brief` and `appraisals_in_brief` are *stage* levers
+/// (`ruminate` inputs), recorded on a trial's manifest rather than on a run,
+/// and wait for that store.
 ///
 /// Serialised by name — the same names [`Lever::as_str`] answers — because
 /// the record is an append-only wire format: a reader that meets a name it

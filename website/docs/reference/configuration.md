@@ -173,6 +173,7 @@ change the server's `-c` or `-np`, change `context_window` to match. See
 | `step_checks` | bool | `true` | Run the checks a plan step declares, through ordinary guarded tool dispatch. |
 | `goal_guidance` | bool | `false` | Add fixed guidance drawn from the run's goal, the charter, and planning discrepancies. |
 | `sensors_in_brief` | bool | `true` | Include homeostat and commitment sensors in the diagnostician's brief; does not change tool permissions. |
+| `appraisals_in_brief` | bool | `true` | Show the nightly diagnostician the clean text appraisals of the sessions its candidate may be selected from — the eligible pool minus the random holdout — and never those of the held-out sessions that confirm a change. A brief carrying one counts as private data in that conversation. |
 | `situation_brief` | bool | `false` | Put the recorded situation brief into the run's first message, as words. The brief is recorded either way. See [the situation brief](/docs/features/appraisal/reference#the-situation-brief). |
 | `past_appraisals` | bool | `false` | Let `goal_context` return up to three past appraisals of runs in the same situation toward the same goal, from runs that read no third-party content. Only when the model asks; nothing is added to the prompt. |
 

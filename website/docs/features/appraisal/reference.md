@@ -93,7 +93,7 @@ The current consumers have different jobs:
 | Project closure | Labels and separate positive/negative sums across task-linked sessions, including counts of unreadable or undelegated tasks. |
 | Distillation | Signed errors and resolved goal pointers in episode metadata; goal sentences and the owner's answers stay in mecha. |
 | Harness replay selection | Among candidates tied on metric headroom, prefer evidence attributed to a higher-ranked charter line. This does not optimize the affect label. |
-| Harness diagnosis | Homeostat and anticipated-guilt readings enter the diagnostic brief unless `[agent] sensors_in_brief` is disabled (it is on by default). They do not directly alter permissions or budgets. |
+| Harness diagnosis | Homeostat and anticipated-guilt readings enter the diagnostic brief unless `[agent] sensors_in_brief` is disabled (it is on by default). So do the clean text appraisals of the sessions a nightly candidate may be selected from — never those of the held-out sessions that confirm it — unless `[agent] appraisals_in_brief` is disabled (also on by default). They shape what is proposed, never what is accepted, and they do not directly alter permissions or budgets. |
 
 A draft sent unchanged already contributes positive appraisal evidence. Learning
 writing rules from that positive signal is still separate open work; the
@@ -468,7 +468,7 @@ one appears, is part of the prose. They are kept in
 `~/.mecha/appraisals/appraisals.jsonl`, one per session, written by
 [`mecha distill`](/docs/features/memory/distillation#the-same-pass-writes-the-sessions-appraisal)
 in a follow-up question on the episode's own conversation, on the local model
-only. Nothing reads them yet except you.
+only.
 
 Beside the prose prediction, a record carries an **expected act**. This is
 what the appraiser expects you to do with this kind of output next time — one
@@ -488,9 +488,12 @@ Three rules hold for every record:
   be read.
 - **Only appraisals of clean sessions go further.** Learning, memory and rule
   tenure will read only appraisals of sessions with no third-party content.
-  The rest are stored for you to read and go nowhere else. The one reader
-  today is the appraiser itself: a session's appraisal is shown up to three
-  earlier clean appraisals of the same situation and goal.
+  The rest are stored for you to read and go nowhere else. Two readers use
+  them today. The appraiser itself is shown up to three earlier clean
+  appraisals of the same situation and goal. The nightly harness
+  diagnostician is shown the clean appraisals of the sessions its candidate
+  may be selected from, never the held-out ones that confirm it (see
+  [the diagnostic stage](/docs/features/learning/run-quality#the-diagnostic-stage)).
 - **A goal is named only if mecha holds it.** A judgment's goal must be a
   charter line, a task or project on the board, a trigger or a front-door
   request that exists. Anything else is recorded as no goal and counted.
