@@ -10,8 +10,9 @@
 # front-end, a machine that was asleep) — not as the primary path.
 #
 # Ordering is the one deliberate choice here. `validate --unprocessed-only`
-# runs BEFORE `learn`, because learn marks reflections processed — measuring
-# afterwards would grade the rules on their own training data. Tonight's fresh
+# and `sessions compare` run BEFORE `learn`, because learn marks reflections
+# processed and derives rules from the same steers — measuring afterwards
+# would grade the rules on their own training data. Tonight's fresh
 # reflections are unseen by the current rules by construction, and learn's
 # --holdout keeps a slice unseen by the next generation too.
 #
@@ -101,6 +102,26 @@ echo "  --cover 1 buys one probe per (rule, region) pair the ledger has never gr
 echo "  so a widened rule is measured in each sub-region it widened over)"
 "$MECHA" validate -p "$PROVIDER" --judge-provider "$JUDGE" --unprocessed-only --cover 1
 
+# `sessions compare` runs BEFORE `learn`, for validate's reason (owner,
+# 2026-09-26): its `Rules` arm is the rules deployed now, and its points are
+# the same steers and denials `learn` is about to consume — after learn it
+# would grade tonight's rules on their own training data. Here it measures
+# yesterday's rules on today's points, held out by construction. It is the
+# bounded pass (eight points, a short horizon, one background seat per point,
+# deferring when every seat stays held), so its place ahead of learn costs
+# the night a bounded wait, never a stall; it writes no rule.
+#
+# It never drives an owner-bound check point here (owner, 2026-09-26): one is
+# posed as an artifact probe, which executes its task, and this line throws
+# none of the levers (hooks, outbox, messages) that would let it run
+# unattended. The tally names them "owner-bound, not driven", apart from
+# "unavailable" — a decision, not an absence of data.
+echo "· compare (point-wise comparison at recorded decision points, decided by the"
+echo "  owner's recorded verdict, before learn so the deployed rules are measured on"
+echo "  points they were not learned from; what it separates, tomorrow's distill"
+echo "  writes into the session's appraisal as the losing arm)"
+"$MECHA" sessions compare -p "$PROVIDER"
+
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
 echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
 "$MECHA" learn -p "$PROVIDER" --holdout 0.25 --auto
@@ -125,24 +146,12 @@ echo "· proposals awaiting review"
 echo "· harness candidates awaiting review"
 "$MECHA" harness list
 
-# The two measurement passes run last, after everything that changes what the
+# The lesson-source pass runs last, after everything that changes what the
 # next run carries and after the two readouts the morning reads, so a slow or
-# stalled pass delays nothing the morning depends on. Each holds one background
-# seat per point (compare) or per intervention (lesson sources) and defers the
-# rest when every seat stays held, so neither can stall the other; neither
-# writes a rule. `learn --compare-sources` is the unbounded one: its arms run
-# to the recording's own turn limit.
-#
-# `sessions compare` never drives an owner-bound check point here (owner,
-# 2026-09-26): one is posed as an artifact probe, which executes its task,
-# and this line throws none of the levers (hooks, outbox, messages) that
-# would let it run unattended. The tally names them "owner-bound, not
-# driven", apart from "unavailable" — a decision, not an absence of data.
-echo "· compare (point-wise comparison at recorded decision points, decided by the"
-echo "  owner's recorded verdict; what it separates, tomorrow's distill writes into"
-echo "  the session's appraisal as the losing arm)"
-"$MECHA" sessions compare -p "$PROVIDER"
-
+# stalled pass delays nothing the morning depends on. It holds one background
+# seat per intervention and defers the rest when every seat stays held; it
+# reads no rule and writes none, and it is the unbounded one: its arms run to
+# the recording's own turn limit.
 echo "· lesson sources (the reflector's lessons against the text appraisal's, on the"
 echo "  same interventions — shadow, measurement only; the real-session evidence R25"
 echo "  gates folding the reflector in on, and 2e-2 gates feeding learn on)"
