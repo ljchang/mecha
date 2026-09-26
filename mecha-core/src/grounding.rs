@@ -227,15 +227,6 @@ pub fn admit<'e, R: Referent>(
 /// stripped. The window is the caller's, for the same reason the quote
 /// floor is; a window of zero matches nothing.
 pub fn carries_over(text: &str, sources: &[&str], window: usize) -> Option<String> {
-    let words = |s: &str| -> Vec<String> {
-        s.split_whitespace()
-            .map(|w| {
-                w.trim_matches(|c: char| !c.is_alphanumeric())
-                    .to_lowercase()
-            })
-            .filter(|w| !w.is_empty())
-            .collect()
-    };
     if window == 0 {
         return None;
     }
@@ -252,6 +243,31 @@ pub fn carries_over(text: &str, sources: &[&str], window: usize) -> Option<Strin
         }
     }
     None
+}
+
+/// Does `text` hold the whole of `span`, as one unbroken run of words?
+///
+/// [`carries_over`] with the window set to the span's own length, so the
+/// comparison is its comparison — lowercased, surrounding punctuation
+/// stripped — and "Thursday." finds "thursday" where a byte search would
+/// not. Whole words only: "Rhea" is not held by "Rheanne", which a
+/// substring test would say it is. An empty span is held by nothing, for
+/// the reason [`admit`]'s zero floor admits nothing.
+pub fn holds(text: &str, span: &str) -> bool {
+    let n = words(span).len();
+    n > 0 && carries_over(span, &[text], n).is_some()
+}
+
+/// The comparison [`carries_over`] and [`holds`] share: whitespace-split,
+/// surrounding punctuation stripped, lowercased, empties dropped.
+fn words(s: &str) -> Vec<String> {
+    s.split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
 }
 
 #[cfg(test)]
@@ -509,6 +525,20 @@ mod tests {
             None
         );
         assert!(carries_over("the model stopped after the tool call failed", &[page], 8).is_some());
+    }
+
+    #[test]
+    fn holds_takes_whole_words_and_ignores_case_and_punctuation() {
+        let result = "Dana Whitfield joined Northwind Labs on Thursday.";
+        assert!(holds(result, "northwind labs"));
+        assert!(holds(result, "Thursday"));
+        assert!(
+            !holds(result, "North"),
+            "a word is not held by a longer one"
+        );
+        assert!(!holds(result, "Northwind Thursday"), "one unbroken run");
+        assert!(!holds(result, ""));
+        assert!(!holds(result, " ... "), "punctuation alone is no span");
     }
 
     #[test]

@@ -202,6 +202,13 @@ fn seed_learning_store(learning_dir: &str, session_id: &str, steer: &str) -> Res
         dropped_reason: None,
         situation: None,
         situation_recomputed_at: None,
+        // What `reflect` stamps a steer about how the work was done: a
+        // behaviour correction with no fact at issue (D3, row 2e-3).
+        attribution: Some(mecha_core::attribution::Attribution::new(
+            mecha_core::attribution::Basis::NoFact,
+            None,
+            None,
+        )),
     })?;
     store.commit("retirement drill: seeded scenario");
     Ok(())

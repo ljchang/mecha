@@ -157,7 +157,8 @@ pub enum Args {
     /// carried, the rules deployed today, none) a short horizon from the
     /// point, holding one background seat per point. A point no structural
     /// validator can pose is stored inconclusive and costs nothing. Points
-    /// are drawn uniformly with a printed seed; every comparison lands in
+    /// are shuffled with a printed seed, then ordered by their sessions'
+    /// replay priority, the seed deciding among equals; every comparison lands in
     /// the comparison store, clean sessions only. Like `appraise --probe`,
     /// a replay builds a real workspace jail, so run it from a project
     /// directory or name one with `--workspace`.
@@ -166,8 +167,9 @@ pub enum Args {
         #[arg(long, default_value_t = mecha_core::pointwise::DEFAULT_POINTS)]
         points: usize,
 
-        /// Seed for the uniform draw. Defaults to today's day number, and
-        /// is printed so any pass can be redrawn.
+        /// Seed for the shuffle the priority order breaks ties with.
+        /// Defaults to today's day number, and is printed so any pass can
+        /// be redrawn.
         #[arg(long)]
         seed: Option<u64>,
 

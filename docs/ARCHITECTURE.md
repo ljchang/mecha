@@ -382,6 +382,16 @@ workspace**. Six decisions, each a bug if undone:
   and interrupts it, so Ctrl-C stops the GPU, not just the wait. It
   interrupts only when the queue says *this* job is running: an older
   ComfyUI ignores `/interrupt`'s `prompt_id` and stops whatever executes.
+- **What the server keeps, it is asked to drop.** The history entry (prompt
+  and file names) is deleted on every exit. With `[image] server_temp_dir`
+  set — for ComfyUI the `--temp-directory` path with `temp` appended — so are
+  the uploaded references and the preview, by the names the server returned,
+  each checked to be one plain path component (`imagegen::discard`); a copy
+  the server named and the directory lacks is reported in the result, since
+  a wrong directory is otherwise a deletion that silently never happens. The
+  job's id is minted client-side (ComfyUI takes a canonical UUID), so a run
+  with an image trail — an incognito chat's — can write it down before the
+  server has it; a trail that cannot be written stops the job first.
 
 **Deploy order: binaries first, then `[image]`.** `ConfigLayer` denies
 unknown fields, so a binary older than this section refuses a config that has
@@ -513,6 +523,104 @@ recorded before the field existed all classify `untrusted`, and there is
 deliberately no knob — a switch that lets third-party text into every future
 prompt is the silently-degrading-sandbox shape. Excluded reflections stay in
 the archive as evidence; they are simply never candidates.
+
+**A behaviour rule is mined only from a behaviour error** (`attribution.rs`;
+`APPRAISAL-WIRING-DESIGN.md` L7, row 2e-3). This is mecha-graph's D3 error
+contract ported (`mecha-graph` `docs/PLAN.md` §D3; its graph half is
+`mecha-graph-core/src/corrections.rs`): one correction, attributed by *what
+the run was given*: the wrong value among the results it had read is a
+**data error** (the source's to repair), the right value there and the wrong
+one not is a **behaviour error** (the agent's), and neither is a **gap**
+(nobody's fault, a retrieval target). D3's table order is kept, so both
+values given is still a data error, because two sources disagreed. That
+includes a result that mentions the old value only as history ("moved from
+Room 118"): a lookup cannot tell a claim from a mention, and the error runs
+the conservative way, since a data error is never mined. Before this,
+every correction became a behaviour lesson, including the ones where the run
+did exactly what its data told it to. The decisions that carry it:
+
+- **The model copies spans; the harness decides the class.** The reflector's
+  reply gains `fact` (true/false) and, for a fact, `wrong` and `right` as
+  verbatim spans. The class is never the reflector's. D3 takes the
+  correction's content from a model too (the graph's event is the
+  distiller's `{wrong, right, about}`). Here it is the reflector's, because
+  `DISTILLER_SYSTEM` is pinned byte-identical (R32) and the distiller's
+  corrections are per session, where a reflection is per intervention. The
+  fields are read leniently (`attribution::Answer::from_reply`), so a garbled
+  one never fails the parse and the reflection is still recorded. It does
+  cost the rule: a reply that answers neither way is unknown and never
+  mined. So after this row every behaviour rule depends on the local model
+  answering `fact`, which a fixed-reply test cannot measure. `learn` prints
+  each withheld class every pass, and doctor's starvation finding counts
+  attribution-withheld reflections beside the origin-excluded ones, so a
+  model that stops answering is seen on the next night.
+  `examples/reflector_fact_probe.rs` asks the configured model directly,
+  over fixtures on the fictional cast: one call each, no store read or
+  written. On 2026-09-26 the local model (qwen3.6-35b-a3b) answered `fact`
+  on 8 of 8, and 8 of 8 landed in the expected class. That was one sample,
+  and only after the prompt was told to copy the value alone. The first run
+  copied "works at Northwind Labs" from the assistant's words, which no
+  result held, so a data error read as a gap.
+- **The pack is `grounding::calls` over the messages before the
+  correction** (`Given::before`): the results the model read, first seen
+  wins, stale never evidence. A result riding in the correcting message
+  itself arrived with the steer and was never acted on, so it is not given.
+  A rejected draft's pack is its staging session's calls before the staging
+  message (`outbox_source::staged_in`), with the draft among what the run
+  said.
+- **"Before the correction" means everything recorded before it, not the
+  list a compaction left** (`Session::messages_ever_before`). Thinning cuts
+  an old result in place with no stale marker, so against the loaded list
+  the wrong value can be gone from the result that carried it while the
+  right one rides in full in a newer result — a data error read as the
+  agent's, and mined (found on review). The correction is found as the one
+  `message` record equal to it, or to it less blocks an extension added
+  later; a correction recorded twice word for word cannot be placed, and is
+  unknown rather than cut at a guess.
+- **Spans are grounded before they decide**, by `grounding::holds` (whole
+  words, case and punctuation ignored): `right` must be in the owner's words,
+  and `wrong` in something the run said, was given, or the owner quoted. A
+  paraphrase is absent from every result, and absence decides a gap, so an
+  ungrounded span, one under three letters or digits, or a record that
+  cannot be read makes the attribution **unknown**, never a guess.
+- **A correction with no fact at issue is behaviour.** "Don't run that",
+  "shorter" are outside D3's table, which is about facts. Every correction was
+  mined before, so the change only narrows what reaches `learn`.
+- **`learn` asks two gates and counts each apart.** `Reflexion::learnable`,
+  the provenance gate, is unchanged. `Reflexion::attribution_admits` comes
+  after it and admits only `behaviour` among the owner's behaviour-domain
+  corrections (`attribution::in_scope`: every `behavior` trigger but
+  `mismatch`, fail-closed on one this build does not know). A harness
+  mismatch, a writing edit and a triage correction are outside D3 and pass
+  as before. `learn` prints one line per withheld class, and one splitting
+  what it admitted by basis — no fact at issue, or the right value given —
+  because a reflector that always answers `"fact": false` withholds nothing
+  and would otherwise read exactly like a gate with nothing to hold back
+  (found on review). `closed_goals` asks
+  the same gate. So does `doctor`'s waiting pool, and doctor counts what the
+  gate withholds toward the starvation floor beside what provenance
+  excludes. Without that count, a pool no pass can consume, with too few
+  origin exclusions to reach the floor, raised no finding at all (found on
+  review). `mecha reflections` makes `learnable` the whole gate (provenance
+  half as `provenance_admits`), names each class in `blocked`, and shows the
+  spans and source.
+- **Unknown is never clean.** A reflection recorded before the field has no
+  attribution and is withheld as unknown: its class cannot be recovered
+  without a model call. So is one whose reply answered neither way. It stays
+  unprocessed, and an **owner's edit admits it**, as the edit already
+  outranks provenance. That is the rescue for a misplaced correction. A
+  reflection consumed before the field is not re-judged; it already became a
+  rule. An unreadable attribution loads as unknown (`attribution::de_lenient`),
+  never as absent.
+- **Where each class lands.** Behaviour goes to `learn`. A data error is
+  recorded on the reflection with the call that carried the wrong value
+  (`attribution::Source`). Its repair is the graph's existing path when that
+  source is the graph, because `distill` ships the same correction as
+  `meta.corrections`; nothing new crosses to the graph. A gap is recorded
+  with the fact it lacked. **mecha has no retrieval-target store**, and none
+  is invented here: the graph's `query_log` gap queue has no write verb from
+  mecha. The attribution is computed by deterministic code over recorded
+  results, whatever the taint; no byte it reads reaches a model or a rule.
 
 **Learning is ungated, and the gate that remains is a measurement.** The
 owner's 2026-08-19 ruling (`LEARNING-AUTONOMY-DESIGN.md`, shipped 2026-08-30):
@@ -800,7 +908,7 @@ reflection's window, not the run's registry) and `RuleTally` folds per
 region beside the totals; probation is released only by rows that
 exercised the rule, `validate --cover N` buys N probes per (rule,
 region) pair nobody has graded from inside that region (the nightly
-passes 1), and `rules propose-retirements` asks `judge_convicted` before
+passes 1), spent in replay-priority order (row 2e-6), and `rules propose-retirements` asks `judge_convicted` before
 retiring: convictions counted against the current scope, and a rule
 convicted in some support regions and clean in others sheds the failing
 ones and re-scopes to the intersection of the rest — a scope checked to
@@ -2014,12 +2122,16 @@ Four things in it that cost something to get right, or would have:
   even at 200, and cross-check the byte count against the size Slack reported.
   Without them a sign-in page reaches the model labelled as the user's
   screenshot.
-- **Unfurling is off on everything the model authors, and there is no parameter
-  to turn it on.** A model-emitted URL that unfurls becomes an outbound GET
-  that no tool call made and no interlock saw — the same reasoning that makes
-  `http_fetch` a send sink despite being read-only. Making it a property of the
-  transport rather than an argument is what stops it being forgotten at one
-  call site.
+- **Unfurling is off on every message posted or edited, and there is no
+  parameter to turn it on** — `post_message` and `update` send
+  `unfurl_links`/`unfurl_media: false` unconditionally. A model-emitted URL
+  that unfurls becomes an outbound GET that no tool call made and no interlock
+  saw — the same reasoning that makes `http_fetch` a send sink despite being
+  read-only. Making it a property of the transport rather than an argument is
+  what stops it being forgotten at one call site. **The streaming calls do not
+  set it yet** (`start_stream`, `append_stream`, `stop_stream`), and streaming
+  carries a run's prose; whether Slack unfurls a streamed message is
+  unverified, so for streams this is an open gap, not a kept guarantee.
 - **Every builder truncates visibly rather than dropping.** Slack silently
   discards blocks past its cap and silently removes oversized images, which
   leaves a human reading a complete-looking message that is missing the part
@@ -2263,9 +2375,9 @@ brief (which reads the board through the graph server) do not run.
   ordinary door refuses the prefix, so a closed incognito key can never come
   back as a recorded chat. `POST /api/incognito/{key}/end` closes one;
   `…/alive` is the open page's ping. The doors that act on a chat — open,
-  send, mode, upload, end, alive — answer a closed key `410 Gone`
-  (`incognito::Closed`) rather than a 500 the page would retry; the reads
-  (the transcript, the file routes) answer 404, as for any unknown key.
+  send, mode, upload, end, alive — and the transcript read answer a closed
+  key `410 Gone` (`incognito::Closed`) rather than an error the page would
+  retry or show; the file routes answer 404, as for any unknown key.
 - **Local only, refused rather than degraded.** The door opens only when the
   chat provider is a loopback server with no `fallbacks` — a `Failover`
   would re-send the conversation to a cloud provider on a transient local
@@ -2301,16 +2413,32 @@ brief (which reads the board through the graph server) do not run.
   against the live registry, so a tool added tomorrow is withheld without
   anyone remembering. Withholding is checked before dispatch *and* before
   outbox staging, so a routed tool cannot even stage a draft. The graph is
-  out (it logs every read's query text) and so is `image_generate` until the
-  image server's temp copies are removed per room.
+  out (it logs every read's query text). `image_generate` is in only where
+  its server's copies are taken back (`incognito::images_forgettable`:
+  `[image] server_temp_dir` set, absolute, on tmpfs).
+- **Pictures leave nothing on the image server.** Every job's history
+  entry is forgotten and its temp files deleted by name, however it ends
+  (§Image generation). An incognito run also keeps a trail,
+  `<room>/image-trail` (`ToolCtx::image_trail`), written *before* the server
+  has the thing it names — the job's id is minted client-side for that — so
+  the start-up sweep reads the trails of the rooms a dead `serve` left and
+  hands them to `imagegen::forget_trail` once the config is loaded, still
+  before the door opens — bounded at 30 s, so a half-answering image server
+  cannot hold the door shut. ComfyUI's executor cache keeps the last prompt in
+  RAM until the next job or the idle unload — accepted, like llama-server's
+  KV cache.
 - **No hooks, no voice.** `pre_tool`/`post_tool` receive tool input and
   output; the voice worker logs what it hears.
 - **Closing** — End, 30 minutes with no turn and no ping from an open page
   (the reaper, once a minute; the owner's ruling is that an open page is
   use), or `serve` stopping — cancels a run in flight, forgets the todo plan, and removes the
   room; a run still finishing removes it again on its way out, so a late
-  spill cannot leave a directory behind. `ChatState::build` sweeps leftover
-  rooms before the door opens, for a `serve` that died.
+  spill cannot leave a directory behind. At shutdown an idle chat's room goes
+  at once, but one with a run in flight is left to that run — which takes its
+  image jobs back and removes the room on its way out — so a forced drain
+  leaves the room and its image trail for the next start rather than losing
+  the trail. `ChatState::build` sweeps leftover rooms before the door opens,
+  for a `serve` that died.
 - Every incognito route answers `Cache-Control: no-store`, and the page
   keeps nothing either: `web/test/no-storage.mjs` fails on any storage API in
   `web/src` or any module it imports (`voice-core.js`'s own preference keys the
@@ -3585,8 +3713,10 @@ prediction that was made *before* either was measured.
   wrong one once the pool is gathered by informativeness: hashing *one* pool
   partitions it into two slices that are both biased the same way, and the
   holdout stops being a check. Drawing the holdout uniformly from the whole
-  pool, then ordering the remainder by `Metric::headroom` — ties broken by
-  the highest-ranked charter line a signed goal error of the session names
+  pool, then ordering the remainder by `harness_probe::selection_order` —
+  an episode with `Metric::headroom` above zero ahead of every one without,
+  then the replay priority (row 2e-6, "Replay priority" below), then the
+  highest-ranked charter line a signed goal error of the session names
   (`appraisal::charter_rank`, `GOAL-SYSTEM-DESIGN.md` §11.1's consumer for
   rank: a signed error against the top line replays before one against
   the fifth, an unranked episode after every ranked one, the id last; **only
@@ -3817,7 +3947,12 @@ through `Value::pointer` against a record, which needs no walk. The front door
 is the first caller that was never a hand-rolled copy: `Record::for_privileged_run`
 hands over only the `dates_mentioned` that `admit` dereferences into the
 record's own prose (§The front door), using the packet half of the module with
-no walk at all.
+no walk at all. D3's attribution (`attribution.rs`, row 2e-3) is the
+second caller that was never hand-rolled. It uses the walk to find what a run
+had been given before the owner corrected it, and `holds` (`carries_over`
+with the window set to the span's length) to find a span in a result. Its
+floor is its own: three letters or digits, set against a coincidental match
+deciding a class.
 
 The decisions that carry it, each a bug if undone:
 
@@ -3878,12 +4013,15 @@ The decisions that carry it, each a bug if undone:
   discards it. It then draws the eligible pool and its uniform holdout
   (`harness_probe::draw_pool`), neither of which reads the metric, and the
   diagnostician's brief carries the clean appraisals of `Pool::remainder`
-  only. After the proposal, `Pool::select` ranks the remainder by the
-  predicted metric's headroom exactly as the single-phase draw did.
-  `the_split_draw_is_the_single_phase_draw` holds the two against the old
-  body, verbatim, element for element and in order, so moving the phase
-  changed when the draw happens and never what is measured. The pool walk
-  (no model call) is paid every night, proposal or not.
+  only. After the proposal, `Pool::select` ranks the remainder by
+  `selection_order` — headroom on the predicted metric as the gate, then
+  the replay priority (row 2e-6). Moving the phase changed when the draw
+  happens and never what is measured; the ranking changed the selection's
+  order and never the holdout:
+  `the_split_draw_holds_the_single_phase_holdout_under_the_ranking` holds
+  the holdout against the old single-phase, pre-priority body, element for
+  element and in order, and the selection to the same remainder at the same
+  size. The pool walk (no model call) is paid every night, proposal or not.
 - **A configured knob must affect the selected adapter.**
   `ConfigChange::ensure_supported` checks `Provider::supports_effort` before
   spending replay budget. The local compatible adapter accepts the config field
@@ -3985,6 +4123,81 @@ The decisions that carry it, each a bug if undone:
 - **Doctor watches the queue.** A candidate staged past 72h is an Attention
   finding with `mecha harness list` as the remedy — the review this loop
   depends on must not be discoverable only by reading a 03:30 log.
+
+### Replay priority
+
+Row 2e-6 (`APPRAISAL-WIRING-DESIGN.md` L1), in
+`mecha_core::replay_priority`: **gain × need**, per recorded session, the
+one order for the harness selection, `learn`'s batches and `validate
+--cover`'s budget.
+
+```text
+priority = gain × need × decay
+  gain  = Σ |sign| of the owner's verdicts × charter weight  +  1.0 per clean 2b-2 miss
+  need  = ln(1 + n)      n = admitted runs in the session's region, last 30 days
+  decay = 2^(−age / 14 days)
+```
+
+- **Gain is the owner's.** `GoalError::is_owner_verdict` admits a steer,
+  denial or stop, a draft's fate, and on the commitment channel an owner's
+  recorded outcome, a question answered or abandoned, a request closed, a
+  task closed or reopened and a workflow act (R16) — decided by the
+  pointer, never by `agency`; a counter (a ceiling included), a sensor and
+  a reflector-judged correction never count. The charter weight
+  (`appraisal::charter_weight`, `1 + 1/(1 + rank)`) applies on clean-origin
+  records only, and a surprise from `scores.jsonl` counts only where the
+  scored appraisal was clean, both on `charter_rank`'s reasoning: the
+  priority decides membership of the slice the gate reads, and a tainted
+  run's model can name a charter line or steer its own expected act.
+- **Need is mecha-graph's Selector demand term, ported** (§5, R14): the
+  Selector scores `ln(1 + touches) · gaps` from `retrieval_touch`; here
+  `touches` is how many recent runs were matched in the session's region
+  (`Situation::region_key` over `Situation::of_record`, the key I2's "same
+  situation and goal" compares on), and the Selector's "a probe's own reads
+  are not demand" is the corpus admission — test and experiment sessions do
+  not recur. The episode is one occurrence of its region, so need is never
+  zero. `Recurrence::scan` reads only each run record's line, newest first,
+  at most 500 sessions; the older ones past the cap are counted and said,
+  as a torn header is, because either makes the counts floors.
+- **Unknown is never zero and never a free pass.** A factor that cannot be
+  read is named on the priority (`Factor`): no appraisal, or a partial
+  one (an unreadable charter is one, so the whole gain is unknown, not
+  only its weighting); a score ledger unread or
+  with a torn line; a session with no run record or an unnameable region;
+  the harness or comparison store unread. The order is by tier: fully
+  known and positive, by value; then any unknown, fewer unknowns first and
+  the known part as a floor (an unknown need counts as the episode alone,
+  `ln 2`, so not being read is never a promotion); then a known zero (no
+  verdict, no surprise); then the hopeless. The id closes every tie. Each
+  pass prints what it could not read: the stores (`Ranker::caveats`), and
+  how many of the priorities it ordered by had an unknown factor, by
+  factor (`replay_priority::unknown_summary`).
+- **The hopeless are demoted** (§9.2's "skip the hopeless";
+  `History`): an episode that sat in a measured *selection* slice on
+  `HOPELESS_NIGHTS` (3) distinct measurement dates since anything last won
+  on it — a candidate that selected it accepted by the gate or the owner
+  (`reverted` counts, it was accepted first), or a comparison preferring a
+  `Candidate` arm on its session. The holdout is never "high". A night
+  loses unless something won, so a `staged` proposal waiting on the owner
+  counts as a rejection does: its episodes stop costing a slot a night
+  while they sit in the queue, and accepting it starts them over.
+- **In the harness selection, headroom gates and the priority orders**
+  (R39). An episode with no headroom on the predicted metric can only tie
+  or worsen, so every episode with headroom ranks first; within each part
+  the priority decides, then §11.1's charter rank, then the id. The holdout
+  is drawn first, uniformly, from ids alone, before any priority is read
+  (`the_uniform_holdout_is_unchanged_by_the_ranking`).
+- **Point-wise points** (R39): `sessions compare` ranks its uniform draw by
+  priority; a harness candidate's points stay uniform — see "Point-wise
+  comparison at decision points".
+- **`learn` and `validate` use the same order.** `learn::order_batches`
+  ranks each situation batch by its best session's priority before the
+  brakes, so the batch that claims a domain's one proposal slot under
+  `--propose` is the one carrying the most regret, and equals keep their old
+  domain-then-region order; `cover_selection` spends `--cover`'s per-pair
+  budget in the same order, the id breaking ties. Both read priorities only
+  when there is more than one thing to order.
+- **Numbers stay harness-side** (G4, R21). No priority reaches a prompt.
 
 ### Counterfactual probes branch, never regenerate
 
@@ -4131,6 +4344,14 @@ through the store above (a `point-*` `Kind` per point kind).
   the point); a declared check is the agent's own (R11) and a surprise has
   no owner act, so both are `Validator::Unposed`: **stored with no arms and
   a derived `Inconclusive`, nothing driven, never judged**.
+- **An owner-bound check point is counted, never driven, where the levers
+  stay on.** Its artifact repeat executes the task, so it runs only with
+  hooks, the outbox and messages off (`ProbePrep::unrunnable_under`); the
+  nightly line throws none of them, by the owner's ruling (2026-09-26), and
+  the tally reports those points as `owner_bound` ("owner-bound, not
+  driven"), apart from `unavailable`. Folded together, "the corpus holds
+  none" and "this pass refuses them all" read as one number and call for
+  opposite fixes (found on review of #333).
 - **The arms are policies** (`pointwise::distinct_policies`): the recorded
   prompt (`WithoutIntervention`), the rules deployed today for the run's
   situation (`Rules`, `validate`'s `RuleSurface`), and none (`RulesFree`) —
@@ -4145,7 +4366,13 @@ through the store above (a `point-*` `Kind` per point kind).
   only — the store's taint rule asked at collection, its surface rule asked
   of the prepared point, both before any seat is taken) is sorted by
   `Point::order` and shuffled with a printed seed (default: the day number)
-  by `pointwise::draw` until 2e-6 ranks it. `--points` (default 8) counts
+  by `pointwise::draw`, then — row 2e-6, R39 — stably re-ordered by the
+  replay priority of each point's session (`pointwise::draw_ranked`), so
+  the seed decides only among equals. **A harness candidate's points are
+  never ranked** (`candidate_draw`): R36 gives the point-wise half no
+  separate holdout, so they are the confirming sample, and a prioritised
+  confirming sample is a biased one (§8.1;
+  `candidate_points_ignore_the_replay_priority`). `--points` (default 8) counts
   driven points; unposed points cost nothing and are not charged. A point
   already on record under the same policies and model
   (`pointwise::already_compared`) is not compared again, so the nightly
@@ -4311,7 +4538,11 @@ door above (`Kind::LessonSource`). Letting either source's lessons *learn* is
   once and share the outcome (`arms_shared`): two samples of one prompt are
   noise, not a difference in lessons.
 - **Clean on both sides, and the reflector's own words.** The reflection
-  passes `Reflexion::learnable` — `learn`'s gate, unchanged — in a run domain
+  passes `Reflexion::learnable` (the provenance half of `learn`'s gate,
+  unchanged). D3's attribution half (row 2e-3, above) is deliberately not
+  asked. The appraisal's lessons carry no attribution, so filtering one side
+  only would compare unlike sets, and every reflection mined before 2e-3 is
+  unattributed. The reflection is in a run domain
   (a `triage` lesson must not ride in front of a tool-having probe, as
   `RuleSurface::load` argues), and is neither dropped nor owner-edited: an
   edited lesson is the owner's, and `provenance()` promotes it to clean,
@@ -5056,7 +5287,11 @@ the store that owns it, never copied into a new one:
   graph's database, which `mecha review`'s module doc refuses. The readout
   says so (`graph_fact_rejections: null`) rather than printing a zero; the
   gap closes with a read-only graph verb that returns rejected candidates
-  with their origin episode's `source` and `source_id`.
+  with their origin episode's `source` and `source_id`. L7 itself is built
+  (row 2e-3, "A behaviour rule is mined only from a behaviour error" in the
+  security model) from the transcript, without them: a correction is placed
+  by what the run was given. These rejections would be a second source of
+  corrections, and they are still unread.
 
 The new cites are `Cite::TaskReopen` and `Cite::Workflow { act }`, and
 `Cite::owner_act` names each for the readout's by-act counts, since all of

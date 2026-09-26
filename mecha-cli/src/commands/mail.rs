@@ -2434,6 +2434,7 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
                             None,
                         )),
                         situation_recomputed_at: None,
+                        attribution: None,
                         // **Honest, not convenient.** This lesson was argued
                         // from mail, so it is untrusted; `learnable()` admits
                         // it because triage rules reach only the classifier,

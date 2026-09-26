@@ -22,7 +22,7 @@ use mecha_core::learning::{
     MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
 };
 use mecha_core::session::Session;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -202,6 +202,44 @@ fn stamp_probation(
     mecha_core::learning::release_probation_when_measured_clean(rules, tallies);
 }
 
+/// One situation batch of one domain: the domain, the region its
+/// reflections share, and the reflections.
+type Batch = (
+    String,
+    mecha_core::situation::Situation,
+    Vec<mecha_core::learning::Reflexion>,
+);
+
+/// Put the pass's batches in replay-priority order (row 2e-6): each batch
+/// ranks as the highest priority among its reflections' sessions, by the
+/// one order (`replay_priority::sort_by_priority`) the harness selection
+/// and `validate`'s coverage budget also use. A session with no priority
+/// in `priorities` — not found, not read — has every factor unknown. Equal
+/// priorities keep the order the batches arrived in (domain, then region),
+/// which is the order they were argued in before.
+pub(crate) fn order_batches(
+    batches: &mut Vec<Batch>,
+    priorities: &BTreeMap<String, mecha_core::replay_priority::Priority>,
+) {
+    use mecha_core::replay_priority::{order_by_priority, sort_by_priority, Priority};
+    let unread = Priority::unread();
+    let mut keyed: Vec<(Priority, String, Batch)> = batches
+        .drain(..)
+        .enumerate()
+        .map(|(i, b)| {
+            let best =
+                b.2.iter()
+                    .map(|r| priorities.get(&r.session_id).unwrap_or(&unread))
+                    .min_by(|x, y| order_by_priority(x, y))
+                    .unwrap_or(&unread)
+                    .clone();
+            (best, format!("{i:08}"), b)
+        })
+        .collect();
+    sort_by_priority(&mut keyed, |(p, i, _)| (p, i.as_str()));
+    batches.extend(keyed.into_iter().map(|(_, _, b)| b));
+}
+
 /// Which reflection ids this pass leaves alone, given a holdout fraction.
 ///
 /// Deterministic by construction: sort by id, then take every k-th. A random
@@ -261,7 +299,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // them again would either duplicate the proposal nightly until someone
     // reviews it, or double-count them into the live rules on a direct pass.
     let proposals = store.proposals()?;
-    let claimed: std::collections::BTreeSet<String> = proposals
+    let claimed: BTreeSet<String> = proposals
         .iter()
         .filter(|p| p.status == "pending")
         .flat_map(|p| p.reflexion_ids.iter().cloned())
@@ -273,40 +311,27 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let mut excluded_by_origin = 0usize;
     let mut unsupported_observations = 0usize;
     let mut dropped_by_owner = 0usize;
+    // D3's attribution (row 2e-3), by class: what `learn` holds back
+    // because the correction was not a behaviour error.
+    let mut withheld_by_class: BTreeMap<mecha_core::attribution::Class, usize> = BTreeMap::new();
+    // And what it let through, by basis: a reflector that always answers
+    // `"fact": false` admits everything as it did before 2e-3 and withholds
+    // nothing, so without this count the gate going inert reads exactly
+    // like a gate with nothing to hold back (found on review of #332).
+    let mut admitted_bases = AdmittedBases::default();
     for r in store.reflexions()? {
-        if r.is_processed {
-            continue;
+        match admission(&r, &claimed) {
+            Admission::Processed => {}
+            Admission::Claimed => awaiting_review += 1,
+            Admission::Dropped => dropped_by_owner += 1,
+            Admission::Unsupported => unsupported_observations += 1,
+            Admission::Origin => excluded_by_origin += 1,
+            Admission::Attribution(class) => *withheld_by_class.entry(class).or_default() += 1,
+            Admission::Admitted => {
+                admitted_bases.count(&r);
+                by_domain.entry(r.domain.clone()).or_default().push(r)
+            }
         }
-        if claimed.contains(&r.id) {
-            awaiting_review += 1;
-            continue;
-        }
-        // The owner's own refusal outranks a provenance argument the same
-        // way `learnable()` orders them — checked first and counted
-        // separately, or a person dropping lessons they disagree with would
-        // read back as "excluded by origin", which is the gate's doing
-        // reported as though it were theirs.
-        if r.dropped_at.is_some() {
-            dropped_by_owner += 1;
-            continue;
-        }
-        if r.trigger == Trigger::Mismatch.as_str()
-            && !serde_json::from_str::<mecha_core::planning::StepFeedback>(&r.context)
-                .is_ok_and(|s| s.learnable_failure())
-        {
-            unsupported_observations += 1;
-            continue;
-        }
-        // Structural, before any prompt is built: a lesson drawn while
-        // third-party content sat in context must never become a rule that
-        // rides in every future run's system prompt. Excluded here rather
-        // than scored inside the consolidation — no amount of confidence
-        // promotes untrusted evidence.
-        if !r.learnable() {
-            excluded_by_origin += 1;
-            continue;
-        }
-        by_domain.entry(r.domain.clone()).or_default().push(r);
     }
     if unsupported_observations > 0 {
         println!("{unsupported_observations} cost-only or unreadable mismatch observation(s) excluded: no verified failure supports a behavioral lesson");
@@ -322,6 +347,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             "{excluded_by_origin} reflection(s) excluded by origin — evidence from \
              untrusted or non-interactive sessions stays in the archive, never in rules"
         );
+    }
+    for line in withheld_lines(&withheld_by_class) {
+        println!("{line}");
+    }
+    if let Some(line) = admitted_bases.line() {
+        println!("{line}");
     }
     if dropped_by_owner > 0 {
         println!(
@@ -382,77 +413,111 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // region sits at one or two reflections is visible in the summary
     // rather than quiet.
     let mut waiting = 0usize;
-    for (domain, reflexions) in &by_domain {
-        for (region, reflexions) in batches_by_region(reflexions.clone()) {
-            let reflexions = &reflexions;
-            // The floor is per batch as well as per domain: the learner call
-            // moved inside the batch, and a domain floor alone let three
-            // reflections on three tools pass `--min 3` as three
-            // single-incident learner calls, each minting a scoped rule (and
-            // under `--auto` a probe pair) from one event — the permissive
-            // failure, found on review. A small region waits, unprocessed,
-            // until its own pool reaches the floor; the standing batch
-            // usually gets there first.
-            if reflexions.len() < args.min {
-                waiting += 1;
-                println!(
-                    "{domain} [{}]: {} reflection(s), below --min {}; waiting for more in \
-                     this situation",
-                    region.describe(),
-                    reflexions.len(),
-                    args.min
-                );
-                continue;
-            }
-            // One pending proposal per domain. Each batch proposes a
-            // whole-domain set from the same base, so two pending rows for a
-            // domain are alternatives: accepting one moves the rules under
-            // the other, and `accept`'s only way past that is `--force`, the
-            // lossy path. The later batches wait, unprocessed, behind the
-            // review (`--auto` resolves at birth and never parks here).
-            if (args.propose || args.auto) && already_argued(&proposals, domain, reflexions) {
-                println!(
-                    "{domain} [{}]: this exact batch of {} reflection(s) was already argued \
-                     (see `mecha proposals`); waiting for new reflections",
-                    region.describe(),
-                    reflexions.len()
-                );
-                continue;
-            }
-            if args.propose && !args.auto {
-                // Pending in the store, or admitted earlier in this very
-                // pass: every admitted batch under `--propose` writes a
-                // proposal, so the second of a domain would be the
-                // alternative this check exists to prevent. After the
-                // argued brake, not before: a batch the brake turns away
-                // must not claim the slot, or a `rejected_by_gate` batch
-                // (whose reflections stay unprocessed, so the brake stays
-                // true) starves every other region of its domain for good
-                // (found on review).
-                let pending = proposals
-                    .iter()
-                    .any(|p| p.domain == *domain && p.status == "pending")
-                    || !proposing.insert(domain.clone());
-                if pending {
-                    println!(
-                        "{domain} [{}]: a proposal for this domain is pending review; this \
-                         batch waits behind it (`mecha proposals`)",
-                        region.describe()
-                    );
-                    continue;
-                }
-            }
-            // A batch identical to one some proposal already argued — most
-            // likely a gate rejection whose reflections rightly returned to the
-            // pool — is not argued again until the pool changes. Without this,
-            // an unchanged pool means a fresh near-identical proposal (and its
-            // probe cost) every night. `--auto` needs the brake most: its
-            // `rejected_by_gate` arm leaves the reflections unprocessed, and
-            // `learn-live.sh` runs per *session*, so an unguarded identical
-            // batch re-pays a learner call plus a probe pair per steer/denial on
-            // every session close until the pool changes.
-            batches.push((domain.clone(), region, reflexions.clone()));
+    // Every situation batch of every domain, then in replay-priority order
+    // (row 2e-6, L1: "regret is reflected on first") — before the brakes
+    // below, because the order decides which batch of a domain claims the
+    // one proposal slot under `--propose`.
+    let mut candidates: Vec<Batch> = by_domain
+        .iter()
+        .flat_map(|(domain, reflexions)| {
+            batches_by_region(reflexions.clone())
+                .into_iter()
+                .map(move |(region, rs)| (domain.clone(), region, rs))
+        })
+        .collect();
+    // Read only when there is a choice to make: `learn-live.sh` runs this
+    // on every session close, and a pass with one batch at the floor needs
+    // no corpus walk. Batches below the floor wait whatever their priority:
+    // they are sorted too (unread, so first among the waiting lines), which
+    // moves only where their "waiting for more" line prints.
+    if candidates.iter().filter(|b| b.2.len() >= args.min).count() > 1 {
+        let sessions_dir = mecha_core::session::Session::default_dir()?;
+        let ranker = mecha_core::replay_priority::Ranker::load(&sessions_dir, chrono::Utc::now());
+        for caveat in ranker.caveats() {
+            eprintln!("replay priority: {caveat}");
         }
+        let priorities = ranker.of_sessions(
+            &sessions_dir,
+            candidates
+                .iter()
+                .filter(|b| b.2.len() >= args.min)
+                .flat_map(|(_, _, rs)| rs.iter().map(|r| r.session_id.as_str())),
+        );
+        if let Some(line) = mecha_core::replay_priority::unknown_summary(priorities.values()) {
+            eprintln!("replay priority: {line}");
+        }
+        order_batches(&mut candidates, &priorities);
+    }
+    for (domain, region, reflexions) in candidates {
+        let domain = &domain;
+        let reflexions = &reflexions;
+        // The floor is per batch as well as per domain: the learner call
+        // moved inside the batch, and a domain floor alone let three
+        // reflections on three tools pass `--min 3` as three
+        // single-incident learner calls, each minting a scoped rule (and
+        // under `--auto` a probe pair) from one event — the permissive
+        // failure, found on review. A small region waits, unprocessed,
+        // until its own pool reaches the floor; the standing batch
+        // usually gets there first.
+        if reflexions.len() < args.min {
+            waiting += 1;
+            println!(
+                "{domain} [{}]: {} reflection(s), below --min {}; waiting for more in \
+                     this situation",
+                region.describe(),
+                reflexions.len(),
+                args.min
+            );
+            continue;
+        }
+        // One pending proposal per domain. Each batch proposes a
+        // whole-domain set from the same base, so two pending rows for a
+        // domain are alternatives: accepting one moves the rules under
+        // the other, and `accept`'s only way past that is `--force`, the
+        // lossy path. The later batches wait, unprocessed, behind the
+        // review (`--auto` resolves at birth and never parks here).
+        if (args.propose || args.auto) && already_argued(&proposals, domain, reflexions) {
+            println!(
+                "{domain} [{}]: this exact batch of {} reflection(s) was already argued \
+                     (see `mecha proposals`); waiting for new reflections",
+                region.describe(),
+                reflexions.len()
+            );
+            continue;
+        }
+        if args.propose && !args.auto {
+            // Pending in the store, or admitted earlier in this very
+            // pass: every admitted batch under `--propose` writes a
+            // proposal, so the second of a domain would be the
+            // alternative this check exists to prevent. After the
+            // argued brake, not before: a batch the brake turns away
+            // must not claim the slot, or a `rejected_by_gate` batch
+            // (whose reflections stay unprocessed, so the brake stays
+            // true) starves every other region of its domain for good
+            // (found on review).
+            let pending = proposals
+                .iter()
+                .any(|p| p.domain == *domain && p.status == "pending")
+                || !proposing.insert(domain.clone());
+            if pending {
+                println!(
+                    "{domain} [{}]: a proposal for this domain is pending review; this \
+                         batch waits behind it (`mecha proposals`)",
+                    region.describe()
+                );
+                continue;
+            }
+        }
+        // A batch identical to one some proposal already argued — most
+        // likely a gate rejection whose reflections rightly returned to the
+        // pool — is not argued again until the pool changes. Without this,
+        // an unchanged pool means a fresh near-identical proposal (and its
+        // probe cost) every night. `--auto` needs the brake most: its
+        // `rejected_by_gate` arm leaves the reflections unprocessed, and
+        // `learn-live.sh` runs per *session*, so an unguarded identical
+        // batch re-pays a learner call plus a probe pair per steer/denial on
+        // every session close until the pool changes.
+        batches.push((domain.clone(), region, reflexions.clone()));
     }
 
     if waiting > 0 {
@@ -877,6 +942,129 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Why one reflection is, or is not, in this pass's pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    Processed,
+    /// Claimed by a pending proposal.
+    Claimed,
+    Dropped,
+    /// A mismatch with no verified failure behind it.
+    Unsupported,
+    /// Held back by the provenance gate.
+    Origin,
+    /// Held back by D3's attribution, as this class.
+    Attribution(mecha_core::attribution::Class),
+    Admitted,
+}
+
+/// The pool's gates, in order — pure, so what reaches a learner is tested
+/// without one.
+fn admission(r: &mecha_core::learning::Reflexion, claimed: &BTreeSet<String>) -> Admission {
+    if r.is_processed {
+        return Admission::Processed;
+    }
+    if claimed.contains(&r.id) {
+        return Admission::Claimed;
+    }
+    // The owner's own refusal outranks a provenance argument the same
+    // way `learnable()` orders them — checked first and counted
+    // separately, or a person dropping lessons they disagree with would
+    // read back as "excluded by origin", which is the gate's doing
+    // reported as though it were theirs.
+    if r.dropped_at.is_some() {
+        return Admission::Dropped;
+    }
+    if r.trigger == Trigger::Mismatch.as_str()
+        && !serde_json::from_str::<mecha_core::planning::StepFeedback>(&r.context)
+            .is_ok_and(|s| s.learnable_failure())
+    {
+        return Admission::Unsupported;
+    }
+    // Structural, before any prompt is built: a lesson drawn while
+    // third-party content sat in context must never become a rule that
+    // rides in every future run's system prompt. Excluded here rather
+    // than scored inside the consolidation — no amount of confidence
+    // promotes untrusted evidence.
+    if !r.learnable() {
+        return Admission::Origin;
+    }
+    // The attribution half, after provenance: **a behaviour rule is mined
+    // only from a behaviour error** (mecha-graph's D3, row 2e-3). A data
+    // error is the source's to repair and a gap is a retrieval target;
+    // neither teaches the agent anything. Unknown — no attribution
+    // recorded, or none placeable — is never clean. Left unprocessed,
+    // like every exclusion here: an owner's edit admits it.
+    if let Some(class) = r.attribution_withholds() {
+        return Admission::Attribution(class);
+    }
+    Admission::Admitted
+}
+
+/// One line per class `learn` held back on attribution, so a withheld
+/// lesson is seen and never mistaken for an empty pool: a data error names
+/// where its repair goes, a gap that it is a retrieval target, and an
+/// unknown that it is counted rather than mined.
+fn withheld_lines(withheld: &BTreeMap<mecha_core::attribution::Class, usize>) -> Vec<String> {
+    use mecha_core::attribution::Class;
+    withheld
+        .iter()
+        .filter(|(_, n)| **n > 0)
+        .map(|(class, n)| match class {
+            Class::Data => format!(
+                "{n} reflection(s) attributed to a data error — the run used what it was \
+                 given; the source is repaired, never a behaviour rule"
+            ),
+            Class::Gap => format!(
+                "{n} reflection(s) attributed to a gap — the run was given neither value; \
+                 a retrieval target, never a behaviour rule"
+            ),
+            // Behaviour is never withheld; Unknown and anything a newer
+            // build writes read the same way.
+            _ => format!(
+                "{n} reflection(s) with no behaviour attribution — recorded before it, or \
+                 not placeable — counted, never mined (`mecha reflections` shows each)"
+            ),
+        })
+        .collect()
+}
+
+/// The attributed lessons `learn` admitted, split by why they are behaviour:
+/// the reflector named no fact at issue, or the run had been given the
+/// right value. The first half is the one a reflector can reach by never
+/// answering `true`, so its share is printed beside the whole rather than
+/// left for a reader to infer from an absence of withheld lines.
+#[derive(Debug, Default, PartialEq)]
+struct AdmittedBases {
+    no_fact: usize,
+    placed: usize,
+}
+
+impl AdmittedBases {
+    fn count(&mut self, r: &mecha_core::learning::Reflexion) {
+        use mecha_core::attribution::{in_scope, Basis};
+        if r.edited_at.is_some() || !in_scope(&r.domain, &r.trigger) {
+            return;
+        }
+        match r.attribution.as_ref().map(|a| a.basis) {
+            Some(Basis::NoFact) => self.no_fact += 1,
+            Some(_) => self.placed += 1,
+            None => {}
+        }
+    }
+
+    fn line(&self) -> Option<String> {
+        let all = self.no_fact + self.placed;
+        (all > 0).then(|| {
+            format!(
+                "{all} attributed correction(s) admitted as behaviour: {} named no fact at \
+                 issue, {} had the right value in what the run read",
+                self.no_fact, self.placed
+            )
+        })
+    }
+}
+
 /// R34's lines for the learn log: rules toward a closed goal by id with why,
 /// waiting reflections toward one, and each goal the stores could not
 /// answer for — the last never folded into "nothing is dark". Empty only
@@ -1142,6 +1330,7 @@ mod tests {
             dropped_reason: None,
             situation: None,
             situation_recomputed_at: None,
+            attribution: None,
         };
         let argued = Proposal {
             id: "p".into(),
@@ -1373,5 +1562,145 @@ mod tests {
         let held = hold_out(&ids(8), 0.9);
         assert!(held.len() < 8, "held out everything: {held:?}");
         assert_eq!(held.len(), 4);
+    }
+
+    /// **A behaviour rule is mined only from a behaviour error** (D3, row
+    /// 2e-3): a data error, a gap and an unplaceable correction never reach
+    /// a learner, each counted under its class, while the same reflection
+    /// attributed to the agent does. Not vacuous: every one of them passes
+    /// the provenance gate, which was the pool's last gate before this row —
+    /// on that tree all of them were admitted.
+    #[test]
+    fn no_behaviour_rule_is_mined_from_a_data_error_a_gap_or_an_unknown() {
+        use super::{admission, Admission};
+        use mecha_core::attribution::{Attribution, Basis, Class};
+        use mecha_core::learning::{Evidence, Origin, Reflexion};
+        let refl = |trigger: &str, basis: Option<Basis>| Reflexion {
+            goals: Vec::new(),
+            id: "r".into(),
+            domain: "behavior".into(),
+            session_id: "s".into(),
+            trigger: trigger.into(),
+            context: String::new(),
+            intervention: "No, Dana is at Lakeside Institute now.".into(),
+            reflexion_text: "Check the employer before writing.".into(),
+            error_type: None,
+            confidence: None,
+            is_processed: false,
+            leap_run_id: None,
+            created_at: String::new(),
+            origin: Origin::Clean,
+            evidence: Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
+            situation: None,
+            situation_recomputed_at: None,
+            attribution: basis.map(|b| Attribution::new(b, None, None)),
+        };
+        let none = std::collections::BTreeSet::new();
+        for (basis, class) in [
+            (Some(Basis::WrongGiven), Class::Data),
+            (Some(Basis::NeitherGiven), Class::Gap),
+            (Some(Basis::Ungrounded), Class::Unknown),
+            (Some(Basis::NotAnswered), Class::Unknown),
+            // Recorded before attribution existed: unknown, never clean.
+            (None, Class::Unknown),
+        ] {
+            for trigger in ["steer", "denial", "followup", "reject"] {
+                let r = refl(trigger, basis);
+                assert!(r.learnable(), "the provenance gate admits it");
+                assert_eq!(
+                    admission(&r, &none),
+                    Admission::Attribution(class),
+                    "{trigger} {basis:?}"
+                );
+            }
+        }
+        for basis in [Basis::RightGiven, Basis::NoFact] {
+            assert_eq!(
+                admission(&refl("steer", Some(basis)), &none),
+                Admission::Admitted
+            );
+        }
+        // Outside D3's table, admitted as before: a writing edit teaches
+        // the owner's voice, not the agent's behaviour.
+        let mut edit = refl("edit", None);
+        edit.domain = "writing".into();
+        assert_eq!(admission(&edit, &none), Admission::Admitted);
+        // The owner's own words outrank the class, as they outrank origin.
+        let mut owned = refl("steer", Some(Basis::WrongGiven));
+        owned.edited_at = Some("2026-09-26T00:00:00Z".into());
+        assert_eq!(admission(&owned, &none), Admission::Admitted);
+        // And provenance still decides first: the gate it was is unchanged.
+        let mut tainted = refl("steer", Some(Basis::RightGiven));
+        tainted.origin = Origin::Untrusted;
+        assert_eq!(admission(&tainted, &none), Admission::Origin);
+    }
+
+    #[test]
+    fn the_learn_log_counts_what_the_attribution_gate_let_through_by_basis() {
+        use super::AdmittedBases;
+        use mecha_core::attribution::{Attribution, Basis};
+        use mecha_core::learning::{Evidence, Origin, Reflexion};
+        let with = |basis: Option<Basis>| Reflexion {
+            goals: Vec::new(),
+            id: "r".into(),
+            domain: "behavior".into(),
+            session_id: "s".into(),
+            trigger: "steer".into(),
+            context: String::new(),
+            intervention: "No, not like that.".into(),
+            reflexion_text: "Ask before rewriting.".into(),
+            error_type: None,
+            confidence: None,
+            is_processed: false,
+            leap_run_id: None,
+            created_at: String::new(),
+            origin: Origin::Clean,
+            evidence: Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
+            situation: None,
+            situation_recomputed_at: None,
+            attribution: basis.map(|b| Attribution::new(b, None, None)),
+        };
+        let mut bases = AdmittedBases::default();
+        assert_eq!(
+            bases.line(),
+            None,
+            "nothing attributed is no line, not zeros"
+        );
+        bases.count(&with(None));
+        assert_eq!(
+            bases.line(),
+            None,
+            "an unattributed record is not counted here"
+        );
+        for b in [Basis::NoFact, Basis::NoFact, Basis::RightGiven] {
+            bases.count(&with(Some(b)));
+        }
+        assert_eq!(
+            bases.line().unwrap(),
+            "3 attributed correction(s) admitted as behaviour: 2 named no fact at issue, \
+             1 had the right value in what the run read"
+        );
+    }
+
+    #[test]
+    fn the_learn_log_names_each_withheld_class_and_what_happens_to_it() {
+        use super::withheld_lines;
+        use mecha_core::attribution::Class;
+        assert!(withheld_lines(&BTreeMap::new()).is_empty());
+        let lines = withheld_lines(&BTreeMap::from([
+            (Class::Data, 2),
+            (Class::Gap, 1),
+            (Class::Unknown, 3),
+        ]));
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("2 reflection(s) attributed to a data error"));
+        assert!(lines[1].starts_with("1 reflection(s) attributed to a gap"));
+        assert!(lines[2].contains("counted, never mined"));
     }
 }

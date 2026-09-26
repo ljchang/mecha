@@ -105,6 +105,37 @@ using. The `/learning` modal in the TUI drives exactly them, alongside
 the same two panes, the same verbs as child processes, so no surface can do
 something to the store that the command line cannot.
 
+### Whose mistake was it?
+
+Not every correction is a lesson about how mecha behaves. If you say "no,
+Dana moved to Lakeside Institute" and the knowledge graph mecha read still
+listed her old employer, mecha did the right thing with wrong data. A rule
+telling it to behave differently would teach it nothing true. So each
+correction is placed by **what the run had actually read** before you stepped
+in:
+
+| What the run had read | Class | What happens |
+|---|---|---|
+| the wrong value | **data error** | the source is repaired, never a rule |
+| the right value, and not the wrong one | **behaviour error** | a lesson `mecha learn` may mine |
+| neither | **gap**, nobody's fault | recorded as something to look up, never a rule |
+
+The reflector only copies the two values, word for word, out of your
+correction. The class is decided by looking them up in the tool results the
+run received, never by a model. A value that is not really in your words, or
+not in anything the run said or read, makes the correction **unknown**. So
+does a reflection recorded before this existed. Unknown corrections are
+counted and never mined. A correction about *how* the work was done ("don't
+run that", "shorter, please") names no fact, and is a behaviour lesson as
+before.
+
+`mecha learn` prints how many reflections it held back under each class, and
+`mecha reflections` says why for each one. Editing a lesson into your own
+words admits it whatever its class, the same way an edit rescues a lesson
+held back for provenance. This is the agent's half of the knowledge graph's
+error contract. The graph's half, superseding the wrong fact, runs when the
+session is [distilled](/docs/features/memory/distillation).
+
 ## `mecha learn` — reflections become rules
 
 Consolidation groups reflections by domain and situation, then rewrites the
@@ -461,8 +492,14 @@ mecha sessions compare                 # up to 8 points, today's seed
 mecha sessions compare --points 20 --seed 20250 --json
 ```
 
-Points are drawn uniformly with a printed seed, so a pass can be redrawn. A
-point already compared under the same rules and model is not compared again.
+Points are shuffled with a printed seed, then ordered by the
+[replay priority](/docs/features/appraisal#6-picking-which-past-run-to-replay-tonight)
+of the session they come from. Points from sessions you corrected, that
+surprised the appraisal, or whose situation keeps recurring are compared
+first, and the seed decides among equals, so a pass can be redrawn. The
+points that measure a proposed harness change are never ordered this way.
+They stay a uniform draw, because they are what confirms the change. A point
+already compared under the same rules and model is not compared again.
 Only clean sessions are drawn, as for learning; each point holds one of the
 background model seats while its arms run, and the pass refuses a provider
 that is not on this machine.

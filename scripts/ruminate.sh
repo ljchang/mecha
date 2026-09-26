@@ -132,6 +132,12 @@ echo "· harness candidates awaiting review"
 # rest when every seat stays held, so neither can stall the other; neither
 # writes a rule. `learn --compare-sources` is the unbounded one: its arms run
 # to the recording's own turn limit.
+#
+# `sessions compare` never drives an owner-bound check point here (owner,
+# 2026-09-26): one is posed as an artifact probe, which executes its task,
+# and this line throws none of the levers (hooks, outbox, messages) that
+# would let it run unattended. The tally names them "owner-bound, not
+# driven", apart from "unavailable" — a decision, not an absence of data.
 echo "· compare (point-wise comparison at recorded decision points, decided by the"
 echo "  owner's recorded verdict; what it separates, tomorrow's distill writes into"
 echo "  the session's appraisal as the losing arm)"
