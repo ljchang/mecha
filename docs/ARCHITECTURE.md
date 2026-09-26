@@ -6256,12 +6256,16 @@ comparison over a chosen set**, with the design written before the run.
   `rules propose-retirements --apply` (the one brake on rules that go
   live as they are derived; a loop without it flatters the learn arm),
   `harness ruminate`, **the nightly's own order and argv**
-  (`scripts/ruminate.sh`, less the two shadow measurement passes it runs
-  last — `sessions compare` and `learn --compare-sources` change nothing the
-  next run carries, so an arm would buy only wall clock): validate is the
-  held-out measurement and learn marks reflections processed, so learn first would grade the
-  rules on their own training data and measure a loop that does not
-  ship (the first cut did; found on review) — as child `mecha` verbs
+  (`scripts/ruminate.sh`, less its two shadow measurement passes —
+  `sessions compare`, before learn, and `learn --compare-sources`, last —
+  which change nothing the next run carries, so an arm would buy only wall
+  clock; the lesson-source comparison because it is never taught
+  (`kind_phrase` has no phrase for it), point-wise comparison only while
+  nothing reads the counterfactuals `distill` writes into a prompt, so a
+  reader added there must revisit this): validate is the held-out
+  measurement and learn marks reflections processed, so learn first would
+  grade the rules on their own training data and measure a loop that does
+  not ship (the first cut did; found on review) — as child `mecha` verbs
   against that home from a scratch workspace beside the ledger (a
   path jail from the home itself is refused), on the run child's
   environment allowlist and session kind,

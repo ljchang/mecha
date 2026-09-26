@@ -1410,8 +1410,12 @@ O3, since built), ranked points (2e-6, since built under R39 — for
 `sessions compare`; a candidate's points stay uniform), surprise sources
 beyond forecast misses (2b-1's resolved predictions, 2b-2's scored appraisal
 predictions). The nightly wiring is made (owner, 2026-09-26):
-`scripts/ruminate.sh` runs `mecha sessions compare` and
-`mecha learn --compare-sources` last, after `harness ruminate`. **It never
+`scripts/ruminate.sh` runs `mecha sessions compare` **before `learn`**, for
+validate's reason (owner, 2026-09-26): its `Rules` arm is the deployed rule
+set and its points are the steers `learn` consumes, so after learn it would
+grade tonight's rules on their own training data — before it, yesterday's
+rules meet today's points, held out by construction. `mecha learn
+--compare-sources`, which reads no rule, runs last. **It never
 drives an owner-bound check point** (owner, 2026-09-26): such a point is
 posed as an artifact probe, which executes its task, and the nightly throws
 none of the levers that would let it run unattended — so the tally counts
