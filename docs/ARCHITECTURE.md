@@ -514,6 +514,71 @@ deliberately no knob — a switch that lets third-party text into every future
 prompt is the silently-degrading-sandbox shape. Excluded reflections stay in
 the archive as evidence; they are simply never candidates.
 
+**A behaviour rule is mined only from a behaviour error** (`attribution.rs`;
+`APPRAISAL-WIRING-DESIGN.md` L7, row 2e-3). This is mecha-graph's D3 error
+contract ported (`mecha-graph` `docs/PLAN.md` §D3; its graph half is
+`mecha-graph-core/src/corrections.rs`): one correction, attributed by *what
+the run was given*: the wrong value among the results it had read is a
+**data error** (the source's to repair), the right value there and the wrong
+one not is a **behaviour error** (the agent's), and neither is a **gap**
+(nobody's fault, a retrieval target). D3's table order is kept, so both
+values given is still a data error, because two sources disagreed. Before this,
+every correction became a behaviour lesson, including the ones where the run
+did exactly what its data told it to. The decisions that carry it:
+
+- **The model copies spans; the harness decides the class.** The reflector's
+  reply gains `fact` (true/false) and, for a fact, `wrong` and `right` as
+  verbatim spans. The class is never the reflector's. D3 takes the
+  correction's content from a model too (the graph's event is the
+  distiller's `{wrong, right, about}`). Here it is the reflector's, because
+  `DISTILLER_SYSTEM` is pinned byte-identical (R32) and the distiller's
+  corrections are per session, where a reflection is per intervention. The
+  fields are read leniently (`attribution::Answer::from_reply`), so a garbled
+  one costs the answer and never the lesson.
+- **The pack is `grounding::calls` over the messages before the
+  correction** (`Given::before`): the results the model read, first seen
+  wins, stale never evidence. A result riding in the correcting message
+  itself arrived with the steer and was never acted on, so it is not given.
+  A rejected draft's pack is its staging session's calls before the staging
+  message (`outbox_source::staged_in`), with the draft among what the run
+  said.
+- **Spans are grounded before they decide**, by `grounding::holds` (whole
+  words, case and punctuation ignored): `right` must be in the owner's words,
+  and `wrong` in something the run said, was given, or the owner quoted. A
+  paraphrase is absent from every result, and absence decides a gap, so an
+  ungrounded span, one under three letters or digits, or a record that
+  cannot be read makes the attribution **unknown**, never a guess.
+- **A correction with no fact at issue is behaviour.** "Don't run that",
+  "shorter" are outside D3's table, which is about facts. Every correction was
+  mined before, so the change only narrows what reaches `learn`.
+- **`learn` asks two gates and counts each apart.** `Reflexion::learnable`,
+  the provenance gate, is unchanged. `Reflexion::attribution_admits` comes
+  after it and admits only `behaviour` among the owner's behaviour-domain
+  corrections (`attribution::in_scope`: every `behavior` trigger but
+  `mismatch`, fail-closed on one this build does not know). A harness
+  mismatch, a writing edit and a triage correction are outside D3 and pass
+  as before. `learn` prints one line per withheld class. `doctor`'s waiting
+  pool and `closed_goals` ask the same gate, or a pool no pass can consume
+  would silence the starvation finding. `mecha reflections` names each class
+  in `blocked` and shows the spans and source.
+- **Unknown is never clean.** A reflection recorded before the field has no
+  attribution and is withheld as unknown: its class cannot be recovered
+  without a model call. So is one whose reply answered neither way. It stays
+  unprocessed, and an **owner's edit admits it**, as the edit already
+  outranks provenance. That is the rescue for a misplaced correction. A
+  reflection consumed before the field is not re-judged; it already became a
+  rule. An unreadable attribution loads as unknown (`attribution::de_lenient`),
+  never as absent.
+- **Where each class lands.** Behaviour goes to `learn`. A data error is
+  recorded on the reflection with the call that carried the wrong value
+  (`attribution::Source`). Its repair is the graph's existing path when that
+  source is the graph, because `distill` ships the same correction as
+  `meta.corrections`; nothing new crosses to the graph. A gap is recorded
+  with the fact it lacked. **mecha has no retrieval-target store**, and none
+  is invented here: the graph's `query_log` gap queue has no write verb from
+  mecha. The attribution is computed by deterministic code over recorded
+  results, whatever the taint; no byte it reads reaches a model or a rule.
+
 **Learning is ungated, and the gate that remains is a measurement.** The
 owner's 2026-08-19 ruling (`LEARNING-AUTONOMY-DESIGN.md`, shipped 2026-08-30):
 a rule goes live when it is derived, not when someone approves it. `learn
@@ -3817,7 +3882,12 @@ through `Value::pointer` against a record, which needs no walk. The front door
 is the first caller that was never a hand-rolled copy: `Record::for_privileged_run`
 hands over only the `dates_mentioned` that `admit` dereferences into the
 record's own prose (§The front door), using the packet half of the module with
-no walk at all.
+no walk at all. D3's attribution (`attribution.rs`, row 2e-3) is the
+second caller that was never hand-rolled. It uses the walk to find what a run
+had been given before the owner corrected it, and `holds` (`carries_over`
+with the window set to the span's length) to find a span in a result. Its
+floor is its own: three letters or digits, set against a coincidental match
+deciding a class.
 
 The decisions that carry it, each a bug if undone:
 
@@ -4311,7 +4381,11 @@ door above (`Kind::LessonSource`). Letting either source's lessons *learn* is
   once and share the outcome (`arms_shared`): two samples of one prompt are
   noise, not a difference in lessons.
 - **Clean on both sides, and the reflector's own words.** The reflection
-  passes `Reflexion::learnable` — `learn`'s gate, unchanged — in a run domain
+  passes `Reflexion::learnable` (the provenance half of `learn`'s gate,
+  unchanged). D3's attribution half (row 2e-3, above) is deliberately not
+  asked. The appraisal's lessons carry no attribution, so filtering one side
+  only would compare unlike sets, and every reflection mined before 2e-3 is
+  unattributed. The reflection is in a run domain
   (a `triage` lesson must not ride in front of a tool-having probe, as
   `RuleSurface::load` argues), and is neither dropped nor owner-edited: an
   edited lesson is the owner's, and `provenance()` promotes it to clean,
@@ -5056,7 +5130,11 @@ the store that owns it, never copied into a new one:
   graph's database, which `mecha review`'s module doc refuses. The readout
   says so (`graph_fact_rejections: null`) rather than printing a zero; the
   gap closes with a read-only graph verb that returns rejected candidates
-  with their origin episode's `source` and `source_id`.
+  with their origin episode's `source` and `source_id`. L7 itself is built
+  (row 2e-3, "A behaviour rule is mined only from a behaviour error" in the
+  security model) from the transcript, without them: a correction is placed
+  by what the run was given. These rejections would be a second source of
+  corrections, and they are still unread.
 
 The new cites are `Cite::TaskReopen` and `Cite::Workflow { act }`, and
 `Cite::owner_act` names each for the readout's by-act counts, since all of

@@ -22,7 +22,7 @@ use mecha_core::learning::{
     MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
 };
 use mecha_core::session::Session;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -261,7 +261,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // them again would either duplicate the proposal nightly until someone
     // reviews it, or double-count them into the live rules on a direct pass.
     let proposals = store.proposals()?;
-    let claimed: std::collections::BTreeSet<String> = proposals
+    let claimed: BTreeSet<String> = proposals
         .iter()
         .filter(|p| p.status == "pending")
         .flat_map(|p| p.reflexion_ids.iter().cloned())
@@ -273,40 +273,19 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let mut excluded_by_origin = 0usize;
     let mut unsupported_observations = 0usize;
     let mut dropped_by_owner = 0usize;
+    // D3's attribution (row 2e-3), by class: what `learn` holds back
+    // because the correction was not a behaviour error.
+    let mut withheld_by_class: BTreeMap<mecha_core::attribution::Class, usize> = BTreeMap::new();
     for r in store.reflexions()? {
-        if r.is_processed {
-            continue;
+        match admission(&r, &claimed) {
+            Admission::Processed => {}
+            Admission::Claimed => awaiting_review += 1,
+            Admission::Dropped => dropped_by_owner += 1,
+            Admission::Unsupported => unsupported_observations += 1,
+            Admission::Origin => excluded_by_origin += 1,
+            Admission::Attribution(class) => *withheld_by_class.entry(class).or_default() += 1,
+            Admission::Admitted => by_domain.entry(r.domain.clone()).or_default().push(r),
         }
-        if claimed.contains(&r.id) {
-            awaiting_review += 1;
-            continue;
-        }
-        // The owner's own refusal outranks a provenance argument the same
-        // way `learnable()` orders them — checked first and counted
-        // separately, or a person dropping lessons they disagree with would
-        // read back as "excluded by origin", which is the gate's doing
-        // reported as though it were theirs.
-        if r.dropped_at.is_some() {
-            dropped_by_owner += 1;
-            continue;
-        }
-        if r.trigger == Trigger::Mismatch.as_str()
-            && !serde_json::from_str::<mecha_core::planning::StepFeedback>(&r.context)
-                .is_ok_and(|s| s.learnable_failure())
-        {
-            unsupported_observations += 1;
-            continue;
-        }
-        // Structural, before any prompt is built: a lesson drawn while
-        // third-party content sat in context must never become a rule that
-        // rides in every future run's system prompt. Excluded here rather
-        // than scored inside the consolidation — no amount of confidence
-        // promotes untrusted evidence.
-        if !r.learnable() {
-            excluded_by_origin += 1;
-            continue;
-        }
-        by_domain.entry(r.domain.clone()).or_default().push(r);
     }
     if unsupported_observations > 0 {
         println!("{unsupported_observations} cost-only or unreadable mismatch observation(s) excluded: no verified failure supports a behavioral lesson");
@@ -322,6 +301,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             "{excluded_by_origin} reflection(s) excluded by origin — evidence from \
              untrusted or non-interactive sessions stays in the archive, never in rules"
         );
+    }
+    for line in withheld_lines(&withheld_by_class) {
+        println!("{line}");
     }
     if dropped_by_owner > 0 {
         println!(
@@ -881,6 +863,93 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 /// waiting reflections toward one, and each goal the stores could not
 /// answer for — the last never folded into "nothing is dark". Empty only
 /// when the readout found nothing closed and nothing unknown.
+/// Why one reflection is, or is not, in this pass's pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    Processed,
+    /// Claimed by a pending proposal.
+    Claimed,
+    Dropped,
+    /// A mismatch with no verified failure behind it.
+    Unsupported,
+    /// Held back by the provenance gate.
+    Origin,
+    /// Held back by D3's attribution, as this class.
+    Attribution(mecha_core::attribution::Class),
+    Admitted,
+}
+
+/// The pool's gates, in order — pure, so what reaches a learner is tested
+/// without one.
+fn admission(r: &mecha_core::learning::Reflexion, claimed: &BTreeSet<String>) -> Admission {
+    if r.is_processed {
+        return Admission::Processed;
+    }
+    if claimed.contains(&r.id) {
+        return Admission::Claimed;
+    }
+    // The owner's own refusal outranks a provenance argument the same
+    // way `learnable()` orders them — checked first and counted
+    // separately, or a person dropping lessons they disagree with would
+    // read back as "excluded by origin", which is the gate's doing
+    // reported as though it were theirs.
+    if r.dropped_at.is_some() {
+        return Admission::Dropped;
+    }
+    if r.trigger == Trigger::Mismatch.as_str()
+        && !serde_json::from_str::<mecha_core::planning::StepFeedback>(&r.context)
+            .is_ok_and(|s| s.learnable_failure())
+    {
+        return Admission::Unsupported;
+    }
+    // Structural, before any prompt is built: a lesson drawn while
+    // third-party content sat in context must never become a rule that
+    // rides in every future run's system prompt. Excluded here rather
+    // than scored inside the consolidation — no amount of confidence
+    // promotes untrusted evidence.
+    if !r.learnable() {
+        return Admission::Origin;
+    }
+    // The attribution half, after provenance: **a behaviour rule is mined
+    // only from a behaviour error** (mecha-graph's D3, row 2e-3). A data
+    // error is the source's to repair and a gap is a retrieval target;
+    // neither teaches the agent anything. Unknown — no attribution
+    // recorded, or none placeable — is never clean. Left unprocessed,
+    // like every exclusion here: an owner's edit admits it.
+    if let Some(class) = r.attribution_withholds() {
+        return Admission::Attribution(class);
+    }
+    Admission::Admitted
+}
+
+/// One line per class `learn` held back on attribution, so a withheld
+/// lesson is seen and never mistaken for an empty pool: a data error names
+/// where its repair goes, a gap that it is a retrieval target, and an
+/// unknown that it is counted rather than mined.
+fn withheld_lines(withheld: &BTreeMap<mecha_core::attribution::Class, usize>) -> Vec<String> {
+    use mecha_core::attribution::Class;
+    withheld
+        .iter()
+        .filter(|(_, n)| **n > 0)
+        .map(|(class, n)| match class {
+            Class::Data => format!(
+                "{n} reflection(s) attributed to a data error — the run used what it was \
+                 given; the source is repaired, never a behaviour rule"
+            ),
+            Class::Gap => format!(
+                "{n} reflection(s) attributed to a gap — the run was given neither value; \
+                 a retrieval target, never a behaviour rule"
+            ),
+            // Behaviour is never withheld; Unknown and anything a newer
+            // build writes read the same way.
+            _ => format!(
+                "{n} reflection(s) with no behaviour attribution — recorded before it, or \
+                 not placeable — counted, never mined (`mecha reflections` shows each)"
+            ),
+        })
+        .collect()
+}
+
 fn closed_goal_lines(read: &mecha_core::learning::ClosedGoals) -> Vec<String> {
     let mut out = Vec::new();
     if !read.rules.is_empty() {
@@ -1142,6 +1211,7 @@ mod tests {
             dropped_reason: None,
             situation: None,
             situation_recomputed_at: None,
+            attribution: None,
         };
         let argued = Proposal {
             id: "p".into(),
@@ -1373,5 +1443,95 @@ mod tests {
         let held = hold_out(&ids(8), 0.9);
         assert!(held.len() < 8, "held out everything: {held:?}");
         assert_eq!(held.len(), 4);
+    }
+
+    /// **A behaviour rule is mined only from a behaviour error** (D3, row
+    /// 2e-3): a data error, a gap and an unplaceable correction never reach
+    /// a learner, each counted under its class, while the same reflection
+    /// attributed to the agent does. Not vacuous: every one of them passes
+    /// the provenance gate, which was the pool's last gate before this row —
+    /// on that tree all of them were admitted.
+    #[test]
+    fn no_behaviour_rule_is_mined_from_a_data_error_a_gap_or_an_unknown() {
+        use super::{admission, Admission};
+        use mecha_core::attribution::{Attribution, Basis, Class};
+        use mecha_core::learning::{Evidence, Origin, Reflexion};
+        let refl = |trigger: &str, basis: Option<Basis>| Reflexion {
+            goals: Vec::new(),
+            id: "r".into(),
+            domain: "behavior".into(),
+            session_id: "s".into(),
+            trigger: trigger.into(),
+            context: String::new(),
+            intervention: "No, Dana is at Lakeside Institute now.".into(),
+            reflexion_text: "Check the employer before writing.".into(),
+            error_type: None,
+            confidence: None,
+            is_processed: false,
+            leap_run_id: None,
+            created_at: String::new(),
+            origin: Origin::Clean,
+            evidence: Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
+            situation: None,
+            situation_recomputed_at: None,
+            attribution: basis.map(|b| Attribution::new(b, None, None)),
+        };
+        let none = std::collections::BTreeSet::new();
+        for (basis, class) in [
+            (Some(Basis::WrongGiven), Class::Data),
+            (Some(Basis::NeitherGiven), Class::Gap),
+            (Some(Basis::Ungrounded), Class::Unknown),
+            (Some(Basis::NotAnswered), Class::Unknown),
+            // Recorded before attribution existed: unknown, never clean.
+            (None, Class::Unknown),
+        ] {
+            for trigger in ["steer", "denial", "followup", "reject"] {
+                let r = refl(trigger, basis);
+                assert!(r.learnable(), "the provenance gate admits it");
+                assert_eq!(
+                    admission(&r, &none),
+                    Admission::Attribution(class),
+                    "{trigger} {basis:?}"
+                );
+            }
+        }
+        for basis in [Basis::RightGiven, Basis::NoFact] {
+            assert_eq!(
+                admission(&refl("steer", Some(basis)), &none),
+                Admission::Admitted
+            );
+        }
+        // Outside D3's table, admitted as before: a writing edit teaches
+        // the owner's voice, not the agent's behaviour.
+        let mut edit = refl("edit", None);
+        edit.domain = "writing".into();
+        assert_eq!(admission(&edit, &none), Admission::Admitted);
+        // The owner's own words outrank the class, as they outrank origin.
+        let mut owned = refl("steer", Some(Basis::WrongGiven));
+        owned.edited_at = Some("2026-09-26T00:00:00Z".into());
+        assert_eq!(admission(&owned, &none), Admission::Admitted);
+        // And provenance still decides first: the gate it was is unchanged.
+        let mut tainted = refl("steer", Some(Basis::RightGiven));
+        tainted.origin = Origin::Untrusted;
+        assert_eq!(admission(&tainted, &none), Admission::Origin);
+    }
+
+    #[test]
+    fn the_learn_log_names_each_withheld_class_and_what_happens_to_it() {
+        use super::withheld_lines;
+        use mecha_core::attribution::Class;
+        assert!(withheld_lines(&BTreeMap::new()).is_empty());
+        let lines = withheld_lines(&BTreeMap::from([
+            (Class::Data, 2),
+            (Class::Gap, 1),
+            (Class::Unknown, 3),
+        ]));
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("2 reflection(s) attributed to a data error"));
+        assert!(lines[1].starts_with("1 reflection(s) attributed to a gap"));
+        assert!(lines[2].contains("counted, never mined"));
     }
 }
