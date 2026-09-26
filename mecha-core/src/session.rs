@@ -1431,6 +1431,14 @@ pub struct Transcript {
     /// errored — so this, not the outcome list, says which run a message
     /// belongs to. [`Transcript::anchor_covering`] reads it.
     pub anchors: Vec<(Option<usize>, Option<crate::goal::GoalRef>)>,
+    /// The length of the list the last *summarising* `Rewrite` left: every
+    /// message below it is the rebuilt head or a tail carried through the
+    /// compaction, whose run's anchor record lost its place. Kept because
+    /// clearing those positions is not enough — a later run's record keeps
+    /// its place, and a search that skipped the placeless ones would read
+    /// it back onto the carried tail (found on review of #335). Zero when
+    /// no summarising rewrite happened.
+    pub anchor_floor: usize,
     /// Every recorded outcome, folded into the episode the session describes.
     pub episode: Option<RunStats>,
     /// The taint checkpoints, positioned against the loaded messages — the
@@ -1477,9 +1485,13 @@ impl Transcript {
     ///
     /// `None` also when the run's record names no anchor, when no record
     /// covers the message (a run in flight, a transcript from before the
-    /// record, or a head a summarising compaction removed), never the
-    /// session's last anchor read back onto it.
+    /// record, or a message below [`Transcript::anchor_floor`] — the
+    /// rebuilt head and the tail a summarising compaction carried, whose
+    /// run's record lost its place), never a later anchor read back onto it.
     pub fn anchor_covering(&self, message_index: usize) -> Option<&crate::goal::GoalRef> {
+        if message_index < self.anchor_floor {
+            return None;
+        }
         let (end, anchor) = self
             .anchors
             .iter()
@@ -1778,6 +1790,7 @@ impl Session {
         let mut title = None;
         let mut goal_anchor = None;
         let mut anchors: Vec<(Option<usize>, Option<crate::goal::GoalRef>)> = Vec::new();
+        let mut anchor_floor = 0usize;
         let mut messages = Vec::new();
         let mut taint = Taint::default();
         // Built here with `TaintTimeline::from_records`'s exact state
@@ -1883,6 +1896,7 @@ impl Session {
                         for (p, _) in &mut anchors {
                             *p = None;
                         }
+                        anchor_floor = m.len();
                     }
                     messages = m;
                     taint_checkpoints.clear();
@@ -1954,6 +1968,7 @@ impl Session {
             outcomes,
             outcome_positions,
             anchors,
+            anchor_floor,
             taint_timeline: TaintTimeline {
                 checkpoints: taint_checkpoints,
             },
@@ -3196,10 +3211,27 @@ mod tests {
         );
         assert_eq!(t.anchor_covering(0), None);
         assert_eq!(
-            t.convo.goal_anchor,
-            Some(second),
+            t.convo.goal_anchor.as_ref(),
+            Some(&second),
             "the conversation's is kept"
         );
+        // …and stays placeless once a later run records its own: the
+        // carried head never takes the next run's anchor, while that run's
+        // own messages, appended after the compaction, do.
+        let third: GoalRef = "request:r-dana".parse().unwrap();
+        session
+            .append_messages(&[Message::user("next"), Message::assistant(vec![])])
+            .unwrap();
+        session
+            .append(&Record::GoalAnchor {
+                goal: Some(third.clone()),
+            })
+            .unwrap();
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(t.anchor_floor, 1);
+        assert_eq!(t.anchor_covering(0), None, "the rebuilt head stamps none");
+        assert_eq!(t.anchor_covering(1), Some(&third));
+        assert_eq!(t.convo.goal_anchor, Some(third), "the conversation's last");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

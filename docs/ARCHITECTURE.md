@@ -5649,9 +5649,13 @@ record has no finer grain, so a run holding such a call after the message (or
 in the turn the message answers) stamps none: the anchor may postdate the
 intervention, and one before it is `goal_at`'s to name. It is **not the
 session's last anchor**: a conversation re-anchored by an answer or a
-hand-over carries each run's own, and a message no record covers (a run in
-flight, a head a summarising compaction removed) stamps none rather than a
-later anchor read back onto it. It is **not the
+hand-over carries each run's own, and a message no record covers stamps none
+rather than a later anchor read back onto it: a run in flight, and everything
+below `Transcript::anchor_floor` — the rebuilt head and the tail a summarising
+compaction carried, whose run's record lost its place. Clearing those
+positions alone was not enough, since a later run's record keeps its place and
+a search skipping the placeless ones read it back onto the carried tail (found
+on review of #335). It is **not the
 situation's goal key**, which stays `rules_goal` — what the rules block was
 matched toward — so where a hand-over resumes an older anchor the two differ
 on purpose, one saying what the lesson served and the other where it loads.
