@@ -263,24 +263,13 @@ impl ChatState {
         // failure is said at warn, the one line this sweep writes there,
         // because it is a promise not kept rather than a count.
         if !left_on_the_image_server.is_empty() {
-            // Bounded: best-effort cleanup must not hold the door shut on a
-            // half-answering image server (found on review of #331).
-            const SWEEP_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
-            let outcome = match &prepared.config.image {
-                Some(cfg) => tokio::time::timeout(
-                    SWEEP_LIMIT,
-                    mecha_core::imagegen::forget_trail(cfg, &left_on_the_image_server),
-                )
-                .await
-                .unwrap_or_else(|_| {
-                    Err(anyhow::anyhow!(
-                        "the image server took longer than {} s",
-                        SWEEP_LIMIT.as_secs()
-                    ))
-                }),
-                None => Err(anyhow::anyhow!("no [image] is configured to reach it")),
-            };
-            if let Err(e) = outcome {
+            if let Err(e) = super::incognito::take_back(
+                prepared.config.image.as_ref(),
+                &left_on_the_image_server,
+                super::incognito::TAKE_BACK_LIMIT,
+            )
+            .await
+            {
                 tracing::warn!(
                     "a closed incognito chat's images could not be taken back off the image \
                      server ({e:#}); restarting the image server clears them"

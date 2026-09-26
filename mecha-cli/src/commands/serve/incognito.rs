@@ -104,6 +104,26 @@ pub fn withheld<'a>(
         .collect()
 }
 
+/// How long the start-up sweep may spend taking a dead `serve`'s image jobs
+/// back: best-effort cleanup must not hold the door shut on a half-answering
+/// image server (found on review of #331).
+pub const TAKE_BACK_LIMIT: Duration = Duration::from_secs(30);
+
+/// Take what dead rooms' image trails name back off the image server
+/// (`imagegen::forget_trail`), within `limit`.
+pub async fn take_back(
+    image: Option<&mecha_core::imagegen::ImageConfig>,
+    entries: &[mecha_core::imagegen::TrailEntry],
+    limit: Duration,
+) -> Result<()> {
+    let Some(cfg) = image else {
+        bail!("no [image] is configured to reach it");
+    };
+    tokio::time::timeout(limit, mecha_core::imagegen::forget_trail(cfg, entries))
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("the image server did not finish within {limit:?}")))
+}
+
 /// Whether `image_generate` may be offered in an incognito chat: the tool
 /// deletes the server's temp copies by name after every job
 /// (`[image] server_temp_dir`), and that directory is on tmpfs, so even the
@@ -529,6 +549,40 @@ mod tests {
                 "research",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn taking_back_is_bounded_by_its_limit() {
+        use mecha_core::imagegen::{ImageConfig, TrailEntry};
+        // A server that accepts and never answers: without the bound, each
+        // request would wait out its own 30 s timeout with the door shut.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock);
+            }
+        });
+        let cfg = ImageConfig {
+            url,
+            ..ImageConfig::default()
+        };
+        let started = std::time::Instant::now();
+        let err = take_back(
+            Some(&cfg),
+            &[TrailEntry::Job("job-1".into())],
+            Duration::from_millis(300),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(format!("{err:#}").contains("did not finish"), "{err:#}");
+        assert!(take_back(None, &[], Duration::from_secs(1)).await.is_err());
     }
 
     #[test]
