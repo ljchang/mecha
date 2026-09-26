@@ -437,6 +437,18 @@ Measured on 2026-09-26 against `c841aee`:
   `autoload=false`, or a health check would be the thing that swaps the model.
 - **An unknown model is a loud 400** (`model 'x' not found`), where a
   single-model server silently answers with whatever it has.
+- **The router looks a file up across every snapshot of its repo**, newest
+  first (`hub_file`). A repo gains a snapshot each time a file is fetched
+  from a newer revision, while files already on disk stay in the old one;
+  a "first snapshot, then the file" lookup lost the Qwen3.8 Q4_K_M and its
+  projector the moment the UD-Q4_K_XL was downloaded beside them.
+- **Qwen3.8-27B, four builds, measured 2026-09-26** on llama.cpp `95887577`
+  (single stream, 400 tokens, same prompt and flags): unsloth Q4_K_M 21.1
+  tok/s at 0.38 MTP draft acceptance, UD-Q4_K_XL 22.9 at 0.45, HauhauCS
+  uncensored Q4_K_P 26.8 at 0.57, huihui abliterated UD-Q4_K_XL 22.1 at
+  0.42; all four read an image and passed a reasoning check. The same
+  Q4_K_M was 18.2 tok/s at 0.36 on `c841aee` — the build alone was ~14%.
+  The router serves the UD-Q4_K_XL and both uncensored builds.
 - **Sampling is per model, in its preset.** Gemma runs on llama-server's
   defaults; the Qwens carry their model cards' values. Nothing sampling-shaped
   goes in `[*]`, or it silently retunes Gemma.
