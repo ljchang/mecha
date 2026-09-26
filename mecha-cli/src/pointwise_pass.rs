@@ -647,7 +647,7 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
         if let Some(why) = &refused {
             eprintln!("· {} {}: {why}", point.session_id, point.kind.as_str());
         }
-        if count_unrunnable(&mut tally, refused.as_deref()) {
+        if count_unrunnable(&mut tally, point.kind, refused.is_some()) {
             continue;
         }
         let lost = planned.lost_recorded_tools(live.agent.registry());
@@ -1086,14 +1086,21 @@ fn store_one(
     Ok(())
 }
 
-/// Count a point the levers refuse to drive — an artifact probe, posed only
-/// for an owner-bound check — as owner-bound, never as `unavailable`, and
-/// say whether it was refused.
-fn count_unrunnable(tally: &mut Tally, refused: Option<&str>) -> bool {
-    if refused.is_some() {
-        tally.owner_bound += 1;
+/// Count a point the levers refuse to drive, and say whether it was
+/// refused. Owner-bound only when the drawn point is a failed check — the
+/// one kind `plan` poses as an artifact probe — and asked of the point
+/// itself rather than trusted from that: a caller that ever poses an artifact
+/// for another kind files it under `unavailable`, never under a ruling
+/// nobody made about it (found on review).
+fn count_unrunnable(tally: &mut Tally, kind: PointKind, refused: bool) -> bool {
+    if refused {
+        if kind == PointKind::FailedCheck {
+            tally.owner_bound += 1;
+        } else {
+            tally.unavailable += 1;
+        }
     }
-    refused.is_some()
+    refused
 }
 
 /// What was drawn and not compared, and why — owner-bound points named
@@ -2021,15 +2028,19 @@ mod tests {
         };
 
         let mut t = Tally::default();
-        let refused = prep.unrunnable_with(&[]);
-        assert!(refused.is_some(), "the nightly's argv throws no lever");
-        assert!(count_unrunnable(&mut t, refused.as_deref()));
+        let refused = prep.unrunnable_with(&[]).is_some();
+        assert!(refused, "the nightly's argv throws no lever");
+        assert!(count_unrunnable(&mut t, check.kind, refused));
         assert_eq!((t.owner_bound, t.unavailable), (1, 0));
 
         let off = [Lever::Hooks, Lever::Outbox, Lever::Messages];
-        let drivable = prep.unrunnable_with(&off);
-        assert_eq!(drivable, None);
-        assert!(!count_unrunnable(&mut t, drivable.as_deref()));
+        let drivable = prep.unrunnable_with(&off).is_some();
+        assert!(!drivable);
+        assert!(!count_unrunnable(&mut t, check.kind, drivable));
         assert_eq!((t.owner_bound, t.unavailable), (1, 0));
+
+        // A refusal of any other kind is not the owner's ruling.
+        assert!(count_unrunnable(&mut t, PointKind::Steer, true));
+        assert_eq!((t.owner_bound, t.unavailable), (1, 1));
     }
 }
