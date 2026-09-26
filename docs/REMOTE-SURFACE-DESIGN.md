@@ -626,7 +626,23 @@ DeltaNet normalisation fix and a GB10 decode path — Qwen3.8's Q4_K_M
 decoded 18.2 → 20.7 tok/s on it (+14%, same prompt, back to back, as a
 single-model server; the router table's 21.1 is a separate run). Its `llama-server` has its own RUNPATH, so installing it is a
 rename-swap of `~/.local/bin/llama-server`; the old build stays as the
-rollback. The embedder on :8081 moves to it at its next restart.
+rollback. The embedder on :8081 moves to it at its next restart — checked
+first: the same four texts embedded by both builds agree to cosine ≥
+0.99999, norms 1.0, so the stored graph vectors stay valid.
+
+**One behaviour the new build changes, pinned rather than inherited** (owner's
+ruling, 2026-09-26): llama.cpp #28174 turned `preserve_reasoning` on by
+default. Qwen3.6's template drops earlier turns' thinking unless told to keep
+it, so production's prompts would have changed silently at the swap. Every
+Qwen preset now says `reasoning-preserve = true` — kept, so each prompt is a
+prefix of the next and the cached prefix survives a new user turn, at the
+cost of context that fills sooner. Qwen3.8's templates keep it by default, so
+nothing changes there; Gemma's has no such rule.
+
+**Owed, not in these PRs:** `start-moe-mtp.sh`, `start-gemma26.sh` and
+`start-e4b.sh` — the single-model rollbacks — still take
+`S=$(ls -d …/snapshots/*/)`, which breaks outright (two paths in one
+variable) the day their repo gains a second snapshot. None has one today.
 
 The config gains `follow_loaded`, and `ProviderConfig` denies unknown
 fields, so **the binary goes in before the config edit** — an older binary

@@ -21,9 +21,22 @@
 # a custom license with revenue triggers), 262,144 native context, released
 # ~2026-08-12. Days old at the time of writing, so treat quirks as unmapped
 # rather than absent.
-M=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--Qwen3.8-27B-GGUF/snapshots/*/Qwen3.8-27B-Q4_K_M.gguf)
+# The file the router's preset serves, newest existing copy across snapshots;
+# the withdrawn Q4_K_M only where the UD-Q4_K_XL is absent. A rollback that
+# served a different file under the same alias would not reproduce what it
+# rolls back (found on review).
+HUB="${HF_HUB:-$HOME/.cache/huggingface/hub}"
+newest() { local f; while IFS= read -r f; do [ -f "$f" ] && { echo "$f"; return 0; }; done < <(ls -t "$HUB"/models--unsloth--Qwen3.8-27B-GGUF/snapshots/*/"$1" 2>/dev/null); return 1; }
+M=$(newest Qwen3.8-27B-UD-Q4_K_XL.gguf || newest Qwen3.8-27B-Q4_K_M.gguf) || {
+  echo "$(basename "$0"): no Qwen3.8-27B weights on disk — hf download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-UD-Q4_K_XL.gguf" >&2
+  exit 1
+}
 source "$(dirname "$0")/mmproj.sh"
-MMPROJ=$(mmproj_or_die "$(dirname "$M")" unsloth/Qwen3.8-27B-GGUF)
+# The projector may sit in an older snapshot than the weights (unsloth
+# re-uploaded the weights, not the unchanged projector): walk them newest first.
+MMPROJ=""
+while IFS= read -r d; do MMPROJ=$(mmproj_in "$d") && break; done < <(ls -dt "$HUB"/models--unsloth--Qwen3.8-27B-GGUF/snapshots/*/ 2>/dev/null)
+[ -n "$MMPROJ" ] || MMPROJ=$(mmproj_or_die "$(dirname "$M")" unsloth/Qwen3.8-27B-GGUF) || exit 1
 
 # MTP is IN THE FILE, exactly like the 3.6 MoE — an earlier version of this
 # script was wrong about that, and the correction is worth its history.
@@ -200,7 +213,7 @@ exec ${LLAMA_SERVER:-llama-server} -m "$M" \
   --mmproj "$MMPROJ" \
   --host 127.0.0.1 --port 8083 -ngl 999 -c 262144 -np 1 --alias qwen3.8-27b --jinja \
   --reasoning-budget 4096 \
-  --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 \
+  --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --reasoning-preserve \
   --presence-penalty 0.0 --repeat-penalty 1.0 \
   --spec-type draft-mtp \
   --spec-draft-n-max 4
