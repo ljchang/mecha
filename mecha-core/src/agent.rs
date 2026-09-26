@@ -563,12 +563,20 @@ impl Taint {
     /// the transcript, so a conversation resumed with a brief in it — a
     /// session recorded before the ruling, or one whose taint record was
     /// torn — arms too. User-role text only, the only slot the fold writes.
+    ///
+    /// **And a diagnostician's brief carrying clean appraisals** (R38, row
+    /// 2f): a clean run's appraisal can speak of the owner's files. The
+    /// section sits mid-brief, so it is matched anywhere in the text by its
+    /// stem (`diagnose::APPRAISAL_STEM`); over-matching a user who types the
+    /// phrase only arms more, which is the safe direction.
     pub fn arm_for_content(&mut self, messages: &[Message]) {
         if messages.iter().any(|m| {
             m.content.iter().any(|b| match b {
                 Block::Image { .. } => true,
                 Block::Text { text } => {
-                    m.role == Role::User && text.trim_start().starts_with(crate::brief::BRIEF_STEM)
+                    m.role == Role::User
+                        && (text.trim_start().starts_with(crate::brief::BRIEF_STEM)
+                            || text.contains(crate::diagnose::APPRAISAL_STEM))
                 }
                 _ => false,
             })
@@ -6699,6 +6707,99 @@ mod tests {
             .find(|c| c.name == "send")
             .unwrap();
         assert!(send.denied, "the send should be recorded as denied");
+    }
+
+    /// Row 2f (R38): a diagnostician's brief carrying a clean appraisal
+    /// opens its conversation private, so once it reads one outside page
+    /// the interlock refuses a model-chosen send — through the loop, not
+    /// only on the flag. Without the appraisal the same script sends, which
+    /// is the non-vacuous half (`SendTool` panics if it runs, so the control
+    /// swaps in one that records the call).
+    #[tokio::test]
+    async fn a_diagnostician_brief_carrying_an_appraisal_is_refused_a_send_after_a_fetch() {
+        let script = || {
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "b".into(),
+                        name: "fetch_page".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "c".into(),
+                        name: "send".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("stopped")], StopReason::EndTurn),
+            ]
+        };
+        let situation = crate::situation::Situation::default();
+        let read = crate::appraisal_store::clean_read_of(vec![crate::appraisal_store::test_row(
+            "s-1",
+            &situation,
+            true,
+            "2026-09-20T00:00:00Z",
+        )]);
+        let briefed = crate::diagnose::Evidence::default().with_appraisals(&read, &["s-1".into()]);
+        assert!(!briefed.appraisals.is_empty());
+
+        let (mut agent, _) = agent_with(script(), PermissionMode::Allow);
+        agent.registry.insert(Arc::new(UntrustedTool));
+        agent.registry.insert(Arc::new(SendTool)); // panics if it ever runs
+        agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+        let mut convo = briefed.conversation("diagnose");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.blocked_sends, 1);
+        assert!(outcome.taint.private && outcome.taint.untrusted);
+
+        // And built by hand from the rendered brief — the construction
+        // `run_diagnostician` had before 2f: the loop arms it off the
+        // transcript at run start (found on review of #329).
+        let (mut agent, _) = agent_with(script(), PermissionMode::Allow);
+        agent.registry.insert(Arc::new(UntrustedTool));
+        agent.registry.insert(Arc::new(SendTool)); // panics if it ever runs
+        agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+        let mut convo = Conversation::user(format!("{}\n---\ndiagnose", briefed.brief()));
+        assert!(!convo.taint.private);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.blocked_sends, 1);
+
+        struct CountingSend(Arc<std::sync::atomic::AtomicUsize>);
+        #[async_trait]
+        impl Tool for CountingSend {
+            fn name(&self) -> &str {
+                "send"
+            }
+            fn description(&self) -> &str {
+                "sends"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                crate::tool::Capabilities::default().sends()
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(ToolOutput::ok("sent"))
+            }
+        }
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (mut agent, _) = agent_with(script(), PermissionMode::Allow);
+        agent.registry.insert(Arc::new(UntrustedTool));
+        agent
+            .registry
+            .insert(Arc::new(CountingSend(Arc::clone(&sent))));
+        agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+        let mut convo = crate::diagnose::Evidence::default().conversation("diagnose");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.blocked_sends, 0);
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     /// Run one armed send against a registry holding [`SendTool`] plus
