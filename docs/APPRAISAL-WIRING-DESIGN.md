@@ -1413,8 +1413,12 @@ predictions). The nightly wiring is made (owner, 2026-09-26):
 `scripts/ruminate.sh` runs `mecha sessions compare` **before `learn`**, for
 validate's reason (owner, 2026-09-26): its `Rules` arm is the deployed rule
 set and its points are the steers `learn` consumes, so after learn it would
-grade tonight's rules on their own training data — before it, yesterday's
-rules meet today's points, held out by construction. `mecha learn
+grade the sweep's new rules on their own training data. That is all the
+position buys, and it is **not a hold-out** (found on review): `validate`'s
+hold-out is `--unprocessed-only`, while `sessions compare` draws the whole
+corpus and live consolidation (`learn-live.sh`) has usually learned from a
+point's steer within minutes of its session closing, so its `Rules` arm
+mostly measures the deployed rules at points they may have come from. `mecha learn
 --compare-sources`, which reads no rule, runs last. **It never
 drives an owner-bound check point** (owner, 2026-09-26): such a point is
 posed as an artifact probe, which executes its task, and the nightly throws

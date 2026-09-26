@@ -2034,9 +2034,13 @@ mod tests {
         assert_eq!((t.owner_bound, t.unavailable), (1, 0));
 
         let off = [Lever::Hooks, Lever::Outbox, Lever::Messages];
-        let drivable = prep.unrunnable_with(&off).is_some();
-        assert!(!drivable);
-        assert!(!count_unrunnable(&mut t, check.kind, drivable));
+        let refused_with_levers_off = prep.unrunnable_with(&off).is_some();
+        assert!(!refused_with_levers_off);
+        assert!(!count_unrunnable(
+            &mut t,
+            check.kind,
+            refused_with_levers_off
+        ));
         assert_eq!((t.owner_bound, t.unavailable), (1, 0));
 
         // A refusal of any other kind is not the owner's ruling.
