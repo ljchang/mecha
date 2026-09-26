@@ -42,9 +42,11 @@ mkdir -p "$(dirname "$OUT")"
 # a pruned blob leaves one dangling, which `ls` still lists.
 hub_file() {
   local f
-  for f in $(ls -t "$HUB"/models--"$1"/snapshots/*/"$2" 2>/dev/null); do
+  # Read line by line rather than word-split, so a space in HF_HUB is a path,
+  # not two (found on review).
+  while IFS= read -r f; do
     [ -f "$f" ] && { echo "$f"; return 0; }
-  done
+  done < <(ls -t "$HUB"/models--"$1"/snapshots/*/"$2" 2>/dev/null)
   return 0
 }
 
@@ -189,7 +191,12 @@ fi
 # Gemma's MTP head ships as a separate draft file.
 R=unsloth--gemma-4-26B-A4B-it-GGUF
 F=$(hub_file "$R" gemma-4-26B-A4B-it-UD-Q4_K_M.gguf)
-D=$(hub_file "$R" mtp-gemma-4-26B-A4B-it.gguf)
+# The MTP draft from the weights' own snapshot, never another revision's: a
+# draft head from a different revision than its weights is a worse mismatch
+# than a projector (found on review).
+D=""
+[ -n "$F" ] && [ -f "$(dirname "$F")/mtp-gemma-4-26B-A4B-it.gguf" ] &&
+  D="$(dirname "$F")/mtp-gemma-4-26B-A4B-it.gguf"
 if [ -n "$F" ] && [ -n "$D" ] && MP=$(hub_mmproj "$R"); then
   cat >>"$OUT" <<EOF
 
