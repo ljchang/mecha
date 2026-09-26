@@ -623,14 +623,10 @@ qwen3.6-35b-a3b-uncensored` straight after installing.
 libraries in `~/llama.cpp/build/bin` were never touched). It carries the
 router's own fixes after `c841aee` (an LRU hang, eviction races), the Gated
 DeltaNet normalisation fix and a GB10 decode path — Qwen3.8's Q4_K_M
-decoded 18.2 → 20.7 tok/s on it (+14%, same prompt, back to back). Its `llama-server` has its own RUNPATH, so installing it is a
+decoded 18.2 → 20.7 tok/s on it (+14%, same prompt, back to back, as a
+single-model server; the router table's 21.1 is a separate run). Its `llama-server` has its own RUNPATH, so installing it is a
 rename-swap of `~/.local/bin/llama-server`; the old build stays as the
 rollback. The embedder on :8081 moves to it at its next restart.
-
-**Three Qwen3.8 entries go in the config beside the others** — all on
-:8080, `context_window = 262144`, `vision = true`, `temperature = 1.0` (R4:
-it must equal the preset's): `qwen3.8-27b`, `qwen3.8-27b-uncensored`
-(HauhauCS) and `qwen3.8-27b-abliterated` (huihui).
 
 The config gains `follow_loaded`, and `ProviderConfig` denies unknown
 fields, so **the binary goes in before the config edit** — an older binary
@@ -639,6 +635,11 @@ as an entry on :8080 (`local` keeping production and `follow_loaded =
 true`), the unit's `ExecStart` to `start-router.sh`, and a restart of
 `llama-local`. The uncensored drop-in retires with it: the arm becomes
 `mecha model use`.
+
+**Three Qwen3.8 entries go in the config beside the others** — all on
+:8080, `context_window = 262144`, `vision = true`, `temperature = 1.0` (R4:
+it must equal the preset's): `qwen3.8-27b`, `qwen3.8-27b-uncensored`
+(HauhauCS) and `qwen3.8-27b-abliterated` (huihui).
 
 ### Three rulings carried over (2026-09-26)
 
