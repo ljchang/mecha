@@ -1110,6 +1110,7 @@ mod tests {
 
     fn props(n_ctx: u64, slots: u64, vision: bool) -> Props {
         Props {
+            role: None,
             model_alias: Some("qwen3.6-35b-a3b".into()),
             total_slots: Some(slots),
             modalities: Modalities { vision },

@@ -444,9 +444,10 @@ request by its `model` field. What follows was read in
   drafting, `-c`/`-np`, sampling and `--reasoning-budget`. A switch
   therefore never un-tunes a model. The router controls the alias, host and
   port itself.
-- **A swap measured about 9 s warm:** the uncensored arm's 20 GB file,
-  already in the page cache, from process start at 12:41:35 to "model
-  loaded" at 12:41:44. A cold load from disk has not been measured.
+- **A swap is the disk's speed.** 9 s with the file in the page cache (the
+  uncensored arm's 20 GB, 12:41:35 → 12:41:44); cold, 33 s for Gemma and
+  39 s for Qwen3.8; 22–24 s through `mecha model use` with the file partly
+  cached. All measured 2026-09-26 on a test router at :8090.
 - **Stopping the router stops its children.** On SIGINT (the unit's
   `KillSignal`) its `clean_up` calls `server_models::unload_all`, which
   sends each child an exit command over stdin and waits for it. A child
@@ -471,7 +472,19 @@ it.** A run resolves its provider **when it starts**. It asks the router
 which model is loaded (`GET /models`), then uses the `[providers.*]` entry
 that names that alias. If nothing is loaded (after a restart or a crash),
 it uses `default_provider`. Resolving per run rather than per process is
-what retires the four-service restart. A stored "current model" setting
+what retires the four-service restart.
+
+As built (`provider::router`): the entry that stands for the router is
+marked **`follow_loaded = true`**, and only a run that takes it *by
+default* follows — a provider named by `--provider`, a trigger or an
+experiment arm is a pin. It has to be declared rather than implied because
+an experiment arm pins its model by setting `default_provider`, which would
+otherwise read as "follow"; `trial_env` also clears the flag, so a designed
+comparison never drifts. Each process snapshots the router once at start
+(`main`), so an `eval` or `batch` is one model for its whole sweep, and the
+trigger daemon snapshots again per fire. A resident model that no entry
+names, or two entries name, is warned about and not guessed — the default
+then stands, and its first request swaps the pick back out. A stored "current model" setting
 would be a second answer that can disagree with the router; asking the
 router is `/props`' rule applied to choosing.
 
@@ -540,23 +553,47 @@ setting.) The chip reads the router's `GET /models/sse` stream, so
 6. **The prompt cache dies with the child.** Unloading drops every slot's
    KV and `-cram` cache, so every live session re-reads its whole history
    once after each swap.
+7. **The router offers every GGUF in the Hugging Face cache**, found on the
+   test router: sixteen models, embedders and an MTP-only draft file among
+   them, each loadable by name with bare flags. `start-router.sh` points
+   `LLAMA_CACHE` at an empty directory, which leaves exactly the presets.
 
 ### Build order
 
-1. `models.ini` from the four start scripts, and `llama-local.service`
-   starting the router. The scripts' comments stay the record of *why*
-   each flag is set, and the ini becomes the authority on values (see
-   open questions).
-2. Every probe to `?model=<resolved>&autoload=false`.
-3. The four `[providers.*]` entries onto one `base_url`, and provider
-   resolution at run start.
-4. `mecha model list|use`, and the TUI's `/model` calling it.
+**The router's flags live in one place (owner's ruling, 2026-09-26):**
+`scripts/start-router.sh`, which writes the preset INI and starts the
+router. The INI is generated rather than tracked because a preset cannot
+glob — snapshot directories are content hashes that change on re-download,
+and the paths are this machine's.
+
+1. *Built:* `start-router.sh`. Not yet installed: `llama-local.service`
+   still starts a single model.
+2. *Built:* every probe asks `?model=…&autoload=false` —
+   `preflight::fetch`, the brief's `/slots`, `model-idle.sh`.
+3. *Built:* `follow_loaded`, the snapshot per process and per trigger fire.
+   Owed: the per-run resolution inside the three processes that hold one
+   agent for their lifetime — `mecha serve` (chat and voice), `voice-serve`
+   and the Slack connector. Until then they follow the pick from their
+   start, so a switch reaches them on a restart. Everything else already
+   builds its agent per run and follows at once.
+4. *Built:* `mecha model list|use`. Owed: the TUI's `/model` calling it.
 5. The chip's picker and load state.
-6. Retire the drop-in swap.
+6. Retire the drop-in swap and the single-model scripts, moving their
+   comments' reasoning into `LLAMA-SERVER.md`. They stay until the router
+   has run production for a while, because they are the rollback.
+
+### Deploying step 1
+
+The config gains `follow_loaded`, and `ProviderConfig` denies unknown
+fields, so **the binary goes in before the config edit** — an older binary
+refuses a config naming it, the way `[image]` did. Then: every chat model
+as an entry on :8080 (`local` keeping production and `follow_loaded =
+true`), the unit's `ExecStart` to `start-router.sh`, and a restart of
+`llama-local`. The uncensored drop-in retires with it: the arm becomes
+`mecha model use`.
 
 ### Open
 
-- Cold-load time, measured after a page-cache drop.
-- Whether the scripts or the ini are the authority on flags. Today
-  `start-moe-mtp.sh` is, and both kept side by side is how two copies
-  drift apart.
+- Whether a switch should refuse while a long request is in flight, or
+  queue behind it as the router does now. Queueing is the router's
+  behaviour, and `mecha model use` reports the wait.

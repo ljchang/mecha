@@ -2234,7 +2234,7 @@ fn begin_turn(
                     &cx.tools,
                     crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE,
                 ),
-                mecha_core::brief::slots_for(local_server.as_deref()),
+                mecha_core::brief::slots_for(local_server.as_ref()),
             );
             if sampled {
                 cx.homeostat = homeostat;

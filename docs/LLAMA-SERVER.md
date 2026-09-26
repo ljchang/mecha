@@ -5,8 +5,10 @@ server, written down on 2026-08-20 when the two stopped running separate
 engines. Most of it was learned by measuring something that had already gone
 wrong, so each item carries the measurement rather than the conclusion alone.
 
-The flags themselves live in `scripts/start-moe-mtp.sh`, which is the
-authority; this file is the reasoning and the numbers.
+The flags themselves live in the start scripts — `scripts/start-router.sh` for
+the chat models once the router is installed (§Router mode), and
+`scripts/start-moe-mtp.sh` and its siblings until then and as the rollback;
+this file is the reasoning and the numbers.
 
 ## Two servers, one model each
 
@@ -19,6 +21,9 @@ llama-server holds **one model per process**. So:
 
 Pointing both at one port silently sends embedding requests to the chat model.
 There is a test asserting `DEFAULT_EMBED_URL != llm::DEFAULT_BASE_URL`.
+
+Router mode (below) keeps this true — each loaded model is still its own
+child process — and keeps the embedder out of the router on purpose.
 
 **Why ollama was removed.** It ran its own `llama-server` underneath, so the
 choice was never about the engine — only about who sets the flags. What it
@@ -397,9 +402,50 @@ machine from starting is one people turn off.
 - Measured full re-embed of 27,140 vectors (20,444 episodes + 6,696 facts):
   **0.6B ≈ 9–10 min, 4B ≈ 27 min** and double the storage.
 
+## Router mode — one port, the model chosen per request
+
+`scripts/start-router.sh` runs llama-server with no `-m` and a generated
+`--models-preset`: one router process on :8080, one child server per loaded
+model, and the request's `model` field choosing the child. `--models-max 1`,
+because memory decides it. The design and the rulings are
+`REMOTE-SURFACE-DESIGN.md` §14 (D12); mecha's side is `provider::router`.
+Measured on 2026-09-26 against `c841aee`:
+
+- **The section name is the model name.** The router overwrites `--alias`
+  with it, so `[providers.*] model` must equal it — and in router mode that
+  string *selects*, so a record naming it is naming what answered.
+- **Swaps evict only an idle model.** A request for another model queues;
+  the resident one finishes what it has in flight, is stopped (2.7 s), and
+  the new one loads.
+- **Load time is the disk.** Cold: Gemma 33 s, Qwen3.8 39 s. With the file
+  in the page cache: 9 s (the uncensored arm's 20 GB). `mecha model use`
+  measured 22–24 s partly cached.
+- **Stopping the router stops the children.** SIGINT runs
+  `server_models::unload_all`, which tells each child to exit over stdin and
+  waits; a child that hangs is killed after `stop-timeout` (10 s).
+- **The router offers every GGUF in the Hugging Face cache** — sixteen
+  models here, embedders and an MTP-only draft file among them, each
+  loadable by name with bare flags (no projector, default context). The
+  script points `LLAMA_CACHE` at an empty directory; the children load by
+  absolute path and never read it.
+- **Bare `GET /props` is a placeholder:** 200 with `role: "router"`,
+  `model_alias: "llama-server"`, `n_ctx: 0`. Every reader asks
+  `/props?model=…` instead.
+- **A GET naming a model loads it** unless it adds `autoload=false`; then a
+  model that is not resident is a 400 `model is not loaded`. Every probe here
+  — `preflight::fetch`, the brief's `/slots`, `model-idle.sh` — says
+  `autoload=false`, or a health check would be the thing that swaps the model.
+- **An unknown model is a loud 400** (`model 'x' not found`), where a
+  single-model server silently answers with whatever it has.
+- **Sampling is per model, in its preset.** Gemma runs on llama-server's
+  defaults; the Qwens carry their model cards' values. Nothing sampling-shaped
+  goes in `[*]`, or it silently retunes Gemma.
+
 ## Related
 
-- `scripts/start-moe-mtp.sh` — the flags, and the history behind each number
+- `scripts/start-router.sh` — every chat model's flags, as router presets
+- `scripts/start-moe-mtp.sh` — the single-model flags, and the history behind each number
+- `provider/router.rs` — which model is resident, and following it
 - `scripts/mmproj.sh` — the projector guard every start script sources
 - `provider/preflight.rs` — one `GET /props`, checked against config
 - `scripts/bench-slots.sh` — throughput

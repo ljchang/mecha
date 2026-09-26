@@ -110,6 +110,69 @@ skip() {
 }
 stuck_skip() { skip "$1" stuck; }
 
+# The GPU gate and the all-clear, shared by both ways of finding the slots
+# idle below.
+finish() {
+    local util
+    util="$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc '0-9')"
+    # Present but unreadable (`[N/A]`, which this box's nvidia-smi answers for
+    # its memory queries) still fails open, but says so: from the journal it
+    # must not look like a quiet GPU.
+    if [ -z "$util" ] && command -v nvidia-smi >/dev/null 2>&1; then
+        echo "model-idle: nvidia-smi gave no readable GPU utilisation — not gating on it"
+    fi
+    if [ -n "$util" ] && [ "$util" -gt "$GPU_BUSY" ]; then
+        skip "GPU at ${util}% (> ${GPU_BUSY}%)"
+    fi
+    # The sweep runs: the day's skips are over.
+    rm -f "$DAY_FILE"
+    exit 0
+}
+
+# **A router serves /slots per model** (llama-server router mode,
+# REMOTE-SURFACE-DESIGN §14). Its bare /slots is a 400, and naming a model
+# without `autoload=false` *loads* it — the idle check would be what swaps out
+# the owner's pick. So ask which model is resident and read that one's slots.
+# A server that does not say `role: router` (every single-model llama-server,
+# and anything that does not answer /props) takes the plain read below
+# unchanged, which fails loudly on its own terms.
+BASE="${SLOTS_URL%/slots}"
+role="$(curl -s -m 5 "$BASE/props" 2>/dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin).get("role", ""))' 2>/dev/null)"
+if [ "$role" = router ]; then
+    # One line: "<status> <url-to-read>", "none", "many", or nothing on an
+    # answer this cannot read.
+    state="$(curl -s -m 5 "$BASE/models" 2>/dev/null | BASE="$BASE" python3 -c '
+import json, os, sys, urllib.parse
+r = [m for m in json.load(sys.stdin).get("data", [])
+     if m.get("status", {}).get("value") in ("loaded", "loading", "sleeping")]
+if not r:
+    print("none")
+elif len(r) > 1:
+    print("many")
+else:
+    q = urllib.parse.urlencode({"model": r[0]["id"], "autoload": "false"})
+    print(r[0]["status"]["value"], os.environ["BASE"] + "/slots?" + q)
+' 2>/dev/null)"
+    case "$state" in
+        # Nothing loaded is nothing in flight: the sweep's first request loads
+        # the default. A sleeping model has no request by definition.
+        none | sleeping\ *)
+            rm -f "$STUCK_FILE"
+            finish
+            ;;
+        loading\ *) stuck_skip "the router at $BASE is loading a model" ;;
+        loaded\ *) SLOTS_URL="${state#loaded }" ;;
+        many)
+            echo "model-idle: the router at $BASE has more than one model resident — not the one-model server this gate reads; failing so mecha doctor sees it"
+            exit 255
+            ;;
+        *)
+            echo "model-idle: the router at $BASE did not answer /models in a shape this reads — failing so mecha doctor sees it"
+            exit 255
+            ;;
+    esac
+fi
+
 # The body and the status separately: `curl -f` would fold every HTTP error
 # into one exit code, and two of them mean opposite things here.
 reply="$(curl -s -m 5 -w '\n%{http_code}' "$SLOTS_URL")"
@@ -166,18 +229,4 @@ if [ "$busy" -gt 0 ]; then
     skip "$busy model slot(s) in use"
 fi
 
-util="$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc '0-9')"
-# Present but unreadable (`[N/A]`, which this box's nvidia-smi answers for
-# its memory queries) still fails open, but says so: from the journal it must
-# not look like a quiet GPU.
-if [ -z "$util" ] && command -v nvidia-smi >/dev/null 2>&1; then
-    echo "model-idle: nvidia-smi gave no readable GPU utilisation — not gating on it"
-fi
-if [ -n "$util" ] && [ "$util" -gt "$GPU_BUSY" ]; then
-    skip "GPU at ${util}% (> ${GPU_BUSY}%)"
-fi
-
-# The sweep runs: the day's skips are over.
-rm -f "$DAY_FILE"
-
-exit 0
+finish

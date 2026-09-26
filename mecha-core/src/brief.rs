@@ -912,12 +912,30 @@ pub fn slots_of(status: u16, body: &str) -> Slots {
     }
 }
 
+/// Where a run's model is served, for the `/slots` read.
+#[derive(Debug, Clone)]
+pub struct LocalServer {
+    pub base_url: String,
+    /// The run's model. A router (`provider::router`) answers `/slots` only
+    /// for a named model; a single-model server ignores the parameter.
+    pub model: Option<String>,
+}
+
 /// One `GET /slots` against a local server, bounded by [`SLOTS_TIMEOUT`].
-pub async fn read_slots(base_url: &str) -> Slots {
+///
+/// Naming a model always says `autoload=false`: against a router, a reading
+/// that loads the model it reads would swap out the one the owner picked. A
+/// model that is not resident answers 400, read as unread — the run is about
+/// to load it, so no slot of it is ours to count yet.
+pub async fn read_slots(base_url: &str, model: Option<&str>) -> Slots {
     let url = format!(
         "{}/slots",
         base_url.trim_end_matches('/').trim_end_matches("/v1")
     );
+    let query: Vec<(&str, &str)> = match model {
+        Some(m) => vec![("model", m), ("autoload", "false")],
+        None => Vec::new(),
+    };
     let http = match reqwest::Client::builder().timeout(SLOTS_TIMEOUT).build() {
         Ok(h) => h,
         Err(e) => {
@@ -926,7 +944,7 @@ pub async fn read_slots(base_url: &str) -> Slots {
             }
         }
     };
-    match http.get(&url).send().await {
+    match http.get(&url).query(&query).send().await {
         Err(e) => Slots::Unread {
             why: format!("/slots: {e}"),
         },
@@ -1124,9 +1142,9 @@ pub struct Inputs<'a> {
 
 /// The slot reading for a provider: `/slots` when it is a local
 /// llama-server (its base URL), [`Slots::NotLocal`] otherwise.
-pub async fn slots_for(local_server: Option<&str>) -> Slots {
+pub async fn slots_for(local_server: Option<&LocalServer>) -> Slots {
     match local_server {
-        Some(url) => read_slots(url).await,
+        Some(l) => read_slots(&l.base_url, l.model.as_deref()).await,
         None => Slots::NotLocal,
     }
 }
@@ -2542,7 +2560,7 @@ mod tests {
             .unwrap();
             head
         });
-        let slots = read_slots(&format!("http://{addr}/v1")).await;
+        let slots = read_slots(&format!("http://{addr}/v1"), None).await;
         assert_eq!(slots, Slots::Read { total: 3, busy: 1 });
         assert!(
             server.await.unwrap().starts_with("GET /slots "),
@@ -2553,7 +2571,7 @@ mod tests {
         let port = closed.local_addr().unwrap().port();
         drop(closed);
         assert!(matches!(
-            read_slots(&format!("http://127.0.0.1:{port}")).await,
+            read_slots(&format!("http://127.0.0.1:{port}"), None).await,
             Slots::Unread { .. }
         ));
     }
