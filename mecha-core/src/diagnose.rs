@@ -27,6 +27,16 @@
 //! second setting: the safety property is a function signature rather than a
 //! rule someone has to remember.
 //!
+//! **One kind of text is admitted, by type (row 2f, L8, R38):** the clean
+//! appraisals of the episodes the nightly's draw will measure the candidate
+//! on — the pool minus its uniform holdout, never the holdout — as bounded
+//! [`AppraisalNote`]s, which only a `Clean` can become. They are the
+//! appraiser's words about runs that read no third-party content, never the
+//! runs' own content (no quotes), never a number; a brief carrying one opens
+//! the conversation private ([`Evidence::conversation`]); and a proposal
+//! lifting eight words of one is refused ([`lifted`]). `mecha diagnose` run
+//! by hand has no draw and carries none.
+//!
 //! **The proposal never quotes its evidence.** The diagnostician may read the
 //! source, this repository's documentation, and the web — that is where a real
 //! diagnosis comes from. What it emits is a typed change and a prediction, and
@@ -253,6 +263,10 @@ pub struct Evidence {
     /// Clean appraisals of those episodes the cap left out — said, never
     /// silent.
     pub appraisals_not_shown: usize,
+    /// The appraisal store could not be read, and why. Said in the brief —
+    /// an unreadable store is a finding, and "no appraisal shown" must not
+    /// read as "none on file".
+    pub appraisals_unread: Option<String>,
 }
 
 // ─── Appraisals in the brief (row 2f) ───────────────────────────────────────
@@ -461,8 +475,23 @@ impl Evidence {
         convo
     }
 
+    /// The brief when the appraisal store could not be read: no note, and
+    /// the reason said where the notes would have been.
+    pub fn appraisals_unread(mut self, why: String) -> Evidence {
+        self.appraisals = Vec::new();
+        self.appraisals_not_shown = 0;
+        self.appraisals_unread = Some(why);
+        self
+    }
+
     /// The appraisal section of the brief, or nothing.
     fn appraisal_section(&self) -> String {
+        if let Some(why) = &self.appraisals_unread {
+            return format!(
+                "\nthe appraisal store could not be read ({why}), so no appraisal of these \
+                 episodes is shown — which is not the same as none being on file\n"
+            );
+        }
         if self.appraisals.is_empty() {
             return String::new();
         }
@@ -566,6 +595,7 @@ impl Evidence {
             history: Vec::new(),
             appraisals: Vec::new(),
             appraisals_not_shown: 0,
+            appraisals_unread: None,
         }
     }
 
