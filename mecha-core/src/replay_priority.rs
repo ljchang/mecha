@@ -988,7 +988,64 @@ mod tests {
         std::fs::write(dir.join("torn.jsonl"), "{\"type\":\"meta\",\"id\":").unwrap();
         let r = Recurrence::scan(&dir, Utc::now()).unwrap();
         assert_eq!(r.unreadable, 1, "the listing dropped it without a word");
+        assert_eq!(r.unreadable_in_window, 0, "a torn header has no date");
         assert!(r.counts.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The scan's two guarantees for 2e-5c, over a real store (review of
+    /// #338: they were only asserted over hand-built values). Every run's
+    /// situation is kept, not the session's last, so a region that came up
+    /// in an earlier run did recur; and a session whose header reads, dated
+    /// in the window, with a run record that does not, is counted unread
+    /// in the window as well as overall.
+    #[test]
+    fn the_scan_keeps_every_run_and_counts_an_unread_run_record_in_the_window() {
+        use crate::session::{Record, RunConfig, SessionKind, SessionMeta};
+        let dir = std::env::temp_dir()
+            .join("mecha-replay-priority-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let on = |surface: SessionKind| RunConfig {
+            rules_surface: Some(surface),
+            ..Default::default()
+        };
+        let meta = || SessionMeta {
+            id: Session::new_id(),
+            created_at: Utc::now(),
+            provider: "p".into(),
+            model: "m".into(),
+            workspace: "/w".into(),
+            title: None,
+            kind: Some(SessionKind::Web),
+        };
+        // Two runs: the TUI's first, then the web's.
+        let s = Session::create(&dir, meta()).unwrap();
+        s.append(&Record::Config(on(SessionKind::Tui))).unwrap();
+        s.append(&Record::Config(on(SessionKind::Web))).unwrap();
+        let r = Recurrence::scan(&dir, Utc::now()).unwrap();
+        assert_eq!(r.runs.len(), 2, "every run's situation, not the last");
+        let tui = Situation::of_record(&on(SessionKind::Tui));
+        assert_eq!(
+            r.matching(Some(&tui)),
+            1,
+            "the earlier run's region recurred"
+        );
+        assert_eq!((r.unreadable, r.unreadable_in_window), (0, 0));
+
+        // A readable header, in the window, over a torn run record.
+        let torn = Session::create(&dir, meta()).unwrap();
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&torn.path)
+                .unwrap();
+            writeln!(f, "{{\"record\":\"config\",\"tools\":").unwrap();
+        }
+        torn.append(&Record::Config(on(SessionKind::Web))).unwrap();
+        let r = Recurrence::scan(&dir, Utc::now()).unwrap();
+        assert_eq!((r.unreadable, r.unreadable_in_window), (1, 1));
         std::fs::remove_dir_all(&dir).ok();
     }
 
