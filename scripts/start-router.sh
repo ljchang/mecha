@@ -48,12 +48,13 @@ printf '%s\n' "version = 1" "" "[*]" "n-gpu-layers = 999" "jinja = true" >"$OUT"
 # for. -c is DIVIDED across -np (four slots of 262,144), and
 # `[providers.local] context_window` must equal c / np.
 S=$(snapshot unsloth--Qwen3.6-35B-A3B-MTP-GGUF) || true
-[ -n "$S" ] || { warn "production model missing: hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF"; exit 1; }
+F="${S}Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+[ -n "$S" ] && [ -f "$F" ] || { warn "production model missing: hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"; exit 1; }
 MP=$(mmproj_or_die "$S" unsloth/Qwen3.6-35B-A3B-MTP-GGUF)
 cat >>"$OUT" <<EOF
 
 [qwen3.6-35b-a3b]
-model = $S/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+model = $F
 mmproj = $MP
 ctx-size = ${MECHA_LLAMA_CTX:-1048576}
 parallel = ${MECHA_LLAMA_NP:-4}

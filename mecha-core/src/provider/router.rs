@@ -17,6 +17,12 @@
 //! `mecha eval` or `batch` is one model for its whole sweep; a process that
 //! outlives one run (the trigger daemon) observes again per run.
 //!
+//! **`Config::provider(None)` reads that snapshot, a process-global** — the
+//! hazard `brief::seats_under` was parameterised to avoid. It is accepted
+//! here because the global is inert unless a config marks an entry
+//! `follow_loaded`, and [`followed`] then only ever picks among the entries
+//! of the config it is handed; tests that write it take turns and restore it.
+//!
 //! Two router answers are traps, both measured against `c841aee`:
 //!
 //! - `GET /props` with no `?model=` answers **200 with a placeholder** —
@@ -195,9 +201,10 @@ static SNAPSHOT: RwLock<Snapshot> = RwLock::new(Snapshot {
 /// names (when following), and a `follow_loaded` that is being ignored.
 ///
 /// Called once at process start, and again per fire by anything that outlives
-/// one run. A handful of loopback round trips per router (`/props`,
-/// `/models`, then the resident model's own `/props`); a refused connection
-/// costs nothing and leaves the default standing.
+/// one run. Four loopback round trips per router with a model resident —
+/// `/props` and `/models` here, then `preflight::fetch`'s bare `/props` and
+/// the resident model's own; a refused connection costs nothing and leaves
+/// the default standing.
 pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
     let mut seen = Vec::new();
     for b in followed_bases(cfg) {
@@ -447,6 +454,10 @@ pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
     // other refusal means no load is coming — kept, so that instead of
     // waiting out `wait` and blaming a long request, the poll gives up after
     // a short grace and names it (found on review).
+    //
+    // A `failed` flag left by an earlier attempt is never read as this one's:
+    // `server_models::load` sets the model `LOADING` before the POST handler
+    // returns (`c841aee`), so by the first poll the stale status is gone.
     let status = resp.status();
     let refusal = if status.is_success() {
         None
@@ -816,15 +827,30 @@ mod tests {
 
     #[test]
     fn the_router_model_list_parses_as_served() {
-        // Trimmed from the router on 2026-09-26 (c841aee).
+        // Captured from the router on 2026-09-26 (c841aee), args trimmed to
+        // the flags that matter. **An unloaded model still reports its
+        // preset's full argv** — which is what lets R4 check a model before
+        // it is loaded — and a preset with no sampling (Gemma) has none.
         let body = r#"{"data":[
-            {"id":"gemma-4-26b-a4b","status":{"value":"unloaded","args":["llama-server"]}},
-            {"id":"qwen3.8-27b","status":{"value":"loaded","args":["llama-server"]}},
+            {"id":"gemma-4-26b-a4b","status":{"value":"unloaded","args":["/home/u/.local/bin/llama-server","--host","127.0.0.1","--jinja","--port","0","--spec-type","draft-mtp","--alias","gemma-4-26b-a4b","--ctx-size","32768","--parallel","1"]}},
+            {"id":"qwen3.8-27b","status":{"value":"loaded","args":["/home/u/.local/bin/llama-server","--host","127.0.0.1","--jinja","--min-p","0.0","--temperature","1.0","--top-k","20","--alias","qwen3.8-27b","--parallel","1"]}},
+            {"id":"qwen3.6-35b-a3b","status":{"value":"unloaded","args":["/home/u/.local/bin/llama-server","--host","127.0.0.1","--temperature","0.6","--alias","qwen3.6-35b-a3b","--parallel","4"]}},
             {"id":"broken","status":{"value":"unloaded","failed":true,"exit_code":1}}
         ],"object":"list"}"#;
         let list: ModelList = serde_json::from_str(body).unwrap();
         assert_eq!(resident(&list.data), Some("qwen3.8-27b"));
-        assert!(list.data[2].status.failed);
-        assert_eq!(list.data[2].status.exit_code, Some(1));
+        assert_eq!(
+            preset_temperature(&list.data[0]),
+            None,
+            "Gemma: server default"
+        );
+        assert_eq!(preset_temperature(&list.data[1]), Some(1.0));
+        assert_eq!(
+            preset_temperature(&list.data[2]),
+            Some(0.6),
+            "read while unloaded"
+        );
+        assert!(list.data[3].status.failed);
+        assert_eq!(list.data[3].status.exit_code, Some(1));
     }
 }
