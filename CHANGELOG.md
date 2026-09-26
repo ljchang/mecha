@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A rule's owner tenure, beside retirement** (`APPRAISAL-WIRING-DESIGN.md`
+  2e-5b/2e-5c, R41). `mecha rules list`/`show` print `owner: <tenure> ·
+  region: <quiet>` per learned rule, and `--json` gains `owner` and `quiet`.
+  Tenure is the Wilson lower bound (z = 1.96) of the owner-accept rate over
+  the owner's verdicts on runs whose `rule_ids` carried the rule: no bound
+  under 20 verdicts, tenured at 0.65, unknown when a session that carried it
+  cannot be read in full. `rules propose-retirements` gives a tenured rule on
+  probation the ordinary leash (3) for that pass, keeping the probation mark;
+  retirement still runs on measured regressions alone, and nothing leaves a
+  prompt on the bound. A rule whose scope no recent run matched is named
+  QUIET — a report only; nothing is evicted. `--no-board` skips both walks.
 - **`goal_context` can serve past clean appraisals** (`APPRAISAL-WIRING-DESIGN.md`
   I2, 2c-2), behind `[agent] past_appraisals` / `Lever::PastAppraisals`,
   which **ships off** until an experiment measures it (`levers_on =

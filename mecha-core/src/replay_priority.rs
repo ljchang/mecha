@@ -377,9 +377,19 @@ pub struct Recurrence {
     /// Sessions in the window whose run record could not be read — counted,
     /// so a caller can say the counts are floors.
     pub unreadable: usize,
+    /// Of `unreadable`, the admitted sessions in the window whose run
+    /// record could not be read — the part known to lie in the window. A
+    /// transcript whose header does not parse has no date and is counted
+    /// in `unreadable` only.
+    pub unreadable_in_window: usize,
     /// Admitted sessions in the window past [`RECURRENCE_SCAN_CAP`], the
     /// oldest: not walked, so their regions' counts are floors too.
     pub beyond_cap: usize,
+    /// Each walked session's run situations (`Situation::of_record` of
+    /// every run record) — what a rule's scope is matched against when row
+    /// 2e-5c asks whether its region has gone quiet ([`Self::matching`]).
+    /// Empty from [`Self::from_keys`].
+    pub runs: Vec<Situation>,
 }
 
 impl Recurrence {
@@ -392,7 +402,9 @@ impl Recurrence {
         Recurrence {
             counts,
             unreadable: 0,
+            unreadable_in_window: 0,
             beyond_cap: 0,
+            runs: Vec::new(),
         }
     }
 
@@ -422,18 +434,32 @@ impl Recurrence {
         for (_, path) in listed.into_iter().take(RECURRENCE_SCAN_CAP) {
             match Session::run_configs_streaming(&path) {
                 Ok(configs) => {
-                    if let Some(key) = configs
-                        .last()
-                        .map(Situation::of_record)
-                        .and_then(|s| s.region_key())
-                    {
+                    let run = configs.last().map(Situation::of_record);
+                    if let Some(key) = run.as_ref().and_then(|s| s.region_key()) {
                         *out.counts.entry(key).or_default() += 1;
                     }
+                    // Every run's, not the last: a rule whose region came
+                    // up in an earlier run of the session did recur.
+                    out.runs.extend(configs.iter().map(Situation::of_record));
                 }
-                Err(_) => out.unreadable += 1,
+                Err(_) => {
+                    out.unreadable += 1;
+                    out.unreadable_in_window += 1;
+                }
             }
         }
         Ok(out)
+    }
+
+    /// Walked runs a rule scoped to `scope` would have loaded in — the
+    /// loader's own match (`learning::carried_in`), so a widened rule counts
+    /// every run of every region it covers. A rule with no scope (it
+    /// predates scoping and loads everywhere) matches every run.
+    pub fn matching(&self, scope: Option<&Situation>) -> usize {
+        self.runs
+            .iter()
+            .filter(|r| scope.is_none_or(|s| s.matches(r)))
+            .count()
     }
 
     /// Runs in `key`'s region, at least the episode itself; `None` for a
@@ -962,7 +988,64 @@ mod tests {
         std::fs::write(dir.join("torn.jsonl"), "{\"type\":\"meta\",\"id\":").unwrap();
         let r = Recurrence::scan(&dir, Utc::now()).unwrap();
         assert_eq!(r.unreadable, 1, "the listing dropped it without a word");
+        assert_eq!(r.unreadable_in_window, 0, "a torn header has no date");
         assert!(r.counts.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The scan's two guarantees for 2e-5c, over a real store (review of
+    /// #338: they were only asserted over hand-built values). Every run's
+    /// situation is kept, not the session's last, so a region that came up
+    /// in an earlier run did recur; and a session whose header reads, dated
+    /// in the window, with a run record that does not, is counted unread
+    /// in the window as well as overall.
+    #[test]
+    fn the_scan_keeps_every_run_and_counts_an_unread_run_record_in_the_window() {
+        use crate::session::{Record, RunConfig, SessionKind, SessionMeta};
+        let dir = std::env::temp_dir()
+            .join("mecha-replay-priority-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let on = |surface: SessionKind| RunConfig {
+            rules_surface: Some(surface),
+            ..Default::default()
+        };
+        let meta = || SessionMeta {
+            id: Session::new_id(),
+            created_at: Utc::now(),
+            provider: "p".into(),
+            model: "m".into(),
+            workspace: "/w".into(),
+            title: None,
+            kind: Some(SessionKind::Web),
+        };
+        // Two runs: the TUI's first, then the web's.
+        let s = Session::create(&dir, meta()).unwrap();
+        s.append(&Record::Config(on(SessionKind::Tui))).unwrap();
+        s.append(&Record::Config(on(SessionKind::Web))).unwrap();
+        let r = Recurrence::scan(&dir, Utc::now()).unwrap();
+        assert_eq!(r.runs.len(), 2, "every run's situation, not the last");
+        let tui = Situation::of_record(&on(SessionKind::Tui));
+        assert_eq!(
+            r.matching(Some(&tui)),
+            1,
+            "the earlier run's region recurred"
+        );
+        assert_eq!((r.unreadable, r.unreadable_in_window), (0, 0));
+
+        // A readable header, in the window, over a torn run record.
+        let torn = Session::create(&dir, meta()).unwrap();
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&torn.path)
+                .unwrap();
+            writeln!(f, "{{\"record\":\"config\",\"tools\":").unwrap();
+        }
+        torn.append(&Record::Config(on(SessionKind::Web))).unwrap();
+        let r = Recurrence::scan(&dir, Utc::now()).unwrap();
+        assert_eq!((r.unreadable, r.unreadable_in_window), (1, 1));
         std::fs::remove_dir_all(&dir).ok();
     }
 

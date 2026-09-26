@@ -367,8 +367,8 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2e-4c** | **A staged skill draft** after k verified successes in one region with a shared tool sequence, proposed only. *Deferred by R40 until the success set has been read on real data; k is unset.* | L2, R40 | 2e-4a | no skill is written without the owner |
 | **2e-5** | **Goal-stamped reflections and per-line tenure**: the anchor as the second source of `Reflexion::goals`; tenure by the Wilson lower bound of the owner-accept rate on the line's owner-verdict channels (`ladder.rs` ported); dormancy for a region that stops recurring (`decay.rs`). Appraisal-weighted tenure only behind R20's guard — the owner's verdict overrides, grounded claims from clean runs only — and as a measured lever against owner-only tenure, with a revert, before it is on. *Split in three for review (2026-09-26), the owner-verdict half only; the appraisal-weighted half stays deferred behind R20 and 2a-2:* | L3, R20, here §5 | 1a, 1d; the appraisal-weighted half 2a-2 | a rule's tenure moves on owner verdicts by the bound, not a streak; an owner verdict overrides an appraisal's bad; the lever reverts |
 | **2e-5a** | **The anchor as the second source of `Reflexion::goals`**: where no plan or question in force names a goal at the intervention, the anchor in force there (`Transcript::anchor_covering`: the anchor the run holding the message ended on, none where a question answered later in that run could have moved it) — never the session's last, never backfilled, and not the situation's goal key. | L3 | 1a | a correction in an anchored run that planned nothing is stamped with its run's anchor and `goal_lessons` serves its rule toward it — *built; see L3* |
-| **2e-5b** | **Tenure by the Wilson lower bound** of the owner-accept rate on a rule's owner-verdict channels (S3, the outbox verdicts; never a counter or a model's account), `ladder.rs` ported. *Waits on the owner's shape questions: the bound's z, floor and minimum n; whether it replaces or sits beside the ledger's attributed-regression retirement; which verdicts are a rule's (the runs that carried it by `RunConfig::rule_ids`, or its line's).* | L3, here §5 | 2e-5a, 1d | a rule's tenure moves on owner verdicts by the bound, not a streak |
-| **2e-5c** | **Dormancy for a region that stops recurring** (`decay.rs`, over 2e-6's recurrence). *Waits on the owner: ARCHITECTURE's "Acceptance is not tenure" names decay and usage-based eviction as deliberately absent ("the rarely-fired rule that must never expire"), and what a dormant rule does to its slot under the per-domain cap is unruled.* | L3, here §5 | 2e-6 | — |
+| **2e-5b** | **Tenure by the Wilson lower bound** of the owner-accept rate over the owner's verdicts on the runs that carried the rule (`RunConfig::rule_ids`; `GoalError::is_owner_verdict`, never a counter or a model's account), `ladder.rs` ported under R41: z = 1.96, no bound under 20 verdicts, tenured at 0.65. Beside retirement: a tenured rule leaves probation and is shown tenured; nothing leaves the prompt on the bound, and retirement stays on measured regressions. | L3, R41, here §5 | 1d | a rule's tenure moves on owner verdicts by the bound, not a streak; an unread session makes it unknown — *built; see L3* |
+| **2e-5c** | **A quiet region, reported** (`decay.rs`'s rule, as a report under R41): `mecha rules` names an active rule no admitted run in 2e-6's recurrence window matched. Nothing evicted, no slot changes, nothing stops loading. | L3, R41, here §5 | 2e-6 | a rule older than the window that no run matched reads QUIET and still loads — *built; see L3* |
 | **2e-6** | **Replay priority is gain × need**: \|signed error\| on owner-verdict channels × charter rank × how often the `Situation` region recurs (the Selector's demand term) × age decay; the hopeless demoted; the holdout still drawn uniformly first; the same order for `learn`'s batches and the validation budget; 2b-2's misses raise it. | L1, here §5 | 1g; 2b-2 for the surprise term | the uniform holdout is unchanged by the ranking; a recurring region outranks a one-off of equal error — *built under R39; see L1: the Selector's `ln(1 + touches)` ported as the need term, over runs matched in the region* |
 | **2f** | **The diagnostician reads clean appraisals** of the episodes its draw selected, beside its counters, through `Clean` only; `carries_over` covers their text as a source; `candidate::judge` still decides. *Built as 2f, under R38: the draw's first phase (pool and uniform holdout) precedes the diagnosis, and the appraisals are the remainder's, never the holdout's.* | L8, R38 | 2a-2 | a tainted appraisal never reaches `diagnose::Evidence`; a proposal lifting a run of words from an appraisal is refused — *built; see L8* |
 
@@ -526,8 +526,9 @@ widening.
 | R38 | 2 | Which episodes the diagnostician's appraisals come from (2f): the nightly's draw is split in two, on one seed. The candidate id — the seed — is minted before the diagnosis, and the eligible pool and its uniform holdout are drawn then, since neither reads the metric; the diagnostician reads the clean appraisals of **the pool minus the holdout**, and **never the holdout**; after the proposal the selection is ranked by headroom from that same remainder, exactly as before, so `judge_drawn` and `combine` get the inputs they got. Accepted costs: a pool walk every night (no model call) and a candidate id minted and discarded on nights with no candidate. `mecha diagnose` run by hand has no draw and carries no appraisals. A brief carrying one opens the diagnostician's conversation **private**, fail-closed, and the thinner research on those nights (after the first fetch, blind `web_search` only) is accepted | **ruled 2026-09-25/26** (the owner, on 2f's shape question); built as 2f |
 | R39 | 2 | How 2e-6's replay priority enters the two draws that feed a gate. **The harness selection**: headroom on the predicted metric above zero is the gate — an episode that can only tie comes after every one that can discriminate — and within each part the order is the priority, then the charter rank, then the id. **Point-wise points**: `mecha sessions compare` ranks its uniform draw by the priority of each point's session; `compare_candidate` inside `harness measure` stays uniform, because its points are R36's confirming sample (no separate holdout) and ranking them would bias the verdict (GOAL-SYSTEM-DESIGN §8.1) | **ruled 2026-09-26** (the owner, on 2e-6's two shape questions); built as 2e-6 |
 | R40 | 2 | Row 2e-4's shape. **The success set is derived at read time** (`success.rs`) from the stores that own each act — a model's message draft sent unchanged, a standing `done` closure with no `undoes` reopen, a workflow closed and not reopened, a question answered whose session completed — with **no new success store**, so a reopen withdraws a success by construction (1d's "read from the store that owns it"). **An exemplar is the sent draft's own text, verbatim**, with its tool, situation and an `Origin` from the staging taint, and no model call; built **in shadow**, served to no run — the lever that serves exemplars to drafting runs is deferred, and must arm `private_data` as the brief does (R35). **2e-4c (staged skill drafts) is deferred** until the success set has been read on real data; k stays unset. The planning success example's step source is the implementer's to choose and justify (2e-4b): the verified session's tool sequence, since few runs write plan steps | **ruled 2026-09-26** (the owner, on 2e-4's shape questions); 2e-4a built |
+| R41 | 2 | 2e-5's owner-verdict half (2e-5b, 2e-5c). **Tenure** sits **beside** retirement, not replacing it: the Wilson lower bound of the owner-accept rate gates release from probation and a "tenured" status, and retirement stays on measured regressions (3 attributed, 2 on probation); nothing leaves the prompt on the bound. **Verdicts** counted toward a rule are the S3 and outbox owner verdicts from runs whose `RunConfig::rule_ids` carried it, each rule its own rate, never a model's account and never counters. **Thresholds** are `ladder.rs`'s: z = 1.96; no bound below 20 verdicts (`None`, "not enough verdicts", never a rate); tenured at a lower bound of 0.65, the ladder's 0.85 and 0.15 floors carried only where they map cleanly (neither does; L3 says why). **Dormancy** is report only: rules whose region has been quiet over 2e-6's `Recurrence` window are named in `mecha rules`; nothing is evicted, no slot changes, nothing stops loading, and ARCHITECTURE's "Acceptance is not tenure" stands as written. Numbered R41 because R40 is taken by the 2e-4 lane (#336, unmerged) | **ruled 2026-09-26 (the owner)**; built as 2e-5b and 2e-5c |
 
-**Every ruling is settled** (2026-09-24; R30–R37 on 2026-09-25; R38 on 2026-09-25/26; R39 and R40 on 2026-09-26), except the
+**Every ruling is settled** (2026-09-24; R30–R37 on 2026-09-25; R38 on 2026-09-25/26; R39, R40 and R41 on 2026-09-26), except the
 parked items (R3, R8), the flag (R9), the deferred R7, the declined R2 and
 R29, which is not proposed.
 Phase 5's R28 waited on the bubblewrap upgrade, an ops step; the workstation
@@ -1640,8 +1641,32 @@ evidence local to the moment is the more specific; the anchor, the harness's
 seed or the owner's confirmation, is what remains when the run named none —
 every run since the model stopped planning. Each run's own anchor is read,
 never the session's last, and a message no recorded outcome covers stamps
-none. Not backfilled, as `goals` never was. 2e-5b (the Wilson bound) and
-2e-5c (dormancy) wait on the owner; the row says on what.
+none. Not backfilled, as `goals` never was.
+
+*2e-5b and 2e-5c built, under R41* (`mecha_core::tenure`; ARCHITECTURE
+"Tenure by the owner's verdicts sits beside retirement, and only
+promotes"). What moved from `ladder.rs`, and what did not:
+
+- **Moved.** Only the owner's acts count. The statistic is the Wilson lower
+  bound at z = 1.96, not a streak and not a raw rate. It promotes and never
+  demotes. The ladder's `GATE_MIN_JUDGED` (20) is the minimum, below which
+  there is no bound (`None`), where the ladder answered 0.0. The
+  `PROMOTE_LB_SAMPLED` floor (0.65) is tenure.
+- **Changed.** The ladder's class is the proposer that produced the fact. A
+  rule has none, so its record is the owner's verdicts on the runs that
+  carried it (`RunConfig::rule_ids`). A turn-cited verdict counts toward that
+  run's rules, and any other toward the rules every run of the session
+  carried. The rung is a released probation leash and a readout, not an
+  auto-accept lane.
+- **Not carried.** The 0.85 `TRUSTED` floor (a rule has no spot-check to lose)
+  and the 0.15 generation gate (for a rule, that would be leaving the prompt,
+  which R41 rules out).
+- **Dormancy.** From `decay.rs`: "decay calibrates, it does not demote", and a
+  person's verdict vetoes it. It is built as a report only. A rule whose
+  scope no admitted run in the recurrence window matched is named QUIET in
+  `mecha rules`, never while younger than the window, and unknown where part
+  of the window was unread.
+- **Deferred still.** The appraisal-weighted half waits behind R20 and 2a-2.
 
 #### L1. Replay priority is gain × need
 
