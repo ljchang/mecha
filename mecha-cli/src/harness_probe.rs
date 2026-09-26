@@ -659,7 +659,7 @@ pub(crate) fn fixture_session(dir: &Path, id: &str, n: u32, serves: Option<&str>
         tool_calls: 3,
         tool_errors: n % 3,
         compactions: n % 2,
-        ended_on_failed_call: n % 2 == 0,
+        ended_on_failed_call: n.is_multiple_of(2),
         checks_declared: serves.map(|_| 1),
         checks_passed: serves.map(|_| 0),
         ..Default::default()

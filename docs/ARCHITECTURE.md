@@ -3655,12 +3655,39 @@ Two rules are structural rather than instructed:
   a corpus of them cannot be an injection surface the way tool output would
   be. `frontdoor::Record::for_privileged_run` in a second setting — the safety
   property is a function signature, not a rule someone remembers.
+  **One kind of text is admitted, by type (row 2f, R38): clean appraisals.**
+  `Evidence::with_appraisals` takes a `CleanRead`, the store's clean door,
+  and the episode ids of the nightly draw's remainder. That remainder is
+  the pool minus its uniform holdout, never the holdout, so the slice that
+  confirms a change is one its author never read about.
+  - Only a `Clean` becomes an `AppraisalNote`: its fields are private and
+    its one constructor takes `&Clean`.
+  - A note carries the appraiser's words (interpretation, good/bad per goal,
+    lessons). It never carries a claim's quote, which is the appraised run's
+    content, and never a number (R21).
+  - It is bounded: 6 notes, newest first, one per session; interpretation
+    cut at 600 characters, and at most 2 lessons of 240. That is about 9,000
+    characters in all. A cut is flagged, notes past the cap are counted, and
+    an unreadable store is said.
+  - **A brief carrying a note opens the conversation `private`**
+    (`Evidence::conversation`), fail-closed: a clean run may have read the
+    owner's files, and its appraisal can say so. On those nights the
+    diagnostician's first fetched page arms the interlock, and it researches
+    on blind `web_search` only (the owner's ruling; `TRIFECTA.md`).
+  - `mecha diagnose` run by hand has no draw and carries none.
+    `[agent] appraisals_in_brief` is the lifetime stage lever (on).
+  - Nothing in a note reaches the gate. `judge_drawn` and `combine` read
+    replay pairs and the point-wise tally, and the class comes from the
+    proposal's own text.
 - **The proposal never quotes its evidence.** The diagnostician may read the
   source, these documents and the web; `carries_over` rejects a proposal that
   reproduces eight consecutive words from anything it read. An instruction
   lifted from a page cannot survive that; a conclusion drawn from one can.
   Eight because shorter runs collide on ordinary technical prose, and a check
   that fires on honest proposals gets turned off and protects nothing.
+  The appraisal notes in the brief are sources too. `diagnose::lifted`
+  checks a proposal against the tool results and the notes as one list,
+  through the same `carries_over`, with no second checker.
 - **The class is derived from the change, never taken on trust.** The class is
   what decides whether a human ever sees a proposal — `Security` is never
   measured and never auto-applied, while `Config` inside the closed override
@@ -3815,6 +3842,18 @@ everything else stages for review or is rejected with the evidence attached.
 
 The decisions that carry it, each a bug if undone:
 
+- **The draw is split in two phases on one seed, and the holdout is fixed
+  before the diagnosis** (row 2f, R38). `ruminate` mints the candidate id
+  (the seed, `seed_of`) before diagnosing, and a night with no candidate
+  discards it. It then draws the eligible pool and its uniform holdout
+  (`harness_probe::draw_pool`), neither of which reads the metric, and the
+  diagnostician's brief carries the clean appraisals of `Pool::remainder`
+  only. After the proposal, `Pool::select` ranks the remainder by the
+  predicted metric's headroom exactly as the single-phase draw did.
+  `the_split_draw_is_the_single_phase_draw` holds the two against the old
+  body, verbatim, element for element and in order, so moving the phase
+  changed when the draw happens and never what is measured. The pool walk
+  (no model call) is paid every night, proposal or not.
 - **A configured knob must affect the selected adapter.**
   `ConfigChange::ensure_supported` checks `Provider::supports_effort` before
   spending replay budget. The local compatible adapter accepts the config field
