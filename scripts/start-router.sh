@@ -33,7 +33,20 @@ mkdir -p "$(dirname "$OUT")"
 # on disk stays in the old one. Found 2026-09-26, when fetching unsloth's
 # UD-Q4_K_XL put it in a second snapshot and the first-snapshot lookup lost
 # the Q4_K_M and its projector beside it (the qwen3.8-27b preset vanished).
-hub_file() { ls -t "$HUB"/models--"$1"/snapshots/*/"$2" 2>/dev/null | head -1; }
+#
+# Prints nothing — and **still succeeds** — when no snapshot holds the file:
+# every caller is a bare `F=$(hub_file …)` under `set -euo pipefail`, where a
+# non-zero helper would end the script silently, before any `warn` could say
+# why (found on review: an unmatched glob makes `ls` exit 2). And only a file
+# that is really there counts: snapshot entries are symlinks into blobs/, and
+# a pruned blob leaves one dangling, which `ls` still lists.
+hub_file() {
+  local f
+  for f in $(ls -t "$HUB"/models--"$1"/snapshots/*/"$2" 2>/dev/null); do
+    [ -f "$f" ] && { echo "$f"; return 0; }
+  done
+  return 0
+}
 
 # A repo's vision projector, as mmproj.sh names them (BF16 first); when none is
 # on disk, mmproj_or_die's message — with the download line — and a failure.
@@ -42,7 +55,9 @@ hub_mmproj() {
   found=$(hub_file "$1" mmproj-BF16.gguf)
   [ -n "$found" ] || found=$(hub_file "$1" mmproj-F16.gguf)
   [ -n "$found" ] && { echo "$found"; return 0; }
-  mmproj_or_die "$HUB/models--$1/snapshots/none/" "${1/--//}"
+  # The newest snapshot is where the fetch line it prints should write; a
+  # caller only gets here after finding the weights, so there is one.
+  mmproj_or_die "$(ls -dt "$HUB/models--$1"/snapshots/*/ 2>/dev/null | head -1 || true)" "${1/--//}"
 }
 warn() { echo "$(basename "$0"): $*" >&2; }
 
@@ -83,8 +98,8 @@ EOF
 # head in the GGUF (block_count 40, no nextn), so no spec-type — passing it
 # fails the child's start. Its projector ships under its own name.
 R=HauhauCS--Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive
-F=$(hub_file $R Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf)
-MP=$(hub_file $R mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf)
+F=$(hub_file "$R" Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf)
+MP=$(hub_file "$R" mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf)
 if [ -n "$F" ] && [ -n "$MP" ]; then
   cat >>"$OUT" <<EOF
 
@@ -119,7 +134,7 @@ EOF
 }
 
 # Measured 2026-09-26 on llama.cpp 95887577, one stream, 400 tokens, same
-# prompt and flags for all three rows below (docs/LLAMA-SERVER.md §Router mode):
+# prompt and flags for all four rows below (docs/LLAMA-SERVER.md §Router mode):
 #
 #   file                          decode       MTP draft acceptance
 #   unsloth Q4_K_M (withdrawn)    21.1 tok/s   0.38
@@ -135,12 +150,12 @@ EOF
 # fallback for a machine that still has it; the projector is unchanged since
 # 2026-08-14 and serves both.
 R=unsloth--Qwen3.8-27B-GGUF
-F=$(hub_file $R Qwen3.8-27B-UD-Q4_K_XL.gguf)
+F=$(hub_file "$R" Qwen3.8-27B-UD-Q4_K_XL.gguf)
 if [ -z "$F" ]; then
-  F=$(hub_file $R Qwen3.8-27B-Q4_K_M.gguf)
+  F=$(hub_file "$R" Qwen3.8-27B-Q4_K_M.gguf)
   [ -n "$F" ] && warn "qwen3.8-27b: UD-Q4_K_XL not on disk, serving the withdrawn Q4_K_M — hf download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-UD-Q4_K_XL.gguf"
 fi
-if [ -n "$F" ] && MP=$(hub_mmproj $R); then
+if [ -n "$F" ] && MP=$(hub_mmproj "$R"); then
   qwen38 qwen3.8-27b "$F" "$MP"
 else
   warn "skipping qwen3.8-27b: weights or projector not on disk"
@@ -152,8 +167,8 @@ fi
 # HauhauCS "Aggressive": method undisclosed (the maker of the Qwen3.6
 # uncensored arm above); users report its reasoning forced into English.
 R=HauhauCS--Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF
-F=$(hub_file $R Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf)
-MP=$(hub_file $R mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf)
+F=$(hub_file "$R" Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf)
+MP=$(hub_file "$R" mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf)
 if [ -n "$F" ] && [ -n "$MP" ]; then
   qwen38 qwen3.8-27b-uncensored "$F" "$MP"
 else
@@ -163,8 +178,8 @@ fi
 # huihui-ai: abliteration (refusal-direction ablation, layers 17-52) over
 # unsloth's UD quant; MTP and vision untouched, per its README and its header.
 R=huihui-ai--Huihui-Qwen3.8-27B-abliterated-GGUF
-F=$(hub_file $R Huihui-Qwen3.8-27B-abliterated-UD-Q4_K_XL.gguf)
-MP=$(hub_file $R mmproj-model-bf16.gguf)
+F=$(hub_file "$R" Huihui-Qwen3.8-27B-abliterated-UD-Q4_K_XL.gguf)
+MP=$(hub_file "$R" mmproj-model-bf16.gguf)
 if [ -n "$F" ] && [ -n "$MP" ]; then
   qwen38 qwen3.8-27b-abliterated "$F" "$MP"
 else
@@ -173,9 +188,9 @@ fi
 
 # Gemma's MTP head ships as a separate draft file.
 R=unsloth--gemma-4-26B-A4B-it-GGUF
-F=$(hub_file $R gemma-4-26B-A4B-it-UD-Q4_K_M.gguf)
-D=$(hub_file $R mtp-gemma-4-26B-A4B-it.gguf)
-if [ -n "$F" ] && [ -n "$D" ] && MP=$(hub_mmproj $R); then
+F=$(hub_file "$R" gemma-4-26B-A4B-it-UD-Q4_K_M.gguf)
+D=$(hub_file "$R" mtp-gemma-4-26B-A4B-it.gguf)
+if [ -n "$F" ] && [ -n "$D" ] && MP=$(hub_mmproj "$R"); then
   cat >>"$OUT" <<EOF
 
 [gemma-4-26b-a4b]
