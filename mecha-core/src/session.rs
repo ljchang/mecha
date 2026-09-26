@@ -1448,6 +1448,24 @@ impl Transcript {
             .rfind(|(pos, _)| **pos <= message_index)
             .map(|(_, cfg)| cfg)
     }
+
+    /// The goal anchor recorded by the run message `message_index` belongs
+    /// to: the outcome of the first run that ended after it
+    /// (`RunStats::goal_anchor`), which is the anchor in force while that
+    /// run held the message — a later re-anchoring (an answered question, a
+    /// hand-over to an older task) belongs to a later run and is never read
+    /// back onto this one. `None` when that run's outcome names no anchor,
+    /// when no recorded outcome covers the message (the run errored, is in
+    /// flight, or a summarising compaction removed its place — see
+    /// `outcome_positions`), or on a transcript from before the field:
+    /// absent, never the session's last anchor guessed onto it.
+    pub fn anchor_covering(&self, message_index: usize) -> Option<&crate::goal::GoalRef> {
+        self.outcome_positions
+            .iter()
+            .zip(&self.outcomes)
+            .find(|(end, _)| end.is_some_and(|end| end > message_index))
+            .and_then(|(_, o)| o.goal_anchor.as_ref())
+    }
 }
 
 /// Every `Record::Outcome` in a transcript, in order.

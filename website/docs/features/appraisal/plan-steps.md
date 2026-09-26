@@ -128,8 +128,10 @@ and keeps the owner's completion verdict alongside execution evidence.
 examples with passing checks. It preserves scope and provenance and runs only
 when requested by the agent. It returns nothing until those links exist: a
 reflection takes its goal from the plan (or the named goal) at the moment of the
-intervention, and an example needs a completed step whose check passed, so on an
-install where runs rarely write a plan the lists stay empty. An empty answer means
+intervention, or else from the goal its run was anchored to (a delegated task, a
+trigger, a goal you confirmed), and an example needs a completed step whose check
+passed, so on an install where runs rarely write a plan the example list stays
+empty, and lessons come only from anchored or planned runs. An empty answer means
 no recorded evidence, not a proven approach. Failed checks, changes to frozen checks and
 verified task-criterion failures can supply bounded mismatch reflections to
 `mecha reflect`. Estimate overruns remain observations; they do not establish a
