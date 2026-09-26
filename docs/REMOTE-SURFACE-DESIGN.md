@@ -657,10 +657,12 @@ loaded Qwen3.8 in 25 s.
 
 ### Four scripts read a bare `/props`
 
-Found on review, and each fails loudly rather than recording a wrong
-number: `bench/run.sh` and `scripts/replay-regression.sh` (`MODEL_PORT`
-8080), `scripts/bench-slots.sh` (reads `total_slots`, which the placeholder
-lacks, and refuses), and `scripts/appraisal-validity.py` (pins the
-placeholder's `"llama-server"` as `--model`, which the router answers 400).
+Found on review: `bench/run.sh` and `scripts/replay-regression.sh`
+(`MODEL_PORT` 8080), `scripts/bench-slots.sh` (reads `total_slots`, which
+the placeholder lacks, and refuses), and `scripts/appraisal-validity.py`.
+Not all of them fail loudly: `bench/run.sh` and `appraisal-validity.py`
+read the placeholder's `model_alias: "llama-server"` as a model name — the
+latter then pins it as `--model`, which the router answers 400, but the
+former can write it down as what was benchmarked.
 They need `?model=…&autoload=false` before the install, or the `update`
 skill's benchmark step is the next thing to break.
