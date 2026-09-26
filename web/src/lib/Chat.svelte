@@ -563,6 +563,7 @@
     if (incognito) {
       draft = '';
       attachments = [];
+      todo = [];
     }
     incognito = false;
     gone = null;
@@ -601,6 +602,9 @@
       const data = await res.json();
       switchTo(data.key);
       incognito = true;
+      // Another chat's attachments are paths in another jail; they would not
+      // resolve in the room.
+      attachments = [];
       // `switchTo` returns early on the same key, and it is what clears this.
       gone = null;
       queueMicrotask(() => inputEl?.focus());
@@ -1025,8 +1029,13 @@
         }
         if (!res.ok) throw new Error((await res.text()).trim());
         const data = await res.json();
+        // `attachments` belongs to whichever chat is on screen: a switch
+        // mid-upload must not announce this chat's file in the next one — from
+        // an incognito chat, into a recorded transcript (review of #326).
+        if (sessionKey !== key) return;
         attachments.push(data.path);
       } catch (err) {
+        if (sessionKey !== key) return;
         pushEntry({ kind: 'notice', text: `upload failed: ${err?.message ?? err}` });
       } finally {
         uploading = false;
