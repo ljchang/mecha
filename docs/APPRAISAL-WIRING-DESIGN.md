@@ -328,7 +328,7 @@ needs.*
 | 2c | Past clean appraisals retrieved by situation and goal through `goal_context`, with the goal as a `Situation` key | I2, M1 |
 | 2d | **Point-wise counterfactual comparison, beside whole-session rumination** (R26: both): at the informative decision points of recorded sessions (a steer, a denial, a failed check, an edited or rejected draft, a surprise), drive K policies a short horizon from the point and let the owner's recorded verdict decide; the losing arms' confirmed outcomes are written into that session's appraisal | O1, O3 |
 | 2e | Learning from appraisals: the reflector's lessons measured against I1's on the same interventions, then `learn` fed clean appraisals — successes included, corrections attributed data / behaviour / gap, tenure by a Wilson bound on the owner's verdicts behind R20's guard, priority from I1's judgments × how often the situation recurs | L2, L7, L3, L1 |
-| 2f | The nightly diagnostician reads clean appraisals beside its counters | L8 |
+| 2f | The nightly diagnostician reads clean appraisals beside its counters — *built (R38)* | L8 |
 
 **Done when**, in a lifetime experiment on fixtures against the
 appraisal-off preset: lessons from appraisals validate more often than
@@ -364,7 +364,7 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2e-4** | **Learn from what went right**: owner-verified positives (sent unchanged, answered, `done` and not reopened) as writing exemplars, planning success examples and contrast evidence; a staged skill draft after k successes in one region, proposed only. | L2 | 1d | a draft sent unchanged is mined as an exemplar; a success the owner later reopens is withdrawn; no skill is written without the owner |
 | **2e-5** | **Goal-stamped reflections and per-line tenure**: the anchor as the second source of `Reflexion::goals`; tenure by the Wilson lower bound of the owner-accept rate on the line's owner-verdict channels (`ladder.rs` ported); dormancy for a region that stops recurring (`decay.rs`). Appraisal-weighted tenure only behind R20's guard — the owner's verdict overrides, grounded claims from clean runs only — and as a measured lever against owner-only tenure, with a revert, before it is on. | L3, R20, here §5 | 1a, 1d; the appraisal-weighted half 2a-2 | a rule's tenure moves on owner verdicts by the bound, not a streak; an owner verdict overrides an appraisal's bad; the lever reverts |
 | **2e-6** | **Replay priority is gain × need**: \|signed error\| on owner-verdict channels × charter rank × how often the `Situation` region recurs (the Selector's demand term) × age decay; the hopeless demoted; the holdout still drawn uniformly first; the same order for `learn`'s batches and the validation budget; 2b-2's misses raise it. | L1, here §5 | 1g; 2b-2 for the surprise term | the uniform holdout is unchanged by the ranking; a recurring region outranks a one-off of equal error |
-| **2f** | **The diagnostician reads clean appraisals** of the episodes its draw selected, beside its counters, through `Clean` only; `carries_over` covers their text as a source; `candidate::judge` still decides. | L8 | 2a-2 | a tainted appraisal never reaches `diagnose::Evidence`; a proposal lifting a run of words from an appraisal is refused |
+| **2f** | **The diagnostician reads clean appraisals** of the episodes its draw selected, beside its counters, through `Clean` only; `carries_over` covers their text as a source; `candidate::judge` still decides. *Built as 2f, under R38: the draw's first phase (pool and uniform holdout) precedes the diagnosis, and the appraisals are the remainder's, never the holdout's.* | L8, R38 | 2a-2 | a tainted appraisal never reaches `diagnose::Evidence`; a proposal lifting a run of words from an appraisal is refused — *built; see L8* |
 
 **Parallel now**, on phase 1 alone: 2a-1, 2b-1, 2c-1, 2d-1, 2e-3, 2e-4,
 the owner-verdict half of 2e-5, and 2e-6 without its surprise term.
@@ -517,8 +517,9 @@ widening.
 | R33 | 2 | How a text prediction is scored (2b-2): a closed-set expected owner act from R16's set sits beside the prose and is scored structurally against the act the owner records (here §3, the second question) | **ruled 2026-09-25** by the owner directly; the field is `TextAppraisal::expected_act`, added by 2a-2 (#314); scoring it is 2b-2 |
 | R34 | 2 | A rule scoped to a goal that closes keeps its scope (`task:<uid>`) and widens only on evidence, by §17.4's restatement; such rules are made **visible**, not left silent | **ruled 2026-09-25; built as #317** — `mecha rules list` counts and marks them `LOADS NOWHERE`, `mecha learn` repeats the count each pass, an unreadable board is its own finding |
 | R37 | 2 | An appraisal's expected owner act of "no act" becomes the act that happened once **the output's store patience** has elapsed, counted from **the appraised session's end**: the patience is `doctor::Patience::for_store`'s (the charter line watching that store, else the doctor's constant); an output with no store (a chat answer) resolves at the doctor's constant; an owner act that arrives before the window closes is the act; an unreadable act store or patience is unknown and never resolves to no act. **Refined 2026-09-25:** a task's output uses the task's due date — the window runs from the session's end to the board row's `due_at` (the end of that day in the owner's zone), an owner closure by then is the act, an undated task keeps the constant, a `due_at` already past at the session's end falls back to the constant, and an unreadable board or unparseable `due_at` is unknown; workflow outputs keep the constant for now; "the doctor's constant" is confirmed as the outbox's 48h | **ruled 2026-09-25**; built as 2b-2 |
+| R38 | 2 | Which episodes the diagnostician's appraisals come from (2f): the nightly's draw is split in two, on one seed. The candidate id — the seed — is minted before the diagnosis, and the eligible pool and its uniform holdout are drawn then, since neither reads the metric; the diagnostician reads the clean appraisals of **the pool minus the holdout**, and **never the holdout**; after the proposal the selection is ranked by headroom from that same remainder, exactly as before, so `judge_drawn` and `combine` get the inputs they got. Accepted costs: a pool walk every night (no model call) and a candidate id minted and discarded on nights with no candidate. `mecha diagnose` run by hand has no draw and carries no appraisals. A brief carrying one opens the diagnostician's conversation **private**, fail-closed, and the thinner research on those nights (after the first fetch, blind `web_search` only) is accepted | **ruled 2026-09-25/26** (the owner, on 2f's shape question); built as 2f |
 
-**Every ruling is settled** (2026-09-24; R30–R37 on 2026-09-25), except the
+**Every ruling is settled** (2026-09-24; R30–R37 on 2026-09-25; R38 on 2026-09-25/26), except the
 parked items (R3, R8), the flag (R9), the deferred R7, the declined R2 and
 R29, which is not proposed.
 Phase 5's R28 waited on the bubblewrap upgrade, an ops step; the workstation
@@ -1501,6 +1502,47 @@ changes from — is counters and means, and all twelve candidates it has propose
 episodes the draw selected: what went wrong and why, in text, beside the
 counters. Its proposals remain gated by `candidate::judge` on cost metrics; the
 appraisal feeds what is proposed, never what is accepted.
+
+*2f built, under R38 (the owner's ruling on its shape question).* The row
+said "the episodes the draw selected", and the draw came after the
+diagnosis: its seed is the candidate's id and its selection is ranked by
+the metric the proposal names. So the draw is split, on one seed
+(`harness_probe::draw_pool`, then `Pool::select`):
+
+- **Before the diagnosis**, `harness ruminate` mints the candidate id and
+  draws the eligible pool and its uniform holdout, neither of which reads
+  the metric. The diagnostician's brief carries the clean appraisals of
+  `Pool::remainder` — the pool minus the holdout — and **never the
+  holdout's**, so the slice that confirms a change is one its author never
+  read about.
+- **After the proposal**, the selection is ranked from that same remainder
+  by headroom, exactly as before. The split changes nothing about what is
+  measured: `the_split_draw_is_the_single_phase_draw` holds the two-phase
+  draw against the old single-phase body, verbatim, over every metric and
+  several seeds, sizes and holdout rates, element for element and in order.
+- **What rides** (`diagnose::AppraisalNote`, built only from `&Clean`): the
+  interpretation, good/bad per goal as words, and the lessons — never a
+  claim's quote, which is the run's content, and no number (R21). At most
+  6 appraisals, newest first, one per session; each interpretation cut at
+  600 characters and at most 2 lessons of 240, about 1,450 characters a
+  note and 9,000 in all. A cut is flagged on the note, and appraisals past
+  the cap are counted in the brief; an unreadable store is said, never read
+  as none.
+- **A source for `carries_over`.** `diagnose::lifted` checks a proposal
+  against the tool results and the notes as one list; there is no second
+  checker.
+- **Private.** A clean run may have read the owner's files, and its
+  appraisal can say so, so a brief carrying one opens the diagnostician's
+  conversation with `private` taint (`Evidence::conversation`): after its
+  first fetched page the interlock refuses `http_fetch`, and research
+  continues on blind `web_search` only (R38; `TRIFECTA.md`).
+- **The gate is untouched.** `judge_drawn` and `combine` read replay pairs
+  and the point-wise tally; the class is derived from the proposal's own
+  text. Nothing in the brief reaches either.
+- **A stage lever**, `[agent] appraisals_in_brief` (on; `stages_off =
+  ["appraisals_in_brief"]` in a lifetime arm), is the appraisal-off
+  preset's reach into `ruminate`; off withholds the section by omission.
+- `mecha diagnose` run by hand has no draw, and carries no appraisals.
 
 ### For phase 3 — meaning in the run
 

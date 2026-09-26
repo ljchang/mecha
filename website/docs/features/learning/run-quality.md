@@ -186,10 +186,19 @@ Two rules are structural rather than instructed:
 - **The brief is built from counters, not content.** `Evidence` holds numbers
   and doctor's findings — machine-authored text, written by this program. There
   is deliberately no field for a transcript excerpt and no argument that adds
-  one.
+  one. The one kind of prose it admits is a **clean text appraisal**: mecha's
+  own interpretation of a session that read no third-party content. The
+  nightly pass shows the diagnostician the appraisals of the sessions its
+  candidate will be measured on, but never those of the held-out sessions
+  that confirm a change. It shows at most six, cut short and marked where
+  cut, with no quote from the session and no number. A brief that carries one
+  counts as private data in the diagnostician's conversation, so after it
+  reads one outside page it can search the web but not fetch from it.
+  `mecha diagnose` run by hand shows no appraisals.
 - **The proposal never quotes its evidence.** The diagnostician runs read-only
   with the web tools and may read the source and these docs; a proposal that
-  reproduces **eight consecutive words** from anything it read is refused. An
+  reproduces **eight consecutive words** from anything it read — an appraisal
+  in its brief included — is refused. An
   instruction lifted from a page cannot survive that; a conclusion drawn from
   one can. Eight because shorter runs collide on ordinary technical prose, and a
   check that fires on honest proposals gets turned off and protects nothing.
@@ -360,6 +369,9 @@ sessions, and dispose of it through the gate — in one pass, on a timer.
 Replay spends its budget on the sessions where the predicted metric has the
 most room to move; when two are tied, the one whose signed errors touch a
 higher-ranked [charter](/docs/features/appraisal/charter) line goes first.
+The held-out sessions, drawn at random, are chosen **before** the diagnosis.
+The diagnostician reads the appraisals of the other sessions only, so a change
+is always confirmed on sessions its author never read about.
 
 ```bash
 mecha harness ruminate --sessions 16 --days 7   # the nightly pass
