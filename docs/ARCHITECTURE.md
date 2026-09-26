@@ -4608,10 +4608,18 @@ Decisions, each a bug if undone:
 - **Owner acts only, never self-judged success.** No appraisal's `good`, no
   model's account and no counter enters the set; the one harness fact read is
   the recorded stop cause above.
-- **Tests are hidden, not counted.** A success whose every named session is
-  one `runlog::Scan::admits` refuses (smoke-test, experiment) is counted as
-  hidden; one that names no session is kept, since a missing session id is
-  not evidence of a test. A session store that cannot be listed, **or
+- **Tests are hidden, not counted — and a session that cannot be placed is
+  unknown.** A success whose every named session is one `runlog::Scan::admits`
+  refuses (smoke-test, experiment) is counted as hidden; one naming an
+  admitted session stands; one that names no session is kept, since an
+  absent session id is not evidence of a test. **One whose named sessions
+  are not in the store** (pruned, or a header that did not read) and none
+  admitted is unknown: whether it was a test cannot be read, and keeping it
+  failed open for drafts, closures and workflows (found on review).
+  `--include-tests` lifts the test admission on `sessions successes`, and
+  `sessions appraise` passes its own flag through, so one readout counts one
+  population (found on review: the successes line hid the tests every other
+  number on the page counted). A session store that cannot be listed, **or
   holds one transcript whose header does not read**, makes the set partial
   by name (`session store`), like a short outbox, closure, workflow or
   question store: a torn header is `Missing`, so a torn smoke-test session's
@@ -4620,7 +4628,10 @@ Decisions, each a bug if undone:
 - **The exemplar is the draft, verbatim, and served to no run.** Each
   standing draft sent unchanged carries a writing exemplar: its tool, the
   arguments that went out, a `Situation` keyed on the drafting tool alone (as
-  an edit's lesson is — the item records no surface or workspace), and an
+  an edit's lesson is — the item records no surface, and its `workspace` is
+  the drafting jail, which `reflect` never stamps as a key; built through
+  `Situation::of_run`, never a literal, so `known_workspace` stays the only
+  place a workspace key is made), and an
   `Origin` from `learning::classify_origin` over the staging taint, so a
   draft written with third-party text in context is `Untrusted`. No model
   call. **Shadow**: the owner's readout is the only reader —

@@ -132,9 +132,11 @@ pub struct Exemplar {
     /// what "unchanged" means.
     pub args: serde_json::Value,
     pub session: Option<String>,
-    /// Keyed as an edit's lesson is: the drafting tool, nothing else — the
-    /// item records no surface or workspace. The positive half of the same
-    /// comparison, in the same region.
+    /// Keyed as an edit's lesson is: the drafting tool, nothing else. The
+    /// item records no surface, and its `workspace` is the drafting jail,
+    /// which is not a rules-block workspace (`reflect` never stamps a jail
+    /// as a key). The positive half of the same comparison, in the same
+    /// region.
     pub situation: Situation,
     /// From the conversation's taint when the draft was staged, fail-closed
     /// (`learning::classify_origin`): third-party text in context makes it
@@ -240,8 +242,14 @@ pub struct SessionIndex {
 }
 
 impl SessionIndex {
-    pub fn load(dir: &Path) -> anyhow::Result<SessionIndex> {
-        let scan = crate::runlog::Scan::default();
+    /// `include_tests` lifts the smoke-test admission as `--include-tests`
+    /// does on every corpus reader, so a readout that counts test sessions
+    /// counts their successes too (found on review).
+    pub fn load(dir: &Path, include_tests: bool) -> anyhow::Result<SessionIndex> {
+        let scan = crate::runlog::Scan {
+            include_tests,
+            ..Default::default()
+        };
         let (listed, skipped) = crate::session::Session::list_counting(dir)?;
         Ok(SessionIndex {
             skipped,
@@ -285,10 +293,51 @@ fn parse_at(s: &str) -> Option<DateTime<Utc>> {
         .map(|t| t.with_timezone(&Utc))
 }
 
-/// Every named session hidden — and at least one named. A success with no
-/// session is not a test's for want of one.
-fn all_hidden(sessions: &[String], facts: &dyn SessionFacts) -> bool {
-    !sessions.is_empty() && sessions.iter().all(|s| facts.seen(s) == Seen::Hidden)
+/// Where a success's named sessions put it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// Kept: a named session is admitted, or none is named — a success with
+    /// no session is not a test's for want of one.
+    Kept,
+    /// Every named session is a smoke-test or experiment session.
+    Hidden,
+    /// No named session is admitted and at least one is not in the store:
+    /// whether it was a test cannot be read, so it is unknown — never kept.
+    /// A torn header and a pruned transcript land here alike (found on
+    /// review: a missing session failed open for three of the four kinds).
+    Unplaced,
+}
+
+/// Why an unplaced success is unknown.
+const UNPLACED: &str = "its session is not in the store, so whether it was a smoke test is unknown";
+
+fn place(sessions: &[String], facts: &dyn SessionFacts) -> Place {
+    let seen: Vec<Seen> = sessions.iter().map(|s| facts.seen(s)).collect();
+    if seen.is_empty() || seen.contains(&Seen::Admitted) {
+        Place::Kept
+    } else if seen.iter().all(|s| *s == Seen::Hidden) {
+        Place::Hidden
+    } else {
+        Place::Unplaced
+    }
+}
+
+/// Count a success that is not kept; `true` when it was kept.
+fn placed(out: &mut Successes, success: &Success, facts: &dyn SessionFacts) -> bool {
+    match place(&success.sessions, facts) {
+        Place::Kept => true,
+        Place::Hidden => {
+            out.hidden += 1;
+            false
+        }
+        Place::Unplaced => {
+            out.unknown.push(Unknown {
+                pointer: success.act.pointer(),
+                why: UNPLACED,
+            });
+            false
+        }
+    }
 }
 
 /// A model's message draft the owner sent as written.
@@ -312,32 +361,32 @@ pub fn derive(src: &Sources<'_>, facts: &dyn SessionFacts) -> Successes {
 
     // --- Drafts sent unchanged, each with its exemplar ---
     for item in src.drafts.iter().filter(|i| sent_unchanged(i)) {
-        let sessions: Vec<String> = item.session_id.iter().cloned().collect();
-        if all_hidden(&sessions, facts) {
-            out.hidden += 1;
+        let sent_at = item.resolved_at.as_deref().and_then(parse_at);
+        let success = Success {
+            act: Act::SentUnchanged {
+                item: item.id.clone(),
+            },
+            sessions: item.session_id.iter().cloned().collect(),
+            goal: None,
+            at: sent_at,
+        };
+        if !placed(&mut out, &success, facts) {
             continue;
         }
-        let sent_at = item.resolved_at.as_deref().and_then(parse_at);
         out.exemplars.push(Exemplar {
             item: item.id.clone(),
             tool: item.tool.clone(),
             args: item.args.clone(),
             session: item.session_id.clone(),
-            situation: Situation {
-                tools: vec![item.tool.clone()],
-                ..Situation::default()
-            },
+            // Through the door, keyed on the tool alone: the item's
+            // `workspace` is the drafting jail, which is not the workspace
+            // a run's rules block is matched on (`reflect`'s reason for
+            // never stamping a jail), so it is not a key here.
+            situation: Situation::of_run(std::slice::from_ref(&item.tool), None),
             origin: crate::learning::classify_origin(Some(item.taint)),
             sent_at,
         });
-        out.standing.push(Success {
-            act: Act::SentUnchanged {
-                item: item.id.clone(),
-            },
-            sessions,
-            goal: None,
-            at: sent_at,
-        });
+        out.standing.push(success);
     }
 
     // --- Tasks closed `done`, unless a recorded reopen undoes the closure ---
@@ -358,8 +407,7 @@ pub fn derive(src: &Sources<'_>, facts: &dyn SessionFacts) -> Successes {
             goal: Some(GoalRef::Task(c.task.clone())),
             at: Some(c.at),
         };
-        if all_hidden(&success.sessions, facts) {
-            out.hidden += 1;
+        if !placed(&mut out, &success, facts) {
             continue;
         }
         let reopen = src
@@ -401,14 +449,16 @@ pub fn derive(src: &Sources<'_>, facts: &dyn SessionFacts) -> Successes {
                 goal: w.task_id.clone().map(GoalRef::Task),
                 at: Some(d.at),
             };
-            if all_hidden(&success.sessions, facts) {
-                out.hidden += 1;
+            if !placed(&mut out, &success, facts) {
                 continue;
             }
             match d.reopened_at {
+                // A `reopened` event carries no id of its own: named as the
+                // workflow's reopen, never as the workflow itself, which
+                // read as a workflow taking itself back (found on review).
                 Some(at) => out.withdrawn.push(Withdrawn {
                     success,
-                    by: format!("workflow:{}", w.id),
+                    by: format!("workflow:{}#reopened", w.id),
                     at: Some(at),
                 }),
                 None => out.standing.push(success),
@@ -699,7 +749,7 @@ mod tests {
             Some(GoalRef::Task("task-northwind-report".into()))
         );
         assert_eq!(set.withdrawn.len(), 1);
-        assert_eq!(set.withdrawn[0].by, "workflow:wf-back");
+        assert_eq!(set.withdrawn[0].by, "workflow:wf-back#reopened");
     }
 
     /// A question answered is a success only once its session completed;
@@ -807,10 +857,12 @@ mod tests {
         text.push_str(&outcome.to_string());
         std::fs::write(&newer, text).unwrap();
         write("s-smoke", SessionKind::Test, &[StopCause::Completed]);
-        let index = SessionIndex::load(root.path()).unwrap();
+        let index = SessionIndex::load(root.path(), false).unwrap();
         assert_eq!(index.seen("s-resumed"), Seen::Admitted);
         assert_eq!(index.seen("s-smoke"), Seen::Hidden);
         assert_eq!(index.seen("s-gone"), Seen::Missing);
+        let with_tests = SessionIndex::load(root.path(), true).unwrap();
+        assert_eq!(with_tests.seen("s-smoke"), Seen::Admitted);
         assert_eq!(index.completed("s-resumed"), Some(true));
         assert_eq!(index.completed("s-parked"), Some(false));
         assert_eq!(index.completed("s-silent"), None);
@@ -818,8 +870,49 @@ mod tests {
         assert_eq!(index.skipped, 0);
         // A transcript whose header does not read is counted, not forgotten.
         std::fs::write(root.path().join("s-torn.jsonl"), "{\"kind\":\"me").unwrap();
-        assert_eq!(SessionIndex::load(root.path()).unwrap().skipped, 1);
+        assert_eq!(SessionIndex::load(root.path(), false).unwrap().skipped, 1);
         assert_eq!(index.completed("s-gone"), None);
+    }
+
+    /// A named session the store does not hold — pruned, or a header that
+    /// did not read — cannot be told from a smoke test, so its success is
+    /// unknown, never kept; one naming no session at all is kept, and one
+    /// naming an admitted session beside a missing one stands.
+    #[test]
+    fn a_success_whose_session_is_missing_is_unknown() {
+        let drafts = vec![draft("ob-gone", "sent", false)];
+        let closures = vec![closure("cl-gone", "task-g", "done", "close", None)];
+        let workflows = vec![workflow("wf-gone", false)];
+        let src = Sources {
+            drafts: &drafts,
+            closures: &closures,
+            workflows: &workflows,
+            ..Default::default()
+        };
+        let set = derive(&src, &Facts::default());
+        assert!(
+            set.standing.is_empty() && set.exemplars.is_empty(),
+            "{set:?}"
+        );
+        assert_eq!(set.unknown.len(), 3);
+        assert!(set.unknown.iter().all(|u| u.why == UNPLACED));
+
+        let mut unnamed = draft("ob-unnamed", "sent", false);
+        unnamed.session_id = None;
+        let mut shared = closure("cl-shared", "task-s", "done", "close", None);
+        shared.sessions = vec!["s-pruned".into(), DANA.into()];
+        let drafts = vec![unnamed];
+        let closures = vec![shared];
+        let set = derive(
+            &Sources {
+                drafts: &drafts,
+                closures: &closures,
+                ..Default::default()
+            },
+            &admitted(),
+        );
+        assert_eq!(set.standing.len(), 2, "{set:?}");
+        assert!(set.unknown.is_empty());
     }
 
     /// A store that could not be read makes the set partial, by name —

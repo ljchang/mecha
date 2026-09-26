@@ -211,6 +211,11 @@ pub enum Args {
         #[arg(long, short = 'n')]
         limit: Option<usize>,
 
+        /// Count successes in smoke-test sessions (`MECHA_SESSION_KIND=test`)
+        /// too. Off by default: they are the harness measuring itself.
+        #[arg(long)]
+        include_tests: bool,
+
         /// Emit JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -303,8 +308,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         Args::Successes {
             exemplars,
             limit,
+            include_tests,
             json,
-        } => crate::success_readout::run(&dir, json, exemplars, limit)?,
+        } => crate::success_readout::run(&dir, json, exemplars, limit, include_tests)?,
 
         Args::Compare {
             points,
@@ -1683,8 +1689,11 @@ async fn appraise(
     // Owner-verified successes (row 2e-4a): derived from the stores read
     // above, store-wide whatever `--days` narrowed the sessions to — a
     // task can be closed long after the session that did its work.
+    // The same test admission as the walk, so one readout counts one
+    // population.
     let successes = crate::success_readout::derive(
         dir,
+        include_tests || kind == Some(mecha_core::session::SessionKind::Test),
         &mecha_core::success::Sources {
             drafts: &drafts,
             outbox_unreadable,
