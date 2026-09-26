@@ -208,7 +208,13 @@ async fn preflight_provider(cfg: &mecha_core::config::Config, opts: &GlobalOpts)
     let Some(props) = mecha_core::provider::preflight::fetch(base_url, model).await else {
         return;
     };
-    for line in mecha_core::provider::preflight::disagreements(&name, pcfg, &props) {
+    // Compared as the run's model, not the entry's: behind a router the
+    // props asked for are that model's, and comparing them with the entry's
+    // printed "llama-server ignores the `model` field" — the one thing a
+    // router does not do (found on review).
+    let mut checked = pcfg.clone();
+    checked.model = model.map(str::to_string);
+    for line in mecha_core::provider::preflight::disagreements(&name, &checked, &props) {
         eprintln!("warning: {line}");
     }
 }

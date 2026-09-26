@@ -486,6 +486,14 @@ pub enum Command {
 }
 
 impl Command {
+    /// Whether a default provider in this command may follow the router's
+    /// loaded model. Not `mecha eval`: a scorecard grades the model it names,
+    /// and two taken a week apart must not be different models under one
+    /// condition. It is still observed, for its permit seats (found on review).
+    fn may_follow(&self) -> bool {
+        !matches!(self, Command::Eval(_))
+    }
+
     /// Whether this command may resolve a default provider — run a model, or
     /// build an agent — and so needs [`follow_the_loaded_model`]'s snapshot.
     ///
@@ -556,7 +564,7 @@ impl Command {
 /// config that does not load is the command's own error to report, and a
 /// router that is down leaves the default standing — one loopback round trip
 /// when it is up, nothing when nothing listens.
-async fn follow_the_loaded_model(global: &GlobalOpts) {
+async fn follow_the_loaded_model(global: &GlobalOpts, may_follow: bool) {
     let cfg = if global.global_config_only {
         mecha_core::config::Config::load_global()
     } else {
@@ -569,7 +577,7 @@ async fn follow_the_loaded_model(global: &GlobalOpts) {
     // does not follow — the passes that resolve `cfg.provider(global.provider)`
     // themselves (lesson, pointwise, gossip, …) never reach `setup`'s pin. It
     // is still observed: its permit pool is sized to what is loaded.
-    let follows = global.model.is_none() && global.provider.is_none();
+    let follows = may_follow && global.model.is_none() && global.provider.is_none();
     for warning in mecha_core::provider::router::observe(&cfg, follows).await {
         tracing::warn!("{warning}");
     }
@@ -601,7 +609,7 @@ async fn main() {
 async fn dispatch() -> Result<()> {
     let cli = Cli::parse();
     if cli.command.runs_a_model() {
-        follow_the_loaded_model(&cli.global).await;
+        follow_the_loaded_model(&cli.global, cli.command.may_follow()).await;
     }
     match cli.command {
         Command::Run(args) => commands::run::execute(&cli.global, args).await,
@@ -663,5 +671,9 @@ mod tests {
         assert!(!cmd(&["mecha", "model", "list"]).runs_a_model());
         assert!(cmd(&["mecha", "run", "hello"]).runs_a_model());
         assert!(cmd(&["mecha", "mail", "classify"]).runs_a_model());
+        // A scorecard names its model: eval observes, and never follows.
+        assert!(cmd(&["mecha", "eval", "cases.toml"]).runs_a_model());
+        assert!(!cmd(&["mecha", "eval", "cases.toml"]).may_follow());
+        assert!(cmd(&["mecha", "run", "hello"]).may_follow());
     }
 }

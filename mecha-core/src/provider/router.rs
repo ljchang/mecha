@@ -189,6 +189,20 @@ async fn list_on(http: &reqwest::Client, b: &str) -> Option<Vec<RouterModel>> {
     Some(body.json::<ModelList>().await.ok()?.data)
 }
 
+/// Whether a `/models` answer is one this can draw a conclusion from: a
+/// non-empty list whose every status is one it knows. **"Nothing resident"
+/// is a claim, and a list this does not fully understand cannot support it**
+/// — read as nothing loaded, the default would stand and its first request
+/// evict the owner's pick without a word. The same rule `model-idle.sh`
+/// applies to the same answer (found on review).
+pub fn readable(models: &[RouterModel]) -> bool {
+    const KNOWN: [&str; 5] = ["unloaded", "loading", "loaded", "sleeping", "downloading"];
+    !models.is_empty()
+        && models
+            .iter()
+            .all(|m| KNOWN.contains(&m.status.value.as_str()))
+}
+
 /// The resident model, if exactly one is. `--models-max 1` means at most one;
 /// two resident is a server started otherwise, and naming either would be a
 /// guess, so it is reported as none.
@@ -231,8 +245,17 @@ static SNAPSHOT: RwLock<Snapshot> = RwLock::new(Snapshot {
 /// the default standing.
 pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
     let mut seen = Vec::new();
+    let mut unreadable = Vec::new();
     for b in followed_bases(cfg) {
         if let Some(list) = models(&b).await {
+            if !readable(&list) {
+                unreadable.push(format!(
+                    "the router at {b} answered /models with a list this cannot read (empty, or \
+                     a status it does not know), so which model is loaded is unknown — runs use \
+                     the default provider, which may swap out the model that is loaded"
+                ));
+                continue;
+            }
             let resident = resident(&list).map(str::to_string);
             let slots = match &resident {
                 Some(m) => crate::provider::preflight::fetch(&b, Some(m))
@@ -252,6 +275,7 @@ pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
     } else {
         Vec::new()
     };
+    warnings.extend(unreadable);
     for (name, p) in &cfg.providers {
         if p.follow_loaded && !follows_here(p) {
             warnings.push(format!(
@@ -346,10 +370,23 @@ pub fn namers<'a>(cfg: &'a Config, b: &'a str, model: &'a str) -> impl Iterator<
 /// loses the pick without being told why.
 fn orphans(cfg: &Config, seen: &[Seen]) -> Vec<String> {
     let mut out = Vec::new();
+    // The default already naming the resident model is the working case,
+    // however many pinned aliases name it too: `followed` stands on it, and
+    // "leave one" would be wrong advice (found on review).
+    let default_names = |b: &str, model: &str| {
+        cfg.providers.get(&cfg.default_provider).is_some_and(|p| {
+            follows_here(p)
+                && p.base_url.as_deref().map(base).as_deref() == Some(b)
+                && p.model.as_deref() == Some(model)
+        })
+    };
     for s in seen {
         let Some(model) = s.resident.as_deref() else {
             continue;
         };
+        if default_names(&s.base_url, model) {
+            continue;
+        }
         match namers(cfg, &s.base_url, model).count() {
             1 => {}
             0 => out.push(format!(
@@ -625,6 +662,33 @@ mod tests {
         let w = orphans(&c, &s);
         assert_eq!(w.len(), 1);
         assert!(w[0].contains("no [providers.*] entry names it"), "{w:?}");
+    }
+
+    #[test]
+    fn an_alias_of_the_resident_default_is_not_called_ambiguous() {
+        let mut c = cfg();
+        c.providers.insert(
+            "prod-pinned".into(),
+            entry("qwen3.6-35b-a3b", "http://127.0.0.1:8080", false),
+        );
+        assert!(orphans(&c, &seen(Some("qwen3.6-35b-a3b"))).is_empty());
+    }
+
+    #[test]
+    fn a_models_list_it_cannot_fully_read_supports_no_conclusion() {
+        let m = |v: &str| RouterModel {
+            id: "m".into(),
+            status: Status {
+                value: v.into(),
+                ..Default::default()
+            },
+        };
+        assert!(readable(&[m("unloaded"), m("loaded")]));
+        assert!(!readable(&[]), "empty");
+        assert!(
+            !readable(&[m("unloaded"), m("resident")]),
+            "a renamed status"
+        );
     }
 
     #[test]
