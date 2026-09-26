@@ -17,8 +17,8 @@ use std::path::Path;
 /// store that cannot be listed makes every named session unknown to this
 /// read, so the set is marked partial by name rather than read as though
 /// no session were a test.
-pub fn derive(dir: &Path, sources: &Sources<'_>) -> Successes {
-    match SessionIndex::load(dir) {
+pub fn derive(dir: &Path, include_tests: bool, sources: &Sources<'_>) -> Successes {
+    match SessionIndex::load(dir, include_tests) {
         Ok(index) => {
             let mut set = success::derive(sources, &index);
             // A header that did not read is a session this read cannot
@@ -167,9 +167,15 @@ fn full_json(set: &Successes, exemplars: bool) -> serde_json::Value {
 }
 
 /// `mecha sessions successes`.
-pub fn run(dir: &Path, json: bool, exemplars: bool, limit: Option<usize>) -> Result<()> {
+pub fn run(
+    dir: &Path,
+    json: bool,
+    exemplars: bool,
+    limit: Option<usize>,
+    include_tests: bool,
+) -> Result<()> {
     let stores = mecha_core::appraisal::Stores::load();
-    let mut set = derive(dir, &Sources::of(&stores));
+    let mut set = derive(dir, include_tests, &Sources::of(&stores));
     // Newest first, like every other listing here.
     // Undated rows last: `None < Some`, so a bare `Reverse` put them first,
     // where `-n` let them crowd out the newest (found on review).
@@ -294,7 +300,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mecha-torn-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("s-torn.jsonl"), "{\"record\":\"me").unwrap();
-        let set = derive(&dir, &Sources::default());
+        let set = derive(&dir, false, &Sources::default());
         let _ = std::fs::remove_dir_all(&dir);
         assert!(set.unreadable.contains(&"session store"), "{set:?}");
     }
@@ -305,7 +311,7 @@ mod tests {
     fn an_unlistable_session_store_makes_the_set_partial() {
         let file = std::env::temp_dir().join(format!("mecha-not-a-dir-{}", std::process::id()));
         std::fs::write(&file, "x").unwrap();
-        let set = derive(&file, &Sources::default());
+        let set = derive(&file, false, &Sources::default());
         let _ = std::fs::remove_file(&file);
         assert!(set.unreadable.contains(&"session store"), "{set:?}");
     }

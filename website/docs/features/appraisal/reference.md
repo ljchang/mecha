@@ -474,6 +474,7 @@ you already say that with acts you perform anyway:
 mecha sessions successes               # the set, newest first
 mecha sessions successes --exemplars   # each draft you sent unchanged, as sent
 mecha sessions successes --json
+mecha sessions successes --include-tests   # count development sessions too
 ```
 
 Nothing is written down to make this list. It is read fresh each time from
@@ -482,7 +483,9 @@ you **reopen** a task or a workflow later, the success is listed as
 **withdrawn** from then on, beside the reopen that took it back. A success
 that cannot be confirmed — a closure by someone this version cannot
 identify, a question whose session is gone — is listed as unknown and never
-counted. Successes in development sessions are hidden and counted as such.
+counted, and so is one whose session is no longer in the store, since it
+cannot be told apart from a development session. Successes in development
+sessions are hidden and counted as such.
 Only your own acts count: mecha's opinion of its own work, and an
 appraisal's reading of a run, never make something a success.
 
