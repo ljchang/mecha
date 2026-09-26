@@ -682,12 +682,83 @@ found the release bug above, which every unit under it had passed over. Run
 it after touching validate, the bisection, tallies or the retirement scan.
 Deliberately absent: decay, TTLs, usage-based eviction (the rarely-fired
 rule that must never expire), and any policy built on model-rated
-confidence — only measured harm argues for retirement. `mecha
+confidence — only measured harm argues for retirement. (A rule whose
+region has gone quiet is *reported*, row 2e-5c below, and that is all.) `mecha
 learning-report` is how anyone knows the loop is improving; `mecha eval
 --ab-rules` is the coarse complement: the case set runs rules-free then
 rules-on and the per-case flips are their own artifact, never a comparable
 scorecard. The evidence behind all of this is `docs/MEMORY-RESEARCH.md` and
 `docs/LEARNING-LOOP-RESEARCH.md`.
+
+**Tenure by the owner's verdicts sits beside retirement, and only
+promotes** (`APPRAISAL-WIRING-DESIGN.md` L3, rows 2e-5b and 2e-5c, ruling
+R41; `mecha_core::tenure`). mecha-graph's autonomy ladder (`ladder.rs`) is
+ported:
+
+- **The statistic.** A class climbs when the Wilson lower bound of its
+  *human* accept rate clears a floor. Here a rule's record is the owner's
+  verdicts (`GoalError::is_owner_verdict`, R16's channels, the predicate
+  2e-6's replay priority reads) on the runs whose `RunConfig::rule_ids`
+  carried it, each rule its own rate. Positive is an accept and negative a
+  reject. It counts no counter and no model's account, and no test or
+  experiment session (the corpus admission).
+- **Attribution.** A verdict cited at a turn counts toward the rules the run
+  record covering that turn carried. One cited by a draft, question, closure
+  or workflow counts toward the rules *every* run record of its session
+  carried, because the cite does not say which run it judged. A run record
+  from before `rules_hash` names no rule.
+- **The ladder's numbers.** z = 1.96. There is no bound below 20 verdicts:
+  `None`, "not enough verdicts", never a low rate or a perfect one. The
+  ladder answered 0.0 there and let the floor refuse. The tenure floor is
+  0.65, the ladder's `PROMOTE_LB_SAMPLED`.
+- **Two ladder floors do not map.**
+  - Its 0.85 `TRUSTED` floor removes a class's spot-check, and a rule has no
+    spot-check to remove.
+  - Its 0.15 generation gate stops a class being produced, which for a rule
+    would be leaving the prompt, and R41 rules that nothing leaves the prompt
+    on the bound.
+- **What tenure changes.** In each retirement scan a tenured rule's
+  probation is released (`release_probation_when_owner_tenures`, beside
+  `release_probation_when_measured_clean`, never instead), so it answers to
+  the ordinary threshold of 3 rather than 2. Like the ledger's release this
+  is in memory, per pass: the file keeps the mark, and the owner's record is
+  re-read next pass, so the roster says "the ordinary leash", never
+  "released" (found on review of #338). `mecha rules` shows it as
+  tenured. A low bound demotes nothing, and retirement stays on attributed
+  regressions alone.
+- **Unknown is never clean.** A session that carried the rule and could not
+  be read in full makes its tenure unknown, whatever the rest would say.
+  "Not read in full" means the transcript is unreadable, an appraisal store
+  is missing (the appraisal is partial), a session staged drafts and
+  recorded no outcome, or a summarising compaction cut turns out of it. The
+  last is the sharp one, found on review of #338: every turn-cited verdict
+  is a reject and the accepts come from stores keyed by session, so a
+  compacted session read as it stands loses only rejects and raises the
+  bound. A session store that cannot be listed makes every
+  rule unknown.
+- **Cost.** The walk reads run records to find the sessions that carried a
+  wanted rule, and builds appraisals only for those. It is unbounded on
+  purpose, unlike 2e-6's windowed and capped walk: a cap would bias the
+  bound toward recent runs, and a cap honoured as "unread" would make every
+  rule unknown. `propose-retirements`
+  walks for probationary rules only. `rules list` and `show` walk unless
+  `--no-board`, the TUI's and the web's budget flag, under which both
+  readings are "not read".
+- **Scope of the ruling.** Curation acts (R16f's retire and restore) are not
+  counted: R41 names the verdicts on runs that carried the rule.
+
+**Dormancy is a report** (row 2e-5c). `mecha rules` names an active rule
+whose scope no admitted run in 2e-6's recurrence window (30 days, the same
+admission and the same 500-session walk, `Recurrence::runs`) was matched by:
+**QUIET**. It is matched with the loader's own `Situation::matches`, and a
+rule with no scope matches every run. It is never quiet while younger than
+the window. It is unknown when part of the window was unread or the rule
+has no birth date. "Part of the window" counts only what is known to lie in
+it (`Recurrence::unreadable_in_window`): a transcript whose header never
+parsed has no date, so it gets a caveat line in the roster rather than
+switching the report off for good (found on review of #338). Nothing is evicted, no slot changes, and nothing stops
+loading: "the rarely-fired rule that must never expire" above stands as
+written.
 
 **Replay completeness and retry identity are separate from a verdict.**
 `counterfactual::followup_branch` retains the corrective user message;
