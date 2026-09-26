@@ -79,7 +79,8 @@
   color: var(--mecha-accent-400);
 }
 
-.part:hover .partNo {
+.part:hover .partNo,
+.part:focus-within .partNo {
   border-color: var(--ifm-color-primary);
 }
 

@@ -79,11 +79,11 @@
 
 .plate {
   margin: 0;
-}
-
-.plate img {
-  border-color: var(--sheet-rule);
-  border-radius: 4px 4px 0 0;
+  /* Poster's own knobs: the edge in the title block's rule colour, square
+     where the plate meets the block, and no drop shadow falling onto it. */
+  --poster-edge: var(--sheet-rule);
+  --poster-radius: 4px 4px 0 0;
+  --poster-shadow: none;
 }
 
 /* The title block: the ruled strip along the foot of a drawing. Four fields
@@ -161,6 +161,9 @@
 
 .action::after {
   content: '→';
+  /* Decoration, not part of the link's name: empty alt text where the
+     syntax is supported, the bare arrow where it is not. */
+  content: '→' / '';
   font-weight: 400;
 }
 
@@ -176,8 +179,10 @@
   background: var(--mecha-accent-700);
 }
 
+/* Darker on hover, never lighter: white on accent-600 is under 4.5:1 at
+   this size, so the resting fill is already the lightest this may go. */
 .actionPrimary:hover {
-  background: var(--mecha-accent-600);
+  background: var(--mecha-accent-900);
 }
 
 [data-theme='dark'] .actionPrimary,
@@ -193,6 +198,12 @@
 .action:focus-visible {
   outline: 2px solid var(--mecha-accent-500);
   outline-offset: -2px;
+}
+
+/* Inset over the accent fill the ring is under 3:1 in both themes, so on
+   the primary cell it sits outside, over the block's own ground. */
+.actionPrimary:focus-visible {
+  outline-offset: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {

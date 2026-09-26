@@ -1,18 +1,26 @@
+/* The sheet's edge, corners and shadow are read from custom properties, so a
+   page that mounts a plate differently — the landing hero joins it to a title
+   block — sets values rather than out-specifying a selector here. A theme
+   rule and a page rule of equal weight would otherwise be decided by which
+   CSS module the bundler happens to emit second. */
 .poster {
   margin: 0 0 2rem;
+  --poster-edge-default: var(--ifm-color-emphasis-200);
+  --poster-shadow-default: none;
+}
+
+[data-theme='dark'] .poster {
+  --poster-edge-default: rgba(233, 233, 237, 0.12);
+  --poster-shadow-default: 0 12px 40px rgba(0, 0, 0, 0.35);
 }
 
 .poster img {
   display: block;
   width: 100%;
   height: auto;
-  border: 1px solid var(--ifm-color-emphasis-200);
-  border-radius: 4px;
-}
-
-[data-theme='dark'] .poster img {
-  border-color: rgba(233, 233, 237, 0.12);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--poster-edge, var(--poster-edge-default));
+  border-radius: var(--poster-radius, 4px);
+  box-shadow: var(--poster-shadow, var(--poster-shadow-default));
 }
 
 .poster figcaption {
