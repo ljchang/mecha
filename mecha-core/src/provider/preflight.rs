@@ -262,4 +262,59 @@ mod tests {
         c.context_window = Some(32768);
         assert!(disagreements("local", &c, &parsed).is_empty());
     }
+
+    /// A stub that answers one request per body, in order, and hands back
+    /// each request line it was sent.
+    async fn stub(bodies: Vec<&'static str>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut lines = Vec::new();
+            for body in bodies {
+                let (mut s, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 2048];
+                let n = s.read(&mut buf).await.unwrap();
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                lines.push(head.lines().next().unwrap_or_default().to_string());
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                s.write_all(reply.as_bytes()).await.unwrap();
+            }
+            lines
+        });
+        (base, task)
+    }
+
+    /// The router's bare `/props` is a placeholder (captured from `c841aee`),
+    /// never the answer: the model's own props are asked for, and asked for
+    /// with `autoload=false`, or the preflight would be what swaps the model.
+    #[tokio::test]
+    async fn a_router_is_asked_about_the_named_model_without_loading_it() {
+        let placeholder = r#"{"role":"router","model_alias":"llama-server","model_path":"none","default_generation_settings":{"params":{},"n_ctx":0}}"#;
+        let child = r#"{"model_alias":"gemma-4-26b-a4b","total_slots":1,"modalities":{"vision":true},"default_generation_settings":{"n_ctx":32768}}"#;
+        let (base, server) = stub(vec![placeholder, child]).await;
+        let props = fetch(&base, Some("gemma-4-26b-a4b")).await.unwrap();
+        assert_eq!(props.model_alias.as_deref(), Some("gemma-4-26b-a4b"));
+        assert_eq!(props.default_generation_settings.n_ctx, Some(32768));
+        let lines = server.await.unwrap();
+        assert_eq!(lines[0], "GET /props HTTP/1.1");
+        assert_eq!(
+            lines[1],
+            "GET /props?model=gemma-4-26b-a4b&autoload=false HTTP/1.1"
+        );
+    }
+
+    /// A single-model server's answer is the answer: one request, no query.
+    #[tokio::test]
+    async fn a_single_model_server_is_asked_once() {
+        let props =
+            r#"{"model_alias":"qwen3.6-35b-a3b","default_generation_settings":{"n_ctx":262144}}"#;
+        let (base, server) = stub(vec![props]).await;
+        let got = fetch(&base, Some("qwen3.6-35b-a3b")).await.unwrap();
+        assert_eq!(got.default_generation_settings.n_ctx, Some(262144));
+        assert_eq!(server.await.unwrap(), vec!["GET /props HTTP/1.1"]);
+    }
 }

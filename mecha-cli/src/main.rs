@@ -485,6 +485,71 @@ pub enum Command {
     Model(commands::model::Args),
 }
 
+impl Command {
+    /// Whether this command may resolve a default provider — run a model, or
+    /// build an agent — and so needs [`follow_the_loaded_model`]'s snapshot.
+    ///
+    /// **Exhaustive, no wildcard, on purpose:** a new subcommand has to
+    /// decide. The two mistakes cost differently. A model-running command
+    /// wrongly listed `false` names the default model and silently swaps the
+    /// owner's pick back out; an observer wrongly listed `true` pays a
+    /// loopback round trip. So unsure is `true` — except where the command
+    /// promises no network, which `mecha doctor`'s module doc does (found on
+    /// review).
+    fn runs_a_model(&self) -> bool {
+        match self {
+            Command::Run(_)
+            | Command::Chat(_)
+            | Command::Tui(_)
+            | Command::VoiceServe(_)
+            | Command::Batch(_)
+            | Command::Eval(_)
+            | Command::Reflect(_)
+            | Command::Learn(_)
+            | Command::Distill(_)
+            | Command::Validate(_)
+            | Command::Setup(_)
+            | Command::Serve(_)
+            | Command::Diagnose(_)
+            | Command::Harness(_)
+            | Command::Exp(_)
+            | Command::Frontdoor(_)
+            | Command::Mail(_)
+            | Command::Tasks(_)
+            | Command::Workflow(_)
+            | Command::Questions(_)
+            | Command::Gossip(_)
+            | Command::Corroborate(_)
+            | Command::Vet(_)
+            | Command::Slack(_)
+            | Command::Trigger(_)
+            | Command::Replay(_)
+            // These build the tool registry (`prepare_tools`), whose output
+            // budget is the default provider's window; `sessions` also has a
+            // subcommand that builds an agent.
+            | Command::Outbox(_)
+            | Command::Kg(_)
+            | Command::Tools(_)
+            | Command::Sessions(_) => true,
+            // Readers of stores, and `mecha model`, which asks the router
+            // directly rather than through a snapshot.
+            Command::Reflections(_)
+            | Command::LearningReport(_)
+            | Command::Msg(_)
+            | Command::Work(_)
+            | Command::Doctor(_)
+            | Command::Polls(_)
+            | Command::Proposals(_)
+            | Command::Review(_)
+            | Command::Rules(_)
+            | Command::Skills(_)
+            | Command::Charter(_)
+            | Command::Config(_)
+            | Command::Model(_) => false,
+        }
+    }
+}
+
 /// Which model the llama-server router has loaded, snapshotted once for this
 /// process so every default provider in it follows the owner's pick
 /// (`provider::router`, REMOTE-SURFACE-DESIGN §14). Best-effort by design: a
@@ -530,7 +595,9 @@ async fn main() {
 
 async fn dispatch() -> Result<()> {
     let cli = Cli::parse();
-    follow_the_loaded_model(&cli.global).await;
+    if cli.command.runs_a_model() {
+        follow_the_loaded_model(&cli.global).await;
+    }
     match cli.command {
         Command::Run(args) => commands::run::execute(&cli.global, args).await,
         Command::Chat(args) => commands::chat::execute(&cli.global, args).await,
@@ -575,5 +642,21 @@ async fn dispatch() -> Result<()> {
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
         Command::Config(args) => commands::config::execute(&cli.global, args).await,
         Command::Model(args) => commands::model::execute(&cli.global, args).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The router snapshot is taken where a default provider can be resolved,
+    /// and never by `mecha doctor`, whose module doc promises no network.
+    #[test]
+    fn doctor_does_not_probe_the_router_and_a_run_does() {
+        let cmd = |argv: &[&str]| Cli::try_parse_from(argv).unwrap().command;
+        assert!(!cmd(&["mecha", "doctor"]).runs_a_model());
+        assert!(!cmd(&["mecha", "model", "list"]).runs_a_model());
+        assert!(cmd(&["mecha", "run", "hello"]).runs_a_model());
+        assert!(cmd(&["mecha", "mail", "classify"]).runs_a_model());
     }
 }

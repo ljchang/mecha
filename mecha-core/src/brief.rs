@@ -2576,6 +2576,42 @@ mod tests {
         ));
     }
 
+    /// A named model is read with `autoload=false`, or against a router the
+    /// reading would load the model it reads and swap out the owner's pick.
+    /// A single-model server ignores both parameters — measured on the live
+    /// llama-server (`c841aee`, 2026-09-26): `/slots?model=nonsense&autoload=false`
+    /// answers 200 with its slots — so the same 200 must still parse here.
+    #[tokio::test]
+    async fn a_named_model_is_read_without_being_loaded() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let n = s.read(&mut buf).await.unwrap();
+            let head = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = r#"[{"is_processing":true}]"#;
+            s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+            head
+        });
+        let slots = read_slots(&format!("http://{addr}"), Some("gemma-4-26b-a4b")).await;
+        assert_eq!(slots, Slots::Read { total: 1, busy: 1 });
+        let head = server.await.unwrap();
+        assert!(
+            head.starts_with("GET /slots?model=gemma-4-26b-a4b&autoload=false "),
+            "{head}"
+        );
+    }
+
     #[test]
     fn a_voice_turn_stamps_a_call_and_a_dead_facade_is_no_turn_seen() {
         let home = scratch("voice");
