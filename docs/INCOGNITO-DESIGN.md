@@ -2,8 +2,13 @@
 
 > **Status (2026-09-25):** step 0 merged as #313; steps 1–3 (the server side:
 > the session with no transcript, the room in RAM, the allowlist, local only)
-> built in the PR after it; the page (step 5), the image server's cleanup
-> (step 4) and mecha-graph's unrecorded reads (step 7) are next. Three
+> merged as #321; the page (step 5) built in the PR after it, with two owner
+> rulings of the same evening — an open page counts as use (it pings), and
+> `shell` registers in the room rather than the mecha home. The image
+> server's cleanup (step 4) and mecha-graph's unrecorded reads (step 7) are
+> next. The key is 82 random bits (a v4 UUID's 22 hex digits), not §4.2's
+> 128 — `chat::valid_key`'s 32 characters are the bound, and 82 is ample for
+> an unguessable address on a single-owner tailnet. Three
 > deliberate differences from the text below: §6.1's "own provider" is a
 > refusal at the door when the provider is not a loopback server without
 > fallbacks (this machine has none, and a refusal cannot silently degrade);
@@ -211,9 +216,9 @@ Allowed:
 - `web_search` / `web_open` / `http_fetch` (R4);
 - `image_generate` (§6.3);
 - the builtins, with `fs_*` and `shell` jailed to the tmpfs folder and still
-  subject to the chat's read-only / ask / allow toggle — `shell` only where
-  the sandbox keeps its writes there (`bwrap` or `docker`, no extra
-  `writable` paths); elsewhere it is withheld.
+  subject to the chat's read-only / ask / allow toggle — `shell` only in a
+  sealed sandbox (`bwrap` or `docker`, no extra `writable` or `readable`
+  path, no network); elsewhere it is withheld.
 
 Everything else is withheld — which today means outbox-routed tools, every
 MCP tool without `readOnlyHint`, the graph's tools (reads included, until §5.2

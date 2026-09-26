@@ -2261,7 +2261,11 @@ brief (which reads the board through the graph server) do not run.
 
 - **Its own door.** `POST /api/incognito` mints `incognito-<22 hex>`; the
   ordinary door refuses the prefix, so a closed incognito key can never come
-  back as a recorded chat. `POST /api/incognito/{key}/end` closes one.
+  back as a recorded chat. `POST /api/incognito/{key}/end` closes one;
+  `…/alive` is the open page's ping. The doors that act on a chat — open,
+  send, mode, upload, end, alive — answer a closed key `410 Gone`
+  (`incognito::Closed`) rather than a 500 the page would retry; the reads
+  (the transcript, the file routes) answer 404, as for any unknown key.
 - **Local only, refused rather than degraded.** The door opens only when the
   chat provider is a loopback server with no `fallbacks` — a `Failover`
   would re-send the conversation to a cloud provider on a transient local
@@ -2278,11 +2282,16 @@ brief (which reads the board through the graph server) do not run.
   nobody's chat. The jail is `<room>/<key>`: `WebAsker`
   routes an `ask_user` card by the jail's directory name, which must be the
   session key.
-- **`shell` only where the sandbox keeps its writes in the room.** `fs_*` are
-  jailed by `ToolCtx::resolve`; `shell` only by the sandbox, and
-  `Sandbox::writes_stay_in_workspace` is true for `bwrap` and `docker` with no
-  extra `writable` paths — not for `none`, and not for `landlock`, which
-  shares the host's `/tmp`. Elsewhere `shell` is withheld with the rest.
+- **`shell` only in a sealed sandbox** (`incognito::shell_is_sealed`): `bwrap`
+  or `docker`, no extra `writable` or `readable` path, no network. `fs_*` are
+  jailed by `ToolCtx::resolve`; `shell` only by the sandbox. Writes: `none`
+  and `landlock` (shared `/tmp`) could leave what `Room::remove` never sees.
+  Reads and network: where it runs, `shell` registers in the room
+  (`<room>/shells`, `ToolCtx::shell_registry`), not the mecha home, so the
+  closure check reads its commands as unregistered and one that clears
+  `MECHA_RUN_POSTURE` would pass as the owner — harmless only because the
+  board is reached through the graph server, which a command that can read
+  no config and call no network cannot find. Elsewhere `shell` is withheld.
 - **A deny-gate hook refuses the door** (`pre_tool`, `pre_task_close`). No hook runs in an incognito chat
   (a hook's log is a trace); an observer is simply not run, but a deny gate
   skipped would widen the chat past what the owner allowed, so its presence
@@ -2296,12 +2305,22 @@ brief (which reads the board through the graph server) do not run.
   image server's temp copies are removed per room.
 - **No hooks, no voice.** `pre_tool`/`post_tool` receive tool input and
   output; the voice worker logs what it hears.
-- **Closing** — End, 30 idle minutes (the reaper, once a minute), or `serve`
-  stopping — cancels a run in flight, forgets the todo plan, and removes the
+- **Closing** — End, 30 minutes with no turn and no ping from an open page
+  (the reaper, once a minute; the owner's ruling is that an open page is
+  use), or `serve` stopping — cancels a run in flight, forgets the todo plan, and removes the
   room; a run still finishing removes it again on its way out, so a late
   spill cannot leave a directory behind. `ChatState::build` sweeps leftover
   rooms before the door opens, for a `serve` that died.
-- Every incognito route answers `Cache-Control: no-store`.
+- Every incognito route answers `Cache-Control: no-store`, and the page
+  keeps nothing either: `web/test/no-storage.mjs` fails on any storage API in
+  `web/src` or any module it imports (`voice-core.js`'s own preference keys the
+  one argued allowance), and a generated picture is not a link in an incognito chat
+  (opening it in a tab writes its address into the browser's history).
+- **The page** (`Chat.svelte`): a second new-chat button beside **+**, a banner
+  that does not scroll away and carries the search notice, **End**, no voice
+  call, and — on End or a `410` — a screen saying the chat is gone, with the
+  conversation dropped from the tab's memory too: the event stream closes,
+  and an event already in flight is dropped rather than drawn.
 
 The end-to-end test drives the real routes: a turn and an upload carrying a
 canary, a scan of the whole mecha home (nothing while open, nothing after),
