@@ -117,14 +117,15 @@ probation mark), and retirement stays on measured regressions. A rule
 whose region no admitted run in the recurrence window matched reads QUIET
 in `mecha rules` (`tenure::Quiet`), as a report only.
 
-Installed in five builds: #322 and #324 at 23:44Z on the
-25th (`be373132`); #327 and #328 at 01:14Z on the 26th (`720feb27`); #329
-at 03:50Z (`39c9f359`, another lane's install, by its report); #332 and
-#334 at 12:19Z (`450a5cc6`, reported by the installing lane); and #335,
-#336 and #338 at 22:40Z (`b3135e1b`). HANDOFF's *Machine state, dated*
-holds what was checked for each and which were reported rather than
-verified; the 22:40Z build, which carries every row, was verified with
-`strings`. What the arc left open is in HANDOFF's goal-system section.
+Installed: #322 and #324 at 23:44Z on the 25th (`be373132`); #327 and
+#328 at 01:14Z on the 26th (`720feb27`); #332 and #334 at 12:19Z
+(`450a5cc6`, reported by the installing lane); and #335, #336 and #338 at
+22:40Z (`b3135e1b`). #329's source is in every build from `39c9f359`
+(another lane's 03:50Z install) on, but no `mecha` artifact was probed for
+it until 22:40Z, so that is its first verified install. HANDOFF's *Machine
+state, dated* holds what was checked for each and which were reported
+rather than verified; the 22:40Z build, which carries every row, was
+verified with `strings`. What the arc left open is in HANDOFF's goal-system section.
 
 **2026-09-25/26 — incognito chat, live: the server side (#321) and the
 page (#326).** `INCOGNITO-DESIGN.md` is the authority; the 2026-09-25 entry
