@@ -105,9 +105,14 @@ echo "  so a widened rule is measured in each sub-region it widened over)"
 # `sessions compare` runs BEFORE `learn`, for validate's reason (owner,
 # 2026-09-26): its `Rules` arm is the rules deployed now, and its points are
 # the same steers and denials `learn` is about to consume — after learn it
-# would grade tonight's rules on their own training data. Here it measures
-# yesterday's rules on today's points, held out by construction. It is the
-# bounded pass (eight points, a short horizon, one background seat per point,
+# would grade tonight's sweep's rules on their own training data. That is
+# all the position buys, and it is NOT a hold-out: `validate`'s comes from
+# `--unprocessed-only`, and this pass has no such filter and draws the whole
+# corpus, while consolidation is live (`learn-live.sh` learns from a session
+# minutes after it closes). So most drawn points already meet a `Rules` arm
+# learned from them; the `Rules` arm reads as "the deployed rules at points
+# they may have been learned from", never as a held-out measurement (found
+# on review). It is the bounded pass (eight points, a short horizon, one background seat per point,
 # deferring when every seat stays held), so its place ahead of learn costs
 # the night a bounded wait, never a stall; it writes no rule.
 #
@@ -117,9 +122,9 @@ echo "  so a widened rule is measured in each sub-region it widened over)"
 # unattended. The tally names them "owner-bound, not driven", apart from
 # "unavailable" — a decision, not an absence of data.
 echo "· compare (point-wise comparison at recorded decision points, decided by the"
-echo "  owner's recorded verdict, before learn so the deployed rules are measured on"
-echo "  points they were not learned from; what it separates, tomorrow's distill"
-echo "  writes into the session's appraisal as the losing arm)"
+echo "  owner's recorded verdict, before the sweep's learn; not a hold-out — live"
+echo "  learning has already consumed most points; what it separates, tomorrow's"
+echo "  distill writes into the session's appraisal as the losing arm)"
 "$MECHA" sessions compare -p "$PROVIDER"
 
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
