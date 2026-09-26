@@ -1407,9 +1407,24 @@ the point, one background seat per point, eight driven points a pass by
 default, local model only (R29). Left for later: the candidate arm and the
 acceptance rule (2d-2, since built), the losing arm into the appraisal (2d-3,
 O3, since built), ranked points (2e-6, since built under R39 — for
-`sessions compare`; a candidate's points stay uniform), surprise sources beyond forecast misses (2b-1's resolved
-predictions, 2b-2's scored appraisal predictions), and the nightly wiring —
-a line in `scripts/ruminate.sh`, a deploy change offered rather than made.
+`sessions compare`; a candidate's points stay uniform), surprise sources
+beyond forecast misses (2b-1's resolved predictions, 2b-2's scored appraisal
+predictions). The nightly wiring is made (owner, 2026-09-26):
+`scripts/ruminate.sh` runs `mecha sessions compare` **before `learn`**, for
+validate's reason (owner, 2026-09-26): its `Rules` arm is the deployed rule
+set and its points are the steers `learn` consumes, so after learn it would
+grade the sweep's new rules on their own training data. That is all the
+position buys, and it is **not a hold-out** (found on review): `validate`'s
+hold-out is `--unprocessed-only`, while `sessions compare` draws the whole
+corpus and live consolidation (`learn-live.sh`) has usually learned from a
+point's steer within minutes of its session closing, so its `Rules` arm
+mostly measures the deployed rules at points they may have come from. `mecha learn
+--compare-sources`, which reads no rule, runs last. **It never
+drives an owner-bound check point** (owner, 2026-09-26): such a point is
+posed as an artifact probe, which executes its task, and the nightly throws
+none of the levers that would let it run unattended — so the tally counts
+those points as *owner-bound, not driven*, apart from `unavailable`, and
+"none in the corpus" and "refused by the pass" stay two different numbers.
 
 **R36 completes the combination** (ruled 2026-09-25, built as 2d-2 in
 `candidate::combine`): point-wise for and no numeric regression accepts;
@@ -1520,9 +1535,10 @@ same decided interventions.
   appraisal lessons reach `learn`.
 - **Left:** the measurement on real sessions (on this install at most about
   14% of real runs are clean, and fewer carry a steer or a denial, so the
-  decided set will be small — a nightly line accumulates it; wiring it into
-  the nightly is a deploy change, not made here); the appraisal's arm
-  carries the session's whole lesson set (up to three) where the
+  decided set will be small — the nightly line accumulates it, in
+  `scripts/ruminate.sh` since 2026-09-26; its arms run to the recording's own
+  turn limit, so it is the unbounded half of the nightly's wall clock); the
+  appraisal's arm carries the session's whole lesson set (up to three) where the
   reflector's carries one, which is each source as it would be learned
   from, not a per-lesson attribution.
 

@@ -87,6 +87,12 @@ pub struct Tally {
     /// The point could not be prepared or cannot be driven here — counted
     /// before any seat or budget is spent, never evidence for any arm.
     pub unavailable: usize,
+    /// Owner-bound check points: posed as an artifact probe, which executes
+    /// its task, and refused because hooks, the outbox or messages are on.
+    /// The nightly never drives them (owner, 2026-09-26), so they are
+    /// counted apart from `unavailable` — "none in the corpus" and "refused
+    /// by this pass" call for opposite fixes and must not share a number.
+    pub owner_bound: usize,
     /// Drawn after the budget ran out.
     pub over_budget: usize,
     /// Every background seat stayed held past the wait.
@@ -637,9 +643,11 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
         let live = prepared.as_ref().expect("prepared above");
         // Both asked before the budget or a seat is spent: neither answer
         // can change by driving.
-        if let Some(why) = planned.unrunnable_under(live) {
+        let refused = planned.unrunnable_under(live);
+        if let Some(why) = &refused {
             eprintln!("· {} {}: {why}", point.session_id, point.kind.as_str());
-            tally.unavailable += 1;
+        }
+        if count_unrunnable(&mut tally, point.kind, refused.is_some()) {
             continue;
         }
         let lost = planned.lost_recorded_tools(live.agent.registry());
@@ -1078,6 +1086,33 @@ fn store_one(
     Ok(())
 }
 
+/// Count a point the levers refuse to drive, and say whether it was
+/// refused. Owner-bound only when the drawn point is a failed check — the
+/// one kind `plan` poses as an artifact probe — and asked of the point
+/// itself rather than trusted from that: a caller that ever poses an artifact
+/// for another kind files it under `unavailable`, never under a ruling
+/// nobody made about it (found on review).
+fn count_unrunnable(tally: &mut Tally, kind: PointKind, refused: bool) -> bool {
+    if refused {
+        if kind == PointKind::FailedCheck {
+            tally.owner_bound += 1;
+        } else {
+            tally.unavailable += 1;
+        }
+    }
+    refused
+}
+
+/// What was drawn and not compared, and why — owner-bound points named
+/// apart from `unavailable`.
+fn skipped_line(t: &Tally) -> String {
+    format!(
+        "  skipped: {} already compared · {} with one distinct policy · {} unavailable · \
+         {} owner-bound, not driven · {} over budget · {} with no free seat",
+        t.already_compared, t.single_policy, t.unavailable, t.owner_bound, t.over_budget, t.no_seat
+    )
+}
+
 fn print_text(t: &Tally, seed: u64, outbox_read: bool) {
     let found: Vec<String> = t.found.iter().map(|(k, n)| format!("{k} {n}")).collect();
     println!(
@@ -1105,11 +1140,7 @@ fn print_text(t: &Tally, seed: u64, outbox_read: bool) {
          {} unposed, stored inconclusive with nothing driven",
         t.drawable, t.driven, t.arms_driven, t.drive_failed, t.unposed
     );
-    println!(
-        "  skipped: {} already compared · {} with one distinct policy · {} unavailable · \
-         {} over budget · {} with no free seat",
-        t.already_compared, t.single_policy, t.unavailable, t.over_budget, t.no_seat
-    );
+    println!("{}", skipped_line(t));
     if let Some(line) = t.stored.line() {
         println!("  {line}");
     }
@@ -1955,5 +1986,65 @@ mod tests {
             .unwrap();
         assert_eq!(back, vec![c]);
         assert_eq!(back[0].kind, Kind::PointCheck);
+    }
+
+    /// Owner's ruling on #333: the nightly never drives an owner-bound check
+    /// point, and says so as its own number — a count folded into
+    /// `unavailable` read the same as "no such points in the corpus".
+    #[test]
+    fn owner_bound_points_are_counted_apart_from_unavailable() {
+        let t = Tally {
+            unavailable: 1,
+            owner_bound: 2,
+            ..Tally::default()
+        };
+        let line = super::skipped_line(&t);
+        assert!(line.contains("1 unavailable"), "{line}");
+        assert!(line.contains("2 owner-bound, not driven"), "{line}");
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["owner_bound"], 2);
+        assert_eq!(json["unavailable"], 1);
+    }
+
+    /// The classification itself, on a real posed artifact: under the
+    /// nightly's levers (none thrown) the probe is refused and counted
+    /// owner-bound, not unavailable; with hooks, the outbox and messages off
+    /// it is drivable and counted as neither (review of #333: the rendering
+    /// test alone passed with the counter reverted).
+    #[test]
+    fn a_refused_owner_bound_point_is_counted_owner_bound() {
+        use mecha_core::harness::Lever;
+        let _guard = crate::testenv::HomeGuard::new("pointwise-owner-bound");
+        let (root, r) = crate::probe::mismatch_tests::fixture(Some(true), true, true);
+        let path = Session::find(root.path(), &r.session_id).unwrap();
+        let transcript = Session::read(&path).unwrap();
+        let points = pointwise::points_in(&r.session_id, &transcript.convo.messages, &[]);
+        let check = points
+            .iter()
+            .find(|p| p.kind == PointKind::FailedCheck)
+            .expect("the failed criterion is a check point");
+        let Plan::Posed(prep) = plan(check, &path, &BTreeMap::new(), None).unwrap() else {
+            panic!("an owner-bound check with its case bound is posed");
+        };
+
+        let mut t = Tally::default();
+        let refused = prep.unrunnable_with(&[]).is_some();
+        assert!(refused, "the nightly's argv throws no lever");
+        assert!(count_unrunnable(&mut t, check.kind, refused));
+        assert_eq!((t.owner_bound, t.unavailable), (1, 0));
+
+        let off = [Lever::Hooks, Lever::Outbox, Lever::Messages];
+        let refused_with_levers_off = prep.unrunnable_with(&off).is_some();
+        assert!(!refused_with_levers_off);
+        assert!(!count_unrunnable(
+            &mut t,
+            check.kind,
+            refused_with_levers_off
+        ));
+        assert_eq!((t.owner_bound, t.unavailable), (1, 0));
+
+        // A refusal of any other kind is not the owner's ruling.
+        assert!(count_unrunnable(&mut t, PointKind::Steer, true));
+        assert_eq!((t.owner_bound, t.unavailable), (1, 1));
     }
 }

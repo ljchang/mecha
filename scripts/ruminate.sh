@@ -10,8 +10,9 @@
 # front-end, a machine that was asleep) — not as the primary path.
 #
 # Ordering is the one deliberate choice here. `validate --unprocessed-only`
-# runs BEFORE `learn`, because learn marks reflections processed — measuring
-# afterwards would grade the rules on their own training data. Tonight's fresh
+# and `sessions compare` run BEFORE `learn`, because learn marks reflections
+# processed and derives rules from the same steers — measuring afterwards
+# would grade the rules on their own training data. Tonight's fresh
 # reflections are unseen by the current rules by construction, and learn's
 # --holdout keeps a slice unseen by the next generation too.
 #
@@ -101,6 +102,31 @@ echo "  --cover 1 buys one probe per (rule, region) pair the ledger has never gr
 echo "  so a widened rule is measured in each sub-region it widened over)"
 "$MECHA" validate -p "$PROVIDER" --judge-provider "$JUDGE" --unprocessed-only --cover 1
 
+# `sessions compare` runs BEFORE `learn`, for validate's reason (owner,
+# 2026-09-26): its `Rules` arm is the rules deployed now, and its points are
+# the same steers and denials `learn` is about to consume — after learn it
+# would grade tonight's sweep's rules on their own training data. That is
+# all the position buys, and it is NOT a hold-out: `validate`'s comes from
+# `--unprocessed-only`, and this pass has no such filter and draws the whole
+# corpus, while consolidation is live (`learn-live.sh` learns from a session
+# minutes after it closes). So most drawn points already meet a `Rules` arm
+# learned from them; the `Rules` arm reads as "the deployed rules at points
+# they may have been learned from", never as a held-out measurement (found
+# on review). It is the bounded pass (eight points, a short horizon, one background seat per point,
+# deferring when every seat stays held), so its place ahead of learn costs
+# the night a bounded wait, never a stall; it writes no rule.
+#
+# It never drives an owner-bound check point here (owner, 2026-09-26): one is
+# posed as an artifact probe, which executes its task, and this line throws
+# none of the levers (hooks, outbox, messages) that would let it run
+# unattended. The tally names them "owner-bound, not driven", apart from
+# "unavailable" — a decision, not an absence of data.
+echo "· compare (point-wise comparison at recorded decision points, decided by the"
+echo "  owner's recorded verdict, before the sweep's learn; not a hold-out — live"
+echo "  learning has already consumed most points; what it separates, tomorrow's"
+echo "  distill writes into the session's appraisal as the losing arm)"
+"$MECHA" sessions compare -p "$PROVIDER"
+
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
 echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
 "$MECHA" learn -p "$PROVIDER" --holdout 0.25 --auto
@@ -124,5 +150,16 @@ echo "· proposals awaiting review"
 
 echo "· harness candidates awaiting review"
 "$MECHA" harness list
+
+# The lesson-source pass runs last, after everything that changes what the
+# next run carries and after the two readouts the morning reads, so a slow or
+# stalled pass delays nothing the morning depends on. It holds one background
+# seat per intervention and defers the rest when every seat stays held; it
+# reads no rule and writes none, and it is the unbounded one: its arms run to
+# the recording's own turn limit.
+echo "· lesson sources (the reflector's lessons against the text appraisal's, on the"
+echo "  same interventions — shadow, measurement only; the real-session evidence R25"
+echo "  gates folding the reflector in on, and 2e-2 gates feeding learn on)"
+"$MECHA" learn -p "$PROVIDER" --compare-sources
 
 echo "── rumination done $(date -Is) ──"

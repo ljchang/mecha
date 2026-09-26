@@ -4344,6 +4344,14 @@ through the store above (a `point-*` `Kind` per point kind).
   the point); a declared check is the agent's own (R11) and a surprise has
   no owner act, so both are `Validator::Unposed`: **stored with no arms and
   a derived `Inconclusive`, nothing driven, never judged**.
+- **An owner-bound check point is counted, never driven, where the levers
+  stay on.** Its artifact repeat executes the task, so it runs only with
+  hooks, the outbox and messages off (`ProbePrep::unrunnable_under`); the
+  nightly line throws none of them, by the owner's ruling (2026-09-26), and
+  the tally reports those points as `owner_bound` ("owner-bound, not
+  driven"), apart from `unavailable`. Folded together, "the corpus holds
+  none" and "this pass refuses them all" read as one number and call for
+  opposite fixes (found on review of #333).
 - **The arms are policies** (`pointwise::distinct_policies`): the recorded
   prompt (`WithoutIntervention`), the rules deployed today for the run's
   situation (`Rules`, `validate`'s `RuleSurface`), and none (`RulesFree`) —
@@ -6248,10 +6256,16 @@ comparison over a chosen set**, with the design written before the run.
   `rules propose-retirements --apply` (the one brake on rules that go
   live as they are derived; a loop without it flatters the learn arm),
   `harness ruminate`, **the nightly's own order and argv**
-  (`scripts/ruminate.sh`): validate is the held-out measurement and
-  learn marks reflections processed, so learn first would grade the
-  rules on their own training data and measure a loop that does not
-  ship (the first cut did; found on review) — as child `mecha` verbs
+  (`scripts/ruminate.sh`, less its two shadow measurement passes —
+  `sessions compare`, before learn, and `learn --compare-sources`, last —
+  which change nothing the next run carries, so an arm would buy only wall
+  clock; the lesson-source comparison because it is never taught
+  (`kind_phrase` has no phrase for it), point-wise comparison only while
+  nothing reads the counterfactuals `distill` writes into a prompt, so a
+  reader added there must revisit this): validate is the held-out
+  measurement and learn marks reflections processed, so learn first would
+  grade the rules on their own training data and measure a loop that does
+  not ship (the first cut did; found on review) — as child `mecha` verbs
   against that home from a scratch workspace beside the ledger (a
   path jail from the home itself is refused), on the run child's
   environment allowlist and session kind,
