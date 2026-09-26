@@ -5631,6 +5631,27 @@ recorded clean taint and matching tools/workspace/surface. A startup snapshot
 examines at most 32 recent transcripts of at most 2 MB each and keeps 64 examples.
 It does not add unsolicited lesson delivery. Missing context is never a success.
 
+**A reflection serves the plan's goal, else its run's anchor**
+(`APPRAISAL-WIRING-DESIGN.md` L3, built as 2e-5a; `reflect::goals_for`).
+`Reflexion::goals` is what a lesson bears on, and the join `goal_lessons`
+serves through; it had one source, the plan at the intervention, and was
+empty on every reflection once the model stopped planning. The second source
+is the anchor the run covering the intervention recorded
+(`Transcript::anchor_covering`, off that run's `RunStats::goal_anchor`), taken
+only where the plan and the question in force name none, since evidence local
+to the moment is the more specific. Three things it is not. It is **not the
+session's last anchor**: a conversation re-anchored by an answer or a
+hand-over carries each run's own, and a message no recorded outcome covers
+(an errored run, one in flight, a head a summarising compaction removed)
+stamps none rather than a later anchor read back onto it. It is **not the
+situation's goal key**, which stays `rules_goal` — what the rules block was
+matched toward — so where a hand-over resumes an older anchor the two differ
+on purpose, one saying what the lesson served and the other where it loads.
+And it is **not backfilled**: reflections mined before it keep their goals,
+so lessons appear as anchored runs are corrected. The anchor is the harness's
+seed or the owner's confirmation, never a model's claim, which is why it
+carries `trigger:` and `request:` pointers the plan-named source may not.
+
 **Past clean appraisals are served through `goal_context`, on demand, and
 only behind their lever** (`APPRAISAL-WIRING-DESIGN.md` I2, built as 2c-2).
 `Lever::PastAppraisals` (`[agent] past_appraisals`, `--no-past-appraisals`)

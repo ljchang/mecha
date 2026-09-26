@@ -309,33 +309,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                             &given_in(ever.as_deref()),
                         ));
                     }
-                    r.goals = if intervention.trigger == Trigger::Mismatch {
-                        serde_json::from_str::<mecha_core::planning::StepFeedback>(
-                            &intervention.context,
-                        )
-                        .ok()
-                        .map(|s| s.goals())
-                        .unwrap_or_default()
-                    } else {
-                        convo
-                            .messages
-                            .get(intervention.at)
-                            .and_then(|m| m.planning.as_ref())
-                            .map(|f| {
-                                f.steps
-                                    .iter()
-                                    .filter_map(|s| s.goal.clone())
-                                    .collect::<Vec<_>>()
-                            })
-                            .filter(|goals| !goals.is_empty())
-                            .unwrap_or_else(|| {
-                                mecha_core::appraisal::goal_at(&convo.messages[..=intervention.at])
-                                    .into_iter()
-                                    .collect()
-                            })
-                    };
-                    r.goals.sort_by_key(|g| g.to_string());
-                    r.goals.dedup();
+                    r.goals = goals_for(&t, intervention);
                     r.origin = origin;
                     r.evidence = evidence;
                     // Where it happened, from what the miner already held:
@@ -554,6 +528,66 @@ fn matched_keys_of(path: &Path) -> std::result::Result<Vec<ReconciledKeys>, Stri
                 .collect()
         })
         .map_err(|e| format!("session unreadable: {e:#}"))
+}
+
+/// What a reflection serves (`Reflexion::goals`), from two sources in
+/// order (`APPRAISAL-WIRING-DESIGN.md` L3, row 2e-5a):
+///
+/// 1. **The plan at the intervention**: a mismatch's failed step's goals,
+///    or the step goals on the intervention message's planning metadata,
+///    else the plan or question in force there (`appraisal::goal_at`).
+///    Evidence local to the moment, so it wins where it names one.
+/// 2. **The conversation's anchor** (S1), which the run covering the
+///    intervention recorded (`Transcript::anchor_covering`): a task run's
+///    `task:<id>`, a trigger run's `trigger:<name>`, a front-door drain's
+///    `request:<id>`, or a goal the owner confirmed. Only when the first
+///    names none — which, since the model stopped planning, is every
+///    reflection, and why `goal_lessons` and `goal_context` served
+///    nothing.
+///
+/// The anchor is the harness's seed or the owner's confirmation, never a
+/// model's claim, so it takes every kind (a `trigger:` or `request:`
+/// pointer included, which the plan-named source may not carry). It is
+/// not the situation's goal key: that is `rules_goal`, what the rules
+/// block was matched toward (`keys_covering`), and the two differ wherever
+/// a hand-over resumes an older anchor. An intervention no recorded run
+/// covers stamps none from the anchor — absent, never the session's last
+/// anchor read back onto it.
+fn goals_for(
+    t: &mecha_core::session::Transcript,
+    intervention: &Intervention,
+) -> Vec<mecha_core::goal::GoalRef> {
+    let messages = &t.convo.messages;
+    let mut goals = if intervention.trigger == Trigger::Mismatch {
+        serde_json::from_str::<mecha_core::planning::StepFeedback>(&intervention.context)
+            .ok()
+            .map(|s| s.goals())
+            .unwrap_or_default()
+    } else {
+        messages
+            .get(intervention.at)
+            .and_then(|m| m.planning.as_ref())
+            .map(|f| {
+                f.steps
+                    .iter()
+                    .filter_map(|s| s.goal.clone())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|goals| !goals.is_empty())
+            .unwrap_or_else(|| {
+                messages
+                    .get(..=intervention.at)
+                    .and_then(mecha_core::appraisal::goal_at)
+                    .into_iter()
+                    .collect()
+            })
+    };
+    if goals.is_empty() {
+        goals.extend(t.anchor_covering(intervention.at).cloned());
+    }
+    goals.sort_by_key(|g| g.to_string());
+    goals.dedup();
+    goals
 }
 
 /// The keys of the run record covering message `at` of a transcript
@@ -1401,6 +1435,155 @@ mod tests {
                 &["shell".into()],
                 None
             )));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Row 2e-5a: the anchor is the second source of `Reflexion::goals`.
+    /// A correction in a run that planned nothing takes the anchor its run
+    /// recorded; a plan naming a goal at the intervention still wins; each
+    /// run's own anchor is read, never the session's last; and an
+    /// intervention no recorded run covers takes none.
+    #[test]
+    fn a_reflection_serves_the_anchor_its_run_recorded_when_no_plan_names_one() {
+        use mecha_core::goal::GoalRef;
+        use mecha_core::learning::Trigger;
+        use mecha_core::message::{Block, Message};
+        use mecha_core::planning::{Feedback, StepFeedback};
+        use mecha_core::session::RunStats;
+        let dir = scratch("mecha-reflect-anchor");
+        let task: GoalRef = "task:t-northwind-report".parse().unwrap();
+        let later: GoalRef = "trigger:lakeside-digest".parse().unwrap();
+        let s = session_on(&dir, "/jail", None, Some(SessionKind::Task), None);
+        let outcome = |anchor: &GoalRef| {
+            Record::Outcome(RunStats {
+                goal_anchor: Some(anchor.clone()),
+                ..Default::default()
+            })
+        };
+        // Run one, anchored to the task: 0 user, 1 assistant.
+        s.append(&Record::Message(Message::user(
+            "draft the Northwind report for Dana Whitfield",
+        )))
+        .unwrap();
+        s.append(&Record::Message(Message::assistant(vec![Block::Text {
+            text: "drafted".into(),
+        }])))
+        .unwrap();
+        s.append(&Record::GoalAnchor {
+            goal: Some(task.clone()),
+        })
+        .unwrap();
+        s.append(&outcome(&task)).unwrap();
+        // Run two, re-anchored: 2 user (a correction), 3 assistant whose
+        // planning metadata names a goal of its own.
+        s.append(&Record::Message(Message::user(
+            "no — cite the Lakeside figures",
+        )))
+        .unwrap();
+        let mut planned = Message::assistant(vec![Block::Text {
+            text: "revised".into(),
+        }]);
+        planned.planning = Some(Feedback {
+            steps: vec![StepFeedback {
+                goal: Some("task:t-planned".parse().unwrap()),
+                ..serde_json::from_value(
+                    serde_json::json!({"step": "revise", "verification": "not_declared"}),
+                )
+                .unwrap()
+            }],
+            ..Default::default()
+        });
+        s.append(&Record::Message(planned)).unwrap();
+        s.append(&Record::GoalAnchor {
+            goal: Some(later.clone()),
+        })
+        .unwrap();
+        s.append(&outcome(&later)).unwrap();
+        // 4: a message no run's outcome covers yet.
+        s.append(&Record::Message(Message::user("and send it")))
+            .unwrap();
+        let t = Session::read(&s.path).unwrap();
+        let at = |at: usize| Intervention {
+            trigger: Trigger::Followup,
+            context: String::new(),
+            text: String::new(),
+            aftermath: String::new(),
+            at,
+            tools_before: Vec::new(),
+            tools_after: Vec::new(),
+        };
+        assert_eq!(
+            goals_for(&t, &at(1)),
+            vec![task.clone()],
+            "no plan names a goal, so the run's anchor is the source"
+        );
+        assert_eq!(
+            goals_for(&t, &at(2)),
+            vec![later.clone()],
+            "the second run's anchor, not the first's"
+        );
+        assert_eq!(
+            goals_for(&t, &at(3)),
+            vec!["task:t-planned".parse::<GoalRef>().unwrap()],
+            "a plan naming a goal at the intervention is the first source"
+        );
+        assert!(
+            goals_for(&t, &at(4)).is_empty(),
+            "uncovered: absent, never the session's last anchor ({:?})",
+            t.convo.goal_anchor
+        );
+        assert_eq!(t.convo.goal_anchor, Some(later));
+
+        // And the loop the row names closes: a clean reflection stamped
+        // this way, behind a live rule, is a lesson `goal_lessons` serves
+        // toward the anchor — where it served nothing before.
+        let store = LearningStore::open(dir.join("learning")).unwrap();
+        store
+            .append_reflexion(&mecha_core::learning::Reflexion {
+                goals: goals_for(&t, &at(1)),
+                id: "r-anchored".into(),
+                domain: "behavior".into(),
+                session_id: t.meta.id.clone(),
+                trigger: "followup".into(),
+                context: "c".into(),
+                intervention: "no — cite the Lakeside figures".into(),
+                reflexion_text: "Cite the source figures in a report.".into(),
+                error_type: None,
+                confidence: None,
+                is_processed: true,
+                leap_run_id: None,
+                created_at: "2026-09-26T00:00:00Z".into(),
+                origin: Origin::Clean,
+                evidence: Evidence::Full,
+                edited_at: None,
+                dropped_at: None,
+                dropped_reason: None,
+                situation: None,
+                situation_recomputed_at: None,
+                attribution: None,
+            })
+            .unwrap();
+        store
+            .write_learned_rules(
+                "behavior",
+                &[mecha_core::learning::Rule {
+                    text: "Cite the source figures in a report.".into(),
+                    id: Some("rule-cite".into()),
+                    sources: vec!["r-anchored".into()],
+                    ..Default::default()
+                }],
+            )
+            .unwrap();
+        let lessons = mecha_core::learning::goal_lessons(
+            &store,
+            &mecha_core::situation::Situation::of_run(&[], None),
+        )
+        .unwrap();
+        assert_eq!(
+            lessons.iter().map(|l| &l.goal).collect::<Vec<_>>(),
+            vec![&task],
+            "{lessons:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
