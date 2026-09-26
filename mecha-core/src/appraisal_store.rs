@@ -1187,6 +1187,29 @@ impl AppraisalStore {
             .map(|r| r.id))
     }
 
+    /// The clean door's read and the sessions with an appraisal on record,
+    /// clean or not, from **one** read of the ledger — ids only for the
+    /// second, so a reader that must count a withheld appraisal (row
+    /// 2e-1's "clean for one source only") never holds its text.
+    pub fn clean_with_sessions(&self) -> Result<(CleanRead, std::collections::BTreeSet<String>)> {
+        let (rows, skipped) = self.for_owner()?;
+        let mut read = CleanRead {
+            skipped,
+            ..CleanRead::default()
+        };
+        let mut sessions = std::collections::BTreeSet::new();
+        for row in rows {
+            if !row.session_id.trim().is_empty() {
+                sessions.insert(row.session_id.clone());
+            }
+            match Clean::admit(row) {
+                Some(clean) => read.appraisals.push(clean),
+                None => read.withheld += 1,
+            }
+        }
+        Ok((read, sessions))
+    }
+
     /// Every record, oldest first, and how many lines were skipped — **for
     /// the owner's surfaces only**. A missing file is an empty store; a file
     /// that cannot be read is an `Err`.
@@ -2064,7 +2087,8 @@ fn policy_short(policy: Option<&str>) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NotTaught {
     /// Not a point-wise comparison (O1): a steer probe, a validation pair,
-    /// a gate pair, or a kind this build cannot read.
+    /// a gate pair, a lesson-source measurement (row 2e-1), or a kind this
+    /// build cannot read.
     OtherKind,
     /// Inconclusive, unposed, or a verdict this build cannot read: nothing
     /// was decided (R27 — never judged instead).
@@ -2117,7 +2141,13 @@ fn kind_phrase(kind: crate::comparison::Kind) -> Option<&'static str> {
         Kind::PointRejectedDraft => "a draft the owner rejected",
         Kind::PointCheck => "a failed check",
         Kind::PointSurprise => "a surprise",
-        Kind::SteerProbe | Kind::Validation | Kind::Gate | Kind::Unknown => return None,
+        // A lesson-source comparison (row 2e-1) is a measurement of the
+        // learners, shadow by ruling: its losing arm carries a lesson, and
+        // writing that into an appraisal would feed one source's words back
+        // into the other's input. Never taught.
+        Kind::SteerProbe | Kind::Validation | Kind::Gate | Kind::LessonSource | Kind::Unknown => {
+            return None
+        }
     })
 }
 
@@ -2162,6 +2192,8 @@ fn role_phrase(arm: &crate::comparison::Arm, proposal: Option<&str>) -> String {
             Some(p) if !p.trim().is_empty() => format!("harness candidate {p}"),
             _ => "a harness candidate".to_string(),
         },
+        Role::ReflectorLesson => "the reflector's lesson alone".to_string(),
+        Role::AppraisalLesson => "the appraisal's lessons alone".to_string(),
         Role::Unknown => "a policy this build cannot name".to_string(),
     };
     // `Arm::no_block`: recorded and empty, a different fact from unknown.
@@ -4128,6 +4160,20 @@ mod tests {
             Validator::StructuralSteer,
             rejected_draft("s-dana").arms,
         );
+        // A decided lesson-source measurement (row 2e-1): shadow, so its
+        // losing arm, a learner's lesson, is never written back into an
+        // appraisal, where it would feed the next appraiser.
+        let lesson_source = point(
+            "s-dana",
+            Kind::LessonSource,
+            Validator::StructuralDenial,
+            vec![
+                Arm::new(Role::RulesFree, Arm::no_block(), Outcome::Fail),
+                Arm::new(Role::ReflectorLesson, Some(RULES.into()), Outcome::Pass),
+                Arm::new(Role::AppraisalLesson, Some("other".into()), Outcome::Fail),
+            ],
+        );
+        assert_eq!(lesson_source.verdict, Verdict::Separated);
         let t = store
             .teach(&[
                 inconclusive,
@@ -4137,6 +4183,7 @@ mod tests {
                 judged,
                 edited,
                 not_pointwise,
+                lesson_source,
             ])
             .unwrap();
         assert_eq!(t.written, 0);
@@ -4148,7 +4195,7 @@ mod tests {
                 t.inconsistent,
                 t.other_kinds
             ),
-            (3, 1, 1, 1, 1)
+            (3, 1, 1, 1, 2)
         );
         assert!(
             !store.counterfactuals_ledger().exists(),

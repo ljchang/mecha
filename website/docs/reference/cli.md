@@ -1263,6 +1263,10 @@ mecha learn [OPTIONS]
 | `--propose` | Measure the candidate and stage a surviving proposal for review. |
 | `--auto` | Measure and apply unless a probe regresses; ungradeable candidates apply on probation. Conflicts with `--propose`. |
 | `--dry-run` | Show what would run without calling a model or writing anything. |
+| `--compare-sources` | Learn nothing: measure the reflector's lessons against the text appraisal's on the same interventions and report per region (below). Conflicts with `--propose`, `--auto`, `--dry-run` and `--holdout`. |
+| `--interventions <N>` | With `--compare-sources`: most interventions to replay this pass. Default `8`. |
+| `--seed <N>` | With `--compare-sources`: seed for the uniform draw. Defaults to today's day number, and is printed. |
+| `--json` | With `--compare-sources`: the pass's tally and the report as JSON. |
 
 `learn` rewrites `rules/<domain>.learned.toml` within a fixed character budget;
 `rules/<domain>.user.toml` is yours and is never written by code. The store is a git
@@ -1278,7 +1282,15 @@ mecha learn --dry-run
 mecha learn --holdout 0.25        # leave a measurement set for validate
 mecha learn --auto --holdout 0.25 -p local  # the supplied automation
 mecha learn --propose -p local              # require owner review
+mecha learn --compare-sources               # measure lessons by source; learns nothing
 ```
+
+`--compare-sources` is a measurement and writes no rule, proposal or
+validation row — only one comparison per intervention in the comparison store.
+It replays each drawn steer or denial the reflector reflected on three times —
+no rules, the reflector's lesson, and the lessons of that session's text
+appraisal — holding one background model seat, on a provider on this machine
+only. See [Lessons by source](/docs/features/learning#mecha-learn---compare-sources--lessons-by-source).
 
 ## `learning-report`
 
