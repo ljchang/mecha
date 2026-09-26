@@ -37,9 +37,16 @@ mkdir -p "$(dirname "$OUT")"
 # Prints nothing — and **still succeeds** — when no snapshot holds the file:
 # every caller is a bare `F=$(hub_file …)` under `set -euo pipefail`, where a
 # non-zero helper would end the script silently, before any `warn` could say
-# why (found on review: an unmatched glob makes `ls` exit 2). And only a file
-# that is really there counts: snapshot entries are symlinks into blobs/, and
-# a pruned blob leaves one dangling, which `ls` still lists.
+# why (found on review). The explicit `return 0` is what guards it: the loop
+# below ends on a failed `read`, and the first version's `ls | head` pipeline
+# carried ls's exit 2 on an unmatched glob. And only a file that is really
+# there counts: snapshot entries are symlinks into blobs/, and a pruned blob
+# leaves one dangling, which `ls` still lists.
+#
+# Newest-first also means a repo that re-uploads a file under the same name
+# (a re-quant) is served at the next restart under an unchanged alias, with
+# nothing said — for production as for the rest. The served file is in each
+# model's `/props` (`model_path`) when a run needs to know which.
 hub_file() {
   local f
   # Read line by line rather than word-split, so a space in HF_HUB is a path,
@@ -84,7 +91,7 @@ hub_mmproj() {
 }
 warn() { echo "$(basename "$0"): $*" >&2; }
 
-# The three Qwens' sampling, as the Qwen model cards give it; temp differs.
+# Every Qwen preset's sampling, as the Qwen model cards give it; temp differs.
 # Deliberately not in [*]: Gemma runs on llama-server's defaults, and a shared
 # line would silently retune it.
 qwen_sampling() {

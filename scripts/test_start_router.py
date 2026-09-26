@@ -214,5 +214,50 @@ class StartRouter(unittest.TestCase):
             self.assertEqual(preset.get("temp"), "1.0", name)
             self.assertEqual(preset.get("reasoning-preserve"), "true", name)
 
+class SingleModelScripts(unittest.TestCase):
+    """The single-model start scripts are the rollbacks, and a projector they
+    cannot find must stop them: mmproj_or_die's own exit ends only its $(...)
+    subshell, and none of them sets -e, so without `|| exit 1` they carried on
+    to `--mmproj ""` — a text-only server (found on review)."""
+
+    SCRIPTS = [
+        ("start-moe-mtp.sh", PROD, PROD_FILE),
+        ("start-gemma26.sh", "unsloth--gemma-4-26B-A4B-it-GGUF", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"),
+        ("start-e4b.sh", "unsloth--gemma-4-E4B-it-qat-GGUF", None),
+    ]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.cache = Cache(base / "hub")
+        self.cache.root.mkdir()
+        self.stub = base / "llama-server"
+        self.stub.write_text("#!/bin/sh\necho started \"$@\"\n")
+        self.stub.chmod(0o755)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_script(self, name):
+        env = dict(os.environ, HF_HUB=str(self.cache.root), LLAMA_SERVER=str(self.stub))
+        out = subprocess.run(
+            ["bash", str(SCRIPT.with_name(name))], env=env, capture_output=True, text=True, timeout=30
+        )
+        return out.returncode, out.stdout, out.stderr
+
+    def test_a_missing_projector_stops_the_rollback_before_the_server(self):
+        for name, repo, weights in self.SCRIPTS:
+            with self.subTest(script=name):
+                # The weights (where the script names one), and no projector.
+                if weights:
+                    self.cache.put(repo, "r1", weights)
+                else:
+                    (self.cache.root / f"models--{repo}" / "snapshots" / "r1").mkdir(parents=True, exist_ok=True)
+                code, out, err = self.run_script(name)
+                self.assertNotEqual(code, 0, err)
+                self.assertNotIn("started", out, "no server may start without its projector")
+                self.assertIn("vision tower is not on disk", err)
+
+
 if __name__ == "__main__":
     unittest.main()

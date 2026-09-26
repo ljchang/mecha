@@ -1,9 +1,9 @@
 #!/bin/bash
 # Qwen3.8-27B, as a single-model server — the rollback for the router's
 # `qwen3.8-27b` preset (scripts/start-router.sh), which now carries its flags
-# and serves unsloth's UD-Q4_K_XL. This script still serves the Q4_K_M it was
-# written for; unsloth withdrew that file upstream on 2026-08-19, so it runs
-# only where the file is already on disk.
+# and serves unsloth's UD-Q4_K_XL. This script serves the same file, falling
+# back to the Q4_K_M it was originally written for — unsloth withdrew that one
+# upstream on 2026-08-19, so the fallback only fires where it is already on disk.
 #
 # Read this before assuming it is a drop-in for start-moe-mtp.sh: **it is
 # dense, and that one word is the whole story.** At launch Qwen3.8 shipped two

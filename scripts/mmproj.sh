@@ -48,8 +48,8 @@ Fetch it:
     "https://huggingface.co/$repo/resolve/main/mmproj-BF16.gguf"
 
 Or start deliberately text-only by adding --no-mmproj to a single-model
-script's exec line; start-router.sh has no such escape hatch and skips the
-model instead.
+script's exec line; start-router.sh has no such escape hatch — it skips an
+optional model, and stops when production's projector is missing.
 EOF
   exit 1
 }
