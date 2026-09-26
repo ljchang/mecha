@@ -923,7 +923,10 @@ async fn run_agent(
     // owner's pick as it stands now (`provider::router`, D12) — and before
     // the cost cap, which must price the entry this run will use, not the one
     // resident when the daemon started (found on review).
-    for warning in mecha_core::provider::router::observe(&cfg).await {
+    // The daemon's own `--model`/`--provider`, if it was given one, still
+    // pins every fire; a trigger's own fields pin through `prepare_tools`.
+    let follows = global.model.is_none() && global.provider.is_none();
+    for warning in mecha_core::provider::router::observe(&cfg, follows).await {
         eprintln!("mecha: {warning}");
     }
     check_cost_cap(t)?;

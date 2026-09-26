@@ -61,6 +61,10 @@ pub struct Status {
     /// Set on an `unloaded` model whose child exited while loading.
     #[serde(default)]
     pub failed: bool,
+    /// The child's command line — the preset, as flags. Where a preset's
+    /// sampling is read from ([`preset_temperature`]).
+    #[serde(default)]
+    pub args: Vec<String>,
     #[serde(default)]
     pub exit_code: Option<i64>,
 }
@@ -164,16 +168,35 @@ pub fn resident(models: &[RouterModel]) -> Option<&str> {
     }
 }
 
-static SEEN: RwLock<Vec<Seen>> = RwLock::new(Vec::new());
+/// This process's snapshot: what each router had resident, and whether a
+/// default provider may follow it.
+///
+/// Two decisions, one read, and they are kept apart on purpose. A process
+/// given `--model` or `--provider` has named what it runs and must not
+/// follow — but its permit pool must still be sized to what is *loaded*, or
+/// `mecha distill -p local` admits three background runs onto a one-slot
+/// model (found on review).
+struct Snapshot {
+    seen: Vec<Seen>,
+    follows: bool,
+}
+
+static SNAPSHOT: RwLock<Snapshot> = RwLock::new(Snapshot {
+    seen: Vec::new(),
+    follows: false,
+});
 
 /// Snapshot every router a `follow_loaded` provider points at, replacing the
-/// last snapshot. Returns what `Config::provider(None)` will now follow and a
-/// warning for each resident model no provider entry names.
+/// last snapshot. `follows` is whether this process's default provider may
+/// follow it (false when it was given `--model` or `--provider`); the slot
+/// count is recorded either way. Returns warnings: a resident model no entry
+/// names (when following), and a `follow_loaded` that is being ignored.
 ///
 /// Called once at process start, and again per fire by anything that outlives
-/// one run. Costs one loopback round trip per router; a refused connection
+/// one run. A handful of loopback round trips per router (`/props`,
+/// `/models`, then the resident model's own `/props`); a refused connection
 /// costs nothing and leaves the default standing.
-pub async fn observe(cfg: &Config) -> Vec<String> {
+pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
     let mut seen = Vec::new();
     for b in followed_bases(cfg) {
         if let Some(list) = models(&b).await {
@@ -191,9 +214,24 @@ pub async fn observe(cfg: &Config) -> Vec<String> {
             });
         }
     }
-    let warnings = orphans(cfg, &seen);
-    if let Ok(mut slot) = SEEN.write() {
-        *slot = seen;
+    let mut warnings = if follows {
+        orphans(cfg, &seen)
+    } else {
+        Vec::new()
+    };
+    for (name, p) in &cfg.providers {
+        if p.follow_loaded && p.kind != "local" {
+            warnings.push(format!(
+                "[providers.{name}] sets follow_loaded, which is ignored on kind = {:?}: it means \
+                 \"whatever a llama-server router on this machine has loaded\", and following a \
+                 remote server would put a request to it in front of every command. Use \
+                 kind = \"local\" for a local router.",
+                p.kind
+            ));
+        }
+    }
+    if let Ok(mut slot) = SNAPSHOT.write() {
+        *slot = Snapshot { seen, follows };
     }
     warnings
 }
@@ -201,8 +239,9 @@ pub async fn observe(cfg: &Config) -> Vec<String> {
 /// How many background runs may hold the model at once, under this process's
 /// snapshot (`permit.rs`; owner's ruling 2026-09-26, §14 trap 5).
 pub fn background_seats(fallback: usize) -> usize {
-    SEEN.read()
-        .map_or(fallback, |seen| seats_for(&seen, fallback))
+    SNAPSHOT
+        .read()
+        .map_or(fallback, |s| seats_for(&s.seen, fallback))
 }
 
 /// The pure half of [`background_seats`]: one seat short of the resident
@@ -223,8 +262,11 @@ pub fn seats_for(seen: &[Seen], fallback: usize) -> usize {
 /// The provider `name` stands for right now, under this process's snapshot.
 /// `None` means `name` itself.
 pub fn follow(cfg: &Config, name: &str) -> Option<String> {
-    let seen = SEEN.read().ok()?;
-    followed(cfg, name, &seen)
+    let s = SNAPSHOT.read().ok()?;
+    if !s.follows {
+        return None;
+    }
+    followed(cfg, name, &s.seen)
 }
 
 /// The pure half of [`follow`]: which entry `name` resolves to against `seen`.
@@ -288,6 +330,85 @@ fn orphans(cfg: &Config, seen: &[Seen]) -> Vec<String> {
         }
     }
     out
+}
+
+/// The temperature a model's preset starts its child with, off the router's
+/// `/models` (`--temperature 0.6`; `--temp` is the same flag). `None` when the
+/// preset leaves it to llama-server's default.
+pub fn preset_temperature(m: &RouterModel) -> Option<f64> {
+    let args = &m.status.args;
+    args.iter()
+        .position(|a| a == "--temperature" || a == "--temp")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+}
+
+/// Entries naming `m` on the router at `b` whose `temperature` disagrees with
+/// its preset (owner's ruling R4, 2026-09-26: such a model is refused).
+///
+/// Temperature because it is the one sampling value mecha sends on every
+/// request, so it silently overrides the preset — a model loaded under a
+/// config that disagrees with its tuning is un-tuned without a word. An entry
+/// with no `temperature` sends none, and the preset governs.
+pub fn sampling_mismatches(cfg: &Config, b: &str, m: &RouterModel) -> Vec<String> {
+    let preset = preset_temperature(m);
+    cfg.providers
+        .iter()
+        .filter(|(_, p)| {
+            p.base_url.as_deref().map(base).as_deref() == Some(b)
+                && p.model.as_deref() == Some(m.id.as_str())
+        })
+        .filter_map(|(name, p)| {
+            let t = p.temperature?;
+            let agrees = preset.is_some_and(|pt| (pt - t).abs() < 1e-9);
+            (!agrees).then(|| {
+                format!(
+                    "[providers.{name}] temperature = {t}, but the router's preset for {:?} \
+                     starts it at {} — every request would override the preset's tuning",
+                    m.id,
+                    preset.map_or_else(|| "llama-server's default".to_string(), |p| p.to_string())
+                )
+            })
+        })
+        .collect()
+}
+
+/// Stop `model` on the router, **even mid-reply** — the request in flight
+/// fails (owner's ruling R2: a switch may be made "now" rather than waiting
+/// for idle). Waits until it is unloaded.
+pub async fn unload(base_url: &str, model: &str, wait: Duration) -> Result<()> {
+    let b = base(base_url);
+    let http = client(Duration::from_secs(10)).context("building an HTTP client")?;
+    let resp = http
+        .post(format!("{b}/models/unload"))
+        .json(&serde_json::json!({ "model": model }))
+        .send()
+        .await
+        .with_context(|| format!("POST {b}/models/unload"))?;
+    if !resp.status().is_success() {
+        bail!(
+            "the router refused to unload {model}: {} {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default().trim()
+        );
+    }
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let gone = models(&b)
+            .await
+            .and_then(|l| l.into_iter().find(|m| m.id == model))
+            .is_some_and(|m| !m.is_resident());
+        if gone {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            bail!(
+                "{model} was still resident {}s after unloading it",
+                wait.as_secs()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 /// How long a refused load is given to show up as loading anyway (a refusal
@@ -508,6 +629,33 @@ mod tests {
     }
 
     #[test]
+    fn a_preset_temperature_that_disagrees_with_config_is_named() {
+        let m = |args: &[&str]| RouterModel {
+            id: "gemma-4-26b-a4b".into(),
+            status: Status {
+                value: "unloaded".into(),
+                args: args.iter().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            },
+        };
+        let mut c = cfg();
+        let b = "http://127.0.0.1:8080";
+        // No temperature in config: mecha sends none, the preset governs.
+        assert!(sampling_mismatches(&c, b, &m(&["--temperature", "0.6"])).is_empty());
+        c.providers.get_mut("gemma26").unwrap().temperature = Some(0.6);
+        assert!(sampling_mismatches(&c, b, &m(&["--temp", "0.6"])).is_empty());
+        let w = sampling_mismatches(&c, b, &m(&["--temperature", "1.0"]));
+        assert_eq!(w.len(), 1);
+        assert!(
+            w[0].contains("[providers.gemma26] temperature = 0.6"),
+            "{w:?}"
+        );
+        // A preset that leaves it to the server's default disagrees with 0.6.
+        let w = sampling_mismatches(&c, b, &m(&["--ctx-size", "32768"]));
+        assert!(w[0].contains("llama-server's default"), "{w:?}");
+    }
+
+    #[test]
     fn a_v1_spelling_is_the_same_router() {
         let mut c = cfg();
         c.providers.get_mut("local").unwrap().base_url = Some("http://127.0.0.1:8080/v1".into());
@@ -527,46 +675,112 @@ mod tests {
         assert_eq!(followed(&c, "local", &seen(Some("gemma-4-26b-a4b"))), None);
     }
 
-    /// The wiring, not just the pure half: `observe` reads a router, and
-    /// `Config::provider(None)` — the call every default run makes — answers
-    /// with the sibling. If `provider` stopped consulting the snapshot, every
-    /// other test here would still pass.
-    #[tokio::test]
-    async fn a_default_run_takes_the_entry_naming_what_the_router_has_loaded() {
+    /// The snapshot is process-global; the tests that write it take turns.
+    static SNAPSHOT_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// A stub server answering one request per body, in order.
+    async fn stub(bodies: Vec<&'static str>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
-        let replies = [
-            r#"{"role":"router","model_alias":"llama-server"}"#,
-            r#"{"data":[{"id":"qwen3.6-35b-a3b","status":{"value":"unloaded"}},{"id":"gemma-4-26b-a4b","status":{"value":"loaded"}}]}"#,
-        ];
-        let server = tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            for body in replies {
+            let mut lines = Vec::new();
+            for body in bodies {
                 let (mut s, _) = listener.accept().await.unwrap();
                 let mut buf = [0u8; 2048];
-                let _ = s.read(&mut buf).await.unwrap();
+                let n = s.read(&mut buf).await.unwrap();
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                lines.push(head.lines().next().unwrap_or_default().to_string());
                 let reply = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 s.write_all(reply.as_bytes()).await.unwrap();
             }
+            lines
         });
+        (url, task)
+    }
+
+    /// A router with Gemma resident, as `observe` reads it: `/props`, then
+    /// `/models`, then the resident model's own `/props` (the placeholder
+    /// first, as `preflight::fetch` asks).
+    const GEMMA_RESIDENT: [&str; 4] = [
+        r#"{"role":"router","model_alias":"llama-server"}"#,
+        r#"{"data":[{"id":"qwen3.6-35b-a3b","status":{"value":"unloaded"}},{"id":"gemma-4-26b-a4b","status":{"value":"loaded"}}]}"#,
+        r#"{"role":"router","model_alias":"llama-server"}"#,
+        r#"{"model_alias":"gemma-4-26b-a4b","total_slots":1,"default_generation_settings":{"n_ctx":32768}}"#,
+    ];
+
+    fn config_at(url: &str) -> Config {
         let mut c = Config {
             default_provider: "local".into(),
             ..Default::default()
         };
         c.providers
-            .insert("local".into(), entry("qwen3.6-35b-a3b", &url, true));
+            .insert("local".into(), entry("qwen3.6-35b-a3b", url, true));
         c.providers
-            .insert("gemma26".into(), entry("gemma-4-26b-a4b", &url, false));
-        assert!(observe(&c).await.is_empty());
+            .insert("gemma26".into(), entry("gemma-4-26b-a4b", url, false));
+        c
+    }
+
+    /// The wiring, not just the pure half: `observe` reads a router, and
+    /// `Config::provider(None)` — the call every default run makes — answers
+    /// with the sibling. If `provider` stopped consulting the snapshot, every
+    /// other test here would still pass.
+    #[tokio::test]
+    async fn a_default_run_takes_the_entry_naming_what_the_router_has_loaded() {
+        let _turn = SNAPSHOT_TESTS.lock().await;
+        let (url, server) = stub(GEMMA_RESIDENT.to_vec()).await;
+        let c = config_at(&url);
+        assert!(observe(&c, true).await.is_empty());
         server.await.unwrap();
         assert_eq!(c.provider(None).unwrap().0, "gemma26");
         assert_eq!(
             c.provider(Some("local")).unwrap().0,
             "local",
             "a name is a pin"
+        );
+        assert_eq!(
+            background_seats(3),
+            1,
+            "one short of one slot, floored at one"
+        );
+    }
+
+    /// A process given `--model`/`--provider` does not follow, and its permit
+    /// pool is still sized to what is loaded — the two decisions apart.
+    #[tokio::test]
+    async fn a_pinned_process_does_not_follow_but_still_sizes_its_seats() {
+        let _turn = SNAPSHOT_TESTS.lock().await;
+        let (url, server) = stub(GEMMA_RESIDENT.to_vec()).await;
+        let c = config_at(&url);
+        observe(&c, false).await;
+        server.await.unwrap();
+        assert_eq!(c.provider(None).unwrap().0, "local", "pinned: no follow");
+        assert_eq!(
+            background_seats(3),
+            1,
+            "seats still read off the resident model"
+        );
+    }
+
+    #[tokio::test]
+    async fn follow_loaded_off_machine_is_said_to_be_ignored() {
+        let _turn = SNAPSHOT_TESTS.lock().await;
+        let mut c = cfg();
+        // Nothing listens here; the warning comes from the config alone.
+        for p in c.providers.values_mut() {
+            p.base_url = Some("http://127.0.0.1:9".into());
+        }
+        let gemma = c.providers.get_mut("gemma26").unwrap();
+        gemma.kind = "openai".into();
+        gemma.follow_loaded = true;
+        let w = observe(&c, false).await;
+        assert!(
+            w.iter()
+                .any(|w| w.contains("[providers.gemma26] sets follow_loaded")),
+            "{w:?}"
         );
     }
 
