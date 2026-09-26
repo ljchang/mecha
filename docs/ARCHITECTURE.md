@@ -2024,12 +2024,16 @@ Four things in it that cost something to get right, or would have:
   even at 200, and cross-check the byte count against the size Slack reported.
   Without them a sign-in page reaches the model labelled as the user's
   screenshot.
-- **Unfurling is off on everything the model authors, and there is no parameter
-  to turn it on.** A model-emitted URL that unfurls becomes an outbound GET
-  that no tool call made and no interlock saw — the same reasoning that makes
-  `http_fetch` a send sink despite being read-only. Making it a property of the
-  transport rather than an argument is what stops it being forgotten at one
-  call site.
+- **Unfurling is off on every message posted or edited, and there is no
+  parameter to turn it on** — `post_message` and `update` send
+  `unfurl_links`/`unfurl_media: false` unconditionally. A model-emitted URL
+  that unfurls becomes an outbound GET that no tool call made and no interlock
+  saw — the same reasoning that makes `http_fetch` a send sink despite being
+  read-only. Making it a property of the transport rather than an argument is
+  what stops it being forgotten at one call site. **The streaming calls do not
+  set it yet** (`start_stream`, `append_stream`, `stop_stream`), and streaming
+  carries a run's prose; whether Slack unfurls a streamed message is
+  unverified, so for streams this is an open gap, not a kept guarantee.
 - **Every builder truncates visibly rather than dropping.** Slack silently
   discards blocks past its cap and silently removes oversized images, which
   leaves a human reading a complete-looking message that is missing the part

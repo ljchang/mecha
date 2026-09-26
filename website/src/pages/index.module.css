@@ -1,16 +1,18 @@
 /**
  * The hero is the one saturated field in the brand (--mecha-section). Nothing
  * else on the site fills an area with colour, so this band is doing all of the
- * work — which is why it gets the grid and the mark rather than a gradient.
+ * work — which is why it gets the grid and the drawing rather than a gradient
+ * alone.
  */
 .heroBanner {
-  padding: 4rem 0 3rem;
-  text-align: center;
-  /* Infima's .hero is a flex row; the pitch and the poster stack. */
-  flex-direction: column;
+  padding: 2.25rem 0 3.5rem;
   position: relative;
   overflow: hidden;
   border-bottom: 1px solid var(--ifm-color-emphasis-200);
+  /* Rules and labels in the title block. One token, so the block's lines and
+     the plate's edge are the same weight of the same colour. */
+  --sheet-rule: rgba(93, 82, 148, 0.35);
+  --sheet-label: var(--ifm-color-emphasis-600);
 }
 
 [data-theme='dark'] .heroBanner {
@@ -21,6 +23,8 @@
     var(--mecha-bg) 100%
   );
   border-bottom-color: rgba(233, 233, 237, 0.1);
+  --sheet-rule: rgba(181, 171, 252, 0.24);
+  --sheet-label: var(--mecha-text-muted);
 }
 
 /* The light theme gets the same band an order of magnitude quieter: a tint of
@@ -31,7 +35,7 @@
 }
 
 /* The same 44-unit grid as the social card, so the hero and the link preview
-   are recognisably one surface. */
+   are recognisably one surface — and, behind a drawing, a drafting table. */
 .heroBanner::before {
   content: '';
   position: absolute;
@@ -53,59 +57,266 @@
   position: relative;
 }
 
-.heroPoster {
-  max-width: 1180px;
-  margin-top: 2.75rem;
+.visuallyHidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
-.heroPoster figure {
-  margin-bottom: 0;
+/* The plate is 3:2 and the title block about 7.5rem, so a sheet this wide
+   puts both on the first screen of a laptop: width = (viewport − navbar −
+   padding − title block) × 1.5. Never narrower than 720px where there is room
+   for it, because below that the callouts stop being legible. */
+.sheet {
+  max-width: min(1180px, max(720px, calc((100svh - 15rem) * 1.5)));
+  container: sheet / inline-size;
 }
 
-.heroBanner :global(.hero__title) {
-  letter-spacing: -0.03em;
+.plate {
+  /* Poster's own knobs: flush against the title block, the edge in the
+     block's rule colour, square where they meet, and no drop shadow falling
+     onto it. */
+  --poster-margin: 0;
+  --poster-edge: var(--sheet-rule);
+  --poster-radius: 4px 4px 0 0;
+  --poster-shadow: none;
 }
 
-.kicker {
+/* The title block: the ruled strip along the foot of a drawing. Four fields
+   on one row — what it is, what it does, what it is made of, where to go —
+   and the links are cells of the block rather than buttons beside it. */
+.titleBlock {
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1fr) minmax(0, 2.5fr) minmax(0, 0.75fr) minmax(12rem, 1fr);
+  border: 1px solid var(--sheet-rule);
+  border-top: 0;
+  border-radius: 0 0 4px 4px;
+  background: var(--ifm-background-color);
+  text-align: left;
+}
+
+.cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.9rem 1.1rem;
+  border-right: 1px solid var(--sheet-rule);
+  min-width: 0;
+}
+
+.label {
   font-family: var(--ifm-font-family-monospace);
-  font-size: 0.78rem !important;
-  letter-spacing: 0.22em;
-  color: var(--mecha-hazard) !important;
-  margin-bottom: 1rem !important;
+  font-size: 0.66rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--sheet-label);
 }
 
-.heroBanner :global(.hero__subtitle) {
-  max-width: 46rem;
-  margin: 0 auto 2rem;
-  color: var(--ifm-color-emphasis-700);
-  font-size: 1.25rem;
+.value {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.86rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ifm-heading-color);
 }
 
-[data-theme='dark'] .heroBanner :global(.hero__subtitle) {
-  color: var(--mecha-text-muted);
+.tagline {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.45;
+  color: var(--ifm-heading-color);
 }
 
-@media screen and (max-width: 996px) {
-  .heroBanner {
-    padding: 3rem 1rem 2rem;
-  }
-
-  .heroBanner :global(.hero__subtitle) {
-    font-size: 1.1rem;
-  }
-
-  .heroPoster {
-    margin-top: 1.75rem;
-    padding: 0;
-  }
+.actions {
+  display: flex;
+  flex-direction: column;
 }
 
-.buttons {
+.action {
+  flex: 1;
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 1.1rem;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ifm-heading-color);
+  text-decoration: none;
+  transition: background-color var(--ifm-transition-fast) ease;
+}
+
+.action + .action {
+  border-top: 1px solid var(--sheet-rule);
+}
+
+.action::after {
+  content: '→';
+  /* Decoration, not part of the link's name: empty alt text where the
+     syntax is supported, the bare arrow where it is not. */
+  content: '→' / '';
+  font-weight: 400;
+}
+
+.action:hover {
+  color: var(--ifm-heading-color);
+  text-decoration: none;
+  background: rgba(145, 132, 217, 0.12);
+}
+
+.actionPrimary,
+.actionPrimary:hover {
+  color: #fff;
+  background: var(--mecha-accent-700);
+}
+
+/* Darker on hover, never lighter: white on accent-600 is under 4.5:1 at
+   this size, so the resting fill is already the lightest this may go. */
+.actionPrimary:hover {
+  background: var(--mecha-accent-900);
+}
+
+[data-theme='dark'] .actionPrimary,
+[data-theme='dark'] .actionPrimary:hover {
+  color: var(--mecha-void);
+  background: var(--mecha-accent-400);
+}
+
+[data-theme='dark'] .actionPrimary:hover {
+  background: var(--mecha-accent-300);
+}
+
+.action:focus-visible {
+  outline: 2px solid var(--mecha-accent-500);
+  outline-offset: -2px;
+}
+
+/* Inset over the accent fill the ring is under 3:1 in both themes, so on
+   the primary cell it sits outside, over the block's own ground. */
+.actionPrimary:focus-visible {
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .action {
+    transition: none;
+  }
+}
+
+/* A short laptop screen (1366×768, 1280×720) clamps the sheet towards its
+   720px floor, and there the first cell got about 82px — narrower than
+   LOCAL-FIRST, which then broke at its hyphen over four lines and grew the
+   block past what the sheet's width formula reserves. Widening that cell
+   only moves the squeeze onto the description, so a narrow sheet tightens
+   the block instead: smaller values, less tracking and padding, and a
+   narrower links column. Keyed to the sheet's own width, not the viewport's,
+   because the sheet's width follows the screen's height. */
+@media screen and (min-width: 997px) {
+  @container sheet (max-width: 900px) {
+    .titleBlock {
+      grid-template-columns:
+        minmax(0, 1fr) minmax(0, 2.5fr) minmax(0, 0.75fr) minmax(10rem, 1fr);
+    }
+
+    .cell {
+      padding: 0.9rem 0.8rem;
+    }
+
+    .value {
+      font-size: 0.78rem;
+      letter-spacing: 0.02em;
+    }
+
+    .action {
+      padding: 0.5rem 0.85rem;
+    }
+  }
+}
+
+/* Narrow: what and made-of share a row, the description gets its own, and the
+   links become a row of three. */
+@media screen and (max-width: 996px) {
+  .heroBanner {
+    padding: 1.25rem 0 2.5rem;
+  }
+
+  .sheet {
+    max-width: none;
+  }
+
+  .titleBlock {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .cellDrawing {
+    order: 1;
+  }
+
+  .cellBuild {
+    order: 2;
+    border-right: 0;
+  }
+
+  .cellTagline {
+    order: 3;
+    grid-column: 1 / -1;
+    border-right: 0;
+    border-top: 1px solid var(--sheet-rule);
+  }
+
+  .actions {
+    order: 4;
+    grid-column: 1 / -1;
+    flex-direction: row;
+    border-top: 1px solid var(--sheet-rule);
+  }
+
+  .action {
+    padding: 0.85rem 1rem;
+  }
+
+  .action + .action {
+    border-top: 0;
+    border-left: 1px solid var(--sheet-rule);
+  }
+}
+
+@media screen and (max-width: 520px) {
+  .actions {
+    flex-direction: column;
+  }
+
+  .action + .action {
+    border-left: 0;
+    border-top: 1px solid var(--sheet-rule);
+  }
+}
+
+/* A panel header in the drawing's own voice — "FRONT VIEW (ORTHOGRAPHIC)" —
+   over each section below the hero. */
+.sectionLabel {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.68rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-600);
+}
+
+[data-theme='dark'] .sectionLabel {
+  color: var(--mecha-text-muted);
 }
 
 .sample {
