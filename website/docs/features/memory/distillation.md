@@ -187,6 +187,12 @@ The follow-up adds real time to each session, mostly generation. Measured on
 eight real sessions it took 20–137 s of a seat, a median of about a minute,
 with the episode's whole prompt read from the server's cache each time.
 
+Every pass that writes — even one with nothing new to distill — then adds
+what [`mecha sessions compare`](/docs/features/learning#mecha-sessions-compare--policies-at-the-moments-you-decided)
+decided to the appraisals it bears on: [the losing
+arm](/docs/features/appraisal/reference#what-a-losing-arm-taught). This makes
+no model call.
+
 ## Distillation is not learning
 
 The provenance rule here is deliberately different from the one

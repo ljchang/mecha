@@ -53,8 +53,73 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // distillation, so an appraisal written this pass is on record for it.
     if !dry_run {
         score_predictions(&server).await;
+        // Row 2d-3, for the same reasons: no model, and a comparison is
+        // drawn from a session *after* it was distilled — `sessions
+        // compare` reads recorded sessions — so the losing arm reaches the
+        // appraisal on the next pass, quiet night or not. After the
+        // distillation, so an appraisal written this pass can be taught.
+        teach_losing_arms();
     }
     distilled
+}
+
+/// Row 2d-3 (O3): write each decided point-wise comparison's losing arm
+/// into its session's appraisal, once — no model call. Nothing here can
+/// stop distill: a store that cannot be read is said, and its comparisons
+/// wait for a pass that can read it.
+fn teach_losing_arms() {
+    let Some(store) = AppraisalStore::open_existing_default() else {
+        return;
+    };
+    let Some(comparisons) = mecha_core::comparison::ComparisonStore::open_existing_default() else {
+        println!("losing arms: no comparison on record");
+        return;
+    };
+    let (rows, skipped) = match comparisons.comparisons_counting() {
+        Ok(read) => read,
+        Err(e) => {
+            eprintln!("mecha: the comparison store could not be read; no losing arm taught: {e:#}");
+            return;
+        }
+    };
+    match store.teach(&rows) {
+        Ok(t) => println!("{}", losing_arms_line(&t, skipped)),
+        Err(e) => eprintln!("mecha: the losing arms could not be taught: {e:#}"),
+    }
+}
+
+/// One line for what a teaching pass did — every comparison read, counted
+/// once, by why.
+pub(crate) fn losing_arms_line(
+    t: &mecha_core::appraisal_store::Taught,
+    comparisons_unreadable: usize,
+) -> String {
+    let refused: usize = t.refused.values().sum();
+    let why: Vec<String> = t.refused.iter().map(|(k, n)| format!("{k} {n}")).collect();
+    let refused_what = format!("refused by the dereference ({})", why.join(", "));
+    let mut out = format!(
+        "losing arms: {} taught into their session's appraisal ({} not clean — the owner's \
+         alone) · {} already taught · {} whose session has no appraisal yet · {} undecided and \
+         {} tied (nothing lost; nothing written)",
+        t.written, t.written_not_clean, t.already, t.awaiting_appraisal, t.undecided, t.tied
+    );
+    for (n, what) in [
+        (t.not_structural, "separated by no structural validator"),
+        (t.inconsistent, "inconsistent with their own arms"),
+        (t.no_session, "naming no session"),
+        (refused, refused_what.as_str()),
+        (comparisons_unreadable, "unreadable comparison line(s)"),
+        (t.appraisals_unreadable, "unreadable appraisal line(s)"),
+        (
+            t.counterfactuals_unreadable,
+            "unreadable reflection line(s)",
+        ),
+    ] {
+        if n > 0 {
+            out.push_str(&format!(" · {n} {what}"));
+        }
+    }
+    out
 }
 
 async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
