@@ -5651,11 +5651,20 @@ intervention, and one before it is `goal_at`'s to name. It is **not the
 session's last anchor**: a conversation re-anchored by an answer or a
 hand-over carries each run's own, and a message no record covers stamps none
 rather than a later anchor read back onto it: a run in flight, and everything
-below `Transcript::anchor_floor` — the rebuilt head and the tail a summarising
-compaction carried, whose run's record lost its place. Clearing those
-positions alone was not enough, since a later run's record keeps its place and
-a search skipping the placeless ones read it back onto the carried tail (found
-on review of #335). It is **not the
+below `Transcript::anchor_floor`.
+
+**The anchor floor is where the record stops saying anything** (review of
+#335, twice). Two things raise it. A summarising compaction raises it to the
+length it left, because the rebuilt head and the carried tail lost their run's
+record, and clearing their positions alone let a search skip the placeless
+records and read the next run's back onto the tail. An outcome with no
+`GoalAnchor` since the previous outcome raises it to that outcome's place:
+every front-end calls `record_run` before `record_outcome`, so such a run
+predates the record, and without the floor the seed `run --resume --goal`
+writes *before* the resumed run (`run::seed_goal_anchor`) was the first record
+after its messages. A truncating rewrite clamps it like every position. The
+residue is a transcript from before outcomes were recorded, which carries
+neither record. It is **not the
 situation's goal key**, which stays `rules_goal` — what the rules block was
 matched toward — so where a hand-over resumes an older anchor the two differ
 on purpose, one saying what the lesson served and the other where it loads.
