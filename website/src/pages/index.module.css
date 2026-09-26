@@ -75,6 +75,7 @@
    for it, because below that the callouts stop being legible. */
 .sheet {
   max-width: min(1180px, max(720px, calc((100svh - 15rem) * 1.5)));
+  container: sheet / inline-size;
 }
 
 .plate {
@@ -210,6 +211,36 @@
 @media (prefers-reduced-motion: reduce) {
   .action {
     transition: none;
+  }
+}
+
+/* A short laptop screen (1366×768, 1280×720) clamps the sheet towards its
+   720px floor, and there the first cell got about 82px — narrower than
+   LOCAL-FIRST, which then broke at its hyphen over four lines and grew the
+   block past what the sheet's width formula reserves. Widening that cell
+   only moves the squeeze onto the description, so a narrow sheet tightens
+   the block instead: smaller values, less tracking and padding, and a
+   narrower links column. Keyed to the sheet's own width, not the viewport's,
+   because the sheet's width follows the screen's height. */
+@media screen and (min-width: 997px) {
+  @container sheet (max-width: 900px) {
+    .titleBlock {
+      grid-template-columns:
+        minmax(0, 1fr) minmax(0, 2.5fr) minmax(0, 0.75fr) minmax(10rem, 1fr);
+    }
+
+    .cell {
+      padding: 0.9rem 0.8rem;
+    }
+
+    .value {
+      font-size: 0.78rem;
+      letter-spacing: 0.02em;
+    }
+
+    .action {
+      padding: 0.5rem 0.85rem;
+    }
   }
 }
 
