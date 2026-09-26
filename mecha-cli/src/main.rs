@@ -557,12 +557,6 @@ impl Command {
 /// router that is down leaves the default standing — one loopback round trip
 /// when it is up, nothing when nothing listens.
 async fn follow_the_loaded_model(global: &GlobalOpts) {
-    // A process given `--model` or `--provider` has named what it runs, and
-    // the passes that resolve `cfg.provider(global.provider)` themselves
-    // (lesson, pointwise, gossip, …) never reach `setup`'s pin.
-    if global.model.is_some() || global.provider.is_some() {
-        return;
-    }
     let cfg = if global.global_config_only {
         mecha_core::config::Config::load_global()
     } else {
@@ -571,7 +565,12 @@ async fn follow_the_loaded_model(global: &GlobalOpts) {
             .and_then(|cwd| mecha_core::config::Config::load(&cwd))
     };
     let Ok(cfg) = cfg else { return };
-    for warning in mecha_core::provider::router::observe(&cfg).await {
+    // A process given `--model` or `--provider` has named what it runs, so it
+    // does not follow — the passes that resolve `cfg.provider(global.provider)`
+    // themselves (lesson, pointwise, gossip, …) never reach `setup`'s pin. It
+    // is still observed: its permit pool is sized to what is loaded.
+    let follows = global.model.is_none() && global.provider.is_none();
+    for warning in mecha_core::provider::router::observe(&cfg, follows).await {
         tracing::warn!("{warning}");
     }
 }

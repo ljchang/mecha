@@ -8,7 +8,7 @@
 //! tool; a model never chooses the model.
 
 use crate::GlobalOpts;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use mecha_core::config::Config;
 use mecha_core::provider::router;
 use serde::Serialize;
@@ -29,14 +29,21 @@ pub enum Cmd {
     /// naming each (default).
     List,
     /// Load a model — by provider entry name or by the router's model name —
-    /// and wait until it is resident. The model it replaces finishes any
-    /// request in flight first; every run after this one follows it.
+    /// and wait until it is resident; every run after this one follows it.
+    /// The model it replaces finishes any reply in flight first, unless
+    /// `--now`. If the new model fails to come up, the previous one is loaded
+    /// back. A model whose preset temperature disagrees with its provider
+    /// entry is refused.
     Use {
         name: String,
         /// Give up after this many seconds. A cold load from disk measured
         /// 33–39 s on 2026-09-26; the unit allows 600.
         #[arg(long, default_value_t = 600)]
         wait_secs: u64,
+        /// Switch now: stop the resident model even mid-reply, instead of
+        /// waiting for it to go idle. The reply in progress fails.
+        #[arg(long)]
+        now: bool,
     },
 }
 
@@ -58,6 +65,9 @@ struct Model {
     /// The provider entries naming this model on this router. One is the
     /// working case; none means a run can never choose it by default.
     providers: Vec<String>,
+    /// Entries whose `temperature` disagrees with this model's preset;
+    /// `mecha model use` refuses the model while any remain (R4).
+    sampling_mismatches: Vec<String>,
 }
 
 fn load_config(global: &GlobalOpts) -> Result<Config> {
@@ -99,6 +109,7 @@ async fn survey(cfg: &Config) -> Vec<(String, Option<Router>)> {
                     providers: router::namers(cfg, &base, &m.id)
                         .map(str::to_string)
                         .collect(),
+                    sampling_mismatches: router::sampling_mismatches(cfg, &base, m),
                 })
                 .collect(),
             unserved,
@@ -113,7 +124,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let cfg = load_config(global)?;
     match args.cmd.unwrap_or(Cmd::List) {
         Cmd::List => list(&cfg, args.json).await,
-        Cmd::Use { name, wait_secs } => use_(&cfg, &name, wait_secs, args.json).await,
+        Cmd::Use {
+            name,
+            wait_secs,
+            now,
+        } => use_(&cfg, &name, wait_secs, now, args.json).await,
     }
 }
 
@@ -165,6 +180,9 @@ async fn list(cfg: &Config, json: bool) -> Result<()> {
                 ps => ps.join(", "),
             };
             println!("  {here} {:<30} {:<9} {who}", m.id, m.status);
+            for w in &m.sampling_mismatches {
+                println!("      ! {w}");
+            }
         }
         for n in &r.unserved {
             println!("  ! [providers.{n}] names a model this router does not serve");
@@ -173,7 +191,7 @@ async fn list(cfg: &Config, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn use_(cfg: &Config, name: &str, wait_secs: u64, json: bool) -> Result<()> {
+async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -> Result<()> {
     let bases = router_bases(cfg);
     // A provider entry on one of the routers, then a model id one serves.
     let target = match cfg.providers.get(name) {
@@ -207,25 +225,94 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, json: bool) -> Result<()
              can be loaded"
         );
     };
+    let list = router::models(&base)
+        .await
+        .with_context(|| format!("{base} is not a llama-server router (or is not up)"))?;
+    let previous = router::resident(&list).map(str::to_string);
+    if previous.as_deref() == Some(model.as_str()) {
+        return report(cfg, &base, &model, 0.0, json);
+    }
+
+    // R4: a preset whose temperature the config would override is refused.
+    if let Some(m) = list.iter().find(|m| m.id == model) {
+        let mismatches = router::sampling_mismatches(cfg, &base, m);
+        if !mismatches.is_empty() {
+            bail!(
+                "refusing to load {model}: its preset's sampling disagrees with config, so every \
+                 request would silently re-tune it —\n  {}\nMake the entry's temperature match \
+                 the preset in scripts/start-router.sh (or unset it).",
+                mismatches.join("\n  ")
+            );
+        }
+    }
+
+    // R2: the resident model mid-reply is waited for, or — `--now` — cut off.
+    if let Some(prev) = &previous {
+        if let mecha_core::brief::Slots::Read { busy, .. } =
+            mecha_core::brief::read_slots(&base, Some(prev)).await
+        {
+            if busy > 0 && now {
+                eprintln!("stopping {prev} now — {busy} reply(ies) in progress will fail");
+                router::unload(&base, prev, Duration::from_secs(60)).await?;
+            } else if busy > 0 {
+                eprintln!(
+                    "{prev} is answering {busy} request(s); the switch waits for it to go idle \
+                     (--now cuts it off)"
+                );
+            }
+        }
+    }
+
     let started = Instant::now();
-    router::load(&base, &model, Duration::from_secs(wait_secs)).await?;
-    let secs = started.elapsed().as_secs_f64();
-    let providers: Vec<String> = router::namers(cfg, &base, &model)
+    match router::load(&base, &model, Duration::from_secs(wait_secs)).await {
+        Ok(()) => report(cfg, &base, &model, started.elapsed().as_secs_f64(), json),
+        // R1: a model that does not come up is replaced by the one it was
+        // meant to replace, rather than leaving the next request to load the
+        // default.
+        Err(failed) => {
+            let Some(prev) = previous else {
+                return Err(failed);
+            };
+            eprintln!("{failed:#}\nloading {prev} back…");
+            match router::load(&base, &prev, Duration::from_secs(wait_secs)).await {
+                Ok(()) => Err(failed.context(format!(
+                    "{model} did not load; {prev} is loaded again, as it was before"
+                ))),
+                Err(back) => Err(failed.context(format!(
+                    "{model} did not load, and loading {prev} back failed too: {back:#}"
+                ))),
+            }
+        }
+    }
+}
+
+/// What `use` did, for a person or for the chip.
+fn report(cfg: &Config, base: &str, model: &str, secs: f64, json: bool) -> Result<()> {
+    let providers: Vec<String> = router::namers(cfg, base, model)
         .map(str::to_string)
         .collect();
+    // One entry is the working case; none or several means default runs keep
+    // the default and swap this back out — said in both outputs, because the
+    // chip reads the JSON (found on review).
+    let warning = (providers.len() != 1).then(|| {
+        format!(
+            "{} provider entries name {model} — default runs will keep the default provider \
+             and swap it back out; `mecha model list` shows which",
+            providers.len()
+        )
+    });
     if json {
         println!(
             "{}",
-            serde_json::json!({ "base_url": base, "model": model, "providers": providers, "seconds": secs })
+            serde_json::json!({
+                "base_url": base, "model": model, "providers": providers,
+                "seconds": secs, "warning": warning,
+            })
         );
     } else {
         println!("{model} is loaded at {base} ({secs:.1}s)");
-        if providers.len() != 1 {
-            println!(
-                "warning: {} provider entries name it — default runs will keep the default \
-                 provider and swap it back out. `mecha model list` shows which.",
-                providers.len()
-            );
+        if let Some(w) = warning {
+            println!("warning: {w}");
         }
     }
     Ok(())

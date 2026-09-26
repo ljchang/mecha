@@ -1754,3 +1754,35 @@ mecha config show | grep -A4 '\[sandbox\]'
 ```
 
 See the [configuration reference](/docs/reference/configuration) for every key.
+
+## `model`
+
+The local model router: what it can serve, and which model it holds. Loading a
+model *is* the choice — every run that takes a provider marked
+`follow_loaded` by default uses whichever model is loaded, with no restart and
+no setting to edit. `list` is the default subcommand.
+
+```
+mecha model [list|use] [ARGS] [--json]
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `list` | | Each router's models, which one is loaded (●), the provider entry naming each, and any entry whose `temperature` disagrees with its model's preset. |
+| `use` | `<NAME>` | A provider entry or a router model name. Loads it and waits until it is resident. |
+| `use` | `--now` | Stop the loaded model even mid-reply instead of waiting for it to go idle; the reply in progress fails. |
+| `use` | `--wait-secs <N>` | Give up after this many seconds (default 600; a cold load measured 33–39 s). |
+| both | `--json` | Machine-readable output. An unreachable router is listed with `"reachable": false`. |
+
+`use` refuses a model whose preset temperature disagrees with its provider
+entry, because mecha sends `temperature` on every request and would silently
+re-tune it. If the new model fails to come up, the one it was replacing is
+loaded back.
+
+```bash
+mecha model
+mecha model use gemma26
+mecha model use qwen3.6-35b-a3b-uncensored --now
+```
+
+See `follow_loaded` in the [configuration reference](/docs/reference/configuration).

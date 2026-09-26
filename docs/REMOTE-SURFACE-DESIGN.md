@@ -624,8 +624,41 @@ true`), the unit's `ExecStart` to `start-router.sh`, and a restart of
 `llama-local`. The uncensored drop-in retires with it: the arm becomes
 `mecha model use`.
 
-### Open
+### Three rulings carried over (2026-09-26)
 
-- Whether a switch should refuse while a long request is in flight, or
-  queue behind it as the router does now. Queueing is the router's
-  behaviour, and `mecha model use` reports the wait.
+A peer session's restart-based design got four owner rulings the same day;
+asked whether they carry over to this one, the owner kept three. All are
+built in `mecha model use`:
+
+- **R1 — a switch that fails reverts.** If the new model does not come up,
+  the one it was replacing is loaded back, rather than leaving the next
+  request to load the default.
+- **R2 — wait, or switch now.** The default waits for the resident model to
+  go idle (the router's own behaviour, and said out loud); `--now` unloads
+  it mid-reply, and the reply in progress fails. mecha's stream decoder
+  already refuses a stream that ends with no `[DONE]` and no
+  `finish_reason`, which is how the router's cut-off arrives (a 200 whose
+  body ends in `proxy error: Failed to read connection`), so a cut reply is
+  a failure and never a short answer.
+- **R4 — sampling must match.** A model whose preset temperature disagrees
+  with its provider entry's is refused; `mecha model list` marks it.
+  Temperature because it is the one sampling value mecha sends per
+  request, and so the one that would silently re-tune the preset.
+
+R3 (the chip opens the settings pane rather than an inline menu) did not
+carry over; the chip's shape is step 5's to settle.
+
+All three were exercised on a test router at :8090: a preset pointing at a
+missing file failed and Gemma was loaded back; a 0.5 entry against a 1.0
+preset was refused; `--now` during a streaming Gemma reply cut it off and
+loaded Qwen3.8 in 25 s.
+
+### Four scripts read a bare `/props`
+
+Found on review, and each fails loudly rather than recording a wrong
+number: `bench/run.sh` and `scripts/replay-regression.sh` (`MODEL_PORT`
+8080), `scripts/bench-slots.sh` (reads `total_slots`, which the placeholder
+lacks, and refuses), and `scripts/appraisal-validity.py` (pins the
+placeholder's `"llama-server"` as `--model`, which the router answers 400).
+They need `?model=…&autoload=false` before the install, or the `update`
+skill's benchmark step is the next thing to break.
