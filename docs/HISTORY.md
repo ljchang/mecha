@@ -14,6 +14,41 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-25/26 — incognito chat, live: the server side (#321) and the
+page (#326).** `INCOGNITO-DESIGN.md` is the authority; the 2026-09-25 entry
+below holds the design and step 0. #321 (`62b5cf10`, six review passes) made
+an unrecorded chat a type rather than a flag — a web session is
+`Recording::Kept | Incognito`, and every write that records had to say what
+it does instead — and put the chat in a room on tmpfs under
+`$XDG_RUNTIME_DIR/mecha-incognito/<home>/<key>/`, withheld everything outside
+an allowlist computed against the live registry, and refused at the door
+what it could not honour: a non-loopback provider or one with fallbacks, a
+deny-gate hook (`pre_tool`, `pre_task_close`), a runtime directory that is
+not tmpfs. Review found the load-bearing seams one at a time: the jail had
+to be named for the key or `ask_user` routed nowhere (or to the wrong
+chat); a second `serve` against the same home swept the first one's live
+rooms until each room carried its opener's pid; a routed builtin stayed
+reachable because only mail tools were checked against the outbox; and
+even a count at the default log level said a chat had existed, which R1
+rules out. #326 (`720feb27`, five passes) is the page: a button beside
+**+**, a banner with the search notice, **End**, no voice call, and a
+screen saying the chat is gone on End or on the server's `410`. Two owner
+rulings of the same evening shaped it: **an open page is use** (it pings
+`/alive` once a minute; the idle clock runs once the tab closes), and
+**`shell` registers in the room**, not `~/.mecha/runs/shells`. The second
+was only safe once review corrected the argument for it: a room
+registration is invisible to the closure check, so a command that clears
+`MECHA_RUN_POSTURE` would pass as the owner, and the board is reached
+through the graph server rather than a file — so `shell` is offered only in
+a sealed sandbox (`incognito::shell_is_sealed`: no writes, no reads outside
+the jail, no network), not merely a write-confined one. The page's own
+passes found the promise leaking through the tab itself: the event stream
+refilling a forgotten conversation after End, unsent text following a
+drawer switch into a recorded chat, and an upload finishing after a switch
+announcing its file there. Installed 2026-09-26 01:14Z (HANDOFF, *Machine
+state*); a live chat through the tailnet door opened, pinged, ended and
+answered `410` with its room gone.
+
 **2026-09-25 — local image generation, and an incognito chat that leaves
 no trace.** Two arcs from one lane, the second designed while the first was
 in review.
