@@ -42,8 +42,9 @@
 //!
 //! Each factor that cannot be read is named in [`Priority::unknown`] —
 //! the owner's verdicts (no appraisal could be built, or a store it reads
-//! did not load), the charter weight (the charter did not load and there
-//! are verdicts to weigh), the surprises (the score ledger did not load, or
+//! did not load — the charter among them, which it weighs by, so an
+//! unreadable charter makes the whole gain unknown rather than only its
+//! weighting), the surprises (the score ledger did not load, or
 //! has lines that do not parse), the recurrence (the session has no run
 //! record, or its region names a surface or goal this build cannot read, or
 //! the corpus walk failed), and the hopeless mark (the harness or
@@ -108,7 +109,6 @@ pub const HOPELESS_NIGHTS: usize = 3;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Factor {
     OwnerVerdicts,
-    CharterWeight,
     Surprises,
     Recurrence,
     Hopeless,
@@ -118,7 +118,6 @@ impl Factor {
     pub fn as_str(self) -> &'static str {
         match self {
             Factor::OwnerVerdicts => "owner verdicts",
-            Factor::CharterWeight => "charter weight",
             Factor::Surprises => "surprises",
             Factor::Recurrence => "recurrence",
             Factor::Hopeless => "hopeless mark",
@@ -132,8 +131,6 @@ impl Factor {
 pub struct Inputs {
     /// [`appraisal::owner_verdict_gain`] of the session's appraisal.
     pub owner_gain: Option<f64>,
-    /// Whether the charter loaded — it weighs the owner's verdicts.
-    pub charter_read: bool,
     /// Clean misses of the session's appraisal's prediction (2b-2).
     pub surprises: Option<usize>,
     /// Recent admitted runs in the session's region.
@@ -163,16 +160,8 @@ pub struct Priority {
 impl Priority {
     pub fn of(i: &Inputs) -> Priority {
         let mut unknown = BTreeSet::new();
-        match i.owner_gain {
-            None => {
-                unknown.insert(Factor::OwnerVerdicts);
-            }
-            // Only a verdict can be weighed: with none, the charter's
-            // absence changes nothing.
-            Some(g) if g > 0.0 && !i.charter_read => {
-                unknown.insert(Factor::CharterWeight);
-            }
-            Some(_) => {}
+        if i.owner_gain.is_none() {
+            unknown.insert(Factor::OwnerVerdicts);
         }
         if i.surprises.is_none() {
             unknown.insert(Factor::Surprises);
@@ -201,7 +190,6 @@ impl Priority {
     pub fn unread() -> Priority {
         Priority::of(&Inputs {
             owner_gain: None,
-            charter_read: false,
             surprises: None,
             recurrence: None,
             age_days: 0.0,
@@ -423,10 +411,16 @@ impl Recurrence {
             since: Some(now - chrono::Duration::days(RECURRENCE_WINDOW_DAYS)),
             ..Default::default()
         };
-        let mut listed = Session::list(sessions_dir)?;
+        // Counting: a session whose header does not read is dropped by the
+        // listing, and one in the window would lower its region's count
+        // with nothing saying the count is a floor.
+        let (mut listed, torn) = Session::list_counting(sessions_dir)?;
         listed.retain(|(meta, _)| admission.admits(meta));
         listed.sort_by_key(|(meta, _)| std::cmp::Reverse(meta.created_at));
-        let mut out = Recurrence::default();
+        let mut out = Recurrence {
+            unreadable: torn,
+            ..Recurrence::default()
+        };
         for (_, path) in listed.into_iter().take(RECURRENCE_SCAN_CAP) {
             match Session::run_configs_streaming(&path) {
                 Ok(configs) => {
@@ -494,7 +488,7 @@ impl Ranker {
             Ok(r) => {
                 if r.unreadable > 0 {
                     caveats.push(format!(
-                        "{} recent session(s) had no readable run record: recurrence counts are floors",
+                        "{} session(s) whose header or run record could not be read: recurrence counts are floors",
                         r.unreadable
                     ));
                 }
@@ -517,7 +511,11 @@ impl Ranker {
             }
         };
         if stores.charter_unreadable {
-            caveats.push("the charter could not be read: charter weights unknown".into());
+            caveats.push(
+                "the charter could not be read: every appraisal is partial, so every \
+                 session's owner verdicts are unknown"
+                    .into(),
+            );
         }
         Ranker::from_parts(now, stores, surprises, recurrence, history, caveats)
     }
@@ -578,7 +576,6 @@ impl Ranker {
             .and_then(|s| s.region_key());
         let inputs = Inputs {
             owner_gain,
-            charter_read: !self.stores.charter_unreadable,
             surprises: self
                 .surprises
                 .as_ref()
@@ -590,26 +587,29 @@ impl Ranker {
         (Priority::of(&inputs), built)
     }
 
-    /// One session's priority by id, read from `sessions_dir`; a session
-    /// that cannot be found or read has every factor unknown.
-    pub fn of_session(&self, sessions_dir: &Path, id: &str) -> Priority {
-        match Session::find(sessions_dir, id).and_then(|p| Session::read(&p)) {
-            Ok(t) => self.of_transcript(&t).0,
-            Err(_) => Priority::unread(),
-        }
-    }
-
-    /// [`Self::of_session`] for many ids, each read once.
+    /// Many sessions' priorities by exact id, each transcript read once.
+    /// The store is listed once for all of them — `Session::find` lists it
+    /// per call, which over a pass's reflections is a header walk per id.
+    /// A session that cannot be found or read has every factor unknown, as
+    /// does every id when the store cannot be listed.
     pub fn of_sessions<'a>(
         &self,
         sessions_dir: &Path,
         ids: impl IntoIterator<Item = &'a str>,
     ) -> BTreeMap<String, Priority> {
+        let paths: BTreeMap<String, std::path::PathBuf> = Session::list(sessions_dir)
+            .map(|listed| listed.into_iter().map(|(m, p)| (m.id, p)).collect())
+            .unwrap_or_default();
         let mut out = BTreeMap::new();
         for id in ids {
-            if !out.contains_key(id) {
-                out.insert(id.to_string(), self.of_session(sessions_dir, id));
+            if out.contains_key(id) {
+                continue;
             }
+            let priority = match paths.get(id).map(|p| Session::read(p)) {
+                Some(Ok(t)) => self.of_transcript(&t).0,
+                _ => Priority::unread(),
+            };
+            out.insert(id.to_string(), priority);
         }
         out
     }
@@ -633,7 +633,6 @@ mod tests {
     fn inputs() -> Inputs {
         Inputs {
             owner_gain: Some(1.0),
-            charter_read: true,
             surprises: Some(0),
             recurrence: Some(1),
             age_days: 0.0,
@@ -756,24 +755,11 @@ mod tests {
                 hopeless: None,
                 ..inputs()
             }),
-            Priority::of(&Inputs {
-                charter_read: false,
-                ..inputs()
-            }),
             Priority::unread(),
         ] {
             assert_eq!(p.tier(), 1, "{p:?}");
             assert!(!p.known_zero);
         }
-        // The charter's absence matters only where there is a verdict to
-        // weigh.
-        let nothing_to_weigh = Priority::of(&Inputs {
-            owner_gain: Some(0.0),
-            charter_read: false,
-            ..inputs()
-        });
-        assert!(nothing_to_weigh.unknown.is_empty());
-        assert!(nothing_to_weigh.known_zero);
     }
 
     #[test]
@@ -911,5 +897,18 @@ mod tests {
         assert_eq!(r.of(Some("shell on tui")), Some(2));
         assert_eq!(r.of(Some("never seen")), Some(1));
         assert_eq!(r.of(None), None);
+    }
+
+    #[test]
+    fn a_torn_header_makes_the_recurrence_counts_floors() {
+        let dir = std::env::temp_dir()
+            .join("mecha-replay-priority-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("torn.jsonl"), "{\"type\":\"meta\",\"id\":").unwrap();
+        let r = Recurrence::scan(&dir, Utc::now()).unwrap();
+        assert_eq!(r.unreadable, 1, "the listing dropped it without a word");
+        assert!(r.counts.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
