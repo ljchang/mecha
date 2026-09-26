@@ -488,7 +488,7 @@ mecha sessions <list|show|path|stats|health|appraise|compare> [OPTIONS]
 | `appraise` | `--appraise` | **Retired.** A no-op that says so on stderr; the text appraisal `mecha distill` writes replaced the counts-only appraiser. Kept so scripts still run. |
 | `appraise` | `--max-appraisals <N>` | **Retired** with `--appraise`; accepted and ignored. |
 | `compare` | `--points <N>` | Most decision points to drive this pass. Default `8`. A point no structural validator can pose drives nothing and is not counted. **Paid** — up to three replays per point, on the local model only. |
-| `compare` | `--seed <N>` | Seed for the uniform draw of points. Defaults to today's day number, and is printed. |
+| `compare` | `--seed <N>` | Seed for the draw of points, which is shuffled and then ordered by replay priority, so the seed decides among equals. Defaults to today's day number, and is printed. |
 | `compare` | `--days <N>`, `-n`/`--limit <N>`, `--kind <KIND>`, `--include-tests`, `--json` | As for `appraise`. |
 
 `stats` totals token usage — and cost, where prices are configured — grouped by

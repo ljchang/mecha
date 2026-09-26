@@ -502,12 +502,14 @@ pub struct Measurement {
     pub seed: u64,
     /// How many of the selection the charter tiebreak ranked
     /// (`GOAL-SYSTEM-DESIGN.md` §11.1; `harness_probe::selection_order`).
-    /// The seed and the corpus pin the holdout; the selection's order among
-    /// equal headroom is the rank, and the rank is read off the *present*
-    /// stores — the charter, and the outbox, question, front-door and
-    /// learning stores a session's errors are signed from — so the same
-    /// seed over the same session corpus can tie differently once a draft
-    /// is resolved or a line re-ranked. `episodes` keeps the resulting
+    /// The seed and the corpus pin the holdout; the selection's order is the
+    /// replay priority (row 2e-6) and then the rank, and both are read off
+    /// the *present* stores — the charter, the outbox, question, front-door
+    /// and learning stores a session's errors are signed from, the score
+    /// ledger, the harness and comparison stores, the recent corpus — and
+    /// the priority off the draw's clock (age decay), so the same seed over
+    /// the same session corpus can order differently once a draft is
+    /// resolved, a prediction scored or a line re-ranked. `episodes` keeps the resulting
     /// order; this says whether the tiebreak had anything to decide, and
     /// it used to live on a stderr line nobody keeps (found on review).
     /// Counted over the selection **as drawn**, before divergence dropped
@@ -819,11 +821,20 @@ impl HarnessStore {
     /// Every candidate, oldest first. Unreadable files are skipped with a
     /// warning — one bad record must not hide the store.
     pub fn all(&self) -> Result<Vec<HarnessCandidate>> {
+        self.all_counting().map(|(out, _)| out)
+    }
+
+    /// [`Self::all`], and how many candidate files were skipped as
+    /// unreadable — for a reader that must say its answer is a floor rather
+    /// than read a skipped record as one that never existed (the replay
+    /// priority's hopeless rule, row 2e-6).
+    pub fn all_counting(&self) -> Result<(Vec<HarnessCandidate>, usize)> {
         let dir = self.root.join("candidates");
         if !dir.is_dir() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
         let mut out = Vec::new();
+        let mut skipped = 0usize;
         for entry in std::fs::read_dir(&dir)? {
             let path = entry?.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -831,11 +842,14 @@ impl HarnessStore {
             }
             match serde_json::from_str(&std::fs::read_to_string(&path)?) {
                 Ok(c) => out.push(c),
-                Err(e) => tracing::warn!("skipping unreadable candidate {}: {e}", path.display()),
+                Err(e) => {
+                    skipped += 1;
+                    tracing::warn!("skipping unreadable candidate {}: {e}", path.display())
+                }
             }
         }
         out.sort_by(|a: &HarnessCandidate, b: &HarnessCandidate| a.id.cmp(&b.id));
-        Ok(out)
+        Ok((out, skipped))
     }
 
     /// Find one candidate by id or unique prefix. Ambiguity is an error

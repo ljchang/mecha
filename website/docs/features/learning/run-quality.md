@@ -257,8 +257,17 @@ Seven decisions carry it:
   Selection happens on one slice and the winner is confirmed on a **holdout it
   was never chosen on** — picking the best of N on the episodes that justify it
   is a multiple-comparisons trap that looks *better* the more it overfits. The
-  split is a hash of the episode id, never random: a rerun that resplits is a
-  holdout that means nothing.
+  split is seeded and the seed recorded with the holdout's episodes: a split
+  nobody can redraw is a holdout nobody can check.
+- **The confirming slice is drawn first, at random; the rest is drawn by
+  priority.** The holdout is taken uniformly from the eligible sessions before
+  anything is ranked. The selection then takes, from what remains, the
+  sessions that have room to improve on the predicted metric, and orders them
+  by [replay priority](/docs/features/appraisal#6-picking-which-past-run-to-replay-tonight).
+  That priority is your verdicts on the run, weighted by your charter, times
+  how often its situation recurs, fading with age. Sessions that have been
+  replayed three nights with nothing won go to the back. The priority chooses
+  what is examined. It never touches the slice that confirms.
 - **The work guardrail outranks the score.** A change that improves its metric
   while tool calls fall below 75% of the baseline is rejected, not ranked.
   "Fewer errors" is trivially achieved by attempting less — the null run, and

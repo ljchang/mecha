@@ -363,6 +363,18 @@ impl Situation {
         }
     }
 
+    /// The situation a run record was matched in: the registry it carried,
+    /// and the workspace, surface and goal its rules block was matched
+    /// against (`RunConfig::rules_workspace`, `rules_surface`,
+    /// `rules_goal`). What a session's text appraisal is keyed on (I2) and
+    /// what a region recurs as (row 2e-6's demand term) — one spelling, so
+    /// "the same situation" cannot mean two things.
+    pub fn of_record(c: &crate::session::RunConfig) -> Situation {
+        Situation::of_run(&c.tools, c.rules_workspace.as_deref())
+            .on(c.rules_surface)
+            .toward(c.rules_goal.clone())
+    }
+
     /// The surface a run is on — what the front-end told `prepare`, and
     /// what the run record keeps as `rules_surface`. `None` is unknown,
     /// which matches no surface-scoped rule.
@@ -458,6 +470,17 @@ impl Situation {
             parts.push(format!("for {g}"));
         }
         parts.join(" ")
+    }
+
+    /// The region key two records are compared on — [`Self::key`] — or
+    /// `None` where this situation cannot be keyed: a surface or a goal this
+    /// build cannot name. Kept verbatim in [`Self::key`], such a key is
+    /// still never equal to anything, so "the same situation" never widens
+    /// through a key nobody can read.
+    pub fn region_key(&self) -> Option<String> {
+        let unnamed =
+            self.surface_unread.is_some() || matches!(self.goal, Some(GoalKey::Unread(_)));
+        (!unnamed).then(|| self.key())
     }
 
     /// Whether a rule scoped to `self` belongs in `run`'s prefix. Every
