@@ -644,10 +644,16 @@ ruling, 2026-09-26): llama.cpp #28174 turned `preserve_reasoning` on by
 default. Qwen3.6's template drops earlier turns' thinking unless told to keep
 it, so production's prompts would have changed silently at the swap. Every
 Qwen preset now says `reasoning-preserve = true`, and so does the
-production rollback `start-moe-mtp.sh` (the one script where it bites) — kept, so each prompt is a
+production rollback `start-moe-mtp.sh` (the one script where it bites) — both
+builds accept the flag (`--help` on each, 2026-09-26) — kept, so each prompt is a
 prefix of the next and the cached prefix survives a new user turn, at the
 cost of context that fills sooner. Qwen3.8's templates keep it by default, so
 nothing changes there; Gemma's has no such rule.
+
+**Rolling back a Qwen3.8 preset is a port change too:** `start-qwen38.sh`
+serves on :8083, where the three Qwen3.8 provider entries point at :8080, so
+the rollback needs their `base_url` edited as well. Production's rollback,
+`start-moe-mtp.sh`, lands on :8080 and needs none.
 
 **Owed, not in these PRs:** `start-moe-mtp.sh`, `start-gemma26.sh` and
 `start-e4b.sh` — the single-model rollbacks — still take
