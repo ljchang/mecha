@@ -322,6 +322,8 @@ pub const APPRAISAL_INTERPRETATION_CHARS: usize = 600;
 /// How many of one appraisal's lessons ride, and how much of each.
 pub const APPRAISAL_LESSONS_SHOWN: usize = 2;
 pub const APPRAISAL_LESSON_CHARS: usize = 240;
+/// How long a session id in a note may run.
+pub const APPRAISAL_SESSION_ID_CHARS: usize = 80;
 /// How many of one appraisal's per-goal bearings ride, and how long one
 /// "good for <goal>" may run.
 pub const APPRAISAL_JUDGED_SHOWN: usize = 4;
@@ -401,11 +403,14 @@ impl AppraisalNote {
         // writer would keep must not ride in full (found on review of #329).
         let more_judged = judged.len() > APPRAISAL_JUDGED_SHOWN;
         let judged: Vec<String> = judged.into_iter().take(APPRAISAL_JUDGED_SHOWN).collect();
+        // Through `cut` like the rest: the id comes off a real session
+        // header today, but the invariant should rest on the type.
+        let session_id = cut(&a.session_id, APPRAISAL_SESSION_ID_CHARS);
         if more_lessons || more_judged {
             clipped = true;
         }
         AppraisalNote {
-            session_id: a.session_id.clone(),
+            session_id,
             date: a.at.format("%Y-%m-%d").to_string(),
             interpretation,
             judged,
