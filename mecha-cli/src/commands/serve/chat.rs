@@ -233,18 +233,20 @@ impl ChatState {
         };
         // Before the door opens: a `serve` that died with incognito chats
         // open left their rooms, and nothing else will remove them (R1).
+        let mut left_on_the_image_server = Vec::new();
         match super::incognito::rooms_root() {
             Ok(rooms) => {
-                let removed = super::incognito::sweep(&rooms);
+                let swept = super::incognito::sweep(&rooms);
                 // At debug: even a count says incognito chats existed, and
                 // the default level is journald's (R1 — no content-free
                 // counts; found on review of #321).
-                if !removed.is_empty() {
+                if !swept.rooms.is_empty() {
                     tracing::debug!(
                         "removed {} incognito room(s) left by a previous serve",
-                        removed.len()
+                        swept.rooms.len()
                     );
                 }
+                left_on_the_image_server = swept.image_trail;
             }
             Err(e) => tracing::info!("incognito chats are unavailable: {e:#}"),
         }
@@ -255,6 +257,25 @@ impl ChatState {
         // is the session key; see `present::WebAsker`). An unanswered card
         // resolves as the tool's measured decline, never a guess.
         let mut prepared = setup::prepare(&opts, false).await?;
+        // Still before the door opens: what a dead `serve`'s incognito chats
+        // left on the image server — jobs, their records, their files — is
+        // taken back as soon as there is a config saying where it is. A
+        // failure is said at warn, the one line this sweep writes there,
+        // because it is a promise not kept rather than a count.
+        if !left_on_the_image_server.is_empty() {
+            let outcome = match &prepared.config.image {
+                Some(cfg) => {
+                    mecha_core::imagegen::forget_trail(cfg, &left_on_the_image_server).await
+                }
+                None => Err(anyhow::anyhow!("no [image] is configured to reach it")),
+            };
+            if let Err(e) = outcome {
+                tracing::warn!(
+                    "a closed incognito chat's images could not be taken back off the image \
+                     server ({e:#}); restarting the image server clears them"
+                );
+            }
+        }
         let routes: QuestionRoutes = Arc::default();
         let lookup: super::present::SessionLookup = {
             let routes = Arc::clone(&routes);
@@ -369,6 +390,7 @@ impl ChatState {
             super::incognito::shell_is_sealed(&mecha_core::sandbox::Sandbox::new(
                 self.config.sandbox.clone(),
             )),
+            super::incognito::images_forgettable(self.config.image.as_ref()),
         );
         let (events, _) = broadcast::channel(512);
         let questions = super::present::Questions::default();
@@ -1519,6 +1541,12 @@ pub async fn transcript(
     let sessions = chat.sessions.lock().await;
     let ws = match sessions.get(&key) {
         Some(ws) => ws,
+        // An incognito key is minted only by its door, so one not open has
+        // closed: gone, like every door that acts on it, and the page's cue
+        // for the gone screen (review of #326).
+        None if super::incognito::is_incognito_key(&key) => {
+            return (StatusCode::GONE, format!("{}\n", super::incognito::Closed)).into_response()
+        }
         None => return (StatusCode::NOT_FOUND, "no such session\n").into_response(),
     };
     let running = ws.live.is_some();
@@ -2068,6 +2096,8 @@ fn begin_turn(
         // in RAM, and goes with the room (`incognito::Room`).
         // And its shells register in the room, not the mecha home.
         shell_registry: ws.session.room().map(|room| room.shells.clone()),
+        // And its image jobs are recorded there, for a sweep to take back.
+        image_trail: ws.session.room().map(|room| room.image_trail.clone()),
         ..match ws.session.room() {
             Some(room) => chat
                 .agent
@@ -3234,6 +3264,10 @@ mod tests {
             code.contains("shell_registry: ws.session.room().map(|room| room.shells.clone()),"),
             "a served turn no longer points an incognito chat's shells at its room"
         );
+        assert!(
+            code.contains("image_trail: ws.session.room().map(|room| room.image_trail.clone()),"),
+            "a served turn no longer records an incognito chat's image jobs in its room"
+        );
     }
 
     #[test]
@@ -4127,9 +4161,104 @@ pub(super) fn test_chat_answering(reply: &'static str, local: bool) -> Arc<ChatS
             ..Default::default()
         },
     );
-    let agent = Agent::new(
+    test_chat_from(
         Box::new(Answers(reply)),
         mecha_core::tool::Registry::new(),
+        config,
+    )
+}
+
+/// A chat whose model, asked anything, draws `prompt` with `image_generate`
+/// against `image`'s server and then says so — the image leg of the
+/// incognito canary test (design §8).
+#[cfg(test)]
+pub(super) fn test_chat_drawing(
+    prompt: &str,
+    image: mecha_core::imagegen::ImageConfig,
+) -> Arc<ChatState> {
+    use mecha_core::message::{Block, CompletionResponse, StopReason};
+    struct Draws {
+        prompt: String,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl mecha_core::provider::Provider for Draws {
+        fn id(&self) -> &str {
+            "local"
+        }
+        fn default_model(&self) -> &str {
+            "test"
+        }
+        async fn complete(
+            &self,
+            _: &mecha_core::message::CompletionRequest,
+            _: Option<&mecha_core::provider::StreamSink>,
+        ) -> Result<CompletionResponse> {
+            let first = self
+                .calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .is_multiple_of(2);
+            let (block, stop_reason) = if first {
+                (
+                    Block::ToolUse {
+                        id: "draw-1".into(),
+                        name: "image_generate".into(),
+                        input: serde_json::json!({"prompt": self.prompt}),
+                    },
+                    StopReason::ToolUse,
+                )
+            } else {
+                (
+                    Block::Text {
+                        text: "drawn".into(),
+                    },
+                    StopReason::EndTurn,
+                )
+            };
+            Ok(CompletionResponse {
+                message: Message::assistant(vec![block]),
+                stop_reason,
+                usage: Usage::default(),
+                refusal: None,
+                model: "test".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+    let mut config = Config::default();
+    config.providers.insert(
+        "local".into(),
+        mecha_core::config::ProviderConfig {
+            base_url: Some("http://127.0.0.1:8080".into()),
+            ..Default::default()
+        },
+    );
+    config.image = Some(image.clone());
+    let mut registry = mecha_core::tool::Registry::new();
+    registry.insert(Arc::new(
+        mecha_core::imagegen::ImageGenerate::new(image).unwrap(),
+    ));
+    test_chat_from(
+        Box::new(Draws {
+            prompt: prompt.to_string(),
+            calls: Default::default(),
+        }),
+        registry,
+        config,
+    )
+}
+
+/// A chat on `provider`, serving `registry`, under `config`: the parts the
+/// incognito tests vary.
+#[cfg(test)]
+fn test_chat_from(
+    provider: Box<dyn mecha_core::provider::Provider>,
+    registry: mecha_core::tool::Registry,
+    config: Config,
+) -> Arc<ChatState> {
+    let agent = Agent::new(
+        provider,
+        registry,
         Arc::new(mecha_core::tool::ModeApprover {
             mode: PermissionMode::ReadOnly,
         }),

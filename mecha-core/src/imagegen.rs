@@ -27,6 +27,14 @@
 //! its seed; editing one means passing it in `reference_images`, and an edit
 //! always samples at a fresh seed (see `call`).
 //!
+//! **What the server keeps, it is asked to drop.** Every job's history entry
+//! (the prompt, the file names) is deleted however the job ends; with
+//! `[image] server_temp_dir` set, so are the uploaded references and the
+//! preview it wrote, by the names it returned. A run that must survive this
+//! process dying — an incognito chat's — also gets a trail
+//! (`ToolCtx::image_trail`): the job's id and each file's name, written
+//! *before* the server has them, for [`forget_trail`] to act on later.
+//!
 //! The request is shaped like stable-diffusion.cpp's native API (prompt, size,
 //! steps, seed in; PNG bytes out; a job that can be cancelled) rather than
 //! like ComfyUI's graphs, because that shape is model-agnostic and a second
@@ -78,6 +86,13 @@ pub struct ImageConfig {
     /// Ask the server to unload its models this long after the last
     /// generation, so ~15 GB is not held between requests. `0` keeps them.
     pub unload_after_secs: u64,
+    /// The directory the server writes its temp files into — for ComfyUI,
+    /// the `--temp-directory` path with `temp` appended. When set, each job's
+    /// uploaded references and preview are deleted there, by the names the
+    /// server returned, however the job ends. Unset, they stay until the
+    /// server restarts, and an incognito chat withholds the tool: a promise
+    /// that cannot be kept is not made (`INCOGNITO-DESIGN.md` §6.3).
+    pub server_temp_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for ImageConfig {
@@ -92,6 +107,7 @@ impl Default for ImageConfig {
             timeout_secs: 600,
             min_available_mb: 16_384,
             unload_after_secs: 600,
+            server_temp_dir: None,
         }
     }
 }
@@ -217,6 +233,160 @@ const POLL_FAILURES: u32 = 3;
 /// How many polls to wait for an interrupted job to reach the server's
 /// history before deleting it from there.
 const FORGET_WAIT_POLLS: u32 = 10;
+
+/// One line of an image trail (`ToolCtx::image_trail`): a job the tool is
+/// about to submit, or a file the server is about to hold or has said it
+/// holds. Written before the thing exists on the server, so a process that
+/// dies at any point leaves a trail that names everything it left there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrailEntry {
+    Job(String),
+    File(String),
+}
+
+impl TrailEntry {
+    fn line(&self) -> String {
+        match self {
+            TrailEntry::Job(id) => format!("job {id}"),
+            TrailEntry::File(name) => format!("file {name}"),
+        }
+    }
+
+    /// A line back, if it is one this module could have written.
+    fn parse(line: &str) -> Option<Self> {
+        match line.split_once(' ')? {
+            ("job", id) if job_id(id) => Some(TrailEntry::Job(id.to_string())),
+            ("file", name) if plain_name(name) => Some(TrailEntry::File(name.to_string())),
+            _ => None,
+        }
+    }
+}
+
+/// Whether `name` is one plain path component — the only kind of name the
+/// tool deletes in `server_temp_dir`, whoever supplied it.
+fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\', '\0'])
+}
+
+/// Whether `id` looks like a job id: what the tool mints (a UUID) or what an
+/// older server answers with, never anything longer or stranger.
+fn job_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Append `entry` to the trail, if the run keeps one. The file must be where
+/// the caller said — it is never created in a directory that is gone, since
+/// a room that has been removed is a chat that has closed.
+fn note(trail: Option<&std::path::Path>, entry: &TrailEntry) -> Result<()> {
+    use std::io::Write;
+    let Some(path) = trail else {
+        return Ok(());
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.append(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("opening the image trail {}", path.display()))?;
+    writeln!(file, "{}", entry.line())
+        .with_context(|| format!("writing the image trail {}", path.display()))
+}
+
+/// What a trail records, skipping any line this module would not write.
+pub fn read_trail(path: &std::path::Path) -> Vec<TrailEntry> {
+    std::fs::read_to_string(path)
+        .map(|text| text.lines().filter_map(TrailEntry::parse).collect())
+        .unwrap_or_default()
+}
+
+/// The temp files a job's history entry says it wrote.
+fn temp_outputs(entry: &Value) -> Vec<String> {
+    entry
+        .get("outputs")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|outputs| outputs.values())
+        .filter_map(|out| out.get("images")?.as_array())
+        .flatten()
+        .filter(|image| {
+            image.get("type").and_then(Value::as_str) == Some("temp")
+                && image
+                    .get("subfolder")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .is_empty()
+        })
+        .filter_map(|image| image.get("filename")?.as_str().map(str::to_string))
+        .collect()
+}
+
+/// Delete each of `names` from `dir`, and say which could not be. A name that
+/// is not one plain component is never touched. `gone_is_fine` is for a
+/// trail, whose writer may already have removed a file before it died; after
+/// a job, a copy the server confirmed and the directory does not hold means
+/// the directory is the wrong one, which is worth saying.
+fn discard(dir: Option<&std::path::Path>, names: &[String], gone_is_fine: bool) -> Option<String> {
+    let dir = dir?;
+    let mut failed = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for name in names.iter().filter(|n| seen.insert(n.as_str())) {
+        if !plain_name(name) {
+            failed.push(format!(
+                "`{name}` (not one plain file name, so not touched)"
+            ));
+            continue;
+        }
+        match std::fs::remove_file(dir.join(name)) {
+            Ok(()) => {}
+            Err(e) if gone_is_fine && e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => failed.push(format!("`{name}` ({e})")),
+        }
+    }
+    (!failed.is_empty()).then(|| format!("{} in {}", failed.join(", "), dir.display()))
+}
+
+/// Take everything a trail records off the image server: each job out of the
+/// queue (interrupted if it is running) and out of the history, with any
+/// file it wrote, and each recorded file deleted from `server_temp_dir`. For
+/// a trail whose writer is gone — an incognito room a `serve` that died left
+/// behind, swept at the next one's start (`INCOGNITO-DESIGN.md` §4.2).
+pub async fn forget_trail(cfg: &ImageConfig, entries: &[TrailEntry]) -> Result<()> {
+    let server = ComfyUi::for_config(cfg)?;
+    // Every step below is best effort, so ask first whether anyone is there:
+    // otherwise a server that is down reads as a trail that was cleared.
+    server
+        .get_json("queue")
+        .await
+        .context("the image server did not answer")?;
+    let mut files = Vec::new();
+    for entry in entries {
+        match entry {
+            TrailEntry::Job(id) => files.extend(server.abandon(id).await),
+            TrailEntry::File(name) => files.push(name.clone()),
+        }
+    }
+    if files.is_empty() {
+        return Ok(());
+    }
+    let Some(dir) = cfg.server_temp_dir.as_deref() else {
+        bail!(
+            "[image] server_temp_dir is not set, so the files stay in the server's temp \
+             directory until it restarts"
+        );
+    };
+    match discard(Some(dir), &files, true) {
+        None => Ok(()),
+        Some(left) => bail!("could not remove {left}"),
+    }
+}
 
 /// ComfyUI's graph for one generation with Qwen-Image 2.1 — text to image,
 /// or an edit when `uploaded` names reference images already on the server.
@@ -388,7 +558,39 @@ fn clip(s: &str) -> String {
     }
 }
 
+/// A finished call on the server: the image or why not, and — when some of
+/// the server's temp copies could not be removed — which, and why.
+struct Outcome {
+    image: std::result::Result<Vec<u8>, Failure>,
+    left: Option<String>,
+}
+
 impl ComfyUi {
+    /// The client for `cfg`'s server, refusing one not on this machine.
+    fn for_config(cfg: &ImageConfig) -> Result<Self> {
+        let mut base = loopback_url(&cfg.url)?;
+        // `join` replaces the last path segment unless the base ends in `/`.
+        if !base.path().ends_with('/') {
+            base.set_path(&format!("{}/", base.path()));
+        }
+        // The vetted address is the only one this client may reach. A
+        // redirect would walk it elsewhere — a 307/308 on `/prompt` re-sends
+        // the body, prompt and all — while the tool goes on declaring no
+        // egress; an inherited proxy setting would route the loopback call
+        // through someone else. `fetch_vetted` treats a redirect as fatal for
+        // the same reason (found on review of #303).
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .build()
+            .context("building the image server's HTTP client")?;
+        Ok(ComfyUi {
+            base,
+            http,
+            poll: Duration::from_secs(1),
+        })
+    }
+
     fn endpoint(&self, path: &str) -> Result<reqwest::Url> {
         Ok(self.base.join(path)?)
     }
@@ -472,7 +674,7 @@ impl ComfyUi {
     /// it and stop whatever is executing — which would let cancelling a
     /// queued image kill another call's running one. Asking the queue first
     /// makes it right on either (found on review of #303).
-    async fn abandon(&self, id: &str) {
+    async fn abandon(&self, id: &str) -> Vec<String> {
         let _ = self.post_json("queue", &json!({"delete": [id]})).await;
         let running = self
             .get_json("queue")
@@ -505,20 +707,24 @@ impl ComfyUi {
         }
         // A cancelled or interrupted job is still recorded, prompt and all. A
         // job taken off the queue before it ran never reaches the history.
+        // One that finished as it was stopped also wrote its preview, which
+        // only the record names — so read it before forgetting it.
+        let wrote = self
+            .get_json(&format!("history/{id}"))
+            .await
+            .ok()
+            .and_then(|h| h.get(id).map(temp_outputs))
+            .unwrap_or_default();
         self.forget(id).await;
+        wrote
     }
 
-    /// Put one reference in the server's temp directory under a name nobody
-    /// chose, and return the name the server filed it under. Multipart by
-    /// hand: one file and one field do not justify a crate feature.
-    async fn upload(&self, reference: &Reference) -> Result<String> {
+    /// Put one reference in the server's temp directory as `filename` (a
+    /// random name the caller has already written to the trail), and return
+    /// the name the server filed it under. Multipart by hand: one file and one
+    /// field do not justify a crate feature.
+    async fn upload(&self, reference: &Reference, filename: &str) -> Result<String> {
         let boundary = format!("mecha-{:08x}{:08x}", fresh_seed(), fresh_seed());
-        let filename = format!(
-            "mecha-{:08x}{:08x}.{}",
-            fresh_seed(),
-            fresh_seed(),
-            reference.ext
-        );
         let mut body = Vec::with_capacity(reference.bytes.len() + 512);
         body.extend_from_slice(
             format!(
@@ -588,22 +794,69 @@ impl ComfyUi {
             })
     }
 
+    /// One job, and then its temp files deleted however it ended.
     async fn generate(
         &self,
         cfg: &ImageConfig,
         req: &Request,
         cancel: Option<&CancellationToken>,
         timeout: Duration,
+        trail: Option<&std::path::Path>,
+    ) -> Outcome {
+        // The names the server confirmed it holds: only those are expected to
+        // be there to delete.
+        let mut held = Vec::new();
+        let image = self.run(cfg, req, cancel, timeout, trail, &mut held).await;
+        Outcome {
+            image,
+            left: discard(cfg.server_temp_dir.as_deref(), &held, false),
+        }
+    }
+
+    async fn run(
+        &self,
+        cfg: &ImageConfig,
+        req: &Request,
+        cancel: Option<&CancellationToken>,
+        timeout: Duration,
+        trail: Option<&std::path::Path>,
+        held: &mut Vec<String>,
     ) -> std::result::Result<Vec<u8>, Failure> {
+        // A trail that cannot be written stops the job before the server has
+        // anything of it: the trail is what cleans up after a process that
+        // dies, and a protection that cannot run must stop the run.
+        let record = |entry: TrailEntry| {
+            note(trail, &entry).map_err(|e| {
+                Failure::Other(e.context("the image job could not be recorded for cleanup"))
+            })
+        };
         self.preflight(cfg).await?;
         let mut uploaded = Vec::with_capacity(req.references.len());
         for reference in &req.references {
-            uploaded.push(self.upload(reference).await?);
+            let asked = format!(
+                "mecha-{:08x}{:08x}.{}",
+                fresh_seed(),
+                fresh_seed(),
+                reference.ext
+            );
+            record(TrailEntry::File(asked.clone()))?;
+            let filed = self.upload(reference, &asked).await?;
+            held.push(filed.clone());
+            if filed != asked {
+                record(TrailEntry::File(filed.clone()))?;
+            }
+            uploaded.push(filed);
         }
+        // The id is minted here and written down before the server sees the
+        // job; ComfyUI takes a client's id in canonical UUID form. An older
+        // server mints its own, which is written down as soon as it answers.
+        let asked = uuid::Uuid::new_v4().to_string();
+        record(TrailEntry::Job(asked.clone()))?;
         let (status, body) = self
             .post_json(
                 "prompt",
-                &json!({"prompt": comfy_graph(cfg, req, &uploaded), "client_id": "mecha"}),
+                &json!({"prompt": comfy_graph(cfg, req, &uploaded), "client_id": "mecha",
+                        "prompt_id": asked}),
             )
             .await?;
         if !status.is_success() {
@@ -617,6 +870,12 @@ impl ComfyUi {
             .ok()
             .and_then(|v| v.get("prompt_id")?.as_str().map(str::to_string))
             .ok_or_else(|| anyhow!("the image server accepted the job but named no prompt_id"))?;
+        if id != asked {
+            if let Err(e) = record(TrailEntry::Job(id.clone())) {
+                held.extend(self.abandon(&id).await);
+                return Err(e);
+            }
+        }
 
         let started = Instant::now();
         let mut failed_polls = 0u32;
@@ -625,7 +884,7 @@ impl ComfyUi {
             match cancel {
                 Some(token) => tokio::select! {
                     _ = token.cancelled() => {
-                        self.abandon(&id).await;
+                        held.extend(self.abandon(&id).await);
                         return Err(Failure::Cancelled);
                     }
                     _ = tick => {}
@@ -633,7 +892,7 @@ impl ComfyUi {
                 None => tick.await,
             }
             if started.elapsed() > timeout {
-                self.abandon(&id).await;
+                held.extend(self.abandon(&id).await);
                 return Err(anyhow!(
                     "the image took longer than {} s and was abandoned",
                     timeout.as_secs()
@@ -656,7 +915,7 @@ impl ComfyUi {
                     if failed_polls < POLL_FAILURES {
                         continue;
                     }
-                    self.abandon(&id).await;
+                    held.extend(self.abandon(&id).await);
                     return Err(e
                         .context(format!(
                             "the image server stopped answering ({POLL_FAILURES} polls in a row)"
@@ -668,6 +927,7 @@ impl ComfyUi {
                 continue; // queued or running
             };
             if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
+                held.extend(temp_outputs(entry));
                 self.forget(&id).await;
                 let why = entry
                     .pointer("/status/messages")
@@ -682,6 +942,13 @@ impl ComfyUi {
                 .flat_map(|o| o.values())
                 .filter_map(|out| out.get("images")?.as_array()?.first().cloned())
                 .next();
+            // Everything the job wrote, onto the trail and the list to delete
+            // before the record naming it is forgotten.
+            let wrote = temp_outputs(entry);
+            for name in &wrote {
+                let _ = note(trail, &TrailEntry::File(name.clone()));
+            }
+            held.extend(wrote);
             match found {
                 Some(image) => break image,
                 // Recorded without an image: finished with nothing to show.
@@ -849,28 +1116,8 @@ pub struct ImageGenerate {
 impl ImageGenerate {
     /// Refuses a configuration whose server is not on this machine.
     pub fn new(cfg: ImageConfig) -> Result<Self> {
-        let mut base = loopback_url(&cfg.url)?;
-        // `join` replaces the last path segment unless the base ends in `/`.
-        if !base.path().ends_with('/') {
-            base.set_path(&format!("{}/", base.path()));
-        }
-        // The vetted address is the only one this client may reach. A
-        // redirect would walk it elsewhere — a 307/308 on `/prompt` re-sends
-        // the body, prompt and all — while the tool goes on declaring no
-        // egress; an inherited proxy setting would route the loopback call
-        // through someone else. `fetch_vetted` treats a redirect as fatal for
-        // the same reason (found on review of #303).
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .build()
-            .context("building the image server's HTTP client")?;
         Ok(ImageGenerate {
-            backend: Arc::new(ComfyUi {
-                base,
-                http,
-                poll: Duration::from_secs(1),
-            }),
+            backend: Arc::new(ComfyUi::for_config(&cfg)?),
             cfg,
             generation: Arc::new(AtomicU64::new(0)),
         })
@@ -1074,21 +1321,39 @@ impl Tool for ImageGenerate {
         self.generation.fetch_add(1, Ordering::SeqCst);
         let started = Instant::now();
         let timeout = Duration::from_secs(self.cfg.timeout_secs);
-        let outcome = self
+        let Outcome { image, left } = self
             .backend
-            .generate(&self.cfg, &req, ctx.cancel.as_ref(), timeout)
+            .generate(
+                &self.cfg,
+                &req,
+                ctx.cancel.as_ref(),
+                timeout,
+                ctx.image_trail.as_deref(),
+            )
             .await;
         // Armed whatever the outcome: a job that failed or was cancelled
         // mid-graph has already loaded the models, and the memory it holds is
         // the reason the timer exists (found on review of #303). The counter
         // makes a timer armed by an earlier call a no-op.
         self.arm_unload();
-        let bytes = match outcome {
+        // A copy the server confirmed and the configured directory does not
+        // hold is said, whatever else happened: a wrong `server_temp_dir` is
+        // otherwise a deletion that quietly never happens.
+        let left = left.map(|left| {
+            tracing::warn!("image server temp copies not removed: {left}");
+            format!(
+                " The image server's temp copies could not all be removed: {left}. Check \
+                 [image] server_temp_dir — for ComfyUI, the --temp-directory path with /temp \
+                 appended."
+            )
+        });
+        let left = left.unwrap_or_default();
+        let bytes = match image {
             Ok(bytes) => bytes,
             Err(Failure::Cancelled) => {
-                return Ok(ToolOutput::err(
-                    "Cancelled — the generation was stopped and nothing was saved.",
-                ))
+                return Ok(ToolOutput::err(format!(
+                    "Cancelled — the generation was stopped and nothing was saved.{left}"
+                )))
             }
             Err(Failure::Other(e)) => {
                 let reach = if e.chain().any(|c| c.is::<reqwest::Error>()) {
@@ -1101,7 +1366,7 @@ impl Tool for ImageGenerate {
                     String::new()
                 };
                 return Ok(ToolOutput::err(format!(
-                    "Image generation failed: {e:#}.{reach}"
+                    "Image generation failed: {e:#}.{reach}{left}"
                 )));
             }
         };
@@ -1109,7 +1374,7 @@ impl Tool for ImageGenerate {
             Ok(path) => path,
             Err(e) => {
                 return Ok(ToolOutput::err(format!(
-                    "The image was made but not saved: {e:#}"
+                    "The image was made but not saved: {e:#}{left}"
                 )))
             }
         };
@@ -1146,6 +1411,7 @@ impl Tool for ImageGenerate {
                 req.seed
             ));
         }
+        text.push_str(&left);
         Ok(ToolOutput::ok(text))
     }
 }
@@ -1893,6 +2159,320 @@ mod tests {
                 "{reference} sampled at the seed it was given: {submitted}"
             );
         }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The tool, deleting the server's temp copies in `temp`.
+    fn tool_in(url: &str, temp: &std::path::Path) -> ImageGenerate {
+        ImageGenerate::new(ImageConfig {
+            url: url.into(),
+            min_available_mb: 0,
+            unload_after_secs: 0,
+            server_temp_dir: Some(temp.to_path_buf()),
+            ..Default::default()
+        })
+        .unwrap()
+        .polling_every(Duration::from_millis(10))
+    }
+
+    /// A finished job whose one preview is `filename`.
+    fn done_as(filename: &str) -> Value {
+        json!({"job-1": {
+            "status": {"status_str": "success", "completed": true},
+            "outputs": {"out": {"images": [
+                {"filename": filename, "subfolder": "", "type": "temp"}
+            ]}}
+        }})
+    }
+
+    /// A workspace holding one photo to edit, and a temp directory holding
+    /// what the fake server says it wrote — plus a file nobody named.
+    fn edit_scene() -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/me.jpg"), [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).unwrap();
+        let temp = dir.join("server-temp");
+        std::fs::create_dir_all(&temp).unwrap();
+        for f in ["up.png", "a_temp_00001_.png", "someone-elses.png"] {
+            std::fs::write(temp.join(f), "x").unwrap();
+        }
+        (dir, temp)
+    }
+
+    #[tokio::test]
+    async fn a_jobs_server_copies_are_deleted_by_the_names_the_server_returned() {
+        let (url, _) = fake(vec![done()], "200 OK").await;
+        let (dir, temp) = edit_scene();
+        let out = tool_in(&url, &temp)
+            .call(
+                json!({"prompt": "Keep <image1> unchanged except: a hat",
+                       "reference_images": ["inbox/me.jpg"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            !temp.join("up.png").exists(),
+            "the uploaded reference stayed"
+        );
+        assert!(
+            !temp.join("a_temp_00001_.png").exists(),
+            "the preview stayed"
+        );
+        assert!(
+            temp.join("someone-elses.png").exists(),
+            "a file nobody named was touched"
+        );
+        assert!(!out.content.contains("could not"), "{}", out.content);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_name_that_is_not_one_plain_component_is_never_deleted() {
+        let (url, _) = fake(vec![done_as("../escape.png")], "200 OK").await;
+        let dir = tempdir();
+        let temp = dir.join("server-temp");
+        std::fs::create_dir_all(&temp).unwrap();
+        std::fs::write(dir.join("escape.png"), "keep me").unwrap();
+        let out = tool_in(&url, &temp)
+            .call(json!({"prompt": "a fox"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(
+            dir.join("escape.png").exists(),
+            "a server's name walked out of the directory"
+        );
+        assert!(
+            out.content.contains("not one plain file name"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_edit_still_deletes_its_upload() {
+        // History never shows the job, so only the cancel ends the call.
+        let (url, _) = fake(vec![], "200 OK").await;
+        let (dir, temp) = edit_scene();
+        let token = CancellationToken::new();
+        let mut c = ctx(&dir);
+        c.cancel = Some(token.clone());
+        let t = tool_in(&url, &temp);
+        let call = tokio::spawn(async move {
+            t.call(
+                json!({"prompt": "a hat", "reference_images": ["inbox/me.jpg"]}),
+                &c,
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        token.cancel();
+        let out = call.await.unwrap().unwrap();
+        assert!(out.content.starts_with("Cancelled"), "{}", out.content);
+        assert!(
+            !temp.join("up.png").exists(),
+            "a cancelled edit left its upload"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_copy_the_directory_does_not_hold_is_said_rather_than_skipped() {
+        // The server says it wrote a preview; the configured directory has
+        // none — the wrong directory, and a deletion that would quietly never
+        // happen.
+        let (url, _) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let temp = dir.join("not-the-servers");
+        std::fs::create_dir_all(&temp).unwrap();
+        let out = tool_in(&url, &temp)
+            .call(json!({"prompt": "a fox"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "the image itself was made: {}", out.content);
+        assert!(
+            out.content.contains("could not all be removed")
+                && out.content.contains("a_temp_00001_.png")
+                && out.content.contains("server_temp_dir"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn the_trail_names_the_job_and_every_file_and_the_server_gets_that_id() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let (dir, temp) = edit_scene();
+        let trail = dir.join("image-trail");
+        let mut c = ctx(&dir);
+        c.image_trail = Some(trail.clone());
+        let out = tool_in(&url, &temp)
+            .call(
+                json!({"prompt": "a hat", "reference_images": ["inbox/me.jpg"]}),
+                &c,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let entries = read_trail(&trail);
+        let jobs: Vec<&String> = entries
+            .iter()
+            .filter_map(|e| match e {
+                TrailEntry::Job(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        let files: Vec<&String> = entries
+            .iter()
+            .filter_map(|e| match e {
+                TrailEntry::File(name) => Some(name),
+                _ => None,
+            })
+            .collect();
+        // Minted here, and sent: the server was told the id already written.
+        let minted = jobs.first().expect("a job was recorded");
+        assert!(uuid::Uuid::parse_str(minted).is_ok(), "{minted}");
+        let submitted = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|l| l.starts_with("POST /prompt"))
+            .cloned()
+            .unwrap();
+        assert!(
+            submitted.contains(&format!("\"prompt_id\":\"{minted}\"")),
+            "{submitted}"
+        );
+        // This fake answers with its own id, as an older server does; that
+        // one is recorded too.
+        assert!(jobs.iter().any(|j| j.as_str() == "job-1"), "{entries:?}");
+        // The name asked for, the name filed under, and the preview.
+        assert!(
+            files
+                .iter()
+                .any(|f| f.starts_with("mecha-") && f.ends_with(".jpg")),
+            "{entries:?}"
+        );
+        assert!(files.iter().any(|f| f.as_str() == "up.png"), "{entries:?}");
+        assert!(
+            files.iter().any(|f| f.as_str() == "a_temp_00001_.png"),
+            "{entries:?}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_trail_that_cannot_be_written_stops_the_job_before_the_server_has_it() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let (dir, temp) = edit_scene();
+        let mut c = ctx(&dir);
+        // A room that has gone: the chat closed, so the job must not start.
+        c.image_trail = Some(dir.join("gone-room").join("image-trail"));
+        let out = tool_in(&url, &temp)
+            .call(
+                json!({"prompt": "a hat", "reference_images": ["inbox/me.jpg"]}),
+                &c,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("could not be recorded for cleanup"),
+            "{}",
+            out.content
+        );
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("POST /upload") || l.starts_with("POST /prompt")),
+            "the server received something no trail named"
+        );
+        assert!(
+            !dir.join("gone-room").exists(),
+            "the trail recreated a closed room"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_dead_writers_trail_is_taken_back_off_the_server() {
+        // The job is not running (a serve died after it finished), so what it
+        // wrote is found in its record, deleted, and the record forgotten.
+        let (url, seen) = fake_running(vec![done()], "200 OK", false, "temp").await;
+        let (dir, temp) = edit_scene();
+        let cfg = ImageConfig {
+            url,
+            server_temp_dir: Some(temp.clone()),
+            ..Default::default()
+        };
+        forget_trail(
+            &cfg,
+            &[
+                TrailEntry::Job("job-1".into()),
+                TrailEntry::File("up.png".into()),
+                // Recorded before an upload that never happened: not a failure.
+                TrailEntry::File("mecha-00000000deadbeef.jpg".into()),
+            ],
+        )
+        .await
+        .unwrap();
+        assert!(!temp.join("up.png").exists());
+        assert!(
+            !temp.join("a_temp_00001_.png").exists(),
+            "the job's preview stayed"
+        );
+        assert!(temp.join("someone-elses.png").exists());
+        let seen = seen.lock().unwrap().clone();
+        assert!(seen
+            .iter()
+            .any(|l| l.starts_with("POST /queue") && l.contains("job-1")));
+        assert!(
+            seen.iter()
+                .any(|l| l.starts_with("POST /history") && l.contains("job-1")),
+            "the record, prompt and all, stayed on the server"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_trail_against_a_server_that_is_down_says_so() {
+        // A port nobody is listening on.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let cfg = ImageConfig {
+            url: format!("http://127.0.0.1:{port}"),
+            ..Default::default()
+        };
+        let err = forget_trail(&cfg, &[TrailEntry::Job("job-1".into())])
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("did not answer"), "{err:#}");
+    }
+
+    #[test]
+    fn a_trail_reads_back_only_what_this_module_writes() {
+        let dir = tempdir();
+        let trail = dir.join("image-trail");
+        std::fs::write(
+            &trail,
+            "job 0b9e1c2a-4f3d-4a7e-9d5c-2f1e0a9b8c7d\nfile up.png\nfile ../../etc/passwd\n\
+             file a/b.png\njob ;rm -rf\nsomething else\nfile \n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_trail(&trail),
+            vec![
+                TrailEntry::Job("0b9e1c2a-4f3d-4a7e-9d5c-2f1e0a9b8c7d".into()),
+                TrailEntry::File("up.png".into()),
+            ]
+        );
+        assert!(read_trail(&dir.join("absent")).is_empty());
         std::fs::remove_dir_all(dir).ok();
     }
 

@@ -651,6 +651,7 @@ Global file only — a project layer's `[image]` is ignored with a warning.
 | `timeout_secs` | integer | `600` | A generation running longer is abandoned on the server. |
 | `min_available_mb` | integer | `16384` | Refuse to start below this much available memory. `0` skips the check. |
 | `unload_after_secs` | integer | `600` | Ask the server to unload its models after this long idle. `0` keeps them loaded. |
+| `server_temp_dir` | path | unset | The directory the server writes temp files into — for ComfyUI, the `--temp-directory` path with `temp` appended. When set, each job's uploaded references and preview are deleted there after the job. Unset, they stay until the server restarts, and incognito chats cannot generate images. |
 
 `image_generate` declares no capabilities at all: what comes back is a file name
 and a seed, and the prompt goes only to a server on this machine. That is why
