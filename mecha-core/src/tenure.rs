@@ -241,22 +241,37 @@ pub fn session_verdicts(
         return SessionVerdicts::Unread;
     }
     let throughout = carried_throughout(t);
+    // A turn no run record covers (messages written before the session's
+    // first `Record::Config`) cannot be placed, and every turn-cited owner
+    // verdict is a reject: dropping it would keep the session's store-keyed
+    // accepts and lose its rejects, the same upward bias the compaction
+    // guard stops — so the session is unread (found on review).
+    let mut unplaced = false;
     let verdicts = a
         .errors
         .iter()
         .filter(|e| e.sign != 0.0 && e.is_owner_verdict())
         .map(|e| {
             let rules = match &e.cite {
-                Cite::Turn(at) => t
-                    .config_covering(*at)
-                    .filter(|c| c.rules_hash.is_some())
-                    .map(|c| c.rule_ids.iter().cloned().collect())
-                    .unwrap_or_default(),
+                Cite::Turn(at) => match t.config_covering(*at) {
+                    // A record from before `rules_hash` names no rule, and
+                    // `carried_throughout` is empty for that session too,
+                    // so its accepts drop with it.
+                    Some(c) if c.rules_hash.is_none() => BTreeSet::new(),
+                    Some(c) => c.rule_ids.iter().cloned().collect(),
+                    None => {
+                        unplaced = true;
+                        BTreeSet::new()
+                    }
+                },
                 _ => throughout.clone(),
             };
             (rules, e.sign > 0.0)
         })
         .collect();
+    if unplaced {
+        return SessionVerdicts::Unread;
+    }
     SessionVerdicts::Read(verdicts)
 }
 
@@ -724,6 +739,71 @@ mod tests {
         assert_eq!(
             session_verdicts(&t, Some(&a), true),
             SessionVerdicts::Read(vec![(BTreeSet::new(), false), (BTreeSet::new(), true)])
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A reject at a turn no run record covers — messages written before
+    /// the session's first run record — makes the session unread, never a
+    /// dropped verdict: every turn-cited owner verdict is a reject, so
+    /// dropping it keeps the accepts and raises the bound (found on review).
+    #[test]
+    fn a_reject_no_run_record_covers_makes_the_session_unread() {
+        let dir = scratch("unplaced");
+        let s = Session::create(
+            &dir,
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: "p".into(),
+                model: "m".into(),
+                workspace: "/w".into(),
+                title: None,
+                kind: Some(SessionKind::Web),
+            },
+        )
+        .unwrap();
+        // Written before any run record: the older half of a resumed session.
+        s.append_messages(&[
+            Message::user("tidy the Northwind notes"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "c0".into(),
+                name: "shell".into(),
+                input: serde_json::json!({"command": "rm -rf notes"}),
+            }]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "c0".into(),
+                content: "Denied by the user: not that".into(),
+                is_error: true,
+            }]),
+            Message::assistant(vec![Block::Text {
+                text: "understood".into(),
+            }]),
+        ])
+        .unwrap();
+        s.append(&Record::Config(carrying(&["r1"]))).unwrap();
+        s.append_messages(&[
+            Message::user("draft the note to Dana instead"),
+            Message::assistant(vec![Block::Text {
+                text: "drafted".into(),
+            }]),
+        ])
+        .unwrap();
+        s.append(&Record::Outcome(RunStats::default())).unwrap();
+        let t = Session::read(&s.path).unwrap();
+        let mut a = built(&t);
+        assert!(
+            a.errors
+                .iter()
+                .any(|e| e.is_owner_verdict() && e.cite == Cite::Turn(2)),
+            "the early denial is an owner verdict at turn 2"
+        );
+        assert!(t.config_covering(2).is_none(), "no run record covers it");
+        a.errors
+            .push(owner_error(Cite::Draft("d-dana".into()), 1.0));
+        assert_eq!(
+            session_verdicts(&t, Some(&a), true),
+            SessionVerdicts::Unread
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
