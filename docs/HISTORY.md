@@ -14,6 +14,116 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-25/26 — appraisal wiring, phase 2 continued: the gate's
+acceptance rule completed, the appraisal's prediction scored, and learning
+reads who made an error, what went right and how the owner judged a rule.**
+Ten rows merged after the phase-1 handoff (#310). `APPRAISAL-WIRING-DESIGN.md`
+stays the authority: each row's catalogue entry there ends with what it
+built and what it left, and the owner's rulings R36–R41 are rows of its §6.
+In merge order (times UTC):
+
+**2d-2**, #322 (`410783a5`, 22:54Z on the 25th): R26's acceptance rule,
+completed by R36, in `candidate::combine`. Point-wise *for* with the
+numeric guard `Held` accepts (a `Security` or `Architecture` change still
+only proposes); *for* with a regression rejects; *against* rejects; and
+*undecided* leaves the numeric verdict unchanged, recorded as
+`Basis::NumericOnly`, so the 2026-08-22 auto-accept stands. The point-wise
+side decides at `MIN_DECIDED_POINTS` (4) with strictly more candidate-only
+passes than baseline-only ones. `harness ruminate`'s measurement drives up
+to eight points per candidate (`pointwise_pass::compare_candidate`),
+stored with the candidate id as `proposal_id`, and `Judgement` gained a
+typed `Guard`. **2b-2**, #324 (`be373132`, 23:43Z): each text appraisal's
+`expected_act` is scored against the owner's recorded act on the session's
+output (`appraisal_store::observe`), and "no act" is the act once R37's
+window closes. That window is the outbox's patience when drafts were
+staged, a task output's `due_at`, else 48h (`NO_STORE_PATIENCE_HOURS`),
+counted from `TextAppraisal::session_ended_at`. An unreadable store is
+unknown, never "no act". Each resolution is written once to
+`~/.mecha/appraisals/scores.jsonl`, a miss as a surprise.
+
+**2d-3**, #328 (`ff96d9f6`, 00:12Z on the 26th): a decided point-wise
+comparison's losing arm becomes an `appraisal_store::Counterfactual` in a
+side ledger, `counterfactuals.jsonl`, joined by appraisal id. An amendment
+row in `appraisals.jsonl` was rejected because an older build would load it
+as a second appraisal of the session. `AppraisalStore::teach` runs on every
+`mecha distill` pass with no model call. It teaches only from a
+structurally `Separated` comparison whose verdict it re-derives from the
+arms, renders every word from the typed record, and points with the new
+`Pointer::Comparison`. **2e-1**, #327 (`4ec0f919`, 00:27Z): `mecha learn
+--compare-sources` drives validate's probe three times at each steer or
+denial the reflector reflected on: with no rules, with the reflector's
+lesson alone, and with the appraisal's lessons alone. Each verdict is a 1g
+comparison (`Kind::LessonSource`), and each source's validation rate per
+region is re-read from the store; `sessions appraise` prints the same
+(`lesson_sources`). Nothing is learned. It is R25's gate for 2a-4 and
+2e-2, and it has not yet run on this install (HANDOFF). **2f**, #329
+(`b180a2e6`, 01:38Z): under R38 the nightly draw is split on one seed.
+`harness_probe::draw_pool` mints the candidate id and draws the pool and its
+uniform holdout before the diagnosis. The diagnostician's brief carries the
+clean appraisals of `Pool::remainder`, never the holdout's, as
+`diagnose::AppraisalNote`, which only `&Clean` can construct: words only,
+and under 11,000 characters in all. `Pool::select` ranks afterwards exactly
+as before, which a test held against the old single-phase body copied
+verbatim (since 2e-6 it holds the holdout alone to that body, as
+`the_split_draw_holds_the_single_phase_holdout_under_the_ranking`). A
+brief carrying a note arms `private` taint. The stage lever `[agent]
+appraisals_in_brief` (on) is the appraisal-off preset's reach into
+`ruminate`.
+
+**2e-3**, #332 (`dce65cac`, 04:27Z): mecha-graph's D3 contract, ported as
+`attribution::decide`. A correction is a data error, a behaviour error or
+a gap, looked up from what the run was given (`grounding::calls`), with its
+spans grounded first (`grounding::holds`). `learn` admits a reflection only
+through `Reflexion::attribution_admits`, so a behaviour rule is mined only
+from a behaviour error. Reflections from before the field are unknown and
+not mined (six unprocessed, clean `behavior` reflections at merge, #332's
+own count); an owner's edit admits whatever the class. **2e-6**, #334
+(`450a5cc6`, 04:27Z): `replay_priority` is gain × need × decay. Gain is the
+owner's verdicts (`GoalError::is_owner_verdict`), charter-weighted on clean
+records, plus 2b-2's clean surprises. Need is `ln(1 + n)` over the runs
+matched in the session's `Situation` region, mecha-graph's Selector demand
+term ported. Decay is a 14-day half-life. An unknown factor ranks between
+known positive and known zero, and an episode that sits in a selection
+slice on three nights without a win ranks last. Under R39, headroom gates
+the harness selection and the priority orders within it; `learn`'s batches
+and `validate --cover`'s budget use the same order. `sessions compare`
+ranks its uniform draw, while `compare_candidate` stays uniform because its
+points are R36's confirming sample. The holdout is drawn first from ids
+alone, unchanged.
+
+**2e-5a**, #335 (`ab1f7375`, 18:06Z): the anchor in force at the
+intervention (`Transcript::anchor_covering`) is the second, fallback source
+of `Reflexion::goals` (`reflect::goals_for`). The model stopped planning
+around 2026-08-28, so the field had been empty on every new reflection and
+`goal_lessons` served nothing. Each run's own anchor is read, never the
+session's last, and none where an answered `ask_user` later in that run
+could have moved it. **2e-4a**, #336 (`08d165d3`, 18:20Z), under R40:
+`success.rs` derives the owner-verified successes on every read — a draft
+sent unchanged, a `done` closure no reopen undoes, a workflow close not
+reopened, an answered question whose session then completed. There is no
+success store, so a reopen withdraws by construction. Each draft sent
+unchanged carries its verbatim exemplar with an `Origin`. It is shadow
+only: `mecha sessions successes` and one line in `sessions appraise` are
+its readers. **2e-5b and 2e-5c**, #338 (`b3135e1b`, 19:01Z), under R41:
+`tenure` is the Wilson lower bound (z = 1.96; none under
+`TENURE_MIN_VERDICTS` = 20; tenured at `TENURE_FLOOR` = 0.65) of the
+owner-accept rate over the owner's verdicts on runs whose
+`RunConfig::rule_ids` carried the rule. The owner's curation of rules is
+not among them, since 1d keeps curation off a run's score. Tenure sits
+beside retirement: `tenure::release_probation_when_owner_tenures` runs
+after `release_probation_when_measured_clean` in `rules
+propose-retirements`, the release lasts one pass (the file keeps the
+probation mark), and retirement stays on measured regressions. A rule
+whose region no admitted run in the recurrence window matched reads QUIET
+in `mecha rules` (`tenure::Quiet`), as a report only.
+
+Installed in five builds: #322 and #324 at 23:44Z on the
+25th (`be373132`); #327 and #328 at 01:14Z on the 26th (`720feb27`); #329
+at 03:50Z (`39c9f359`, another lane's install); #332 and #334 at 12:19Z
+(`450a5cc6`); and #335, #336 and #338 at 22:40Z (`b3135e1b`). HANDOFF's
+*Machine state, dated* holds how each was verified. What the arc left open
+is in HANDOFF's goal-system section.
+
 **2026-09-25/26 — incognito chat, live: the server side (#321) and the
 page (#326).** `INCOGNITO-DESIGN.md` is the authority; the 2026-09-25 entry
 below holds the design and step 0. #321 (`62b5cf10`, six review passes) made
@@ -9195,6 +9305,14 @@ handled.**
   looking exactly like a regression in that day's work. **Compile-time paths
   live in the artifact, not the fingerprint: give a throwaway worktree its own
   target dir.** (2026-08-07, in the factory repo; the lesson is generic.)
+  **Hit again in this repo on 2026-09-26**, and it cost time a second time
+  because it reads as flakiness: with one `CARGO_TARGET_DIR` shared across
+  the appraisal lane's worktrees, mecha-mail's fixture-spawning tests
+  (in `google::docs_server`) failed on a missing fixture path, because the
+  reused test binary's `env!("CARGO_MANIFEST_DIR")` named another,
+  since-deleted, worktree. `cargo clean -p <crate>` or a per-worktree
+  target fixes it. A "missing fixture" failure in a crate the change never
+  touched is this trap until shown otherwise.
 - **`cargo install` replaced a binary built from a different checkout, and
   the only warning was one line of its own output.** Three sessions wrote
   `~/.cargo/bin/mecha` on 2026-08-24 from three different checkouts of the

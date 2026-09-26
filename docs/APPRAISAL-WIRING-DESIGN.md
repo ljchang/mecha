@@ -3,8 +3,8 @@
 **Status: designed and ruled 2026-09-24. Phase 1 (1a–1i) is built, merged and
 installed; phases 2 and 3 are under way, row by row** (here §3, "Phase 2
 as pull requests"). Which rows have merged, by PR, is in
-[`HISTORY.md`](HISTORY.md) under 2026-09-24/25, and what is open in
-`HANDOFF.md`'s goal-system section. The rulings each phase waits on are in here §6. The evidence behind every claim here — what exists, what
+[`HISTORY.md`](HISTORY.md) under 2026-09-24/25 and 2026-09-25/26, and what
+is open in `HANDOFF.md`'s goal-system section. The rulings each phase waits on are in here §6. The evidence behind every claim here — what exists, what
 reads it, what has been measured — is
 [`APPRAISAL-INVENTORY-RESEARCH.md`](APPRAISAL-INVENTORY-RESEARCH.md)
 (cited as *inventory §N*). `GOAL-SYSTEM-DESIGN.md` designs the signals and
