@@ -119,6 +119,20 @@ echo "  holdout-confirmed config win auto-applies to the override layer, reversi
 echo "  prose, architecture and anything unmeasurable stages for review)"
 "$MECHA" harness ruminate -p "$PROVIDER" --sessions 16
 
+# The two measurement passes run last, after everything that changes what the
+# next run carries, so a slow night delays nothing the morning depends on.
+# Each holds one background seat per point and defers the rest when every seat
+# stays held, so neither can stall the other; neither writes a rule.
+echo "· compare (point-wise comparison at recorded decision points, decided by the"
+echo "  owner's recorded verdict; what it separates, tomorrow's distill writes into"
+echo "  the session's appraisal as the losing arm)"
+"$MECHA" sessions compare -p "$PROVIDER"
+
+echo "· lesson sources (the reflector's lessons against the text appraisal's, on the"
+echo "  same interventions — shadow, measurement only; the real-session evidence R25"
+echo "  gates folding the reflector in on, and 2e-2 gates feeding learn on)"
+"$MECHA" learn -p "$PROVIDER" --compare-sources
+
 echo "· proposals awaiting review"
 "$MECHA" proposals
 

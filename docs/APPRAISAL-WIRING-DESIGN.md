@@ -1406,8 +1406,9 @@ the point, one background seat per point, eight driven points a pass by
 default, local model only (R29). Left for later: the candidate arm and the
 acceptance rule (2d-2, since built), the losing arm into the appraisal (2d-3,
 O3, since built), ranked points (2e-6), surprise sources beyond forecast misses (2b-1's resolved
-predictions, 2b-2's scored appraisal predictions), and the nightly wiring —
-a line in `scripts/ruminate.sh`, a deploy change offered rather than made.
+predictions, 2b-2's scored appraisal predictions). The nightly wiring is
+made (owner, 2026-09-26): `scripts/ruminate.sh` runs `mecha sessions compare`
+and `mecha learn --compare-sources` last, after `harness ruminate`.
 
 **R36 completes the combination** (ruled 2026-09-25, built as 2d-2 in
 `candidate::combine`): point-wise for and no numeric regression accepts;
