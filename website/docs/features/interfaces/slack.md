@@ -269,16 +269,6 @@ one cannot work over SSH — a file dropped on the prompt pastes the path on you
 laptop, which the machine at the other end resolves to nothing. See
 [Images](/docs/features/interfaces/images#from-slack).
 
-## Links never unfurl
-
-Every message mecha posts or edits in Slack goes out with unfurling off, and
-there is no parameter to turn it on. An unfurl is Slack fetching a URL the moment a message
-lands, so a link the model wrote would become an outbound request that no tool
-call made and the [trifecta interlock](/docs/features/security) never saw — the
-same reason `http_fetch` counts as a send even though it only reads. Because the
-setting belongs to the transport rather than to each message, no call site can
-forget it.
-
 ## Two things it deliberately does not do
 
 - **`ask_user` is absent.** It is a *tool*, and the tool registry belongs to the

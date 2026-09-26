@@ -1,10 +1,10 @@
-/* The sheet's edge, corners and shadow are read from custom properties, so a
-   page that mounts a plate differently — the landing hero joins it to a title
-   block — sets values rather than out-specifying a selector here. A theme
-   rule and a page rule of equal weight would otherwise be decided by which
-   CSS module the bundler happens to emit second. */
+/* The sheet's margin, edge, corners and shadow are read from custom
+   properties, so a page that mounts a plate differently — the landing hero
+   joins it to a title block — sets values rather than out-specifying a
+   selector here. A theme rule and a page rule of equal weight would otherwise
+   be decided by which CSS module the bundler happens to emit second. */
 .poster {
-  margin: 0 0 2rem;
+  margin: var(--poster-margin, 0 0 2rem);
   --poster-edge-default: var(--ifm-color-emphasis-200);
   --poster-shadow-default: none;
 }
