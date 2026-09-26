@@ -557,12 +557,14 @@ policy like any other command. A `[[policy]]` rule that forbids the
    const). Gemma and Qwen3.8 run `-np 1`, so once the router is installed a
    switch to either admits three background runs onto one slot, and the
    owner's turn — which takes no permit, by design — queues behind them.
-   **Owed, and it needs a ruling**: sizing seats as `slots − 1` keeps
-   "Reserve, never preempt" but is *zero* on a one-slot model, pausing the
-   permit-takers (delegations, questions, `distill` and the nightly
-   `lesson`/`pointwise` passes) while it is loaded; a floor of one keeps
-   "nightly runs on whatever is loaded" but lets one background decode sit
-   ahead of the owner. Must land before the router is installed.
+   **Ruled 2026-09-26: `max(slots − 1, 1)`, and built**
+   (`router::background_seats`). A floor of one keeps "nightly runs on
+   whatever is loaded" and lets at most one background decode sit ahead of
+   the owner; the alternative, `slots − 1` exactly, would have paused every
+   permit-taker — delegations, questions, `distill`, the nightly
+   `lesson`/`pointwise` passes — for as long as a one-slot model is loaded.
+   The router snapshot records the resident model's slot count from its own
+   `/props`; unknown keeps production's 3.
 6. **The prompt cache dies with the child.** Unloading drops every slot's
    KV and `-cram` cache, so every live session re-reads its whole history
    once after each swap.
@@ -597,7 +599,22 @@ and the paths are this machine's.
 
 ### Deploying step 1
 
-Blocked on trap 5 (permit seats) — its ruling and fix come first.
+**A long-lived agent swaps the pick back** (found by a peer session,
+verified against `ChatState::build` and the Slack connector). In router mode
+the request's model *selects*, and `mecha serve` (chat and voice) and Slack
+name the model they resolved at start. So until step 3's per-run resolution
+lands in them, a switch lasts only until the next web, voice or Slack turn,
+which loads the old model back once the new one goes idle — and a switch
+made *from the chip* is undone by that chip's own next turn. Two
+consequences: the chip (step 5) cannot ship before that resolution, and
+installing the router before it means switching only holds while those
+surfaces are quiet (or after restarting them).
+
+**The router loads production at start** (`load-on-startup`), so installing
+it ends whatever arm a drop-in was serving. The uncensored arm was ruled to
+stay up through the 2026-09-26/27 night's ruminate (03:30Z) and mail
+classify (05:31Z): install after those, or run `mecha model use
+qwen3.6-35b-a3b-uncensored` straight after installing.
 
 The config gains `follow_loaded`, and `ProviderConfig` denies unknown
 fields, so **the binary goes in before the config edit** — an older binary

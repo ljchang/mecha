@@ -163,6 +163,9 @@ bounce_skip() {
 BASE="${SLOTS_URL%/slots}"
 get "$BASE/props"
 bounce_skip "$BASE/props"
+# A 503 is a server — router or not — still loading, which is a bounce too;
+# read as "not a router", it would send a router to its bare /slots 400.
+[ "$GOT_CODE" = 503 ] && stuck_skip "$BASE/props says the server is still loading"
 role=""
 if [ "$GOT_RC" -eq 0 ] && [ "$GOT_CODE" = 200 ]; then
     role="$(printf '%s' "$GOT_BODY" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("role", ""))' 2>/dev/null)"

@@ -976,6 +976,18 @@ fn step_escalation_slot(
     enabled.then(|| Arc::new(std::sync::Mutex::new(None)))
 }
 
+/// `--model` pins, as `MECHA_MODEL` does (`Config::merge_env_from`). `build`
+/// applies the flag's model *after* resolving the provider, so without this
+/// a following default resolved to the sibling naming the resident model and
+/// only its model string was replaced — `--model qwen3.8-27b` ran under
+/// Gemma's entry and its 32,768-token window (found on review). The TUI's
+/// `/model` rebuilds through here and is pinned the same way.
+fn pin_named_model(cfg: &mut Config, opts: &GlobalOpts) {
+    if opts.model.is_some() {
+        cfg.pin_provider(opts.provider.as_deref());
+    }
+}
+
 /// Resolve config, workspace, tools, and the approval policy.
 pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<PreparedTools> {
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
@@ -986,6 +998,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     };
 
     // --- flags override config ---
+    pin_named_model(&mut cfg, opts);
     if let Some(effort) = opts.effort {
         cfg.agent.effort = Some(effort);
     }
@@ -2125,9 +2138,55 @@ mod surface_only_tests {
 mod tests {
     use super::{
         build_subagent, excluded_by_allowlist, fold_agent_switches, front_end_interactive,
-        levers_off, posture_for, step_escalation_enabled, step_escalation_slot,
+        levers_off, pin_named_model, posture_for, step_escalation_enabled, step_escalation_slot,
     };
     use crate::GlobalOpts;
+
+    /// `--model` pins: the default no longer follows the router to a sibling
+    /// whose window and prices belong to another model.
+    #[test]
+    fn a_named_model_stops_the_default_following_the_router() {
+        use mecha_core::config::{Config, ProviderConfig};
+        use mecha_core::provider::router::{followed, Seen};
+        let mut cfg = Config {
+            default_provider: "local".into(),
+            ..Default::default()
+        };
+        for (name, model, follow) in [
+            ("local", "qwen3.6-35b-a3b", true),
+            ("gemma26", "gemma-4-26b-a4b", false),
+        ] {
+            cfg.providers.insert(
+                name.into(),
+                ProviderConfig {
+                    kind: "local".into(),
+                    base_url: Some("http://127.0.0.1:8080".into()),
+                    model: Some(model.into()),
+                    follow_loaded: follow,
+                    ..Default::default()
+                },
+            );
+        }
+        let seen = [Seen {
+            base_url: "http://127.0.0.1:8080".into(),
+            resident: Some("gemma-4-26b-a4b".into()),
+            slots: Some(1),
+        }];
+
+        let mut unnamed = cfg.clone();
+        pin_named_model(&mut unnamed, &GlobalOpts::default());
+        assert_eq!(
+            followed(&unnamed, "local", &seen).as_deref(),
+            Some("gemma26")
+        );
+
+        let named = GlobalOpts {
+            model: Some("qwen3.8-27b".into()),
+            ..GlobalOpts::default()
+        };
+        pin_named_model(&mut cfg, &named);
+        assert_eq!(followed(&cfg, "local", &seen), None);
+    }
 
     /// A front end is a person only with a terminal and no run's shell above
     /// it: a nested or piped one refuses a closure (review of #294).

@@ -131,6 +131,9 @@ whichever model the router has loaded — `mecha model use <entry>` switches it,
 with no restart — and records that model. A run that names a provider
 (`--provider`, a trigger's `provider`, an experiment arm) is never moved.
 `mecha model list` shows what the router serves and which entry names each.
+A followed run takes **everything** from the sibling entry — its
+`context_window`, sampling, prices, `fallbacks` and retry settings — not
+only its model, so give each sibling the settings of the model it names.
 
 ### `context_window` degrades silently when absent
 

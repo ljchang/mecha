@@ -1470,21 +1470,30 @@ impl Config {
     fn merge_env_from(&mut self, get: impl Fn(&str) -> Option<String>) {
         if let Some(v) = get("MECHA_PROVIDER") {
             self.default_provider = v;
-            if let Some(p) = self.providers.get_mut(&self.default_provider) {
-                p.follow_loaded = false;
-            }
+            self.pin_provider(None);
         }
         if let Some(v) = get("MECHA_MODEL") {
             let name = self.default_provider.clone();
             if let Some(p) = self.providers.get_mut(&name) {
                 p.model = Some(v);
-                p.follow_loaded = false;
             }
+            self.pin_provider(None);
         }
         if let Some(v) = get("MECHA_EFFORT") {
             if let Ok(e) = v.parse() {
                 self.agent.effort = Some(e);
             }
+        }
+    }
+
+    /// Stop the entry `name` (the default when `None`) following a router
+    /// (`provider::router`): a model or provider the owner named — by flag,
+    /// by environment, by a trigger's own field — is a pin, and must not be
+    /// walked away from to whichever sibling names the resident model.
+    pub fn pin_provider(&mut self, name: Option<&str>) {
+        let name = name.unwrap_or(&self.default_provider).to_string();
+        if let Some(p) = self.providers.get_mut(&name) {
+            p.follow_loaded = false;
         }
     }
 

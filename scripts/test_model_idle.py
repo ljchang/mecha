@@ -48,6 +48,8 @@ ROUTERS = {
     "/r-hangprops": ([{"id": "m", "status": {"value": "loaded"}}], IDLE_SLOT),
     "/r-hangmodels": ([{"id": "m", "status": {"value": "loaded"}}], IDLE_SLOT),
 }
+# A router whose /props is still loading.
+ROUTERS["/r-503props"] = ([{"id": "m", "status": {"value": "loaded"}}], IDLE_SLOT)
 # Reads that outlast the script's 5 s budget: a router mid-restart.
 HANGS = {"/r-hangprops/props", "/r-hangmodels/models"}
 SEEN = []  # every path the stub was asked for, in order
@@ -59,6 +61,8 @@ def routed(path):
         if not path.startswith(prefix + "/"):
             continue
         rest = urllib.parse.urlsplit(path[len(prefix):])
+        if rest.path == "/props" and prefix == "/r-503props":
+            return 503, {"error": {"message": "Loading model"}}
         if rest.path == "/props":
             # The placeholder a bare /props really answers on a router.
             return 200, {"role": "router", "model_alias": "llama-server"}
@@ -270,6 +274,10 @@ class ModelIdle(unittest.TestCase):
         # Demoted to "single-model", the bare /slots read would be refused
         # (the stub answers it 500) and fail the unit on the first tick.
         codes = [self.run_check(f"{self.base}/r-hangprops/slots", stuck_max=2)[0] for _ in range(2)]
+        self.assertEqual(codes, [1, 255])
+
+    def test_a_loading_props_is_a_bounce_not_a_single_model_server(self):
+        codes = [self.run_check(f"{self.base}/r-503props/slots", stuck_max=2)[0] for _ in range(2)]
         self.assertEqual(codes, [1, 255])
 
     def test_a_lost_models_read_is_a_bounce(self):

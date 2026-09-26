@@ -768,7 +768,7 @@ pub enum Seats {
 pub fn seats_under(home: &Path) -> Seats {
     let pool = crate::permit::Permits::new(
         crate::permit::dir_under(home),
-        crate::permit::DEFAULT_BACKGROUND_PERMITS,
+        crate::provider::router::background_seats(crate::permit::DEFAULT_BACKGROUND_PERMITS),
     );
     match pool.read_live() {
         Ok(read) => {
