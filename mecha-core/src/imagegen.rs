@@ -566,8 +566,20 @@ struct Outcome {
 }
 
 impl ComfyUi {
-    /// The client for `cfg`'s server, refusing one not on this machine.
+    /// The client for `cfg`'s server, refusing one not on this machine — and
+    /// a `server_temp_dir` that is not absolute, which would delete the
+    /// server's file names relative to whatever directory this process runs
+    /// in (found on review of #331; the incognito check alone came too late).
     fn for_config(cfg: &ImageConfig) -> Result<Self> {
+        if let Some(dir) = &cfg.server_temp_dir {
+            if !dir.is_absolute() {
+                bail!(
+                    "[image] server_temp_dir `{}` must be an absolute path — the tool deletes \
+                     files there by the names the image server returns",
+                    dir.display()
+                );
+            }
+        }
         let mut base = loopback_url(&cfg.url)?;
         // `join` replaces the last path segment unless the base ends in `/`.
         if !base.path().ends_with('/') {
@@ -926,8 +938,21 @@ impl ComfyUi {
             let Some(entry) = history.get(&id) else {
                 continue; // queued or running
             };
+            // Everything the job wrote goes onto the trail and the list to
+            // delete *before* the record naming it is forgotten — a job that
+            // failed after its preview was written included (found on review
+            // of #331: forgotten first, a death here left files nothing named).
+            let wrote = temp_outputs(entry);
+            for name in &wrote {
+                if let Err(e) = note(trail, &TrailEntry::File(name.clone())) {
+                    // No job left to stop by now; the usual cause is a room
+                    // that has just closed. Said at debug, which is not a
+                    // count at the default level (R1).
+                    tracing::debug!("a preview's name did not reach the image trail: {e:#}");
+                }
+            }
+            held.extend(wrote);
             if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
-                held.extend(temp_outputs(entry));
                 self.forget(&id).await;
                 let why = entry
                     .pointer("/status/messages")
@@ -942,13 +967,6 @@ impl ComfyUi {
                 .flat_map(|o| o.values())
                 .filter_map(|out| out.get("images")?.as_array()?.first().cloned())
                 .next();
-            // Everything the job wrote, onto the trail and the list to delete
-            // before the record naming it is forgotten.
-            let wrote = temp_outputs(entry);
-            for name in &wrote {
-                let _ = note(trail, &TrailEntry::File(name.clone()));
-            }
-            held.extend(wrote);
             match found {
                 Some(image) => break image,
                 // Recorded without an image: finished with nothing to show.
@@ -2197,6 +2215,58 @@ mod tests {
             std::fs::write(temp.join(f), "x").unwrap();
         }
         (dir, temp)
+    }
+
+    #[test]
+    fn a_relative_temp_dir_is_refused_when_the_tool_is_built() {
+        let refused = ImageGenerate::new(ImageConfig {
+            server_temp_dir: Some("comfy/temp".into()),
+            ..Default::default()
+        });
+        let Err(e) = refused else {
+            panic!("a relative server_temp_dir was accepted");
+        };
+        assert!(format!("{e:#}").contains("absolute"), "{e:#}");
+        assert!(ImageGenerate::new(ImageConfig {
+            server_temp_dir: Some("/run/user/1000/comfyui-temp/temp".into()),
+            ..Default::default()
+        })
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_job_that_failed_after_its_preview_still_names_and_deletes_it() {
+        // The server wrote a preview, then failed the job: the preview must
+        // reach the trail before the record is forgotten, and be deleted.
+        let failed = json!({"job-1": {
+            "status": {"status_str": "error", "completed": false, "messages": []},
+            "outputs": {"out": {"images": [
+                {"filename": "e_temp_00001_.png", "subfolder": "", "type": "temp"}
+            ]}}
+        }});
+        let (url, _) = fake(vec![failed], "200 OK").await;
+        let dir = tempdir();
+        let temp = dir.join("server-temp");
+        std::fs::create_dir_all(&temp).unwrap();
+        std::fs::write(temp.join("e_temp_00001_.png"), "x").unwrap();
+        let trail = dir.join("image-trail");
+        let mut c = ctx(&dir);
+        c.image_trail = Some(trail.clone());
+        let out = tool_in(&url, &temp)
+            .call(json!({"prompt": "a fox"}), &c)
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            read_trail(&trail).contains(&TrailEntry::File("e_temp_00001_.png".into())),
+            "a failed job's preview was never written down: {:?}",
+            read_trail(&trail)
+        );
+        assert!(
+            !temp.join("e_temp_00001_.png").exists(),
+            "the failed job's preview stayed"
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]
