@@ -43,11 +43,12 @@ cannot see images -- which looks like the model's limitation and is not.
 
 Fetch it:
 
-  S=\$(ls -d "$snapshot")
+  S=\$(ls -d "${snapshot%/}")
   curl -L --fail -o "\$S/mmproj-BF16.gguf" \\
     "https://huggingface.co/$repo/resolve/main/mmproj-BF16.gguf"
 
-Or start deliberately text-only by adding --no-mmproj to this script.
+Or start deliberately text-only: a single-model start script takes
+--no-mmproj; start-router.sh has no such switch and skips the model instead.
 EOF
   exit 1
 }
