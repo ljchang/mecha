@@ -33,11 +33,12 @@ function page(start) {
     `'use strict';
      let { key, draft, attachments, incognito, gone } = start;
      let todo = ['[~] plan the thing'];
+     let goneNote = 'incognito is unavailable: no local model';
      let entries = ['x'], streaming = 'y', usage = 1, taint = 1;
      let affect = 1, valence = 1, sawAffectThisRun = true;
      const receivedInputs = new Set(), inputDelivery = new Map();
      ${switchToSrc}
-     return { switchTo, now: () => ({ key, draft, attachments, incognito, gone, todo }) };`,
+     return { switchTo, now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote }) };`,
   )(start);
 }
 
@@ -61,6 +62,7 @@ function is(actual, expected, what) {
   const s = p.now();
   is([s.key, s.draft, s.attachments, s.incognito], ['main', '', [], false], 'leaving incognito clears the composer');
   is(s.todo, [], "and the incognito chat's plan");
+  is([s.gone, s.goneNote], [null, null], 'and the gone screen with its note');
 }
 {
   const p = page({ key: 'main', draft: 'half a thought', attachments: ['inbox/a.pdf'], incognito: false, gone: null });

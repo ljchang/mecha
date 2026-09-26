@@ -76,10 +76,8 @@ pub const READABLE_SERVER: &str = "mail";
 /// not allowed. `tools` is the registry as `(name, read_only)`; `routed` the
 /// outbox's routed names, which stage a draft in every permission mode and
 /// so are withheld even when read-only. `shell_confined` is
-/// [`Sandbox::writes_stay_in_workspace`](mecha_core::sandbox::Sandbox::writes_stay_in_workspace):
-/// `fs_*` are jailed to the room by `ToolCtx::resolve`, but `shell` only by
-/// the sandbox, and a command that can write outside the room leaves a trace
-/// `Room::remove` never sees (found on review of #321).
+/// [`shell_is_sealed`]: `fs_*` are jailed to the room by `ToolCtx::resolve`,
+/// but `shell` only by the sandbox.
 pub fn withheld<'a>(
     tools: impl IntoIterator<Item = (&'a str, bool)>,
     routed: &[String],
@@ -99,6 +97,28 @@ pub fn withheld<'a>(
         })
         .map(|(name, _)| name.to_string())
         .collect()
+}
+
+/// Whether `shell` may be offered in an incognito chat: a sandbox that keeps
+/// every write in the room, reads nothing outside it, and reaches no network.
+///
+/// Each clause closes a different route. **Writes**: a command that can write
+/// outside the room leaves a trace `Room::remove` never sees — so not `none`,
+/// not `landlock` (the host's `/tmp` is shared), and no extra `writable` path
+/// (found on review of #321). **Reads and network**: an incognito chat's
+/// commands register in the room, not the guard homes
+/// (`ToolCtx::shell_registry`), so the closure check reads them as
+/// unregistered, and a command that clears `MECHA_RUN_POSTURE` would be taken
+/// for the owner. That is harmless only if the command cannot reach the board
+/// at all — and the board is written through the graph server, found from the
+/// mecha home's config, not through a file the jail would stop. With nothing
+/// readable outside the jail there is no config naming a server and no store
+/// to open; with no network there is nothing to call (found on review of
+/// #326, which caught the argument resting on writes alone).
+pub fn shell_is_sealed(sandbox: &mecha_core::sandbox::Sandbox) -> bool {
+    sandbox.writes_stay_in_workspace()
+        && !sandbox.reaches_beyond_workspace()
+        && !sandbox.can_reach_network()
 }
 
 /// An incognito key that is not open: ended, reaped, or never opened. A
@@ -454,6 +474,35 @@ mod tests {
                 "research",
             ]
         );
+    }
+
+    #[test]
+    fn shell_is_offered_only_in_a_sealed_sandbox() {
+        use mecha_core::sandbox::{Backend, Sandbox, SandboxConfig};
+        let cfg = |kind| SandboxConfig {
+            kind,
+            ..SandboxConfig::default()
+        };
+        assert!(shell_is_sealed(&Sandbox::new(cfg(Backend::Bwrap))));
+        assert!(shell_is_sealed(&Sandbox::new(cfg(Backend::Docker))));
+        assert!(!shell_is_sealed(&Sandbox::new(cfg(Backend::None))));
+        assert!(!shell_is_sealed(&Sandbox::new(cfg(Backend::Landlock))));
+        for widened in [
+            SandboxConfig {
+                network: true,
+                ..cfg(Backend::Bwrap)
+            },
+            SandboxConfig {
+                readable: vec!["/home/someone/.mecha".into()],
+                ..cfg(Backend::Bwrap)
+            },
+            SandboxConfig {
+                writable: vec!["/var/cache/x".into()],
+                ..cfg(Backend::Bwrap)
+            },
+        ] {
+            assert!(!shell_is_sealed(&Sandbox::new(widened)));
+        }
     }
 
     #[test]

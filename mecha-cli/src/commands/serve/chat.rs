@@ -309,13 +309,13 @@ impl ChatState {
             // goes now, and a run still finishing removes it again on its
             // way out (`begin_turn`'s hand-back).
             if let Some(room) = ws.session.room() {
-                if let Err(e) = room.remove() {
-                    tracing::warn!("an incognito room was not removed at shutdown: {e:#}");
-                }
-                // The same close as End's (`close_incognito_locked`), plan
-                // included, so the two paths do not drift.
+                // The same close as End's (`close_incognito_locked`), in the
+                // same order — plan, then room — so the two paths do not drift.
                 if let Some(todo) = &self.todo {
                     todo.forget_in(&ws.workspace);
+                }
+                if let Err(e) = room.remove() {
+                    tracing::warn!("an incognito room was not removed at shutdown: {e:#}");
                 }
             }
         }
@@ -366,8 +366,9 @@ impl ChatState {
                 .iter()
                 .map(|t| (t.name(), t.read_only())),
             &routed,
-            mecha_core::sandbox::Sandbox::new(self.config.sandbox.clone())
-                .writes_stay_in_workspace(),
+            super::incognito::shell_is_sealed(&mecha_core::sandbox::Sandbox::new(
+                self.config.sandbox.clone(),
+            )),
         );
         let (events, _) = broadcast::channel(512);
         let questions = super::present::Questions::default();
@@ -3219,6 +3220,22 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_incognito_turn_registers_its_shells_in_the_room() {
+        // Reads the source, like the test below: the assignment is one field
+        // in front of a `..match` base, the easiest line in the turn to lose
+        // by folding the arms together, and losing it sends an incognito
+        // chat's shells back to `~/.mecha/runs/shells` with every behavioural
+        // test still green — a registration is removed when its command
+        // ends, so no scan after the turn could see it (review of #326).
+        let src = include_str!("chat.rs");
+        let code = src.split("#[cfg(test)]\nmod tests {").next().unwrap_or(src);
+        assert!(
+            code.contains("shell_registry: ws.session.room().map(|room| room.shells.clone()),"),
+            "a served turn no longer points an incognito chat's shells at its room"
+        );
+    }
+
     #[test]
     fn every_served_session_builds_its_turn_context_through_for_session() {
         // Reads the source because there is no reflective way to ask. The

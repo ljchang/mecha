@@ -35,6 +35,9 @@
   // conversation, which the page forgets as well.
   let incognito = $state(false);
   let gone = $state(null);
+  // Why a new incognito chat from the gone screen was refused: that screen
+  // draws no transcript, so a notice pushed there would go unseen.
+  let goneNote = $state(null);
   let handNote = $state(null);
   let todoOpen = $state(true);
   const MARK = { completed: '[x]', in_progress: '[~]', pending: '[ ]' };
@@ -567,6 +570,7 @@
     }
     incognito = false;
     gone = null;
+    goneNote = null;
   }
 
   // What the page itself holds of a conversation. An incognito chat that has
@@ -609,7 +613,9 @@
       gone = null;
       queueMicrotask(() => inputEl?.focus());
     } catch (e) {
-      pushEntry({ kind: 'notice', text: `incognito is unavailable: ${e?.message ?? e}` });
+      const why = `incognito is unavailable: ${e?.message ?? e}`;
+      if (gone) goneNote = why;
+      else pushEntry({ kind: 'notice', text: why });
     }
   }
 
@@ -1318,6 +1324,7 @@
           ? 'Nothing from it was kept.'
           : 'It was idle for 30 minutes, or the server restarted. Nothing from it was kept.'}
       </p>
+      {#if goneNote}<p class="gone-note">{goneNote}</p>{/if}
       <div class="gone-actions">
         <button class="newbtn incog" onclick={newIncognito}>new incognito chat</button>
         <button class="newbtn" onclick={() => switchTo(DEFAULT_KEY)}>back to chat</button>
@@ -1412,12 +1419,16 @@
              of the call. Served from this session's own jail, images only
              (serve/files.rs), so a tap opens it full size. -->
         {#if picture}
-          <!-- No link in an incognito chat: opening the picture in a tab
-               writes its address into the browser's history, which outlives
-               the chat (R6). -->
-          <a class="genimg" href={incognito ? undefined : workspaceFile(picture)} target="_blank" rel="noopener">
-            <img src={workspaceFile(picture)} alt="what the model generated" loading="lazy" />
-          </a>
+          {#if incognito}
+            <!-- No link in an incognito chat: opening the picture in a tab
+                 writes its address into the browser's history, which
+                 outlives the chat (R6). -->
+            <span class="genimg"><img src={workspaceFile(picture)} alt="generated" loading="lazy" /></span>
+          {:else}
+            <a class="genimg" href={workspaceFile(picture)} target="_blank" rel="noopener">
+              <img src={workspaceFile(picture)} alt="generated" loading="lazy" />
+            </a>
+          {/if}
           <!-- Starts a sentence rather than sending one: the change is the
                person's to describe. The path is what lets the model pass the
                right file as the reference. -->
@@ -1952,6 +1963,11 @@
     margin: 0;
     color: var(--text-muted);
     font-size: 14px;
+  }
+  .gone-note {
+    margin: 0;
+    color: var(--hazard);
+    font-size: 13px;
   }
   .gone-actions {
     display: flex;
