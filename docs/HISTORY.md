@@ -125,7 +125,8 @@ Installed: #322 and #324 at 23:44Z on the 25th (`be373132`); #327 and
 it until 22:40Z, so that is its first verified install. HANDOFF's *Machine
 state, dated* holds what was checked for each and which were reported
 rather than verified; the 22:40Z build, which carries every row, was
-verified with `strings`. What the arc left open is in HANDOFF's goal-system section.
+verified with `strings`. What the arc left open is in HANDOFF's
+goal-system section.
 
 **2026-09-25/26 — incognito chat, live: the server side (#321) and the
 page (#326).** `INCOGNITO-DESIGN.md` is the authority; the 2026-09-25 entry
