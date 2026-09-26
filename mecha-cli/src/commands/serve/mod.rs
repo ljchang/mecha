@@ -1997,6 +1997,247 @@ mod boundary_tests {
         assert!(why.contains("local model"), "{why}");
     }
 
+    /// A ComfyUI stand-in for the image leg: answers what `image_generate`
+    /// asks, writes the preview into `temp` when a job is submitted (as the
+    /// real server does), and records every request — and every file it
+    /// wrote, so the test knows the deletion it checks was not vacuous.
+    async fn fake_image_server(temp: PathBuf) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use axum::extract::Path as UrlPath;
+        use axum::routing::{get, post};
+        const PREVIEW: &str = "c_temp_00001_.png";
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log = |seen: &Arc<std::sync::Mutex<Vec<String>>>, line: String| {
+            seen.lock().unwrap().push(line);
+        };
+        let record = move |id: &str| {
+            serde_json::json!({ id: {
+                "status": {"status_str": "success", "completed": true},
+                "outputs": {"out": {"images": [
+                    {"filename": PREVIEW, "subfolder": "", "type": "temp"}
+                ]}}
+            }})
+        };
+        let (s1, s2, s3, s4) = (seen.clone(), seen.clone(), seen.clone(), seen.clone());
+        let app = Router::new()
+            .route(
+                "/object_info/{node}",
+                get(|UrlPath(node): UrlPath<String>| async move {
+                    let files = |input: &str, name: &str| {
+                        serde_json::json!({ node.clone(): {"input": {"required": {input: [[name], {}]}}}})
+                    };
+                    axum::Json(match node.as_str() {
+                        "UnetLoaderGGUF" => files("unet_name", "Qwen-Image-2.1-Q4.gguf"),
+                        "CLIPLoader" => files("clip_name", "qwen3vl_8b_w4a8.safetensors"),
+                        "VAELoader" => files("vae_name", "qwen_image_2.1_vae_bf16.safetensors"),
+                        _ => serde_json::json!({ node.clone(): {"input": {}} }),
+                    })
+                }),
+            )
+            .route(
+                "/prompt",
+                post(move |body: String| async move {
+                    log(&s1, format!("POST /prompt {body}"));
+                    std::fs::write(temp.join(PREVIEW), b"\x89PNG\r\n\x1a\nfake").unwrap();
+                    log(&s1, format!("wrote {PREVIEW}"));
+                    let id = serde_json::from_str::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|v| v["prompt_id"].as_str().map(str::to_string))
+                        .unwrap_or_else(|| "job-1".into());
+                    axum::Json(serde_json::json!({ "prompt_id": id }))
+                }),
+            )
+            .route(
+                "/history/{id}",
+                get(move |UrlPath(id): UrlPath<String>| async move { axum::Json(record(&id)) }),
+            )
+            .route(
+                "/history",
+                post(move |body: String| async move {
+                    log(&s2, format!("POST /history {body}"));
+                    axum::Json(serde_json::json!({}))
+                }),
+            )
+            .route(
+                "/queue",
+                get(|| async {
+                    axum::Json(serde_json::json!({"queue_running": [], "queue_pending": []}))
+                })
+                .post(move |body: String| async move {
+                    log(&s3, format!("POST /queue {body}"));
+                    axum::Json(serde_json::json!({}))
+                }),
+            )
+            .route(
+                "/view",
+                get(|| async {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "image/png")],
+                        b"\x89PNG\r\n\x1a\nfake".to_vec(),
+                    )
+                }),
+            )
+            .route(
+                "/free",
+                post(move |body: String| async move {
+                    log(&s4, format!("POST /free {body}"));
+                    axum::Json(serde_json::json!({}))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+        (url, seen)
+    }
+
+    /// What the process logs at the default level (`warn`), captured.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `$TMPDIR` pointed at a fresh directory for the guard's life (under
+    /// the `HomeGuard` lock, which serialises every test that moves process
+    /// environment), so what this process stages there can be scanned.
+    struct TmpDir(PathBuf, Option<std::ffi::OsString>);
+    impl TmpDir {
+        fn new(at: PathBuf) -> Self {
+            std::fs::create_dir_all(&at).unwrap();
+            let previous = std::env::var_os("TMPDIR");
+            std::env::set_var("TMPDIR", &at);
+            TmpDir(at, previous)
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            match &self.1 {
+                Some(v) => std::env::set_var("TMPDIR", v),
+                None => std::env::remove_var("TMPDIR"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_incognito_picture_leaves_nothing_here_or_on_the_image_server() {
+        let home = crate::testenv::HomeGuard::new("incognito-image");
+        let Some(runtime) = RuntimeDir::new() else {
+            return;
+        };
+        const CANARY: &str = "KUMQUAT-9911";
+        let tmp = TmpDir::new(runtime.0.join("tmpdir"));
+        // The image server's temp directory, in RAM as comfyui.service's is.
+        let server_temp = runtime.0.join("comfy-temp");
+        std::fs::create_dir_all(&server_temp).unwrap();
+        let (url, seen) = fake_image_server(server_temp.clone()).await;
+        // The default level, as journald gets it.
+        let logs = Captured::default();
+        let writer = logs.clone();
+        let _logging = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::WARN)
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish(),
+        );
+
+        let chat = chat::test_chat_drawing(
+            &format!("a shop sign that reads {CANARY}"),
+            mecha_core::imagegen::ImageConfig {
+                url,
+                min_available_mb: 0,
+                unload_after_secs: 0,
+                server_temp_dir: Some(server_temp.clone()),
+                ..Default::default()
+            },
+        );
+        let app = app(chat.clone());
+        let opened = app
+            .clone()
+            .oneshot(post("/api/incognito", ""))
+            .await
+            .unwrap();
+        assert_eq!(opened.status(), StatusCode::OK);
+        let key = body(opened).await["key"].as_str().unwrap().to_string();
+        converse(&app, &key, "draw the sign").await;
+
+        // While open: the picture is in the room, and the server has already
+        // been asked to forget the job and has lost its preview.
+        let room = chat.room_of(&key).await.unwrap();
+        let pictures: Vec<_> = std::fs::read_dir(room.workspace.join("images"))
+            .map(|d| d.flatten().collect())
+            .unwrap_or_default();
+        assert_eq!(pictures.len(), 1, "the picture landed in the room");
+        let seen = seen.lock().unwrap().clone();
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(
+            submitted.contains(CANARY),
+            "the drawing reached the server: {submitted}"
+        );
+        let id = serde_json::from_str::<serde_json::Value>(
+            submitted.trim_start_matches("POST /prompt "),
+        )
+        .unwrap()["prompt_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            seen.iter()
+                .any(|l| l.starts_with("POST /history") && l.contains(&id)),
+            "the job's record, prompt and all, stayed on the server: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|l| l == "wrote c_temp_00001_.png"),
+            "the server never wrote a preview, so its deletion proves nothing"
+        );
+        assert!(
+            !server_temp.join("c_temp_00001_.png").exists(),
+            "the server's preview stayed in its temp directory"
+        );
+        assert!(
+            mecha_core::imagegen::read_trail(&room.image_trail)
+                .contains(&mecha_core::imagegen::TrailEntry::Job(id.clone())),
+            "the job was not recorded where a sweep would find it"
+        );
+
+        // End: nothing anywhere this process writes, at any level journald sees.
+        let ended = app
+            .clone()
+            .oneshot(post(&format!("/api/incognito/{key}/end"), ""))
+            .await
+            .unwrap();
+        assert_eq!(ended.status(), StatusCode::NO_CONTENT);
+        assert!(!room.root.exists(), "the room, picture and trail, is gone");
+        for (what, dir) in [
+            ("the mecha home", &home.dir),
+            ("$TMPDIR", &tmp.0),
+            ("the runtime directory", &runtime.0),
+        ] {
+            assert!(
+                files_containing(dir, CANARY).is_empty(),
+                "{what} holds the canary: {:?}",
+                files_containing(dir, CANARY)
+            );
+        }
+        // The capture is live — a warning from this thread lands in it — so
+        // its silence about the canary means something.
+        tracing::warn!("capture-probe");
+        let logged = String::from_utf8_lossy(&logs.0.lock().unwrap()).to_string();
+        assert!(
+            logged.contains("capture-probe"),
+            "the log capture saw nothing"
+        );
+        assert!(
+            !logged.contains(CANARY),
+            "the default log level carries it: {logged}"
+        );
+    }
+
     #[tokio::test]
     async fn an_open_page_keeps_the_chat_and_a_closed_chat_answers_gone() {
         let _home = crate::testenv::HomeGuard::new("incognito-alive");
@@ -2037,6 +2278,13 @@ mod boundary_tests {
             let r = app.clone().oneshot(post(&uri, "")).await.unwrap();
             assert_eq!(r.status(), StatusCode::GONE, "{uri}");
         }
+        // The read too, so the page shows the gone screen rather than an error.
+        let read = app
+            .clone()
+            .oneshot(get(&format!("/api/chat/{key}")))
+            .await
+            .unwrap();
+        assert_eq!(read.status(), StatusCode::GONE);
         let ordinary = app
             .clone()
             .oneshot(post("/api/incognito/main/alive", ""))

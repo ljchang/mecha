@@ -91,6 +91,11 @@ temporary folder it clears when it restarts.
   (16 GB) the tool declines and says why; try again once a large build or
   another model has finished. After ten idle minutes it asks the server to
   unload its models.
+- **Leaving copies on the image server.** The server's record of each job
+  (the prompt, the file names) is deleted when the job ends, however it ends.
+  Set `server_temp_dir` and the uploaded pictures and the server's preview
+  are deleted too; without it they stay in the server's temp folder until it
+  restarts, and an incognito chat will not generate images at all.
 - **Anything but a prompt, a size and a seed.** The workflow the server runs
   is fixed in mecha's code. The model fills in values; it never writes the
   workflow, because an image server will run whatever workflow it is handed.

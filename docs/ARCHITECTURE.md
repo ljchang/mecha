@@ -382,6 +382,16 @@ workspace**. Six decisions, each a bug if undone:
   and interrupts it, so Ctrl-C stops the GPU, not just the wait. It
   interrupts only when the queue says *this* job is running: an older
   ComfyUI ignores `/interrupt`'s `prompt_id` and stops whatever executes.
+- **What the server keeps, it is asked to drop.** The history entry (prompt
+  and file names) is deleted on every exit. With `[image] server_temp_dir`
+  set — for ComfyUI the `--temp-directory` path with `temp` appended — so are
+  the uploaded references and the preview, by the names the server returned,
+  each checked to be one plain path component (`imagegen::discard`); a copy
+  the server named and the directory lacks is reported in the result, since
+  a wrong directory is otherwise a deletion that silently never happens. The
+  job's id is minted client-side (ComfyUI takes a canonical UUID), so a run
+  with an image trail — an incognito chat's — can write it down before the
+  server has it; a trail that cannot be written stops the job first.
 
 **Deploy order: binaries first, then `[image]`.** `ConfigLayer` denies
 unknown fields, so a binary older than this section refuses a config that has
@@ -2263,9 +2273,9 @@ brief (which reads the board through the graph server) do not run.
   ordinary door refuses the prefix, so a closed incognito key can never come
   back as a recorded chat. `POST /api/incognito/{key}/end` closes one;
   `…/alive` is the open page's ping. The doors that act on a chat — open,
-  send, mode, upload, end, alive — answer a closed key `410 Gone`
-  (`incognito::Closed`) rather than a 500 the page would retry; the reads
-  (the transcript, the file routes) answer 404, as for any unknown key.
+  send, mode, upload, end, alive — and the transcript read answer a closed
+  key `410 Gone` (`incognito::Closed`) rather than an error the page would
+  retry or show; the file routes answer 404, as for any unknown key.
 - **Local only, refused rather than degraded.** The door opens only when the
   chat provider is a loopback server with no `fallbacks` — a `Failover`
   would re-send the conversation to a cloud provider on a transient local
@@ -2301,8 +2311,19 @@ brief (which reads the board through the graph server) do not run.
   against the live registry, so a tool added tomorrow is withheld without
   anyone remembering. Withholding is checked before dispatch *and* before
   outbox staging, so a routed tool cannot even stage a draft. The graph is
-  out (it logs every read's query text) and so is `image_generate` until the
-  image server's temp copies are removed per room.
+  out (it logs every read's query text). `image_generate` is in only where
+  its server's copies are taken back (`incognito::images_forgettable`:
+  `[image] server_temp_dir` set, absolute, on tmpfs).
+- **Pictures leave nothing on the image server.** Every job's history
+  entry is forgotten and its temp files deleted by name, however it ends
+  (§Image generation). An incognito run also keeps a trail,
+  `<room>/image-trail` (`ToolCtx::image_trail`), written *before* the server
+  has the thing it names — the job's id is minted client-side for that — so
+  the start-up sweep reads the trails of the rooms a dead `serve` left and
+  hands them to `imagegen::forget_trail` once the config is loaded, still
+  before the door opens. ComfyUI's executor cache keeps the last prompt in
+  RAM until the next job or the idle unload — accepted, like llama-server's
+  KV cache.
 - **No hooks, no voice.** `pre_tool`/`post_tool` receive tool input and
   output; the voice worker logs what it hears.
 - **Closing** — End, 30 minutes with no turn and no ping from an open page

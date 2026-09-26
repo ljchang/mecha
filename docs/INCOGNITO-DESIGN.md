@@ -5,15 +5,18 @@
 > merged as #321; the page (step 5) built in the PR after it, with two owner
 > rulings of the same evening — an open page counts as use (it pings), and
 > `shell` registers in the room rather than the mecha home. The image
-> server's cleanup (step 4) and mecha-graph's unrecorded reads (step 7) are
-> next. The key is 82 random bits (a v4 UUID's 22 hex digits), not §4.2's
+> server's cleanup (step 4) and step 6's remaining canary legs (an image
+> against a fake server, `$TMPDIR`, the default log level) are built in the
+> PR after that — §6.3 says how — and mecha-graph's unrecorded reads (step 7)
+> are next. The key is 82 random bits (a v4 UUID's 22 hex digits), not §4.2's
 > 128 — `chat::valid_key`'s 32 characters are the bound, and 82 is ample for
 > an unguessable address on a single-owner tailnet. Three
 > deliberate differences from the text below: §6.1's "own provider" is a
 > refusal at the door when the provider is not a loopback server without
 > fallbacks (this machine has none, and a refusal cannot silently degrade);
 > rooms sit one level deeper, per mecha home, so a second `serve` cannot
-> sweep this one's; and `image_generate` is withheld until step 4 lands.
+> sweep this one's; and `image_generate` is offered only where the server's
+> temp directory is named and on tmpfs (§6.3).
 > `ARCHITECTURE.md` §Incognito chat describes what is built.
 
 **2026-09-25.** One question: *how does a web chat leave no trace once it is
@@ -292,6 +295,36 @@ preview PNG and uploaded references — have no delete endpoint in ComfyUI, so:
   stays in RAM.
 - With `server_temp_dir` unset, `image_generate` is withheld from incognito:
   a promise that cannot be kept is not made.
+
+**As built.** The deletion runs on every exit — finished, failed, cancelled,
+timed out — for every chat, not only incognito ones, and only names the
+server confirmed it holds are expected: a copy it named and the directory
+lacks is reported in the result, because a wrong `server_temp_dir` is
+otherwise a deletion that quietly never happens. For ComfyUI the directory
+is the `--temp-directory` path *with `temp` appended* — the server adds it.
+An incognito chat is offered the tool only where `server_temp_dir` is set,
+absolute, and on tmpfs (judged by its nearest existing ancestor, since the
+server makes it at its own start).
+
+The crash case (§4.2) rides on a trail rather than a manifest written after
+the fact: the tool mints the job's id itself — ComfyUI takes a client's
+`prompt_id` in canonical UUID form — and appends `job <id>` and each
+`file <name>` to `<room>/image-trail` *before* the server has them, so a
+`serve` that dies at any point leaves a trail naming everything it left
+there. A trail that cannot be written stops the job before anything is sent.
+The next `serve` reads the trails of the rooms its sweep removes and, once
+its config is loaded, takes each job off the queue and out of the history
+with the files its record names, and deletes each recorded file
+(`imagegen::forget_trail`). That makes the history clear the text above
+proposed unnecessary: which entries were incognito's is exactly what the
+trail writes down. A server that is down at sweep time is said at `warn`;
+its own restart empties both.
+
+One copy is accepted rather than removed: ComfyUI's executor cache keeps the
+last job's node inputs — the prompt among them — in memory until the next job
+replaces them or the idle unload (`unload_after_secs`) frees them. RAM only,
+gone on reuse or restart: the footing §6.2 accepts for llama-server's KV
+cache.
 
 ---
 
