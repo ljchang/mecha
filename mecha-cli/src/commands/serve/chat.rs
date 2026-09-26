@@ -439,7 +439,6 @@ impl ChatState {
         });
     }
 
-    /// The room of the open incognito chat under `key`, for a test to age.
     /// Mark an open incognito chat used now; `false` when it is not open.
     pub(super) async fn room_touch(&self, key: &str) -> bool {
         let sessions = self.sessions.lock().await;
@@ -452,6 +451,7 @@ impl ChatState {
         }
     }
 
+    /// The room of the open incognito chat under `key`, for a test to age.
     #[cfg(test)]
     pub(super) async fn room_of(&self, key: &str) -> Option<Arc<super::incognito::Room>> {
         self.sessions
@@ -556,6 +556,10 @@ pub(super) async fn attachment_workspace(
     let session = ensure_session(chat, &mut sessions, key).map_err(|e| {
         Box::new((super::incognito::status_of(&e), format!("{e:#}\n")).into_response())
     })?;
+    // An upload is use, as a turn is (the page's ping covers it too).
+    if let Some(room) = session.session.room() {
+        room.touch();
+    }
     Ok(session.workspace.clone())
 }
 
@@ -1457,7 +1461,8 @@ pub async fn end_incognito(
     if chat.close_incognito(&key).await {
         StatusCode::NO_CONTENT.into_response()
     } else {
-        (StatusCode::NOT_FOUND, "no such incognito chat\n").into_response()
+        // Gone, like every other door on a closed key (`incognito::Closed`).
+        (StatusCode::GONE, format!("{}\n", super::incognito::Closed)).into_response()
     }
 }
 
