@@ -14,7 +14,6 @@
 your context, your permissions, and a safe way to reach the world.**
 
 [Documentation](https://docs.mecha-factory.ai/) ·
-[Design principles](https://docs.mecha-factory.ai/docs/principles) ·
 [Security model](https://docs.mecha-factory.ai/docs/features/security)
 
 ---
@@ -249,8 +248,7 @@ reference](https://docs.mecha-factory.ai/docs/reference/configuration).
 
 Full documentation is at **[docs.mecha-factory.ai](https://docs.mecha-factory.ai/)**:
 
-- [Overview](https://docs.mecha-factory.ai/docs/intro) and
-  [design principles](https://docs.mecha-factory.ai/docs/principles)
+- [Overview](https://docs.mecha-factory.ai/docs/intro)
 - [Getting started](https://docs.mecha-factory.ai/docs/getting-started/installation)
 - [Features](https://docs.mecha-factory.ai/docs/features) — ten sections:
   interfaces, models and context, tools, security and review, delegation and
