@@ -4157,6 +4157,75 @@ auto-accepts) now asks two questions of a config candidate, and
   policy that wins every rejected-draft point is what the guard exists
   for: it wins point-wise by attempting less, and `WORK_FLOOR` refuses it.
 
+### The reflector's lessons against the appraisal's
+
+`APPRAISAL-WIRING-DESIGN.md` L2, row 2e-1 — R25's gate for folding the
+reflector into the appraisal (2a-4): `mecha learn --compare-sources`
+(`lesson_pass.rs`, over `mecha_core::lesson_source`). **Shadow, measurement
+only**: a lesson from either source reaches one probe arm's system prompt and
+nothing else. The pass branches before `learn` opens or locks the learning
+store, reads it and never writes it — no rule, no proposal, and no
+validation-ledger row, since a ledger row charges rule ids and neither lesson
+is a rule; its one write is a comparison per intervention through the 1g
+door above (`Kind::LessonSource`). Letting either source's lessons *learn* is
+2e-2, a lever.
+
+- **The unit is an intervention the reflector reflected on**, and only a
+  steer or a denial: the two a structural validator grades (R27). A followup
+  is judge-graded, an edit or a rejection has no replayable point, a
+  mismatch is graded against the owner's artifact — each is excluded and
+  counted (`Exclusion::NotTraceGraded`), never judged.
+- **Three arms, one probe, one seed.** `probe::prepare_probe` over the
+  reflection, then `probe::drive_arm` — `validate`'s probe, branched at the
+  intervention, `Stop` mode, the recording's own turn ceiling — under one
+  provider config: the recorded prompt with its rules removed
+  (`Role::RulesFree`), and the same with only the reflector's lesson
+  (`ReflectorLesson`) or only the session appraisal's lessons
+  (`AppraisalLesson`) as its rules block, both rendered by
+  `lesson_source::lesson_block` in the learned-rules frame under the
+  reflection's domain, one collapsed line per lesson, so the arms differ in
+  the lessons and nothing else. Two arms under an identical prompt are driven
+  once and share the outcome (`arms_shared`): two samples of one prompt are
+  noise, not a difference in lessons.
+- **Clean on both sides, and the reflector's own words.** The reflection
+  passes `Reflexion::learnable` — `learn`'s gate, unchanged — in a run domain
+  (a `triage` lesson must not ride in front of a tool-having probe, as
+  `RuleSurface::load` argues), and is neither dropped nor owner-edited: an
+  edited lesson is the owner's, and `provenance()` promotes it to clean,
+  which would credit the reflector with the owner's words. The appraisal's
+  lessons come only through `AppraisalStore::clean` (R19); whether a withheld
+  one exists is asked of `sessions_on_record`, ids only, so its text is never
+  held. An intervention clean for one source and not the other is excluded
+  as `CleanForReflectorOnly` / `CleanForAppraisalOnly`, apart from
+  `CleanForNeither` and `NoAppraisal`. The store's own door is then asked
+  before any seat is taken, as `sessions compare` asks it.
+- **Seats and draws are `sessions compare`'s**: one background seat per
+  intervention for its three arms (`pointwise_pass::take_seat`), local model
+  only (R29, before anything is read), a uniform draw with a printed seed,
+  `--interventions` (8) counting driven interventions. An intervention whose
+  lessons *as they stand* are on record under this model
+  (`lesson_source::on_record`: the reflection, the kind, the model and the
+  three (role, policy hash) arms) is not driven again, so a rewritten lesson
+  is measured afresh.
+- **The report is re-read from the stores** (`lesson_source::report`), per
+  intervention region — `Situation::key` of the reflection's recorded
+  situation, the key a validation row's region folds on; `None` is unknown,
+  never standing. Each source's rate is passes over the **decided** set,
+  the interventions where every arm graded, so the two sources' rates are
+  over the same interventions; beneath it pass, fail, improved and regressed
+  against the rules-free arm, and the arm's inconclusive count. Beside them:
+  eligible, compared, inconclusive, unmeasured (eligible with nothing on
+  record), unavailable (a pass's own count — `None` in the free readout,
+  since nothing keeps it) and excluded by reason. A rate over nothing is
+  `None`. `sessions appraise` prints the same report every call
+  (`lesson_sources` in `--json`), for the model of the newest lesson
+  comparison, counting rows under other models apart.
+- **Its limit, named:** the appraisal writes up to three lessons per session
+  and the reflector one per intervention, so the appraisal's arm carries the
+  session's whole set at each of that session's interventions. That is each
+  source as it would be learned from, which is what R25 asks about; it is not
+  a per-lesson attribution.
+
 ## The goal system
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the design and is deliberately not rewritten as
