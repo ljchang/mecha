@@ -643,9 +643,11 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
         let live = prepared.as_ref().expect("prepared above");
         // Both asked before the budget or a seat is spent: neither answer
         // can change by driving.
-        if let Some(why) = planned.unrunnable_under(live) {
+        let refused = planned.unrunnable_under(live);
+        if let Some(why) = &refused {
             eprintln!("· {} {}: {why}", point.session_id, point.kind.as_str());
-            tally.owner_bound += 1;
+        }
+        if count_unrunnable(&mut tally, refused.as_deref()) {
             continue;
         }
         let lost = planned.lost_recorded_tools(live.agent.registry());
@@ -1082,6 +1084,16 @@ fn store_one(
         on_record.push(comparison);
     }
     Ok(())
+}
+
+/// Count a point the levers refuse to drive — an artifact probe, posed only
+/// for an owner-bound check — as owner-bound, never as `unavailable`, and
+/// say whether it was refused.
+fn count_unrunnable(tally: &mut Tally, refused: Option<&str>) -> bool {
+    if refused.is_some() {
+        tally.owner_bound += 1;
+    }
+    refused.is_some()
 }
 
 /// What was drawn and not compared, and why — owner-bound points named
@@ -1985,5 +1997,39 @@ mod tests {
         let json = serde_json::to_value(&t).unwrap();
         assert_eq!(json["owner_bound"], 2);
         assert_eq!(json["unavailable"], 1);
+    }
+
+    /// The classification itself, on a real posed artifact: under the
+    /// nightly's levers (none thrown) the probe is refused and counted
+    /// owner-bound, not unavailable; with hooks, the outbox and messages off
+    /// it is drivable and counted as neither (review of #333: the rendering
+    /// test alone passed with the counter reverted).
+    #[test]
+    fn a_refused_owner_bound_point_is_counted_owner_bound() {
+        use mecha_core::harness::Lever;
+        let _guard = crate::testenv::HomeGuard::new("pointwise-owner-bound");
+        let (root, r) = crate::probe::mismatch_tests::fixture(Some(true), true, true);
+        let path = Session::find(root.path(), &r.session_id).unwrap();
+        let transcript = Session::read(&path).unwrap();
+        let points = pointwise::points_in(&r.session_id, &transcript.convo.messages, &[]);
+        let check = points
+            .iter()
+            .find(|p| p.kind == PointKind::FailedCheck)
+            .expect("the failed criterion is a check point");
+        let Plan::Posed(prep) = plan(check, &path, &BTreeMap::new(), None).unwrap() else {
+            panic!("an owner-bound check with its case bound is posed");
+        };
+
+        let mut t = Tally::default();
+        let refused = prep.unrunnable_with(&[]);
+        assert!(refused.is_some(), "the nightly's argv throws no lever");
+        assert!(count_unrunnable(&mut t, refused.as_deref()));
+        assert_eq!((t.owner_bound, t.unavailable), (1, 0));
+
+        let off = [Lever::Hooks, Lever::Outbox, Lever::Messages];
+        let drivable = prep.unrunnable_with(&off);
+        assert_eq!(drivable, None);
+        assert!(!count_unrunnable(&mut t, drivable.as_deref()));
+        assert_eq!((t.owner_bound, t.unavailable), (1, 0));
     }
 }
