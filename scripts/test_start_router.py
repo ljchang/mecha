@@ -163,6 +163,39 @@ class StartRouter(unittest.TestCase):
         _, _, err, ini = self.run_script()
         self.assertTrue(self.section(ini, "gemma-4-26b-a4b")["model-draft"].endswith("/w/mtp-gemma-4-26B-A4B-it.gguf"), err)
 
+    def test_a_matched_gemma_pair_in_an_older_snapshot_survives_newer_weights(self):
+        # Weights re-fetched into a newer snapshot must not orphan the matched
+        # weights + draft pair still in the older one.
+        g = "unsloth--gemma-4-26B-A4B-it-GGUF"
+        self.cache.production()
+        self.cache.put(g, "old", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", age=100)
+        self.cache.put(g, "old", "mtp-gemma-4-26B-A4B-it.gguf", age=100)
+        self.cache.put(g, "old", "mmproj-BF16.gguf", age=100)
+        self.cache.put(g, "new", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", age=0)
+        _, _, err, ini = self.run_script()
+        preset = self.section(ini, "gemma-4-26b-a4b")
+        self.assertTrue(preset.get("model", "").endswith("/old/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"), err)
+        self.assertTrue(preset.get("model-draft", "").endswith("/old/mtp-gemma-4-26B-A4B-it.gguf"), err)
+
+    def test_the_two_uncensored_qwen38_builds_get_their_own_presets(self):
+        hh = "HauhauCS--Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF"
+        hu = "huihui-ai--Huihui-Qwen3.8-27B-abliterated-GGUF"
+        self.cache.production()
+        self.cache.put(hh, "r", "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf")
+        self.cache.put(hh, "r", "mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf")
+        self.cache.put(hu, "r", "Huihui-Qwen3.8-27B-abliterated-UD-Q4_K_XL.gguf")
+        self.cache.put(hu, "r", "mmproj-model-bf16.gguf")
+        code, _, err, ini = self.run_script()
+        self.assertEqual(code, 0, err)
+        for name, model, proj in [
+            ("qwen3.8-27b-uncensored", "Aggressive-Q4_K_P.gguf", "Aggressive-BF16.gguf"),
+            ("qwen3.8-27b-abliterated", "abliterated-UD-Q4_K_XL.gguf", "mmproj-model-bf16.gguf"),
+        ]:
+            preset = self.section(ini, name)
+            self.assertTrue(preset.get("model", "").endswith(model), (name, preset))
+            self.assertTrue(preset.get("mmproj", "").endswith(proj), (name, preset))
+            self.assertEqual(preset.get("spec-type"), "draft-mtp", name)
+            self.assertEqual(preset.get("temp"), "1.0", name)
 
 if __name__ == "__main__":
     unittest.main()

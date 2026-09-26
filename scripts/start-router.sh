@@ -50,6 +50,19 @@ hub_file() {
   return 0
 }
 
+# The newest snapshot holding BOTH files, as real files — for a pair that must
+# come from one revision (Gemma's weights and their MTP draft). Not "the
+# newest weights, then the draft beside them": weights re-fetched into a newer
+# snapshot would orphan a matched pair still sitting in an older one (found on
+# review). Prints the snapshot directory, or nothing; always succeeds.
+hub_pair() {
+  local d
+  while IFS= read -r d; do
+    [ -f "$d$2" ] && [ -f "$d$3" ] && { echo "$d"; return 0; }
+  done < <(ls -dt "$HUB"/models--"$1"/snapshots/*/ 2>/dev/null)
+  return 0
+}
+
 # A repo's vision projector, as mmproj.sh names them (BF16 first); when none is
 # on disk, mmproj_or_die's message — with the download line — and a failure.
 hub_mmproj() {
@@ -190,13 +203,12 @@ fi
 
 # Gemma's MTP head ships as a separate draft file.
 R=unsloth--gemma-4-26B-A4B-it-GGUF
-F=$(hub_file "$R" gemma-4-26B-A4B-it-UD-Q4_K_M.gguf)
-# The MTP draft from the weights' own snapshot, never another revision's: a
-# draft head from a different revision than its weights is a worse mismatch
-# than a projector (found on review).
-D=""
-[ -n "$F" ] && [ -f "$(dirname "$F")/mtp-gemma-4-26B-A4B-it.gguf" ] &&
-  D="$(dirname "$F")/mtp-gemma-4-26B-A4B-it.gguf"
+# Weights and MTP draft from one snapshot, never two revisions: a draft head
+# from a different revision than its weights is a worse mismatch than a
+# projector (found on review).
+P=$(hub_pair "$R" gemma-4-26B-A4B-it-UD-Q4_K_M.gguf mtp-gemma-4-26B-A4B-it.gguf)
+F="${P:+${P}gemma-4-26B-A4B-it-UD-Q4_K_M.gguf}"
+D="${P:+${P}mtp-gemma-4-26B-A4B-it.gguf}"
 if [ -n "$F" ] && [ -n "$D" ] && MP=$(hub_mmproj "$R"); then
   cat >>"$OUT" <<EOF
 
