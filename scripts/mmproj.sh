@@ -47,8 +47,9 @@ Fetch it:
   curl -L --fail -o "\$S/mmproj-BF16.gguf" \\
     "https://huggingface.co/$repo/resolve/main/mmproj-BF16.gguf"
 
-Or start deliberately text-only: a single-model start script takes
---no-mmproj; start-router.sh has no such switch and skips the model instead.
+Or start deliberately text-only by adding --no-mmproj to a single-model
+script's exec line; start-router.sh has no such escape hatch and skips the
+model instead.
 EOF
   exit 1
 }

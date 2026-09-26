@@ -103,6 +103,12 @@ qwen_sampling() {
 # it makes each prompt a prefix of the next — the cached prefix survives a new
 # user turn instead of re-reading from the first dropped block — at the cost
 # of context that fills sooner. Gemma's template has no such rule.
+#
+# Both builds take the flag — asked of the binaries, not the changelog, on
+# 2026-09-26: the installed c841aee's `--help` lists `--reasoning-preserve,
+# --no-reasoning-preserve … (default: template default)`, 95887577's the same
+# with "(default: enabled)". So it is safe in the single-model rollbacks
+# (start-moe-mtp.sh, start-qwen38.sh) on either build.
 
 printf '%s\n' "version = 1" "" "[*]" "n-gpu-layers = 999" "jinja = true" >"$OUT"
 
