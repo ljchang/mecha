@@ -4027,7 +4027,8 @@ priority = gain × need × decay
   at most 500 sessions.
 - **Unknown is never zero and never a free pass.** A factor that cannot be
   read is named on the priority (`Factor`): no appraisal, or a partial
-  one; the charter unread with verdicts to weigh; a score ledger unread or
+  one (an unreadable charter is one, so the whole gain is unknown, not
+  only its weighting); a score ledger unread or
   with a torn line; a session with no run record or an unnameable region;
   the harness or comparison store unread. The order is by tier: fully
   known and positive, by value; then any unknown, fewer unknowns first and
@@ -4040,16 +4041,15 @@ priority = gain × need × decay
   on it — a candidate that selected it accepted by the gate or the owner
   (`reverted` counts, it was accepted first), or a comparison preferring a
   `Candidate` arm on its session. The holdout is never "high".
-  `Point::order` and shuffled with a printed seed (default: the day number)
-  by `pointwise::draw`, then — row 2e-6, R39 — stably re-ordered by the
-  replay priority of each point's session (`pointwise::draw_ranked`), so
-  the seed decides only among equals. **A harness candidate's points are
-  never ranked** (`candidate_draw`): R36 gives the point-wise half no
-  separate holdout, so they are the confirming sample, and a prioritised
-  confirming sample is a biased one (§8.1;
-  `candidate_points_ignore_the_replay_priority`). The holdout is drawn
-  first, uniformly, from ids alone, before any priority is read
+- **In the harness selection, headroom gates and the priority orders**
+  (R39). An episode with no headroom on the predicted metric can only tie
+  or worsen, so every episode with headroom ranks first; within each part
+  the priority decides, then §11.1's charter rank, then the id. The holdout
+  is drawn first, uniformly, from ids alone, before any priority is read
   (`the_uniform_holdout_is_unchanged_by_the_ranking`).
+- **Point-wise points** (R39): `sessions compare` ranks its uniform draw by
+  priority; a harness candidate's points stay uniform — see "Point-wise
+  comparison at decision points".
 - **`learn` and `validate` use the same order.** `learn::order_batches`
   ranks each situation batch by its best session's priority before the
   brakes, so the batch that claims a domain's one proposal slot under

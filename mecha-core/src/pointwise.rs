@@ -768,7 +768,6 @@ mod tests {
         let p = |owner_gain: f64| {
             Priority::of(&Inputs {
                 owner_gain: Some(owner_gain),
-                charter_read: true,
                 surprises: Some(0),
                 recurrence: Some(1),
                 age_days: 0.0,
