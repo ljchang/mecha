@@ -245,6 +245,10 @@ fn orphans(cfg: &Config, seen: &[Seen]) -> Vec<String> {
     out
 }
 
+/// How long a refused load is given to show up as loading anyway (a refusal
+/// that raced a load already under way) before the refusal is the answer.
+const REFUSAL_GRACE: Duration = Duration::from_secs(10);
+
 /// Ask the router to load `model`, and wait until it is resident or has
 /// failed. The router evicts the idle model to make room; one with a request
 /// in flight finishes it first, which is the wait a caller sees.
@@ -269,10 +273,23 @@ pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
         .send()
         .await
         .with_context(|| format!("POST {b}/models/load"))?;
-    // Already loaded is an error body on some builds and success on others;
-    // the poll below is the authority either way.
-    let _ = resp.status();
-    let deadline = tokio::time::Instant::now() + wait;
+    // The router refuses a load in two cases (`post_router_models_load` at
+    // `c841aee`): a model it does not know, which the check above rules out,
+    // and one already running, which the poll below sees as resident. Any
+    // other refusal means no load is coming — kept, so that instead of
+    // waiting out `wait` and blaming a long request, the poll gives up after
+    // a short grace and names it (found on review).
+    let status = resp.status();
+    let refusal = if status.is_success() {
+        None
+    } else {
+        Some(format!(
+            "{status} from POST /models/load: {}",
+            resp.text().await.unwrap_or_default().trim()
+        ))
+    };
+    let started_at = tokio::time::Instant::now();
+    let deadline = started_at + wait;
     let mut started = false;
     loop {
         if let Some(list) = models(&b).await {
@@ -294,16 +311,25 @@ pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
                 }
             }
         }
+        if let Some(why) = &refusal {
+            if !started && started_at.elapsed() >= REFUSAL_GRACE {
+                bail!("the router refused to load {model}: {why}");
+            }
+        }
         if tokio::time::Instant::now() >= deadline {
             bail!(
                 "{model} was not loaded after {}s ({}) — the model it replaces may still be \
-                 answering a long request",
+                 answering a long request{}",
                 wait.as_secs(),
                 if started {
                     "it started loading"
                 } else {
                     "it never started loading"
-                }
+                },
+                refusal
+                    .as_deref()
+                    .map(|r| format!("; the router said {r}"))
+                    .unwrap_or_default()
             );
         }
         tokio::time::sleep(Duration::from_millis(500)).await;

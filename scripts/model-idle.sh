@@ -162,6 +162,10 @@ else:
             ;;
         loading\ *) stuck_skip "the router at $BASE is loading a model" ;;
         loaded\ *) SLOTS_URL="${state#loaded }" ;;
+        # Unreachable under `--models-max 1`, and loud on purpose: if the
+        # router is ever run with room for two, this gate has to learn which
+        # one the sweep will use before it can say "idle" — until then every
+        # tick fails, which is the intended behaviour, not a bug.
         many)
             echo "model-idle: the router at $BASE has more than one model resident — not the one-model server this gate reads; failing so mecha doctor sees it"
             exit 255

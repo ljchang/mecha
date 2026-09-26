@@ -516,12 +516,16 @@ router is `/props`' rule applied to choosing.
 Only the owner: the chip, the TUI's existing `/model` picker (today a
 provider switch inside one process), and the CLI. Following D4, the chip's
 serve route runs a `mecha model use <provider>` child, and `mecha model
-list` backs the picker. **There is no tool.** A model never chooses the
-model. The choice of what answers belongs to the owner, and an injection
-able to move the machine onto the abliterated arm would be choosing the
-reader of every later turn. (The interlock does not rest on the model
-refusing anything, so this is not a trifecta control. It is who owns the
-setting.) The chip reads the router's `GET /models/sse` stream, so
+list` backs the picker. **There is no tool.** No model is handed a way to
+choose the model. The choice of what answers belongs to the owner, and an
+injection able to move the machine onto the abliterated arm would be
+choosing the reader of every later turn. (The interlock does not rest on
+the model refusing anything, so this is not a trifecta control. It is who
+owns the setting.) "No tool" is not "unreachable": a run holding
+unconfined `shell` can type `mecha model use`, and meets the approval
+policy like any other command. A `[[policy]]` rule that forbids the
+`mecha model use` prefix closes that for the owner who wants it closed
+(found on review). The chip reads the router's `GET /models/sse` stream, so
 "loading…" is a status the server reports, not a guess made by a timer.
 
 ### Traps found in the source

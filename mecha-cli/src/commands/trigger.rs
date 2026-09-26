@@ -915,17 +915,19 @@ async fn run_agent(
     record: &mut RunRecord,
     stop: Option<&CancellationToken>,
 ) -> Result<String> {
-    check_cost_cap(t)?;
-
     // The global config only — a scheduled run must not inherit the tool
     // surface of whatever repository the daemon was started in.
     let cfg = mecha_core::config::Config::load_global()?;
     // The daemon outlives every run it starts, so the snapshot `main` took is
     // the model loaded when the *daemon* started. A scheduled run follows the
-    // owner's pick as it stands now (`provider::router`, D12).
+    // owner's pick as it stands now (`provider::router`, D12) — and before
+    // the cost cap, which must price the entry this run will use, not the one
+    // resident when the daemon started (found on review).
     for warning in mecha_core::provider::router::observe(&cfg).await {
         eprintln!("mecha: {warning}");
     }
+    check_cost_cap(t)?;
+
     let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
     let system = if base.is_empty() {
         UNATTENDED.to_string()
