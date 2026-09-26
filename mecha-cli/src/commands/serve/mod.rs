@@ -1980,6 +1980,42 @@ mod boundary_tests {
     }
 
     #[tokio::test]
+    async fn a_run_in_flight_at_shutdown_keeps_its_room_until_it_is_done() {
+        let _home = crate::testenv::HomeGuard::new("incognito-stop-live");
+        let Some(_runtime) = RuntimeDir::new() else {
+            return;
+        };
+        let go = Arc::new(tokio::sync::Notify::new());
+        let chat = chat::test_chat_waiting(go.clone());
+        let app = app(chat.clone());
+        let key = chat.open_incognito().await.unwrap();
+        let room = chat.room_of(&key).await.unwrap();
+        let sent = app
+            .clone()
+            .oneshot(json_post(
+                &format!("/api/chat/{key}/send"),
+                serde_json::json!({ "text": "hello" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert!(sent.status().is_success(), "{}", sent.status());
+        chat.stop().await;
+        // Still there: a forced drain from here on must leave the room — and
+        // its image trail — for the next start's sweep.
+        assert!(
+            room.root.exists(),
+            "the room of a run in flight went at stop"
+        );
+        // The run finishes; on its way out it finds its chat closed and
+        // removes the room itself.
+        go.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), chat.drain())
+            .await
+            .expect("the run never finished");
+        assert!(!room.root.exists(), "the run left its room behind");
+    }
+
+    #[tokio::test]
     async fn incognito_refuses_a_model_that_is_not_on_this_machine() {
         let _home = crate::testenv::HomeGuard::new("incognito-cloud");
         let Some(_runtime) = RuntimeDir::new() else {

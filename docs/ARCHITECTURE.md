@@ -2321,7 +2321,8 @@ brief (which reads the board through the graph server) do not run.
   has the thing it names — the job's id is minted client-side for that — so
   the start-up sweep reads the trails of the rooms a dead `serve` left and
   hands them to `imagegen::forget_trail` once the config is loaded, still
-  before the door opens. ComfyUI's executor cache keeps the last prompt in
+  before the door opens — bounded at 30 s, so a half-answering image server
+  cannot hold the door shut. ComfyUI's executor cache keeps the last prompt in
   RAM until the next job or the idle unload — accepted, like llama-server's
   KV cache.
 - **No hooks, no voice.** `pre_tool`/`post_tool` receive tool input and
@@ -2330,8 +2331,12 @@ brief (which reads the board through the graph server) do not run.
   (the reaper, once a minute; the owner's ruling is that an open page is
   use), or `serve` stopping — cancels a run in flight, forgets the todo plan, and removes the
   room; a run still finishing removes it again on its way out, so a late
-  spill cannot leave a directory behind. `ChatState::build` sweeps leftover
-  rooms before the door opens, for a `serve` that died.
+  spill cannot leave a directory behind. At shutdown an idle chat's room goes
+  at once, but one with a run in flight is left to that run — which takes its
+  image jobs back and removes the room on its way out — so a forced drain
+  leaves the room and its image trail for the next start rather than losing
+  the trail. `ChatState::build` sweeps leftover rooms before the door opens,
+  for a `serve` that died.
 - Every incognito route answers `Cache-Control: no-store`, and the page
   keeps nothing either: `web/test/no-storage.mjs` fails on any storage API in
   `web/src` or any module it imports (`voice-core.js`'s own preference keys the

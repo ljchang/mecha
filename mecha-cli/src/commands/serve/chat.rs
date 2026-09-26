@@ -263,10 +263,21 @@ impl ChatState {
         // failure is said at warn, the one line this sweep writes there,
         // because it is a promise not kept rather than a count.
         if !left_on_the_image_server.is_empty() {
+            // Bounded: best-effort cleanup must not hold the door shut on a
+            // half-answering image server (found on review of #331).
+            const SWEEP_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
             let outcome = match &prepared.config.image {
-                Some(cfg) => {
-                    mecha_core::imagegen::forget_trail(cfg, &left_on_the_image_server).await
-                }
+                Some(cfg) => tokio::time::timeout(
+                    SWEEP_LIMIT,
+                    mecha_core::imagegen::forget_trail(cfg, &left_on_the_image_server),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Err(anyhow::anyhow!(
+                        "the image server took longer than {} s",
+                        SWEEP_LIMIT.as_secs()
+                    ))
+                }),
                 None => Err(anyhow::anyhow!("no [image] is configured to reach it")),
             };
             if let Err(e) = outcome {
@@ -326,17 +337,24 @@ impl ChatState {
                 live.cancel
                     .cancel(mecha_core::agent::CancelReason::Shutdown);
             }
-            // An incognito chat does not survive the process (R1): its room
-            // goes now, and a run still finishing removes it again on its
-            // way out (`begin_turn`'s hand-back).
+            // An incognito chat does not survive the process (R1). An idle
+            // one's room goes now. One with a run in flight is left to that
+            // run: cancelled above, it takes its image jobs back and then
+            // removes the room on its way out (`begin_turn`'s hand-back, which
+            // finds the entry gone) — and if the drain is forced before it
+            // gets there, the room and its image trail survive for the next
+            // start's sweep, which is the case the trail exists for (found on
+            // review of #331: removed here, a forced drain lost the trail).
             if let Some(room) = ws.session.room() {
                 // The same close as End's (`close_incognito_locked`), in the
                 // same order — plan, then room — so the two paths do not drift.
                 if let Some(todo) = &self.todo {
                     todo.forget_in(&ws.workspace);
                 }
-                if let Err(e) = room.remove() {
-                    tracing::warn!("an incognito room was not removed at shutdown: {e:#}");
+                if ws.live.is_none() {
+                    if let Err(e) = room.remove() {
+                        tracing::warn!("an incognito room was not removed at shutdown: {e:#}");
+                    }
                 }
             }
         }
@@ -4244,6 +4262,52 @@ pub(super) fn test_chat_drawing(
             calls: Default::default(),
         }),
         registry,
+        config,
+    )
+}
+
+/// A chat whose model answers only once `go` is notified — a run that is
+/// still in flight for as long as a test needs it to be.
+#[cfg(test)]
+pub(super) fn test_chat_waiting(go: Arc<tokio::sync::Notify>) -> Arc<ChatState> {
+    struct Waits(Arc<tokio::sync::Notify>);
+    #[async_trait::async_trait]
+    impl mecha_core::provider::Provider for Waits {
+        fn id(&self) -> &str {
+            "local"
+        }
+        fn default_model(&self) -> &str {
+            "test"
+        }
+        async fn complete(
+            &self,
+            _: &mecha_core::message::CompletionRequest,
+            _: Option<&mecha_core::provider::StreamSink>,
+        ) -> Result<mecha_core::message::CompletionResponse> {
+            self.0.notified().await;
+            Ok(mecha_core::message::CompletionResponse {
+                message: Message::assistant(vec![mecha_core::message::Block::Text {
+                    text: "late".into(),
+                }]),
+                stop_reason: mecha_core::message::StopReason::EndTurn,
+                usage: Usage::default(),
+                refusal: None,
+                model: "test".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+    let mut config = Config::default();
+    config.providers.insert(
+        "local".into(),
+        mecha_core::config::ProviderConfig {
+            base_url: Some("http://127.0.0.1:8080".into()),
+            ..Default::default()
+        },
+    );
+    test_chat_from(
+        Box::new(Waits(go)),
+        mecha_core::tool::Registry::new(),
         config,
     )
 }
