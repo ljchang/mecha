@@ -15,6 +15,7 @@ pub mod kg;
 pub mod learn;
 pub mod learning_report;
 pub mod mail;
+pub mod model;
 pub mod msg;
 pub mod outbox;
 pub mod polls;

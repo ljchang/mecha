@@ -8,6 +8,7 @@ pub mod anthropic;
 pub mod openai;
 pub mod preflight;
 pub mod retry;
+pub mod router;
 pub(crate) mod sse;
 
 use crate::message::{CompletionRequest, CompletionResponse, Usage};
