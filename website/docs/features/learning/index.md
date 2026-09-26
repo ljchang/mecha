@@ -492,8 +492,14 @@ mecha sessions compare                 # up to 8 points, today's seed
 mecha sessions compare --points 20 --seed 20250 --json
 ```
 
-Points are drawn uniformly with a printed seed, so a pass can be redrawn. A
-point already compared under the same rules and model is not compared again.
+Points are shuffled with a printed seed, then ordered by the
+[replay priority](/docs/features/appraisal#6-picking-which-past-run-to-replay-tonight)
+of the session they come from. Points from sessions you corrected, that
+surprised the appraisal, or whose situation keeps recurring are compared
+first, and the seed decides among equals, so a pass can be redrawn. The
+points that measure a proposed harness change are never ordered this way.
+They stay a uniform draw, because they are what confirms the change. A point
+already compared under the same rules and model is not compared again.
 Only clean sessions are drawn, as for learning; each point holds one of the
 background model seats while its arms run, and the pass refuses a provider
 that is not on this machine.
