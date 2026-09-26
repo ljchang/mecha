@@ -522,7 +522,10 @@ the run was given*: the wrong value among the results it had read is a
 **data error** (the source's to repair), the right value there and the wrong
 one not is a **behaviour error** (the agent's), and neither is a **gap**
 (nobody's fault, a retrieval target). D3's table order is kept, so both
-values given is still a data error, because two sources disagreed. Before this,
+values given is still a data error, because two sources disagreed. That
+includes a result that mentions the old value only as history ("moved from
+Room 118"): a lookup cannot tell a claim from a mention, and the error runs
+the conservative way, since a data error is never mined. Before this,
 every correction became a behaviour lesson, including the ones where the run
 did exactly what its data told it to. The decisions that carry it:
 
@@ -534,7 +537,20 @@ did exactly what its data told it to. The decisions that carry it:
   `DISTILLER_SYSTEM` is pinned byte-identical (R32) and the distiller's
   corrections are per session, where a reflection is per intervention. The
   fields are read leniently (`attribution::Answer::from_reply`), so a garbled
-  one costs the answer and never the lesson.
+  one never fails the parse and the reflection is still recorded. It does
+  cost the rule: a reply that answers neither way is unknown and never
+  mined. So after this row every behaviour rule depends on the local model
+  answering `fact`, which a fixed-reply test cannot measure. `learn` prints
+  each withheld class every pass, and doctor's starvation finding counts
+  attribution-withheld reflections beside the origin-excluded ones, so a
+  model that stops answering is seen on the next night.
+  `examples/reflector_fact_probe.rs` asks the configured model directly,
+  over fixtures on the fictional cast: one call each, no store read or
+  written. On 2026-09-26 the local model (qwen3.6-35b-a3b) answered `fact`
+  on 8 of 8, and 8 of 8 landed in the expected class. That was one sample,
+  and only after the prompt was told to copy the value alone. The first run
+  copied "works at Northwind Labs" from the assistant's words, which no
+  result held, so a data error read as a gap.
 - **The pack is `grounding::calls` over the messages before the
   correction** (`Given::before`): the results the model read, first seen
   wins, stale never evidence. A result riding in the correcting message
@@ -557,10 +573,14 @@ did exactly what its data told it to. The decisions that carry it:
   corrections (`attribution::in_scope`: every `behavior` trigger but
   `mismatch`, fail-closed on one this build does not know). A harness
   mismatch, a writing edit and a triage correction are outside D3 and pass
-  as before. `learn` prints one line per withheld class. `doctor`'s waiting
-  pool and `closed_goals` ask the same gate, or a pool no pass can consume
-  would silence the starvation finding. `mecha reflections` names each class
-  in `blocked` and shows the spans and source.
+  as before. `learn` prints one line per withheld class. `closed_goals` asks
+  the same gate. So does `doctor`'s waiting pool, and doctor counts what the
+  gate withholds toward the starvation floor beside what provenance
+  excludes. Without that count, a pool no pass can consume, with too few
+  origin exclusions to reach the floor, raised no finding at all (found on
+  review). `mecha reflections` makes `learnable` the whole gate (provenance
+  half as `provenance_admits`), names each class in `blocked`, and shows the
+  spans and source.
 - **Unknown is never clean.** A reflection recorded before the field has no
   attribution and is withheld as unknown: its class cannot be recovered
   without a model call. So is one whose reply answered neither way. It stays

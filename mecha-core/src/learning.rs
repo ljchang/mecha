@@ -3090,11 +3090,13 @@ lesson — a lesson guessed at missing context is worse than none.
 Separately, say whether the user is correcting a FACT — something the \
 assistant said or used that the user says is untrue (\"no, it's Thursday\", \
 \"she left Northwind last spring\", \"that's the old address\") — rather than \
-how the assistant went about the work. For a fact, copy two short spans WORD \
-FOR WORD, never paraphrased: `wrong`, the untrue value as it appears in the \
-excerpts or the user's words, and `right`, the true value as the user wrote \
-it; leave `right` out when the user only rejected the claim. Spans that are \
-not copied exactly are discarded. You do not decide whose fault it was.
+how the assistant went about the work. For a fact, copy two spans WORD FOR \
+WORD, never paraphrased, each only the value itself — the name, date, number \
+or place, not the sentence around it (\"Harbor Street\", not \"she lives on \
+Harbor Street\"): `wrong`, the untrue value as it appears in the excerpts or \
+the user's words, and `right`, the true value as the user wrote it; leave \
+`right` out when the user only rejected the claim. Spans that are not copied \
+exactly are discarded. You do not decide whose fault it was.
 
 Reply with one JSON object and nothing else:
 {\"skip\": false, \"reflexion\": \"<the directive, 1-3 sentences>\", \
@@ -3158,8 +3160,11 @@ struct ReflectorReply {
     confidence: Option<f64>,
     /// D3's extraction (`crate::attribution`): whether a fact was corrected,
     /// and the two spans. Untyped on purpose, like the distiller's
-    /// corrections: a formatting slip in an optional field must not fail the
-    /// parse and cost the lesson.
+    /// corrections: a formatting slip here must not fail the parse and lose
+    /// the reflection. It still costs the rule: a reply that answers neither
+    /// way is unknown, recorded and never mined — which is why `learn`
+    /// counts each withheld class and doctor's starvation finding counts
+    /// them too.
     #[serde(default)]
     fact: Option<serde_json::Value>,
     #[serde(default)]

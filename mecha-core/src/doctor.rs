@@ -2097,6 +2097,21 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let mut total = 0usize;
     let mut excluded = 0usize;
     let mut newest_excluded: Option<DateTime<Utc>> = None;
+    // Clean and unprocessed, and held back by D3's attribution (row 2e-3):
+    // a data error, a gap, or no attribution at all. Counted apart from
+    // `excluded`, whose remedy is about origin, and never silent: a pool
+    // `learn` will never consume is "nothing happened" reported as
+    // "nothing went wrong" unless something here says so (found on review).
+    let mut withheld = 0usize;
+    let mut newest_withheld: Option<DateTime<Utc>> = None;
+    let newest = |slot: &mut Option<DateTime<Utc>>, at: &str| {
+        if let Ok(t) = DateTime::parse_from_rfc3339(at) {
+            let t = t.with_timezone(&Utc);
+            if slot.is_none_or(|n| t > n) {
+                *slot = Some(t);
+            }
+        }
+    };
     // domain → clean unprocessed reflections. Kept as records rather than
     // a count because the floor `learn` applies is per *situation batch*
     // within a domain, not per domain: three reflections on three focus
@@ -2129,8 +2144,13 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             // never consolidate — this finding silenced by records that sit
             // unprocessed for good. Not counted as excluded either: that
             // count is the provenance gate's, and its remedy is about origin.
-            if !r.is_processed && r.attribution_admits() {
-                waiting.entry(r.domain.clone()).or_default().push(r);
+            if !r.is_processed {
+                if r.attribution_admits() {
+                    waiting.entry(r.domain.clone()).or_default().push(r);
+                } else {
+                    withheld += 1;
+                    newest(&mut newest_withheld, &r.created_at);
+                }
             }
         } else if r.dropped_at.is_none() {
             // `learnable()` checks the drop before it checks provenance, so
@@ -2143,12 +2163,7 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             // (`mecha reflect --dry-run`) that answers a question nobody
             // asked. Only what provenance itself blocked counts here.
             excluded += 1;
-            if let Ok(t) = DateTime::parse_from_rfc3339(&r.created_at) {
-                let t = t.with_timezone(&Utc);
-                if newest_excluded.is_none_or(|n| t > n) {
-                    newest_excluded = Some(t);
-                }
-            }
+            newest(&mut newest_excluded, &r.created_at);
         }
     }
 
@@ -2178,13 +2193,18 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     if learned_within(root, now, RECENT_CONSOLIDATION) {
         return out;
     }
-    if excluded < STARVED_LEARNER_MIN_EXCLUDED {
+    // Held back by either gate: a pool withheld on attribution starves the
+    // learner exactly as one excluded by origin does.
+    if excluded + withheld < STARVED_LEARNER_MIN_EXCLUDED {
         return out;
     }
     // A loop nothing has fed for a month is dormant, not starved — the
     // distinction matters because the remedy for dormant is elsewhere
     // (triggers, reflect itself), and this finding must not shadow it.
-    let alive = newest_excluded.is_some_and(|t| now.signed_duration_since(t).num_days() <= 30);
+    let alive = [newest_excluded, newest_withheld]
+        .into_iter()
+        .flatten()
+        .any(|t| now.signed_duration_since(t).num_days() <= 30);
     if !alive {
         return out;
     }
@@ -2198,12 +2218,47 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let held = if withheld == 0 {
+        String::new()
+    } else {
+        format!(" and {withheld} withheld on attribution")
+    };
+    let why_withheld = if withheld == 0 {
+        String::new()
+    } else {
+        format!(
+            " {withheld} clean reflection(s) are held back by the attribution gate instead: a \
+             data error, a gap, or no attribution at all — every reflection mined before \
+             corrections were attributed is unknown, and so is one whose reply named no \
+             fact either way. `mecha reflections` says which each is; editing a lesson into \
+             your own words admits it."
+        )
+    };
+    // The remedy follows the larger half: the dry run shows how new
+    // interventions classify by origin, and says nothing about attribution,
+    // which needs the reflector's answer.
+    let remedy = if withheld > excluded {
+        Remedy {
+            description: "see why each clean reflection is held back — doctor never loosens \
+                          the gate"
+                .to_string(),
+            argv: vec!["mecha".into(), "reflections".into()],
+            needs_terminal: false,
+        }
+    } else {
+        Remedy {
+            description: "see how new interventions classify — doctor never loosens the gate"
+                .to_string(),
+            argv: vec!["mecha".into(), "reflect".into(), "--dry-run".into()],
+            needs_terminal: false,
+        }
+    };
     out.push(Finding {
         component: "learning".to_string(),
         severity: Severity::Attention,
         summary: format!(
             "the rule learner is starved: {excluded} of {total} reflections excluded by \
-             origin, and no situation batch reaches the learn floor of {floor}"
+             origin{held}, and no situation batch reaches the learn floor of {floor}"
         ),
         detail: format!(
             "reflect keeps mining and the provenance gate keeps excluding — the gate working \
@@ -2212,15 +2267,10 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
              the gate held back, some may be mecha's own words correctly kept out of a \
              feedback loop; the decision this proposes is yours, not a command's: read what \
              got excluded, and change what evidence the loop may consolidate if the mix \
-             looks wrong.",
+             looks wrong.{why_withheld}",
             path.display()
         ),
-        remedy: Some(Remedy {
-            description: "see how new interventions classify — doctor never loosens the gate"
-                .to_string(),
-            argv: vec!["mecha".into(), "reflect".into(), "--dry-run".into()],
-            needs_terminal: false,
-        }),
+        remedy: Some(remedy),
     });
     out
 }
@@ -3200,9 +3250,50 @@ mod tests {
         let learning = of(&findings, "learning");
         assert_eq!(learning.len(), 1, "{findings:#?}");
         assert!(
-            learning[0].summary.contains("12 of 15"),
+            learning[0].summary.contains("12 of 15")
+                && learning[0].summary.contains("3 withheld on attribution"),
             "withheld on attribution is not excluded by origin: {}",
             learning[0].summary
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The hole the case above cannot see (found on review): with nothing
+    /// excluded by origin, a clean pool withheld whole on attribution must
+    /// still raise the finding — the floor counts either gate — and the
+    /// remedy follows it to `mecha reflections`, since the dry run shows
+    /// origin and nothing about attribution. Fails with the floor on the
+    /// origin count alone.
+    #[test]
+    fn a_pool_withheld_whole_on_attribution_is_starved_with_nothing_excluded_by_origin() {
+        let home = home("learning-starved-attribution-only");
+        let lines: Vec<String> = (0..10)
+            .map(|i| {
+                let mut v: serde_json::Value = serde_json::from_str(&reflection_line(
+                    &format!("c{i}"),
+                    "clean",
+                    false,
+                    "2026-08-13T12:00:00Z",
+                ))
+                .unwrap();
+                v["attribution"] = serde_json::Value::Null;
+                v.to_string()
+            })
+            .collect();
+        write_reflections(&home, &lines);
+        let findings = examine(&home, utc(NOW));
+        let learning = of(&findings, "learning");
+        assert_eq!(learning.len(), 1, "{findings:#?}");
+        assert!(
+            learning[0].summary.contains("0 of 10")
+                && learning[0].summary.contains("10 withheld on attribution"),
+            "{}",
+            learning[0].summary
+        );
+        assert!(learning[0].detail.contains("`mecha reflections`"));
+        assert_eq!(
+            learning[0].remedy.as_ref().unwrap().argv,
+            vec!["mecha", "reflections"]
         );
         let _ = std::fs::remove_dir_all(&home);
     }
