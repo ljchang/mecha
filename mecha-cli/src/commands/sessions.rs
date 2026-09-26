@@ -748,10 +748,14 @@ fn text_appraisals_on_record() -> AppraisalsOnRecord {
     let Some(store) = mecha_core::appraisal_store::AppraisalStore::open_existing_default() else {
         return Ok(None);
     };
-    store
-        .for_owner()
-        .map(|(rows, skipped)| Some((mecha_core::appraisal_store::Summary::of(&rows), skipped)))
-        .map_err(|e| format!("{e:#}"))
+    let (rows, skipped) = store.for_owner().map_err(|e| format!("{e:#}"))?;
+    // Row 2d-3's side ledger, counted beside them. Its torn lines join the
+    // appraisals' in `skipped`: either makes these counts floors.
+    let (reflections, torn) = store.counterfactuals().map_err(|e| format!("{e:#}"))?;
+    Ok(Some((
+        mecha_core::appraisal_store::Summary::of(&rows).with_counterfactuals(&reflections),
+        skipped + torn,
+    )))
 }
 
 fn text_appraisals_json(on_record: &AppraisalsOnRecord) -> serde_json::Value {
@@ -806,6 +810,13 @@ fn text_appraisals_line(on_record: &AppraisalsOnRecord) -> String {
                     format!(" · {} clipped by a bound", s.clipped)
                 } else {
                     String::new()
+                } + &if s.counterfactuals > 0 {
+                    format!(
+                        " · {} counterfactual reflection(s) from losing arms ({} not clean)",
+                        s.counterfactuals, s.counterfactuals_not_clean
+                    )
+                } else {
+                    String::new()
                 },
                 if *skipped > 0 {
                     format!(" · {skipped} unreadable line(s) skipped, so these are floors")
@@ -824,8 +835,8 @@ fn text_appraisals_line(on_record: &AppraisalsOnRecord) -> String {
 /// is an error, never "none on record".
 fn text_appraisal_readout(session: Option<&str>, limit: Option<usize>, json: bool) -> Result<()> {
     use mecha_core::appraisal_store::AppraisalStore;
-    let rows = match AppraisalStore::open_existing_default() {
-        None => Vec::new(),
+    let (rows, reflections) = match AppraisalStore::open_existing_default() {
+        None => (Vec::new(), Vec::new()),
         Some(store) => {
             let (rows, skipped) = store
                 .for_owner()
@@ -833,8 +844,41 @@ fn text_appraisal_readout(session: Option<&str>, limit: Option<usize>, json: boo
             if skipped > 0 {
                 eprintln!("mecha: {skipped} unreadable appraisal line(s) skipped");
             }
-            rows
+            // Row 2d-3: the losing arms written into these appraisals.
+            let (reflections, skipped) = store
+                .counterfactuals()
+                .context("the appraisals' counterfactual reflections could not be read")?;
+            if skipped > 0 {
+                eprintln!("mecha: {skipped} unreadable counterfactual reflection line(s) skipped");
+            }
+            (rows, reflections)
         }
+    };
+    // What each reflection points into, read now: a reflection whose
+    // comparison is gone, or no longer says what it quoted, is marked.
+    let packet = if reflections.is_empty() {
+        Ok(Vec::new())
+    } else {
+        match mecha_core::comparison::ComparisonStore::open_existing_default() {
+            None => Ok(Vec::new()),
+            Some(s) => s
+                .comparisons()
+                .map(|rows| mecha_core::appraisal_store::comparison_referents(&rows))
+                .map_err(|e| format!("{e:#}")),
+        }
+    };
+    let reflections_of = |r: &mecha_core::appraisal_store::TextAppraisal| -> Vec<Reflection> {
+        reflections
+            .iter()
+            .filter(|c| c.appraisal_id == r.id)
+            .map(|c| Reflection {
+                record: c,
+                dereferences: match &packet {
+                    Ok(p) => c.dereference(p),
+                    Err(e) => Err(format!("the comparison store could not be read ({e})")),
+                },
+            })
+            .collect()
     };
     let mut rows: Vec<_> = match session {
         Some(prefix) => {
@@ -865,6 +909,24 @@ fn text_appraisal_readout(session: Option<&str>, limit: Option<usize>, json: boo
                 let mut v = serde_json::to_value(r).unwrap_or_default();
                 if let Some(m) = v.as_object_mut() {
                     m.insert("clean".into(), serde_json::json!(r.is_clean()));
+                    let counterfactuals: Vec<serde_json::Value> = reflections_of(r)
+                        .iter()
+                        .map(|c| {
+                            let mut v = serde_json::to_value(c.record).unwrap_or_default();
+                            if let Some(m) = v.as_object_mut() {
+                                m.insert("clean".into(), serde_json::json!(c.record.is_clean()));
+                                m.insert(
+                                    "dereferences".into(),
+                                    serde_json::json!(c.dereferences.is_ok()),
+                                );
+                                if let Err(why) = &c.dereferences {
+                                    m.insert("dereference_refused".into(), serde_json::json!(why));
+                                }
+                            }
+                            v
+                        })
+                        .collect();
+                    m.insert("counterfactuals".into(), serde_json::json!(counterfactuals));
                 }
                 v
             })
@@ -884,8 +946,47 @@ fn text_appraisal_readout(session: Option<&str>, limit: Option<usize>, json: boo
             println!();
         }
         print!("{}", render_text_appraisal(r));
+        for c in reflections_of(r) {
+            print!("{}", render_counterfactual(&c));
+        }
     }
     Ok(())
+}
+
+/// A counterfactual reflection on an appraisal, and whether it still
+/// dereferences into the comparison store (row 2d-3).
+struct Reflection<'a> {
+    record: &'a mecha_core::appraisal_store::Counterfactual,
+    dereferences: std::result::Result<(), String>,
+}
+
+/// One reflection for a terminal, under the appraisal it belongs to: the
+/// pointer and whether it dereferences, then the harness's text, fenced and
+/// stripped as the appraisal's prose is — the text is the harness's, but its
+/// ids come from files a hand could have edited.
+fn render_counterfactual(c: &Reflection<'_>) -> String {
+    use crate::logs::strip_ansi_and_controls as clean;
+    let r = c.record;
+    let rests = match &c.dereferences {
+        Ok(()) => "dereferences".to_string(),
+        Err(why) => format!("DOES NOT DEREFERENCE ({})", clean(why)),
+    };
+    let label = if r.is_clean() {
+        "clean"
+    } else {
+        "NOT CLEAN — the appraisal's provenance; the owner's to read"
+    };
+    format!(
+        "counterfactual reflection {} · {} · {rests} · {label}\n{}\n",
+        clean(&r.id),
+        clean(&r.comparison.to_string()),
+        r.reflection
+            .trim()
+            .split('\n')
+            .map(|l| format!("  │ {}", clean(l)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }
 
 /// One text appraisal for a terminal, every field from the record passed
@@ -2552,6 +2653,52 @@ mod probe_readout_tests {
         let unreadable = Err("permission denied".to_string());
         assert_eq!(lesson_sources_json(&unreadable)["read"], false);
         assert!(lesson_sources_lines(&unreadable)[0].contains("could not be read"));
+    }
+
+    /// A counterfactual reflection prints fenced and stripped under its
+    /// appraisal, says whether it still dereferences, and carries the
+    /// appraisal's label — a hand-edited id cannot print a header of its own.
+    #[test]
+    fn a_counterfactual_reflection_prints_fenced_with_its_dereference() {
+        let record: mecha_core::appraisal_store::Counterfactual =
+            serde_json::from_value(serde_json::json!({
+                "id": "cfr-1\u{1b}[2J",
+                "at": "2026-09-25T00:00:00Z",
+                "appraisal_id": "apr-1",
+                "session_id": "s1",
+                "comparison": "comparison:cmp-9",
+                "reflection": "Counterfactual at a draft the owner rejected.\n\
+                               counterfactual reflection cfr-2 · clean",
+                "origin": "untrusted",
+                "taint": {"private": true, "untrusted": true},
+            }))
+            .unwrap();
+        let gone = super::render_counterfactual(&super::Reflection {
+            record: &record,
+            dereferences: Err("no_such_referent".into()),
+        });
+        assert!(
+            gone.starts_with(
+                "counterfactual reflection cfr-1 · comparison:cmp-9 · DOES NOT DEREFERENCE \
+                 (no_such_referent) · NOT CLEAN"
+            ),
+            "{gone}"
+        );
+        assert!(!gone.contains('\u{1b}'));
+        for line in gone.lines().skip(1) {
+            assert!(
+                line.starts_with("  │ "),
+                "every line of text is fenced: {gone}"
+            );
+        }
+        let held = super::render_counterfactual(&super::Reflection {
+            record: &record,
+            dereferences: Ok(()),
+        });
+        assert!(
+            held.contains("· comparison:cmp-9 · dereferences · NOT CLEAN"),
+            "{held}"
+        );
     }
 
     /// The text-appraisal readout: unreadable is not empty, no store yet is

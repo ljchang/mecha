@@ -1421,6 +1421,11 @@ queue. A tainted session still distills — losing the record of a real afternoo
 because a web page was open would gut the memory — and the taint snapshot is recorded
 on the episode's metadata instead. Idempotent at both ends.
 
+Every pass that writes, with or without sessions to distill, also scores the
+appraisals' predictions and adds each decided comparison's [losing
+arm](/docs/features/appraisal/reference#what-a-losing-arm-taught) to its
+session's appraisal. Neither makes a model call.
+
 ```bash
 mecha distill --dry-run
 mecha distill -p local --limit 10 --server graph
