@@ -363,7 +363,9 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2e-3** | **Attribute a correction by what the run was given** — mecha-graph's D3 contract ported: data error, behaviour error or gap from `grounding::calls`; a behaviour rule mined only from a behaviour error; a gap a retrieval target. | L7, here §5 | 1d | fixture corrections of each class are routed to their class; no behaviour rule is mined from a data error or a gap — *built; see L7* |
 | **2e-4** | **Learn from what went right**: owner-verified positives (sent unchanged, answered, `done` and not reopened) as writing exemplars, planning success examples and contrast evidence; a staged skill draft after k successes in one region, proposed only. *Split in three under R40 (the owner, 2026-09-26):* | L2 | 1d | a draft sent unchanged is mined as an exemplar; a success the owner later reopens is withdrawn; no skill is written without the owner |
 | **2e-4a** | **The success set, derived; writing exemplars, in shadow.** `success.rs` derives the owner-verified successes at read time from the stores that own each act — a model's message draft sent unchanged, a `done` closure no recorded reopen undoes, a workflow close not reopened, an answered question whose session then completed — with no success store, so a reopen withdraws by construction. An exemplar is the sent draft verbatim, with its tool, its situation and an `Origin` from the staging taint; no model call. Read by the owner alone (`mecha sessions successes`, and a count in `sessions appraise`); nothing serves an exemplar to a run. | L2, R40 | 1d | a draft sent unchanged is derived as an exemplar and nothing else is; a success the owner later reopens is withdrawn — *built; see L2* |
-| **2e-4b** | **Planning success examples and contrast evidence** from the standing set: a success example for `planning::examples` whose step is the verified session's tool sequence (R40); a correction in a region that also holds a verified success reflected with the success beside it. Changes what a run and the reflector see, so shadow first and then a lever. | L2, R40 | 2e-4a | a reopened task's session supplies no example; a correction beside a verified success in its region reaches the reflector with it, one outside the region without |
+| **2e-4b** | **Planning success examples and contrast evidence** from the standing set: a success example for `planning::examples` whose step is the verified session's tool sequence (R40); a correction in a region that also holds a verified success reflected with the success beside it. Changes what a run and the reflector see, so shadow first and then a lever. *Split in two for review (2026-09-26): the planning half first, since it changes only what `goal_context` can serve; the reflector half waits on a shape question:* | L2, R40 | 2e-4a | a reopened task's session supplies no example; a correction beside a verified success in its region reaches the reflector with it, one outside the region without |
+| **2e-4b-1** | **Planning success examples.** `planning::success_examples`: a standing success toward a goal lends each clean, admitted, scoped session it names, with the session's tool sequence as the step (R40), toward the success's goal, served by `goal_context` only in a run whose situation every run of the session scopes onto, ahead of declared-check examples and in their own shape, behind `Lever::SuccessExamples` (ships off). `sessions successes --examples` is the shadow readout. | L2, R40 | 2e-4a | a reopened task's session supplies no example; with the lever off the answer is unchanged — *built; see L2* |
+| **2e-4b-2** | **Contrast evidence for the reflector**: a correction in a region that also holds a verified success reflected with the success beside it, behind a lever that ships off. *Waits on the owner:* a correction's recorded situation is a tool window and a success's is a whole session, so `Situation::region_key` equality never holds between them; "the same region" is either the correction's scope matching the success session's run records (the loader's match, 2e-5c's precedent) or the two sessions' region keys being equal (2e-6's and I2's precedent). | L2, R40 | 2e-4a | a correction beside a verified success in its region reaches the reflector with it, one outside the region without |
 | **2e-4c** | **A staged skill draft** after k verified successes in one region with a shared tool sequence, proposed only. *Deferred by R40 until the success set has been read on real data; k is unset.* | L2, R40 | 2e-4a | no skill is written without the owner |
 | **2e-5** | **Goal-stamped reflections and per-line tenure**: the anchor as the second source of `Reflexion::goals`; tenure by the Wilson lower bound of the owner-accept rate on the line's owner-verdict channels (`ladder.rs` ported); dormancy for a region that stops recurring (`decay.rs`). Appraisal-weighted tenure only behind R20's guard — the owner's verdict overrides, grounded claims from clean runs only — and as a measured lever against owner-only tenure, with a revert, before it is on. *Split in three for review (2026-09-26), the owner-verdict half only; the appraisal-weighted half stays deferred behind R20 and 2a-2:* | L3, R20, here §5 | 1a, 1d; the appraisal-weighted half 2a-2 | a rule's tenure moves on owner verdicts by the bound, not a streak; an owner verdict overrides an appraisal's bad; the lever reverts |
 | **2e-5a** | **The anchor as the second source of `Reflexion::goals`**: where no plan or question in force names a goal at the intervention, the anchor in force there (`Transcript::anchor_covering`: the anchor the run holding the message ended on, none where a question answered later in that run could have moved it) — never the session's last, never backfilled, and not the situation's goal key. | L3 | 1a | a correction in an anchored run that planned nothing is stamped with its run's anchor and `goal_lessons` serves its rule toward it — *built; see L3* |
@@ -1520,10 +1522,32 @@ is recorded* holds the invariants).
   and one line in `sessions appraise` are its only readers. Serving
   exemplars to drafting runs is the deferred lever, and it arms
   `private_data` when it lands.
-- **Left:** 2e-4b — planning success examples, whose step is the verified
-  session's tool sequence (4 of 79 long runs wrote a plan, so a plan step
-  would supply almost nothing), and contrast evidence for the reflector;
-  2e-4c, deferred by R40.
+- **Left:** 2e-4b-2 — contrast evidence for the reflector, waiting on what
+  "the same region" means between a correction and a success (the PR
+  table's row); 2e-4c, deferred by R40.
+
+*2e-4b-1 built — planning success examples, behind a lever that ships off*
+(`planning::success_examples`, under R40; ARCHITECTURE's *Planning examples
+from what went right* holds the invariants).
+
+- **The step is the verified session's tool sequence** (R40's choice, since
+  4 of 79 long runs wrote a plan): registry names in call order, harness
+  calls left out, repeats folded — never an argument or prose.
+- **Derived, never stored.** Only standing successes lend, so a reopen
+  withdraws the example as it withdraws the success. A session lends only if
+  the corpus admits it, its recorded taint is clean to its end (unknown is
+  not), every run in it recorded a matched workspace and surface, and it
+  called a tool; each refusal is named for the owner.
+- **Served in the session's situation, toward the success's goal.** Every
+  run of the session must scope onto the asking run (`Situation::matches`);
+  the example serves only its goal, as `planning::examples` always has, so
+  a success keyed to a done task seldom serves a later run — the
+  narrowness is named, and widening across goals is a new shape not taken.
+- **The lever.** `Lever::SuccessExamples` ships off; `mecha eval` forces it
+  off and the diagnostician's run is narrowed off it (2f's holdout
+  argument). `goal_context` is `private` (R35's arming) and nothing reaches
+  the prefix; off, the answer is today's bytes. Shadow readout: `mecha
+  sessions successes --examples`. The measured arm is owed.
 
 *2e-1 built — the reflector's lessons against the appraisal's, in shadow*
 (`mecha learn --compare-sources`; ARCHITECTURE's *The reflector's lessons
