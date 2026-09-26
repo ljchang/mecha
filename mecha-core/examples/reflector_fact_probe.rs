@@ -141,6 +141,9 @@ async fn main() -> Result<()> {
     eprintln!("probing {} ({name})", reflector.model());
 
     let (mut answered, mut placed, mut lessons) = (0usize, 0usize, 0usize);
+    // `false` on every case would read as "answered" throughout, and is the
+    // shape that mines everything as before: counted apart (review of #332).
+    let mut no_fact = 0usize;
     for c in CASES {
         let messages = transcript(c);
         let full = Intervention {
@@ -164,6 +167,9 @@ async fn main() -> Result<()> {
                 if answer != Answer::NotAnswered {
                     answered += 1;
                 }
+                if answer == Answer::NoFact {
+                    no_fact += 1;
+                }
                 let a = decide(&answer, c.owner, &Given::before(&messages, 4));
                 if a.class == c.expect {
                     placed += 1;
@@ -180,8 +186,8 @@ async fn main() -> Result<()> {
         }
     }
     println!(
-        "\n{lessons}/{} drew a lesson; of those, {answered} answered `fact` and {placed} \
-         landed in the expected class",
+        "\n{lessons}/{} drew a lesson; of those, {answered} answered `fact` ({no_fact} of \
+         them `false`) and {placed} landed in the expected class",
         CASES.len()
     );
     Ok(())

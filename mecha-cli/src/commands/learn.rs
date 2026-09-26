@@ -276,6 +276,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // D3's attribution (row 2e-3), by class: what `learn` holds back
     // because the correction was not a behaviour error.
     let mut withheld_by_class: BTreeMap<mecha_core::attribution::Class, usize> = BTreeMap::new();
+    // And what it let through, by basis: a reflector that always answers
+    // `"fact": false` admits everything as it did before 2e-3 and withholds
+    // nothing, so without this count the gate going inert reads exactly
+    // like a gate with nothing to hold back (found on review of #332).
+    let mut admitted_bases = AdmittedBases::default();
     for r in store.reflexions()? {
         match admission(&r, &claimed) {
             Admission::Processed => {}
@@ -284,7 +289,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             Admission::Unsupported => unsupported_observations += 1,
             Admission::Origin => excluded_by_origin += 1,
             Admission::Attribution(class) => *withheld_by_class.entry(class).or_default() += 1,
-            Admission::Admitted => by_domain.entry(r.domain.clone()).or_default().push(r),
+            Admission::Admitted => {
+                admitted_bases.count(&r);
+                by_domain.entry(r.domain.clone()).or_default().push(r)
+            }
         }
     }
     if unsupported_observations > 0 {
@@ -303,6 +311,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         );
     }
     for line in withheld_lines(&withheld_by_class) {
+        println!("{line}");
+    }
+    if let Some(line) = admitted_bases.line() {
         println!("{line}");
     }
     if dropped_by_owner > 0 {
@@ -946,6 +957,42 @@ fn withheld_lines(withheld: &BTreeMap<mecha_core::attribution::Class, usize>) ->
         .collect()
 }
 
+/// The attributed lessons `learn` admitted, split by why they are behaviour:
+/// the reflector named no fact at issue, or the run had been given the
+/// right value. The first half is the one a reflector can reach by never
+/// answering `true`, so its share is printed beside the whole rather than
+/// left for a reader to infer from an absence of withheld lines.
+#[derive(Debug, Default, PartialEq)]
+struct AdmittedBases {
+    no_fact: usize,
+    placed: usize,
+}
+
+impl AdmittedBases {
+    fn count(&mut self, r: &mecha_core::learning::Reflexion) {
+        use mecha_core::attribution::{in_scope, Basis};
+        if r.edited_at.is_some() || !in_scope(&r.domain, &r.trigger) {
+            return;
+        }
+        match r.attribution.as_ref().map(|a| a.basis) {
+            Some(Basis::NoFact) => self.no_fact += 1,
+            Some(_) => self.placed += 1,
+            None => {}
+        }
+    }
+
+    fn line(&self) -> Option<String> {
+        let all = self.no_fact + self.placed;
+        (all > 0).then(|| {
+            format!(
+                "{all} attributed correction(s) admitted as behaviour: {} named no fact at \
+                 issue, {} had the right value in what the run read",
+                self.no_fact, self.placed
+            )
+        })
+    }
+}
+
 /// R34's lines for the learn log: rules toward a closed goal by id with why,
 /// waiting reflections toward one, and each goal the stores could not
 /// answer for — the last never folded into "nothing is dark". Empty only
@@ -1517,6 +1564,56 @@ mod tests {
         let mut tainted = refl("steer", Some(Basis::RightGiven));
         tainted.origin = Origin::Untrusted;
         assert_eq!(admission(&tainted, &none), Admission::Origin);
+    }
+
+    #[test]
+    fn the_learn_log_counts_what_the_attribution_gate_let_through_by_basis() {
+        use super::AdmittedBases;
+        use mecha_core::attribution::{Attribution, Basis};
+        use mecha_core::learning::{Evidence, Origin, Reflexion};
+        let with = |basis: Option<Basis>| Reflexion {
+            goals: Vec::new(),
+            id: "r".into(),
+            domain: "behavior".into(),
+            session_id: "s".into(),
+            trigger: "steer".into(),
+            context: String::new(),
+            intervention: "No, not like that.".into(),
+            reflexion_text: "Ask before rewriting.".into(),
+            error_type: None,
+            confidence: None,
+            is_processed: false,
+            leap_run_id: None,
+            created_at: String::new(),
+            origin: Origin::Clean,
+            evidence: Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
+            situation: None,
+            situation_recomputed_at: None,
+            attribution: basis.map(|b| Attribution::new(b, None, None)),
+        };
+        let mut bases = AdmittedBases::default();
+        assert_eq!(
+            bases.line(),
+            None,
+            "nothing attributed is no line, not zeros"
+        );
+        bases.count(&with(None));
+        assert_eq!(
+            bases.line(),
+            None,
+            "an unattributed record is not counted here"
+        );
+        for b in [Basis::NoFact, Basis::NoFact, Basis::RightGiven] {
+            bases.count(&with(Some(b)));
+        }
+        assert_eq!(
+            bases.line().unwrap(),
+            "3 attributed correction(s) admitted as behaviour: 2 named no fact at issue, \
+             1 had the right value in what the run read"
+        );
     }
 
     #[test]

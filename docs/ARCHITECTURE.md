@@ -558,6 +558,15 @@ did exactly what its data told it to. The decisions that carry it:
   A rejected draft's pack is its staging session's calls before the staging
   message (`outbox_source::staged_in`), with the draft among what the run
   said.
+- **"Before the correction" means everything recorded before it, not the
+  list a compaction left** (`Session::messages_ever_before`). Thinning cuts
+  an old result in place with no stale marker, so against the loaded list
+  the wrong value can be gone from the result that carried it while the
+  right one rides in full in a newer result — a data error read as the
+  agent's, and mined (found on review). The correction is found as the one
+  `message` record equal to it, or to it less blocks an extension added
+  later; a correction recorded twice word for word cannot be placed, and is
+  unknown rather than cut at a guess.
 - **Spans are grounded before they decide**, by `grounding::holds` (whole
   words, case and punctuation ignored): `right` must be in the owner's words,
   and `wrong` in something the run said, was given, or the owner quoted. A
@@ -573,7 +582,11 @@ did exactly what its data told it to. The decisions that carry it:
   corrections (`attribution::in_scope`: every `behavior` trigger but
   `mismatch`, fail-closed on one this build does not know). A harness
   mismatch, a writing edit and a triage correction are outside D3 and pass
-  as before. `learn` prints one line per withheld class. `closed_goals` asks
+  as before. `learn` prints one line per withheld class, and one splitting
+  what it admitted by basis — no fact at issue, or the right value given —
+  because a reflector that always answers `"fact": false` withholds nothing
+  and would otherwise read exactly like a gate with nothing to hold back
+  (found on review). `closed_goals` asks
   the same gate. So does `doctor`'s waiting pool, and doctor counts what the
   gate withholds toward the starvation floor beside what provenance
   excludes. Without that count, a pool no pass can consume, with too few
