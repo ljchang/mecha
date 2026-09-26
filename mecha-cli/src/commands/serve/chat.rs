@@ -231,8 +231,12 @@ impl ChatState {
             surface: Some(mecha_core::session::SessionKind::Web),
             ..GlobalOpts::default()
         };
+        let mut prepared = setup::prepare(&opts, false).await?;
         // Before the door opens: a `serve` that died with incognito chats
         // open left their rooms, and nothing else will remove them (R1).
+        // After the config is loaded, so a start that fails before then
+        // leaves the rooms — trails and all — for the next one (found on
+        // review of #331: swept first, a failed start lost the trails).
         let mut left_on_the_image_server = Vec::new();
         match super::incognito::rooms_root() {
             Ok(rooms) => {
@@ -256,7 +260,6 @@ impl ChatState {
         // the human who owns the run that asked (the jail's directory name
         // is the session key; see `present::WebAsker`). An unanswered card
         // resolves as the tool's measured decline, never a guess.
-        let mut prepared = setup::prepare(&opts, false).await?;
         // Still before the door opens: what a dead `serve`'s incognito chats
         // left on the image server — jobs, their records, their files — is
         // taken back as soon as there is a config saying where it is. A

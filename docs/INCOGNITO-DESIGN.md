@@ -320,6 +320,12 @@ proposed unnecessary: which entries were incognito's is exactly what the
 trail writes down. A server that is down at sweep time is said at `warn`;
 its own restart empties both.
 
+The close paths (End, the idle reaper, shutdown) never read their own trail:
+the tool deletes per job and says in its result what it could not, so the
+residue is bounded and announced; only a `serve` that died leaves a trail for
+the next one to act on. An output the server files anywhere but its temp
+directory is said the same way rather than skipped.
+
 One copy is accepted rather than removed: ComfyUI's executor cache keeps the
 last job's node inputs — the prompt among them — in memory until the next job
 replaces them or the idle unload (`unload_after_secs`) frees them. RAM only,
