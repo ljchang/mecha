@@ -25,8 +25,9 @@ Interfaces: `mecha run` (one-shot), `mecha chat` (readline REPL), `mecha tui`
 `mecha batch` / `mecha eval` for fan-out.
 
 The user-facing half of this reasoning is published at
-<https://docs.mecha-factory.ai/>; `website/docs/principles.md` is that site's
-restatement of the invariants below, without the incident behind each one.
+<https://docs.mecha-factory.ai/>, on the page for each feature a rule governs
+rather than restated in one place — a standalone principles page was cut on
+2026-09-26, because by then every rule it held lived on a feature page too.
 
 **Where everything else lives.** This file holds only what any session may
 need on any run; it is the expensive file, because it rides in every agent's
