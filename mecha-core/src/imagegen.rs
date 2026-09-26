@@ -270,6 +270,9 @@ fn plain_name(name: &str) -> bool {
         && name != "."
         && name != ".."
         && !name.contains(['/', '\\', '\0'])
+        // A newline would forge a second trail line for the next sweep to
+        // act on (found on review of #331).
+        && !name.chars().any(char::is_control)
 }
 
 /// Whether `id` looks like a job id: what the tool mints (a UUID) or what an
@@ -286,6 +289,16 @@ fn note(trail: Option<&std::path::Path>, entry: &TrailEntry) -> Result<()> {
     let Some(path) = trail else {
         return Ok(());
     };
+    // Only a line that reads back as what was meant: the sweep acts on
+    // whatever parses, so a name that would forge another entry is refused
+    // here rather than trusted there.
+    let line = entry.line();
+    if TrailEntry::parse(&line).as_ref() != Some(entry) {
+        bail!(
+            "refusing to write {:?} to the image trail: it would not read back as written",
+            line
+        );
+    }
     let mut options = std::fs::OpenOptions::new();
     options.append(true).create(true);
     #[cfg(unix)]
@@ -296,8 +309,7 @@ fn note(trail: Option<&std::path::Path>, entry: &TrailEntry) -> Result<()> {
     let mut file = options
         .open(path)
         .with_context(|| format!("opening the image trail {}", path.display()))?;
-    writeln!(file, "{}", entry.line())
-        .with_context(|| format!("writing the image trail {}", path.display()))
+    writeln!(file, "{line}").with_context(|| format!("writing the image trail {}", path.display()))
 }
 
 /// What a trail records, skipping any line this module would not write.
@@ -558,6 +570,15 @@ fn clip(s: &str) -> String {
     }
 }
 
+/// What the server holds of one job, as far as this call knows: the files it
+/// named, and the ones it may have written before an answer was lost. Only a
+/// confirmed name that is not there is worth saying.
+#[derive(Default)]
+struct Held {
+    confirmed: Vec<String>,
+    possible: Vec<String>,
+}
+
 /// A finished call on the server: the image or why not, and — when some of
 /// the server's temp copies could not be removed — which, and why.
 struct Outcome {
@@ -815,13 +836,19 @@ impl ComfyUi {
         timeout: Duration,
         trail: Option<&std::path::Path>,
     ) -> Outcome {
-        // The names the server confirmed it holds: only those are expected to
-        // be there to delete.
-        let mut held = Vec::new();
+        let mut held = Held::default();
         let image = self.run(cfg, req, cancel, timeout, trail, &mut held).await;
+        let dir = cfg.server_temp_dir.as_deref();
+        let left: Vec<String> = [
+            discard(dir, &held.confirmed, false),
+            discard(dir, &held.possible, true),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         Outcome {
             image,
-            left: discard(cfg.server_temp_dir.as_deref(), &held, false),
+            left: (!left.is_empty()).then(|| left.join("; ")),
         }
     }
 
@@ -832,7 +859,7 @@ impl ComfyUi {
         cancel: Option<&CancellationToken>,
         timeout: Duration,
         trail: Option<&std::path::Path>,
-        held: &mut Vec<String>,
+        held: &mut Held,
     ) -> std::result::Result<Vec<u8>, Failure> {
         // A trail that cannot be written stops the job before the server has
         // anything of it: the trail is what cleans up after a process that
@@ -852,8 +879,16 @@ impl ComfyUi {
                 reference.ext
             );
             record(TrailEntry::File(asked.clone()))?;
-            let filed = self.upload(reference, &asked).await?;
-            held.push(filed.clone());
+            let filed = match self.upload(reference, &asked).await {
+                Ok(filed) => filed,
+                Err(e) => {
+                    // The server may have written it before the answer was
+                    // lost (found on review of #331).
+                    held.possible.push(asked);
+                    return Err(e.into());
+                }
+            };
+            held.confirmed.push(filed.clone());
             if filed != asked {
                 record(TrailEntry::File(filed.clone()))?;
             }
@@ -864,27 +899,41 @@ impl ComfyUi {
         // server mints its own, which is written down as soon as it answers.
         let asked = uuid::Uuid::new_v4().to_string();
         record(TrailEntry::Job(asked.clone()))?;
-        let (status, body) = self
+        let submitted = self
             .post_json(
                 "prompt",
                 &json!({"prompt": comfy_graph(cfg, req, &uploaded), "client_id": "mecha",
                         "prompt_id": asked}),
             )
-            .await?;
+            .await;
+        let (status, body) = match submitted {
+            Ok(answer) => answer,
+            Err(e) => {
+                // Queued under the id sent, perhaps, before the answer was
+                // lost — and that id is in hand (found on review of #331).
+                held.confirmed.extend(self.abandon(&asked).await);
+                return Err(e.into());
+            }
+        };
         if !status.is_success() {
+            // Refused, so never queued: nothing to take back.
             return Err(anyhow!(
                 "the image server rejected the job ({status}): {}",
                 clip(&body)
             )
             .into());
         }
-        let id = serde_json::from_str::<Value>(&body)
+        let Some(id) = serde_json::from_str::<Value>(&body)
             .ok()
             .and_then(|v| v.get("prompt_id")?.as_str().map(str::to_string))
-            .ok_or_else(|| anyhow!("the image server accepted the job but named no prompt_id"))?;
+        else {
+            // Accepted, so queued — under the id sent.
+            held.confirmed.extend(self.abandon(&asked).await);
+            return Err(anyhow!("the image server accepted the job but named no prompt_id").into());
+        };
         if id != asked {
             if let Err(e) = record(TrailEntry::Job(id.clone())) {
-                held.extend(self.abandon(&id).await);
+                held.confirmed.extend(self.abandon(&id).await);
                 return Err(e);
             }
         }
@@ -896,7 +945,7 @@ impl ComfyUi {
             match cancel {
                 Some(token) => tokio::select! {
                     _ = token.cancelled() => {
-                        held.extend(self.abandon(&id).await);
+                        held.confirmed.extend(self.abandon(&id).await);
                         return Err(Failure::Cancelled);
                     }
                     _ = tick => {}
@@ -904,7 +953,7 @@ impl ComfyUi {
                 None => tick.await,
             }
             if started.elapsed() > timeout {
-                held.extend(self.abandon(&id).await);
+                held.confirmed.extend(self.abandon(&id).await);
                 return Err(anyhow!(
                     "the image took longer than {} s and was abandoned",
                     timeout.as_secs()
@@ -927,7 +976,7 @@ impl ComfyUi {
                     if failed_polls < POLL_FAILURES {
                         continue;
                     }
-                    held.extend(self.abandon(&id).await);
+                    held.confirmed.extend(self.abandon(&id).await);
                     return Err(e
                         .context(format!(
                             "the image server stopped answering ({POLL_FAILURES} polls in a row)"
@@ -951,7 +1000,7 @@ impl ComfyUi {
                     tracing::debug!("a preview's name did not reach the image trail: {e:#}");
                 }
             }
-            held.extend(wrote);
+            held.confirmed.extend(wrote);
             if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
                 self.forget(&id).await;
                 let why = entry
@@ -1361,7 +1410,7 @@ impl Tool for ImageGenerate {
             tracing::warn!("image server temp copies not removed: {left}");
             format!(
                 " The image server's temp copies could not all be removed: {left}. Check \
-                 [image] server_temp_dir — for ComfyUI, the --temp-directory path with /temp \
+                 [image] server_temp_dir — for ComfyUI, the --temp-directory path with `temp` \
                  appended."
             )
         });
@@ -1487,6 +1536,56 @@ mod tests {
         running: bool,
         upload_type: &'static str,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
+        fake_with(Fake {
+            history,
+            prompt_status,
+            running,
+            upload_type,
+            ..Fake::default()
+        })
+        .await
+    }
+
+    /// What [`fake_with`]'s server does beyond the defaults.
+    struct Fake {
+        history: Vec<Value>,
+        prompt_status: &'static str,
+        running: bool,
+        upload_type: &'static str,
+        /// `/prompt`'s answer body, in place of `{"prompt_id": "job-1", …}`.
+        prompt_body: Option<Value>,
+        /// A path answered by hanging up, after doing its work — an answer
+        /// lost on the way back.
+        hang_up: Option<&'static str>,
+        /// Where uploads are written under the name they were sent with, as
+        /// the real server does; otherwise each is answered as `up.png`.
+        temp: Option<std::path::PathBuf>,
+    }
+
+    impl Default for Fake {
+        fn default() -> Self {
+            Fake {
+                history: Vec::new(),
+                prompt_status: "200 OK",
+                running: true,
+                upload_type: "temp",
+                prompt_body: None,
+                hang_up: None,
+                temp: None,
+            }
+        }
+    }
+
+    async fn fake_with(opts: Fake) -> (String, Arc<Mutex<Vec<String>>>) {
+        let Fake {
+            history,
+            prompt_status,
+            running,
+            upload_type,
+            prompt_body,
+            hang_up,
+            temp,
+        } = opts;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -1503,6 +1602,8 @@ mod tests {
                 let log = Arc::clone(&log);
                 let history = Arc::clone(&history);
                 let interrupted = Arc::clone(&interrupted);
+                let prompt_body = prompt_body.clone();
+                let temp = temp.clone();
                 tokio::spawn(async move {
                     let mut req = Vec::new();
                     let mut tmp = [0u8; 8192];
@@ -1547,12 +1648,13 @@ mod tests {
                             _ => json!({node: {"input": {}}}),
                         })
                     } else if path == "/prompt" {
+                        let answer = prompt_body.unwrap_or_else(
+                            || json!({"prompt_id": "job-1", "error": {"message": "bad node"}}),
+                        );
                         reply(
                             prompt_status,
                             "application/json",
-                            json!({"prompt_id": "job-1", "error": {"message": "bad node"}})
-                                .to_string()
-                                .as_bytes(),
+                            answer.to_string().as_bytes(),
                         )
                     } else if path.starts_with("/history/") && interrupted.load(Ordering::SeqCst) {
                         json_reply(json!({"job-1": {"status": {"status_str": "error",
@@ -1567,7 +1669,21 @@ mod tests {
                     } else if path.starts_with("/view?") {
                         reply("200 OK", "image/png", PNG)
                     } else if path == "/upload/image" {
-                        json_reply(json!({"name": "up.png", "subfolder": "", "type": upload_type}))
+                        let sent = body
+                            .split("filename=\"")
+                            .nth(1)
+                            .and_then(|rest| rest.split('"').next())
+                            .unwrap_or("up.png")
+                            .to_string();
+                        let name = match &temp {
+                            Some(dir) => {
+                                std::fs::write(dir.join(&sent), "x").unwrap();
+                                log.lock().unwrap().push(format!("wrote {sent}"));
+                                sent
+                            }
+                            None => "up.png".to_string(),
+                        };
+                        json_reply(json!({"name": name, "subfolder": "", "type": upload_type}))
                     } else if path == "/interrupt" {
                         interrupted.store(true, Ordering::SeqCst);
                         json_reply(json!({}))
@@ -1579,7 +1695,9 @@ mod tests {
                     } else {
                         json_reply(json!({}))
                     };
-                    let _ = sock.write_all(&out).await;
+                    if hang_up != Some(path.as_str()) {
+                        let _ = sock.write_all(&out).await;
+                    }
                     let _ = sock.shutdown().await;
                 });
             }
@@ -2215,6 +2333,131 @@ mod tests {
             std::fs::write(temp.join(f), "x").unwrap();
         }
         (dir, temp)
+    }
+
+    /// The id this call minted, as sent in `POST /prompt`.
+    fn minted(seen: &[String]) -> String {
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        let body: Value = serde_json::from_str(
+            submitted
+                .split_once(' ')
+                .and_then(|(_, rest)| rest.split_once(' '))
+                .and_then(|(_, rest)| rest.split_once(' '))
+                .map(|(_, body)| body)
+                .unwrap_or_default(),
+        )
+        .unwrap();
+        body["prompt_id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn a_job_accepted_without_an_id_is_still_taken_back() {
+        let (url, seen) = fake_with(Fake {
+            prompt_body: Some(json!({})),
+            running: false,
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let out = tool(&url)
+            .call(json!({"prompt": "a fox"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("named no prompt_id"),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        let id = minted(&seen);
+        assert!(
+            seen.iter()
+                .any(|l| l.starts_with("POST /queue") && l.contains(&id)),
+            "a job the server accepted was left queued: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|l| l.starts_with("POST /history") && l.contains(&id)),
+            "a job the server accepted kept its record: {seen:?}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_job_whose_answer_was_lost_is_still_taken_back() {
+        let (url, seen) = fake_with(Fake {
+            hang_up: Some("/prompt"),
+            running: false,
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let out = tool(&url)
+            .call(json!({"prompt": "a fox"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let id = minted(&seen);
+        assert!(
+            seen.iter()
+                .any(|l| l.starts_with("POST /queue") && l.contains(&id)),
+            "a job that may have been queued was not taken back: {seen:?}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_upload_whose_answer_was_lost_is_still_deleted() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/me.jpg"), [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).unwrap();
+        let temp = dir.join("server-temp");
+        std::fs::create_dir_all(&temp).unwrap();
+        let (url, seen) = fake_with(Fake {
+            hang_up: Some("/upload/image"),
+            temp: Some(temp.clone()),
+            ..Fake::default()
+        })
+        .await;
+        let out = tool_in(&url, &temp)
+            .call(
+                json!({"prompt": "a hat", "reference_images": ["inbox/me.jpg"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("wrote mecha-")),
+            "the server never wrote the upload, so its deletion proves nothing"
+        );
+        assert_eq!(
+            std::fs::read_dir(&temp).unwrap().count(),
+            0,
+            "the upload the server wrote before its answer was lost stayed"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_trail_writes_only_what_it_can_read_back() {
+        let dir = tempdir();
+        let trail = dir.join("image-trail");
+        let forged = TrailEntry::File("x.png\njob 00000000-0000-4000-8000-000000000000".into());
+        assert!(note(Some(&trail), &forged).is_err());
+        assert!(
+            note(Some(&trail), &TrailEntry::Job("not a job id".into())).is_err(),
+            "an id with a space would read back as something else"
+        );
+        assert!(read_trail(&trail).is_empty(), "{:?}", read_trail(&trail));
+        assert!(!plain_name("a\nb.png") && !plain_name("a\rb.png") && plain_name("a b.png"));
+        note(Some(&trail), &TrailEntry::File("ok.png".into())).unwrap();
+        assert_eq!(read_trail(&trail), vec![TrailEntry::File("ok.png".into())]);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
