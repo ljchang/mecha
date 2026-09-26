@@ -447,7 +447,10 @@ Measured on 2026-09-26 against `c841aee`, unless a bullet names another build:
   tok/s at 0.38 MTP draft acceptance, UD-Q4_K_XL 22.9 at 0.45, HauhauCS
   uncensored Q4_K_P 26.8 at 0.57, huihui abliterated UD-Q4_K_XL 22.1 at
   0.42; all four read an image and passed a reasoning check. The same
-  Q4_K_M was 18.2 tok/s at 0.36 on `c841aee` — the build alone was ~14%.
+  Q4_K_M was 18.2 tok/s at 0.36 on `c841aee` against 20.7 on `95887577`,
+  both through `start-qwen38.sh` as a single-model server, back to back —
+  that pair is the build's +14%; the 21.1 above is the same file on the
+  new build through a router, a separate run.
   The router serves the UD-Q4_K_XL and both uncensored builds.
 - **Sampling is per model, in its preset.** Gemma runs on llama-server's
   defaults; the Qwens carry their model cards' values. Nothing sampling-shaped

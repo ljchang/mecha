@@ -120,6 +120,15 @@ class StartRouter(unittest.TestCase):
         self.assertTrue(preset.get("mmproj", "").endswith("/old/mmproj-BF16.gguf"), preset)
         self.assertIn("serving the withdrawn Q4_K_M", err)
 
+    def test_a_fallback_without_its_projector_is_skipped_not_called_served(self):
+        # Once said "serving the withdrawn Q4_K_M" and then "skipping" in one run.
+        self.cache.production()
+        self.cache.put(Q38, "old", "Qwen3.8-27B-Q4_K_M.gguf")
+        _, _, err, ini = self.run_script()
+        self.assertNotIn("[qwen3.8-27b]", ini)
+        self.assertIn("skipping qwen3.8-27b", err)
+        self.assertNotIn("serving the withdrawn", err)
+
     def test_the_newest_copy_of_a_file_wins(self):
         self.cache.production()
         self.cache.put(Q38, "a", "Qwen3.8-27B-UD-Q4_K_XL.gguf", age=500)

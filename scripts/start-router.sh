@@ -65,6 +65,14 @@ hub_pair() {
 
 # A repo's vision projector, as mmproj.sh names them (BF16 first); when none is
 # on disk, mmproj_or_die's message — with the download line — and a failure.
+#
+# Searched across snapshots independently of the weights, **on purpose**: a
+# repo re-uploads its weights without re-uploading an unchanged projector, so
+# pinning the projector to the weights' snapshot would lose vision on exactly
+# the upgrade it should survive. unsloth's Qwen3.8 is that case: the
+# UD-Q4_K_XL sits in the newer snapshot, the projector (unchanged since
+# 2026-08-14) only in the older one. The draft head is the exception, paired
+# by hub_pair, because a draft from another revision mis-drafts silently.
 hub_mmproj() {
   local found
   found=$(hub_file "$1" mmproj-BF16.gguf)
@@ -148,8 +156,9 @@ $(qwen_sampling 1.0)
 EOF
 }
 
-# Measured 2026-09-26 on llama.cpp 95887577, one stream, 400 tokens, same
-# prompt and flags for all four rows below (docs/LLAMA-SERVER.md §Router mode):
+# Measured 2026-09-26 on llama.cpp 95887577, through a test router, one
+# stream, 400 tokens, same prompt and flags for all four rows below
+# (docs/LLAMA-SERVER.md §Router mode):
 #
 #   file                          decode       MTP draft acceptance
 #   unsloth Q4_K_M (withdrawn)    21.1 tok/s   0.38
@@ -166,12 +175,18 @@ EOF
 # 2026-08-14 and serves both.
 R=unsloth--Qwen3.8-27B-GGUF
 F=$(hub_file "$R" Qwen3.8-27B-UD-Q4_K_XL.gguf)
+FALLBACK=""
 if [ -z "$F" ]; then
   F=$(hub_file "$R" Qwen3.8-27B-Q4_K_M.gguf)
-  [ -n "$F" ] && warn "qwen3.8-27b: UD-Q4_K_XL not on disk, serving the withdrawn Q4_K_M — hf download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-UD-Q4_K_XL.gguf"
+  [ -n "$F" ] && FALLBACK=1
 fi
 if [ -n "$F" ] && MP=$(hub_mmproj "$R"); then
   qwen38 qwen3.8-27b "$F" "$MP"
+  # Said only once the preset is really written, so a missing projector
+  # never reads as "served" and "skipped" in one run (found on review).
+  if [ -n "$FALLBACK" ]; then
+    warn "qwen3.8-27b: UD-Q4_K_XL not on disk, serving the withdrawn Q4_K_M — hf download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-UD-Q4_K_XL.gguf"
+  fi
 else
   warn "skipping qwen3.8-27b: weights or projector not on disk"
 fi
