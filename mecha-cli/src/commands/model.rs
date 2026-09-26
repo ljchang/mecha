@@ -95,14 +95,20 @@ async fn survey(cfg: &Config) -> Vec<(String, Option<Router>)> {
             continue;
         };
         let served: Vec<&str> = list.iter().map(|m| m.id.as_str()).collect();
-        let unserved = cfg
-            .providers
-            .iter()
-            .filter(|(_, p)| p.base_url.as_deref().map(router::base).as_deref() == Some(&base))
-            .filter(|(_, p)| p.model.as_deref().is_some_and(|m| !served.contains(&m)))
-            .map(|(n, _)| n.clone())
-            .collect();
+        // Only from a list this reads: an unreadable (say, empty) one would
+        // name every entry "not served" under the banner saying it cannot be
+        // read — two opposite claims about one answer (found on review).
         let readable = router::readable(&list);
+        let unserved = if !readable {
+            Vec::new()
+        } else {
+            cfg.providers
+                .iter()
+                .filter(|(_, p)| p.base_url.as_deref().map(router::base).as_deref() == Some(&base))
+                .filter(|(_, p)| p.model.as_deref().is_some_and(|m| !served.contains(&m)))
+                .map(|(n, _)| n.clone())
+                .collect()
+        };
         let r = Router {
             resident: readable
                 .then(|| router::resident(&list).map(str::to_string))

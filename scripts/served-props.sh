@@ -36,18 +36,28 @@ served_model() {
         return 1
     }
     if [ "$(printf '%s' "$props" | _served_role)" != router ]; then
-        printf '%s' "$props" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("model_alias") or "")' 2>/dev/null
+        # An empty name is not an answer: every request would carry it as the
+        # model, and a scorecard would be filed under it (found on review).
+        local alias
+        alias="$(printf '%s' "$props" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("model_alias") or "")' 2>/dev/null)"
+        if [ -z "$alias" ]; then
+            echo "served_model: $base/props names no model_alias — nothing to call it" >&2
+            return 1
+        fi
+        printf '%s' "$alias"
         return 0
     fi
     # The resident model, only from a list this fully reads: "nothing loaded"
-    # or "two loaded" is not an answer to "what is served".
+    # or "two loaded" is not an answer to "what is served". "loading" counts
+    # as resident, as in `RouterModel::is_resident` and model-idle.sh — mid-
+    # eviction (A sleeping, B loading) that is two, not A (found on review).
     curl -s -m 5 "$base/models" | python3 -c '
 import json, sys
 d = json.load(sys.stdin).get("data")
 known = {"unloaded", "loading", "loaded", "sleeping", "downloading"}
 if not isinstance(d, list) or not d or any(m.get("status", {}).get("value") not in known for m in d):
     raise SystemExit(2)
-r = [m["id"] for m in d if m["status"]["value"] in ("loaded", "sleeping")]
+r = [m["id"] for m in d if m["status"]["value"] in ("loaded", "loading", "sleeping")]
 if len(r) != 1:
     raise SystemExit(3)
 print(r[0])

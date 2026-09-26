@@ -35,6 +35,8 @@ ROUTERS = {
     "/r": (models(("qwen3.6-35b-a3b", "unloaded"), ("gemma-4-26b-a4b", "loaded")), "gemma-4-26b-a4b"),
     "/r-none": (models(("gemma-4-26b-a4b", "unloaded")), None),
     "/r-renamed": (models(("gemma-4-26b-a4b", "resident")), "gemma-4-26b-a4b"),
+    # Mid-eviction: the outgoing model sleeping, the incoming one loading.
+    "/r-evicting": (models(("qwen3.6-35b-a3b", "sleeping"), ("gemma-4-26b-a4b", "loading")), None),
 }
 
 
@@ -43,8 +45,10 @@ class Stub(http.server.BaseHTTPRequestHandler):
         SEEN.append(self.path)
         url = urllib.parse.urlsplit(self.path)
         code, body = 404, {}
-        if url.path in ("/single/props", "/single/v1/props"):
+        if url.path == "/single/props":
             code, body = 200, SINGLE
+        elif url.path == "/nameless/props":
+            code, body = 200, {"total_slots": 1}
         for prefix, (listing, serving) in ROUTERS.items():
             if url.path == f"{prefix}/props":
                 q = urllib.parse.parse_qs(url.query)
@@ -98,6 +102,7 @@ class ServedProps(unittest.TestCase):
     def test_a_v1_spelling_is_the_server_root(self):
         code, out, _ = self.call("served_model", f"{self.base}/single/v1")
         self.assertEqual((code, out.strip()), (0, "qwen3.6-35b-a3b"))
+        self.assertEqual(SEEN, ["/single/props"])
 
     def test_a_router_answers_with_the_resident_models_props_without_loading_it(self):
         code, out, _ = self.call("served_props", f"{self.base}/r")
@@ -114,11 +119,17 @@ class ServedProps(unittest.TestCase):
 
     def test_the_resident_model_is_named_only_from_a_list_it_fully_reads(self):
         self.assertEqual(self.call("served_model", f"{self.base}/r")[1].strip(), "gemma-4-26b-a4b")
-        for prefix in ["/r-none", "/r-renamed"]:
+        for prefix in ["/r-none", "/r-renamed", "/r-evicting"]:
             with self.subTest(prefix=prefix):
                 code, out, _ = self.call("served_model", f"{self.base}{prefix}")
                 self.assertNotEqual(code, 0)
                 self.assertEqual(out.strip(), "")
+
+    def test_a_single_server_that_names_no_model_is_not_an_answer(self):
+        code, out, err = self.call("served_model", f"{self.base}/nameless")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(out.strip(), "")
+        self.assertIn("names no model_alias", err)
 
 
 if __name__ == "__main__":
