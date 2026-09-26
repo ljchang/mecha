@@ -451,7 +451,7 @@ mecha sessions appraise --days 30 --kind web --json
 | `appraiser` | Always `null`: the counts-only appraiser is retired. Kept so a reader of the old shape still finds the key. |
 | `predictions` | Anticipation's predictions scored (store-wide): per response and per concern kind, `predictions`, `scored`, `materialized`, `clean`, the reasons the rest are not yet a point (`unscored`), and `materialized_rate`, which is `null` when nothing was scored; plus `total`, `unreadable`, and whether the outbox was fully `read`. See [anticipation](/docs/features/appraisal/anticipation#how-well-the-predictions-held-up). |
 | `expectations` | The appraisals' own predictions (their expected act) checked against what you did: `with_expectation`, `scored`, `hits`, `surprises` (and `clean_surprises`), `pending` (the waiting period is still open), `unknown` (a store, the board or the patience could not be read), `board_not_read` (task outputs this readout cannot window, because it reads no board; `mecha distill` scores them), and `hit_rate`, which is `null` over no scores. `read: false` when the store could not be read. |
-| `text_appraisals` | Counts from the [text-appraisal store](#text-appraisals): records, sessions, how many are `clean` and `not_clean`, claims kept and dropped by grounding (`dropped_by`, by reason), records carrying an expected act (`with_expected_act`), judgment goals that did not resolve (`goals_unresolved`), and whether the store was fully read. |
+| `text_appraisals` | Counts from the [text-appraisal store](#text-appraisals): records, sessions, how many are `clean` and `not_clean`, claims kept and dropped by grounding (`dropped_by`, by reason), records carrying an expected act (`with_expected_act`), judgment goals that did not resolve (`goals_unresolved`), [counterfactual reflections](#what-a-losing-arm-taught) from losing arms (`counterfactuals`, and `counterfactuals_not_clean`), and whether the store was fully read. |
 
 The signed errors, valence and label above are derived when read and never
 stored. This scan is per **session**, while `sessions health` reports per-run
@@ -545,6 +545,36 @@ changes or adds to it.
 mecha sessions appraise 20260925T1131     # one session's appraisal
 mecha sessions appraise --text -n 5       # the five newest
 ```
+
+#### What a losing arm taught
+
+[`mecha sessions compare`](/docs/features/learning#mecha-sessions-compare--policies-at-the-moments-you-decided)
+replays a moment you already decided — a steer, a refusal, a draft you
+rewrote or rejected — under a few policies, and checks each against what you
+did. When the check separates them, the policy that did what you refused
+**lost**, and that is worth keeping. The next `mecha distill` pass adds it to
+the session's appraisal as a **counterfactual reflection**:
+
+```text
+counterfactual reflection cfr-… · comparison:cmp-… · dereferences · clean
+  │ Counterfactual at a draft the owner rejected (message 6, call 2). Lost: under today's deployed rules (rules 9f8e7d6c5b4a), the arm drafted the text the owner rejected. Won: under no rules (no rules block), the arm ended without drafting. Decided by the rejected-draft validator against the owner's recorded verdict; comparison cmp-….
+```
+
+- **Only a decided comparison writes one.** A moment the check could not
+  decide, or one with no check that can pose it (a surprise, a check the
+  agent set itself), writes nothing, and so does a moment where every
+  policy did the same thing.
+- **mecha writes every word, from the comparison's record.** No model writes
+  it, and neither your text nor a draft's text is in it.
+- **It points at its comparison.** `mecha sessions appraise <session>` checks
+  that the comparison is still on record and still says what the reflection
+  quotes, and says `DOES NOT DEREFERENCE` when it is not.
+- **It carries its appraisal's taint.** A reflection on a session that read
+  third-party content is marked as such, like the appraisal it belongs to.
+- **Each comparison is added once**, in
+  `~/.mecha/appraisals/counterfactuals.jsonl`; the appraisal itself is never
+  rewritten. A comparison of a session that has no appraisal yet waits for the
+  pass after it has one. Nothing reads these yet except you.
 
 ### The finding: most runs had no label, and why the gate moved
 
