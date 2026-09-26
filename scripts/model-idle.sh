@@ -136,12 +136,44 @@ finish() {
 # A server that does not say `role: router` (every single-model llama-server,
 # and anything that does not answer /props) takes the plain read below
 # unchanged, which fails loudly on its own terms.
+#
+# **Both reads classify a bounce the way the /slots read below does** (found
+# on review): a refusal, a reset or a timeout is a restart in progress —
+# counted, and loud only once it has lasted. Without that, one lost /props
+# would demote a healthy router to "single-model", and its bare /slots 400
+# would fail the unit on the first tick of every `systemctl restart`.
+
+# One GET: sets GOT_RC (curl's exit), GOT_CODE (HTTP status), GOT_BODY.
+get() {
+    local reply
+    reply="$(curl -s -m 5 -w '\n%{http_code}' "$1")"
+    GOT_RC=$?
+    GOT_CODE="${reply##*$'\n'}"
+    GOT_BODY="${reply%$'\n'*}"
+}
+# A bounce of URL, going by curl's exit code: counted, and the tick skipped.
+bounce_skip() {
+    case "$GOT_RC" in
+        28) stuck_skip "$1 too busy to answer" ;;
+        7) stuck_skip "nothing listening at $1" ;;
+        52 | 56) stuck_skip "$1 dropped the connection" ;;
+    esac
+}
+
 BASE="${SLOTS_URL%/slots}"
-role="$(curl -s -m 5 "$BASE/props" 2>/dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin).get("role", ""))' 2>/dev/null)"
+get "$BASE/props"
+bounce_skip "$BASE/props"
+role=""
+if [ "$GOT_RC" -eq 0 ] && [ "$GOT_CODE" = 200 ]; then
+    role="$(printf '%s' "$GOT_BODY" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("role", ""))' 2>/dev/null)"
+fi
 if [ "$role" = router ]; then
+    get "$BASE/models"
+    bounce_skip "$BASE/models"
+    [ "$GOT_CODE" = 503 ] && stuck_skip "$BASE/models says the router is still starting"
     # One line: "<status> <url-to-read>", "none", "many", or nothing on an
     # answer this cannot read.
-    state="$(curl -s -m 5 "$BASE/models" 2>/dev/null | BASE="$BASE" python3 -c '
+    state="$(printf '%s' "$GOT_BODY" | BASE="$BASE" python3 -c '
 import json, os, sys, urllib.parse
 r = [m for m in json.load(sys.stdin).get("data", [])
      if m.get("status", {}).get("value") in ("loaded", "loading", "sleeping")]

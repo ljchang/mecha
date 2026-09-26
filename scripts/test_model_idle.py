@@ -45,7 +45,11 @@ ROUTERS = {
     "/r-none": ([{"id": "m", "status": {"value": "unloaded"}}], IDLE_SLOT),
     "/r-loading": ([{"id": "m", "status": {"value": "loading"}}], IDLE_SLOT),
     "/r-many": ([{"id": "m", "status": {"value": "loaded"}}, {"id": "n", "status": {"value": "loaded"}}], IDLE_SLOT),
+    "/r-hangprops": ([{"id": "m", "status": {"value": "loaded"}}], IDLE_SLOT),
+    "/r-hangmodels": ([{"id": "m", "status": {"value": "loaded"}}], IDLE_SLOT),
 }
+# Reads that outlast the script's 5 s budget: a router mid-restart.
+HANGS = {"/r-hangprops/props", "/r-hangmodels/models"}
 SEEN = []  # every path the stub was asked for, in order
 
 
@@ -76,7 +80,7 @@ def routed(path):
 class Stub(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         SEEN.append(self.path)
-        if self.path == "/hang":
+        if self.path == "/hang" or self.path in HANGS:
             threading.Event().wait(8)  # longer than the script's 5 s budget
             return
         code, body = routed(self.path) or ROUTES.get(self.path, (404, {}))
@@ -261,6 +265,17 @@ class ModelIdle(unittest.TestCase):
     def test_a_router_loading_a_model_skips_then_fails_once_it_has_lasted(self):
         codes = [self.run_check(f"{self.base}/r-loading/slots", stuck_max=3)[0] for _ in range(3)]
         self.assertEqual(codes, [1, 1, 255])
+
+    def test_a_lost_props_read_is_a_bounce_not_a_single_model_server(self):
+        # Demoted to "single-model", the bare /slots read would be refused
+        # (the stub answers it 500) and fail the unit on the first tick.
+        codes = [self.run_check(f"{self.base}/r-hangprops/slots", stuck_max=2)[0] for _ in range(2)]
+        self.assertEqual(codes, [1, 255])
+
+    def test_a_lost_models_read_is_a_bounce(self):
+        code, said = self.run_check(f"{self.base}/r-hangmodels/slots")
+        self.assertEqual(code, 1)
+        self.assertIn("too busy to answer", said)
 
     def test_two_resident_models_fail_at_once(self):
         self.assertEqual(self.run_check(f"{self.base}/r-many/slots")[0], 255)
