@@ -164,7 +164,7 @@ class StartRouter(unittest.TestCase):
         code, _, err, _ = self.run_script()
         self.assertEqual(code, 1)
         self.assertIn("vision tower is not on disk", err)
-        self.assertIn("/snapshots/r1/", err, "the fetch line must name the snapshot that holds the weights")
+        self.assertIn('/snapshots/r1")', err, "the fetch line must name the snapshot that holds the weights")
 
     def test_gemmas_draft_comes_from_its_weights_snapshot(self):
         g = "unsloth--gemma-4-26B-A4B-it-GGUF"

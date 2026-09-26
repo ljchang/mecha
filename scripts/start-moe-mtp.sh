@@ -10,7 +10,10 @@ M="$S/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
 # downloads, so it does nothing for any script here, all of which use -m.
 # mecha's startup preflight reads GET /props and warns in both directions.
 source "$(dirname "$0")/mmproj.sh"
-MMPROJ=$(mmproj_or_die "$S" unsloth/Qwen3.6-35B-A3B-MTP-GGUF)
+# `|| exit 1`: mmproj_or_die's own exit ends only the $(...) subshell, and
+# this script has no `set -e`, so without it a missing projector fell through
+# to `--mmproj ""` — a text-only server (found on review).
+MMPROJ=$(mmproj_or_die "$S" unsloth/Qwen3.6-35B-A3B-MTP-GGUF) || exit 1
 # **`-c` is divided across slots, and that is the trap to keep in mind.**
 # `-c 262144 -np 4` is four slots of 65,536, not four of 262,144 — which is why
 # the build's own 4-slot default was dangerous: it silently gave each request an
@@ -245,6 +248,6 @@ exec ${LLAMA_SERVER:-llama-server} -m "$M" \
   --host 127.0.0.1 --port 8080 -ngl 999 -c "$CTX" -np "$NP" --alias qwen3.6-35b-a3b --jinja \
   -cram "$CRAM" \
   --reasoning-budget 4096 \
-  --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0 \
+  --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0 --reasoning-preserve \
   --presence-penalty 0.0 --repeat-penalty 1.0 \
   --spec-type draft-mtp

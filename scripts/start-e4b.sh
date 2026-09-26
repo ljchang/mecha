@@ -1,7 +1,10 @@
 #!/bin/bash
 S=$(ls -d ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--gemma-4-E4B-it-qat-GGUF/snapshots/*/)
 source "$(dirname "$0")/mmproj.sh"
-MMPROJ=$(mmproj_or_die "$S" unsloth/gemma-4-E4B-it-qat-GGUF)
+# `|| exit 1`: mmproj_or_die's own exit ends only the $(...) subshell, and
+# this script has no `set -e`, so without it a missing projector fell through
+# to `--mmproj ""` — a text-only server (found on review).
+MMPROJ=$(mmproj_or_die "$S" unsloth/gemma-4-E4B-it-qat-GGUF) || exit 1
 # **A vision model is two files, and this one is multimodal.** The weights
 # carry the language model; the vision tower ships beside them as a separate
 # mmproj-*.gguf. Without --mmproj the server loads, answers, reports

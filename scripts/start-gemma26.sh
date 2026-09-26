@@ -1,7 +1,10 @@
 #!/bin/bash
 S=$(ls -d ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/*/)
 source "$(dirname "$0")/mmproj.sh"
-MMPROJ=$(mmproj_or_die "$S" unsloth/gemma-4-26B-A4B-it-GGUF)
+# `|| exit 1`: mmproj_or_die's own exit ends only the $(...) subshell, and
+# this script has no `set -e`, so without it a missing projector fell through
+# to `--mmproj ""` — a text-only server (found on review).
+MMPROJ=$(mmproj_or_die "$S" unsloth/gemma-4-26B-A4B-it-GGUF) || exit 1
 # -np 1: see start-moe-mtp.sh — 4 default slots would quarter the context
 # to 8192 per request, and the nightly validate's judge runs 16384-token
 # verdict budgets that cannot fit in that.
