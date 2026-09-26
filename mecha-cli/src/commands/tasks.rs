@@ -2265,7 +2265,10 @@ pub(crate) fn steer_pump(
 pub(crate) fn permits() -> Result<mecha_core::permit::Permits> {
     Ok(mecha_core::permit::Permits::new(
         mecha_core::permit::dir_under(&mecha_core::work::mecha_home()?),
-        mecha_core::permit::DEFAULT_BACKGROUND_PERMITS,
+        // Sized to the model the router has loaded, when it says (§14 trap 5).
+        mecha_core::provider::router::background_seats(
+            mecha_core::permit::DEFAULT_BACKGROUND_PERMITS,
+        ),
     ))
 }
 

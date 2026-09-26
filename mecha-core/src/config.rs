@@ -330,6 +330,7 @@ impl Default for Config {
                 retry_after_cap_secs: None,
                 structured_output: StructuredOutput::Disabled,
                 fallbacks: Vec::new(),
+                follow_loaded: false,
             },
         );
         Config {
@@ -449,6 +450,15 @@ pub struct ProviderConfig {
     /// different model. `mecha eval` never falls back regardless: a
     /// scorecard grades the model it names.
     pub fallbacks: Vec<String>,
+    /// This entry stands for "whatever the llama-server router at `base_url`
+    /// has loaded" (`REMOTE-SURFACE-DESIGN.md` §14, D12). When a run takes
+    /// this entry *by default* — not by name — it takes the sibling entry
+    /// (same `base_url`) whose `model` is the resident one, so the owner's
+    /// pick reaches every consumer without a restart and every record names
+    /// the model that answered. Naming an entry explicitly always pins it.
+    /// Off by default, and cleared in experiment trials: an arm names its
+    /// model. See `provider::router`.
+    pub follow_loaded: bool,
 }
 
 impl ProviderConfig {
@@ -1444,24 +1454,57 @@ impl Config {
     }
 
     fn merge_env(&mut self) {
-        if let Ok(v) = std::env::var("MECHA_PROVIDER") {
+        self.merge_env_from(|k| std::env::var(k).ok());
+    }
+
+    /// [`Self::merge_env`] over any lookup, so it is testable without
+    /// touching the process environment.
+    ///
+    /// **An environment override is a pin.** `MECHA_PROVIDER` is `--provider`
+    /// spelled in the environment and `MECHA_MODEL` is `--model`, and both
+    /// flags pin; so either clears `follow_loaded` on the entry it lands on.
+    /// Without that, `MECHA_MODEL` rewrote the default entry's model and
+    /// `provider::router::followed` then walked away from it to whichever
+    /// sibling named the resident model — dropping the override without a
+    /// word, and only when such a sibling existed (found on review).
+    fn merge_env_from(&mut self, get: impl Fn(&str) -> Option<String>) {
+        if let Some(v) = get("MECHA_PROVIDER") {
             self.default_provider = v;
+            self.pin_provider(None);
         }
-        if let Ok(v) = std::env::var("MECHA_MODEL") {
+        if let Some(v) = get("MECHA_MODEL") {
             let name = self.default_provider.clone();
             if let Some(p) = self.providers.get_mut(&name) {
                 p.model = Some(v);
             }
+            self.pin_provider(None);
         }
-        if let Ok(v) = std::env::var("MECHA_EFFORT") {
+        if let Some(v) = get("MECHA_EFFORT") {
             if let Ok(e) = v.parse() {
                 self.agent.effort = Some(e);
             }
         }
     }
 
-    pub fn provider(&self, name: Option<&str>) -> Result<(String, &ProviderConfig)> {
+    /// Stop the entry `name` (the default when `None`) following a router
+    /// (`provider::router`): a model or provider the owner named — by flag,
+    /// by environment, by a trigger's own field — is a pin, and must not be
+    /// walked away from to whichever sibling names the resident model.
+    pub fn pin_provider(&mut self, name: Option<&str>) {
         let name = name.unwrap_or(&self.default_provider).to_string();
+        if let Some(p) = self.providers.get_mut(&name) {
+            p.follow_loaded = false;
+        }
+    }
+
+    pub fn provider(&self, name: Option<&str>) -> Result<(String, &ProviderConfig)> {
+        // Only the default follows the router's resident model; a name the
+        // caller chose is a pin (`provider::router`).
+        let name = match name {
+            Some(n) => n.to_string(),
+            None => crate::provider::router::follow(self, &self.default_provider)
+                .unwrap_or_else(|| self.default_provider.clone()),
+        };
         let cfg = self.providers.get(&name).with_context(|| {
             format!(
                 "no provider named {name:?}. Configured: {}",
@@ -2034,6 +2077,55 @@ impl ConfigLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `MECHA_MODEL` and `MECHA_PROVIDER` are `--model` and `--provider` in
+    /// the environment, and pin the same way: the entry they land on stops
+    /// following the router, whatever it has resident.
+    #[test]
+    fn an_environment_override_pins_the_entry_it_lands_on() {
+        let fresh = || {
+            let mut c = Config {
+                default_provider: "local".into(),
+                ..Default::default()
+            };
+            for (name, follow) in [("local", true), ("gemma26", true)] {
+                c.providers.insert(
+                    name.into(),
+                    ProviderConfig {
+                        kind: "local".into(),
+                        model: Some(name.into()),
+                        follow_loaded: follow,
+                        ..Default::default()
+                    },
+                );
+            }
+            c
+        };
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+
+        let mut c = fresh();
+        c.merge_env_from(env(&[("MECHA_MODEL", "qwen3.8-27b")]));
+        assert_eq!(c.providers["local"].model.as_deref(), Some("qwen3.8-27b"));
+        assert!(!c.providers["local"].follow_loaded);
+        assert!(c.providers["gemma26"].follow_loaded, "only the entry named");
+
+        let mut c = fresh();
+        c.merge_env_from(env(&[("MECHA_PROVIDER", "gemma26")]));
+        assert_eq!(c.default_provider, "gemma26");
+        assert!(!c.providers["gemma26"].follow_loaded);
+        assert!(c.providers["local"].follow_loaded);
+
+        let mut c = fresh();
+        c.merge_env_from(env(&[]));
+        assert!(c.providers["local"].follow_loaded, "no override, no pin");
+    }
 
     #[test]
     fn layer_overrides_only_named_fields() {
