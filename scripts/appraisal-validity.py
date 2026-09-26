@@ -348,6 +348,9 @@ def served_model(base_url):
     as `scripts/served-props.sh` and `provider::router::readable`)."""
     import urllib.request
 
+    # The server root, as the Rust side and served-props.sh take it: a `/v1`
+    # spelling would otherwise ask `/v1/props`, which llama-server does not serve.
+    base_url = base_url.rstrip("/").removesuffix("/v1").rstrip("/")
     try:
         with urllib.request.urlopen(f"{base_url}/props", timeout=5) as r:
             props = json.load(r)
@@ -359,7 +362,9 @@ def served_model(base_url):
                 m.get("status", {}).get("value") not in known for m in data
             ):
                 sys.exit(f"{base_url}/models is not a list this can read; --appraise will not guess a model")
-            resident = [m["id"] for m in data if m["status"]["value"] in ("loaded", "sleeping")]
+            resident = [
+                m["id"] for m in data if m["status"]["value"] in ("loaded", "loading", "sleeping")
+            ]
             if len(resident) != 1:
                 sys.exit(
                     f"the router at {base_url} has {len(resident)} models loaded; "

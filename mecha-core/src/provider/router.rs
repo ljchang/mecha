@@ -594,7 +594,8 @@ pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
                             .exit_code
                             .map_or_else(|| "unknown".to_string(), |c| c.to_string())
                     ),
-                    // A status this build does not know says nothing about
+                    // A status this build does not know — renamed, or absent
+                    // (an empty value, by `serde(default)`) — says nothing about
                     // whether the load is coming: fail now rather than wait
                     // out `wait` on it (found on review).
                     other if !KNOWN_STATUSES.contains(&other) => bail!(
