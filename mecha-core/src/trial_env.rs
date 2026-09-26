@@ -213,6 +213,12 @@ impl Environment {
         cfg.merge_environment_file(&path)?;
         cfg.default_provider = real.default_provider.clone();
         cfg.providers = real.providers.clone();
+        // A trial runs the model its arm names. Following whatever the owner
+        // last loaded would change an arm's model mid-experiment, silently in
+        // the comparison even though each record would name it.
+        for p in cfg.providers.values_mut() {
+            p.follow_loaded = false;
+        }
         cfg.security = real.security.clone();
         cfg.sandbox = real.sandbox.clone();
         cfg.rules = real.rules.clone();
@@ -733,7 +739,13 @@ mod tests {
             default_provider: "local".into(),
             ..Default::default()
         };
-        real.providers.insert("local".into(), Default::default());
+        real.providers.insert(
+            "local".into(),
+            crate::config::ProviderConfig {
+                follow_loaded: true,
+                ..Default::default()
+            },
+        );
         real.security.trifecta = crate::config::TrifectaPolicy::Ask;
         real.mcp.push(McpServerConfig {
             name: "graph".into(),
@@ -773,6 +785,9 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         assert_eq!(cfg.mcp[0].env["MECHA_GRAPH_DB"], "${STORE}/graph.db");
         assert_eq!(cfg.default_provider, "local");
         assert!(cfg.providers.contains_key("local"));
+        // An arm runs the model it names, never whatever the owner loaded.
+        assert!(real.providers["local"].follow_loaded);
+        assert!(cfg.providers.values().all(|p| !p.follow_loaded));
         assert_eq!(cfg.security.trifecta, real.security.trifecta);
 
         let mut bound = cfg.clone();

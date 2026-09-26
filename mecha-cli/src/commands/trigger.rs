@@ -628,7 +628,14 @@ fn check_cost_cap(t: &Trigger) -> Result<()> {
     let Some(cap) = t.max_cost_usd else {
         return Ok(());
     };
-    let cfg = mecha_core::config::Config::load_global()?;
+    let mut cfg = mecha_core::config::Config::load_global()?;
+    // The entry the run will use: a trigger's own `model` pins the default,
+    // as `setup::pin_named_model` does for the run, or the cap would price the
+    // sibling the router has loaded while the run bills the pinned entry
+    // (found on review).
+    if t.model.is_some() {
+        cfg.pin_provider(t.provider.as_deref());
+    }
     let (name, provider) = cfg.provider(t.provider.as_deref())?;
     anyhow::ensure!(
         provider.pricing().is_some(),
@@ -915,11 +922,22 @@ async fn run_agent(
     record: &mut RunRecord,
     stop: Option<&CancellationToken>,
 ) -> Result<String> {
-    check_cost_cap(t)?;
-
     // The global config only — a scheduled run must not inherit the tool
     // surface of whatever repository the daemon was started in.
     let cfg = mecha_core::config::Config::load_global()?;
+    // The daemon outlives every run it starts, so the snapshot `main` took is
+    // the model loaded when the *daemon* started. A scheduled run follows the
+    // owner's pick as it stands now (`provider::router`, D12) — and before
+    // the cost cap, which must price the entry this run will use, not the one
+    // resident when the daemon started (found on review).
+    // The daemon's own `--model`/`--provider`, if it was given one, still
+    // pins every fire; a trigger's own fields pin through `prepare_tools`.
+    let follows = global.model.is_none() && global.provider.is_none();
+    for warning in mecha_core::provider::router::observe(&cfg, follows).await {
+        eprintln!("mecha: {warning}");
+    }
+    check_cost_cap(t)?;
+
     let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
     let system = if base.is_empty() {
         UNATTENDED.to_string()
