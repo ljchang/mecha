@@ -88,7 +88,7 @@ fi
 # Dense 27B: the whole trained window in one slot; MTP is in the file itself.
 S=$(snapshot unsloth--Qwen3.8-27B-GGUF) || true
 if [ -n "$S" ] && [ -f "${S}Qwen3.8-27B-Q4_K_M.gguf" ] &&
-  MP=$(mmproj_or_die "$S" unsloth/Qwen3.8-27B-GGUF 2>/dev/null); then
+  MP=$(mmproj_or_die "$S" unsloth/Qwen3.8-27B-GGUF ); then
   cat >>"$OUT" <<EOF
 
 [qwen3.8-27b]
@@ -107,7 +107,8 @@ fi
 # Gemma's MTP head ships as a separate draft file.
 S=$(snapshot unsloth--gemma-4-26B-A4B-it-GGUF) || true
 if [ -n "$S" ] && [ -f "${S}gemma-4-26B-A4B-it-UD-Q4_K_M.gguf" ] &&
-  MP=$(mmproj_or_die "$S" unsloth/gemma-4-26B-A4B-it-GGUF 2>/dev/null); then
+  [ -f "${S}mtp-gemma-4-26B-A4B-it.gguf" ] &&
+  MP=$(mmproj_or_die "$S" unsloth/gemma-4-26B-A4B-it-GGUF ); then
   cat >>"$OUT" <<EOF
 
 [gemma-4-26b-a4b]
@@ -120,7 +121,7 @@ model-draft = ${S}mtp-gemma-4-26B-A4B-it.gguf
 n-gpu-layers-draft = 999
 EOF
 else
-  warn "skipping gemma-4-26b-a4b: weights or projector not on disk"
+  warn "skipping gemma-4-26b-a4b: weights, MTP draft or projector not on disk"
 fi
 
 # **An empty cache, or the router offers every GGUF on the machine.** Presets

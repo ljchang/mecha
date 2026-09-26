@@ -109,6 +109,30 @@ pub fn base(url: &str) -> String {
         .to_string()
 }
 
+/// Whether `follow_loaded` is honoured on this entry: a llama-server
+/// (`kind = "local"`) **on this machine**. `kind` names the wire dialect, not
+/// the location — a `local` entry can point at a tailnet host — so the
+/// address is checked too, or the "no request off-machine" promise would
+/// rest on a dialect (found on review).
+pub fn follows_here(p: &ProviderConfig) -> bool {
+    p.follow_loaded && p.kind == "local" && p.base_url.as_deref().is_some_and(is_loopback)
+}
+
+/// Whether a base URL's host is this machine.
+pub fn is_loopback(url: &str) -> bool {
+    let Ok(u) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = u.host_str() else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// The routers `follow_loaded` entries stand for. Local entries only: the
 /// flag means nothing off-machine, and honouring it there would put a
 /// request to someone else's server in front of every command — which
@@ -117,7 +141,7 @@ pub fn followed_bases(cfg: &Config) -> Vec<String> {
     let mut bases: Vec<String> = cfg
         .providers
         .values()
-        .filter(|p| p.follow_loaded && p.kind == "local")
+        .filter(|p| follows_here(p))
         .filter_map(|p| p.base_url.as_deref().map(base))
         .collect();
     bases.sort();
@@ -229,13 +253,14 @@ pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
         Vec::new()
     };
     for (name, p) in &cfg.providers {
-        if p.follow_loaded && p.kind != "local" {
+        if p.follow_loaded && !follows_here(p) {
             warnings.push(format!(
-                "[providers.{name}] sets follow_loaded, which is ignored on kind = {:?}: it means \
-                 \"whatever a llama-server router on this machine has loaded\", and following a \
-                 remote server would put a request to it in front of every command. Use \
-                 kind = \"local\" for a local router.",
-                p.kind
+                "[providers.{name}] sets follow_loaded, which is ignored unless the entry is \
+                 kind = \"local\" at a loopback address (this one is kind = {:?} at {}): it \
+                 means \"whatever a llama-server router on this machine has loaded\", and \
+                 following any other server would put a request to it in front of every command.",
+                p.kind,
+                p.base_url.as_deref().unwrap_or("no base_url")
             ));
         }
     }
@@ -262,10 +287,13 @@ pub fn background_seats(fallback: usize) -> usize {
 /// routers disagree, which would be a guess.
 pub fn seats_for(seen: &[Seen], fallback: usize) -> usize {
     let mut known = seen.iter().filter_map(|s| s.slots);
-    match (known.next(), known.next()) {
-        (Some(n), None) => (n.saturating_sub(1) as usize).max(1),
-        _ => fallback,
+    let Some(n) = known.next() else {
+        return fallback;
+    };
+    if known.any(|m| m != n) {
+        return fallback;
     }
+    (n.saturating_sub(1) as usize).max(1)
 }
 
 /// The provider `name` stands for right now, under this process's snapshot.
@@ -287,7 +315,7 @@ pub fn follow(cfg: &Config, name: &str) -> Option<String> {
 /// not answer.
 pub fn followed(cfg: &Config, name: &str, seen: &[Seen]) -> Option<String> {
     let p = cfg.providers.get(name)?;
-    if !p.follow_loaded || p.kind != "local" {
+    if !follows_here(p) {
         return None;
     }
     let b = base(p.base_url.as_deref()?);
@@ -643,6 +671,7 @@ mod tests {
             3,
             "two disagree: no guess"
         );
+        assert_eq!(seats_for(&[at(Some(1)), at(Some(1))], 3), 1, "two agree");
     }
 
     #[test]
@@ -670,6 +699,22 @@ mod tests {
         // A preset that leaves it to the server's default disagrees with 0.6.
         let w = sampling_mismatches(&c, b, &m(&["--ctx-size", "32768"]));
         assert!(w[0].contains("llama-server's default"), "{w:?}");
+    }
+
+    #[test]
+    fn a_local_kind_entry_off_this_machine_is_not_followed() {
+        let mut c = cfg();
+        c.providers.get_mut("local").unwrap().base_url = Some("http://studio.tailnet:8080".into());
+        assert!(followed_bases(&c).is_empty());
+        assert_eq!(followed(&c, "local", &seen(Some("gemma-4-26b-a4b"))), None);
+        for url in [
+            "http://127.0.0.1:8080",
+            "http://localhost:8080/v1",
+            "http://[::1]:8080",
+        ] {
+            assert!(is_loopback(url), "{url}");
+        }
+        assert!(!is_loopback("http://100.64.0.7:8080"));
     }
 
     #[test]

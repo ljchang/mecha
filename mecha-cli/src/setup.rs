@@ -202,8 +202,10 @@ async fn preflight_provider(cfg: &mecha_core::config::Config, opts: &GlobalOpts)
     // request reports far better than a startup line can, and printing it
     // here would put a warning in front of every command on a machine whose
     // model is not running yet.
-    let Some(props) = mecha_core::provider::preflight::fetch(base_url, pcfg.model.as_deref()).await
-    else {
+    // The run's model: under `--model` it is the one that answers, and a
+    // router is asked about the model named (found on review).
+    let model = opts.model.as_deref().or(pcfg.model.as_deref());
+    let Some(props) = mecha_core::provider::preflight::fetch(base_url, model).await else {
         return;
     };
     for line in mecha_core::provider::preflight::disagreements(&name, pcfg, &props) {
