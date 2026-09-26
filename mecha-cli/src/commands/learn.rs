@@ -859,10 +859,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     Ok(())
 }
 
-/// R34's lines for the learn log: rules toward a closed goal by id with why,
-/// waiting reflections toward one, and each goal the stores could not
-/// answer for — the last never folded into "nothing is dark". Empty only
-/// when the readout found nothing closed and nothing unknown.
 /// Why one reflection is, or is not, in this pass's pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Admission {
@@ -950,6 +946,10 @@ fn withheld_lines(withheld: &BTreeMap<mecha_core::attribution::Class, usize>) ->
         .collect()
 }
 
+/// R34's lines for the learn log: rules toward a closed goal by id with why,
+/// waiting reflections toward one, and each goal the stores could not
+/// answer for — the last never folded into "nothing is dark". Empty only
+/// when the readout found nothing closed and nothing unknown.
 fn closed_goal_lines(read: &mecha_core::learning::ClosedGoals) -> Vec<String> {
     let mut out = Vec::new();
     if !read.rules.is_empty() {

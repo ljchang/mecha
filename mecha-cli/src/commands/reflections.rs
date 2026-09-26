@@ -220,7 +220,10 @@ fn list(store: &LearningStore, domain: Option<&str>, all: bool, as_json: bool) -
                     // The whole gate; its provenance half beside it.
                     "learnable": admitted(r),
                     "provenance_admits": r.learnable(),
-                    "attribution": r.attribution.as_ref().map(|a| a.class.as_str()),
+                    // The class alone, under a name that says so: `show --json`
+                    // carries the whole `attribution` object, and one key must
+                    // not mean two shapes (found on review).
+                    "attribution_class": r.attribution.as_ref().map(|a| a.class.as_str()),
                     "blocked": blocked_because(r),
                     "edited": r.edited_at.is_some(),
                     "dropped": r.dropped_at.is_some(),

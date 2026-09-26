@@ -2223,16 +2223,33 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     } else {
         format!(" and {withheld} withheld on attribution")
     };
-    let why_withheld = if withheld == 0 {
-        String::new()
+    // Each half of the detail is said only when its cause is present: with
+    // nothing excluded by origin there are no excluded records to read and
+    // no evidence mix to change, and a detail that led with them would name
+    // the wrong cause and the wrong action (found on review).
+    let why_excluded = if excluded == 0 {
+        None
     } else {
-        format!(
-            " {withheld} clean reflection(s) are held back by the attribution gate instead: a \
-             data error, a gap, or no attribution at all — every reflection mined before \
+        Some(format!(
+            "The provenance gate keeps excluding — the gate working as designed, every \
+             night, with nothing downstream to show for it. The {excluded} excluded \
+             record(s) stay readable in {} — some are third-party evidence the gate held \
+             back, some may be mecha's own words correctly kept out of a feedback loop; the \
+             decision this proposes is yours, not a command's: read what got excluded, and \
+             change what evidence the loop may consolidate if the mix looks wrong.",
+            path.display()
+        ))
+    };
+    let why_withheld = if withheld == 0 {
+        None
+    } else {
+        Some(format!(
+            "{withheld} clean reflection(s) are held back by the attribution gate: a data \
+             error, a gap, or no attribution at all — every reflection mined before \
              corrections were attributed is unknown, and so is one whose reply named no \
              fact either way. `mecha reflections` says which each is; editing a lesson into \
              your own words admits it."
-        )
+        ))
     };
     // The remedy follows the larger half: the dry run shows how new
     // interventions classify by origin, and says nothing about attribution,
@@ -2260,16 +2277,13 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             "the rule learner is starved: {excluded} of {total} reflections excluded by \
              origin{held}, and no situation batch reaches the learn floor of {floor}"
         ),
-        detail: format!(
-            "reflect keeps mining and the provenance gate keeps excluding — the gate working \
-             as designed, every night, with nothing downstream to show for it. Clean pool: \
-             {pool}. The excluded records stay readable in {} — some are third-party evidence \
-             the gate held back, some may be mecha's own words correctly kept out of a \
-             feedback loop; the decision this proposes is yours, not a command's: read what \
-             got excluded, and change what evidence the loop may consolidate if the mix \
-             looks wrong.{why_withheld}",
-            path.display()
-        ),
+        detail: std::iter::once(format!(
+            "reflect keeps mining, and nothing it mines reaches a rule. Clean pool: {pool}."
+        ))
+        .chain(why_excluded)
+        .chain(why_withheld)
+        .collect::<Vec<_>>()
+        .join(" "),
         remedy: Some(remedy),
     });
     out
@@ -3291,6 +3305,14 @@ mod tests {
             learning[0].summary
         );
         assert!(learning[0].detail.contains("`mecha reflections`"));
+        assert!(
+            !learning[0]
+                .detail
+                .contains("provenance gate keeps excluding")
+                && !learning[0].detail.contains("excluded record"),
+            "nothing was excluded by origin, and the detail must not say so: {}",
+            learning[0].detail
+        );
         assert_eq!(
             learning[0].remedy.as_ref().unwrap().argv,
             vec!["mecha", "reflections"]

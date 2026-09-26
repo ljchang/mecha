@@ -41,8 +41,8 @@
 //!   are per session, while a reflection is per intervention. The model
 //!   extracts two spans; it never names the class. [`decide`] does.
 //! - *The spans are grounded before they are used* — `right` must be the
-//!   owner's words and `wrong` must be something the run said or was given
-//!   (both by [`crate::grounding::holds`]) — because a paraphrase would read
+//!   owner's words and `wrong` must be something the run said or was given,
+//!   or the owner quoted (all by [`crate::grounding::holds`]) — because a paraphrase would read
 //!   as absent, and absence decides a gap. A span that does not dereference
 //!   makes the attribution unknown rather than a guess.
 //!
@@ -119,7 +119,8 @@ pub enum Basis {
     /// Unknown: the reflector's reply said nothing either way.
     NotAnswered,
     /// Unknown: a span was not where it must be — `right` not in the
-    /// owner's words, or `wrong` in nothing the run said or was given.
+    /// owner's words, or `wrong` in nothing the run said or was given and
+    /// not in the owner's words either.
     Ungrounded,
     /// Unknown: a span below [`MIN_SPAN_CHARS`], or no `wrong` at all.
     TooShort,
@@ -174,7 +175,11 @@ fn unread_basis() -> Basis {
 
 impl Attribution {
     /// The one constructor that derives the class from the basis, so the two
-    /// cannot disagree on a record this build writes.
+    /// cannot disagree on a record this build writes. A record read back is
+    /// not re-derived: a newer build's basis word loads as
+    /// [`Basis::Unread`] beside the class it recorded, and the gate reads
+    /// the class — the forward-compatible answer, and the only place the two
+    /// can differ.
     pub fn new(basis: Basis, fact: Option<Fact>, source: Option<Source>) -> Attribution {
         let class = match basis {
             Basis::NoFact | Basis::RightGiven => Class::Behaviour,
@@ -250,18 +255,29 @@ impl Answer {
             },
             _ => None,
         };
-        let text = |v: Option<&serde_json::Value>| {
-            v.and_then(|v| v.as_str())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
+        // A span is a string, or a number the model did not quote ("right":
+        // 214 for a room); absent, null or empty is no span. Anything else is
+        // no answer at all, rather than read as "no replacement", which
+        // would turn a garbled `right` into a rejection and a false gap
+        // (found on review).
+        let text = |v: Option<&serde_json::Value>| -> Result<Option<String>, ()> {
+            match v {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(serde_json::Value::String(s)) => {
+                    Ok(Some(s.trim().to_string()).filter(|s| !s.is_empty()))
+                }
+                Some(serde_json::Value::Number(n)) => Ok(Some(n.to_string())),
+                Some(_) => Err(()),
+            }
         };
-        match said {
-            None => Answer::NotAnswered,
-            Some(false) => Answer::NoFact,
-            Some(true) => Answer::Fact(Fact {
-                wrong: text(wrong).unwrap_or_default(),
-                right: text(right),
+        match (said, text(wrong), text(right)) {
+            (None, _, _) => Answer::NotAnswered,
+            (Some(false), _, _) => Answer::NoFact,
+            (Some(true), Ok(wrong), Ok(right)) => Answer::Fact(Fact {
+                wrong: wrong.unwrap_or_default(),
+                right,
             }),
+            (Some(true), _, _) => Answer::NotAnswered,
         }
     }
 }
@@ -633,6 +649,24 @@ mod tests {
             ),
             fact("Northwind Labs", None),
             "trimmed, and an empty right is a rejection"
+        );
+        assert_eq!(
+            Answer::from_reply(
+                Some(&v(json!(true))),
+                Some(&v(json!(118))),
+                Some(&v(json!(214))),
+            ),
+            fact("118", Some("214")),
+            "a number is a value the model did not quote"
+        );
+        assert_eq!(
+            Answer::from_reply(
+                Some(&v(json!(true))),
+                Some(&v(json!("Room 118"))),
+                Some(&v(json!(["Room 214"]))),
+            ),
+            Answer::NotAnswered,
+            "a garbled right is no answer, never a rejection"
         );
     }
 
