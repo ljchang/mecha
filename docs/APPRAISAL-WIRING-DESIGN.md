@@ -1596,8 +1596,9 @@ the metric the proposal names. So the draw is split, on one seed
   interpretation, good/bad per goal as words, and the lessons — never a
   claim's quote, which is the run's content, and no number (R21). At most
   6 appraisals, newest first, one per session; each interpretation cut at
-  600 characters and at most 2 lessons of 240, about 1,450 characters a
-  note and 9,000 in all. A cut is flagged on the note, and appraisals past
+  600 characters, at most 2 lessons of 240 and at most 4 per-goal bearings
+  of 120, each re-bounded on read; at most about 1,700 characters a
+  note and under 11,000 in all (about 2.8k tokens). A cut is flagged on the note, and appraisals past
   the cap are counted in the brief; an unreadable store, or unparseable lines of one, is said, never read
   as none. Each piece is flattened to one line before it is bounded.
 - **A source for `carries_over`.** `diagnose::lifted` checks a proposal
