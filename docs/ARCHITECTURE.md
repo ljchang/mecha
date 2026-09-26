@@ -4024,7 +4024,8 @@ priority = gain × need × decay
   are not demand" is the corpus admission — test and experiment sessions do
   not recur. The episode is one occurrence of its region, so need is never
   zero. `Recurrence::scan` reads only each run record's line, newest first,
-  at most 500 sessions.
+  at most 500 sessions; the older ones past the cap are counted and said,
+  as a torn header is, because either makes the counts floors.
 - **Unknown is never zero and never a free pass.** A factor that cannot be
   read is named on the priority (`Factor`): no appraisal, or a partial
   one (an unreadable charter is one, so the whole gain is unknown, not
@@ -4040,7 +4041,10 @@ priority = gain × need × decay
   `HOPELESS_NIGHTS` (3) distinct measurement dates since anything last won
   on it — a candidate that selected it accepted by the gate or the owner
   (`reverted` counts, it was accepted first), or a comparison preferring a
-  `Candidate` arm on its session. The holdout is never "high".
+  `Candidate` arm on its session. The holdout is never "high". A night
+  loses unless something won, so a `staged` proposal waiting on the owner
+  counts as a rejection does: its episodes stop costing a slot a night
+  while they sit in the queue, and accepting it starts them over.
 - **In the harness selection, headroom gates and the priority orders**
   (R39). An episode with no headroom on the predicted metric can only tie
   or worsen, so every episode with headroom ranks first; within each part

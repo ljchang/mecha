@@ -276,6 +276,14 @@ pub fn sort_by_priority<T>(items: &mut [T], key: impl Fn(&T) -> (&Priority, &str
 ///
 /// Only nights after the latest win count, so an episode something learned
 /// from starts over.
+///
+/// **A night is losing unless something won, not only when something
+/// lost**: a `staged` proposal waiting on the owner counts, as a rejection
+/// does. That is the design's rule (APPRAISAL-WIRING-DESIGN L1, "since
+/// anything last won"), and it is deliberate: an episode whose change is
+/// already in the owner's queue is not re-spent a slot a night while it
+/// waits, and accepting the proposal is a win that starts it over — the
+/// demotion lasts only while the queue is unread.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct History {
     losing: BTreeMap<String, BTreeSet<NaiveDate>>,
@@ -384,6 +392,9 @@ pub struct Recurrence {
     /// Sessions in the window whose run record could not be read — counted,
     /// so a caller can say the counts are floors.
     pub unreadable: usize,
+    /// Admitted sessions in the window past [`RECURRENCE_SCAN_CAP`], the
+    /// oldest: not walked, so their regions' counts are floors too.
+    pub beyond_cap: usize,
 }
 
 impl Recurrence {
@@ -396,6 +407,7 @@ impl Recurrence {
         Recurrence {
             counts,
             unreadable: 0,
+            beyond_cap: 0,
         }
     }
 
@@ -421,6 +433,7 @@ impl Recurrence {
             unreadable: torn,
             ..Recurrence::default()
         };
+        out.beyond_cap = listed.len().saturating_sub(RECURRENCE_SCAN_CAP);
         for (_, path) in listed.into_iter().take(RECURRENCE_SCAN_CAP) {
             match Session::run_configs_streaming(&path) {
                 Ok(configs) => {
@@ -490,6 +503,12 @@ impl Ranker {
                     caveats.push(format!(
                         "{} session(s) whose header or run record could not be read: recurrence counts are floors",
                         r.unreadable
+                    ));
+                }
+                if r.beyond_cap > 0 {
+                    caveats.push(format!(
+                        "{} older session(s) in the window past the {RECURRENCE_SCAN_CAP}-session scan: recurrence counts are floors",
+                        r.beyond_cap
                     ));
                 }
                 Some(r)
