@@ -935,6 +935,9 @@ pub enum StageLever {
     /// `rules propose-retirements --apply`; see `Schedule::retire`.
     Retire,
     SensorsInBrief,
+    /// `[agent] appraisals_in_brief` in the trial home's config — the clean
+    /// appraisals' entry into the diagnostician's brief (row 2f).
+    AppraisalsInBrief,
     /// Not a lever: the principal's call at a position, on the same ledger
     /// so `stage_health` and the judge's hold read it like a stage — a
     /// principal that failed to act is a treatment not known to have
@@ -950,13 +953,14 @@ pub enum StageLever {
 }
 
 impl StageLever {
-    pub const ALL: [StageLever; 6] = [
+    pub const ALL: [StageLever; 7] = [
         StageLever::Reflect,
         StageLever::Learn,
         StageLever::Validate,
         StageLever::Ruminate,
         StageLever::Retire,
         StageLever::SensorsInBrief,
+        StageLever::AppraisalsInBrief,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -968,6 +972,7 @@ impl StageLever {
             StageLever::Retire => "retire",
             StageLever::Principal => "principal",
             StageLever::SensorsInBrief => "sensors_in_brief",
+            StageLever::AppraisalsInBrief => "appraisals_in_brief",
             StageLever::Unknown => "unknown",
         }
     }
@@ -997,7 +1002,10 @@ impl StageLever {
             StageLever::Validate => Some(&["validate", "--unprocessed-only"]),
             StageLever::Ruminate => Some(&["harness", "ruminate"]),
             StageLever::Retire => Some(&["rules", "propose-retirements", "--apply"]),
-            StageLever::SensorsInBrief | StageLever::Principal | StageLever::Unknown => None,
+            StageLever::SensorsInBrief
+            | StageLever::AppraisalsInBrief
+            | StageLever::Principal
+            | StageLever::Unknown => None,
         }
     }
 }
@@ -3104,10 +3112,14 @@ pub fn child_invocation(
         let change = crate::harness::parse_change(spec)?;
         change.apply_to_agent(&mut config.agent)?;
     }
-    // The one stage lever that is a config switch rather than a verb: it
-    // rides in the trial home's config, where `harness ruminate` reads it.
-    if arm.resolve_stages()?.contains(&StageLever::SensorsInBrief) {
+    // The two stage levers that are config switches rather than verbs: they
+    // ride in the trial home's config, where `harness ruminate` reads them.
+    let stages = arm.resolve_stages()?;
+    if stages.contains(&StageLever::SensorsInBrief) {
         config.agent.sensors_in_brief = false;
+    }
+    if stages.contains(&StageLever::AppraisalsInBrief) {
+        config.agent.appraisals_in_brief = false;
     }
     Ok(ChildInvocation {
         config,
@@ -5282,6 +5294,28 @@ rationale = "r"
         let child = child_invocation(&real, &arm, None).unwrap();
         assert!(!child.config.agent.sensors_in_brief);
         assert!(child.flags.is_empty(), "a switch, not a flag");
+    }
+
+    /// Row 2f's lever: the appraisal-off preset reaches `harness ruminate`
+    /// through the trial home's config, and it withholds only the
+    /// appraisals — the sensors stay.
+    #[test]
+    fn appraisals_in_brief_off_rides_in_the_childs_config() {
+        let real = crate::config::Config::default();
+        let mut arm = Arm::default();
+        assert!(
+            child_invocation(&real, &arm, None)
+                .unwrap()
+                .config
+                .agent
+                .appraisals_in_brief
+        );
+        arm.stages_off = vec!["appraisals_in_brief".into()];
+        let child = child_invocation(&real, &arm, None).unwrap();
+        assert!(!child.config.agent.appraisals_in_brief);
+        assert!(child.config.agent.sensors_in_brief);
+        assert!(child.flags.is_empty(), "a switch, not a flag");
+        assert_eq!(StageLever::AppraisalsInBrief.argv(), None);
     }
 
     /// The gate over arm sets: each treatment arm paired with the control by

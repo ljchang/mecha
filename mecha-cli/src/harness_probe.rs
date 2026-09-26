@@ -234,7 +234,123 @@ fn slice_sizes(want: usize, holdout_in: u64, pool: usize) -> (usize, usize) {
     (holdout_n, drawable - holdout_n)
 }
 
-/// Draw a selection and a holdout for one candidate.
+/// Both phases of a draw in one call, for a test with the metric in hand.
+/// `ruminate` calls them apart — [`draw_pool`] before the diagnosis,
+/// [`Pool::select`] after it (row 2f).
+#[cfg(test)]
+pub fn draw_episodes(
+    sessions_dir: &Path,
+    model: &str,
+    metric: Metric,
+    want: usize,
+    holdout_in: u64,
+    seed: u64,
+    workspace: Option<&Path>,
+) -> Result<Draw> {
+    Ok(draw_pool(sessions_dir, model, want, holdout_in, seed, workspace)?.select(metric))
+}
+
+/// The first phase of a [`Draw`]: the eligible pool and its uniform holdout
+/// — everything the draw decides before a metric exists.
+///
+/// **Split so the diagnostician can read the episodes a candidate will be
+/// measured on before there is a candidate** (row 2f; the owner's ruling
+/// R38). Nightly, `ruminate` mints the candidate id — the seed — draws this
+/// phase, hands the diagnostician the clean appraisals of [`Pool::remainder`],
+/// and only after the proposal names its metric calls [`Pool::select`]. The
+/// holdout is fixed before the diagnosis and is **never** in the remainder,
+/// so the slice that confirms a change is one its author never read about.
+///
+/// Nothing about what is measured moves: the pool, the holdout and the
+/// selection are exactly what the single-phase draw produced for the same
+/// seed and store — the holdout never read the metric, and the selection's
+/// order is computed from the same headroom, rank and id
+/// (`the_split_draw_is_the_single_phase_draw` holds the two against each
+/// other).
+pub struct Pool {
+    /// Drawn uniformly, in pool order — as the single-phase draw left it.
+    holdout: Vec<EpisodePrep>,
+    /// The rest of the pool, in pool order, not yet ranked.
+    rest: Vec<EpisodePrep>,
+    selection_n: usize,
+    seed: u64,
+    skipped: usize,
+    /// The charter did not load, so the tiebreak cannot run —
+    /// [`Draw::ranked`]'s `None`.
+    charter_unreadable: bool,
+}
+
+impl Pool {
+    /// The episodes the selection will be ranked from: the pool minus the
+    /// holdout. What the diagnostician may read appraisals of, and nothing
+    /// else.
+    pub fn remainder(&self) -> Vec<String> {
+        self.rest.iter().map(|p| p.id.clone()).collect()
+    }
+
+    /// The held-out episodes' ids.
+    #[cfg(test)]
+    pub fn holdout_ids(&self) -> Vec<String> {
+        self.holdout.iter().map(|p| p.id.clone()).collect()
+    }
+
+    /// The second phase: rank the remainder by what can discriminate for
+    /// `metric` — and among equals, by the charter line the record names
+    /// (§11.1's tiebreak) — and keep the selection's share.
+    pub fn select(self, metric: Metric) -> Draw {
+        // Headroom off *every* outcome the session recorded, folded.
+        // `last_outcome` describes how the session ended, and an episode
+        // here is the whole session — `extract` pulls every recorded user
+        // turn and `drive_episode` replays all of them, folding each run
+        // with `absorb`. Sizing the priority signal from one run while the
+        // arms it feeds are folded over all of them is a unit mismatch, and
+        // it inverts: a resumed chat with nine error-heavy runs and a clean
+        // tenth scores zero and sorts to the bottom, so the most
+        // discriminating episode in the corpus is the one prioritised
+        // sampling drops.
+        //
+        // A session with no recorded outcome scores zero rather than being
+        // dropped: it was still drawable by the uniform half, which is the
+        // half that must not be filtered by informativeness.
+        let mut rest: Vec<(EpisodePrep, f64)> = self
+            .rest
+            .into_iter()
+            .map(|p| {
+                let headroom = p
+                    .episode
+                    .as_ref()
+                    .map(|s| metric.headroom(s))
+                    .unwrap_or(0.0);
+                (p, headroom)
+            })
+            .collect();
+        rest.sort_by(|a, b| {
+            selection_order(
+                (a.1, a.0.charter_rank, &a.0.id),
+                (b.1, b.0.charter_rank, &b.0.id),
+            )
+        });
+        rest.truncate(self.selection_n);
+        // Unknown where the tiebreak could not run, a count — zero included —
+        // where it did.
+        let ranked = (!self.charter_unreadable).then(|| {
+            rest.iter()
+                .filter(|(p, _)| p.charter_rank.is_some())
+                .count()
+        });
+        Draw {
+            selection: rest.into_iter().map(|(p, _)| p).collect(),
+            holdout: self.holdout,
+            seed: self.seed,
+            skipped: self.skipped,
+            ranked,
+        }
+    }
+}
+
+/// The first phase of a [`Draw`] for one candidate — see [`Pool`]: the
+/// eligible pool and its uniform holdout. Everything in it is what the
+/// single-phase draw did before it read the metric, unchanged.
 ///
 /// **The holdout comes off the pool first, uniformly.** Prioritised experience
 /// replay samples by how much a transition can teach, which is right for
@@ -248,21 +364,20 @@ fn slice_sizes(want: usize, holdout_in: u64, pool: usize) -> (usize, usize) {
 /// one running now and the oldest sessions were recorded by versions of it
 /// that no longer exist. So the draw is uniform *over the eligible corpus*,
 /// which is the honest claim — not uniform over all history.
-pub fn draw_episodes(
+pub fn draw_pool(
     sessions_dir: &Path,
     model: &str,
-    metric: Metric,
     want: usize,
     holdout_in: u64,
     seed: u64,
     workspace: Option<&Path>,
-) -> Result<Draw> {
+) -> Result<Pool> {
     let mut listed: Vec<(SessionMeta, PathBuf)> = Session::list(sessions_dir)?;
     listed.sort_by_key(|entry| std::cmp::Reverse(entry.0.created_at));
 
     // Build the eligible pool: model-matched, replayable, recency-bounded.
     let pool_size = want.saturating_mul(POOL_MULTIPLE).max(want);
-    let mut pool: Vec<(EpisodePrep, f64)> = Vec::new();
+    let mut pool: Vec<EpisodePrep> = Vec::new();
     let mut skipped = 0usize;
     // The same admission the diagnosis applies (`Scan::admits`), built once:
     // see the comment at its use below.
@@ -304,29 +419,7 @@ pub fn draw_episodes(
             continue;
         }
         match prepare_episode(&path, &meta.id, stores.map(|s| (s, meta.created_at)))? {
-            Ok(prep) => {
-                // Headroom off *every* outcome the session recorded, folded.
-                // `last_outcome` describes how the session ended, and an
-                // episode here is the whole session — `extract` pulls every
-                // recorded user turn and `drive_episode` replays all of them,
-                // folding each run with `absorb`. Sizing the priority signal
-                // from one run while the arms it feeds are folded over all of
-                // them is a unit mismatch, and it inverts: a resumed chat with
-                // nine error-heavy runs and a clean tenth scores zero and
-                // sorts to the bottom, so the most discriminating episode in
-                // the corpus is the one prioritised sampling drops.
-                //
-                // A session with no recorded outcome scores zero rather than
-                // being dropped: it is still drawable by the uniform half,
-                // which is the half that must not be filtered by
-                // informativeness.
-                let headroom = prep
-                    .episode
-                    .as_ref()
-                    .map(|s| metric.headroom(s))
-                    .unwrap_or(0.0);
-                pool.push((prep, headroom));
-            }
+            Ok(prep) => pool.push(prep),
             Err(_) => skipped += 1,
         }
     }
@@ -335,45 +428,22 @@ pub fn draw_episodes(
 
     // Uniform first. Sorted by id before the shuffle, or the seed is a lie —
     // a deterministic shuffle of a nondeterministic order is nondeterministic.
-    let mut ids: Vec<String> = pool.iter().map(|(p, _)| p.id.clone()).collect();
+    let mut ids: Vec<String> = pool.iter().map(|p| p.id.clone()).collect();
     ids.sort();
     let held: std::collections::HashSet<String> =
         mecha_core::sample::take_uniform(ids, seed, holdout_n)
             .into_iter()
             .collect();
 
-    let (mut holdout, mut rest): (Vec<_>, Vec<_>) =
-        pool.into_iter().partition(|(p, _)| held.contains(&p.id));
+    let (holdout, rest): (Vec<_>, Vec<_>) = pool.into_iter().partition(|p| held.contains(&p.id));
 
-    // Then the selection, by what can discriminate — and among equals, by
-    // the charter line the record names (§11.1's tiebreak).
-    rest.sort_by(|a, b| {
-        selection_order(
-            (a.1, a.0.charter_rank, &a.0.id),
-            (b.1, b.0.charter_rank, &b.0.id),
-        )
-    });
-    rest.truncate(selection_n);
-    // Unknown where the tiebreak could not run, a count — zero included —
-    // where it did.
-    let ranked = match chartered {
-        mecha_core::appraisal::Chartered::Unreadable => None,
-        _ => Some(
-            rest.iter()
-                .filter(|(p, _)| p.charter_rank.is_some())
-                .count(),
-        ),
-    };
-
-    Ok(Draw {
-        selection: rest.into_iter().map(|(p, _)| p).collect(),
-        holdout: std::mem::take(&mut holdout)
-            .into_iter()
-            .map(|(p, _)| p)
-            .collect(),
+    Ok(Pool {
+        holdout,
+        rest,
+        selection_n,
         seed,
         skipped,
-        ranked,
+        charter_unreadable: matches!(chartered, mecha_core::appraisal::Chartered::Unreadable),
     })
 }
 /// What one arm of one episode produced.
@@ -517,6 +587,84 @@ pub async fn drive_episode(
         Ok(report) => Ok(Ok(ArmOutcome::from_report(report, divergence.reason()))),
         Err(e) => Ok(Err(format!("replay failed: {e:#}"))),
     }
+}
+
+/// A replayable recorded session for draw tests: one tool call, a clean
+/// taint checkpoint, and an outcome that varies with `n` on every metric, so
+/// headroom orders differ by metric. `serves` names a charter line on a
+/// failed declared check, which is what gives an episode a rank.
+#[cfg(test)]
+pub(crate) fn fixture_session(dir: &Path, id: &str, n: u32, serves: Option<&str>) {
+    use mecha_core::message::{Block, Message, Role};
+    use mecha_core::session::Record;
+    let s = Session::create(
+        dir,
+        SessionMeta {
+            id: id.into(),
+            created_at: chrono::Utc::now(),
+            provider: "local".into(),
+            model: "m".into(),
+            workspace: PathBuf::from("/tmp"),
+            title: None,
+            kind: None,
+        },
+    )
+    .unwrap();
+    s.append(&Record::Config(RunConfig::default())).unwrap();
+    let mut calls = vec![Block::ToolUse {
+        id: "t1".into(),
+        name: "shell".into(),
+        input: serde_json::json!({}),
+    }];
+    let mut results = vec![Block::ToolResult {
+        tool_use_id: "t1".into(),
+        content: "ok".into(),
+        is_error: false,
+    }];
+    if let Some(serves) = serves {
+        calls.push(Block::ToolUse {
+            id: "t2".into(),
+            name: "todo".into(),
+            input: serde_json::json!({
+                "items": [{"content": "do it", "status": "completed"}],
+                "serves": serves,
+            }),
+        });
+        results.push(Block::ToolResult {
+            tool_use_id: "t2".into(),
+            content: "ok".into(),
+            is_error: false,
+        });
+    }
+    s.append_messages(&[
+        Message::user("do the thing"),
+        Message::assistant(calls),
+        Message {
+            harness: false,
+            planning: None,
+            tool_provenance: Default::default(),
+            role: Role::User,
+            content: results,
+        },
+        Message::assistant(vec![Block::text("done")]),
+    ])
+    .unwrap();
+    s.append(&Record::Taint(mecha_core::agent::Taint {
+        private: false,
+        untrusted: false,
+    }))
+    .unwrap();
+    s.append(&Record::Outcome(RunStats {
+        turns: 1 + n % 4,
+        tool_calls: 3,
+        tool_errors: n % 3,
+        compactions: n % 2,
+        ended_on_failed_call: n % 2 == 0,
+        checks_declared: serves.map(|_| 1),
+        checks_passed: serves.map(|_| 0),
+        ..Default::default()
+    }))
+    .unwrap();
 }
 
 #[cfg(test)]
@@ -924,5 +1072,243 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── The split draw (row 2f, R38) ────────────────────────────────────
+
+    /// The single-phase draw as it stood before row 2f split it, verbatim
+    /// but for its name — the reference the split is held against.
+    #[allow(clippy::too_many_arguments)]
+    fn single_phase_reference(
+        sessions_dir: &Path,
+        model: &str,
+        metric: Metric,
+        want: usize,
+        holdout_in: u64,
+        seed: u64,
+        workspace: Option<&Path>,
+    ) -> Result<Draw> {
+        let mut listed: Vec<(SessionMeta, PathBuf)> = Session::list(sessions_dir)?;
+        listed.sort_by_key(|entry| std::cmp::Reverse(entry.0.created_at));
+
+        // Build the eligible pool: model-matched, replayable, recency-bounded.
+        let pool_size = want.saturating_mul(POOL_MULTIPLE).max(want);
+        let mut pool: Vec<(EpisodePrep, f64)> = Vec::new();
+        let mut skipped = 0usize;
+        // The same admission the diagnosis applies (`Scan::admits`), built once:
+        // see the comment at its use below.
+        let admission = mecha_core::runlog::Scan {
+            workspace: workspace.map(std::path::Path::to_path_buf),
+            ..Default::default()
+        };
+        // The stores an appraisal reads, once for the whole pool — four store
+        // reads per draw rather than per episode, and none at all without a
+        // charter, since only a charter with lines can rank anything. Only the
+        // charter rank comes of it here; see `EpisodePrep::charter_rank`.
+        let chartered = mecha_core::appraisal::Stores::load_if_chartered();
+        let stores = chartered.stores();
+        for (meta, path) in listed {
+            if pool.len() >= pool_size {
+                break;
+            }
+            // The header model, not per-run attribution: a whole-session replay
+            // runs under one model, so the filter's job is only to keep the
+            // corpus representative of the model being graded.
+            if meta.model != model {
+                continue;
+            }
+            // Scoped the same way the diagnosis was, or the two halves of one
+            // night disagree about what they are talking about: `--from-workspace`
+            // narrowed the brief while the draw kept re-scanning every session, so
+            // a change reasoned about one job was accepted or rejected on the
+            // average of four. Found in review, and it read as a working flag —
+            // the diagnosis was visibly scoped, and only the arms were not.
+            //
+            // Prefix, matching `runlog::Scan`: a checkout's worktrees are the same
+            // population as the checkout. Through `Scan::admits` itself rather
+            // than a second spelling of the rule, so the draw and the diagnosis
+            // cannot disagree again through a new filter — the second time this
+            // paragraph's incident recurred, it was the `kind` filter: the
+            // diagnosis excluded smoke-test sessions and the draw did not, so
+            // real-model budget was spent replaying them (found on review).
+            if !admission.admits(&meta) {
+                continue;
+            }
+            match prepare_episode(&path, &meta.id, stores.map(|s| (s, meta.created_at)))? {
+                Ok(prep) => {
+                    // Headroom off *every* outcome the session recorded, folded.
+                    // `last_outcome` describes how the session ended, and an
+                    // episode here is the whole session — `extract` pulls every
+                    // recorded user turn and `drive_episode` replays all of them,
+                    // folding each run with `absorb`. Sizing the priority signal
+                    // from one run while the arms it feeds are folded over all of
+                    // them is a unit mismatch, and it inverts: a resumed chat with
+                    // nine error-heavy runs and a clean tenth scores zero and
+                    // sorts to the bottom, so the most discriminating episode in
+                    // the corpus is the one prioritised sampling drops.
+                    //
+                    // A session with no recorded outcome scores zero rather than
+                    // being dropped: it is still drawable by the uniform half,
+                    // which is the half that must not be filtered by
+                    // informativeness.
+                    let headroom = prep
+                        .episode
+                        .as_ref()
+                        .map(|s| metric.headroom(s))
+                        .unwrap_or(0.0);
+                    pool.push((prep, headroom));
+                }
+                Err(_) => skipped += 1,
+            }
+        }
+
+        let (holdout_n, selection_n) = slice_sizes(want, holdout_in, pool.len());
+
+        // Uniform first. Sorted by id before the shuffle, or the seed is a lie —
+        // a deterministic shuffle of a nondeterministic order is nondeterministic.
+        let mut ids: Vec<String> = pool.iter().map(|(p, _)| p.id.clone()).collect();
+        ids.sort();
+        let held: std::collections::HashSet<String> =
+            mecha_core::sample::take_uniform(ids, seed, holdout_n)
+                .into_iter()
+                .collect();
+
+        let (mut holdout, mut rest): (Vec<_>, Vec<_>) =
+            pool.into_iter().partition(|(p, _)| held.contains(&p.id));
+
+        // Then the selection, by what can discriminate — and among equals, by
+        // the charter line the record names (§11.1's tiebreak).
+        rest.sort_by(|a, b| {
+            selection_order(
+                (a.1, a.0.charter_rank, &a.0.id),
+                (b.1, b.0.charter_rank, &b.0.id),
+            )
+        });
+        rest.truncate(selection_n);
+        // Unknown where the tiebreak could not run, a count — zero included —
+        // where it did.
+        let ranked = match chartered {
+            mecha_core::appraisal::Chartered::Unreadable => None,
+            _ => Some(
+                rest.iter()
+                    .filter(|(p, _)| p.charter_rank.is_some())
+                    .count(),
+            ),
+        };
+
+        Ok(Draw {
+            selection: rest.into_iter().map(|(p, _)| p).collect(),
+            holdout: std::mem::take(&mut holdout)
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect(),
+            seed,
+            skipped,
+            ranked,
+        })
+    }
+
+    /// The owner's condition on the split (R38): it changes nothing about
+    /// what gets measured. Over one store, for every metric, several seeds,
+    /// sizes and holdout rates — the store holding a charter, so ranks are
+    /// in play — the two-phase draw's holdout and selection are the
+    /// single-phase draw's, element for element and in order, and so are the
+    /// seed, the skips and the ranked count. And the remainder the
+    /// diagnostician reads is exactly the pool minus that holdout.
+    #[test]
+    fn the_split_draw_is_the_single_phase_draw() {
+        mecha_core::session::ignore_kind_env_for_tests();
+        let home = crate::testenv::HomeGuard::new("probe-split");
+        std::fs::write(
+            home.dir.join("charter.toml"),
+            "[[line]]\nid = \"top\"\ntext = \"First.\"\n\n[[line]]\nid = \"fifth\"\ntext = \"Later.\"\n",
+        )
+        .unwrap();
+        let dir = home.dir.join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..14u32 {
+            let serves = match i % 3 {
+                0 => Some("charter:top"),
+                1 => Some("charter:fifth"),
+                _ => None,
+            };
+            fixture_session(&dir, &format!("20260101T0000{i:02}-s{i:02}"), i, serves);
+        }
+        let fingerprint = |preps: &[EpisodePrep]| -> Vec<String> {
+            preps
+                .iter()
+                .map(|p| {
+                    format!(
+                        "{}|{:?}|{:?}|{}",
+                        p.id,
+                        p.charter_rank,
+                        p.config_caveat,
+                        serde_json::to_string(&p.episode).unwrap()
+                    )
+                })
+                .collect()
+        };
+        let mut compared = 0;
+        for metric in Metric::ALL {
+            for seed in [0u64, 7, 11, 0xdead_beef] {
+                for (want, holdout_in) in [(4usize, 3u64), (6, 2), (16, 3)] {
+                    let old =
+                        single_phase_reference(&dir, "m", metric, want, holdout_in, seed, None)
+                            .unwrap();
+                    let pool = draw_pool(&dir, "m", want, holdout_in, seed, None).unwrap();
+                    let remainder = pool.remainder();
+                    let held = pool.holdout_ids();
+                    let new = pool.select(metric);
+                    let at = format!("{metric:?} seed {seed} want {want}/{holdout_in}");
+                    assert_eq!(fingerprint(&new.holdout), fingerprint(&old.holdout), "{at}");
+                    assert_eq!(
+                        fingerprint(&new.selection),
+                        fingerprint(&old.selection),
+                        "{at}"
+                    );
+                    assert_eq!(
+                        (new.seed, new.skipped, new.ranked),
+                        (old.seed, old.skipped, old.ranked),
+                        "{at}"
+                    );
+                    assert!(!old.holdout.is_empty() && !old.selection.is_empty(), "{at}");
+                    // The remainder: the selection is drawn from it, and no
+                    // held-out episode is in it.
+                    assert!(remainder.iter().all(|id| !held.contains(id)), "{at}");
+                    assert!(
+                        new.selection.iter().all(|p| remainder.contains(&p.id)),
+                        "{at}"
+                    );
+                    compared += 1;
+                }
+            }
+        }
+        assert_eq!(compared, Metric::ALL.len() * 4 * 3);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The first phase reads no metric, so the remainder a diagnostician is
+    /// shown is the same whichever metric the proposal later names.
+    #[test]
+    fn the_remainder_is_fixed_before_the_metric_is_known() {
+        mecha_core::session::ignore_kind_env_for_tests();
+        let home = crate::testenv::HomeGuard::new("probe-remainder");
+        let dir = home.dir.join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..9u32 {
+            fixture_session(&dir, &format!("20260101T0000{i:02}-r{i:02}"), i, None);
+        }
+        let pool = draw_pool(&dir, "m", 6, 3, 5, None).unwrap();
+        let remainder = pool.remainder();
+        let held = pool.holdout_ids();
+        assert_eq!(held.len(), 2);
+        for metric in Metric::ALL {
+            let again = draw_pool(&dir, "m", 6, 3, 5, None).unwrap();
+            assert_eq!(again.remainder(), remainder);
+            let d = again.select(metric);
+            let drawn: Vec<String> = d.holdout.iter().map(|p| p.id.clone()).collect();
+            assert_eq!(drawn, held, "{metric:?}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
