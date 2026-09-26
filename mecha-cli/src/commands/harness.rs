@@ -153,8 +153,10 @@ async fn ruminate(
         evidence_for(&model, &slice, harness_history().unwrap_or_default(), &cfg),
         &pool.remainder(),
         cfg.agent.appraisals_in_brief,
-        mecha_core::appraisal_store::AppraisalStore::open_existing_default()
-            .map(|store| store.clean()),
+        || {
+            mecha_core::appraisal_store::AppraisalStore::open_existing_default()
+                .map(|store| store.clean())
+        },
     );
 
     let diagnosis = run_diagnostician(global, &evidence).await?;
@@ -362,21 +364,22 @@ fn seed_of(candidate_id: &str) -> u64 {
 /// The brief with the clean appraisals of `remainder` — the draw's pool
 /// minus its holdout — beside the counters (row 2f).
 ///
-/// `store` is the appraisal store's clean door: `None` when no store exists
-/// (nothing is on file, and nothing is said), `Some(Err)` when one exists
-/// and cannot be read (said in the brief, never read as "none"). `on` is
-/// `[agent] appraisals_in_brief`, the stage lever; off withholds the section
-/// by omission, as `sensors_in_brief` does.
+/// `store` reads the appraisal store's clean door: `None` when no store
+/// exists (nothing is on file, and nothing is said), `Some(Err)` when one
+/// exists and cannot be read (said in the brief, never read as "none"). `on`
+/// is `[agent] appraisals_in_brief`, the stage lever; off withholds the
+/// section by omission, as `sensors_in_brief` does, and reads nothing — an
+/// appraisal-off arm does not pay the read it ablates.
 fn with_draw_appraisals(
     evidence: mecha_core::diagnose::Evidence,
     remainder: &[String],
     on: bool,
-    store: Option<Result<mecha_core::appraisal_store::CleanRead>>,
+    store: impl FnOnce() -> Option<Result<mecha_core::appraisal_store::CleanRead>>,
 ) -> mecha_core::diagnose::Evidence {
     if !on {
         return evidence;
     }
-    match store {
+    match store() {
         None => evidence,
         Some(Ok(read)) => evidence.with_appraisals(&read, remainder),
         Some(Err(e)) => evidence.appraisals_unread(format!("{e:#}")),
@@ -1384,7 +1387,7 @@ mod tests {
                 mecha_core::diagnose::Evidence::default(),
                 &pool.remainder(),
                 true,
-                Some(store.clean()),
+                || Some(store.clean()),
             );
             let brief = evidence.brief();
             for id in &held {
@@ -1413,18 +1416,17 @@ mod tests {
     fn the_lever_and_an_unreadable_store_are_each_said_their_own_way() {
         let remainder = vec!["s-1".to_string()];
         let base = mecha_core::diagnose::Evidence::default;
-        let off = with_draw_appraisals(base(), &remainder, false, Some(Err(anyhow::anyhow!("x"))));
+        let off = with_draw_appraisals(base(), &remainder, false, || {
+            panic!("the lever off reads nothing — the read is what it ablates")
+        });
         assert!(off.appraisals_unread.is_none() && off.appraisals.is_empty());
-        let none = with_draw_appraisals(base(), &remainder, true, None);
+        let none = with_draw_appraisals(base(), &remainder, true, || None);
         assert_eq!(none.brief(), base().brief());
-        let unread = with_draw_appraisals(
-            base(),
-            &remainder,
-            true,
+        let unread = with_draw_appraisals(base(), &remainder, true, || {
             Some(Err(anyhow::anyhow!(
                 "reading appraisals.jsonl: permission denied"
-            ))),
-        );
+            )))
+        });
         let brief = unread.brief();
         assert!(
             brief.contains("could not be read (reading appraisals.jsonl"),

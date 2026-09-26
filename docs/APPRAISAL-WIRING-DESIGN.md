@@ -1617,6 +1617,9 @@ the metric the proposal names. So the draw is split, on one seed
   ["appraisals_in_brief"]` in a lifetime arm), is the appraisal-off
   preset's reach into `ruminate`; off withholds the section by omission.
 - `mecha diagnose` run by hand has no draw, and carries no appraisals.
+- **The brief is the only door.** The diagnostician's run is narrowed off
+  past appraisals, so `goal_context`, which has no holdout filter, cannot
+  serve it a held-out episode's appraisal on demand.
 
 ### For phase 3 — meaning in the run
 

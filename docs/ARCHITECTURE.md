@@ -3683,6 +3683,10 @@ Two rules are structural rather than instructed:
     on blind `web_search` only (the owner's ruling; `TRIFECTA.md`).
   - `mecha diagnose` run by hand has no draw and carries none.
     `[agent] appraisals_in_brief` is the lifetime stage lever (on).
+  - **The brief is the only door.** The diagnostician's run is narrowed off
+    past appraisals (`no_past_appraisals`, beside `no_learned_rules`), so
+    `goal_context` — a second reader of the store with no holdout filter —
+    cannot serve it a held-out episode's appraisal on demand.
   - Nothing in a note reaches the gate. `judge_drawn` and `combine` read
     replay pairs and the point-wise tally, and the class comes from the
     proposal's own text.

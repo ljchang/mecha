@@ -401,6 +401,33 @@ pub enum DiagnosisOutcome {
     Proposal(Proposal),
 }
 
+/// The diagnostician's narrowed options: read-only, no outbox, no learned
+/// rules, no past appraisals, global config only.
+///
+/// A function so the narrowing is testable without a provider.
+/// `no_past_appraisals` is the holdout half of row 2f (R38): the brief carries
+/// the draw's remainder only, and `goal_context` is a second reader of the
+/// same store with no holdout filter, so it is off here as `no_learned_rules`
+/// is — "the confirming slice is one its author never read about" holds for
+/// the run, not only for the brief (found on review of #329).
+fn diagnostician_opts(
+    global: &GlobalOpts,
+    system: String,
+    workspace: Option<std::path::PathBuf>,
+) -> GlobalOpts {
+    GlobalOpts {
+        read_only: true,
+        yes: false,
+        system: Some(system),
+        no_outbox: true,
+        no_learned_rules: true,
+        no_past_appraisals: true,
+        global_config_only: true,
+        workspace,
+        ..global.clone()
+    }
+}
+
 /// Run the diagnostician once over an evidence brief and vet what came back.
 ///
 /// One code path for `mecha diagnose` and the nightly, because two spellings
@@ -458,16 +485,11 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
         .as_deref()
         .filter(|d| holds_source(d))
         .map(Path::to_path_buf);
-    let opts = GlobalOpts {
-        read_only: true,
-        yes: false,
-        system: Some(diagnose_system(source.as_deref())),
-        no_outbox: true,
-        no_learned_rules: true,
-        global_config_only: true,
-        workspace: global.workspace.clone().or_else(|| configured.clone()),
-        ..global.clone()
-    };
+    let opts = diagnostician_opts(
+        global,
+        diagnose_system(source.as_deref()),
+        global.workspace.clone().or_else(|| configured.clone()),
+    );
     let prepared = setup::prepare(&opts, false).await?;
     // **The jail above is a hand-copy of `prepare_tools`' fallback chain, and
     // `prepared.workspace` is the ground truth.** Review caught that copy one
@@ -680,6 +702,25 @@ pub fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Found on review of #329: the diagnostician's run is narrowed off past
+    /// appraisals as well as learned rules, so `goal_context` — a second
+    /// reader of the appraisal store with no holdout filter — cannot hand it
+    /// a held-out episode's appraisal on a night whose owner turned
+    /// `[agent] past_appraisals` on. And the other narrowings stay.
+    #[test]
+    fn the_diagnostician_reads_no_past_appraisals_through_goal_context() {
+        let global = GlobalOpts::default();
+        assert!(
+            !global.no_past_appraisals,
+            "not vacuous: the default reads them"
+        );
+        let opts = diagnostician_opts(&global, "sys".into(), None);
+        assert!(opts.no_past_appraisals);
+        assert!(opts.no_learned_rules && opts.no_outbox && opts.read_only);
+        assert!(opts.global_config_only && !opts.yes);
+        assert_eq!(opts.system.as_deref(), Some("sys"));
+    }
 
     // ── The threshold derivation ────────────────────────────────────────
     //
