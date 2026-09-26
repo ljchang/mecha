@@ -314,30 +314,62 @@ fn note(trail: Option<&std::path::Path>, entry: &TrailEntry) -> Result<()> {
 
 /// What a trail records, skipping any line this module would not write.
 pub fn read_trail(path: &std::path::Path) -> Vec<TrailEntry> {
-    std::fs::read_to_string(path)
-        .map(|text| text.lines().filter_map(TrailEntry::parse).collect())
-        .unwrap_or_default()
+    match std::fs::read_to_string(path) {
+        Ok(text) => text.lines().filter_map(TrailEntry::parse).collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        // There and unreadable is a finding, not an empty trail: what it
+        // named stays on the image server (found on review of #331).
+        Err(e) => {
+            tracing::warn!(
+                "an image trail could not be read ({}): {e}; what it named stays on the image \
+                 server until it restarts",
+                path.display()
+            );
+            Vec::new()
+        }
+    }
 }
 
-/// The temp files a job's history entry says it wrote.
-fn temp_outputs(entry: &Value) -> Vec<String> {
-    entry
+/// What a job's history entry says it wrote.
+#[derive(Debug, Default)]
+struct Wrote {
+    /// In the temp directory, by name: what the tool deletes after a job.
+    temp: Vec<String>,
+    /// Anywhere else — a type other than `temp`, or a subfolder — which
+    /// nothing here clears, described so it is said rather than skipped: a
+    /// filter that quietly matched nothing would make the whole cleanup a
+    /// no-op (found on review of #331; `upload` refuses the same case).
+    elsewhere: Vec<String>,
+}
+
+fn outputs(entry: &Value) -> Wrote {
+    let mut wrote = Wrote::default();
+    let images = entry
         .get("outputs")
         .and_then(Value::as_object)
         .into_iter()
         .flat_map(|outputs| outputs.values())
         .filter_map(|out| out.get("images")?.as_array())
-        .flatten()
-        .filter(|image| {
-            image.get("type").and_then(Value::as_str) == Some("temp")
-                && image
-                    .get("subfolder")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .is_empty()
-        })
-        .filter_map(|image| image.get("filename")?.as_str().map(str::to_string))
-        .collect()
+        .flatten();
+    for image in images {
+        let field = |k: &str| image.get(k).and_then(Value::as_str).unwrap_or("");
+        let (name, kind, sub) = (field("filename"), field("type"), field("subfolder"));
+        if kind == "temp" && sub.is_empty() {
+            if !name.is_empty() {
+                wrote.temp.push(name.to_string());
+            }
+        } else {
+            let under = if sub.is_empty() {
+                String::new()
+            } else {
+                format!(" under `{sub}`")
+            };
+            wrote.elsewhere.push(format!(
+                "`{name}` (filed as `{kind}`{under}, where nothing here clears it)"
+            ));
+        }
+    }
+    wrote
 }
 
 /// Delete each of `names` from `dir`, and say which could not be. A name that
@@ -379,25 +411,40 @@ pub async fn forget_trail(cfg: &ImageConfig, entries: &[TrailEntry]) -> Result<(
         .await
         .context("the image server did not answer")?;
     let mut files = Vec::new();
+    let mut elsewhere = Vec::new();
     for entry in entries {
         match entry {
             // No trail to write to: the delete below follows at once.
-            TrailEntry::Job(id) => files.extend(server.abandon(id, None).await),
+            TrailEntry::Job(id) => {
+                let wrote = server.abandon(id, None).await;
+                files.extend(wrote.temp);
+                elsewhere.extend(wrote.elsewhere);
+            }
             TrailEntry::File(name) => files.push(name.clone()),
         }
     }
-    if files.is_empty() {
-        return Ok(());
+    let mut unkept = Vec::new();
+    if !files.is_empty() {
+        match cfg.server_temp_dir.as_deref() {
+            None => unkept.push(
+                "[image] server_temp_dir is not set, so the files stay in the server's temp \
+                 directory until it restarts"
+                    .to_string(),
+            ),
+            Some(dir) => {
+                if let Some(left) = discard(Some(dir), &files, true) {
+                    unkept.push(format!("could not remove {left}"));
+                }
+            }
+        }
     }
-    let Some(dir) = cfg.server_temp_dir.as_deref() else {
-        bail!(
-            "[image] server_temp_dir is not set, so the files stay in the server's temp \
-             directory until it restarts"
-        );
-    };
-    match discard(Some(dir), &files, true) {
-        None => Ok(()),
-        Some(left) => bail!("could not remove {left}"),
+    if !elsewhere.is_empty() {
+        unkept.push(elsewhere.join(", "));
+    }
+    if unkept.is_empty() {
+        Ok(())
+    } else {
+        bail!("{}", unkept.join("; "))
     }
 }
 
@@ -578,6 +625,15 @@ fn clip(s: &str) -> String {
 struct Held {
     confirmed: Vec<String>,
     possible: Vec<String>,
+    /// Outputs filed where nothing here clears them: said, never skipped.
+    elsewhere: Vec<String>,
+}
+
+impl Held {
+    fn take(&mut self, wrote: Wrote) {
+        self.confirmed.extend(wrote.temp);
+        self.elsewhere.extend(wrote.elsewhere);
+    }
 }
 
 /// A finished call on the server: the image or why not, and — when some of
@@ -708,7 +764,7 @@ impl ComfyUi {
     /// it and stop whatever is executing — which would let cancelling a
     /// queued image kill another call's running one. Asking the queue first
     /// makes it right on either (found on review of #303).
-    async fn abandon(&self, id: &str, trail: Option<&std::path::Path>) -> Vec<String> {
+    async fn abandon(&self, id: &str, trail: Option<&std::path::Path>) -> Wrote {
         let _ = self.post_json("queue", &json!({"delete": [id]})).await;
         let running = self
             .get_json("queue")
@@ -747,12 +803,12 @@ impl ComfyUi {
             .get_json(&format!("history/{id}"))
             .await
             .ok()
-            .and_then(|h| h.get(id).map(temp_outputs))
+            .and_then(|h| h.get(id).map(outputs))
             .unwrap_or_default();
         // Onto the trail before the record naming them is forgotten, as the
         // polling path does: a death between here and the caller's delete
         // otherwise leaves a preview nothing names (found on review of #331).
-        for name in &wrote {
+        for name in &wrote.temp {
             if let Err(e) = note(trail, &TrailEntry::File(name.clone())) {
                 tracing::debug!("a preview's name did not reach the image trail: {e:#}");
             }
@@ -848,13 +904,16 @@ impl ComfyUi {
         let mut held = Held::default();
         let image = self.run(cfg, req, cancel, timeout, trail, &mut held).await;
         let dir = cfg.server_temp_dir.as_deref();
-        let left: Vec<String> = [
+        let mut left: Vec<String> = [
             discard(dir, &held.confirmed, false),
             discard(dir, &held.possible, true),
         ]
         .into_iter()
         .flatten()
         .collect();
+        if !held.elsewhere.is_empty() {
+            left.push(held.elsewhere.join(", "));
+        }
         Outcome {
             image,
             left: (!left.is_empty()).then(|| left.join("; ")),
@@ -920,7 +979,7 @@ impl ComfyUi {
             Err(e) => {
                 // Queued under the id sent, perhaps, before the answer was
                 // lost — and that id is in hand (found on review of #331).
-                held.confirmed.extend(self.abandon(&asked, trail).await);
+                held.take(self.abandon(&asked, trail).await);
                 return Err(e.into());
             }
         };
@@ -937,12 +996,12 @@ impl ComfyUi {
             .and_then(|v| v.get("prompt_id")?.as_str().map(str::to_string))
         else {
             // Accepted, so queued — under the id sent.
-            held.confirmed.extend(self.abandon(&asked, trail).await);
+            held.take(self.abandon(&asked, trail).await);
             return Err(anyhow!("the image server accepted the job but named no prompt_id").into());
         };
         if id != asked {
             if let Err(e) = record(TrailEntry::Job(id.clone())) {
-                held.confirmed.extend(self.abandon(&id, trail).await);
+                held.take(self.abandon(&id, trail).await);
                 return Err(e);
             }
         }
@@ -954,7 +1013,7 @@ impl ComfyUi {
             match cancel {
                 Some(token) => tokio::select! {
                     _ = token.cancelled() => {
-                        held.confirmed.extend(self.abandon(&id, trail).await);
+                        held.take(self.abandon(&id, trail).await);
                         return Err(Failure::Cancelled);
                     }
                     _ = tick => {}
@@ -962,7 +1021,7 @@ impl ComfyUi {
                 None => tick.await,
             }
             if started.elapsed() > timeout {
-                held.confirmed.extend(self.abandon(&id, trail).await);
+                held.take(self.abandon(&id, trail).await);
                 return Err(anyhow!(
                     "the image took longer than {} s and was abandoned",
                     timeout.as_secs()
@@ -985,7 +1044,7 @@ impl ComfyUi {
                     if failed_polls < POLL_FAILURES {
                         continue;
                     }
-                    held.confirmed.extend(self.abandon(&id, trail).await);
+                    held.take(self.abandon(&id, trail).await);
                     return Err(e
                         .context(format!(
                             "the image server stopped answering ({POLL_FAILURES} polls in a row)"
@@ -1000,8 +1059,8 @@ impl ComfyUi {
             // delete *before* the record naming it is forgotten — a job that
             // failed after its preview was written included (found on review
             // of #331: forgotten first, a death here left files nothing named).
-            let wrote = temp_outputs(entry);
-            for name in &wrote {
+            let wrote = outputs(entry);
+            for name in &wrote.temp {
                 if let Err(e) = note(trail, &TrailEntry::File(name.clone())) {
                     // No job left to stop by now; the usual cause is a room
                     // that has just closed. Said at debug, which is not a
@@ -1009,7 +1068,7 @@ impl ComfyUi {
                     tracing::debug!("a preview's name did not reach the image trail: {e:#}");
                 }
             }
-            held.confirmed.extend(wrote);
+            held.take(wrote);
             if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
                 self.forget(&id).await;
                 let why = entry
@@ -1416,7 +1475,15 @@ impl Tool for ImageGenerate {
         // hold is said, whatever else happened: a wrong `server_temp_dir` is
         // otherwise a deletion that quietly never happens.
         let left = left.map(|left| {
-            tracing::warn!("image server temp copies not removed: {left}");
+            // Said in the result either way. In the log, at the default level
+            // for an ordinary chat; at debug for a run that keeps a trail —
+            // an incognito chat's — where a line per picture would be the
+            // count R1 rules out (found on review of #331).
+            if ctx.image_trail.is_some() {
+                tracing::debug!("image server temp copies not removed: {left}");
+            } else {
+                tracing::warn!("image server temp copies not removed: {left}");
+            }
             format!(
                 " The image server's temp copies could not all be removed: {left}. Check \
                  [image] server_temp_dir — for ComfyUI, the --temp-directory path with `temp` \
@@ -2365,6 +2432,32 @@ mod tests {
         )
         .unwrap();
         body["prompt_id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn a_preview_filed_anywhere_but_temp_is_said_rather_than_skipped() {
+        let elsewhere = json!({"job-1": {
+            "status": {"status_str": "success", "completed": true},
+            "outputs": {"out": {"images": [
+                {"filename": "o_00001_.png", "subfolder": "", "type": "output"}
+            ]}}
+        }});
+        let (url, _) = fake(vec![elsewhere], "200 OK").await;
+        let dir = tempdir();
+        let temp = dir.join("server-temp");
+        std::fs::create_dir_all(&temp).unwrap();
+        let out = tool_in(&url, &temp)
+            .call(json!({"prompt": "a fox"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("o_00001_.png")
+                && out.content.contains("filed as `output`")
+                && out.content.contains("could not all be removed"),
+            "a copy filed where nothing clears it went unsaid: {}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]
