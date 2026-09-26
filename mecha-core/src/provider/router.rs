@@ -517,10 +517,13 @@ pub async fn unload(base_url: &str, model: &str, wait: Duration) -> Result<()> {
         // rather than holding `mecha model use --now` for `wait` (found on
         // review).
         if let Some(l) = list_on(&http, &b).await {
-            if !readable(&l) {
+            // An empty list *does* answer this narrower question — "is this
+            // model resident?" — no; only an unknown status leaves it open
+            // (found on review).
+            if !l.is_empty() && !readable(&l) {
                 bail!(
-                    "the router's model list is one this build cannot read (empty, or a \
-                     status it does not know) — `mecha model list` shows what it sees"
+                    "the router's model list has a status this build does not know — \
+                     `mecha model list` shows what it sees"
                 );
             }
             if l.iter()
@@ -1021,6 +1024,55 @@ mod tests {
         assert!(format!("{err:#}").contains("\"resident\""), "{err:#}");
         let lines = server.await.unwrap();
         assert_eq!(lines[2], "POST /models/load HTTP/1.1");
+    }
+
+    /// The status lists the shell and Python tools carry by hand are this
+    /// one: a status added here and missed there would make two tools
+    /// disagree about what is loaded, and nothing else would fail (found on
+    /// review). Each copy must quote every known status and the resident set.
+    #[test]
+    fn the_scripts_carry_the_same_status_lists() {
+        let scripts = [
+            (
+                "served-props.sh",
+                include_str!("../../../scripts/served-props.sh"),
+            ),
+            (
+                "model-idle.sh",
+                include_str!("../../../scripts/model-idle.sh"),
+            ),
+            (
+                "appraisal-validity.py",
+                include_str!("../../../scripts/appraisal-validity.py"),
+            ),
+        ];
+        let resident: Vec<&str> = KNOWN_STATUSES
+            .iter()
+            .copied()
+            .filter(|v| {
+                RouterModel {
+                    id: String::new(),
+                    status: Status {
+                        value: v.to_string(),
+                        ..Default::default()
+                    },
+                }
+                .is_resident()
+            })
+            .collect();
+        assert_eq!(resident, ["loading", "loaded", "sleeping"]);
+        for (name, text) in scripts {
+            for status in KNOWN_STATUSES {
+                assert!(
+                    text.contains(&format!("\"{status}\"")),
+                    "{name} does not know {status:?}"
+                );
+            }
+            assert!(
+                text.contains(r#"("loaded", "loading", "sleeping")"#),
+                "{name}'s resident set is not loaded/loading/sleeping"
+            );
+        }
     }
 
     /// `unload` stops at once on a list it cannot read, instead of holding
