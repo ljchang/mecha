@@ -71,15 +71,7 @@ fn load_config(global: &GlobalOpts) -> Result<Config> {
 /// Every base URL a `follow_loaded` entry points at: the routers the owner
 /// has said stand for "whatever is loaded".
 fn router_bases(cfg: &Config) -> Vec<String> {
-    let mut b: Vec<String> = cfg
-        .providers
-        .values()
-        .filter(|p| p.follow_loaded)
-        .filter_map(|p| p.base_url.as_deref().map(router::base))
-        .collect();
-    b.sort();
-    b.dedup();
-    b
+    router::followed_bases(cfg)
 }
 
 async fn survey(cfg: &Config) -> Vec<(String, Option<Router>)> {
@@ -128,10 +120,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 async fn list(cfg: &Config, json: bool) -> Result<()> {
     let routers = survey(cfg).await;
     if json {
-        let found: Vec<&Router> = routers.iter().filter_map(|(_, r)| r.as_ref()).collect();
+        // A router that did not answer is listed, not dropped: "nothing
+        // loaded" and "server down" need different answers from whoever
+        // reads this (the chip), and an unreadable source is a finding, not
+        // an empty list (found on review).
+        let all: Vec<serde_json::Value> = routers
+            .iter()
+            .map(|(base, r)| match r {
+                Some(r) => {
+                    let mut v = serde_json::to_value(r).unwrap_or_default();
+                    v["reachable"] = true.into();
+                    v
+                }
+                None => serde_json::json!({ "base_url": base, "reachable": false }),
+            })
+            .collect();
         println!(
             "{}",
-            serde_json::to_string_pretty(&serde_json::json!({ "routers": found }))?
+            serde_json::to_string_pretty(&serde_json::json!({ "routers": all }))?
         );
         return Ok(());
     }

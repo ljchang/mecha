@@ -553,7 +553,16 @@ policy like any other command. A `[[policy]]` rule that forbids the
    At build time, check that the pressure estimate uses the new provider's
    window at run start.
 5. **Permit seats follow the loaded model's `-np`.** `permit.rs` is sized
-   against production's four slots. Gemma and Qwen3.8 run `-np 1`.
+   against production's four slots (`DEFAULT_BACKGROUND_PERMITS = 3`, a
+   const). Gemma and Qwen3.8 run `-np 1`, so once the router is installed a
+   switch to either admits three background runs onto one slot, and the
+   owner's turn — which takes no permit, by design — queues behind them.
+   **Owed, and it needs a ruling**: sizing seats as `slots − 1` keeps
+   "Reserve, never preempt" but is *zero* on a one-slot model, pausing the
+   permit-takers (delegations, questions, `distill` and the nightly
+   `lesson`/`pointwise` passes) while it is loaded; a floor of one keeps
+   "nightly runs on whatever is loaded" but lets one background decode sit
+   ahead of the owner. Must land before the router is installed.
 6. **The prompt cache dies with the child.** Unloading drops every slot's
    KV and `-cram` cache, so every live session re-reads its whole history
    once after each swap.
@@ -587,6 +596,8 @@ and the paths are this machine's.
    has run production for a while, because they are the rollback.
 
 ### Deploying step 1
+
+Blocked on trap 5 (permit seats) — its ruling and fix come first.
 
 The config gains `follow_loaded`, and `ProviderConfig` denies unknown
 fields, so **the binary goes in before the config edit** — an older binary

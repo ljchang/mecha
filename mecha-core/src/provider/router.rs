@@ -87,9 +87,30 @@ struct ModelList {
     data: Vec<RouterModel>,
 }
 
-/// The one spelling of a base URL two entries are compared under.
+/// The one spelling of a base URL two entries are compared under: the
+/// server root, as `brief::read_slots` already takes it — `…:8080`,
+/// `…:8080/` and `…:8080/v1` are one router (found on review).
 pub fn base(url: &str) -> String {
-    url.trim_end_matches('/').to_string()
+    url.trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// The routers `follow_loaded` entries stand for. Local entries only: the
+/// flag means nothing off-machine, and honouring it there would put a
+/// request to someone else's server in front of every command — which
+/// `setup::preflight_provider` refuses for the same reason (found on review).
+pub fn followed_bases(cfg: &Config) -> Vec<String> {
+    let mut bases: Vec<String> = cfg
+        .providers
+        .values()
+        .filter(|p| p.follow_loaded && p.kind == "local")
+        .filter_map(|p| p.base_url.as_deref().map(base))
+        .collect();
+    bases.sort();
+    bases.dedup();
+    bases
 }
 
 fn client(timeout: Duration) -> Option<reqwest::Client> {
@@ -151,16 +172,8 @@ static SEEN: RwLock<Vec<Seen>> = RwLock::new(Vec::new());
 /// one run. Costs one loopback round trip per router; a refused connection
 /// costs nothing and leaves the default standing.
 pub async fn observe(cfg: &Config) -> Vec<String> {
-    let mut bases: Vec<String> = cfg
-        .providers
-        .values()
-        .filter(|p| p.follow_loaded)
-        .filter_map(|p| p.base_url.as_deref().map(base))
-        .collect();
-    bases.sort();
-    bases.dedup();
     let mut seen = Vec::new();
-    for b in bases {
+    for b in followed_bases(cfg) {
         if let Some(list) = models(&b).await {
             seen.push(Seen {
                 resident: resident(&list).map(str::to_string),
@@ -191,7 +204,7 @@ pub fn follow(cfg: &Config, name: &str) -> Option<String> {
 /// not answer.
 pub fn followed(cfg: &Config, name: &str, seen: &[Seen]) -> Option<String> {
     let p = cfg.providers.get(name)?;
-    if !p.follow_loaded {
+    if !p.follow_loaded || p.kind != "local" {
         return None;
     }
     let b = base(p.base_url.as_deref()?);
@@ -436,6 +449,69 @@ mod tests {
             entry("gemma-4-26b-a4b", "http://127.0.0.1:8082", false),
         );
         assert_eq!(followed(&c, "local", &seen(Some("gemma-4-26b-a4b"))), None);
+    }
+
+    #[test]
+    fn a_v1_spelling_is_the_same_router() {
+        let mut c = cfg();
+        c.providers.get_mut("local").unwrap().base_url = Some("http://127.0.0.1:8080/v1".into());
+        assert_eq!(base("http://127.0.0.1:8080/v1/"), "http://127.0.0.1:8080");
+        assert_eq!(
+            followed(&c, "local", &seen(Some("gemma-4-26b-a4b"))).as_deref(),
+            Some("gemma26")
+        );
+    }
+
+    #[test]
+    fn follow_loaded_on_a_remote_entry_is_ignored_and_never_probed() {
+        let mut c = cfg();
+        let local = c.providers.get_mut("local").unwrap();
+        local.kind = "openai".into();
+        assert!(followed_bases(&c).is_empty(), "no request off-machine");
+        assert_eq!(followed(&c, "local", &seen(Some("gemma-4-26b-a4b"))), None);
+    }
+
+    /// The wiring, not just the pure half: `observe` reads a router, and
+    /// `Config::provider(None)` — the call every default run makes — answers
+    /// with the sibling. If `provider` stopped consulting the snapshot, every
+    /// other test here would still pass.
+    #[tokio::test]
+    async fn a_default_run_takes_the_entry_naming_what_the_router_has_loaded() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let replies = [
+            r#"{"role":"router","model_alias":"llama-server"}"#,
+            r#"{"data":[{"id":"qwen3.6-35b-a3b","status":{"value":"unloaded"}},{"id":"gemma-4-26b-a4b","status":{"value":"loaded"}}]}"#,
+        ];
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            for body in replies {
+                let (mut s, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf).await.unwrap();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                s.write_all(reply.as_bytes()).await.unwrap();
+            }
+        });
+        let mut c = Config {
+            default_provider: "local".into(),
+            ..Default::default()
+        };
+        c.providers
+            .insert("local".into(), entry("qwen3.6-35b-a3b", &url, true));
+        c.providers
+            .insert("gemma26".into(), entry("gemma-4-26b-a4b", &url, false));
+        assert!(observe(&c).await.is_empty());
+        server.await.unwrap();
+        assert_eq!(c.provider(None).unwrap().0, "gemma26");
+        assert_eq!(
+            c.provider(Some("local")).unwrap().0,
+            "local",
+            "a name is a pin"
+        );
     }
 
     #[test]
