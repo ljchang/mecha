@@ -1,4 +1,5 @@
 <script>
+  import { tick } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   // The chat view: a rendering of the conversation the server owns, plus a
@@ -266,6 +267,12 @@
   async function load(sessionKey = key, signal) {
     try {
       const res = await fetch(`/api/chat/${sessionKey}`, { signal });
+      // Reaped between the open and this read: the gone screen, not an
+      // error strip (review of #326).
+      if (res.status === 410) {
+        if (!signal?.aborted && sessionKey === key) closeIncognito('closed');
+        return;
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).trim()}`);
       const data = await res.json();
       if (signal?.aborted || sessionKey !== key) return;
@@ -611,7 +618,10 @@
       attachments = [];
       // `switchTo` returns early on the same key, and it is what clears this.
       gone = null;
-      queueMicrotask(() => inputEl?.focus());
+      // From the gone screen the composer is not mounted yet — it lives in
+      // `{#if gone}`'s other arm — so wait for the flush that draws it.
+      await tick();
+      inputEl?.focus();
     } catch (e) {
       const why = `incognito is unavailable: ${e?.message ?? e}`;
       if (gone) goneNote = why;
@@ -1203,7 +1213,7 @@
          before any search can happen, once per chat, in the page — never in
          the model's context. -->
     <div class="incog-banner" role="note">
-      <span><strong>Incognito</strong> — nothing from this chat is kept. It ends when you tap End, or after 30 minutes idle.</span>
+      <span><strong>Incognito</strong> — nothing from this chat is kept. It ends when you tap End, or 30 minutes after this page is closed.</span>
       <span class="incog-search">A web search still reaches the search engine, which sees the query.</span>
     </div>
   {/if}

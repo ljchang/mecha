@@ -49,9 +49,9 @@ pub fn new_key() -> String {
 
 /// Builtins an incognito chat may call. Everything that writes stays in the
 /// room; search reaches a search engine, which the page says before the
-/// first search (R4). Not here, deliberately: `image_generate`, until the
-/// image server's temp copies are deleted per room (design §6.3, step 4) —
-/// a promise that cannot be kept is not made.
+/// first search (R4). `shell` and `image_generate` are here conditionally
+/// ([`withheld`]): each only where what it leaves outside the room can be
+/// taken back.
 const ALLOWED_BUILTINS: &[&str] = &[
     "fs_read",
     "fs_list",
@@ -64,6 +64,7 @@ const ALLOWED_BUILTINS: &[&str] = &[
     "web_search",
     "web_open",
     "http_fetch",
+    "image_generate",
 ];
 
 /// The MCP server whose read-only tools an incognito chat may call (R3:
@@ -77,11 +78,13 @@ pub const READABLE_SERVER: &str = "mail";
 /// outbox's routed names, which stage a draft in every permission mode and
 /// so are withheld even when read-only. `shell_confined` is
 /// [`shell_is_sealed`]: `fs_*` are jailed to the room by `ToolCtx::resolve`,
-/// but `shell` only by the sandbox.
+/// but `shell` only by the sandbox. `images_forgettable` is
+/// [`images_forgettable`]: the image server keeps copies outside the room.
 pub fn withheld<'a>(
     tools: impl IntoIterator<Item = (&'a str, bool)>,
     routed: &[String],
     shell_confined: bool,
+    images_forgettable: bool,
 ) -> Vec<String> {
     let mail = format!("{READABLE_SERVER}__");
     tools
@@ -91,12 +94,58 @@ pub fn withheld<'a>(
             // builtin the owner routed (`http_fetch`) as much as a mail tool
             // (found on review of #321, when only the mail arm checked).
             let allowed = !routed.iter().any(|r| r == name)
-                && ((ALLOWED_BUILTINS.contains(name) && (*name != "shell" || shell_confined))
+                && ((ALLOWED_BUILTINS.contains(name)
+                    && (*name != "shell" || shell_confined)
+                    && (*name != "image_generate" || images_forgettable))
                     || (name.starts_with(&mail) && *read_only));
             !allowed
         })
         .map(|(name, _)| name.to_string())
         .collect()
+}
+
+/// How long the start-up sweep may spend taking a dead `serve`'s image jobs
+/// back: best-effort cleanup must not hold the door shut on a half-answering
+/// image server (found on review of #331).
+pub const TAKE_BACK_LIMIT: Duration = Duration::from_secs(30);
+
+/// Take what dead rooms' image trails name back off the image server
+/// (`imagegen::forget_trail`), within `limit`.
+pub async fn take_back(
+    image: Option<&mecha_core::imagegen::ImageConfig>,
+    entries: &[mecha_core::imagegen::TrailEntry],
+    limit: Duration,
+) -> Result<()> {
+    let Some(cfg) = image else {
+        bail!("no [image] is configured to reach it");
+    };
+    tokio::time::timeout(limit, mecha_core::imagegen::forget_trail(cfg, entries))
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("the image server did not finish within {limit:?}")))
+}
+
+/// Whether `image_generate` may be offered in an incognito chat: the tool
+/// deletes the server's temp copies by name after every job
+/// (`[image] server_temp_dir`), and that directory is on tmpfs, so even the
+/// brief copy never reaches the disk and "deleted" means gone (R6, design
+/// §6.3). The directory is judged by its nearest existing ancestor — the
+/// server makes it at its own start. Unset, relative, or on a disk: withheld,
+/// since a promise that cannot be kept is not made.
+pub fn images_forgettable(image: Option<&mecha_core::imagegen::ImageConfig>) -> bool {
+    let Some(dir) = image.and_then(|c| c.server_temp_dir.as_deref()) else {
+        return false;
+    };
+    if !dir.is_absolute() {
+        return false;
+    }
+    let mut at = Some(dir);
+    while let Some(p) = at {
+        if p.exists() {
+            return is_tmpfs(p).unwrap_or(false);
+        }
+        at = p.parent();
+    }
+    false
 }
 
 /// Whether `shell` may be offered in an incognito chat: a sandbox that keeps
@@ -289,6 +338,11 @@ pub struct Room {
     pub root: PathBuf,
     /// The jail: `<root>/<key>`, so its directory name is the session key.
     pub workspace: PathBuf,
+    /// Where `image_generate` writes each job's id and server-side file names
+    /// before the server has them (`ToolCtx::image_trail`), so a `serve` that
+    /// dies mid-job leaves the next one enough to take them back ([`sweep`]).
+    /// Beside the jail, never in it: a command must not be able to forge it.
+    pub image_trail: PathBuf,
     /// Where `shell` registers the commands this chat runs
     /// (`ToolCtx::shell_registry`): in the room, beside the jail and never
     /// inside it, so a command cannot edit its own entry and nothing about
@@ -325,6 +379,7 @@ impl Room {
         Ok(Room {
             key: key.to_string(),
             shells: root.join("shells"),
+            image_trail: root.join(TRAIL),
             root,
             workspace,
             spill,
@@ -363,14 +418,23 @@ impl Room {
     }
 }
 
-/// Remove every room under `rooms`: run at start, before the door opens, so
-/// a `serve` that died with incognito chats open leaves nothing for the next
-/// one. Returns what it removed.
-pub fn sweep(rooms: &Path) -> Vec<PathBuf> {
+/// What a start-up [`sweep`] removed, and what those rooms' image trails
+/// say the image server may still hold — read before the rooms went, for
+/// `imagegen::forget_trail` to take back once the config is loaded.
+#[derive(Debug, Default)]
+pub struct Swept {
+    pub rooms: Vec<PathBuf>,
+    pub image_trail: Vec<mecha_core::imagegen::TrailEntry>,
+}
+
+/// Remove every room under `rooms` that its `serve` has left behind: run at
+/// start, before the door opens, so a `serve` that died with incognito chats
+/// open leaves nothing for the next one (design §4.2).
+pub fn sweep(rooms: &Path) -> Swept {
+    let mut swept = Swept::default();
     let Ok(read) = std::fs::read_dir(rooms) else {
-        return Vec::new();
+        return swept;
     };
-    let mut removed = Vec::new();
     for entry in read.flatten() {
         let path = entry.path();
         let is_dir = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir());
@@ -378,19 +442,27 @@ pub fn sweep(rooms: &Path) -> Vec<PathBuf> {
             if !left_behind(&path) {
                 continue;
             }
-            std::fs::remove_dir_all(&path)
+            let trail = mecha_core::imagegen::read_trail(&path.join(TRAIL));
+            let gone = std::fs::remove_dir_all(&path);
+            // Taken back whether or not the room went: the server holds it
+            // either way.
+            swept.image_trail.extend(trail);
+            gone
         } else {
             std::fs::remove_file(&path)
         };
         match gone {
-            Ok(()) => removed.push(path),
+            Ok(()) => swept.rooms.push(path),
             Err(e) => {
                 tracing::warn!(path = %path.display(), "cannot remove a leftover incognito room: {e}")
             }
         }
     }
-    removed
+    swept
 }
+
+/// A room's image trail (`Room::image_trail`).
+const TRAIL: &str = "image-trail";
 
 /// The file in a room naming the process that opened it.
 const OWNER: &str = "owner";
@@ -456,10 +528,14 @@ mod tests {
             "http_fetch".to_string(),
         ];
         assert!(
-            withheld(tools, &routed, false).contains(&"shell".to_string()),
+            withheld(tools, &routed, false, true).contains(&"shell".to_string()),
             "an unconfined shell could write outside the room"
         );
-        let mut out = withheld(tools, &routed, true);
+        assert!(
+            withheld(tools, &routed, true, false).contains(&"image_generate".to_string()),
+            "an image server whose copies are not taken back keeps them"
+        );
+        let mut out = withheld(tools, &routed, true, true);
         out.sort();
         assert_eq!(
             out,
@@ -467,13 +543,80 @@ mod tests {
                 "a_tool_added_tomorrow",
                 "docs__docs_read",
                 "http_fetch",
-                "image_generate",
                 "kg_search",
                 "mail__calendar_create_event",
                 "mail__mail_send",
                 "research",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn taking_back_is_bounded_by_its_limit() {
+        use mecha_core::imagegen::{ImageConfig, TrailEntry};
+        // A server that accepts and never answers: without the bound, each
+        // request would wait out its own 30 s timeout with the door shut.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock);
+            }
+        });
+        let cfg = ImageConfig {
+            url,
+            ..ImageConfig::default()
+        };
+        let started = std::time::Instant::now();
+        let err = take_back(
+            Some(&cfg),
+            &[TrailEntry::Job("job-1".into())],
+            Duration::from_millis(300),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(format!("{err:#}").contains("did not finish"), "{err:#}");
+        assert!(take_back(None, &[], Duration::from_secs(1)).await.is_err());
+    }
+
+    #[test]
+    fn images_are_offered_only_where_the_servers_copies_are_deleted_in_ram() {
+        use mecha_core::imagegen::ImageConfig;
+        let with = |dir: Option<&Path>| ImageConfig {
+            server_temp_dir: dir.map(Path::to_path_buf),
+            ..ImageConfig::default()
+        };
+        assert!(!images_forgettable(None), "no [image]");
+        assert!(
+            !images_forgettable(Some(&with(None))),
+            "nothing to delete in"
+        );
+        assert!(!images_forgettable(Some(&with(Some(Path::new(
+            "relative/temp"
+        ))))));
+        // On a disk: deleting leaves the blocks.
+        let disk = std::env::current_dir().unwrap();
+        if !is_tmpfs(&disk).unwrap_or(true) {
+            assert!(!images_forgettable(Some(&with(Some(&disk)))));
+        }
+        // In RAM, including a directory the server has not made yet.
+        let shm = Path::new("/dev/shm");
+        if is_tmpfs(shm).unwrap_or(false) {
+            let unborn = shm.join(format!("mecha-no-such-{}", uuid::Uuid::new_v4()));
+            assert!(images_forgettable(Some(&with(Some(&unborn.join("temp"))))));
+        } else {
+            assert!(
+                std::env::var_os("MECHA_TEST_REQUIRE_BACKENDS").is_none(),
+                "MECHA_TEST_REQUIRE_BACKENDS is set and /dev/shm is not tmpfs"
+            );
+            eprintln!("skipped the RAM half: /dev/shm is not tmpfs here");
+        }
     }
 
     #[test]
@@ -576,6 +719,11 @@ mod tests {
             room.shells.starts_with(&room.root) && !room.shells.starts_with(&room.workspace),
             "the shell registry is in the room and outside the jail"
         );
+        assert!(
+            room.image_trail.starts_with(&room.root)
+                && !room.image_trail.starts_with(&room.workspace),
+            "the image trail is in the room and outside the jail"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -591,7 +739,7 @@ mod tests {
         // opened anything, so a room stamped with its pid is a reused pid's.
         let left = Room::open(&rooms, &new_key()).unwrap();
         std::fs::write(left.spill.join("shell-1.txt"), "x").unwrap();
-        assert_eq!(sweep(&rooms), vec![left.root.clone()]);
+        assert_eq!(sweep(&rooms).rooms, vec![left.root.clone()]);
         assert!(!left.root.exists());
 
         // Another live `serve`'s room stays (pid 1 is always alive).
@@ -606,6 +754,10 @@ mod tests {
         };
         let dead = Room::open(&rooms, &new_key()).unwrap();
         std::fs::write(dead.root.join(OWNER), dead_pid.to_string()).unwrap();
+        // It died mid-job: its trail is what the image server still holds.
+        std::fs::write(&dead.image_trail, "job job-7\nfile up.png\n").unwrap();
+        // A live room's trail is not the sweep's to act on.
+        std::fs::write(&live.image_trail, "job job-live\n").unwrap();
         // Unstamped: kept while it may still be being made, gone after.
         let fresh = rooms.join(new_key());
         std::fs::create_dir(&fresh).unwrap();
@@ -615,11 +767,20 @@ mod tests {
             .unwrap()
             .set_modified(std::time::SystemTime::now() - UNSTAMPED_GRACE * 2)
             .unwrap();
-        let mut swept = sweep(&rooms);
-        swept.sort();
+        let swept = sweep(&rooms);
+        let mut removed = swept.rooms.clone();
+        removed.sort();
         let mut expected = vec![dead.root.clone(), stale.clone()];
         expected.sort();
-        assert_eq!(swept, expected);
+        assert_eq!(removed, expected);
+        use mecha_core::imagegen::TrailEntry;
+        assert_eq!(
+            swept.image_trail,
+            vec![
+                TrailEntry::Job("job-7".into()),
+                TrailEntry::File("up.png".into())
+            ]
+        );
         assert!(live.root.exists() && fresh.exists());
         std::fs::remove_dir_all(&rooms).ok();
     }
