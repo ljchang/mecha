@@ -672,3 +672,8 @@ the resident model only from a `/models` list every status of which is
 known, its props always with `autoload=false`, and `bench-slots.sh` names
 the model in each request, which a router otherwise refuses.
 `scripts/test_served_props.py` checks the requests sent, in CI.
+
+After the install, `bench/run.sh`'s `-np 1` gate refuses production's preset
+(`parallel = 4`) — truthfully, from the model's own `total_slots`. That is
+the gate working, not a new breakage: a benchmark run needs a one-slot
+preset (or the `update` skill's benchmark step pointed at one).

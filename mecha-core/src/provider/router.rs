@@ -511,16 +511,24 @@ pub async fn unload(base_url: &str, model: &str, wait: Duration) -> Result<()> {
         // Gone is a list that answered and does not hold it resident —
         // absent counts, should a router ever drop unloaded entries (this one
         // keeps them listed). No answer is not gone.
-        // Readable first: an empty or unknown-status list is not "gone"
-        // either (the module's rule, found on review).
-        let gone = list_on(&http, &b).await.is_some_and(|l| {
-            readable(&l)
-                && l.iter()
-                    .find(|m| m.id == model)
-                    .is_none_or(|m| !m.is_resident())
-        });
-        if gone {
-            return Ok(());
+        // Readable first: an empty or unknown-status list is not "gone" —
+        // and, as in `load`, it is not a reason to keep waiting either: it
+        // says nothing about whether the unload is coming, so it fails now
+        // rather than holding `mecha model use --now` for `wait` (found on
+        // review).
+        if let Some(l) = list_on(&http, &b).await {
+            if !readable(&l) {
+                bail!(
+                    "the router's model list is one this build cannot read (empty, or a \
+                     status it does not know) — `mecha model list` shows what it sees"
+                );
+            }
+            if l.iter()
+                .find(|m| m.id == model)
+                .is_none_or(|m| !m.is_resident())
+            {
+                return Ok(());
+            }
         }
         if tokio::time::Instant::now() >= deadline {
             bail!(
@@ -1013,6 +1021,25 @@ mod tests {
         assert!(format!("{err:#}").contains("\"resident\""), "{err:#}");
         let lines = server.await.unwrap();
         assert_eq!(lines[2], "POST /models/load HTTP/1.1");
+    }
+
+    /// `unload` stops at once on a list it cannot read, instead of holding
+    /// `--now` for its whole wait.
+    #[tokio::test]
+    async fn an_unload_that_reads_an_unknown_status_fails_at_once() {
+        let renamed = r#"{"data":[{"id":"m","status":{"value":"resident"}}]}"#;
+        let (url, server) = stub(vec![r#"{"success":true}"#, renamed]).await;
+        let started = std::time::Instant::now();
+        let err = unload(&url, "m", Duration::from_secs(30))
+            .await
+            .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(format!("{err:#}").contains("cannot read"), "{err:#}");
+        assert_eq!(server.await.unwrap()[0], "POST /models/unload HTTP/1.1");
     }
 
     /// The boundary that arm sits on: `downloading` is a status this build
