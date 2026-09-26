@@ -251,18 +251,30 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
 
     // R2: the resident model mid-reply is waited for, or — `--now` — cut off.
     if let Some(prev) = &previous {
-        if let mecha_core::brief::Slots::Read { busy, .. } =
-            mecha_core::brief::read_slots(&base, Some(prev)).await
-        {
-            if busy > 0 && now {
-                eprintln!("stopping {prev} now — {busy} reply(ies) in progress will fail");
-                router::unload(&base, prev, Duration::from_secs(60)).await?;
-            } else if busy > 0 {
-                eprintln!(
-                    "{prev} is answering {busy} request(s); the switch waits for it to go idle \
-                     (--now cuts it off)"
-                );
+        let busy = match mecha_core::brief::read_slots(&base, Some(prev)).await {
+            mecha_core::brief::Slots::Read { busy, .. } => Some(busy),
+            _ => None,
+        };
+        if now {
+            // `--now` unloads whatever the slot reading says: a sleeping
+            // model, or a `/slots` read that bounced, must not quietly turn
+            // "now" into a wait (found on review).
+            match busy {
+                Some(b) if b > 0 => {
+                    eprintln!("stopping {prev} now — {b} reply(ies) in progress will fail")
+                }
+                _ => eprintln!("stopping {prev} now"),
             }
+            // Not fatal: the load below evicts an idle model regardless, so
+            // a refused unload costs only the "now".
+            if let Err(e) = router::unload(&base, prev, Duration::from_secs(wait_secs)).await {
+                eprintln!("warning: {e:#}");
+            }
+        } else if let Some(b) = busy.filter(|b| *b > 0) {
+            eprintln!(
+                "{prev} is answering {b} request(s); the switch waits for it to go idle \
+                 (--now cuts it off)"
+            );
         }
     }
 
