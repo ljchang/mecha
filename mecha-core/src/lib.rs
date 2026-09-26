@@ -49,6 +49,7 @@ pub mod agent;
 pub mod anticipation;
 pub mod appraisal;
 pub mod appraisal_store;
+pub mod attribution;
 pub mod backlog;
 pub mod batch;
 pub mod boredom;

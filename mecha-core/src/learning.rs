@@ -287,6 +287,19 @@ pub struct Reflexion {
     /// off the covering run record's `rules_goal` like the other keys.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub situation_recomputed_at: Option<String>,
+    /// Whether the correction was a data error, a behaviour error or a gap,
+    /// by what the run was given — mecha-graph's D3 contract
+    /// ([`crate::attribution`]; `APPRAISAL-WIRING-DESIGN.md` L7). Stamped by
+    /// `mecha reflect` from the transcript, never by the reflector, which
+    /// only copies the spans. `None` on a record from before the field, and
+    /// on the triggers D3 does not attribute (an edit, a mismatch): see
+    /// [`Reflexion::attribution_admits`] for what each means to `learn`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::attribution::de_lenient"
+    )]
+    pub attribution: Option<crate::attribution::Attribution>,
 }
 
 /// What matching one reflection back to its transcript found — the
@@ -514,6 +527,41 @@ impl Reflexion {
         match crate::agent::is_harness_voice(&self.intervention) {
             true => Origin::Derived,
             false => self.origin,
+        }
+    }
+
+    /// The attribution half of `learn`'s gate, beside [`Self::learnable`]'s
+    /// provenance half and never folded into it: **a behaviour rule is mined
+    /// only from a behaviour error** (D3, row 2e-3). `learn` asks both, and
+    /// counts what each holds back apart.
+    ///
+    /// - A reflection D3 does not attribute ([`crate::attribution::in_scope`]:
+    ///   an edit, a mismatch, a triage correction) is admitted, as before.
+    /// - An **owner-edited** lesson is admitted whatever its class: the lesson
+    ///   is the owner's own words now, which outranks the attribution the way
+    ///   it outranks the provenance — and it is how a correction placed wrongly
+    ///   is rescued, rather than argued about.
+    /// - Otherwise only [`crate::attribution::Class::Behaviour`] is admitted.
+    ///   A data error and a gap never are; **neither is a reflection with no
+    ///   attribution** — one recorded before the field, whose class cannot be
+    ///   known without a model call — nor one whose attribution is unknown.
+    ///   Unknown is never clean.
+    pub fn attribution_admits(&self) -> bool {
+        self.attribution_withholds().is_none()
+    }
+
+    /// What [`Self::attribution_admits`] holds this reflection back as, if
+    /// anything: the class — `Unknown` for a reflection in scope with no
+    /// attribution recorded. `None` when it is admitted.
+    pub fn attribution_withholds(&self) -> Option<crate::attribution::Class> {
+        use crate::attribution::{in_scope, Class};
+        if self.edited_at.is_some() || !in_scope(&self.domain, &self.trigger) {
+            return None;
+        }
+        match self.attribution.as_ref().map(|a| a.class) {
+            Some(Class::Behaviour) => None,
+            Some(class) => Some(class),
+            None => Some(Class::Unknown),
         }
     }
 }
@@ -1174,8 +1222,9 @@ impl LearningStore {
         }
         for r in self.reflexions()? {
             // What `learn` could mint a rule from: unprocessed and past its
-            // gate (`learnable` checks the owner's drop and provenance).
-            if r.is_processed || !r.learnable() {
+            // gate (`learnable` checks the owner's drop and provenance,
+            // `attribution_admits` D3's class).
+            if r.is_processed || !r.learnable() || !r.attribution_admits() {
                 continue;
             }
             if let Some(goal) = r.situation.as_ref().and_then(|s| s.goal.clone()) {
@@ -3038,10 +3087,21 @@ content, so you get the user's own words and tool names only. Judge from \
 what remains, and prefer skip when the user's words alone carry no clear \
 lesson — a lesson guessed at missing context is worse than none.
 
+Separately, say whether the user is correcting a FACT — something the \
+assistant said or used that the user says is untrue (\"no, it's Thursday\", \
+\"she left Northwind last spring\", \"that's the old address\") — rather than \
+how the assistant went about the work. For a fact, copy two short spans WORD \
+FOR WORD, never paraphrased: `wrong`, the untrue value as it appears in the \
+excerpts or the user's words, and `right`, the true value as the user wrote \
+it; leave `right` out when the user only rejected the claim. Spans that are \
+not copied exactly are discarded. You do not decide whose fault it was.
+
 Reply with one JSON object and nothing else:
 {\"skip\": false, \"reflexion\": \"<the directive, 1-3 sentences>\", \
 \"error_type\": \"<one of: premature-action, wrong-approach, overreach, \
-missed-context, style, other>\", \"confidence\": 0.0-1.0}
+missed-context, style, other>\", \"confidence\": 0.0-1.0, \"fact\": false}
+or, when a fact was corrected, the same with \"fact\": true, \
+\"wrong\": \"<span>\", \"right\": \"<span>\"
 or {\"skip\": true} when there is no lesson.";
 
 /// Evidence supplied by the harness is an observation, not a user correction.
@@ -3096,6 +3156,16 @@ struct ReflectorReply {
     error_type: Option<String>,
     #[serde(default)]
     confidence: Option<f64>,
+    /// D3's extraction (`crate::attribution`): whether a fact was corrected,
+    /// and the two spans. Untyped on purpose, like the distiller's
+    /// corrections: a formatting slip in an optional field must not fail the
+    /// parse and cost the lesson.
+    #[serde(default)]
+    fact: Option<serde_json::Value>,
+    #[serde(default)]
+    wrong: Option<serde_json::Value>,
+    #[serde(default)]
+    right: Option<serde_json::Value>,
 }
 
 /// Turns interventions into reflections with one model call each.
@@ -3124,7 +3194,16 @@ impl Reflector {
 
     /// `Ok(None)` means the model judged there was no lesson (or replied
     /// unusably — logged, not fatal: one bad reflection is not worth a run).
-    pub async fn reflect(&self, i: &Intervention) -> Result<Option<Reflexion>> {
+    ///
+    /// Beside the reflection, what the reply said about a corrected fact —
+    /// spans only. The reflection's `attribution` is left `None` (which
+    /// `learn` never mines where D3 applies): the caller holds the
+    /// transcript, and [`crate::attribution::decide`] places the correction
+    /// against what the run was given, never the reflector.
+    pub async fn reflect(
+        &self,
+        i: &Intervention,
+    ) -> Result<Option<(Reflexion, crate::attribution::Answer)>> {
         if i.trigger == Trigger::Mismatch {
             let Ok(step) = serde_json::from_str::<crate::planning::StepFeedback>(&i.context) else {
                 return Ok(None);
@@ -3177,7 +3256,12 @@ impl Reflector {
         if reply.skip || reply.reflexion.trim().is_empty() {
             return Ok(None);
         }
-        Ok(Some(Reflexion {
+        let answer = crate::attribution::Answer::from_reply(
+            reply.fact.as_ref(),
+            reply.wrong.as_ref(),
+            reply.right.as_ref(),
+        );
+        let reflexion = Reflexion {
             goals: Vec::new(),
             id: crate::session::Session::new_id(),
             domain: domain.to_string(),
@@ -3205,7 +3289,10 @@ impl Reflector {
             // window; the reflector saw prose and must not author a key.
             situation: None,
             situation_recomputed_at: None,
-        }))
+            // The caller's, from the transcript: see the doc above.
+            attribution: None,
+        };
+        Ok(Some((reflexion, answer)))
     }
 }
 
@@ -3883,6 +3970,7 @@ mod tests {
             dropped_reason: None,
             situation: None,
             situation_recomputed_at: None,
+            attribution: None,
         };
         assert!(r(Origin::Clean).learnable());
         // The attack this closes: one sentence from a hostile page surviving
@@ -4127,6 +4215,7 @@ mod tests {
             dropped_reason: None,
             situation: None,
             situation_recomputed_at: None,
+            attribution: None,
         };
         store.append_reflexion(&r).unwrap();
         r
@@ -4335,6 +4424,7 @@ mod tests {
             dropped_reason: None,
             situation: None,
             situation_recomputed_at: None,
+            attribution: None,
         };
         assert_eq!(
             r.provenance(),
@@ -4781,6 +4871,7 @@ mod tests {
             dropped_reason: None,
             situation: None,
             situation_recomputed_at: None,
+            attribution: None,
         };
         store.append_reflexion(&r).unwrap();
         let back = store.reflexions().unwrap();
@@ -5041,6 +5132,7 @@ mod tests {
                     dropped_reason: None,
                     situation: None,
                     situation_recomputed_at: None,
+                    attribution: None,
                 })
                 .unwrap();
         }
@@ -5258,6 +5350,7 @@ mod tests {
             dropped_reason: None,
             situation: None,
             situation_recomputed_at: None,
+            attribution: None,
         }
     }
 
@@ -5639,6 +5732,7 @@ mod tests {
                 dropped_reason: None,
                 situation: None,
                 situation_recomputed_at: None,
+                attribution: None,
             };
             assert!(r.learnable());
         }
@@ -6337,6 +6431,12 @@ mod situation_tests {
                 None,
             )),
             situation_recomputed_at: None,
+            // A correction placed on the agent — the class `learn` mines.
+            attribution: Some(crate::attribution::Attribution::new(
+                crate::attribution::Basis::NoFact,
+                None,
+                None,
+            )),
         }
     }
 
@@ -7679,5 +7779,159 @@ mod attribution_regressions {
             extract_mismatches(&[message], &[Some(1)]).is_empty(),
             "necessary linked traversal or late completion updates must not teach a stop-work rule"
         );
+    }
+}
+
+/// D3's attribution as `learn`'s gate sees it (row 2e-3): what the reflector
+/// hands back, what an old record loads as, and which triggers it covers.
+#[cfg(test)]
+mod correction_attribution {
+    use super::*;
+    use crate::attribution::{Answer, Attribution, Basis, Class, Fact};
+
+    /// A model that answers every request with one fixed reply.
+    struct Replies(String);
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for Replies {
+        fn id(&self) -> &str {
+            "replies"
+        }
+        fn default_model(&self) -> &str {
+            "replies-1"
+        }
+        async fn complete(
+            &self,
+            _req: &crate::message::CompletionRequest,
+            _sink: Option<&crate::provider::StreamSink>,
+        ) -> Result<crate::message::CompletionResponse> {
+            Ok(crate::message::CompletionResponse {
+                message: Message::assistant(vec![Block::Text {
+                    text: self.0.clone(),
+                }]),
+                stop_reason: crate::message::StopReason::EndTurn,
+                usage: crate::message::Usage::default(),
+                refusal: None,
+                model: "replies-1".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+
+    fn followup() -> Intervention {
+        Intervention {
+            trigger: Trigger::Followup,
+            context: "Dana Whitfield works at Northwind Labs.".into(),
+            text: "No — she moved to Lakeside Institute in the spring.".into(),
+            aftermath: "Sorry — Lakeside Institute it is.".into(),
+            at: 4,
+            tools_before: vec!["kg_entity".into()],
+            tools_after: Vec::new(),
+        }
+    }
+
+    async fn reflect(reply: &str) -> Option<(Reflexion, Answer)> {
+        Reflector::new(Box::new(Replies(reply.into())), None)
+            .reflect(&followup())
+            .await
+            .unwrap()
+    }
+
+    /// The reflector copies the spans and never names the class: the
+    /// reflection comes back unattributed, for the caller to place.
+    #[tokio::test]
+    async fn the_reflector_hands_back_the_spans_and_leaves_the_class_to_the_harness() {
+        let (r, answer) = reflect(
+            r#"{"skip": false, "reflexion": "Check the employer before writing.",
+                "error_type": "missed-context", "confidence": 0.7,
+                "fact": true, "wrong": "Northwind Labs", "right": "Lakeside Institute"}"#,
+        )
+        .await
+        .expect("a lesson");
+        assert_eq!(
+            answer,
+            Answer::Fact(Fact {
+                wrong: "Northwind Labs".into(),
+                right: Some("Lakeside Institute".into()),
+            })
+        );
+        assert_eq!(
+            r.attribution, None,
+            "the caller places it, never the reflector"
+        );
+
+        let (_, answer) = reflect(r#"{"skip": false, "reflexion": "Ask first.", "fact": false}"#)
+            .await
+            .unwrap();
+        assert_eq!(answer, Answer::NoFact);
+    }
+
+    /// The new fields are optional and lenient: a reply from before them, or
+    /// one that garbles them, keeps its lesson and answers nothing.
+    #[tokio::test]
+    async fn a_reply_without_or_with_a_garbled_fact_keeps_its_lesson_and_answers_nothing() {
+        for reply in [
+            r#"{"skip": false, "reflexion": "Ask first."}"#,
+            r#"{"skip": false, "reflexion": "Ask first.", "fact": {"yes": 1}, "wrong": 3}"#,
+        ] {
+            let (r, answer) = reflect(reply).await.expect("the lesson survives");
+            assert_eq!(r.reflexion_text, "Ask first.");
+            assert_eq!(answer, Answer::NotAnswered, "{reply}");
+        }
+    }
+
+    /// A reflection written before this row has no attribution field. It
+    /// still loads, the provenance gate still admits it exactly as before —
+    /// that gate is unchanged — and D3's gate treats it as unknown: counted,
+    /// never mined. Fails on the old tree, where it went straight to `learn`.
+    #[test]
+    fn a_reflection_from_before_attribution_loads_and_is_unknown() {
+        let line = r#"{"id":"20260920T101500-old","domain":"behavior","session_id":"s",
+            "trigger":"steer","context":"","intervention":"no, the other file",
+            "reflexion_text":"Use the file the user names.","error_type":null,
+            "confidence":null,"created_at":"2026-09-20T10:15:00Z","origin":"clean"}"#;
+        let r: Reflexion = serde_json::from_str(line).expect("old records load");
+        assert_eq!(r.attribution, None);
+        assert!(r.learnable(), "provenance gate unchanged");
+        assert_eq!(r.attribution_withholds(), Some(Class::Unknown));
+        assert!(!r.attribution_admits());
+
+        // And a stamped one round-trips through the store's own encoding.
+        let mut stamped = r.clone();
+        stamped.attribution = Some(Attribution::new(Basis::RightGiven, None, None));
+        let back: Reflexion =
+            serde_json::from_str(&serde_json::to_string(&stamped).unwrap()).unwrap();
+        assert_eq!(back.attribution, stamped.attribution);
+        assert!(back.attribution_admits());
+    }
+
+    /// D3 attributes an owner's correction; a harness mismatch, a writing
+    /// edit and a triage correction are outside its table and pass as
+    /// before. A trigger this build does not know is a correction — unknown
+    /// is never clean.
+    #[test]
+    fn the_gate_covers_the_owners_behaviour_corrections_and_fails_closed_on_the_rest() {
+        let base: Reflexion = serde_json::from_str(
+            r#"{"id":"x","domain":"behavior","session_id":"s","trigger":"steer",
+                "context":"","intervention":"","reflexion_text":"t",
+                "error_type":null,"confidence":null,"created_at":"","origin":"clean"}"#,
+        )
+        .unwrap();
+        let with = |domain: &str, trigger: &str| Reflexion {
+            domain: domain.into(),
+            trigger: trigger.into(),
+            ..base.clone()
+        };
+        for trigger in [
+            "steer",
+            "denial",
+            "followup",
+            "reject",
+            "from-a-newer-build",
+        ] {
+            assert!(!with("behavior", trigger).attribution_admits(), "{trigger}");
+        }
+        assert!(with("behavior", "mismatch").attribution_admits());
+        assert!(with("writing", "edit").attribution_admits());
+        assert!(with(TRIAGE_DOMAIN, "bucket").attribution_admits());
     }
 }

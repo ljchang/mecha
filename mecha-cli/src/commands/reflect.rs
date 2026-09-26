@@ -286,8 +286,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 continue;
             }
             match reflector.reflect(&input).await {
-                Ok(Some(mut r)) => {
+                Ok(Some((mut r, answer))) => {
                     r.session_id = meta.id.clone();
+                    // D3 (row 2e-3): data error, behaviour error or gap, by
+                    // what the run had been given when the owner stepped in
+                    // — decided here, from the transcript, never by the
+                    // reflector, which only copied the spans. Deterministic
+                    // code over the recorded results, whatever the taint:
+                    // nothing it reads reaches a model or a rule.
+                    if mecha_core::attribution::in_scope(&r.domain, &r.trigger) {
+                        r.attribution = Some(mecha_core::attribution::decide(
+                            &answer,
+                            &intervention.text,
+                            &mecha_core::attribution::Given::before(
+                                &convo.messages,
+                                intervention.at,
+                            ),
+                        ));
+                    }
                     r.goals = if intervention.trigger == Trigger::Mismatch {
                         serde_json::from_str::<mecha_core::planning::StepFeedback>(
                             &intervention.context,
@@ -426,7 +442,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let reflector = reflector.as_ref().expect("built unless dry-run");
         match reflector.reflect(&input).await {
             Ok(reflected) => {
-                if let Some(mut r) = reflected {
+                if let Some((mut r, answer)) = reflected {
+                    // A rejection is a correction D3 attributes; what the
+                    // run was given is the staging session's results before
+                    // the staging call, and what it said includes the draft.
+                    // A session that cannot be read, or a staging call it
+                    // does not carry, places no fact — never a gap.
+                    if let (Some(reason), true) = (
+                        item.rejection_reason(),
+                        mecha_core::attribution::in_scope(&r.domain, &r.trigger),
+                    ) {
+                        let messages =
+                            mecha_core::outbox_source::messages_for_item(item, &sessions_dir);
+                        r.attribution = Some(mecha_core::attribution::decide(
+                            &answer,
+                            reason,
+                            &given_at_staging(item, &messages),
+                        ));
+                    }
                     // The drafting session, when the front-end knew it — the
                     // same lineage a behavior reflection carries.
                     r.session_id = item.session_id.clone().unwrap_or_default();
@@ -821,6 +854,25 @@ fn rejection_intervention(item: &mecha_core::outbox::OutboxItem) -> Option<Inter
     })
 }
 
+/// What a rejected draft's run had been given when it staged the draft:
+/// the staging session's calls before the staging message, and — among
+/// what the run said — the draft itself, which rides in the staging call.
+/// A session that could not be read (no messages) or that does not carry
+/// the staging call is unreadable: D3 places no fact against it.
+fn given_at_staging<'a>(
+    item: &mecha_core::outbox::OutboxItem,
+    messages: &'a [mecha_core::message::Message],
+) -> mecha_core::attribution::Given<'a> {
+    match mecha_core::outbox_source::staged_in(item, messages) {
+        Some(at) => {
+            let mut given = mecha_core::attribution::Given::before(messages, at);
+            given.said.push(item.args_before.to_string());
+            given
+        }
+        None => mecha_core::attribution::Given::unreadable(),
+    }
+}
+
 /// Frame one edited-then-sent outbox item as an intervention for the
 /// writing-domain reflector: the draft is the context, the diff is what the
 /// user did, the sent version is the aftermath.
@@ -1028,6 +1080,94 @@ mod tests {
         }))
         .unwrap();
         s
+    }
+
+    /// A rejected draft is a correction D3 attributes (row 2e-3), against
+    /// what the staging run had read before it staged: the calls before the
+    /// staging message, never the staging call or anything after it. The
+    /// wrong value in a result the run read is a data error pointing at that
+    /// read; the same draft from a run that read neither value is a gap; and
+    /// a staging session that cannot be read places no fact at all.
+    #[test]
+    fn a_rejected_draft_is_attributed_by_what_the_staging_run_had_read() {
+        use mecha_core::agent::Taint;
+        use mecha_core::attribution::{decide, Answer, Basis, Class, Fact};
+        use mecha_core::message::{Block, Message};
+        use mecha_core::outbox::{OutboxKind, OutboxStore, Provenance};
+        let root = scratch("reflect-reject-attribution");
+        let store = OutboxStore::open(&root).unwrap();
+        let draft = serde_json::json!({
+            "to": "sam@example.edu",
+            "body": "Dana is at Northwind Labs, so write to her there."
+        });
+        let staged = store
+            .stage(
+                "mail_send",
+                OutboxKind::Message,
+                draft.clone(),
+                Taint::default(),
+                Provenance {
+                    session_id: Some("20260926T090000-ada".into()),
+                    call_id: Some("s1".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let item = store
+            .resolve(
+                &staged.id,
+                "rejected",
+                Some("She moved to Lakeside Institute in March.".into()),
+            )
+            .unwrap();
+        let reason = item.rejection_reason().unwrap().to_string();
+        let transcript = |read: &str| {
+            vec![
+                Message::user("Tell Sam where Dana works now."),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "kg_entity".into(),
+                    input: serde_json::json!({"name": "Dana Whitfield"}),
+                }]),
+                Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: read.into(),
+                    is_error: false,
+                }]),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "s1".into(),
+                    name: "mail_send".into(),
+                    input: draft.clone(),
+                }]),
+                // After the staging call: never what the draft was written from.
+                Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "s1".into(),
+                    content: "Drafted, not sent. Lakeside Institute".into(),
+                    is_error: false,
+                }]),
+            ]
+        };
+        let answer = Answer::Fact(Fact {
+            wrong: "Northwind Labs".into(),
+            right: Some("Lakeside Institute".into()),
+        });
+
+        let read_wrong = transcript("Dana Whitfield — employer: Northwind Labs.");
+        let a = decide(&answer, &reason, &given_at_staging(&item, &read_wrong));
+        assert_eq!((a.class, a.basis), (Class::Data, Basis::WrongGiven));
+        assert_eq!(a.source.unwrap().call, "t1");
+
+        let read_nothing = transcript("Dana Whitfield — no employer on record.");
+        let a = decide(&answer, &reason, &given_at_staging(&item, &read_nothing));
+        assert_eq!(
+            (a.class, a.basis),
+            (Class::Gap, Basis::NeitherGiven),
+            "the wrong value is grounded in the draft; the staging result is not given"
+        );
+
+        let a = decide(&answer, &reason, &given_at_staging(&item, &[]));
+        assert_eq!((a.class, a.basis), (Class::Unknown, Basis::NoRecord));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// R16a: a draft the owner rejected with a reason reaches the reflector
@@ -1281,6 +1421,7 @@ mod tests {
                     ws.map(Path::new),
                 )),
                 situation_recomputed_at: None,
+                attribution: None,
             };
             store.append_reflexion(&r).unwrap();
         };
@@ -1327,6 +1468,7 @@ mod tests {
                     serde_json::from_str(r#"{"tools":["shell"],"surface":"copilot"}"#).unwrap(),
                 ),
                 situation_recomputed_at: None,
+                attribution: None,
             })
             .unwrap();
         assert_eq!(
@@ -1370,6 +1512,7 @@ mod tests {
                     None,
                 )),
                 situation_recomputed_at: None,
+                attribution: None,
             })
             .unwrap();
         let (listed, unreadable) = Session::list_counting(&sessions).unwrap();
@@ -1453,6 +1596,7 @@ mod tests {
                     serde_json::from_str(r#"{"tools":["shell"],"surface":"copilot"}"#).unwrap(),
                 ),
                 situation_recomputed_at: None,
+                attribution: None,
             })
             .unwrap();
         let (listed, unreadable) = Session::list_counting(&sessions).unwrap();
@@ -1509,6 +1653,7 @@ mod tests {
                     serde_json::from_str(r#"{"tools":["shell"],"surface":"copilot"}"#).unwrap(),
                 ),
                 situation_recomputed_at: None,
+                attribution: None,
             })
             .unwrap();
         let (listed, unreadable) = Session::list_counting(&sessions).unwrap();

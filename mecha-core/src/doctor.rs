@@ -2123,7 +2123,13 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         // them), silently suppressing this very finding with the records
         // that caused the starvation.
         if r.learnable() {
-            if !r.is_processed {
+            // `learn`'s attribution half too (D3, row 2e-3): a data error, a
+            // gap or an unattributed correction is never mined, so counting
+            // it as waiting would read a pool at the floor that `learn` will
+            // never consolidate — this finding silenced by records that sit
+            // unprocessed for good. Not counted as excluded either: that
+            // count is the provenance gate's, and its remedy is about origin.
+            if !r.is_processed && r.attribution_admits() {
                 waiting.entry(r.domain.clone()).or_default().push(r);
             }
         } else if r.dropped_at.is_none() {
@@ -3047,6 +3053,8 @@ mod tests {
             "is_processed": processed,
             "created_at": created_at,
             "origin": origin,
+            // Placed on the agent (D3, row 2e-3): the class `learn` mines.
+            "attribution": {"class": "behaviour", "basis": "no_fact"},
         })
         .to_string()
     }
@@ -3156,6 +3164,47 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// A clean pool at the floor that `learn` will never consolidate — every
+    /// reflection a data error, a gap or unattributed (D3, row 2e-3) — is not
+    /// a pool at all, and must not silence starvation: those records sit
+    /// unprocessed for good. Fails with `learnable()` alone deciding
+    /// "waiting", which is what it was.
+    #[test]
+    fn reflections_learn_will_not_mine_do_not_silence_starvation() {
+        let home = home("learning-starved-unattributed");
+        let mut lines: Vec<String> = (0..12)
+            .map(|i| reflection_line(&format!("u{i}"), "untrusted", false, "2026-08-13T12:00:00Z"))
+            .collect();
+        for (i, attribution) in [
+            serde_json::json!({"class": "data", "basis": "wrong_given"}),
+            serde_json::json!({"class": "gap", "basis": "neither_given"}),
+            serde_json::Value::Null,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut v: serde_json::Value = serde_json::from_str(&reflection_line(
+                &format!("c{i}"),
+                "clean",
+                false,
+                "2026-08-05T00:00:00Z",
+            ))
+            .unwrap();
+            v["attribution"] = attribution;
+            lines.push(v.to_string());
+        }
+        write_reflections(&home, &lines);
+        let findings = examine(&home, utc(NOW));
+        let learning = of(&findings, "learning");
+        assert_eq!(learning.len(), 1, "{findings:#?}");
+        assert!(
+            learning[0].summary.contains("12 of 15"),
+            "withheld on attribution is not excluded by origin: {}",
+            learning[0].summary
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

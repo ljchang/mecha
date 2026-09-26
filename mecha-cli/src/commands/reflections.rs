@@ -134,14 +134,57 @@ fn blocked_because(r: &Reflexion) -> Option<String> {
         });
     }
     match r.provenance() {
-        Origin::Clean => None,
+        Origin::Clean => {}
         Origin::Derived => {
-            Some("mecha's own words — nothing can grade it (edit to adopt it)".into())
+            return Some("mecha's own words — nothing can grade it (edit to adopt it)".into())
         }
-        Origin::Untrusted => Some(
-            "third-party content was in context when it was mined (edit to make it yours)".into(),
+        Origin::Untrusted => {
+            return Some(
+                "third-party content was in context when it was mined (edit to make it yours)"
+                    .into(),
+            )
+        }
+    }
+    // D3's half of the gate (row 2e-3): each class says what happens to it
+    // instead, because each calls for something different from the owner.
+    // Not said of a processed reflection: one consumed before attribution
+    // existed already became a rule, and "never a rule" would be untrue.
+    if r.is_processed {
+        return None;
+    }
+    use mecha_core::attribution::Class;
+    match (r.attribution_withholds()?, &r.attribution) {
+        (Class::Data, _) => Some(
+            "a data error — the run used what it was given; the source is repaired, never a \
+             rule (edit to make it yours)"
+                .into(),
+        ),
+        (Class::Gap, _) => Some(
+            "a gap — the run was given neither value; a retrieval target, never a rule \
+             (edit to make it yours)"
+                .into(),
+        ),
+        (_, None) => Some(
+            "mined before corrections were attributed — unknown, never a rule (edit to make \
+             it yours)"
+                .into(),
+        ),
+        (_, Some(_)) => Some(
+            "the correction could not be placed — unknown, never a rule (edit to make it \
+             yours)"
+                .into(),
         ),
     }
+}
+
+/// The attribution as a reader sees it: the class, and the class's basis.
+fn attribution_words(r: &Reflexion) -> Option<String> {
+    let a = r.attribution.as_ref()?;
+    let basis = serde_json::to_value(a.basis)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    Some(format!("{} ({basis})", a.class.as_str()))
 }
 
 fn list(store: &LearningStore, domain: Option<&str>, all: bool, as_json: bool) -> Result<()> {
@@ -163,6 +206,7 @@ fn list(store: &LearningStore, domain: Option<&str>, all: bool, as_json: bool) -
                     "title": r.reflexion_text,
                     "origin": format!("{:?}", r.provenance()).to_lowercase(),
                     "learnable": r.learnable(),
+                    "attribution": r.attribution.as_ref().map(|a| a.class.as_str()),
                     "blocked": blocked_because(r),
                     "edited": r.edited_at.is_some(),
                     "dropped": r.dropped_at.is_some(),
@@ -181,7 +225,10 @@ fn list(store: &LearningStore, domain: Option<&str>, all: bool, as_json: bool) -
         return Ok(());
     }
 
-    let learnable = rows.iter().filter(|r| r.learnable()).count();
+    let learnable = rows
+        .iter()
+        .filter(|r| r.learnable() && r.attribution_admits())
+        .count();
     println!(
         "{} reflection(s) · {learnable} can become rules\n",
         rows.len()
@@ -280,6 +327,19 @@ fn show(store: &LearningStore, id: &str, as_json: bool) -> Result<()> {
         r.evidence,
         yes_no(r.learnable())
     );
+    if let Some(a) = &r.attribution {
+        let mut line = format!("attribution: {}", attribution_words(&r).unwrap_or_default());
+        if let Some(f) = &a.fact {
+            line.push_str(&format!(" · wrong \"{}\"", f.wrong));
+            if let Some(right) = &f.right {
+                line.push_str(&format!(" → right \"{right}\""));
+            }
+        }
+        if let Some(src) = &a.source {
+            line.push_str(&format!(" · from {} ({})", src.tool, src.call));
+        }
+        println!("{line}");
+    }
     if let Some(why) = blocked_because(&r) {
         println!("  └ {why}");
     }
@@ -336,6 +396,7 @@ fn first_line(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mecha_core::attribution::{Attribution, Basis};
     use mecha_core::learning::{Evidence, Trigger};
 
     fn r(origin: Origin) -> Reflexion {
@@ -360,7 +421,35 @@ mod tests {
             dropped_reason: None,
             situation: None,
             situation_recomputed_at: None,
+            // A steer attributed to the agent: the one class `learn` mines.
+            attribution: Some(Attribution::new(Basis::NoFact, None, None)),
         }
+    }
+
+    /// Each class D3 holds back says what happens to it instead, and an
+    /// unattributed one says why it is unknown — never a bare "excluded".
+    #[test]
+    fn each_attribution_that_is_withheld_says_which_and_what_to_do() {
+        let with = |basis| {
+            let mut x = r(Origin::Clean);
+            x.attribution = Some(Attribution::new(basis, None, None));
+            blocked_because(&x).unwrap()
+        };
+        assert!(with(Basis::WrongGiven).starts_with("a data error"));
+        assert!(with(Basis::NeitherGiven).starts_with("a gap"));
+        assert!(with(Basis::Ungrounded).contains("could not be placed"));
+        let mut before = r(Origin::Clean);
+        before.attribution = None;
+        let why = blocked_because(&before).unwrap();
+        assert!(why.contains("before corrections were attributed"), "{why}");
+        // A reflection consumed before attribution already became a rule.
+        before.is_processed = true;
+        assert_eq!(blocked_because(&before), None);
+        // An owner's edit makes the lesson theirs, whatever its class.
+        let mut edited = r(Origin::Clean);
+        edited.attribution = Some(Attribution::new(Basis::WrongGiven, None, None));
+        edited.edited_at = Some("2026-09-26T00:00:00Z".into());
+        assert_eq!(blocked_because(&edited), None);
     }
 
     /// Four ways to be refused, four different things for the owner to do. A
