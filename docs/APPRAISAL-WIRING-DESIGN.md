@@ -358,7 +358,7 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2d-1** | **Point-wise comparison at informative decision points.** At a steer, a denial, a failed check, an edited or rejected draft, a surprise: `probe::drive_arm` runs K policies a short horizon from the point, and the owner's recorded verdict decides (new: a branch's draft against the released text). Each writes a 1g `Comparison` of a new kind. Points drawn uniformly until 2e-6 ranks them. **Built as 2d-1** — `mecha sessions compare`; see O1 for what was built and what it left. | O1, R26, R27 | 1g | fixture points of each kind leave comparisons a second read returns; a point whose verdict no structural validator can pose is inconclusive, never judged |
 | **2d-2** | **The acceptance combination** (R26): a harness candidate is accepted when the point-wise comparison decides for it and the whole-session numeric comparison shows no regression, `WORK_FLOOR` intact. **Built as 2d-2**, with R36's completion: point-wise against rejects, and point-wise undecided leaves the numeric verdict unchanged. | O1, R26 | 2d-1 | a candidate that wins point-wise and regresses the floor is rejected; one that wins point-wise and holds is accepted |
 | **2d-3** | **The losing arm teaches.** A comparison's confirmed losing outcome is written into that session's appraisal as counterfactual reflection — a new pointer kind naming the comparison, which 2a-1's `Pointer::Unread` already round-trips. | O3 | 2a-2, 2d-1 | a decided comparison's loser appears on the session's appraisal, pointing at its comparison; an undecided one writes nothing — *built; see O3* |
-| **2e-1** | **The reflector's lessons against the appraisal's**, on the same interventions, by the validation probes already built — shadow, measurement only. R25's gate for 2a-4. | L2, R25 | 2a-2 | a report per intervention region: validation rate of each source's lessons, with the counts beneath it |
+| **2e-1** | **The reflector's lessons against the appraisal's**, on the same interventions, by the validation probes already built — shadow, measurement only. R25's gate for 2a-4. **Built as 2e-1** — `mecha learn --compare-sources`; see L2 for what was built and what it left. | L2, R25 | 2a-2 | a report per intervention region: validation rate of each source's lessons, with the counts beneath it — *built; the measurement on real sessions is owed, and it is R25's gate: 2a-4 waits on the appraisal's rate being no worse than the reflector's over the same decided interventions* |
 | **2e-2** | **`learn` fed clean appraisals** — lessons and interpretations as material, successes included, through `Clean` only; a stage lever with `stages_off` against reflector-only learning. | L2, R19 | 2e-1 | a tainted appraisal's lesson never reaches a batch (a test on the type); the lever's arm runs |
 | **2e-3** | **Attribute a correction by what the run was given** — mecha-graph's D3 contract ported: data error, behaviour error or gap from `grounding::calls`; a behaviour rule mined only from a behaviour error; a gap a retrieval target. | L7, here §5 | 1d | fixture corrections of each class are routed to their class; no behaviour rule is mined from a data error or a gap |
 | **2e-4** | **Learn from what went right**: owner-verified positives (sent unchanged, answered, `done` and not reopened) as writing exemplars, planning success examples and contrast evidence; a staged skill draft after k successes in one region, proposed only. | L2 | 1d | a draft sent unchanged is mined as an exemplar; a success the owner later reopens is withdrawn; no skill is written without the owner |
@@ -1485,6 +1485,44 @@ becomes:
 Self-judged success (ReasoningBank's channel) is exactly what this must not
 use. Evaluated budget-matched, because the gain may be zero on this model
 (arXiv 2606.15017).
+
+*2e-1 built — the reflector's lessons against the appraisal's, in shadow*
+(`mecha learn --compare-sources`; ARCHITECTURE's *The reflector's lessons
+against the appraisal's* holds the invariants). This is **R25's gate for
+2a-4**: the reflector folds into the appraisal only once this report shows
+the appraisal's lessons validating no worse than the reflector's over the
+same decided interventions.
+
+- **Same interventions.** Each steer or denial the reflector reflected on,
+  where both sides are clean — the reflection passes `learn`'s gate
+  unchanged and is not dropped or owner-edited; the session's appraisal
+  comes through `Clean` (R19). Clean for one side only is excluded and
+  counted by side. Followups are excluded, counted: a judge would have to
+  grade them (R27).
+- **The existing probe, three arms, one seed:** `validate`'s `drive_arm`
+  under the recorded prompt with no rules, with only the reflector's
+  lesson, and with only the appraisal's lessons, both in the learned-rules
+  frame. One background seat per intervention, local model only (R29),
+  drawn uniformly with a printed seed.
+- **Stored, not remembered:** each intervention's verdict is a 1g
+  comparison (`kind: lesson-source`, roles `rules-free`,
+  `reflector-lesson`, `appraisal-lesson`; pointers to the reflection and
+  the appraisal), so the report is re-read from the stores — by the pass,
+  and free on every `sessions appraise`.
+- **The report, per intervention region** (§17.4's key): each source's
+  rate — passes over the decided set — with pass, fail, improved and
+  regressed against no rules beneath it, and the region's inconclusive,
+  unmeasured, unavailable and excluded counts. `None` over nothing decided.
+- **Nothing is learned:** no rule, proposal or validation-ledger row; the
+  learning store is read, never written. 2e-2 is the lever that lets
+  appraisal lessons reach `learn`.
+- **Left:** the measurement on real sessions (on this install at most about
+  14% of real runs are clean, and fewer carry a steer or a denial, so the
+  decided set will be small — a nightly line accumulates it; wiring it into
+  the nightly is a deploy change, not made here); the appraisal's arm
+  carries the session's whole lesson set (up to three) where the
+  reflector's carries one, which is each source as it would be learned
+  from, not a per-lesson attribution.
 
 #### L7. Attribute a correction by what the run was given
 

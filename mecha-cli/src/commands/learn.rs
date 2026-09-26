@@ -63,6 +63,35 @@ pub struct Args {
     /// Show what would run without calling a model or writing anything.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Measure the reflector's lessons against the text appraisal's on the
+    /// same interventions, and report per intervention region
+    /// (`APPRAISAL-WIRING-DESIGN.md` row 2e-1, R25's gate for folding the
+    /// reflector into the appraisal). **Shadow, measurement only**: nothing
+    /// is learned, no rule, proposal or validation-ledger row is written —
+    /// only a comparison per intervention, clean sessions only.
+    ///
+    /// A paid pass, on the local model only. Each drawn steer or denial the
+    /// reflector reflected on is replayed by the validation probe three
+    /// times — no rules, the reflector's lesson, the session appraisal's
+    /// lessons — holding one background seat. Drawn uniformly with a
+    /// printed seed; lessons already measured as they stand are skipped.
+    #[arg(long, conflicts_with_all = ["propose", "auto", "dry_run", "holdout"])]
+    pub compare_sources: bool,
+
+    /// With `--compare-sources`: most interventions to drive this pass.
+    #[arg(long, requires = "compare_sources",
+          default_value_t = mecha_core::lesson_source::DEFAULT_INTERVENTIONS)]
+    pub interventions: usize,
+
+    /// With `--compare-sources`: seed for the uniform draw. Defaults to
+    /// today's day number, and is printed so any pass can be redrawn.
+    #[arg(long, requires = "compare_sources")]
+    pub seed: Option<u64>,
+
+    /// With `--compare-sources`: emit JSON instead of text.
+    #[arg(long, requires = "compare_sources")]
+    pub json: bool,
 }
 
 /// What the gate decided about a candidate, and whether it lands marked.
@@ -198,6 +227,19 @@ fn hold_out(ids: &[String], fraction: f64) -> std::collections::BTreeSet<String>
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
+    // Before the store is opened or locked: this mode reads the learning
+    // store and never writes it (row 2e-1 is shadow).
+    if args.compare_sources {
+        return crate::lesson_pass::run(
+            global,
+            crate::lesson_pass::Options {
+                interventions: args.interventions,
+                seed: args.seed,
+                json: args.json,
+            },
+        )
+        .await;
+    }
     let store = LearningStore::open(LearningStore::default_root()?)?;
     // Writer lock before reading the reflections this pass will consume —
     // a detached reflect landing mid-pass must wait, not interleave. Held
