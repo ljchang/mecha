@@ -467,7 +467,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             for caveat in ranker.caveats() {
                 eprintln!("replay priority: {caveat}");
             }
-            ranker.of_sessions(&sessions_dir, pool.iter().map(|r| r.session_id.as_str()))
+            let priorities =
+                ranker.of_sessions(&sessions_dir, pool.iter().map(|r| r.session_id.as_str()));
+            if let Some(line) = mecha_core::replay_priority::unknown_summary(priorities.values()) {
+                eprintln!("replay priority: {line}");
+            }
+            priorities
         } else {
             BTreeMap::new()
         };

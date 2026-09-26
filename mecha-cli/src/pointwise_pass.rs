@@ -140,6 +140,9 @@ fn compare_draw(pool: Vec<Drawable>, seed: u64, sessions_dir: &Path) -> Vec<Draw
         sessions_dir,
         pool.iter().map(|d| d.point.session_id.as_str()),
     );
+    if let Some(line) = mecha_core::replay_priority::unknown_summary(priorities.values()) {
+        eprintln!("replay priority: {line}");
+    }
     pointwise::draw_ranked(pool, seed, |d| &d.point, &priorities)
 }
 

@@ -456,6 +456,10 @@ pub fn draw_pool(
     }
 
     let (holdout_n, selection_n) = slice_sizes(want, holdout_in, pool.len());
+    let mut caveats = ranker.caveats().to_vec();
+    caveats.extend(mecha_core::replay_priority::unknown_summary(
+        pool.iter().filter_map(|p| p.priority.as_ref()),
+    ));
 
     // Uniform first. Sorted by id before the shuffle, or the seed is a lie —
     // a deterministic shuffle of a nondeterministic order is nondeterministic.
@@ -475,7 +479,7 @@ pub fn draw_pool(
         seed,
         skipped,
         charter_unreadable: ranker.stores().charter_unreadable,
-        caveats: ranker.caveats().to_vec(),
+        caveats,
     })
 }
 /// What one arm of one episode produced.

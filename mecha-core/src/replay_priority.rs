@@ -54,7 +54,8 @@
 //! 2. **any factor unknown** — after every fully known positive priority
 //!    (never a free pass), and before every known zero (never zero); among
 //!    these, fewer unknown factors first, then the value computed with each
-//!    unknown factor left out (a floor for the gain, one for a multiplier);
+//!    unknown factor at its floor (none of the gain's terms; the episode's
+//!    own occurrence, `ln 2`, for need — never more than a known one-off);
 //! 3. a known zero — no owner verdict and no surprise;
 //! 4. the hopeless ([`History::hopeless`]), last.
 //!
@@ -178,7 +179,7 @@ impl Priority {
             // The episode is one occurrence of its own region, so need is
             // never zero (the Selector's untouched node has no analogue: a
             // recorded run was, by definition, touched once).
-            need: i.recurrence.map(|n| (1.0 + n.max(1) as f64).ln()),
+            need: i.recurrence.map(need_of),
             decay: 0.5f64.powf(i.age_days.max(0.0) / AGE_HALF_LIFE_DAYS),
             unknown,
             known_zero: i.owner_gain == Some(0.0) && i.surprises == Some(0),
@@ -197,9 +198,12 @@ impl Priority {
         })
     }
 
-    /// gain × need × decay, with an unknown need left out.
+    /// gain × need × decay, an unknown need at its floor: the episode's
+    /// own occurrence. `1.0` here ranked an unreadable recurrence above a
+    /// known one-off (`ln 2`), a promotion for not being read (found on
+    /// review).
     pub fn value(&self) -> f64 {
-        self.gain * self.need.unwrap_or(1.0) * self.decay
+        self.gain * self.need.unwrap_or(NEED_FLOOR) * self.decay
     }
 
     /// The tier [`order`] ranks by first — see the module note.
@@ -213,25 +217,6 @@ impl Priority {
         } else {
             0
         }
-    }
-
-    /// One line for an operator's log. Never a prompt.
-    pub fn describe(&self) -> String {
-        let mut s = format!(
-            "{:.2} (gain {:.2} × need {} × decay {:.2})",
-            self.value(),
-            self.gain,
-            self.need.map_or("?".into(), |n| format!("{n:.2}")),
-            self.decay
-        );
-        if self.hopeless == Some(true) {
-            s.push_str(", hopeless");
-        }
-        if !self.unknown.is_empty() {
-            let names: Vec<&str> = self.unknown.iter().map(|f| f.as_str()).collect();
-            s.push_str(&format!(", unknown: {}", names.join(", ")));
-        }
-        s
     }
 }
 
@@ -456,6 +441,45 @@ impl Recurrence {
     pub fn of(&self, key: Option<&str>) -> Option<usize> {
         key.map(|k| self.counts.get(k).copied().unwrap_or(0).max(1))
     }
+}
+
+/// Need for `n` recent runs in the region: `ln(1 + n)`, `n` at least the
+/// episode itself.
+fn need_of(n: usize) -> f64 {
+    (1.0 + n.max(1) as f64).ln()
+}
+
+/// An unknown need's stand-in — [`need_of`] the episode alone.
+const NEED_FLOOR: f64 = std::f64::consts::LN_2;
+
+/// One line for a pass's log: how many of the priorities it ordered by had
+/// a factor it could not read, and which — the per-episode half of
+/// [`Ranker::caveats`], which names only the stores a whole pass could not
+/// load, so one session whose appraisal did not build was otherwise said
+/// nowhere (found on review). `None` when every priority was fully known.
+pub fn unknown_summary<'a>(priorities: impl IntoIterator<Item = &'a Priority>) -> Option<String> {
+    let mut total = 0usize;
+    let mut with_unknown = 0usize;
+    let mut by_factor: BTreeMap<Factor, usize> = BTreeMap::new();
+    for p in priorities {
+        total += 1;
+        if !p.unknown.is_empty() {
+            with_unknown += 1;
+        }
+        for f in &p.unknown {
+            *by_factor.entry(*f).or_default() += 1;
+        }
+    }
+    (with_unknown > 0).then(|| {
+        let named: Vec<String> = by_factor
+            .iter()
+            .map(|(f, n)| format!("{} ×{n}", f.as_str()))
+            .collect();
+        format!(
+            "{with_unknown} of {total} ranked with an unknown factor ({})",
+            named.join(", ")
+        )
+    })
 }
 
 // ─── The ranker ────────────────────────────────────────────────────────
@@ -966,5 +990,98 @@ mod tests {
             ..Stores::default()
         };
         assert_eq!(store_caveats(&all).len(), 7);
+    }
+
+    /// The need half, end to end: run records on disk, keyed by their
+    /// region through `Situation::of_record`, counted per region, a test
+    /// session never demand. Every draw fixture writes one default record,
+    /// so need was constant across every pool the suite ranked; a
+    /// `region_key` that stopped naming ordinary records would have turned
+    /// need unknown everywhere with the suite green (found on review).
+    #[test]
+    fn recurrence_is_counted_per_region_from_the_run_records() {
+        use crate::session::{Record, RunConfig, SessionKind, SessionMeta};
+        let dir = std::env::temp_dir()
+            .join("mecha-replay-priority-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let record = |surface: SessionKind| RunConfig {
+            rules_surface: Some(surface),
+            ..Default::default()
+        };
+        let write = |kind: SessionKind, surface: SessionKind| {
+            let s = Session::create(
+                &dir,
+                SessionMeta {
+                    id: Session::new_id(),
+                    created_at: Utc::now(),
+                    provider: "p".into(),
+                    model: "m".into(),
+                    workspace: "/w".into(),
+                    title: None,
+                    kind: Some(kind),
+                },
+            )
+            .unwrap();
+            s.append(&Record::Config(record(surface))).unwrap();
+        };
+        for _ in 0..3 {
+            write(SessionKind::Web, SessionKind::Web);
+        }
+        write(SessionKind::Tui, SessionKind::Tui);
+        // A smoke test is the harness reading itself, never demand.
+        write(SessionKind::Test, SessionKind::Tui);
+
+        let key = |surface| Situation::of_record(&record(surface)).region_key();
+        let (web, tui) = (key(SessionKind::Web), key(SessionKind::Tui));
+        assert!(web.is_some() && tui.is_some() && web != tui);
+        let r = Recurrence::scan(&dir, Utc::now()).unwrap();
+        assert_eq!(r.unreadable, 0);
+        assert_eq!(r.of(web.as_deref()), Some(3));
+        assert_eq!(r.of(tui.as_deref()), Some(1));
+        let (common, rare) = (
+            Priority::of(&Inputs {
+                recurrence: r.of(web.as_deref()),
+                ..inputs()
+            }),
+            Priority::of(&Inputs {
+                recurrence: r.of(tui.as_deref()),
+                ..inputs()
+            }),
+        );
+        assert!(common.value() > rare.value());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An unreadable need stands in at the floor — the episode alone — so
+    /// not being read never outranks a known one-off of equal gain.
+    #[test]
+    fn an_unknown_need_is_never_a_promotion() {
+        let unread = Priority::of(&Inputs {
+            recurrence: None,
+            ..inputs()
+        });
+        let one_off = Priority::of(&Inputs {
+            recurrence: Some(1),
+            ..inputs()
+        });
+        assert!(unread.need.is_none());
+        assert_eq!(unread.value(), one_off.value());
+    }
+
+    #[test]
+    fn a_pass_says_how_many_priorities_it_ranked_blind() {
+        let known = Priority::of(&inputs());
+        assert_eq!(unknown_summary([&known, &known]), None);
+        let no_need = Priority::of(&Inputs {
+            recurrence: None,
+            ..inputs()
+        });
+        let unread = Priority::unread();
+        assert_eq!(
+            unknown_summary([&known, &no_need, &unread]).unwrap(),
+            "2 of 3 ranked with an unknown factor (owner verdicts ×1, surprises ×1, \
+             recurrence ×2, hopeless mark ×1)"
+        );
     }
 }
