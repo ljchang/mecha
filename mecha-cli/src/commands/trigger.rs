@@ -628,7 +628,14 @@ fn check_cost_cap(t: &Trigger) -> Result<()> {
     let Some(cap) = t.max_cost_usd else {
         return Ok(());
     };
-    let cfg = mecha_core::config::Config::load_global()?;
+    let mut cfg = mecha_core::config::Config::load_global()?;
+    // The entry the run will use: a trigger's own `model` pins the default,
+    // as `setup::pin_named_model` does for the run, or the cap would price the
+    // sibling the router has loaded while the run bills the pinned entry
+    // (found on review).
+    if t.model.is_some() {
+        cfg.pin_provider(t.provider.as_deref());
+    }
     let (name, provider) = cfg.provider(t.provider.as_deref())?;
     anyhow::ensure!(
         provider.pricing().is_some(),

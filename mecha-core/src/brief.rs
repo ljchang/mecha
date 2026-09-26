@@ -765,11 +765,13 @@ pub enum Seats {
     },
 }
 
-pub fn seats_under(home: &Path) -> Seats {
-    let pool = crate::permit::Permits::new(
-        crate::permit::dir_under(home),
-        crate::provider::router::background_seats(crate::permit::DEFAULT_BACKGROUND_PERMITS),
-    );
+/// The background pool under `home`, read against `capacity` — passed in
+/// rather than looked up, so this stays a function of its arguments: the
+/// live capacity comes from the router snapshot, which is process-global,
+/// and a test reading it would see whichever router test ran last (found on
+/// review).
+pub fn seats_under(home: &Path, capacity: usize) -> Seats {
+    let pool = crate::permit::Permits::new(crate::permit::dir_under(home), capacity);
     match pool.read_live() {
         Ok(read) => {
             let mut holders: Vec<String> =
@@ -1184,7 +1186,10 @@ pub fn assemble(inputs: Inputs<'_>) -> SituationBrief {
         board: Some(board_of(board_ref, own_task)),
         commitments: Some(commitments_of(homeostat)),
         time: Some(local_time(now, zone, policy)),
-        seats: Some(seats_under(home)),
+        seats: Some(seats_under(
+            home,
+            crate::provider::router::background_seats(crate::permit::DEFAULT_BACKGROUND_PERMITS),
+        )),
         runs: Some(runs_under(home, triggers_ref, anchor)),
         slots: Some(slots),
         voice: Some(VoicePresence::under(home).read(now)),
@@ -2409,7 +2414,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            seats_under(&home),
+            seats_under(&home, crate::permit::DEFAULT_BACKGROUND_PERMITS),
             Seats::Read {
                 capacity: 3,
                 held: 1,
@@ -2455,7 +2460,7 @@ mod tests {
             "not json",
         )
         .unwrap();
-        let seats = seats_under(&home);
+        let seats = seats_under(&home, crate::permit::DEFAULT_BACKGROUND_PERMITS);
         assert!(
             matches!(
                 seats,
@@ -2498,7 +2503,10 @@ mod tests {
         // A pool that is a file, not a directory, cannot be read.
         let torn = scratch("seats-torn");
         std::fs::write(crate::permit::dir_under(&torn), "not a dir").unwrap();
-        assert!(matches!(seats_under(&torn), Seats::Unread { .. }));
+        assert!(matches!(
+            seats_under(&torn, crate::permit::DEFAULT_BACKGROUND_PERMITS),
+            Seats::Unread { .. }
+        ));
         std::fs::write(crate::runmarker::task_dir_under(&torn), "not a dir").unwrap();
         assert!(matches!(
             runs_under(&torn, Err("no store"), None),
@@ -2509,7 +2517,10 @@ mod tests {
         ));
         // And a fresh install: no directory is no holders, never unread.
         let fresh = scratch("seats-fresh");
-        assert!(matches!(seats_under(&fresh), Seats::Read { held: 0, .. }));
+        assert!(matches!(
+            seats_under(&fresh, crate::permit::DEFAULT_BACKGROUND_PERMITS),
+            Seats::Read { held: 0, .. }
+        ));
     }
 
     /// `/slots` read as `model-idle.sh` reads it: a renamed field, an empty
