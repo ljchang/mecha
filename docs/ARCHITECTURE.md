@@ -3669,7 +3669,9 @@ Two rules are structural rather than instructed:
   - It is bounded: 6 notes, newest first, one per session; interpretation
     cut at 600 characters, and at most 2 lessons of 240. That is about 9,000
     characters in all. A cut is flagged, notes past the cap are counted, and
-    an unreadable store is said.
+    an unreadable store, or unparseable lines of one, are said. Every piece is
+    flattened to one line first, so a note cannot emit a line that reads as
+    the brief's own findings.
   - **A brief carrying a note opens the conversation `private`**
     (`Evidence::conversation`), fail-closed: a clean run may have read the
     owner's files, and its appraisal can say so. On those nights the

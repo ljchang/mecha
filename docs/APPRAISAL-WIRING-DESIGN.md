@@ -1560,8 +1560,8 @@ the metric the proposal names. So the draw is split, on one seed
   6 appraisals, newest first, one per session; each interpretation cut at
   600 characters and at most 2 lessons of 240, about 1,450 characters a
   note and 9,000 in all. A cut is flagged on the note, and appraisals past
-  the cap are counted in the brief; an unreadable store is said, never read
-  as none.
+  the cap are counted in the brief; an unreadable store, or unparseable lines of one, is said, never read
+  as none. Each piece is flattened to one line before it is bounded.
 - **A source for `carries_over`.** `diagnose::lifted` checks a proposal
   against the tool results and the notes as one list; there is no second
   checker.
