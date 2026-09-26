@@ -104,6 +104,12 @@ mecha run -p local "..."
 export MECHA_PROVIDER=local        # or via the environment
 ```
 
+Naming a provider or a model — `-p`, `--model`, `MECHA_PROVIDER`,
+`MECHA_MODEL` — pins it. On a llama-server router with `follow_loaded` set
+(see the configuration reference), a pinned run uses the named entry rather
+than whichever model is loaded, so leave these unset in a shell profile if
+you want `mecha model use` to be followed.
+
 ## 3. `mecha setup`
 
 ```bash

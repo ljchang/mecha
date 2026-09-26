@@ -16,6 +16,7 @@ mod render;
 mod review_policy;
 mod setup;
 mod slack;
+mod success_readout;
 #[cfg(test)]
 mod testenv;
 mod tui;
@@ -478,6 +479,109 @@ pub enum Command {
     /// Show or create configuration.
     #[command(subcommand)]
     Config(commands::config::Args),
+
+    /// The local model router: what it can serve, and which model it holds.
+    /// Loading one is the pick — every default run follows it, with no
+    /// restart and no setting to edit.
+    Model(commands::model::Args),
+}
+
+impl Command {
+    /// Whether a default provider in this command may follow the router's
+    /// loaded model. Not `mecha eval`: a scorecard grades the model it names,
+    /// and two taken a week apart must not be different models under one
+    /// condition. It is still observed, for its permit seats (found on review).
+    fn may_follow(&self) -> bool {
+        !matches!(self, Command::Eval(_))
+    }
+
+    /// Whether this command may resolve a default provider — run a model, or
+    /// build an agent — and so needs [`follow_the_loaded_model`]'s snapshot.
+    ///
+    /// **Exhaustive, no wildcard, on purpose:** a new subcommand has to
+    /// decide. The two mistakes cost differently. A model-running command
+    /// wrongly listed `false` names the default model and silently swaps the
+    /// owner's pick back out; an observer wrongly listed `true` pays a
+    /// loopback round trip. So unsure is `true` — except where the command
+    /// promises no network, which `mecha doctor`'s module doc does (found on
+    /// review).
+    fn runs_a_model(&self) -> bool {
+        match self {
+            Command::Run(_)
+            | Command::Chat(_)
+            | Command::Tui(_)
+            | Command::VoiceServe(_)
+            | Command::Batch(_)
+            | Command::Eval(_)
+            | Command::Reflect(_)
+            | Command::Learn(_)
+            | Command::Distill(_)
+            | Command::Validate(_)
+            | Command::Setup(_)
+            | Command::Serve(_)
+            | Command::Diagnose(_)
+            | Command::Harness(_)
+            | Command::Exp(_)
+            | Command::Frontdoor(_)
+            | Command::Mail(_)
+            | Command::Tasks(_)
+            | Command::Workflow(_)
+            | Command::Questions(_)
+            | Command::Gossip(_)
+            | Command::Corroborate(_)
+            | Command::Vet(_)
+            | Command::Slack(_)
+            | Command::Trigger(_)
+            | Command::Replay(_)
+            // These build the tool registry (`prepare_tools`), whose output
+            // budget is the default provider's window; `sessions` also has a
+            // subcommand that builds an agent.
+            | Command::Outbox(_)
+            | Command::Kg(_)
+            | Command::Tools(_)
+            | Command::Sessions(_) => true,
+            // Readers of stores, and `mecha model`, which asks the router
+            // directly rather than through a snapshot.
+            Command::Reflections(_)
+            | Command::LearningReport(_)
+            | Command::Msg(_)
+            | Command::Work(_)
+            | Command::Doctor(_)
+            | Command::Polls(_)
+            | Command::Proposals(_)
+            | Command::Review(_)
+            | Command::Rules(_)
+            | Command::Skills(_)
+            | Command::Charter(_)
+            | Command::Config(_)
+            | Command::Model(_) => false,
+        }
+    }
+}
+
+/// Which model the llama-server router has loaded, snapshotted once for this
+/// process so every default provider in it follows the owner's pick
+/// (`provider::router`, REMOTE-SURFACE-DESIGN §14). Best-effort by design: a
+/// config that does not load is the command's own error to report, and a
+/// router that is down leaves the default standing — one loopback round trip
+/// when it is up, nothing when nothing listens.
+async fn follow_the_loaded_model(global: &GlobalOpts, may_follow: bool) {
+    let cfg = if global.global_config_only {
+        mecha_core::config::Config::load_global()
+    } else {
+        std::env::current_dir()
+            .map_err(anyhow::Error::from)
+            .and_then(|cwd| mecha_core::config::Config::load(&cwd))
+    };
+    let Ok(cfg) = cfg else { return };
+    // A process given `--model` or `--provider` has named what it runs, so it
+    // does not follow — the passes that resolve `cfg.provider(global.provider)`
+    // themselves (lesson, pointwise, gossip, …) never reach `setup`'s pin. It
+    // is still observed: its permit pool is sized to what is loaded.
+    let follows = may_follow && global.model.is_none() && global.provider.is_none();
+    for warning in mecha_core::provider::router::observe(&cfg, follows).await {
+        tracing::warn!("{warning}");
+    }
 }
 
 #[tokio::main]
@@ -505,6 +609,9 @@ async fn main() {
 
 async fn dispatch() -> Result<()> {
     let cli = Cli::parse();
+    if cli.command.runs_a_model() {
+        follow_the_loaded_model(&cli.global, cli.command.may_follow()).await;
+    }
     match cli.command {
         Command::Run(args) => commands::run::execute(&cli.global, args).await,
         Command::Chat(args) => commands::chat::execute(&cli.global, args).await,
@@ -548,5 +655,26 @@ async fn dispatch() -> Result<()> {
         Command::Charter(args) => commands::charter::execute(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
         Command::Config(args) => commands::config::execute(&cli.global, args).await,
+        Command::Model(args) => commands::model::execute(&cli.global, args).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The router snapshot is taken where a default provider can be resolved,
+    /// and never by `mecha doctor`, whose module doc promises no network.
+    #[test]
+    fn doctor_does_not_probe_the_router_and_a_run_does() {
+        let cmd = |argv: &[&str]| Cli::try_parse_from(argv).unwrap().command;
+        assert!(!cmd(&["mecha", "doctor"]).runs_a_model());
+        assert!(!cmd(&["mecha", "model", "list"]).runs_a_model());
+        assert!(cmd(&["mecha", "run", "hello"]).runs_a_model());
+        assert!(cmd(&["mecha", "mail", "classify"]).runs_a_model());
+        // A scorecard names its model: eval observes, and never follows.
+        assert!(cmd(&["mecha", "eval", "cases.toml"]).runs_a_model());
+        assert!(!cmd(&["mecha", "eval", "cases.toml"]).may_follow());
+        assert!(cmd(&["mecha", "run", "hello"]).may_follow());
     }
 }

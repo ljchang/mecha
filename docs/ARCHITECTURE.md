@@ -187,6 +187,13 @@ The parts that bite hardest:
 - **Ask what is served (`GET /props` → `model_alias`), don't assert it.**
   llama-server ignores the request's `model` field, so naming one is not
   selecting it — only deciding what gets recorded.
+- **Router mode inverts that** (`scripts/start-router.sh`, built but not yet
+  installed — `REMOTE-SURFACE-DESIGN.md` §14, `LLAMA-SERVER.md` §Router
+  mode). One process serves several models and the request's `model`
+  *selects*: a `follow_loaded` provider takes whichever is loaded
+  (`provider::router`), every probe must name its model with
+  `autoload=false` or it loads it, and a bare `/props` is a placeholder
+  (`model_alias: "llama-server"`, `n_ctx: 0`).
 - **Throughput is wall clock.** The server times a request only while it is
   running, so summing its per-request rates hides queue wait and reads ~4× at
   `-np 1`, on the one configuration that cannot run anything concurrently.
@@ -4644,6 +4651,84 @@ door above (`Kind::LessonSource`). Letting either source's lessons *learn* is
   source as it would be learned from, which is what R25 asks about; it is not
   a per-lesson attribution.
 
+### What went right, derived where it is recorded
+
+`APPRAISAL-WIRING-DESIGN.md` L2, row 2e-4a, ruled R40: `success.rs`. The
+learning store holds corrections only; an **owner-verified success** is the
+other half, and every kind is an act the owner already performs, in the
+store that owns it:
+
+- a model's message draft **sent unchanged** (`writing_outcome` is
+  `SentUnchanged` — a publish, a harness-authored item and an edited or
+  rejected draft are not);
+- a task closed **`done`** (1b's closure record) that no reopen undoes;
+- a workflow the owner **closed** (after its verification passed) that no
+  `workflow reopen` took back (`Workflow::owner_dispositions`);
+- a question the owner **answered**, whose session's last run then completed
+  (`Session::episode_stats`, the stop cause the appraisal's question arm
+  reads).
+
+Decisions, each a bug if undone:
+
+- **Derived on every read, never stored.** There is no success store and no
+  ledger of successes, so **a reopen withdraws a success by construction**:
+  the closure and the reopen whose `undoes` names it are read together and
+  the pair is reported withdrawn, never standing. A copied success would
+  outlive the owner taking it back. This is 1d's rule for every owner verdict
+  (read from the store that owns it), applied to the positive half.
+- **Unknown is never a success.** A closure whose `actor` this build cannot
+  read, an answered question whose session is not in the store or whose
+  outcome cannot be read — including an outcome whose `stop_cause` is absent,
+  which `lenient_stop_cause` makes of a variant this build cannot name, and
+  which is unknown, never "did not finish" (found on review): each is listed
+  as unknown, with why, and counted in no standing total. An answered question whose session did not complete is
+  neither: asking was not shown to be right, as the appraisal reads it.
+- **Owner acts only, never self-judged success.** No appraisal's `good`, no
+  model's account and no counter enters the set; the one harness fact read is
+  the recorded stop cause above.
+- **Tests are hidden, not counted — and a session that cannot be placed is
+  unknown.** A success whose every named session is one `runlog::Scan::admits`
+  refuses (smoke-test, experiment) is counted as hidden; one naming an
+  admitted session stands; one that names no session is kept, since an
+  absent session id is not evidence of a test. **One whose named sessions
+  are not in the store** (pruned, or a header that did not read) and none
+  admitted is unknown: whether it was a test cannot be read, and keeping it
+  failed open for drafts, closures and workflows (found on review).
+  `--include-tests` lifts the test admission on `sessions successes`, and
+  `sessions appraise` passes its own flag through, so one readout counts one
+  population (found on review: the successes line hid the tests every other
+  number on the page counted). A session store that cannot be listed, **or
+  holds one transcript whose header does not read**, makes the set partial
+  by name (`session store`), like a short outbox, closure, workflow or
+  question store: a torn header is `Missing`, so a torn smoke-test session's
+  success would otherwise stand as real with nothing saying the read was
+  short (`SessionIndex::skipped`, found on review).
+- **The exemplar is the draft, verbatim, and served to no run.** Each
+  standing draft sent unchanged carries a writing exemplar: its tool, the
+  arguments that went out, a `Situation` keyed on the drafting tool alone (as
+  an edit's lesson is — the item records no surface, and its `workspace` is
+  the drafting jail, which `reflect` never stamps as a key; built through
+  `Situation::of_run`, never a literal, so `known_workspace` stays the only
+  place a workspace key is made), and an
+  `Origin` from `learning::classify_origin` over the staging taint, so a
+  draft written with third-party text in context is `Untrusted`. No model
+  call. **Shadow**: the owner's readout is the only reader —
+  `mecha sessions successes` (`--exemplars` prints each verbatim through the
+  control-character filter every model-prose readout uses; `--json`) and one
+  line in `sessions appraise` (`successes` in `--json`, with
+  `exemplars.served: false`). A lever that serves exemplars to drafting runs
+  is deferred, and must arm `private_data` when it lands, as the brief does
+  (R35): an exemplar is sent mail. Only a `Clean` one could be served.
+- **One known softness.** `OutboxItem::taint` is `#[serde(default)]`, so an
+  item file with the field deleted by hand loads as clean. Every item the
+  outbox has written carries it (the field is as old as the store), and
+  `reflect`'s edit pass reads the same field on the same terms.
+
+Left for later rows: planning success examples and contrast evidence for the
+reflector (2e-4b); staged skill drafts (2e-4c, deferred by R40 until this set
+has been read on real data). Skills stay owner-authored: nothing here writes
+under `~/.mecha/skills/`.
+
 ## The goal system
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the design and is deliberately not rewritten as
@@ -5701,6 +5786,48 @@ Rules join goals through clean source reflections; successful examples require
 recorded clean taint and matching tools/workspace/surface. A startup snapshot
 examines at most 32 recent transcripts of at most 2 MB each and keeps 64 examples.
 It does not add unsolicited lesson delivery. Missing context is never a success.
+
+**A reflection serves the plan's goal, else its run's anchor**
+(`APPRAISAL-WIRING-DESIGN.md` L3, built as 2e-5a; `reflect::goals_for`).
+`Reflexion::goals` is what a lesson bears on, and the join `goal_lessons`
+serves through; it had one source, the plan at the intervention, and was
+empty on every reflection once the model stopped planning. The second source
+is the anchor in force at the intervention (`Transcript::anchor_covering`),
+taken only where the plan and the question in force name none, since evidence
+local to the moment is the more specific. What the record holds is the anchor
+each run *ended on*: `record_run` writes a `GoalAnchor` after every run's
+messages, a failed run's included (the task and trigger front-ends record no
+outcome for a run that errored, so the outcome list cannot say which run a
+message belongs to — found on review of #335), and the parse places each
+record among the messages and repairs it by the outcomes' `Rewrite` rule. An
+answered `ask_user` carrying a goal pointer moves the anchor mid-run, and the
+record has no finer grain, so a run holding such a call after the message (or
+in the turn the message answers) stamps none: the anchor may postdate the
+intervention, and one before it is `goal_at`'s to name. It is **not the
+session's last anchor**: a conversation re-anchored by an answer or a
+hand-over carries each run's own, and a message no record covers stamps none
+rather than a later anchor read back onto it: a run in flight, and everything
+below `Transcript::anchor_floor`.
+
+**The anchor floor is where the record stops saying anything** (review of
+#335, twice). Two things raise it. A summarising compaction raises it to the
+length it left, because the rebuilt head and the carried tail lost their run's
+record, and clearing their positions alone let a search skip the placeless
+records and read the next run's back onto the tail. An outcome with no
+`GoalAnchor` since the previous outcome raises it to that outcome's place:
+every front-end calls `record_run` before `record_outcome`, so such a run
+predates the record, and without the floor the seed `run --resume --goal`
+writes *before* the resumed run (`run::seed_goal_anchor`) was the first record
+after its messages. A truncating rewrite clamps it like every position. The
+residue is a transcript from before outcomes were recorded, which carries
+neither record. It is **not the
+situation's goal key**, which stays `rules_goal` — what the rules block was
+matched toward — so where a hand-over resumes an older anchor the two differ
+on purpose, one saying what the lesson served and the other where it loads.
+And it is **not backfilled**: reflections mined before it keep their goals,
+so lessons appear as anchored runs are corrected. The anchor is the harness's
+seed or the owner's confirmation, never a model's claim, which is why it
+carries `trigger:` and `request:` pointers the plan-named source may not.
 
 **Past clean appraisals are served through `goal_context`, on demand, and
 only behind their lever** (`APPRAISAL-WIRING-DESIGN.md` I2, built as 2c-2).
