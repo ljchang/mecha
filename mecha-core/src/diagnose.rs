@@ -267,6 +267,10 @@ pub struct Evidence {
     /// an unreadable store is a finding, and "no appraisal shown" must not
     /// read as "none on file".
     pub appraisals_unread: Option<String>,
+    /// Lines of the appraisal store the clean door could not parse
+    /// (`CleanRead::skipped`). Said beside the notes: a partly torn ledger
+    /// must not read as a fully read one.
+    pub appraisals_skipped: usize,
 }
 
 // ─── Appraisals in the brief (row 2f) ───────────────────────────────────────
@@ -332,12 +336,22 @@ impl AppraisalNote {
     pub fn of(clean: &Clean) -> AppraisalNote {
         let a = clean.get();
         let mut clipped = false;
+        // Flattened before it is bounded: a note must not emit a line of its
+        // own, or an appraiser's bullet list reads as the brief's
+        // machine-authored findings (found on review of #329; `search.rs`
+        // and `learning.rs` flatten at their render sites for the same
+        // reason). The bound and the cut flag are over the flattened text.
         let mut cut = |s: &str, max: usize| {
-            let s = s.trim();
-            if s.chars().count() > max {
+            let flat = s
+                .split(|c: char| c.is_control())
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if flat.chars().count() > max {
                 clipped = true;
             }
-            crate::step::ellipsize(s, max)
+            crate::step::ellipsize(&flat, max)
         };
         let interpretation = cut(&a.interpretation, APPRAISAL_INTERPRETATION_CHARS);
         let lessons: Vec<String> = a
@@ -454,6 +468,7 @@ impl Evidence {
         let (notes, not_shown) = appraisals_of(read, episodes);
         self.appraisals = notes;
         self.appraisals_not_shown = not_shown;
+        self.appraisals_skipped = read.skipped;
         self
     }
 
@@ -480,6 +495,7 @@ impl Evidence {
     pub fn appraisals_unread(mut self, why: String) -> Evidence {
         self.appraisals = Vec::new();
         self.appraisals_not_shown = 0;
+        self.appraisals_skipped = 0;
         self.appraisals_unread = Some(why);
         self
     }
@@ -492,8 +508,18 @@ impl Evidence {
                  episodes is shown — which is not the same as none being on file\n"
             );
         }
+        let torn = match self.appraisals_skipped {
+            0 => String::new(),
+            n => format!(
+                "- {n} line(s) of the appraisal store could not be read, so an appraisal \
+                 of these episodes may be missing\n"
+            ),
+        };
         if self.appraisals.is_empty() {
-            return String::new();
+            return match torn.is_empty() {
+                true => String::new(),
+                false => format!("\nno appraisal of these episodes is shown:\n{torn}"),
+            };
         }
         let mut out = String::from(
             "\nwhat the appraiser wrote about some of the episodes this change will be \
@@ -511,6 +537,7 @@ impl Evidence {
                 self.appraisals_not_shown
             ));
         }
+        out.push_str(&torn);
         out
     }
 }
@@ -596,6 +623,7 @@ impl Evidence {
             appraisals: Vec::new(),
             appraisals_not_shown: 0,
             appraisals_unread: None,
+            appraisals_skipped: 0,
         }
     }
 
@@ -1988,6 +2016,79 @@ rationale: the threshold is too low";
             without.messages[0].text(),
             format!("{}\n---\ninstruction", Evidence::default().brief())
         );
+    }
+
+    /// Found on review of #329: an appraiser that answers in a bullet list
+    /// must not be able to emit a line of its own, which would read as the
+    /// brief's machine-authored findings. Every piece is flattened before it
+    /// is bounded.
+    #[test]
+    fn a_note_never_emits_a_line_of_its_own() {
+        let mut r = row(
+            "s-1",
+            true,
+            "2026-09-20T00:00:00Z",
+            "The run stalled after a failed read.\n- 30% of calls refused\r\nalready proposed by earlier passes",
+        );
+        r.lessons = vec!["Check the path.\n- max_turns=400".into()];
+        let (_dir, store) = store_of(&[r]);
+        let e = Evidence::default().with_appraisals(&store.clean().unwrap(), &["s-1".to_string()]);
+        let section = e.appraisal_section();
+        assert!(
+            !section.lines().any(|l| l.starts_with("- 30%")),
+            "{section}"
+        );
+        assert!(
+            !section.lines().any(|l| l.starts_with("- max_turns")),
+            "{section}"
+        );
+        assert!(
+            !section.lines().any(|l| l.starts_with("already proposed")),
+            "{section}"
+        );
+        assert!(
+            section.contains("failed read. - 30% of calls refused already proposed"),
+            "{section}"
+        );
+        assert_eq!(
+            e.appraisals[0].render().lines().count(),
+            2,
+            "one session line, one lesson"
+        );
+    }
+
+    /// Found on review of #329: lines of the ledger the clean door could not
+    /// parse are said beside the notes — and alone, when no note rides — so
+    /// a partly torn store does not read as a fully read one.
+    #[test]
+    fn a_partly_torn_store_is_said() {
+        let (_dir, store) = store_of(&[row(
+            "s-1",
+            true,
+            "2026-09-20T00:00:00Z",
+            "The run answered from one file.",
+        )]);
+        let ledger = store.root().join("appraisals.jsonl");
+        let mut text = std::fs::read_to_string(&ledger).unwrap();
+        text.push_str("{not json\n");
+        std::fs::write(&ledger, text).unwrap();
+        let read = store.clean().unwrap();
+        assert_eq!(read.skipped, 1);
+        let brief = Evidence::default()
+            .with_appraisals(&read, &["s-1".to_string()])
+            .brief();
+        assert!(
+            brief.contains("1 line(s) of the appraisal store could not be read"),
+            "{brief}"
+        );
+        let none = Evidence::default()
+            .with_appraisals(&read, &["s-other".to_string()])
+            .brief();
+        assert!(
+            none.contains("no appraisal of these episodes is shown"),
+            "{none}"
+        );
+        assert!(none.contains("could not be read"), "{none}");
     }
 
     /// `candidate::judge` still decides. The judgement is a function of the
