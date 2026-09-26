@@ -50,8 +50,11 @@ if [ "$served" != "${MODEL#*/}" ]; then
   echo "refusing to run: :${MODEL_PORT} is serving ${served}, but MECHA_BENCH_MODEL names ${MODEL#*/}." >&2
   exit 1
 fi
-slots=$(served_props "http://127.0.0.1:${MODEL_PORT}" "${MODEL#*/}" \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_slots", 0))' || echo 0)
+props=$(served_props "http://127.0.0.1:${MODEL_PORT}" "${MODEL#*/}") || {
+  echo "refusing to run: cannot read the props of ${MODEL#*/} on :${MODEL_PORT} (above)." >&2
+  exit 1
+}
+slots=$(printf '%s' "$props" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_slots", 0))')
 if [ "$slots" != "1" ]; then
   echo "refusing to run: llama-server on :${MODEL_PORT} has ${slots} slots, not 1 (-np 1)." >&2
   exit 1
