@@ -27,7 +27,23 @@ PORT="${MECHA_ROUTER_PORT:-8080}"
 OUT="${XDG_RUNTIME_DIR:?no XDG_RUNTIME_DIR}/mecha-router/models.ini"
 mkdir -p "$(dirname "$OUT")"
 
-snapshot() { ls -d "$HUB"/models--"$1"/snapshots/*/ 2>/dev/null | head -1; }
+# A file of a Hugging Face repo, from whichever snapshot holds it — newest
+# first. **Not "the first snapshot, then the file":** a repo gains a snapshot
+# every time a new file is fetched from a newer revision, and a file already
+# on disk stays in the old one. Found 2026-09-26, when fetching unsloth's
+# UD-Q4_K_XL put it in a second snapshot and the first-snapshot lookup lost
+# the Q4_K_M and its projector beside it (the qwen3.8-27b preset vanished).
+hub_file() { ls -t "$HUB"/models--"$1"/snapshots/*/"$2" 2>/dev/null | head -1; }
+
+# A repo's vision projector, as mmproj.sh names them (BF16 first); when none is
+# on disk, mmproj_or_die's message — with the download line — and a failure.
+hub_mmproj() {
+  local found
+  found=$(hub_file "$1" mmproj-BF16.gguf)
+  [ -n "$found" ] || found=$(hub_file "$1" mmproj-F16.gguf)
+  [ -n "$found" ] && { echo "$found"; return 0; }
+  mmproj_or_die "$HUB/models--$1/snapshots/none/" "${1/--//}"
+}
 warn() { echo "$(basename "$0"): $*" >&2; }
 
 # The three Qwens' sampling, as the Qwen model cards give it; temp differs.
@@ -47,10 +63,9 @@ printf '%s\n' "version = 1" "" "[*]" "n-gpu-layers = 999" "jinja = true" >"$OUT"
 # Production. Required: a router without it answers nothing the triggers ask
 # for. -c is DIVIDED across -np (four slots of 262,144), and
 # `[providers.local] context_window` must equal c / np.
-S=$(snapshot unsloth--Qwen3.6-35B-A3B-MTP-GGUF) || true
-F="${S}Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-[ -n "$S" ] && [ -f "$F" ] || { warn "production model missing: hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"; exit 1; }
-MP=$(mmproj_or_die "$S" unsloth/Qwen3.6-35B-A3B-MTP-GGUF)
+F=$(hub_file unsloth--Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf)
+[ -n "$F" ] || { warn "production model missing: hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"; exit 1; }
+MP=$(hub_mmproj unsloth--Qwen3.6-35B-A3B-MTP-GGUF)
 cat >>"$OUT" <<EOF
 
 [qwen3.6-35b-a3b]
@@ -67,10 +82,10 @@ EOF
 # The HauhauCS abliteration: production's geometry and sampling, and no MTP
 # head in the GGUF (block_count 40, no nextn), so no spec-type — passing it
 # fails the child's start. Its projector ships under its own name.
-S=$(snapshot HauhauCS--Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive) || true
-F="${S}Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
-MP="${S}mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf"
-if [ -n "$S" ] && [ -f "$F" ] && [ -f "$MP" ]; then
+R=HauhauCS--Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive
+F=$(hub_file $R Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf)
+MP=$(hub_file $R mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf)
+if [ -n "$F" ] && [ -n "$MP" ]; then
   cat >>"$OUT" <<EOF
 
 [qwen3.6-35b-a3b-uncensored]
@@ -86,38 +101,90 @@ else
 fi
 
 # Dense 27B: the whole trained window in one slot; MTP is in the file itself.
-S=$(snapshot unsloth--Qwen3.8-27B-GGUF) || true
-if [ -n "$S" ] && [ -f "${S}Qwen3.8-27B-Q4_K_M.gguf" ] &&
-  MP=$(mmproj_or_die "$S" unsloth/Qwen3.8-27B-GGUF ); then
+# Every Qwen3.8-27B preset shares this geometry, the thinking-mode sampling and
+# the in-file MTP head (block_count 65, blk.64.nextn.*, checked in each GGUF's
+# header before it was added). `qwen38 NAME FILE PROJECTOR` writes one.
+qwen38() {
   cat >>"$OUT" <<EOF
 
-[qwen3.8-27b]
-model = ${S}Qwen3.8-27B-Q4_K_M.gguf
-mmproj = $MP
+[$1]
+model = $2
+mmproj = $3
 ctx-size = 262144
 parallel = 1
 spec-type = draft-mtp
 spec-draft-n-max = 4
 $(qwen_sampling 1.0)
 EOF
+}
+
+# Measured 2026-09-26 on llama.cpp 95887577, one stream, 400 tokens, same
+# prompt and flags for all three rows below (docs/LLAMA-SERVER.md §Router mode):
+#
+#   file                          decode       MTP draft acceptance
+#   unsloth Q4_K_M (withdrawn)    21.1 tok/s   0.38
+#   unsloth UD-Q4_K_XL            22.9 tok/s   0.45
+#   HauhauCS Q4_K_P (uncensored)  26.8 tok/s   0.57
+#   huihui UD-Q4_K_XL (abliter.)  22.1 tok/s   0.42
+#
+# All four read an image and answered a reasoning check correctly.
+#
+# The official model: unsloth's "Dynamic 3.0" UD-Q4_K_XL — the same chat
+# template, MTP in the file, a 1251-chunk imatrix against the Q4_K_M's 45.
+# unsloth deleted the plain Q4_K_M upstream on 2026-08-19, so it is only a
+# fallback for a machine that still has it; the projector is unchanged since
+# 2026-08-14 and serves both.
+R=unsloth--Qwen3.8-27B-GGUF
+F=$(hub_file $R Qwen3.8-27B-UD-Q4_K_XL.gguf)
+if [ -z "$F" ]; then
+  F=$(hub_file $R Qwen3.8-27B-Q4_K_M.gguf)
+  [ -n "$F" ] && warn "qwen3.8-27b: UD-Q4_K_XL not on disk, serving the withdrawn Q4_K_M — hf download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-UD-Q4_K_XL.gguf"
+fi
+if [ -n "$F" ] && MP=$(hub_mmproj $R); then
+  qwen38 qwen3.8-27b "$F" "$MP"
 else
   warn "skipping qwen3.8-27b: weights or projector not on disk"
 fi
 
+# Two uncensored builds of the same model, kept side by side to compare
+# (owner's call, 2026-09-26). Both keep the MTP head and ship a projector.
+#
+# HauhauCS "Aggressive": method undisclosed (the maker of the Qwen3.6
+# uncensored arm above); users report its reasoning forced into English.
+R=HauhauCS--Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF
+F=$(hub_file $R Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf)
+MP=$(hub_file $R mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf)
+if [ -n "$F" ] && [ -n "$MP" ]; then
+  qwen38 qwen3.8-27b-uncensored "$F" "$MP"
+else
+  warn "skipping qwen3.8-27b-uncensored: weights or projector not on disk"
+fi
+
+# huihui-ai: abliteration (refusal-direction ablation, layers 17-52) over
+# unsloth's UD quant; MTP and vision untouched, per its README and its header.
+R=huihui-ai--Huihui-Qwen3.8-27B-abliterated-GGUF
+F=$(hub_file $R Huihui-Qwen3.8-27B-abliterated-UD-Q4_K_XL.gguf)
+MP=$(hub_file $R mmproj-model-bf16.gguf)
+if [ -n "$F" ] && [ -n "$MP" ]; then
+  qwen38 qwen3.8-27b-abliterated "$F" "$MP"
+else
+  warn "skipping qwen3.8-27b-abliterated: weights or projector not on disk"
+fi
+
 # Gemma's MTP head ships as a separate draft file.
-S=$(snapshot unsloth--gemma-4-26B-A4B-it-GGUF) || true
-if [ -n "$S" ] && [ -f "${S}gemma-4-26B-A4B-it-UD-Q4_K_M.gguf" ] &&
-  [ -f "${S}mtp-gemma-4-26B-A4B-it.gguf" ] &&
-  MP=$(mmproj_or_die "$S" unsloth/gemma-4-26B-A4B-it-GGUF ); then
+R=unsloth--gemma-4-26B-A4B-it-GGUF
+F=$(hub_file $R gemma-4-26B-A4B-it-UD-Q4_K_M.gguf)
+D=$(hub_file $R mtp-gemma-4-26B-A4B-it.gguf)
+if [ -n "$F" ] && [ -n "$D" ] && MP=$(hub_mmproj $R); then
   cat >>"$OUT" <<EOF
 
 [gemma-4-26b-a4b]
-model = ${S}gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
+model = $F
 mmproj = $MP
 ctx-size = 32768
 parallel = 1
 spec-type = draft-mtp
-model-draft = ${S}mtp-gemma-4-26B-A4B-it.gguf
+model-draft = $D
 n-gpu-layers-draft = 999
 EOF
 else

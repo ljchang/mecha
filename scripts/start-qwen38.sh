@@ -1,15 +1,21 @@
 #!/bin/bash
-# Qwen3.8-27B — the 3.8 generation's only locally runnable model.
+# Qwen3.8-27B, as a single-model server — the rollback for the router's
+# `qwen3.8-27b` preset (scripts/start-router.sh), which now carries its flags
+# and serves unsloth's UD-Q4_K_XL. This script still serves the Q4_K_M it was
+# written for; unsloth withdrew that file upstream on 2026-08-19, so it runs
+# only where the file is already on disk.
 #
 # Read this before assuming it is a drop-in for start-moe-mtp.sh: **it is
-# dense, and that one word is the whole story.** Qwen3.8 shipped exactly two
-# models, and neither is a mid-size MoE. The only 3.8 MoE is
+# dense, and that one word is the whole story.** At launch Qwen3.8 shipped two
+# models and neither was a mid-size MoE: the only 3.8 MoE was
 # Qwen3.8-2.4T-A95B, whose 4-bit quant (UD-IQ4_XS) is 1,310.9 GB against this
-# machine's 121 GB of unified memory; even its most brutal 1-bit is 397 GB. It
-# is not runnable here and never will be. So Qwen3.6-35B-A3B stays the fast
-# model — 3B active params per token — and this is the quality/latency
-# experiment sitting beside it, not its replacement. Verified 2026-08-14
-# against the HF API, not from a blog post.
+# machine's 121 GB of unified memory. Verified 2026-08-14 against the HF API.
+# **That changed on 2026-08-24:** Qwen3.8-Flash-Next is a 125B-total /
+# 6B-active MoE (architecture `qwen4_exp`, license `qwen-community-1.0`, not
+# Apache) whose smallest unsloth GGUF, UD-IQ3_XXS, is 82 GB — runnable here in
+# principle, on a llama.cpp newer than c841aee. Not evaluated yet. Until it is,
+# Qwen3.6-35B-A3B stays the fast model and this is the quality/latency
+# experiment beside it.
 #
 # What is actually here: 27B dense, Apache 2.0 (the 2.4T is *not* — it carries
 # a custom license with revenue triggers), 262,144 native context, released
