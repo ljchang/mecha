@@ -1,5 +1,4 @@
 import type {ReactNode} from 'react';
-import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import Heading from '@theme/Heading';
 import styles from './styles.module.css';
@@ -82,14 +81,20 @@ const FeatureList: FeatureItem[] = [
   },
 ];
 
-function Feature({title, description, to}: FeatureItem) {
+// The poster's parts key, in the page's own type: a numbered cell per
+// subsystem, ruled rather than boxed, so the list below the drawing reads as
+// the key to it rather than a grid of cards floating on the page.
+function Feature({title, description, to, n}: FeatureItem & {n: number}) {
   return (
-    <div className={clsx('col col--4')}>
-      <div className={styles.card}>
-        <Heading as="h3" className={styles.cardTitle}>
+    <div className={styles.part}>
+      <span className={styles.partNo} aria-hidden="true">
+        {String(n).padStart(2, '0')}
+      </span>
+      <div>
+        <Heading as="h3" className={styles.partTitle}>
           <Link to={to}>{title}</Link>
         </Heading>
-        <p className={styles.cardBody}>{description}</p>
+        <p className={styles.partBody}>{description}</p>
       </div>
     </div>
   );
@@ -99,9 +104,10 @@ export default function HomepageFeatures(): ReactNode {
   return (
     <section className={styles.features}>
       <div className="container">
-        <div className="row">
+        <span className={styles.keyLabel}>Parts key</span>
+        <div className={styles.key}>
           {FeatureList.map((props, idx) => (
-            <Feature key={idx} {...props} />
+            <Feature key={idx} n={idx + 1} {...props} />
           ))}
         </div>
       </div>
