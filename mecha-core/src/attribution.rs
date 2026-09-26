@@ -233,8 +233,9 @@ impl Answer {
     /// Read the reflector's three optional fields, leniently: a `"fact"`
     /// that is a boolean or the strings `"true"` / `"false"` is an answer,
     /// anything else is none. A formatting slip in an optional field must
-    /// not cost the lesson it rides beside — the distiller's corrections
-    /// learned that first (`distill::DistillerReply`).
+    /// not fail the parse and lose the reflection it rides beside, as the
+    /// distiller's corrections learned first (`distill::DistillerReply`).
+    /// The slip still costs the rule: no answer is unknown, never mined.
     pub fn from_reply(
         fact: Option<&serde_json::Value>,
         wrong: Option<&serde_json::Value>,
