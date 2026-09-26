@@ -106,6 +106,7 @@ enforced by the merge, not asked for in a comment. See
 | `retry_after_cap_secs` | integer | `60` | A `Retry-After` above this is surfaced as a failure instead of slept through. |
 | `structured_output` | string | `"disabled"` | Explicit endpoint schema dialect: `json_schema` or `llama_json`. Enable after verifying server/model support. |
 | `fallbacks` | array of strings | `[]` | Provider entries to try, in order, when this one exhausts its retries on a transient failure. |
+| `follow_loaded` | bool | `false` | This entry stands for whatever a llama-server router at `base_url` has loaded. Taken by default, it resolves to the sibling entry naming the resident model; named explicitly, it is pinned. |
 
 Both price fields are required for cost budgets and cost reporting: knowing one is
 worse than knowing neither, because it silently under-reports. Leave both unset for
@@ -121,6 +122,18 @@ and set `seed` instead.
 model. Fallback is turn-local — the next turn starts from the primary again — and
 each fallback answers under its own model name. `mecha eval` never falls back
 regardless.
+
+`follow_loaded` is for a llama-server started in router mode, where one port
+serves several models and the request's `model` field picks one. Give each
+model its own entry on the same `base_url`, and mark the default one
+`follow_loaded = true`: every run that takes the default provider then uses
+whichever model the router has loaded — `mecha model use <entry>` switches it,
+with no restart — and records that model. A run that names a provider
+(`--provider`, a trigger's `provider`, an experiment arm) is never moved.
+`mecha model list` shows what the router serves and which entry names each.
+A followed run takes **everything** from the sibling entry — its
+`context_window`, sampling, prices, `fallbacks` and retry settings — not
+only its model, so give each sibling the settings of the model it names.
 
 ### `context_window` degrades silently when absent
 

@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import urllib.parse
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("model-idle.sh")
@@ -35,12 +36,64 @@ ROUTES = {
 }
 
 
+# llama-server routers (REMOTE-SURFACE-DESIGN §14), by path prefix: what
+# /models lists, and the resident model's /slots.
+IDLE_SLOT = [{"id": 0, "is_processing": False}]
+ROUTERS = {
+    "/r-idle": ([{"id": "m", "status": {"value": "loaded"}}, {"id": "n", "status": {"value": "unloaded"}}], IDLE_SLOT),
+    "/r-busy": ([{"id": "m", "status": {"value": "loaded"}}], [{"id": 0, "is_processing": True}]),
+    "/r-none": ([{"id": "m", "status": {"value": "unloaded"}}], IDLE_SLOT),
+    "/r-loading": ([{"id": "m", "status": {"value": "loading"}}], IDLE_SLOT),
+    "/r-many": ([{"id": "m", "status": {"value": "loaded"}}, {"id": "n", "status": {"value": "loaded"}}], IDLE_SLOT),
+    "/r-hangprops": ([{"id": "m", "status": {"value": "loaded"}}], IDLE_SLOT),
+    "/r-hangmodels": ([{"id": "m", "status": {"value": "loaded"}}], IDLE_SLOT),
+}
+# A router whose /props is still loading.
+ROUTERS["/r-503props"] = ([{"id": "m", "status": {"value": "loaded"}}], IDLE_SLOT)
+# /models answers this cannot read: each must fail, never read as "nothing loaded".
+ROUTERS["/r-renamed"] = ([{"id": "m", "status": {"value": "resident"}}], IDLE_SLOT)
+ROUTERS["/r-nomodels"] = ([], IDLE_SLOT)
+ROUTERS["/r-500models"] = ([{"id": "m", "status": {"value": "unloaded"}}], IDLE_SLOT)
+# Reads that outlast the script's 5 s budget: a router mid-restart.
+HANGS = {"/r-hangprops/props", "/r-hangmodels/models"}
+SEEN = []  # every path the stub was asked for, in order
+
+
+def routed(path):
+    """A router's answer, or None when `path` is under no router prefix."""
+    for prefix, (models, slots) in ROUTERS.items():
+        if not path.startswith(prefix + "/"):
+            continue
+        rest = urllib.parse.urlsplit(path[len(prefix):])
+        if rest.path == "/props" and prefix == "/r-503props":
+            return 503, {"error": {"message": "Loading model"}}
+        if rest.path == "/props":
+            # The placeholder a bare /props really answers on a router.
+            return 200, {"role": "router", "model_alias": "llama-server"}
+        if rest.path == "/models" and prefix == "/r-500models":
+            return 500, {"error": {"message": "internal"}}
+        if rest.path == "/models":
+            return 200, {"data": models, "object": "list"}
+        if rest.path == "/slots":
+            q = urllib.parse.parse_qs(rest.query)
+            if q.get("autoload") != ["false"]:
+                # A probe that would load the model it reads.
+                return 500, {"error": "this read would have loaded a model"}
+            resident = [m["id"] for m in models if m["status"]["value"] == "loaded"]
+            if q.get("model") != resident[:1]:
+                return 400, {"error": {"message": "model is not loaded"}}
+            return 200, slots
+        return 404, {}
+    return None
+
+
 class Stub(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/hang":
+        SEEN.append(self.path)
+        if self.path == "/hang" or self.path in HANGS:
             threading.Event().wait(8)  # longer than the script's 5 s budget
             return
-        code, body = ROUTES.get(self.path, (404, {}))
+        code, body = routed(self.path) or ROUTES.get(self.path, (404, {}))
         data = json.dumps(body).encode()
         self.send_response(code)
         self.send_header("content-type", "application/json")
@@ -197,6 +250,55 @@ class ModelIdle(unittest.TestCase):
         blocker = Path(self.state.name) / "mecha"
         blocker.write_text("a file where the state directory should be")
         self.assertEqual(self.run_check(f"{self.base}/loading")[0], 255)
+
+    # --- a llama-server router ---
+
+    def test_a_router_reads_the_resident_models_slots_without_loading_it(self):
+        SEEN.clear()
+        self.assertEqual(self.run_check(f"{self.base}/r-idle/slots")[0], 0)
+        slots = [p for p in SEEN if "/slots" in p]
+        self.assertEqual(len(slots), 1, SEEN)
+        self.assertIn("model=m", slots[0])
+        self.assertIn("autoload=false", slots[0])
+
+    def test_a_busy_resident_model_skips(self):
+        code, said = self.run_check(f"{self.base}/r-busy/slots")
+        self.assertEqual(code, 1)
+        self.assertIn("1 model slot(s) in use", said)
+
+    def test_a_router_with_nothing_loaded_is_idle_and_is_not_asked_for_slots(self):
+        # Asking for any model's slots with autoload on would load it.
+        SEEN.clear()
+        self.assertEqual(self.run_check(f"{self.base}/r-none/slots")[0], 0)
+        self.assertFalse([p for p in SEEN if "/slots" in p], SEEN)
+
+    def test_a_router_loading_a_model_skips_then_fails_once_it_has_lasted(self):
+        codes = [self.run_check(f"{self.base}/r-loading/slots", stuck_max=3)[0] for _ in range(3)]
+        self.assertEqual(codes, [1, 1, 255])
+
+    def test_a_lost_props_read_is_a_bounce_not_a_single_model_server(self):
+        # Demoted to "single-model", the bare /slots read would be refused
+        # (the stub answers it 500) and fail the unit on the first tick.
+        codes = [self.run_check(f"{self.base}/r-hangprops/slots", stuck_max=2)[0] for _ in range(2)]
+        self.assertEqual(codes, [1, 255])
+
+    def test_a_loading_props_is_a_bounce_not_a_single_model_server(self):
+        codes = [self.run_check(f"{self.base}/r-503props/slots", stuck_max=2)[0] for _ in range(2)]
+        self.assertEqual(codes, [1, 255])
+
+    def test_a_lost_models_read_is_a_bounce(self):
+        code, said = self.run_check(f"{self.base}/r-hangmodels/slots")
+        self.assertEqual(code, 1)
+        self.assertIn("too busy to answer", said)
+
+    def test_a_models_list_it_cannot_read_fails_rather_than_reading_idle(self):
+        # A renamed status, an empty list, a 500: "none" would run the sweep.
+        for route in ["/r-renamed", "/r-nomodels", "/r-500models"]:
+            with self.subTest(route=route):
+                self.assertEqual(self.run_check(f"{self.base}{route}/slots")[0], 255)
+
+    def test_two_resident_models_fail_at_once(self):
+        self.assertEqual(self.run_check(f"{self.base}/r-many/slots")[0], 255)
 
 
 if __name__ == "__main__":

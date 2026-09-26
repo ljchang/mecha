@@ -110,6 +110,119 @@ skip() {
 }
 stuck_skip() { skip "$1" stuck; }
 
+# The GPU gate and the all-clear, shared by both ways of finding the slots
+# idle below.
+finish() {
+    local util
+    util="$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc '0-9')"
+    # Present but unreadable (`[N/A]`, which this box's nvidia-smi answers for
+    # its memory queries) still fails open, but says so: from the journal it
+    # must not look like a quiet GPU.
+    if [ -z "$util" ] && command -v nvidia-smi >/dev/null 2>&1; then
+        echo "model-idle: nvidia-smi gave no readable GPU utilisation — not gating on it"
+    fi
+    if [ -n "$util" ] && [ "$util" -gt "$GPU_BUSY" ]; then
+        skip "GPU at ${util}% (> ${GPU_BUSY}%)"
+    fi
+    # The sweep runs: the day's skips are over.
+    rm -f "$DAY_FILE"
+    exit 0
+}
+
+# **A router serves /slots per model** (llama-server router mode,
+# REMOTE-SURFACE-DESIGN §14). Its bare /slots is a 400, and naming a model
+# without `autoload=false` *loads* it — the idle check would be what swaps out
+# the owner's pick. So ask which model is resident and read that one's slots.
+# A server that does not say `role: router` (every single-model llama-server,
+# and anything that does not answer /props) takes the plain read below
+# unchanged, which fails loudly on its own terms.
+#
+# **Both reads classify a bounce the way the /slots read below does** (found
+# on review): a refusal, a reset or a timeout is a restart in progress —
+# counted, and loud only once it has lasted. Without that, one lost /props
+# would demote a healthy router to "single-model", and its bare /slots 400
+# would fail the unit on the first tick of every `systemctl restart`.
+
+# One GET: sets GOT_RC (curl's exit), GOT_CODE (HTTP status), GOT_BODY.
+get() {
+    local reply
+    reply="$(curl -s -m 5 -w '\n%{http_code}' "$1")"
+    GOT_RC=$?
+    GOT_CODE="${reply##*$'\n'}"
+    GOT_BODY="${reply%$'\n'*}"
+}
+# A bounce of URL, going by curl's exit code: counted, and the tick skipped.
+bounce_skip() {
+    case "$GOT_RC" in
+        28) stuck_skip "$1 too busy to answer" ;;
+        7) stuck_skip "nothing listening at $1" ;;
+        52 | 56) stuck_skip "$1 dropped the connection" ;;
+    esac
+}
+
+BASE="${SLOTS_URL%/slots}"
+get "$BASE/props"
+bounce_skip "$BASE/props"
+# A 503 is a server — router or not — still loading, which is a bounce too;
+# read as "not a router", it would send a router to its bare /slots 400.
+[ "$GOT_CODE" = 503 ] && stuck_skip "$BASE/props says the server is still loading"
+role=""
+if [ "$GOT_RC" -eq 0 ] && [ "$GOT_CODE" = 200 ]; then
+    role="$(printf '%s' "$GOT_BODY" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("role", ""))' 2>/dev/null)"
+fi
+if [ "$role" = router ]; then
+    get "$BASE/models"
+    bounce_skip "$BASE/models"
+    [ "$GOT_CODE" = 503 ] && stuck_skip "$BASE/models says the router is still starting"
+    if [ "$GOT_RC" -ne 0 ] || [ "$GOT_CODE" != 200 ]; then
+        echo "model-idle: $BASE/models answered HTTP $GOT_CODE (curl $GOT_RC) — failing so mecha doctor sees it"
+        exit 255
+    fi
+    # One line: "<status> <url-to-read>", "none", "many", or nothing on an
+    # answer this cannot read. **"none" is a claim of idleness, so it is only
+    # made from a list this fully understands** (found on review): no list,
+    # an empty one, or a status value it does not know is unreadable, never
+    # "nothing loaded" — the same rule as a renamed `is_processing` below.
+    state="$(printf '%s' "$GOT_BODY" | BASE="$BASE" python3 -c '
+import json, os, sys, urllib.parse
+data = json.load(sys.stdin).get("data")
+known = {"unloaded", "loading", "loaded", "sleeping", "downloading"}
+if not isinstance(data, list) or not data or any(
+        m.get("status", {}).get("value") not in known for m in data):
+    raise SystemExit(2)
+r = [m for m in data if m["status"]["value"] in ("loaded", "loading", "sleeping")]
+if not r:
+    print("none")
+elif len(r) > 1:
+    print("many")
+else:
+    q = urllib.parse.urlencode({"model": r[0]["id"], "autoload": "false"})
+    print(r[0]["status"]["value"], os.environ["BASE"] + "/slots?" + q)
+' 2>/dev/null)"
+    case "$state" in
+        # Nothing loaded is nothing in flight: the sweep's first request loads
+        # the default. A sleeping model has no request by definition.
+        none | sleeping\ *)
+            rm -f "$STUCK_FILE"
+            finish
+            ;;
+        loading\ *) stuck_skip "the router at $BASE is loading a model" ;;
+        loaded\ *) SLOTS_URL="${state#loaded }" ;;
+        # Unreachable under `--models-max 1`, and loud on purpose: if the
+        # router is ever run with room for two, this gate has to learn which
+        # one the sweep will use before it can say "idle" — until then every
+        # tick fails, which is the intended behaviour, not a bug.
+        many)
+            echo "model-idle: the router at $BASE has more than one model resident — not the one-model server this gate reads; failing so mecha doctor sees it"
+            exit 255
+            ;;
+        *)
+            echo "model-idle: the router at $BASE did not answer /models in a shape this reads — failing so mecha doctor sees it"
+            exit 255
+            ;;
+    esac
+fi
+
 # The body and the status separately: `curl -f` would fold every HTTP error
 # into one exit code, and two of them mean opposite things here.
 reply="$(curl -s -m 5 -w '\n%{http_code}' "$SLOTS_URL")"
@@ -166,18 +279,4 @@ if [ "$busy" -gt 0 ]; then
     skip "$busy model slot(s) in use"
 fi
 
-util="$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc '0-9')"
-# Present but unreadable (`[N/A]`, which this box's nvidia-smi answers for
-# its memory queries) still fails open, but says so: from the journal it must
-# not look like a quiet GPU.
-if [ -z "$util" ] && command -v nvidia-smi >/dev/null 2>&1; then
-    echo "model-idle: nvidia-smi gave no readable GPU utilisation — not gating on it"
-fi
-if [ -n "$util" ] && [ "$util" -gt "$GPU_BUSY" ]; then
-    skip "GPU at ${util}% (> ${GPU_BUSY}%)"
-fi
-
-# The sweep runs: the day's skips are over.
-rm -f "$DAY_FILE"
-
-exit 0
+finish

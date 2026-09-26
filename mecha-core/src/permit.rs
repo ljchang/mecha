@@ -47,6 +47,13 @@ use std::path::{Path, PathBuf};
 ///
 /// One seat short of the server's, so the owner's turn never queues. Measured
 /// rather than chosen: see the module doc and the measurement record.
+///
+/// The default, not the rule: behind a llama-server router the pool is sized
+/// to the *resident* model by `provider::router::background_seats` — one
+/// short of its slots, never fewer than one (owner's ruling, 2026-09-26). So
+/// on a one-slot model the owner can wait behind one background decode; the
+/// alternative was pausing every permit-taker, the nightly passes among them,
+/// for as long as that model is loaded.
 pub const DEFAULT_BACKGROUND_PERMITS: usize = 3;
 
 /// A held seat: who has it, since when, and what for.

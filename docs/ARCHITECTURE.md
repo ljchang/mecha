@@ -187,6 +187,13 @@ The parts that bite hardest:
 - **Ask what is served (`GET /props` → `model_alias`), don't assert it.**
   llama-server ignores the request's `model` field, so naming one is not
   selecting it — only deciding what gets recorded.
+- **Router mode inverts that** (`scripts/start-router.sh`, built but not yet
+  installed — `REMOTE-SURFACE-DESIGN.md` §14, `LLAMA-SERVER.md` §Router
+  mode). One process serves several models and the request's `model`
+  *selects*: a `follow_loaded` provider takes whichever is loaded
+  (`provider::router`), every probe must name its model with
+  `autoload=false` or it loads it, and a bare `/props` is a placeholder
+  (`model_alias: "llama-server"`, `n_ctx: 0`).
 - **Throughput is wall clock.** The server times a request only while it is
   running, so summing its per-request rates hides queue wait and reads ~4× at
   `-np 1`, on the one configuration that cannot run anything concurrently.
@@ -5708,6 +5715,48 @@ Rules join goals through clean source reflections; successful examples require
 recorded clean taint and matching tools/workspace/surface. A startup snapshot
 examines at most 32 recent transcripts of at most 2 MB each and keeps 64 examples.
 It does not add unsolicited lesson delivery. Missing context is never a success.
+
+**A reflection serves the plan's goal, else its run's anchor**
+(`APPRAISAL-WIRING-DESIGN.md` L3, built as 2e-5a; `reflect::goals_for`).
+`Reflexion::goals` is what a lesson bears on, and the join `goal_lessons`
+serves through; it had one source, the plan at the intervention, and was
+empty on every reflection once the model stopped planning. The second source
+is the anchor in force at the intervention (`Transcript::anchor_covering`),
+taken only where the plan and the question in force name none, since evidence
+local to the moment is the more specific. What the record holds is the anchor
+each run *ended on*: `record_run` writes a `GoalAnchor` after every run's
+messages, a failed run's included (the task and trigger front-ends record no
+outcome for a run that errored, so the outcome list cannot say which run a
+message belongs to — found on review of #335), and the parse places each
+record among the messages and repairs it by the outcomes' `Rewrite` rule. An
+answered `ask_user` carrying a goal pointer moves the anchor mid-run, and the
+record has no finer grain, so a run holding such a call after the message (or
+in the turn the message answers) stamps none: the anchor may postdate the
+intervention, and one before it is `goal_at`'s to name. It is **not the
+session's last anchor**: a conversation re-anchored by an answer or a
+hand-over carries each run's own, and a message no record covers stamps none
+rather than a later anchor read back onto it: a run in flight, and everything
+below `Transcript::anchor_floor`.
+
+**The anchor floor is where the record stops saying anything** (review of
+#335, twice). Two things raise it. A summarising compaction raises it to the
+length it left, because the rebuilt head and the carried tail lost their run's
+record, and clearing their positions alone let a search skip the placeless
+records and read the next run's back onto the tail. An outcome with no
+`GoalAnchor` since the previous outcome raises it to that outcome's place:
+every front-end calls `record_run` before `record_outcome`, so such a run
+predates the record, and without the floor the seed `run --resume --goal`
+writes *before* the resumed run (`run::seed_goal_anchor`) was the first record
+after its messages. A truncating rewrite clamps it like every position. The
+residue is a transcript from before outcomes were recorded, which carries
+neither record. It is **not the
+situation's goal key**, which stays `rules_goal` — what the rules block was
+matched toward — so where a hand-over resumes an older anchor the two differ
+on purpose, one saying what the lesson served and the other where it loads.
+And it is **not backfilled**: reflections mined before it keep their goals,
+so lessons appear as anchored runs are corrected. The anchor is the harness's
+seed or the owner's confirmation, never a model's claim, which is why it
+carries `trigger:` and `request:` pointers the plan-named source may not.
 
 **Past clean appraisals are served through `goal_context`, on demand, and
 only behind their lever** (`APPRAISAL-WIRING-DESIGN.md` I2, built as 2c-2).
