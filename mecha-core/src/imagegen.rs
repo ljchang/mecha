@@ -381,7 +381,8 @@ pub async fn forget_trail(cfg: &ImageConfig, entries: &[TrailEntry]) -> Result<(
     let mut files = Vec::new();
     for entry in entries {
         match entry {
-            TrailEntry::Job(id) => files.extend(server.abandon(id).await),
+            // No trail to write to: the delete below follows at once.
+            TrailEntry::Job(id) => files.extend(server.abandon(id, None).await),
             TrailEntry::File(name) => files.push(name.clone()),
         }
     }
@@ -707,7 +708,7 @@ impl ComfyUi {
     /// it and stop whatever is executing — which would let cancelling a
     /// queued image kill another call's running one. Asking the queue first
     /// makes it right on either (found on review of #303).
-    async fn abandon(&self, id: &str) -> Vec<String> {
+    async fn abandon(&self, id: &str, trail: Option<&std::path::Path>) -> Vec<String> {
         let _ = self.post_json("queue", &json!({"delete": [id]})).await;
         let running = self
             .get_json("queue")
@@ -748,6 +749,14 @@ impl ComfyUi {
             .ok()
             .and_then(|h| h.get(id).map(temp_outputs))
             .unwrap_or_default();
+        // Onto the trail before the record naming them is forgotten, as the
+        // polling path does: a death between here and the caller's delete
+        // otherwise leaves a preview nothing names (found on review of #331).
+        for name in &wrote {
+            if let Err(e) = note(trail, &TrailEntry::File(name.clone())) {
+                tracing::debug!("a preview's name did not reach the image trail: {e:#}");
+            }
+        }
         self.forget(id).await;
         wrote
     }
@@ -911,7 +920,7 @@ impl ComfyUi {
             Err(e) => {
                 // Queued under the id sent, perhaps, before the answer was
                 // lost — and that id is in hand (found on review of #331).
-                held.confirmed.extend(self.abandon(&asked).await);
+                held.confirmed.extend(self.abandon(&asked, trail).await);
                 return Err(e.into());
             }
         };
@@ -928,12 +937,12 @@ impl ComfyUi {
             .and_then(|v| v.get("prompt_id")?.as_str().map(str::to_string))
         else {
             // Accepted, so queued — under the id sent.
-            held.confirmed.extend(self.abandon(&asked).await);
+            held.confirmed.extend(self.abandon(&asked, trail).await);
             return Err(anyhow!("the image server accepted the job but named no prompt_id").into());
         };
         if id != asked {
             if let Err(e) = record(TrailEntry::Job(id.clone())) {
-                held.confirmed.extend(self.abandon(&id).await);
+                held.confirmed.extend(self.abandon(&id, trail).await);
                 return Err(e);
             }
         }
@@ -945,7 +954,7 @@ impl ComfyUi {
             match cancel {
                 Some(token) => tokio::select! {
                     _ = token.cancelled() => {
-                        held.confirmed.extend(self.abandon(&id).await);
+                        held.confirmed.extend(self.abandon(&id, trail).await);
                         return Err(Failure::Cancelled);
                     }
                     _ = tick => {}
@@ -953,7 +962,7 @@ impl ComfyUi {
                 None => tick.await,
             }
             if started.elapsed() > timeout {
-                held.confirmed.extend(self.abandon(&id).await);
+                held.confirmed.extend(self.abandon(&id, trail).await);
                 return Err(anyhow!(
                     "the image took longer than {} s and was abandoned",
                     timeout.as_secs()
@@ -976,7 +985,7 @@ impl ComfyUi {
                     if failed_polls < POLL_FAILURES {
                         continue;
                     }
-                    held.confirmed.extend(self.abandon(&id).await);
+                    held.confirmed.extend(self.abandon(&id, trail).await);
                     return Err(e
                         .context(format!(
                             "the image server stopped answering ({POLL_FAILURES} polls in a row)"
@@ -1560,6 +1569,9 @@ mod tests {
         /// Where uploads are written under the name they were sent with, as
         /// the real server does; otherwise each is answered as `up.png`.
         temp: Option<std::path::PathBuf>,
+        /// The record an interrupted job reads back as, in place of an error
+        /// with no outputs — one that finished as it was stopped.
+        interrupted_record: Option<Value>,
     }
 
     impl Default for Fake {
@@ -1572,6 +1584,7 @@ mod tests {
                 prompt_body: None,
                 hang_up: None,
                 temp: None,
+                interrupted_record: None,
             }
         }
     }
@@ -1585,6 +1598,7 @@ mod tests {
             prompt_body,
             hang_up,
             temp,
+            interrupted_record,
         } = opts;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1604,6 +1618,7 @@ mod tests {
                 let interrupted = Arc::clone(&interrupted);
                 let prompt_body = prompt_body.clone();
                 let temp = temp.clone();
+                let interrupted_record = interrupted_record.clone();
                 tokio::spawn(async move {
                     let mut req = Vec::new();
                     let mut tmp = [0u8; 8192];
@@ -1657,8 +1672,10 @@ mod tests {
                             answer.to_string().as_bytes(),
                         )
                     } else if path.starts_with("/history/") && interrupted.load(Ordering::SeqCst) {
-                        json_reply(json!({"job-1": {"status": {"status_str": "error",
-                            "completed": false}, "outputs": {}}}))
+                        json_reply(interrupted_record.unwrap_or_else(|| {
+                            json!({"job-1": {"status": {"status_str": "error",
+                                "completed": false}, "outputs": {}}})
+                        }))
                     } else if path.starts_with("/history/") {
                         let next = history.lock().unwrap().pop_front().unwrap_or(json!({}));
                         if next == json!("fail") {
@@ -2348,6 +2365,43 @@ mod tests {
         )
         .unwrap();
         body["prompt_id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_jobs_preview_is_written_down_before_its_record_goes() {
+        // Cancelled just as the server finished: the preview exists, and only
+        // the record names it. It must reach the trail before the record is
+        // forgotten, and be deleted.
+        let (url, _) = fake_with(Fake {
+            interrupted_record: Some(done()),
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let temp = dir.join("server-temp");
+        std::fs::create_dir_all(&temp).unwrap();
+        std::fs::write(temp.join("a_temp_00001_.png"), "x").unwrap();
+        let trail = dir.join("image-trail");
+        let token = CancellationToken::new();
+        let mut c = ctx(&dir);
+        c.cancel = Some(token.clone());
+        c.image_trail = Some(trail.clone());
+        let t = tool_in(&url, &temp);
+        let call = tokio::spawn(async move { t.call(json!({"prompt": "a fox"}), &c).await });
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        token.cancel();
+        let out = call.await.unwrap().unwrap();
+        assert!(out.content.starts_with("Cancelled"), "{}", out.content);
+        assert!(
+            read_trail(&trail).contains(&TrailEntry::File("a_temp_00001_.png".into())),
+            "a cancelled job's preview was never written down: {:?}",
+            read_trail(&trail)
+        );
+        assert!(
+            !temp.join("a_temp_00001_.png").exists(),
+            "the preview stayed"
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]
