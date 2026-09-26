@@ -82,7 +82,11 @@ pub struct GenerationSettings {
 /// Deliberately silent on failure: a provider that is merely not running yet
 /// must not print a warning on every start of a machine that does not use it.
 pub async fn fetch(base_url: &str, model: Option<&str>) -> Option<Props> {
-    let base = base_url.trim_end_matches('/');
+    // The server root: a `/v1` spelling (which the router code treats as the
+    // same server) would otherwise ask `…/v1/props`, which llama-server does
+    // not serve, and every check here would silently not run (found on review).
+    let base = crate::provider::router::base(base_url);
+    let base = base.as_str();
     let props = get(&format!("{base}/props"), &[]).await?;
     if props.role.as_deref() != Some("router") {
         return Some(props);
@@ -305,6 +309,16 @@ mod tests {
             lines[1],
             "GET /props?model=gemma-4-26b-a4b&autoload=false HTTP/1.1"
         );
+    }
+
+    /// A `/v1` base URL is the same server: its props are at the root.
+    #[tokio::test]
+    async fn a_v1_base_url_asks_the_server_root() {
+        let props =
+            r#"{"model_alias":"qwen3.6-35b-a3b","default_generation_settings":{"n_ctx":262144}}"#;
+        let (base, server) = stub(vec![props]).await;
+        assert!(fetch(&format!("{base}/v1"), None).await.is_some());
+        assert_eq!(server.await.unwrap(), vec!["GET /props HTTP/1.1"]);
     }
 
     /// A single-model server's answer is the answer: one request, no query.

@@ -624,7 +624,13 @@ refuses a config naming it, the way `[image]` did. Then: every chat model
 as an entry on :8080 (`local` keeping production and `follow_loaded =
 true`), the unit's `ExecStart` to `start-router.sh`, and a restart of
 `llama-local`. The uncensored drop-in retires with it: the arm becomes
-`mecha model use`.
+`mecha model use`. Owed at that point (listed by the session that ran the
+arm): remove `~/.config/systemd/user/llama-local.service.d/model-swap.conf`,
+set `[providers.local] model` back to `"qwen3.6-35b-a3b"`, and delete branch
+`exp/qwen36-uncensored-arm` with its worktree `~/Github/mecha-wt-uncensored`
+(its start script is the rollback until then). Ship the `[[policy]]` rule
+forbidding `mecha model use` with the config edit: a trigger with
+`permission_mode = allow` has no human in the loop to deny it.
 
 ### Three rulings carried over (2026-09-26)
 
@@ -655,14 +661,14 @@ missing file failed and Gemma was loaded back; a 0.5 entry against a 1.0
 preset was refused; `--now` during a streaming Gemma reply cut it off and
 loaded Qwen3.8 in 25 s.
 
-### Four scripts read a bare `/props`
+### Four scripts read a bare `/props` — fixed
 
-Found on review: `bench/run.sh` and `scripts/replay-regression.sh`
-(`MODEL_PORT` 8080), `scripts/bench-slots.sh` (reads `total_slots`, which
-the placeholder lacks, and refuses), and `scripts/appraisal-validity.py`.
-Not all of them fail loudly: `bench/run.sh` and `appraisal-validity.py`
-read the placeholder's `model_alias: "llama-server"` as a model name — the
-latter then pins it as `--model`, which the router answers 400, but the
-former can write it down as what was benchmarked.
-They need `?model=…&autoload=false` before the install, or the `update`
-skill's benchmark step is the next thing to break.
+Found on review: `bench/run.sh`, `scripts/replay-regression.sh`,
+`scripts/bench-slots.sh` and `scripts/appraisal-validity.py` read the
+router's placeholder, two of them quietly (`model_alias: "llama-server"` as a
+model name). All four now ask through `scripts/served-props.sh`
+(`served_model`, `served_props`; the Python one inline, by the same rule):
+the resident model only from a `/models` list every status of which is
+known, its props always with `autoload=false`, and `bench-slots.sh` names
+the model in each request, which a router otherwise refuses.
+`scripts/test_served_props.py` checks the requests sent, in CI.

@@ -37,7 +37,11 @@ export MECHA_BENCH_BINARY="$(pwd)/target-musl/release/mecha"
 # Refuse to measure against a misconfigured server: 4 default slots quarter
 # the context to 8192 and the model returns empty completions past it — the
 # confound that voided a day of scorecards. See scripts/start-moe-mtp.sh.
-slots=$(curl -s "http://127.0.0.1:${MODEL_PORT}/props" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_slots", 0))')
+# Asked of the benchmarked model itself, never a router's placeholder, and
+# never in a way that loads it (scripts/served-props.sh).
+source scripts/served-props.sh
+slots=$(served_props "http://127.0.0.1:${MODEL_PORT}" "${MODEL#*/}" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_slots", 0))' || echo 0)
 if [ "$slots" != "1" ]; then
   echo "refusing to run: llama-server on :${MODEL_PORT} has ${slots} slots, not 1 (-np 1)." >&2
   exit 1

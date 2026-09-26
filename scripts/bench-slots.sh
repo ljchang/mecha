@@ -32,8 +32,17 @@ if ! curl -sf -m 5 "$HOST/health" >/dev/null 2>&1; then
     exit 1
 fi
 
+# Behind a router every request must name its model, and the preflight must
+# not load one: measure whatever is resident, named (scripts/served-props.sh).
+# On a single-model server the name is ignored.
+source "$(dirname "$0")/served-props.sh"
+MODEL="${LLAMA_MODEL:-$(served_model "$HOST")}" || {
+    echo "bench: cannot tell which model $HOST is serving" >&2
+    exit 1
+}
+
 slots_configured() {
-    curl -s "$HOST/props" 2>/dev/null \
+    served_props "$HOST" "$MODEL" 2>/dev/null \
       | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_slots","?"))' 2>/dev/null
 }
 
@@ -41,6 +50,7 @@ slots_configured() {
 # $1 = a prompt seed, so concurrent streams do not collide on one slot's prefix
 one() {
     curl -s "$HOST/completion" -H 'Content-Type: application/json' -d "{
+        \"model\": \"$MODEL\",
         \"prompt\": \"[$1] Write a detailed technical description of a distributed system.\",
         \"n_predict\": $NPREDICT,
         \"ignore_eos\": true,
