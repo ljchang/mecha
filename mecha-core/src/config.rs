@@ -639,6 +639,15 @@ pub struct AgentConfig {
     /// (§1, decision 7), measured with and without by `mecha exp`
     /// (`Lever::PastAppraisals`) before it ships on.
     pub past_appraisals: bool,
+    /// Let `goal_context` serve **planning success examples**: the tool
+    /// sequence of a clean session the owner verified — a task closed
+    /// `done` and not reopened, a workflow closed, a question answered
+    /// whose session then completed — toward the goal asked about, in the
+    /// run's situation (`APPRAISAL-WIRING-DESIGN.md` L2, built as 2e-4b-1,
+    /// R40). On demand, never the prefix. **Off by default**, for the reason
+    /// `past_appraisals` is: measured with and without by `mecha exp`
+    /// (`Lever::SuccessExamples`) before it ships on.
+    pub success_examples: bool,
 }
 
 impl Default for AgentConfig {
@@ -673,6 +682,7 @@ impl Default for AgentConfig {
             appraisals_in_brief: true,
             situation_brief: false,
             past_appraisals: false,
+            success_examples: false,
         }
     }
 }
@@ -1730,6 +1740,7 @@ struct AgentLayer {
     appraisals_in_brief: Option<bool>,
     situation_brief: Option<bool>,
     past_appraisals: Option<bool>,
+    success_examples: Option<bool>,
     timezone: Option<String>,
 }
 
@@ -1851,6 +1862,9 @@ impl ConfigLayer {
             }
             if let Some(v) = a.past_appraisals {
                 t.past_appraisals = v;
+            }
+            if let Some(v) = a.success_examples {
+                t.success_examples = v;
             }
             if a.timezone.is_some() {
                 t.timezone = a.timezone;

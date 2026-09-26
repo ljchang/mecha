@@ -680,6 +680,29 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
             },
         });
     }
+    // Planning success examples for `goal_context` to serve on demand
+    // (L2, 2e-4b-1, R40), behind `Lever::SuccessExamples` — never the
+    // prefix. Keyed as past appraisals are, on what the run record will
+    // keep. Ahead of the declared-check examples: an owner's act is the
+    // stronger evidence, and with the lever off the list is what it was.
+    // Private by the tool that serves them (`goal_context` is `private`),
+    // which is R35's arming: a verified session is the owner's work.
+    if agent_cfg.success_examples {
+        let run = mecha_core::situation::Situation::of_run(
+            &registry
+                .iter()
+                .map(|t| t.name().to_string())
+                .collect::<Vec<_>>(),
+            rules.workspace.as_deref(),
+        )
+        .on(rules.surface)
+        .toward(rules.goal.clone());
+        if let Ok(dir) = mecha_core::session::Session::default_dir() {
+            let mut served = mecha_core::planning::success_examples_at(&dir).for_run(&run);
+            served.append(&mut ctx.goal_examples);
+            ctx.goal_examples = served;
+        }
+    }
 
     let mut agent = Agent::new(
         provider,
@@ -855,6 +878,7 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
             Lever::CarriedState => !agent.carried_state,
             Lever::SituationBrief => !agent.situation_brief,
             Lever::PastAppraisals => !agent.past_appraisals,
+            Lever::SuccessExamples => !agent.success_examples,
         })
         .collect()
 }
@@ -885,6 +909,7 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::CarriedState => opts.no_carried_state = true,
         Lever::SituationBrief => opts.no_situation_brief = true,
         Lever::PastAppraisals => opts.no_past_appraisals = true,
+        Lever::SuccessExamples => opts.no_success_examples = true,
     }
 }
 
@@ -973,6 +998,7 @@ pub(crate) fn fold_agent_switches(agent: &mut mecha_core::config::AgentConfig, o
     agent.carried_state = agent.carried_state && !opts.no_carried_state;
     agent.situation_brief = agent.situation_brief && !opts.no_situation_brief;
     agent.past_appraisals = agent.past_appraisals && !opts.no_past_appraisals;
+    agent.success_examples = agent.success_examples && !opts.no_success_examples;
 }
 
 /// The `ToolCtx` shape `compact_requested` already established: presence is

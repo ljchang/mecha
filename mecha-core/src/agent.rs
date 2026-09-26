@@ -5564,6 +5564,84 @@ mod tests {
         );
     }
 
+    /// L2 (2e-4b-1): a planning success example reaches a run only through
+    /// the `goal_context` result — the prefix is the same bytes with the
+    /// lever on and off, the first request carries none of it — and the
+    /// call that serves it arms `private`, which is R35's arming for the
+    /// owner's own work. Fails if the lever touched the prefix, pushed the
+    /// sequence, or served it from a tool that does not arm.
+    #[tokio::test]
+    async fn success_examples_reach_a_run_only_through_goal_context_and_arm_private() {
+        let ask = || {
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "g1".into(),
+                        name: "goal_context".into(),
+                        input: json!({"serves": "task:task-northwind-report"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ]
+        };
+        let mut seen_by_lever = Vec::new();
+        for lever in [false, true] {
+            let (agent, provider) = agent_with_tools(
+                ask(),
+                vec![Arc::new(crate::tool::goal_context::GoalContext)],
+                PermissionMode::Allow,
+            );
+            let mut cx = (**agent.context()).clone();
+            let mut tools = (*cx.tools).clone();
+            if lever {
+                tools.goal_examples = vec![crate::planning::Example {
+                    goal: "task:task-northwind-report".parse().unwrap(),
+                    step: "fs_read → shell ×2 → fs_write".into(),
+                    expected: None,
+                    source: "s-dana".into(),
+                    owner_act: Some(crate::success::Act::TaskDone {
+                        task: "task-northwind-report".into(),
+                        closure: "c1".into(),
+                    }),
+                }];
+            }
+            cx.tools = Arc::new(tools);
+            let mut convo = Conversation::user("pick up the Northwind Labs report");
+            agent.run_in(&cx, &mut convo, None).await.unwrap();
+            assert!(convo.taint.private, "goal_context arms private");
+            let seen = provider.seen.lock().unwrap().clone();
+            assert_eq!(seen.len(), 2);
+            let first = serde_json::to_string(&seen[0].messages).unwrap();
+            assert!(!first.contains("fs_write"), "never pushed");
+            seen_by_lever.push(seen);
+        }
+        let (off, on) = (&seen_by_lever[0], &seen_by_lever[1]);
+        for i in 0..2 {
+            assert_eq!(
+                serde_json::to_string(&off[i].tools).unwrap(),
+                serde_json::to_string(&on[i].tools).unwrap(),
+                "the tool list is the same bytes with the lever on and off"
+            );
+            assert_eq!(off[i].system, on[i].system, "and so is the system prompt");
+        }
+        let result = |reqs: &Vec<CompletionRequest>| -> String {
+            reqs[1]
+                .messages
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .find_map(|b| match b {
+                    Block::ToolResult { content, .. } => Some(content.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert!(!result(off).contains("tools_in_order"));
+        let served = result(on);
+        assert!(served.contains("fs_read → shell ×2 → fs_write"), "{served}");
+        assert!(served.contains("closure:c1"));
+    }
+
     /// A long-lived conversation (a web chat) is handed a fresh brief each
     /// turn: the same situation is said once, and a changed one is a new
     /// block in the turn it changed on, the old one left where it was — so
