@@ -457,7 +457,12 @@ async fn lessons_from_both_sources_are_measured_per_region_and_nothing_is_learne
     assert!(text.contains("lessons by source"), "{text}");
     assert!(text.contains("reflector   100% (1 of 1 decided)"), "{text}");
     assert!(text.contains("appraisal   0% (0 of 1 decided)"), "{text}");
-    assert!(text.contains("— (nothing decided)"), "{text}");
+    assert!(
+        text.contains(
+            "1 region(s) with no eligible intervention · excluded: 1 clean for the reflector only"
+        ),
+        "{text}"
+    );
 
     // A second pass measures nothing twice.
     let second = mecha(&home, &work, &["learn", "--compare-sources", "--json"]).await;
