@@ -126,15 +126,15 @@ pub struct Drawable {
 /// the sessions carrying the most regret are compared first. The ranker is
 /// read only when there are points to order, and what it could not read is
 /// said.
-fn compare_draw(pool: Vec<Drawable>, seed: u64, sessions_dir: &Path, quiet: bool) -> Vec<Drawable> {
+fn compare_draw(pool: Vec<Drawable>, seed: u64, sessions_dir: &Path) -> Vec<Drawable> {
     if pool.len() < 2 {
         return pointwise::draw(pool, seed, |d| &d.point);
     }
     let ranker = mecha_core::replay_priority::Ranker::load(sessions_dir, chrono::Utc::now());
-    if !quiet {
-        for caveat in ranker.caveats() {
-            eprintln!("replay priority: {caveat}");
-        }
+    // To stderr, so `--json` keeps them too: stdout stays the one object,
+    // and the order is never presented as fully known when it is not.
+    for caveat in ranker.caveats() {
+        eprintln!("replay priority: {caveat}");
     }
     let priorities = ranker.of_sessions(
         sessions_dir,
@@ -553,7 +553,7 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
         surfaces.as_ref(),
         &mut tally,
     )?;
-    let drawn = compare_draw(pool, seed, &sessions_dir, opts.json);
+    let drawn = compare_draw(pool, seed, &sessions_dir);
     if !opts.json {
         eprintln!(
             "comparing up to {} of {} drawable point(s) at seed {seed} with {model} ({provider_name})",
@@ -1851,7 +1851,7 @@ mod tests {
         .unwrap();
         let after = orders(candidate_draw(pool(), seed));
         assert_eq!(after, before, "the candidate's points never move");
-        let compared = orders(compare_draw(pool(), seed, &sessions_dir, true));
+        let compared = orders(compare_draw(pool(), seed, &sessions_dir));
         assert_eq!(compared[0].0, last, "sessions compare leads with it");
         assert_ne!(compared, after);
     }
