@@ -1090,7 +1090,7 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
-        assert!(format!("{err:#}").contains("cannot read"), "{err:#}");
+        assert!(format!("{err:#}").contains("does not know"), "{err:#}");
         assert_eq!(server.await.unwrap()[0], "POST /models/unload HTTP/1.1");
     }
 
