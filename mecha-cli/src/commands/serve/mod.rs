@@ -2061,6 +2061,44 @@ mod boundary_tests {
         );
     }
 
+    /// A chat opened after an outside switch is headed with the model that
+    /// will answer it: the page opens a chat (`POST /api/chat/{key}`) before
+    /// its first turn follows, and that path headed the session — and wrote
+    /// its first record — from `current()`, the model from before the switch
+    /// (review of #347).
+    #[tokio::test]
+    async fn a_chat_opened_after_an_outside_switch_is_headed_with_the_new_model() {
+        let _home = crate::testenv::HomeGuard::new("follow-open-header");
+        let chat = chat::test_chat_answering("noted", true);
+        chat::test_switch_unseen(&chat, "noted", "test-b");
+        let app = app(Arc::clone(&chat));
+        let opened = app
+            .clone()
+            .oneshot(post("/api/chat/opened-late", ""))
+            .await
+            .unwrap();
+        assert!(opened.status().is_success(), "{}", opened.status());
+
+        let dir = mecha_core::session::Session::default_dir().unwrap();
+        let path = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "jsonl"))
+            .expect("opening created a session");
+        let header = mecha_core::session::Session::load(&path).unwrap().0;
+        assert_eq!(
+            header.model, "test-b",
+            "headed with the model from before the switch"
+        );
+        let configs: Vec<String> = mecha_core::session::Session::run_configs(&path)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.model)
+            .collect();
+        assert_eq!(configs, vec!["test-b".to_string()]);
+    }
+
     /// Incognito's gates are re-derived from the binding each turn runs on,
     /// not kept from the one it opened on: a switch onto a model behind a
     /// cloud URL stops the next turn, as `open_incognito` would have refused it.
