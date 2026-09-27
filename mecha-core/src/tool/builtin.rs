@@ -121,8 +121,9 @@ impl Tool for FsRead {
                         .unwrap_or_else(|| "a binary file".to_string());
                     let advice = if crate::message::image_media_type(&path).is_some() {
                         " Nothing you can call will turn it into text. If it was attached to \
-                         this conversation you can already see it; if you have image_view, it \
-                         will show you the picture; otherwise say so rather than describing it."
+                         this conversation you can already see it; if image_view is among your \
+                         tools, it can show you the picture; otherwise say so rather than \
+                         describing it."
                     } else {
                         ""
                     };

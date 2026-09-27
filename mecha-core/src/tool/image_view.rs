@@ -81,21 +81,43 @@ impl Tool for ImageView {
                 "{raw} is not an image this can show — PNG, JPEG, GIF and WebP only."
             )));
         }
-        let size = match tokio::fs::metadata(&path).await {
-            Ok(m) => m.len(),
+        // A workspace can contain a FIFO, and its name is only a claim: open
+        // without waiting for a writer and refuse anything that is not a
+        // regular file before reading it — `fs_read`'s guard, for the same
+        // reason (an `open` on a writer-less FIFO never returns, and a tool
+        // is never interrupted mid-call).
+        let mut options = tokio::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NONBLOCK);
+        let file = match options.open(&path).await {
+            Ok(f) => f,
             Err(e) => return Ok(ToolOutput::err(format!("cannot read {raw}: {e}"))),
         };
-        if size > MAX_FILE_BYTES {
+        let meta = match file.metadata().await {
+            Ok(m) => m,
+            Err(e) => return Ok(ToolOutput::err(format!("cannot read {raw}: {e}"))),
+        };
+        if !meta.is_file() {
+            return Ok(ToolOutput::err(format!(
+                "{raw} is not a regular file, so there is no picture here to show."
+            )));
+        }
+        if meta.len() > MAX_FILE_BYTES {
             return Ok(ToolOutput::err(format!(
                 "{raw} is {} MB; images are capped at {} MB.",
-                size / (1024 * 1024),
+                meta.len() / (1024 * 1024),
                 MAX_FILE_BYTES / (1024 * 1024)
             )));
         }
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(b) => b,
-            Err(e) => return Ok(ToolOutput::err(format!("cannot read {raw}: {e}"))),
-        };
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        {
+            use tokio::io::AsyncReadExt;
+            // Bounded even if the file grows between the check and the read.
+            if let Err(e) = file.take(MAX_FILE_BYTES).read_to_end(&mut bytes).await {
+                return Ok(ToolOutput::err(format!("cannot read {raw}: {e}")));
+            }
+        }
         let name = shown.clone();
         let block =
             tokio::task::spawn_blocking(move || crate::image::rendered_block(&bytes, Some(name)))
@@ -171,17 +193,53 @@ mod tests {
     }
 
     /// The path jail holds: a look is a read, and a read outside the
-    /// workspace is refused before any byte is touched.
+    /// workspace is refused. The target is a real image one level up, so the
+    /// only thing that can refuse it is `ToolCtx::resolve` — a nonexistent
+    /// path would pass on ENOENT with the jail deleted (found on review).
     #[tokio::test]
     async fn a_path_outside_the_workspace_is_refused() {
         let dir = scratch("jail");
-        let out = ImageView
-            .call(json!({"path": "../../etc/passwd.png"}), &ctx(&dir))
-            .await;
-        assert!(
-            out.is_err() || out.as_ref().is_ok_and(|o| o.is_error && o.image.is_none()),
-            "{out:?}"
-        );
+        let mut png = Vec::new();
+        image::RgbImage::from_pixel(8, 8, image::Rgb([0, 0, 0]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let outside = dir
+            .parent()
+            .unwrap()
+            .join(format!("mecha-view-outside-{}.png", std::process::id()));
+        std::fs::write(&outside, &png).unwrap();
+        let name = outside.file_name().unwrap().to_string_lossy().into_owned();
+        for path in [format!("../{name}"), outside.display().to_string()] {
+            let out = ImageView.call(json!({"path": path}), &ctx(&dir)).await;
+            assert!(
+                out.is_err() || out.as_ref().is_ok_and(|o| o.is_error && o.image.is_none()),
+                "{path}: {out:?}"
+            );
+        }
+        std::fs::remove_file(&outside).ok();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A FIFO named like a picture is refused, not waited on: without the
+    /// non-blocking open this test never finishes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_fifo_named_like_a_picture_is_refused_rather_than_waited_on() {
+        let dir = scratch("fifo");
+        let fifo = dir.join("images/p.png");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if !made.is_ok_and(|s| s.success()) {
+            eprintln!("skipping: mkfifo unavailable");
+            return;
+        }
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            ImageView.call(json!({"path": "images/p.png"}), &ctx(&dir)),
+        )
+        .await
+        .expect("image_view waited on a FIFO")
+        .unwrap();
+        assert!(out.is_error && out.image.is_none(), "{}", out.content);
         std::fs::remove_dir_all(dir).ok();
     }
 }

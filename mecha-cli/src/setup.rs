@@ -1414,8 +1414,8 @@ async fn prepare_tools_carrying(
         }
     }
     // Image generation, on the same rule as search: only with a server
-    // configured — and `image_view` beside it, the way a run that drew a
-    // picture checks it on request (`tool::image_view`). A configuration naming a server off this machine is refused
+    // configured — and `image_view` beside it for a model that can see, the
+    // way a run that drew a picture checks it on request (`tool::image_view`). A configuration naming a server off this machine is refused
     // rather than registered, because the tool's no-egress declaration would
     // then be false — said loudly, since a tool missing from the list is
     // otherwise indistinguishable from one never configured.
@@ -1429,7 +1429,15 @@ async fn prepare_tools_carrying(
                 Err(e) => eprintln!("mecha: image_generate not registered — {e:#}"),
             }
         }
-        if opts.tools.is_empty() || opts.tools.iter().any(|t| t == "image_view") {
+        // Only for a model with eyes: to a blind one every look is a decode
+        // whose pixels the loop throws away — the TUI's drop path makes the
+        // same call (`dropped_images`). A later `/model` switch to a blind
+        // provider keeps the tool, and the loop tells the model in words.
+        let sees = cfg
+            .provider(opts.provider.as_deref())
+            .ok()
+            .is_some_and(|(_, p)| p.vision_enabled());
+        if sees && (opts.tools.is_empty() || opts.tools.iter().any(|t| t == "image_view")) {
             registry.insert(Arc::new(mecha_core::tool::image_view::ImageView));
         }
     }
