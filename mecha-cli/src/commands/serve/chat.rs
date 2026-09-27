@@ -1889,7 +1889,10 @@ pub async fn send(
             let paths = body.attachments;
             tokio::task::spawn_blocking(move || attached_images(&workspace, &paths))
                 .await
-                .unwrap_or_default()
+                .unwrap_or_else(|e| {
+                    tracing::warn!("attachments not read: {e}");
+                    Vec::new()
+                })
         }
         _ => Vec::new(),
     };
