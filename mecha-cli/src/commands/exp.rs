@@ -288,6 +288,8 @@ async fn source_call(
             tasks.source_timeout_secs
         ),
     };
+    // Uncovered once reaped: the pid may belong to something else now.
+    drop(_covered);
     anyhow::ensure!(
         output.status.success(),
         "the task source exited {} on `{}`: {}",
@@ -1385,6 +1387,8 @@ async fn principal_call(
                 log.display()
             ),
         };
+        // Uncovered once reaped: the pid may belong to something else now.
+        drop(_covered);
         anyhow::ensure!(
             output.status.success(),
             "the principal exited {}; its stderr is at {}",
