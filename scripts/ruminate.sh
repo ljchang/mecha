@@ -37,10 +37,13 @@ MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
 # default that is a paid API does not start billing nightly. The rule lives
 # in scripts/pin.sh, shared with frontdoor.sh and learn-live.sh. Set the
 # variable to pin a night deliberately, knowing it swaps the router.
-# A missing pin.sh must stop the run, not leave PIN unset: unset expands to
-# no `-p`, which is the unpinned run on the default this file exists to
-# decide (found on review).
-source "$(dirname "$0")/pin.sh" || { echo "ruminate: cannot read $(dirname "$0")/pin.sh; refusing to run unpinned" >&2; exit 1; }
+# A pin.sh that is missing or does not define scheduled_pin must stop the
+# run, not leave PIN unset: unset expands to no `-p`, the unpinned run on the
+# default this file exists to decide (found on review).
+{ source "$(dirname "$0")/pin.sh" && declare -F scheduled_pin >/dev/null; } || {
+    echo "ruminate: no scheduled_pin from $(dirname "$0")/pin.sh; refusing to run unpinned" >&2
+    exit 1
+}
 # **The judge is the model under test, deliberately and provisionally.**
 # A different family is the better methodology — a model grading trajectories
 # it produced shares the blind spot that caused them, which is why
@@ -54,9 +57,12 @@ source "$(dirname "$0")/pin.sh" || { echo "ruminate: cannot read $(dirname "$0")
 # the router made concrete: gemma26 is a preset on :8080 now, one model is
 # resident at a time, so a judge on another model swaps the router on every
 # judge call (tens of seconds each way). Judge-graded rows in the ledger are
-# only as good as this line. Unset, the judge is chosen as the stages are
-# (scripts/pin.sh): the loaded model on a router, `local` otherwise.
-scheduled_pin "${MECHA_RUMINATE_JUDGE:-}"
+# only as good as this line. Unset, the judge is the stages' model: the one
+# MECHA_RUMINATE_PROVIDER pins, else scripts/pin.sh's choice (the loaded model
+# on a router, `local` otherwise). Resolved apart from a pinned stage, it
+# would judge on the default entry and swap the router on every judge call
+# (found on review).
+scheduled_pin "${MECHA_RUMINATE_JUDGE:-${MECHA_RUMINATE_PROVIDER:-}}"
 JUDGE_PIN=()
 [ -n "${PIN[*]-}" ] && JUDGE_PIN=(--judge-provider "${PIN[1]}")
 scheduled_pin "${MECHA_RUMINATE_PROVIDER:-}"
@@ -115,8 +121,9 @@ echo "· distill (episodes → the knowledge graph; catches whatever a hook miss
 "$MECHA" distill ${PIN[@]+"${PIN[@]}"}
 
 echo "· validate (the measurement: held-out + fresh, before learn consumes them;"
-echo "  --cover 1 buys one probe per (rule, region) pair the ledger has never graded,"
-echo "  so a widened rule is measured in each sub-region it widened over)"
+echo "  --cover 1 buys one probe per (rule, region) pair never graded on this model,"
+echo "  so a widened rule is measured in each sub-region it widened over — and the"
+echo "  first night on a newly loaded model re-buys them, since retirement counts one model)"
 "$MECHA" validate ${PIN[@]+"${PIN[@]}"} ${JUDGE_PIN[@]+"${JUDGE_PIN[@]}"} --unprocessed-only --cover 1
 
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
