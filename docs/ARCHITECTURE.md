@@ -285,34 +285,38 @@ of the tool; `run_tools` folds it into the user turn that carries the
 results — the slot steering uses — after every `tool_result` (Anthropic wants
 those first; the OpenAI dialect lifts them into `role: "tool"` messages ahead
 of the parts array anyway), behind a caption naming the call and the file.
-`image_generate` is the one producer. Before it, a model that asked for a
-picture could not tell whether it got one — `fs_read` returns PNG bytes as
-noise, and the result said "You cannot see it" — so it composed each edit
-from the user's description of the last and took the tool's word that it
-had worked.
 
-Three rules on that fold, each a bug if undone:
+**`image_view` is the one producer, and a look is on request.**
+`image_generate` returns a path and a seed and says to call `image_view` to
+check; the owner's ruling (2026-09-27) is that the pixels are not returned by
+default, because a picture costs context by its *pixels* — about 1000 tokens
+for a square generation on the Qwen-VL presets — for the rest of the
+conversation, and most pictures are not ones the model was asked to check.
+Before it, a model could not look at all: `fs_read` returns PNG bytes as
+noise, and the result said "You cannot see it", so each edit was composed
+from the user's description of the last. `image_view` reads any workspace
+image through the path jail — a result under `images/`, an attachment under
+`inbox/` — and is registered beside `image_generate` when `[image]` is
+configured.
+
+Three rules on the fold, each a bug if undone:
 
 - **Only for a model that can see.** To a blind one the image would render
   as a placeholder line on every turn for the life of the conversation; it is
   told in the result instead, and nothing is armed on its account.
-- **It arms `private_data` from the turn it arrives**, which is what
-  `arm_for_content` reads off any image at the next run's start anyway — and
-  the right answer for an edit, whose pixels are the reference files it read
-  out of the workspace: an edit that shows its result is `fs_read` for
-  pictures. A text-to-image result carries nothing its prompt did not, so the
-  arming is conservative there; distinguishing it would need a new field on
-  a wire-format block, and a chat that draws pictures from mail it already
-  read was armed already.
+- **A look arms `private_data`**, from the turn the pixels arrive — what
+  `arm_for_content` reads off any image at the next run's start anyway, and
+  what `image_view` declares: it is `fs_read` for pictures. Drawing arms
+  nothing, because `image_generate` returns no pixels.
 - **The caption is a registered harness voice** (`TOOL_IMAGE_STEM`), and the
   web chat does not draw an image in a results turn as an owner bubble. It
   rides in a user message, so unregistered it would be mined as a steer and
   shown as something the owner said and attached.
 
-The door is `image::rendered_block`, not `block_from_path`: a generated
-picture is **always** re-encoded to JPEG, because it is a photograph's kind of
-content and its PNG is not small — the first twenty here had a median of
-1.8 MB, which every later turn would resend. The PNG on disk is untouched.
+The door is `image::rendered_block`, not `block_from_path`: a look is
+**always** re-encoded to JPEG, because a generated picture is a photograph's
+kind of content and its PNG is not small — the first twenty here had a median
+of 1.8 MB, which every later turn would resend. The file on disk is untouched.
 An MCP server's `image` content is not taken: those would be a third party's
 pixels.
 
@@ -527,9 +531,8 @@ conversation, so the capabilities do not change. Two rules:
   `Edit images/…png: ` in the input, cursor after it. The path is what lets
   the model name the right reference; the change is the owner's to describe.
 
-The model sees what it made, when it can see at all — the result carries the
-picture and the loop folds it beside the results (§Images) — and the result
-hands the seed back: revising is an edited prompt with the same seed. The web chat shows the picture under the
+The model sees what it made on request — `image_view` on the result's path
+(§Images) — and the result hands the seed back: revising is an edited prompt with the same seed. The web chat shows the picture under the
 call, reading the path off the result's first line (`image: images/…png`),
 matched strictly so no other text in a preview is taken for a path to fetch
 (`web/test/generated-image.mjs`). The TUI shows the path.
