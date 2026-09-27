@@ -657,6 +657,14 @@ pub struct ToolCtx {
     /// [`crate::appraisal_store::Clean`] can be held here, so a tainted
     /// appraisal cannot be served whatever the caller loaded.
     pub goal_appraisals: Option<crate::appraisal_store::PastAppraisals>,
+    /// Planning success examples for `goal_context` to serve on demand (L2,
+    /// built as 2e-4b-1, R40), ahead of `goal_examples`. `None` is the lever
+    /// off (`Lever::SuccessExamples`), and the answer is then the bytes it
+    /// was before the lever existed. Holds the whole pool and is re-keyed
+    /// on the registry the run starts with (`ServedSuccesses::for_registry`),
+    /// as past appraisals are, since a front-end may withhold or insert a
+    /// tool after the block is rendered.
+    pub success_examples: Option<crate::planning::ServedSuccesses>,
     pub step_checks: Option<std::sync::Arc<std::sync::Mutex<Vec<crate::step::CheckRequest>>>>,
     /// Whether a person is in this run's conversation, stamped by the
     /// front-end (`setup::posture_for`). The `shell` tool registers every
@@ -865,6 +873,7 @@ impl Default for ToolCtx {
             goal_lessons: Vec::new(),
             goal_examples: Vec::new(),
             goal_appraisals: None,
+            success_examples: None,
             step_checks: None,
             run_posture: None,
             shell_registry: None,
