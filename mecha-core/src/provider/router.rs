@@ -285,6 +285,11 @@ pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
                      follows would be a guess — runs use the default provider, which may swap \
                      one of them out"
                 ));
+                // Not recorded as seen: "nothing resident" would read the same,
+                // and a process that outlives a switch moves to the default on
+                // that. A swap in flight (one stopping, one loading) is exactly
+                // this state, so it is unseen until it settles (`observed`).
+                continue;
             }
             // R4 wherever a model became resident — `load-on-startup`, a
             // `--model` run's autoload, a default run after a restart — not
@@ -993,6 +998,11 @@ mod tests {
         assert!(
             w.iter().any(|w| w.contains("more than one model resident")),
             "{w:?}"
+        );
+        assert_eq!(
+            observed(&url),
+            None,
+            "two resident is not \"nothing resident\": a long-lived surface must not move on it"
         );
         observe(&Config::default(), false).await;
     }

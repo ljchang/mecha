@@ -34,7 +34,9 @@ use tokio::sync::{broadcast, Mutex};
 #[cfg(test)]
 use mecha_core::agent::Agent;
 use mecha_core::agent::{AgentEvent, Conversation};
-use mecha_core::config::{Config, PermissionMode};
+#[cfg(test)]
+use mecha_core::config::Config;
+use mecha_core::config::PermissionMode;
 use mecha_core::message::{Block, Message, Role, Usage};
 use mecha_core::outbox::{OutboxRoute, OutboxStore};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
@@ -81,9 +83,6 @@ pub struct ChatState {
     /// voice facade, so a spoken turn and a typed one run on the same model.
     follower: Arc<crate::follow::Follower>,
     routes: QuestionRoutes,
-    /// The startup build's resolved config — for what does not change with
-    /// the model: the sandbox, hooks, the image server.
-    config: Config,
     outbox_root: PathBuf,
     sessions: Mutex<HashMap<String, WebSession>>,
     stopping: tokio_util::sync::CancellationToken,
@@ -300,7 +299,6 @@ impl ChatState {
         Ok(Self {
             follower,
             routes,
-            config,
             outbox_root,
             sessions: Mutex::new(HashMap::new()),
             stopping: Default::default(),
@@ -370,31 +368,10 @@ impl ChatState {
     pub(super) async fn open_incognito(self: &Arc<Self>) -> Result<String> {
         anyhow::ensure!(!self.stopping.is_cancelled(), "server is shutting down");
         let bound = self.follower.follow().await?;
-        super::incognito::provider_is_local(&bound.config, &bound.provider_name)
-            .map_err(|why| anyhow::anyhow!("an incognito chat needs a local model: {why}"))?;
-        super::incognito::hooks_allow(&self.config).map_err(|why| anyhow::anyhow!("{why}"))?;
+        let withheld = incognito_gates(&bound).map_err(|why| anyhow::anyhow!("{why}"))?;
         let rooms = super::incognito::rooms_root()?;
         let key = super::incognito::new_key();
         let room = Arc::new(super::incognito::Room::open(&rooms, &key)?);
-        let routed: Vec<String> = bound
-            .agent
-            .context()
-            .outbox
-            .as_ref()
-            .map(|o| o.routed().map(String::from).collect())
-            .unwrap_or_default();
-        let withheld = super::incognito::withheld(
-            bound
-                .agent
-                .registry()
-                .iter()
-                .map(|t| (t.name(), t.read_only())),
-            &routed,
-            super::incognito::shell_is_sealed(&mecha_core::sandbox::Sandbox::new(
-                self.config.sandbox.clone(),
-            )),
-            super::incognito::images_forgettable(self.config.image.as_ref()),
-        );
         let (events, _) = broadcast::channel(512);
         let questions = super::present::Questions::default();
         let mut sessions = self.sessions.lock().await;
@@ -1420,6 +1397,41 @@ fn ensure_session_as<'a>(
     Ok(sessions.get_mut(key).expect("just inserted"))
 }
 
+/// Incognito's gates against one binding: a local model with no remote
+/// fallback, no `pre_tool` hook that would be skipped, and the tools the chat
+/// may not reach — the complement of an allowlist, computed against *this*
+/// binding's registry, sandbox and image server.
+///
+/// Checked when the chat opens and again on every turn, because following the
+/// router rebuilds the agent from the config on disk: a server that was down
+/// when the room opened can register tools after a switch (the graph among
+/// them, whose query log would record the chat's words), and a config edit
+/// can take the sandbox away. A deny-list computed once would let both through.
+fn incognito_gates(bound: &crate::follow::Bound) -> std::result::Result<Vec<String>, String> {
+    super::incognito::provider_is_local(&bound.config, &bound.provider_name)
+        .map_err(|why| format!("an incognito chat needs a local model: {why}"))?;
+    super::incognito::hooks_allow(&bound.config)?;
+    let routed: Vec<String> = bound
+        .agent
+        .context()
+        .outbox
+        .as_ref()
+        .map(|o| o.routed().map(String::from).collect())
+        .unwrap_or_default();
+    Ok(super::incognito::withheld(
+        bound
+            .agent
+            .registry()
+            .iter()
+            .map(|t| (t.name(), t.read_only())),
+        &routed,
+        super::incognito::shell_is_sealed(&mecha_core::sandbox::Sandbox::new(
+            bound.config.sandbox.clone(),
+        )),
+        super::incognito::images_forgettable(bound.config.image.as_ref()),
+    ))
+}
+
 /// Close the incognito chat under `key`, with the sessions lock held.
 fn close_incognito_locked(
     chat: &ChatState,
@@ -1916,16 +1928,17 @@ fn begin_turn(
     if opts.spoken && ws.session.room().is_some() {
         return Err(TurnError::Failed("an incognito chat is text-only".into()));
     }
-    // Incognito's promise, re-checked against the model this turn runs on:
-    // `open_incognito` checked the binding it opened on, and following the
-    // router can move the pick onto an entry with a remote fallback mid-chat.
-    if ws.session.room().is_some() {
-        if let Err(why) = super::incognito::provider_is_local(&bound.config, &bound.provider_name) {
-            return Err(TurnError::Failed(format!(
-                "an incognito chat needs a local model: {why}"
-            )));
+    // Incognito's gates, re-derived against the binding this turn runs on
+    // (`incognito_gates`): `open_incognito` checked the one it opened on, and
+    // a switch rebuilds from the config on disk.
+    let incognito_withheld: Option<Arc<[String]>> = if ws.session.room().is_some() {
+        match incognito_gates(bound) {
+            Ok(w) => Some(Arc::from(w)),
+            Err(why) => return Err(TurnError::Failed(why)),
         }
-    }
+    } else {
+        None
+    };
     // A conversation that crosses a switch says so in its own record, ahead of
     // the turn it governs — the per-attach record a resume already writes.
     if ws.recorded_generation != bound.generation {
@@ -2182,7 +2195,7 @@ fn begin_turn(
     cx.queued_input = Some(Arc::clone(&queue));
     // Whatever this session may not dispatch. Empty for an ordinary chat, so
     // the assignment costs nothing and there is one place it is applied.
-    cx.withheld = Arc::clone(&ws.withheld);
+    cx.withheld = incognito_withheld.unwrap_or_else(|| Arc::clone(&ws.withheld));
     // No hooks in an incognito run: `pre_tool` and `post_tool` receive tool
     // input and output, and a user command is somewhere this chat's words
     // would go that it cannot follow (`INCOGNITO-DESIGN.md` §3.3).
@@ -4158,13 +4171,9 @@ pub(super) fn test_chat() -> Arc<ChatState> {
     .unwrap();
     Arc::new(ChatState {
         follower: Arc::new(crate::follow::Follower::fixed(
-            agent,
-            "test",
-            "test",
-            config.clone(),
+            agent, "test", "test", config,
         )),
         routes: Arc::default(),
-        config,
         outbox_root: OutboxStore::default_root().unwrap(),
         sessions: Mutex::new(HashMap::new()),
         stopping: Default::default(),
@@ -4369,13 +4378,9 @@ fn test_chat_from(
     .unwrap();
     Arc::new(ChatState {
         follower: Arc::new(crate::follow::Follower::fixed(
-            agent,
-            "local",
-            "test",
-            config.clone(),
+            agent, "local", "test", config,
         )),
         routes: Arc::default(),
-        config,
         outbox_root: OutboxStore::default_root().unwrap(),
         sessions: Mutex::new(HashMap::new()),
         stopping: Default::default(),

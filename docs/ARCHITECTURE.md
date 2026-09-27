@@ -201,16 +201,25 @@ The parts that bite hardest:
   was undone by the next web, voice or Slack turn. `Follower::follow` runs
   before each turn, outside every lock the turn holds, and rebuilds through
   `setup::prepare` only when the loaded model moved; the invariants:
-  - **A run keeps the binding it started with**; a switch is the next turn's.
-  - **An unseen router moves nothing** (`router::observed`): moving to the
-    default during a router restart would load production over the pick.
+  - **A run keeps the binding it started with — which does not keep the
+    model.** The router protects a request, not a run: a switch made between
+    a run's requests is undone by its next one (§14, open for the owner).
+  - **The config is read from disk per turn**, because the rebuild reads it;
+    resolving against the startup file missed providers added since. A file
+    that does not load keeps the binding and says so once.
+  - **Only evidence of where to go moves a surface.** A router unseen
+    (`router::observed`), mid-swap (two resident), or resident on a model no
+    entry names or several do: the binding stays. Moving to the default on
+    any of those would load production over the pick.
   - **A failed rebuild fails the turn**, never falls back to the old binding,
     whose request would silently undo the switch.
   - **A conversation that crosses a switch records a fresh `RunConfig`**
     ahead of the turn (`Bound::generation`), so each run names the model
     that answered it.
-  - **Incognito's local-only promise is re-checked per turn**: the pick can
-    move onto an entry with a remote fallback mid-chat.
+  - **Incognito's gates are re-derived per turn from the binding**
+    (`incognito_gates`): local-only, hooks, and the withheld list computed
+    against the rebuilt registry — a deny-list computed at open let a server
+    that came up after a switch register tools the chat could call.
 - **Throughput is wall clock.** The server times a request only while it is
   running, so summing its per-request rates hides queue wait and reads ~4× at
   `-np 1`, on the one configuration that cannot run anything concurrently.

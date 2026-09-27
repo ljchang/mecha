@@ -5,7 +5,7 @@
 //! llama-server router the request's `model` field *selects* (§14, D12), so an
 //! agent resolved at startup names the model that was loaded then — and once
 //! the owner switches, that surface's next turn loads the old model back. The
-//! owner's ruling (2026-09-26): **one model serves every surface, and a switch
+//! owner's ruling (2026-09-27): **one model serves every surface, and a switch
 //! from any of them is a switch for all of them.** So these surfaces follow.
 //!
 //! [`Follower::follow`] is called before each turn. It re-observes the router
@@ -17,18 +17,33 @@
 //! already costs a model load of ten to forty seconds; one rebuild beside it,
 //! MCP servers included, is noise, and it happens only when the model changed.
 //!
-//! **A run keeps the binding it started with.** The binding is an `Arc`,
-//! taken once at the top of a turn; a switch mid-run changes what the *next*
-//! turn gets, never the one in flight (the router queues rather than evicting
-//! a busy model, so the run finishes on the model it started on).
+//! **A run keeps the binding it started with** — the binding is an `Arc`,
+//! taken once at the top of a turn — **but that does not keep the model.** The
+//! router evicts only an idle model, which protects one *request*, not a run:
+//! between a run's requests the model is idle, a switch made then completes,
+//! and the run's next request names its own model and loads it back — after
+//! which every following surface follows that. The same holds for a run in
+//! any per-run process (a trigger, `mecha run`), and for the title a web chat
+//! names after its run. Whether a switch should wait for runs, or runs should
+//! re-follow between requests, is an open question for the owner
+//! (REMOTE-SURFACE-DESIGN §14); nothing here claims either.
+//!
+//! **The config is read from disk on every turn**, because a rebuild does
+//! (`setup::prepare` loads it), and the two must agree: resolving against the
+//! startup file while building from the current one would miss a provider
+//! added since, and gate on a sandbox the rebuilt agent no longer has. A file
+//! that does not load keeps the current binding and says so once — it never
+//! wedges every surface on the next switch.
 //!
 //! **Not following is sometimes right, and never silent:**
 //! - A surface started with `--provider` or `--model` is pinned and does not
 //!   move — but it still observes, because the background permit pool is
 //!   sized to whatever is loaded (`router::background_seats`).
-//! - A router that was not seen (restarting, down, unreadable) is no evidence
-//!   the pick changed, so the binding stays. Moving to the default on that
-//!   would have the next request load production over the owner's choice.
+//! - A router that was not seen (restarting, down, unreadable), or seen with a
+//!   model resident that no entry names or several do, or with more than one
+//!   model resident (a swap mid-flight), is no evidence of *which* entry to
+//!   move to, so the binding stays. Moving to the default on that would have
+//!   the next request load production over the owner's choice.
 //! - A rebuild that fails fails the turn, loudly. Falling back to the old
 //!   binding would have its request load the old model — silently undoing the
 //!   owner's switch, which is the degrading-guard shape.
@@ -108,10 +123,6 @@ pub type Finish = Box<dyn Fn(&mut Prepared) + Send + Sync>;
 
 pub struct Follower {
     opts: GlobalOpts,
-    /// The config the router is observed against and the default resolved
-    /// from. Loaded once: a config edit reaches a long-lived surface on its
-    /// restart, as before; a *switch* reaches it on its next turn.
-    cfg: Config,
     /// Named by `--provider` or `--model`: observed, never moved.
     pinned: bool,
     /// Asks the router at all. Off only for a test's fixed binding.
@@ -139,7 +150,6 @@ impl Follower {
         let first = build(&opts, &finish, &generations, resolve(&cfg, pinned), None).await?;
         Ok(Follower {
             opts,
-            cfg,
             pinned,
             observes: true,
             finish,
@@ -148,6 +158,12 @@ impl Follower {
             generations,
             warned,
         })
+    }
+
+    fn warn_once(&self, w: String) {
+        if self.warned.lock().expect("follower lock").insert(w.clone()) {
+            tracing::warn!("{w}");
+        }
     }
 
     /// The binding as it stands, without asking the router. For what is not a
@@ -163,8 +179,19 @@ impl Follower {
         if !self.observes {
             return Ok(self.current());
         }
-        observe(&self.cfg, self.pinned, &self.warned).await;
-        let Some(want) = resolve(&self.cfg, self.pinned) else {
+        let cfg = match load_config(&self.opts) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                self.warn_once(format!(
+                    "the config did not load, so this surface stays on [providers.{}] until \
+                     it does: {e:#}",
+                    self.current().provider_name
+                ));
+                return Ok(self.current());
+            }
+        };
+        observe(&cfg, self.pinned, &self.warned).await;
+        let Some(want) = resolve(&cfg, self.pinned) else {
             return Ok(self.current());
         };
         if self.current().provider_name == want {
@@ -223,7 +250,6 @@ impl Follower {
         };
         Follower {
             opts: GlobalOpts::default(),
-            cfg: config,
             pinned: true,
             observes: false,
             finish: Box::new(|_| {}),
@@ -260,6 +286,11 @@ fn resolve(cfg: &Config, pinned: bool) -> Option<String> {
 /// The pure half of [`resolve`], against what the router showed (`seen`, or
 /// `None` when it was not seen). Separate so each way of *not* moving can be
 /// tested without a router.
+///
+/// Moves only on evidence of where to: nothing resident resolves to the
+/// default (every process does that after a router restart), a resident
+/// model resolves to the one entry that names it, and anything else — a
+/// resident model no entry names or several do — stays.
 fn resolve_seen(
     cfg: &Config,
     pinned: bool,
@@ -274,10 +305,13 @@ fn resolve_seen(
         return Some(name.clone());
     }
     let seen = seen?;
-    Some(
-        mecha_core::provider::router::followed(cfg, name, std::slice::from_ref(&seen))
-            .unwrap_or_else(|| name.clone()),
-    )
+    let Some(resident) = seen.resident.as_deref() else {
+        return Some(name.clone());
+    };
+    if default.model.as_deref() == Some(resident) {
+        return Some(name.clone());
+    }
+    mecha_core::provider::router::followed(cfg, name, std::slice::from_ref(&seen))
 }
 
 /// One `setup::prepare`, finished by the surface. `provider` names the
@@ -388,6 +422,40 @@ mod tests {
     fn a_router_with_nothing_loaded_resolves_to_the_default() {
         assert_eq!(
             resolve_seen(&cfg(true), false, seen(None)).as_deref(),
+            Some("local")
+        );
+    }
+
+    /// A model no entry names — a provider added to the file since, a preset
+    /// loaded by hand — is no evidence of where to go. Resolving it to the
+    /// default was the review's finding: the next turn named production and
+    /// loaded it over the owner's choice.
+    #[test]
+    fn a_model_no_entry_names_moves_nothing() {
+        assert_eq!(
+            resolve_seen(&cfg(true), false, seen(Some("something-added-since"))),
+            None
+        );
+    }
+
+    /// Two entries naming the resident model is a guess either way; stay.
+    #[test]
+    fn a_model_two_entries_name_moves_nothing() {
+        let mut c = cfg(true);
+        let twin = c.providers["local-uncensored"].clone();
+        c.providers.insert("local-uncensored-2".into(), twin);
+        assert_eq!(
+            resolve_seen(&c, false, seen(Some("qwen3.6-35b-a3b-uncensored"))),
+            None
+        );
+    }
+
+    /// The default's own model resident resolves to the default — the switch
+    /// back to production.
+    #[test]
+    fn the_defaults_own_model_resolves_to_the_default() {
+        assert_eq!(
+            resolve_seen(&cfg(true), false, seen(Some("qwen3.6-35b-a3b"))).as_deref(),
             Some("local")
         );
     }
