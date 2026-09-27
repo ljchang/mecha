@@ -12,9 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Image generation.** With `[image]` configured, the `image_generate`
   tool draws a picture with a local image model (ComfyUI with Qwen-Image 2.1
   today) and saves the PNG under `images/` in the conversation's workspace;
-  web chat shows it inline. The workflow the server runs is fixed in mecha's
-  code, and the model only fills in a prompt, a size and a seed. See
-  *Image generation* in the published docs.
+  web chat shows it inline, and the same tool edits a picture you attach or
+  one it drew. The workflow the server runs is fixed in mecha's code; the
+  model fills in values, never the graph. See *Image generation* in the
+  published docs.
 - **Incognito web chat.** A second new-chat button opens a chat that writes
   no transcript, title or count, keeps its files on tmpfs, and is gone when
   you tap End, after 30 idle minutes, or when `mecha serve` stops. It reaches
