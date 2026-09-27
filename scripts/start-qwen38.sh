@@ -211,6 +211,7 @@ while IFS= read -r d; do MMPROJ=$(mmproj_in "$d") && break; done < <(ls -dt "$HU
 # and must move together.
 exec ${LLAMA_SERVER:-llama-server} -m "$M" \
   --mmproj "$MMPROJ" \
+  --image-min-tokens 1024 \
   --host 127.0.0.1 --port 8083 -ngl 999 -c 262144 -np 1 --alias qwen3.8-27b --jinja \
   --reasoning-budget 4096 \
   --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --reasoning-preserve \

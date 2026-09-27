@@ -166,6 +166,19 @@ class StartRouter(unittest.TestCase):
         self.assertIn("vision tower is not on disk", err)
         self.assertIn('/snapshots/r1")', err, "the fetch line must name the snapshot that holds the weights")
 
+    def test_every_qwen_preset_floors_its_image_tokens_and_gemma_does_not(self):
+        # Qwen's projector lets an image shrink to 8 tokens and the build warns
+        # grounding needs 1024 (llama.cpp #16842); Gemma sizes its own images,
+        # so the line must not reach it the way a shared [*] entry would.
+        g = "unsloth--gemma-4-26B-A4B-it-GGUF"
+        self.cache.production()
+        for name in ("gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", "mmproj-BF16.gguf", "mtp-gemma-4-26B-A4B-it.gguf"):
+            self.cache.put(g, "w", name)
+        _, _, err, ini = self.run_script()
+        self.assertEqual(self.section(ini, "qwen3.6-35b-a3b").get("image-min-tokens"), "1024", err)
+        self.assertNotIn("image-min-tokens", self.section(ini, "gemma-4-26b-a4b"), err)
+        self.assertNotIn("image-min-tokens", self.section(ini, "*"), err)
+
     def test_gemmas_draft_comes_from_its_weights_snapshot(self):
         g = "unsloth--gemma-4-26B-A4B-it-GGUF"
         self.cache.production()
@@ -213,6 +226,7 @@ class StartRouter(unittest.TestCase):
             self.assertEqual(preset.get("spec-type"), "draft-mtp", name)
             self.assertEqual(preset.get("temp"), "1.0", name)
             self.assertEqual(preset.get("reasoning-preserve"), "true", name)
+            self.assertEqual(preset.get("image-min-tokens"), "1024", name)
 
 class SingleModelScripts(unittest.TestCase):
     """The single-model start scripts are the rollbacks, and a projector they

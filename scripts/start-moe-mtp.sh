@@ -245,6 +245,7 @@ CRAM="${MECHA_LLAMA_CRAM:-32768}"
 
 exec ${LLAMA_SERVER:-llama-server} -m "$M" \
   --mmproj "$MMPROJ" \
+  --image-min-tokens 1024 \
   --host 127.0.0.1 --port 8080 -ngl 999 -c "$CTX" -np "$NP" --alias qwen3.6-35b-a3b --jinja \
   -cram "$CRAM" \
   --reasoning-budget 4096 \
