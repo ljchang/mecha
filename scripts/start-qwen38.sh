@@ -1,23 +1,42 @@
 #!/bin/bash
-# Qwen3.8-27B — the 3.8 generation's only locally runnable model.
+# Qwen3.8-27B, as a single-model server — the rollback for the router's
+# `qwen3.8-27b` preset (scripts/start-router.sh), which now carries its flags
+# and serves unsloth's UD-Q4_K_XL. This script serves the same file, falling
+# back to the Q4_K_M it was originally written for — unsloth withdrew that one
+# upstream on 2026-08-19, so the fallback only fires where it is already on disk.
 #
 # Read this before assuming it is a drop-in for start-moe-mtp.sh: **it is
-# dense, and that one word is the whole story.** Qwen3.8 shipped exactly two
-# models, and neither is a mid-size MoE. The only 3.8 MoE is
+# dense, and that one word is the whole story.** At launch Qwen3.8 shipped two
+# models and neither was a mid-size MoE: the only 3.8 MoE was
 # Qwen3.8-2.4T-A95B, whose 4-bit quant (UD-IQ4_XS) is 1,310.9 GB against this
-# machine's 121 GB of unified memory; even its most brutal 1-bit is 397 GB. It
-# is not runnable here and never will be. So Qwen3.6-35B-A3B stays the fast
-# model — 3B active params per token — and this is the quality/latency
-# experiment sitting beside it, not its replacement. Verified 2026-08-14
-# against the HF API, not from a blog post.
+# machine's 121 GB of unified memory. Verified 2026-08-14 against the HF API.
+# **That changed on 2026-08-24:** Qwen3.8-Flash-Next is a 125B-total /
+# 6B-active MoE (architecture `qwen4_exp`, license `qwen-community-1.0`, not
+# Apache) whose smallest unsloth GGUF, UD-IQ3_XXS, is 82 GB — runnable here in
+# principle, on a llama.cpp newer than c841aee. Not evaluated yet. Until it is,
+# Qwen3.6-35B-A3B stays the fast model and this is the quality/latency
+# experiment beside it.
 #
 # What is actually here: 27B dense, Apache 2.0 (the 2.4T is *not* — it carries
 # a custom license with revenue triggers), 262,144 native context, released
 # ~2026-08-12. Days old at the time of writing, so treat quirks as unmapped
 # rather than absent.
-M=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--Qwen3.8-27B-GGUF/snapshots/*/Qwen3.8-27B-Q4_K_M.gguf)
+# The file the router's preset serves, newest existing copy across snapshots;
+# the withdrawn Q4_K_M only where the UD-Q4_K_XL is absent. A rollback that
+# served a different file under the same alias would not reproduce what it
+# rolls back (found on review).
+HUB="${HF_HUB:-$HOME/.cache/huggingface/hub}"
+newest() { local f; while IFS= read -r f; do [ -f "$f" ] && { echo "$f"; return 0; }; done < <(ls -t "$HUB"/models--unsloth--Qwen3.8-27B-GGUF/snapshots/*/"$1" 2>/dev/null); return 1; }
+M=$(newest Qwen3.8-27B-UD-Q4_K_XL.gguf || newest Qwen3.8-27B-Q4_K_M.gguf) || {
+  echo "$(basename "$0"): no Qwen3.8-27B weights on disk — hf download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-UD-Q4_K_XL.gguf" >&2
+  exit 1
+}
 source "$(dirname "$0")/mmproj.sh"
-MMPROJ=$(mmproj_or_die "$(dirname "$M")" unsloth/Qwen3.8-27B-GGUF)
+# The projector may sit in an older snapshot than the weights (unsloth
+# re-uploaded the weights, not the unchanged projector): walk them newest first.
+MMPROJ=""
+while IFS= read -r d; do MMPROJ=$(mmproj_in "$d") && break; done < <(ls -dt "$HUB"/models--unsloth--Qwen3.8-27B-GGUF/snapshots/*/ 2>/dev/null)
+[ -n "$MMPROJ" ] || MMPROJ=$(mmproj_or_die "$(dirname "$M")" unsloth/Qwen3.8-27B-GGUF) || exit 1
 
 # MTP is IN THE FILE, exactly like the 3.6 MoE — an earlier version of this
 # script was wrong about that, and the correction is worth its history.
@@ -194,7 +213,7 @@ exec ${LLAMA_SERVER:-llama-server} -m "$M" \
   --mmproj "$MMPROJ" \
   --host 127.0.0.1 --port 8083 -ngl 999 -c 262144 -np 1 --alias qwen3.8-27b --jinja \
   --reasoning-budget 4096 \
-  --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 \
+  --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --reasoning-preserve \
   --presence-penalty 0.0 --repeat-penalty 1.0 \
   --spec-type draft-mtp \
   --spec-draft-n-max 4

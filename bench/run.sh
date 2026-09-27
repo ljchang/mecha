@@ -26,6 +26,12 @@ FORWARD_PORT=18080
 # the run measures whatever is on that port under the wrong name:
 #
 #   MECHA_BENCH_MODEL_PORT=8083 MECHA_BENCH_MODEL=local/qwen3.8-27b bench/run.sh -t <task>
+#
+# **That arm's file changed on 2026-09-26** under an unchanged alias: before,
+# start-qwen38.sh served unsloth's Q4_K_M; from then on the UD-Q4_K_XL (the
+# Q4_K_M was withdrawn upstream). Two qwen3.8-27b scorecards either side of
+# that date are not the same condition — the served file is in the server's
+# `/props` (`model_path`) if a run needs to say which.
 MODEL_PORT="${MECHA_BENCH_MODEL_PORT:-8080}"
 MODEL="${MECHA_BENCH_MODEL:-local/qwen3.6-35b-a3b}"
 

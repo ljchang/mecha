@@ -409,7 +409,7 @@ machine from starting is one people turn off.
 model, and the request's `model` field choosing the child. `--models-max 1`,
 because memory decides it. The design and the rulings are
 `REMOTE-SURFACE-DESIGN.md` §14 (D12); mecha's side is `provider::router`.
-Measured on 2026-09-26 against `c841aee`:
+Measured on 2026-09-26 against `c841aee`, unless a bullet names another build:
 
 - **The section name is the model name.** The router overwrites `--alias`
   with it, so `[providers.*] model` must equal it — and in router mode that
@@ -437,6 +437,27 @@ Measured on 2026-09-26 against `c841aee`:
   `autoload=false`, or a health check would be the thing that swaps the model.
 - **An unknown model is a loud 400** (`model 'x' not found`), where a
   single-model server silently answers with whatever it has.
+- **The router looks a file up across every snapshot of its repo**, newest
+  first (`hub_file`). A repo gains a snapshot each time a file is fetched
+  from a newer revision, while files already on disk stay in the old one;
+  a "first snapshot, then the file" lookup lost the Qwen3.8 Q4_K_M and its
+  projector the moment the UD-Q4_K_XL was downloaded beside them.
+- **Qwen3.8-27B, four builds, measured 2026-09-26** on llama.cpp `95887577`
+  (single stream, 400 tokens, same prompt and flags): unsloth Q4_K_M 21.1
+  tok/s at 0.38 MTP draft acceptance, UD-Q4_K_XL 22.9 at 0.45, HauhauCS
+  uncensored Q4_K_P 26.8 at 0.57, huihui abliterated UD-Q4_K_XL 22.1 at
+  0.42; all four read an image and passed a reasoning check. The same
+  Q4_K_M was 18.2 tok/s at 0.36 on `c841aee` against 20.7 on `95887577`,
+  both through `start-qwen38.sh` as a single-model server, back to back —
+  that pair is the build's +14%; the 21.1 above is the same file on the
+  new build through a router, a separate run.
+  The router serves the UD-Q4_K_XL and both uncensored builds.
+- **`reasoning-preserve` is pinned in every Qwen preset**, because the new
+  build flipped its default (#28174: "template default" → enabled) and the
+  templates disagree about what unset means. Qwen3.6:
+  `preserve_thinking is defined and preserve_thinking is true` — drop unless
+  told. Qwen3.8 (all three builds): `is undefined or … is true` — keep unless
+  told. Read out of each GGUF's header. Owner's ruling: keep.
 - **Sampling is per model, in its preset.** Gemma runs on llama-server's
   defaults; the Qwens carry their model cards' values. Nothing sampling-shaped
   goes in `[*]`, or it silently retunes Gemma.
