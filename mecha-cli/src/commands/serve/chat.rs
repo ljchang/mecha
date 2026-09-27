@@ -1072,7 +1072,72 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
 pub struct SendBody {
     pub text: String,
     pub request_id: Option<String>,
+    /// Workspace-relative paths the page uploaded for this turn (`upload`),
+    /// already named in `text`. Each image among them also rides on the
+    /// turn as pixels, for a model that can see — `REMOTE-SURFACE-DESIGN.md`
+    /// D6's second half. Absent from an older page, which gets the paths
+    /// alone, as before.
+    #[serde(default)]
+    pub attachments: Vec<String>,
 }
+
+/// At most this many pictures ride on one turn; the rest are named by path
+/// only. Each costs context for the rest of the conversation (~1000–1500
+/// tokens on the Qwen-VL presets), and a burst of phone photos should not
+/// spend a window by accident.
+const MAX_ATTACHED_IMAGES: usize = 8;
+
+/// The pictures among `paths`, read out of the session jail and capped at
+/// the door (`image::block_from_bytes`) — the Slack door's rule: the path is
+/// named in the text *and* the pixels ride on the turn, so the model has
+/// both something to look at and something to pass to a tool. Read through
+/// `WorkspaceFiles::read`, the download route's containment walk, because
+/// the paths come from the page. What cannot be read or decoded is left to
+/// its path and logged, never a failed turn.
+fn attached_images(workspace: &std::path::Path, paths: &[String]) -> Vec<Block> {
+    let files = match mecha_core::workspace_files::WorkspaceFiles::open(workspace) {
+        Ok(files) => files,
+        Err(e) => {
+            tracing::warn!("attachments not read: {e}");
+            return Vec::new();
+        }
+    };
+    let mut blocks = Vec::new();
+    for path in paths {
+        if blocks.len() == MAX_ATTACHED_IMAGES {
+            tracing::info!(
+                "more than {MAX_ATTACHED_IMAGES} pictures on one turn; the rest by path"
+            );
+            break;
+        }
+        let Some(media_type) = mecha_core::message::image_media_type(std::path::Path::new(path))
+        else {
+            continue;
+        };
+        let read = files.read(path).and_then(|(file, _)| {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            file.take(MAX_ATTACHMENT_BYTES).read_to_end(&mut bytes)?;
+            Ok(bytes)
+        });
+        let bytes = match read {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!("attachment {path} not read: {e}");
+                continue;
+            }
+        };
+        match mecha_core::image::block_from_bytes(media_type, bytes, Some(path.clone()), path) {
+            Ok(block) => blocks.push(block),
+            Err(e) => tracing::warn!("attachment {path} not attached: {e:#}"),
+        }
+    }
+    blocks
+}
+
+/// A file larger than this is named by path only: the door caps what rides
+/// on the turn either way, and a phone photo is a few megabytes.
+const MAX_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024;
 
 type Chat = State<super::WebState>;
 
@@ -1186,6 +1251,7 @@ pub(super) async fn open_task_conversation(
                 request_id: None,
                 spoken: false,
                 approve_all: false,
+                images: Vec::new(),
             },
         );
     }
@@ -1774,10 +1840,11 @@ pub async fn send(
         }
         match sessions.get(&key) {
             Some(ws) if ws.live.is_some() => return steer(ws, text, request_id),
-            Some(ws) => Some(ws.events.clone()),
+            Some(ws) => Some((ws.events.clone(), ws.workspace.clone())),
             None => None,
         }
     };
+    let (notices, workspace) = notices.unzip();
 
     // The model this turn will run on, followed before the lock: a rebuild
     // after a switch can take as long as an MCP server's start, and every
@@ -1803,6 +1870,20 @@ pub async fn send(
         Ok(entered) => entered,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}\n")).into_response(),
     };
+    // Read before the sessions lock, which every conversation waits on, and
+    // only for a model that can see: to a blind one the pixels would render
+    // as a placeholder every turn, and the path is already in the text. An
+    // attachment needs an upload, which creates the session, so a chat not
+    // yet open has none to read.
+    let images = match workspace {
+        Some(workspace) if bound.agent.vision() && !body.attachments.is_empty() => {
+            let paths = body.attachments;
+            tokio::task::spawn_blocking(move || attached_images(&workspace, &paths))
+                .await
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    };
     let mut sessions = chat.sessions.lock().await;
     if chat.stopping.is_cancelled() {
         return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
@@ -1827,6 +1908,7 @@ pub async fn send(
             spoken: false,
             approve_all: false,
             request_id: Some(request_id),
+            images,
         },
     ) {
         Ok(_started) => Json(serde_json::json!({ "started": true })).into_response(),
@@ -1894,6 +1976,11 @@ struct TurnOpts {
     /// sends still stage through the outbox, and taint now accumulates
     /// across both doors instead of being reset by opening a call.
     approve_all: bool,
+    /// Pictures the owner attached (`attached_images`), put on the turn
+    /// after its text. Arming `private_data` needs nothing here: the loop
+    /// reads any image off the messages at the run's start
+    /// (`Taint::arm_for_content`) — captured, not composed.
+    images: Vec<Block>,
 }
 
 /// `--voice-yes` does not survive hearing ourselves.
@@ -1943,6 +2030,7 @@ mod narrowing_tests {
             request_id: None,
             spoken: true,
             approve_all: true,
+            images: Vec::new(),
         }
     }
 
@@ -1969,6 +2057,7 @@ mod narrowing_tests {
             request_id: None,
             spoken: false,
             approve_all: true,
+            images: Vec::new(),
         };
         assert!(narrow_for_echo(typed, Some(OFFER), "delete it").approve_all);
     }
@@ -1979,6 +2068,7 @@ mod narrowing_tests {
             request_id: None,
             spoken: true,
             approve_all: false,
+            images: Vec::new(),
         };
         assert!(!narrow_for_echo(off, Some(OFFER), "delete it").approve_all);
     }
@@ -2142,6 +2232,9 @@ fn begin_turn(
         // run-quality corpus, whichever way it entered the conversation.
         let pre_fold = conversation.messages.clone();
         mecha_core::agent::append_user_text(&mut conversation.messages, text.clone());
+        if let Some(last) = conversation.messages.last_mut() {
+            last.content.extend(opts.images);
+        }
         // An incognito chat records nothing — there is no transcript to fail.
         if let Some(session) = ws.session.kept() {
             if let Err(e) = session.append(&Record::Rewrite {
@@ -2154,7 +2247,8 @@ fn begin_turn(
         }
         conversation.messages.clone()
     } else {
-        let user = Message::user(&text);
+        let mut user = Message::user(&text);
+        user.content.extend(opts.images);
         conversation.push(user.clone());
         if let Some(session) = ws.session.kept() {
             if let Err(e) = session.append(&Record::Message(user)) {
@@ -2903,6 +2997,7 @@ impl crate::voice::SessionHost for VoiceHost {
                             request_id: None,
                             spoken: true,
                             approve_all,
+                            images: Vec::new(),
                         },
                     ) {
                         Ok(started) => {
@@ -4392,6 +4487,49 @@ impl mecha_core::provider::Provider for Answers {
     }
 }
 
+/// A chat whose model can see (or, `vision` false, cannot), answering "ok"
+/// and keeping every request it was sent — what the attachment door put in
+/// front of it.
+#[cfg(test)]
+pub(super) fn test_chat_seeing(
+    vision: bool,
+) -> (
+    Arc<ChatState>,
+    Arc<StdMutex<Vec<mecha_core::message::CompletionRequest>>>,
+) {
+    struct Sees(
+        bool,
+        Arc<StdMutex<Vec<mecha_core::message::CompletionRequest>>>,
+    );
+    #[async_trait::async_trait]
+    impl mecha_core::provider::Provider for Sees {
+        fn id(&self) -> &str {
+            "local"
+        }
+        fn default_model(&self) -> &str {
+            "test"
+        }
+        fn vision(&self) -> bool {
+            self.0
+        }
+        async fn complete(
+            &self,
+            req: &mecha_core::message::CompletionRequest,
+            sink: Option<&mecha_core::provider::StreamSink>,
+        ) -> Result<mecha_core::message::CompletionResponse> {
+            self.1.lock().unwrap().push(req.clone());
+            Answers("ok").complete(req, sink).await
+        }
+    }
+    let seen = Arc::new(StdMutex::new(Vec::new()));
+    let chat = test_chat_from(
+        Box::new(Sees(vision, Arc::clone(&seen))),
+        mecha_core::tool::Registry::new(),
+        answering_config(true),
+    );
+    (chat, seen)
+}
+
 /// `[providers.local]` on a loopback URL, or — `local` false — a cloud one.
 #[cfg(test)]
 fn answering_config(local: bool) -> Config {
@@ -4608,11 +4746,10 @@ pub(super) fn test_chat_waiting(go: Arc<tokio::sync::Notify>) -> Arc<ChatState> 
     )
 }
 
-/// Put an image into `key`'s idle conversation the way a TUI or Slack turn
-/// carries one — straight into the messages, with the taint left for the
-/// loop to arm at the next run's start. The web door has no path that does
-/// this yet, which is exactly why a reader of `Live::taint` must not trust
-/// the conversation's taint to already cover it.
+/// Put an image into `key`'s idle conversation the way an attached picture
+/// rides on a turn — straight into the messages, with the taint left for the
+/// loop to arm at the next run's start, which is exactly why a reader of
+/// `Live::taint` must not trust the conversation's taint to already cover it.
 #[cfg(test)]
 pub(super) async fn test_plant_image(chat: &ChatState, key: &str) {
     let mut sessions = chat.sessions.lock().await;
@@ -4731,6 +4868,7 @@ mod held_tests {
                 request_id: None,
                 spoken: true,
                 approve_all: false,
+                images: Vec::new(),
             },
         );
         assert!(matches!(result, Err(TurnError::Held)));
@@ -4838,6 +4976,7 @@ mod workflow_recording_tests {
                     request_id: Some("rejected-request".into()),
                     spoken: true,
                     approve_all: false,
+                    images: Vec::new(),
                 },
             );
             let Err(TurnError::Failed(error)) = result else {

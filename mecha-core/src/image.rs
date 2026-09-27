@@ -59,17 +59,32 @@ pub fn block_from_path(path: &Path) -> Result<Option<Block>> {
     };
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+    block_from_bytes(media_type, bytes, name, &path.display().to_string()).map(Some)
+}
 
+/// [`block_from_path`] for bytes a caller already read — through
+/// `WorkspaceFiles::read`, say, whose descriptor-held walk a second open by
+/// path would undo. `media_type` is the caller's (from the name, as
+/// [`image_media_type`] decides it); `what` names the file in errors.
+pub fn block_from_bytes(
+    media_type: &'static str,
+    bytes: Vec<u8>,
+    name: Option<String>,
+    what: &str,
+) -> Result<Block> {
     // Dimensions are read from the header alone, so the common case — an
     // image that is already small — never pays to decode the pixels.
-    let dims = image::image_dimensions(path).ok();
+    let dims = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.into_dimensions().ok());
     let oversized = dims.is_some_and(|(w, h)| w.max(h) > MAX_EDGE);
     if !oversized && bytes.len() <= MAX_BYTES {
-        return Ok(Some(Block::image(media_type, &bytes, name)));
+        return Ok(Block::image(media_type, &bytes, name));
     }
 
     let img = image::load_from_memory(&bytes)
-        .with_context(|| format!("{} is named as an image but did not decode", path.display()))?;
+        .with_context(|| format!("{what} is named as an image but did not decode"))?;
     // `thumbnail` preserves the aspect ratio and takes the *bound* rather
     // than a target, so an image that is oversized in only one dimension is
     // not stretched to fill the other.
@@ -91,13 +106,12 @@ pub fn block_from_path(path: &Path) -> Result<Option<Block>> {
 
     if out.len() > MAX_BYTES {
         bail!(
-            "{} is {} after resizing to {MAX_EDGE}px and stays above the {} limit",
-            path.display(),
+            "{what} is {} after resizing to {MAX_EDGE}px and stays above the {} limit",
             human(out.len()),
             human(MAX_BYTES),
         );
     }
-    Ok(Some(Block::image("image/jpeg", &out, name)))
+    Ok(Block::image("image/jpeg", &out, name))
 }
 
 fn human(bytes: usize) -> String {
