@@ -513,7 +513,12 @@ router is `/props`' rule applied to choosing.
   slices by the model that answered, instead of the scheduler keeping
   models apart. That makes the recorded `model` load-bearing for every
   corpus reader. It must be the resolved provider's alias, never
-  `default_provider`'s.
+  `default_provider`'s. The retirement ledger is the reader where a mix
+  would act, not just mislead: `rules propose-retirements` and `validate
+  --cover` count only the rows measured on the model in use
+  (`learning::measured_on`), so a night on a comparison arm can neither
+  retire a rule nor dilute a regression that production measured (owner's
+  ruling, 2026-09-27: count one model).
 
 ### Who may switch
 

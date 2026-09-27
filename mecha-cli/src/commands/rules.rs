@@ -141,9 +141,42 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
             if let Some(why) = &owner.store_unreadable {
                 println!("owner tenure: {why}; no rule is released on it this pass");
             }
-            propose(&store, min_attributed, apply, Some(&owner))
+            let model = measured_model(global).await?;
+            propose(&store, &model, min_attributed, apply, Some(&owner))
         }
     }
+}
+
+/// The model whose ledger rows a retirement argues from: the one tonight's
+/// `validate` measured on, resolved as it resolves it — `--model`, else the
+/// provider entry's `model`, the entry being the router's resident model
+/// unless `-p` pins one (owner's ruling, 2026-09-27: count one model). An
+/// entry naming no model refuses: which rows are its own cannot be told, and
+/// counting them all is the mix the ruling exists to prevent.
+async fn measured_model(global: &crate::GlobalOpts) -> Result<String> {
+    let cfg = if global.global_config_only {
+        mecha_core::config::Config::load_global()?
+    } else {
+        let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+        mecha_core::config::Config::load(&cwd)?
+    };
+    // `rules` is not a model-running command, so `main` did not look at the
+    // router; this one subcommand has to, to know what is resident.
+    let follows = global.model.is_none() && global.provider.is_none();
+    for warning in mecha_core::provider::router::observe(&cfg, follows).await {
+        tracing::warn!("{warning}");
+    }
+    let (name, entry) = cfg.provider(global.provider.as_deref())?;
+    global
+        .model
+        .clone()
+        .or_else(|| entry.model.clone())
+        .with_context(|| {
+            format!(
+                "[providers.{name}] names no model, so which validation rows were measured on it \
+             cannot be told; pass --model"
+            )
+        })
 }
 
 /// The workspace/surface/goal keys some run's rules block was matched
@@ -999,12 +1032,20 @@ fn show(store: &LearningStore, id: &str, goals: &Goals, standing: Option<&Standi
 
 fn propose(
     store: &LearningStore,
+    model: &str,
     min_attributed: u32,
     apply: bool,
     owner: Option<&Tally>,
 ) -> Result<()> {
     let _lock = store.lock()?;
-    let records = store.validations()?;
+    let (records, other) = mecha_core::learning::measured_on(store.validations()?, model);
+    if other > 0 {
+        println!(
+            "retirement counts {} ledger row(s) measured on {model}; {other} from other models \
+             are not counted (tallies are comparable only within one model)",
+            records.len()
+        );
+    }
     let tallies = rule_tallies(&records);
     let proposals = store.proposals()?;
     let mut staged = 0u32;
@@ -1352,6 +1393,31 @@ mod tests {
         }
     }
 
+    /// Retirement argues from one model's rows (owner's ruling, 2026-09-27).
+    /// Regressions a comparison arm recorded do not retire a rule measured
+    /// on the model in use, however many there are; the same regressions
+    /// recorded on that model do. Fails on the old fold, which summed every
+    /// row whatever model drove it.
+    #[test]
+    fn another_models_regressions_do_not_retire_a_rule() {
+        let store = temp_store();
+        store
+            .write_learned_rules("behavior", &[rule("Bad rule.", "r-bad")])
+            .unwrap();
+        for i in 0..5 {
+            let mut row = regression("r-bad", &format!("2026-09-2{i}T00:00:00Z"));
+            row.model = "comparison-arm".into();
+            store.append_validation(&row).unwrap();
+        }
+        propose(&store, "qwen", 3, true, None).unwrap();
+        assert!(
+            store.learned_rules("behavior").unwrap()[0].active(),
+            "five regressions on another model retire nothing here"
+        );
+        propose(&store, "comparison-arm", 3, true, None).unwrap();
+        assert!(!store.learned_rules("behavior").unwrap()[0].active());
+    }
+
     #[test]
     fn retirement_is_proposed_at_the_threshold_and_through_the_gate() {
         let store = temp_store();
@@ -1371,13 +1437,13 @@ mod tests {
         }
 
         // Below threshold: nothing staged.
-        propose(&store, 4, false, None).unwrap();
+        propose(&store, "qwen", 4, false, None).unwrap();
         assert!(store.proposals().unwrap().is_empty());
 
         // At threshold: one pending proposal that retires r-bad, keeps r-ok,
         // and consumes no reflections. The live rules must be untouched —
         // only acceptance deploys.
-        propose(&store, 3, false, None).unwrap();
+        propose(&store, "qwen", 3, false, None).unwrap();
         let all = store.proposals().unwrap();
         assert_eq!(all.len(), 1);
         let p = &all[0];
@@ -1408,7 +1474,7 @@ mod tests {
         );
 
         // Re-running while the proposal is pending must not stage a twin.
-        propose(&store, 3, false, None).unwrap();
+        propose(&store, "qwen", 3, false, None).unwrap();
         assert_eq!(store.proposals().unwrap().len(), 1);
 
         std::fs::remove_dir_all(store.root()).ok();
@@ -1435,11 +1501,11 @@ mod tests {
         }
 
         // Staged first, as the nightly would have before --apply existed.
-        propose(&store, 3, false, None).unwrap();
+        propose(&store, "qwen", 3, false, None).unwrap();
         assert_eq!(store.proposals().unwrap()[0].status, "pending");
 
         // The direct path retires the rule and resolves the paper.
-        propose(&store, 3, true, None).unwrap();
+        propose(&store, "qwen", 3, true, None).unwrap();
         let all = store.proposals().unwrap();
         assert_eq!(all.len(), 1, "no twin staged");
         assert_eq!(all[0].status, "superseded");
@@ -1480,7 +1546,7 @@ mod tests {
         }
 
         // Below threshold, --apply must be as inert as staging is.
-        propose(&store, 4, true, None).unwrap();
+        propose(&store, "qwen", 4, true, None).unwrap();
         assert!(
             store
                 .learned_rules("behavior")
@@ -1490,7 +1556,7 @@ mod tests {
             "an unconvicted rule must survive an --apply scan"
         );
 
-        propose(&store, 3, true, None).unwrap();
+        propose(&store, "qwen", 3, true, None).unwrap();
 
         // The live file moved, and nothing was queued for anyone to accept.
         assert!(
@@ -1588,7 +1654,7 @@ mod tests {
             ))
             .unwrap();
 
-        propose(&store, 3, true, None).unwrap();
+        propose(&store, "qwen", 3, true, None).unwrap();
 
         let live = store.learned_rules("behavior").unwrap();
         let wide = live
@@ -1616,7 +1682,7 @@ mod tests {
 
         // The convictions that narrowed it lie outside where it now loads:
         // a second scan finds nothing against it.
-        propose(&store, 3, true, None).unwrap();
+        propose(&store, "qwen", 3, true, None).unwrap();
         let again = store.learned_rules("behavior").unwrap();
         let wide = again
             .iter()
@@ -2206,8 +2272,8 @@ mod tests {
                 scope: None,
             })
             .unwrap();
-        propose(&store, 3, false, None).unwrap();
-        propose(&store, 3, false, None).unwrap();
+        propose(&store, "qwen", 3, false, None).unwrap();
+        propose(&store, "qwen", 3, false, None).unwrap();
         let proposals = store.proposals().unwrap();
         assert_eq!(
             proposals.len(),
@@ -2271,7 +2337,14 @@ mod tests {
                 .unwrap();
         }
 
-        propose(&store, mecha_core::learning::DEFAULT_RETIRE_AT, true, None).unwrap();
+        propose(
+            &store,
+            "qwen",
+            mecha_core::learning::DEFAULT_RETIRE_AT,
+            true,
+            None,
+        )
+        .unwrap();
 
         let live = store.learned_rules("behavior").unwrap();
         let bad = live
@@ -2344,6 +2417,7 @@ mod tests {
             }
             propose(
                 &store,
+                "qwen",
                 mecha_core::learning::DEFAULT_RETIRE_AT,
                 true,
                 Some(&tally),

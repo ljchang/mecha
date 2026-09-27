@@ -91,9 +91,9 @@ class Scripts(unittest.TestCase):
             )
             self.assertEqual(done.returncode, 0, done.stderr)
             calls = log.read_text().splitlines() if log.exists() else []
-        # Only the calls that reach a model: `work path`, `work clean`,
-        # `proposals` and the rest take no provider either way.
-        return [c.split() for c in calls if not c.startswith(("work ", "proposals", "harness list", "rules "))]
+        # Only the calls that reach a model — or, for `rules`, resolve one:
+        # `work path`, `work clean` and the listings take no provider.
+        return [c.split() for c in calls if not c.startswith(("work ", "proposals", "harness list"))]
 
     def assert_follows(self, calls, expected):
         self.assertEqual([c[:2] if c[0] in ("frontdoor", "harness") else c[:1] for c in calls], expected)
@@ -102,6 +102,7 @@ class Scripts(unittest.TestCase):
             self.assertNotIn("--judge-provider", c, f"the judge follows too, but: {c}")
 
     def assert_pinned(self, calls, flag, value, where):
+        self.assertTrue(calls, "no call reached the stub")
         for c in calls:
             if any(w in c for w in where):
                 self.assertIn(flag, c, c)
@@ -110,10 +111,14 @@ class Scripts(unittest.TestCase):
     def test_ruminate_follows_unless_pinned(self):
         self.assert_follows(
             self.run_script("ruminate.sh"),
-            [["reflect"], ["distill"], ["validate"], ["learn"], ["harness", "ruminate"]],
+            [["reflect"], ["distill"], ["validate"], ["learn"], ["rules"], ["harness", "ruminate"]],
         )
         calls = self.run_script("ruminate.sh", MECHA_RUMINATE_PROVIDER="x", MECHA_RUMINATE_JUDGE="j")
-        self.assert_pinned(calls, "-p", "x", ["reflect", "distill", "validate", "learn", "ruminate"])
+        # `rules propose-retirements` too: it counts only the rows of the
+        # model validate measured on, so it must resolve the same one.
+        self.assert_pinned(
+            calls, "-p", "x", ["reflect", "distill", "validate", "learn", "propose-retirements", "ruminate"]
+        )
         self.assert_pinned(calls, "--judge-provider", "j", ["validate"])
 
     def test_frontdoor_follows_unless_pinned(self):
