@@ -502,6 +502,16 @@ router is `/props`' rule applied to choosing.
   owner switches to Y keeps naming X, so its next request waits for Y to
   go idle and then swaps X back. The owner's next turn swaps again. This
   costs at most one extra pair of swaps per run, and it is accepted.
+  *Superseded as a bound on 2026-09-27, open for the owner:* once the
+  long-lived surfaces follow the router (step 3), "the owner's next turn"
+  no longer swaps again — it follows, and the router is back on X. A run
+  in flight at the moment of a switch therefore undoes it outright, from any
+  process (a trigger, a delegated task, a web chat's own run and the title
+  named after it), because the router protects one *request*, not a run:
+  between requests the model is idle and the switch completes. Two shapes,
+  neither built: a switch that waits until no *run* holds the model (R2's
+  "wait until idle", widened from requests to runs), or runs that re-follow
+  between requests and change model mid-run.
 - **Nightly passes run on whatever is loaded, and the record says which**
   (owner's ruling, 2026-09-26). Learn, validate, ruminate and appraisal are
   not deferred or skipped on a non-production model. The per-run `model`
