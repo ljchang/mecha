@@ -2229,6 +2229,14 @@ impl Session {
     /// anything else is not a session this process wrote, and is skipped
     /// exactly as `load`'s no-header error skipped it.
     pub fn peek_meta(path: &Path) -> Option<SessionMeta> {
+        match serde_json::from_str::<Record>(&Session::first_line(path)?).ok()? {
+            Record::Meta(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// The first non-blank line of a file, the header's place.
+    fn first_line(path: &Path) -> Option<String> {
         use std::io::BufRead;
         let file = std::fs::File::open(path).ok()?;
         let mut reader = std::io::BufReader::new(file);
@@ -2239,13 +2247,46 @@ impl Session {
                 return None;
             }
             if !first.trim().is_empty() {
-                break;
+                return Some(first);
             }
         }
-        match serde_json::from_str::<Record>(&first).ok()? {
-            Record::Meta(m) => Some(m),
+    }
+
+    /// [`Session::peek_meta`], and whether the header recorded a `kind` at
+    /// all. `SessionMeta::kind` loads as `None` both for a header written
+    /// before kinds existed and for a kind this build cannot name; a reader
+    /// that must tell those apart (`brief::attempts::walk`: the first is
+    /// known not to be a task session, the second may be one) asks here, in
+    /// the same read, rather than opening the header twice.
+    pub fn peek_header(path: &Path) -> Option<(SessionMeta, bool)> {
+        let header: serde_json::Value = serde_json::from_str(&Session::first_line(path)?).ok()?;
+        let recorded = header.get("kind").is_some_and(|k| !k.is_null());
+        match serde_json::from_value::<Record>(header).ok()? {
+            Record::Meta(m) => Some((m, recorded)),
             _ => None,
         }
+    }
+
+    /// [`Session::list_counting`], each header with [`Session::peek_header`]'s
+    /// answer to whether it recorded a kind.
+    pub fn list_headers_counting(dir: &Path) -> Result<(Vec<Header>, usize)> {
+        if !dir.exists() {
+            return Ok((Vec::new(), 0));
+        }
+        let mut out = Vec::new();
+        let mut unreadable = 0usize;
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            match Session::peek_header(&path) {
+                Some((meta, recorded)) => out.push((meta, path, recorded)),
+                None => unreadable += 1,
+            }
+        }
+        out.sort_by_key(|(meta, _, _)| std::cmp::Reverse(meta.created_at));
+        Ok((out, unreadable))
     }
 
     /// The run summaries of a transcript, summed: total usage and turns
@@ -2316,6 +2357,10 @@ impl Session {
         }
     }
 }
+
+/// One session header as [`Session::list_headers_counting`] lists it: the
+/// header, the file, and whether the header recorded a kind at all.
+pub type Header = (SessionMeta, PathBuf, bool);
 
 /// Where each taint checkpoint sits relative to the messages — built by
 /// [`Session::taint_timeline`], consumed by provenance classification in

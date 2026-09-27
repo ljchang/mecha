@@ -2941,6 +2941,7 @@ async fn work(
         &prepared.provider_name,
         &mut cx,
         &convo,
+        Some(&session.meta.id),
         setup::BRIEF_BOARD_TIMEOUT,
     )
     .await;
