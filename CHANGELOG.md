@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every outbox resolve records who made it** (`APPRAISAL-WIRING-DESIGN.md`,
+  R16a's ruling D3). `mecha outbox reject`, `review` and `approve` stamp
+  `resolved_by` on the item — `owner` at the owner's terminal or a
+  surface's own child (web, TUI, Slack, voice), `owner-approved` under an
+  interactive run's `shell`, `unknown` otherwise — decided by the task
+  closure store's rules (`closure::attribute`). A rejection's reason reads
+  as the owner's words only under `owner`: the reflector no longer mines a
+  reason a model's `shell` typed, the appraiser's input shows a typed word
+  in its place, and the meeting-poll sweep puts "No time found" rather than
+  that text on the participants' page. Items resolved before this load as
+  `unknown`. `outbox show` and the TUI print `by <actor>` beside the reason.
+
 - **A rule's owner tenure, beside retirement** (`APPRAISAL-WIRING-DESIGN.md`
   2e-5b/2e-5c, R41). `mecha rules list`/`show` print `owner: <tenure> ·
   region: <quiet>` per learned rule, and `--json` gains `owner` and `quiet`.
