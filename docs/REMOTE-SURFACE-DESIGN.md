@@ -618,6 +618,48 @@ stay up through the 2026-09-26/27 night's ruminate (03:30Z) and mail
 classify (05:31Z): install after those, or run `mecha model use
 qwen3.6-35b-a3b-uncensored` straight after installing.
 
+**Install the new llama.cpp build with the router** (built 2026-09-26 at
+`95887577` in `~/llama.cpp-next`, a separate worktree so the running servers'
+libraries in `~/llama.cpp/build/bin` were never touched). It carries the
+router's own fixes after `c841aee` (an LRU hang, eviction races), the Gated
+DeltaNet normalisation fix and a GB10 decode path — Qwen3.8's Q4_K_M
+decoded 18.2 → 20.7 tok/s on it (+14%, same prompt, back to back, as a
+single-model server; the router table's 21.1 is a separate run). Its `llama-server` has its own RUNPATH, so installing it is a
+rename-swap of `~/.local/bin/llama-server`; the old build stays as the
+rollback. The embedder on :8081 moves to it at its next restart — checked
+first: the same four texts embedded by both builds agree to cosine ≥
+0.99999, norms 1.0, so the stored graph vectors stay valid.
+
+**The idle gate goes in with the router, not before or after it.**
+`~/.local/bin/mecha-model-idle` is still the pre-#337 `scripts/model-idle.sh`
+(confirmed 2026-09-26, byte-identical to `450a5cc6`'s). It is right for a
+single-model server, and against the router its bare `/slots` is a 400 that
+fails every tick — so `install -D -m 755 scripts/model-idle.sh
+~/.local/bin/mecha-model-idle` is part of the same step as the unit's
+`ExecStart` swap. The installed `mecha` already carries #337 (reinstalled
+from `b3135e1b` at 22:40Z), and needs one more reinstall for #339's fixes.
+
+**One behaviour the new build changes, pinned rather than inherited** (owner's
+ruling, 2026-09-26): llama.cpp #28174 turned `preserve_reasoning` on by
+default. Qwen3.6's template drops earlier turns' thinking unless told to keep
+it, so production's prompts would have changed silently at the swap. Every
+Qwen preset now says `reasoning-preserve = true`, and so does the
+production rollback `start-moe-mtp.sh` (the one script where it bites) — both
+builds accept the flag (`--help` on each, 2026-09-26) — kept, so each prompt is a
+prefix of the next and the cached prefix survives a new user turn, at the
+cost of context that fills sooner. Qwen3.8's templates keep it by default, so
+nothing changes there; Gemma's has no such rule.
+
+**Rolling back a Qwen3.8 preset is a port change too:** `start-qwen38.sh`
+serves on :8083, where the three Qwen3.8 provider entries point at :8080, so
+the rollback needs their `base_url` edited as well. Production's rollback,
+`start-moe-mtp.sh`, lands on :8080 and needs none.
+
+**Owed, not in these PRs:** `start-moe-mtp.sh`, `start-gemma26.sh` and
+`start-e4b.sh` — the single-model rollbacks — still take
+`S=$(ls -d …/snapshots/*/)`, which breaks outright (two paths in one
+variable) the day their repo gains a second snapshot. None has one today.
+
 The config gains `follow_loaded`, and `ProviderConfig` denies unknown
 fields, so **the binary goes in before the config edit** — an older binary
 refuses a config naming it, the way `[image]` did. Then: every chat model
@@ -631,6 +673,11 @@ set `[providers.local] model` back to `"qwen3.6-35b-a3b"`, and delete branch
 (its start script is the rollback until then). Ship the `[[policy]]` rule
 forbidding `mecha model use` with the config edit: a trigger with
 `permission_mode = allow` has no human in the loop to deny it.
+
+**Three Qwen3.8 entries go in the config beside the others** — all on
+:8080, `context_window = 262144`, `vision = true`, `temperature = 1.0` (R4:
+it must equal the preset's): `qwen3.8-27b`, `qwen3.8-27b-uncensored`
+(HauhauCS) and `qwen3.8-27b-abliterated` (huihui).
 
 ### Three rulings carried over (2026-09-26)
 
