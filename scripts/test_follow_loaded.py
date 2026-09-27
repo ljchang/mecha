@@ -151,6 +151,8 @@ class Scripts(unittest.TestCase):
                 ["rules"],
                 ["sessions", "compare"],
                 ["learn"],
+                # ...and again after learn, which can re-widen a narrowing.
+                ["rules"],
                 ["harness", "ruminate"],
                 ["learn"],
             ],
@@ -204,7 +206,7 @@ class Scripts(unittest.TestCase):
         after = calls[[c[:2] for c in calls].index(["sessions", "compare"]) + 1 :]
         self.assertEqual(
             [c[:2] if c[0] == "harness" else c[:1] for c in after],
-            [["learn"], ["harness", "ruminate"], ["learn"]],
+            [["learn"], ["rules"], ["harness", "ruminate"], ["learn"]],
         )
 
     def test_a_missing_pin_rule_stops_every_script(self):

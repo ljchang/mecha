@@ -170,7 +170,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`Schedule::due_after`: reflect, validate, retire, learn, ruminate), owner
   2026-09-27. It reads only validate's rows, so a rule measured harmful
   leaves the prompt before `sessions compare` or `learn --auto` spends any
-  wall clock, and `learn` measures its candidate without it.
+  wall clock, and `learn` measures its candidate without it. The nightly scans a
+  second time after `learn`, whose cross-region widening can re-widen a
+  rule the first scan narrowed — so it is re-narrowed that night.
 - **The counterfactual comparison summary counts one model** (the owner's
   ruling of 2026-09-27). Since the chat server became a router, background
   passes follow whichever model is resident, and `mecha sessions appraise`
