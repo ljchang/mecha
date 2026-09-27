@@ -261,10 +261,38 @@ impl Follower {
     }
 }
 
+#[cfg(test)]
+impl Follower {
+    /// Install a new binding under the next generation — what a turn sees
+    /// after `follow` rebuilt for a switch, without a router or a rebuild.
+    pub fn switch_to(&self, agent: Agent, provider_name: &str, model: &str, config: Config) {
+        let generation = self.generations.fetch_add(1, Ordering::Relaxed) + 1;
+        let bound = Bound {
+            agent: Arc::new(agent),
+            provider_name: provider_name.into(),
+            model: model.into(),
+            context_window: None,
+            levers_off: Vec::new(),
+            rules: Default::default(),
+            config,
+            workspace: PathBuf::new(),
+            todo: None,
+            generation,
+            _mcp: Vec::new(),
+        };
+        *self.current.write().expect("follower lock") = Arc::new(bound);
+    }
+}
+
 /// Re-observe the routers `cfg` follows, logging each warning once per process.
+///
+/// Once per *occurrence*, not per process: a warning whose condition has
+/// cleared is forgotten, so the same condition coming back weeks later into
+/// a `serve` is logged again rather than never.
 async fn observe(cfg: &Config, pinned: bool, warned: &Mutex<HashSet<String>>) {
     let warnings = mecha_core::provider::router::observe(cfg, !pinned).await;
     let mut warned = warned.lock().expect("follower lock");
+    warned.retain(|w| warnings.contains(w));
     for w in warnings {
         if warned.insert(w.clone()) {
             tracing::warn!("{w}");
