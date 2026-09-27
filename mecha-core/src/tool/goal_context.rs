@@ -90,17 +90,7 @@ pub const SUCCESS_EXAMPLE_LIMIT: &str = "tools_in_order is what that session cal
 /// act in words. Registry names and a record pointer — nothing a model
 /// wrote rides here.
 fn success_example(session: &str, sequence: &str, act: &crate::success::Act) -> Value {
-    use crate::success::Act;
-    let evidence = match act {
-        Act::TaskDone { .. } => "the owner closed this task done and has not reopened it",
-        Act::WorkflowClosed { .. } => {
-            "the owner closed this workflow after its verification passed and has not reopened it"
-        }
-        Act::QuestionAnswered { .. } => {
-            "the owner answered this session's question and the session then completed"
-        }
-        Act::SentUnchanged { .. } => "the owner sent this session's draft as it was written",
-    };
+    let evidence = act.in_words();
     json!({
         "session": session,
         "tools_in_order": crate::step::ellipsize(sequence, 400),

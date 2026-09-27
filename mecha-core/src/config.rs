@@ -648,6 +648,15 @@ pub struct AgentConfig {
     /// `past_appraisals` is: measured with and without by `mecha exp`
     /// (`Lever::SuccessExamples`) before it ships on.
     pub success_examples: bool,
+    /// Let `mecha reflect` set a verified success beside a correction in its
+    /// region: the reflector's behaviour frame gains one sentence and the
+    /// correction's message a block naming the owner's act and the success
+    /// session's tool sequence (`APPRAISAL-WIRING-DESIGN.md` L2, built as
+    /// 2e-4b-2, R43). A **stage** lever (`StageLever::ContrastEvidence`),
+    /// read by `reflect` and never by a run. **Off by default**: with it off
+    /// the reflector's prompt is the bytes it was, and it is turned on only
+    /// after a measured run.
+    pub contrast_evidence: bool,
 }
 
 impl Default for AgentConfig {
@@ -683,6 +692,7 @@ impl Default for AgentConfig {
             situation_brief: false,
             past_appraisals: false,
             success_examples: false,
+            contrast_evidence: false,
         }
     }
 }
@@ -1741,6 +1751,7 @@ struct AgentLayer {
     situation_brief: Option<bool>,
     past_appraisals: Option<bool>,
     success_examples: Option<bool>,
+    contrast_evidence: Option<bool>,
     timezone: Option<String>,
 }
 
@@ -1862,6 +1873,9 @@ impl ConfigLayer {
             }
             if let Some(v) = a.past_appraisals {
                 t.past_appraisals = v;
+            }
+            if let Some(v) = a.contrast_evidence {
+                t.contrast_evidence = v;
             }
             if let Some(v) = a.success_examples {
                 t.success_examples = v;
@@ -2563,6 +2577,36 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `scripts/pin.sh` decides a scheduled script's `-p` by reading
+    /// `mecha config show` — `toml::to_string_pretty(&Config)` — for the
+    /// default provider's `follow_loaded`, `kind` and `base_url`, the three
+    /// clauses of `router::follows_here`. A rename or a skipped field here
+    /// would read as "does not follow" and quietly put `-p local` back on a
+    /// router; this pins the keys that script parses (found on review of
+    /// #346).
+    #[test]
+    fn config_show_prints_what_pin_sh_reads() {
+        let mut cfg = Config {
+            default_provider: "local".into(),
+            ..Default::default()
+        };
+        cfg.providers.insert(
+            "local".into(),
+            ProviderConfig {
+                kind: "local".into(),
+                base_url: Some("http://127.0.0.1:8080".into()),
+                follow_loaded: true,
+                ..Default::default()
+            },
+        );
+        let shown: toml::Value = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert_eq!(shown["default_provider"].as_str(), Some("local"));
+        let entry = &shown["providers"]["local"];
+        assert_eq!(entry["follow_loaded"].as_bool(), Some(true));
+        assert_eq!(entry["kind"].as_str(), Some("local"));
+        assert_eq!(entry["base_url"].as_str(), Some("http://127.0.0.1:8080"));
     }
 
     #[test]

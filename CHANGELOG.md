@@ -25,6 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `owner` says why — in the terminal, the TUI status line and the web
   review.
 
+- **Contrast evidence for the reflector** (`APPRAISAL-WIRING-DESIGN.md` L2,
+  2e-4b-2, R43), behind `[agent] contrast_evidence` /
+  `StageLever::ContrastEvidence`, a stage lever that **ships off**. On,
+  `mecha reflect` reflects a steer, denial or followup with a verified
+  success from its region beside it — the newest trace of a clean, scoped
+  session the owner verified, from another session, whose run records the
+  correction's scope matches (the loader's match, R43). The reflector sees
+  the owner's act in fixed words and the session's tool sequence; its
+  behaviour frame gains one sentence and the correction one block. Off, the
+  reflector's prompt is byte-identical to before. `mecha reflect --dry-run`
+  names the success each correction would be shown. An experiment arm
+  measures it on through its environment's `config.toml`; `stages_off =
+  ["contrast_evidence"]` forces it off.
 - **Planning examples from what the owner verified** (`APPRAISAL-WIRING-DESIGN.md`
   L2, 2e-4b-1, R40), behind `[agent] success_examples` /
   `Lever::SuccessExamples`, which **ships off** until an experiment measures
@@ -42,6 +55,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --examples` lists what would be served and why each success lends none
   (`planning_examples` in `--json`). Nothing reaches the prefix; the answer
   with the lever off is unchanged.
+- **A task run's situation brief names the task's previous attempts**
+  (`APPRAISAL-WIRING-DESIGN.md` M5, 3a-2, R42). The brief gains an
+  `attempts` field: for a run anchored to a board task, up to three earlier
+  `task` sessions on the same task from the last 90 days, newest first, each
+  said in two lines — what the owner did with its work (a draft rejected,
+  sent as written or after edits, a question answered or let go, the task
+  closed or reopened, an artifact check failing, what still waits), by
+  record id; and how the run ended, as the harness recorded it, never as a
+  verdict. A reopen reason is quoted only when the owner wrote it with their
+  own hand; one written in a conversation with the owner's approval is
+  said to exist and not repeated, and an outbox rejection is said as "draft
+  rejected" and the item id, without its reason. A walk cut by its bound, or a session file that cannot be read,
+  says "at least". Recorded on every run; delivered only behind `[agent]
+  situation_brief`, which still ships off. `sessions health` reports the
+  field's completeness beside the other nine, and counts it unread only
+  when something failed: an unreadable file or store, or a session kind
+  this build cannot name — never the walk's own bound.
 - **A rule's owner tenure, beside retirement** (`APPRAISAL-WIRING-DESIGN.md`
   2e-5b/2e-5c, R41). `mecha rules list`/`show` print `owner: <tenure> ·
   region: <quiet>` per learned rule, and `--json` gains `owner` and `quiet`.
