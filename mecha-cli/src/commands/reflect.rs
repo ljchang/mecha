@@ -2175,6 +2175,7 @@ mod tests {
                 },
                 goal: None,
                 session: "s-dana".into(),
+                named: vec!["s-dana".into()],
                 sequence: "fs_read → shell".into(),
                 scopes: vec![mecha_core::situation::Situation::of_run(
                     &["fs_read".into(), "shell".into()],

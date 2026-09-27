@@ -4846,9 +4846,11 @@ a run — which **ships off**.
   told it of a block it could never see).
 - **Which success.** The newest trace `planning::success_traces` lends
   (`need_goal: false`, so a draft sent unchanged or a goal-less workflow
-  lends too) whose session is not the correction's own: a correction's own
-  session succeeding afterwards is the correction's outcome, not a contrast
-  to it. The traces are 2e-4b-1's: standing successes only, sessions the
+  lends too) from a success that does not name the correction's session: a
+  success verified work that may span sessions, and whichever of them the
+  correction was in, the success is its outcome, not a contrast to it — so
+  the exclusion is by success, not by trace (`SuccessTrace::named`; found
+  on review of #345). The traces are 2e-4b-1's: standing successes only, sessions the
   corpus admits, **recorded taint clean to the end**, every run scoped, and
   a tool called; read once per pass, newest first, at most 32 transcripts.
   One `reflect` pass is one read of the stores, so a reopen withdraws a
