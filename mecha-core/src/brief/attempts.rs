@@ -424,25 +424,6 @@ fn head_names(path: &Path, needle: &str) -> Head {
     }
 }
 
-/// Whether a header whose kind loaded as nothing names a kind at all: a
-/// kind this build cannot read (`Some(true)`), or no kind field, a header
-/// written before kinds existed (`Some(false)`). `None` when the header
-/// cannot be read now.
-fn names_a_kind(path: &Path) -> Option<bool> {
-    use std::io::BufRead;
-    let file = std::fs::File::open(path).ok()?;
-    let mut first = String::new();
-    for line in std::io::BufReader::new(file).lines() {
-        let line = line.ok()?;
-        if !line.trim().is_empty() {
-            first = line;
-            break;
-        }
-    }
-    let header: Value = serde_json::from_str(&first).ok()?;
-    Some(header.get("kind").is_some_and(|k| !k.is_null()))
-}
-
 /// Whether any `GoalAnchor` record in the transcript names `task`.
 fn names_task(t: &Transcript, task: &str) -> bool {
     t.anchors
@@ -459,7 +440,7 @@ pub fn walk(
     current: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Walk, String> {
-    let (listed, headless) = Session::list_counting(dir).map_err(|e| format!("{e:#}"))?;
+    let (listed, headless) = Session::list_headers_counting(dir).map_err(|e| format!("{e:#}"))?;
     let horizon = now - chrono::Duration::days(WINDOW_DAYS);
     // The file names the pointer as `GoalRef`'s wire form, quoted, in every
     // anchor record: a head without it was not opened on the task.
@@ -470,7 +451,7 @@ pub fn walk(
         unreadable: u32::try_from(headless).unwrap_or(u32::MAX),
         unnamed_kind: 0,
     };
-    for (meta, path) in listed {
+    for (meta, path, kind_recorded) in listed {
         if current == Some(meta.id.as_str()) {
             continue;
         }
@@ -483,14 +464,10 @@ pub fn walk(
         let named = match meta.kind {
             Some(SessionKind::Task) => true,
             Some(_) => continue,
-            None => match names_a_kind(&path) {
-                Some(false) => continue,
-                Some(true) => false,
-                None => {
-                    w.unreadable = w.unreadable.saturating_add(1);
-                    continue;
-                }
-            },
+            // Told apart in the listing's own read of the header, so a
+            // legacy header costs nothing more (review of #344).
+            None if kind_recorded => false,
+            None => continue,
         };
         if w.found.len() >= ATTEMPTS_MAX || meta.created_at < horizon {
             w.unsearched = true;
@@ -545,8 +522,9 @@ pub fn attempts_of(walk: Walk, task: &str, stores: &Stores) -> Attempts {
 
 /// The whole field for a run anchored to `anchor`: the walk under `dir`,
 /// then the acts over the stores `load` reads. The stores are read only
-/// when the walk found an attempt, so a task with none (and every run with
-/// no task anchor) pays one directory listing and no store read.
+/// when the walk found an attempt, so a task with none pays one read of
+/// each session header (the listing's), the heads of the task sessions in
+/// the window, and no store read; a run with no task anchor pays nothing.
 pub fn previous_attempts(
     anchor: Option<&GoalRef>,
     dir: Result<&Path, &str>,

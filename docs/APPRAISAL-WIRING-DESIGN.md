@@ -1102,7 +1102,9 @@ known: 499 of the live store's 611 headers carry none, measured
 2026-09-27, and counting them would have made every task brief a floor
 until December.
 The owner's acts are joined only when an attempt was found, so a task
-with none pays one directory listing and no store read. They go through
+with none pays one read of each session header (the listing's, which also
+tells a legacy header from an unnameable kind), the heads of the task
+sessions in the window, and no store read. They go through
 `appraisal::for_transcript` over `Stores::load`, the joins `of_session`
 makes. An empty outcome stands in for a run that recorded none (a run that
 errored still staged drafts the owner may have rejected). Only the
