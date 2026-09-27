@@ -1117,7 +1117,16 @@ fn attached_images(workspace: &std::path::Path, paths: &[String]) -> Vec<Block> 
         let read = files.read(path).and_then(|(file, _)| {
             use std::io::Read;
             let mut bytes = Vec::new();
-            file.take(MAX_ATTACHMENT_BYTES).read_to_end(&mut bytes)?;
+            // One byte past the cap tells "exactly at it" from "cut short": a
+            // truncated JPEG can still decode, as half a picture.
+            file.take(MAX_ATTACHMENT_BYTES + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
+                return Err(std::io::Error::other(format!(
+                    "larger than {} MB",
+                    MAX_ATTACHMENT_BYTES / (1024 * 1024)
+                )));
+            }
             Ok(bytes)
         });
         let bytes = match read {
