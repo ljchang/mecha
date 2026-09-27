@@ -1937,6 +1937,7 @@ text = "Leave work better than you found it."
                 }],
                 unsearched: false,
                 unreadable: 0,
+                unnamed_kind: 0,
                 stores_unread: vec![],
             }),
             board: Some(board_of(Ok(&board), Some("task-g4-own"))),

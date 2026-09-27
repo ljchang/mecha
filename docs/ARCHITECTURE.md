@@ -5325,12 +5325,22 @@ when touching it:
   `attempts::for_run_within`, which runs the walk and the store reads off
   the async threads, joined with the board read under the same deadline, so
   a slow disk costs the field — `Unread` — and never the turn),
-  a file parsed only when it holds the task's quoted pointer, kept when a
-  `GoalAnchor` record names the task; it stops at `ATTEMPTS_MAX` (3) or
-  `WINDOW_DAYS` (90). **A cut or an unreadable file is a floor**: a header
-  or body that will not read, or task sessions past the bound, make the
-  field `Unread` in the completeness readout and the words say "at least"
-  and what was not searched. **The owner's acts are the appraisal's cites,
+  a session's **head** scanned line by line for the task's quoted pointer
+  and stopped at the first message (`attempts::HEAD_BYTES_MAX` at most; both
+  doors that open a task session seed its anchor before the first message),
+  and only a head that names the task read whole, kept when a `GoalAnchor`
+  record names it — so the walk reads the heads plus at most three
+  transcripts, never every task transcript in the window (review of #344);
+  it stops at `ATTEMPTS_MAX` (3) or `WINDOW_DAYS` (90). A session opened on
+  another task and re-anchored to this one later is not found, a named
+  residue. **A failure is `Unread`; the bound is only a floor** (R42's
+  reading, 2026-09-27): a header or body that will not read, a header whose
+  kind this build cannot name (a header with no kind predates kinds and
+  anchors both, and is skipped), or an owner's-acts store read short make
+  the field `Unread` in the completeness readout (`Attempts::unread`); a
+  walk that stopped at its designed bound does not, as a capped commitments
+  store does not, so `Unread` keeps meaning something failed. Either way
+  the words say "at least" and what was not searched (`Attempts::floor`). **The owner's acts are the appraisal's cites,
   never its numbers**: `appraisal::for_transcript` over `Stores::load`
   (read only when an attempt was found), each `Cite` mapped to a closed
   `OwnerAct` by reading the record it names, so a sign, valence or affect

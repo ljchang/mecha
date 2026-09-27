@@ -5512,6 +5512,7 @@ mod tests {
                 }],
                 unsearched: false,
                 unreadable: 0,
+                unnamed_kind: 0,
                 stores_unread: vec![],
             });
             b

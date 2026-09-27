@@ -1358,9 +1358,12 @@ impl SituationBrief {
                     }
                 }),
             ),
-            // Task sessions the walk left unsearched or could not read, or
-            // an owner's-acts store that did not load, make it a floor.
-            ("attempts", of(&self.attempts, Attempts::partial)),
+            // A session file that could not be read, a kind this build
+            // cannot name, or an owner's-acts store that did not load. A walk
+            // that stopped at its designed bound says "at least" in the
+            // words and is not unread, as a capped commitments store is not
+            // (R42's reading, 2026-09-27).
+            ("attempts", of(&self.attempts, Attempts::unread)),
             // A board the server cut, or rows without a readable status,
             // hold counts that are floors: a part not read, on the rule
             // `Seats` and `Flight` apply to a file they could not parse.
@@ -2871,6 +2874,7 @@ mod tests {
                 attempts: vec![],
                 unsearched: false,
                 unreadable: 0,
+                unnamed_kind: 0,
                 stores_unread: vec![],
             }),
             "a home with no sessions holds no attempt, and says so"
