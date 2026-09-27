@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The model can look at an image, on request** (`image_view`, the owner's
+  ruling of 2026-09-27). It takes a workspace path — a picture
+  `image_generate` saved, an attachment under `inbox/` — and the loop puts
+  the picture in the user turn beside the results (`ToolOutput::image`),
+  for a model that can see; a blind one is told in words. Before it, a model
+  could not check what it drew: `image_generate` said "You cannot see it"
+  and `fs_read` returns a PNG as noise, so positional edits ("the second
+  person from the left") were composed blind. Not returned by default,
+  because a look costs ~1000 tokens for the rest of the conversation; a
+  look arms `private_data`, like `fs_read`. Registered for any model that
+  can see; a small picture (≤ 1 MiB, a screenshot most often) reaches it
+  byte for byte, a larger one as JPEG.
+
 ### Fixed
 
 - **A picture uploaded in the web chat reaches the model as pixels**
@@ -47,6 +62,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   point-wise rejected-draft point.
 
 ### Added
+
+- **The web chat's model chip switches the model** (`REMOTE-SURFACE-DESIGN.md`
+  §14, step 5). Tap it for what the router serves, with a dot beside the
+  loaded model; tap another to switch the whole machine. It runs `mecha model
+  use` on the server, so R1's rollback, R4's refusal and D13's wait for runs
+  all apply unchanged. While a switch waits, the chip reads **→ *model***,
+  and the menu names the runs it waits for, with **switch now** and
+  **cancel**. A failed switch turns the chip amber and says why. `mecha model
+  list --json` now reports each router's `pending_switch` and each model's
+  `would_not_follow`. `mecha model use X --now` hurries a switch already
+  waiting on X instead of refusing it as a second switch.
 
 - **Every outbox edit records who made it, and an edit is your writing only
   when you made every edit and the send** (`APPRAISAL-WIRING-DESIGN.md`,
@@ -273,6 +299,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   length-matched canary overflows just as those threads do.
 
 ### Fixed
+
+- **The model chip's "switch now" is offered only while it can act.** Once a
+  switch stops waiting for runs, it records that beside its switch file.
+  The chip then drops "switch now" and cancel, where it used to show buttons
+  that did nothing for the seconds before the router reports the new model
+  loading. `mecha model use X --now` then says the switch is no longer
+  waiting. Two "switch now" taps at once both land; one could report failure
+  for a hurry that had worked, and leave a temp file nothing swept.
 
 - **The web chat's plan has its own read** (`GET /api/chat/{key}/todo`).
   The page re-reads the plan on every `todo` result a run streams, and took

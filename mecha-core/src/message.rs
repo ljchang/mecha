@@ -43,7 +43,7 @@ pub enum Block {
         #[serde(default)]
         is_error: bool,
     },
-    /// An image the user put in front of the model.
+    /// An image the user put in front of the model, or one a tool made.
     ///
     /// **User turns only, and that is a portability decision rather than a
     /// simplification.** Anthropic accepts an image inside a `tool_result`;
@@ -53,7 +53,10 @@ pub enum Block {
     /// the other — the shape of failure this project keeps finding, in the
     /// one place where the missing thing is what the whole turn was about.
     /// So an image enters the conversation the way a person hands one over,
-    /// and `encode_message` renders it only on a user message.
+    /// and `encode_message` renders it only on a user message — which is
+    /// also where a tool's picture goes (`ToolOutput::image`, from
+    /// `image_view`): into the user turn carrying the results, after them,
+    /// never inside one.
     ///
     /// Not every model has eyes. `Provider::vision` says whether the one on
     /// the other end does, and a backend that cannot see renders this block

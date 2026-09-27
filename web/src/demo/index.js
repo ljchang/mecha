@@ -167,6 +167,8 @@ export const ROUTES = [
   ['GET', /^\/api\/chat\/([^/]+)\/todo$/, (_url, [key]) =>
     ({ todo: key.startsWith('incognito-') ? [] : fx.transcript.todo ?? [] })],
   ['POST', /^\/api\/chat\/[^/]+$/, () => text('')],
+  // The chip's picker reads the router; switching is on the demo boundary.
+  ['GET', /^\/api\/model$/, () => fx.modelList],
   ['POST', /^\/api\/incognito$/, () => ({ key: 'incognito-demo' })],
   ['POST', /^\/api\/incognito\/[^/]+\/(end|alive)$/, () => text('')],
   // Never reached: `EventSource` is replaced wholesale below, so the stream
@@ -259,6 +261,7 @@ export const ROUTES = [
           'settings/reflections/(edit|drop|restore)',
           'settings/rules/(retire|restore)',
           'settings/voice/clone(/delete)?',
+          'model/(use|cancel)',
           'resume',
           'dictate',
           'offer',

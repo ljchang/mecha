@@ -2113,6 +2113,7 @@ mod tests {
                     external: true,
                     refusal: false,
                     not_dispatched: self.0,
+                    image: None,
                 })
             }
         }
