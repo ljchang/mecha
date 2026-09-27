@@ -249,6 +249,11 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_past_appraisals: bool,
 
+    /// Serve no planning success example through `goal_context`, whatever
+    /// `[agent] success_examples` says (`Lever::SuccessExamples`).
+    #[arg(long, global = true)]
+    pub no_success_examples: bool,
+
     /// Don't route any tools through the outbox — configured [outbox] tools
     /// execute directly under the usual gates instead of being staged.
     #[arg(long, global = true)]

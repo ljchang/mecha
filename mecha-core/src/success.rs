@@ -39,9 +39,17 @@
 //! successes`). Serving them to drafting runs is a later lever, and it must
 //! arm `private_data` as the brief does (R35) — an exemplar is sent mail.
 //!
-//! What this leaves for later rows: planning success examples and contrast
-//! evidence for the reflector (2e-4b), and staged skill drafts (2e-4c,
-//! deferred by R40 until this set has been read on real data).
+//! **Planning success examples ride on it too, behind a lever that ships
+//! off** (row 2e-4b-1): a standing success toward a goal lends each of its
+//! clean, scoped sessions to `planning::success_examples`, whose step is the
+//! session's tool sequence (R40) — read from the transcript when a run is built,
+//! never copied into a store, and re-checked against the closure and workflow
+//! stores at every run start, so a reopen withdraws the example with the success.
+//!
+//! What this leaves for later rows: contrast evidence for the reflector
+//! (2e-4b-2, waiting on what "the same region" means between a correction
+//! and a success), and staged skill drafts (2e-4c, deferred by R40 until
+//! this set has been read on real data).
 
 use crate::closure::{Actor, Move, Transition};
 use crate::goal::GoalRef;
@@ -208,6 +216,55 @@ impl<'a> Sources<'a> {
     }
 }
 
+/// The four owning stores, read from the mecha home on the terms
+/// `appraisal::Stores::load` reads them — without the front door, the
+/// learning store and the charter, which no success is derived from. What a
+/// run start reads when `[agent] success_examples` is on, so it pays for
+/// these four and nothing else.
+#[derive(Debug, Clone, Default)]
+pub struct Owned {
+    pub drafts: Vec<OutboxItem>,
+    pub outbox_unreadable: bool,
+    pub closures: Vec<Transition>,
+    pub closures_unreadable: bool,
+    pub workflows: Vec<Workflow>,
+    pub workflows_unreadable: bool,
+    pub questions: Vec<Question>,
+    pub questions_unreadable: bool,
+}
+
+impl Owned {
+    pub fn load() -> Owned {
+        let (drafts, outbox_unreadable) = crate::appraisal::load_drafts();
+        let (closures, closures_unreadable) = crate::appraisal::load_closures();
+        let (workflows, workflows_unreadable) = crate::appraisal::load_workflows();
+        let (questions, questions_unreadable) = crate::appraisal::load_questions();
+        Owned {
+            drafts,
+            outbox_unreadable,
+            closures,
+            closures_unreadable,
+            workflows,
+            workflows_unreadable,
+            questions,
+            questions_unreadable,
+        }
+    }
+
+    pub fn sources(&self) -> Sources<'_> {
+        Sources {
+            drafts: &self.drafts,
+            outbox_unreadable: self.outbox_unreadable,
+            closures: &self.closures,
+            closures_unreadable: self.closures_unreadable,
+            workflows: &self.workflows,
+            workflows_unreadable: self.workflows_unreadable,
+            questions: &self.questions,
+            questions_unreadable: self.questions_unreadable,
+        }
+    }
+}
+
 /// Where a session named by an owning record stands in the session store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Seen {
@@ -261,6 +318,19 @@ impl SessionIndex {
                 })
                 .collect(),
         })
+    }
+}
+
+impl SessionIndex {
+    /// The transcript of a session this index admits — `None` for one it
+    /// hides (a smoke test, an experiment outside its home) or does not
+    /// hold. What a planning success example reads its tool sequence from,
+    /// so a test session named beside a real one lends nothing.
+    pub fn admitted_path(&self, id: &str) -> Option<&Path> {
+        match self.by_id.get(id) {
+            Some((true, path)) => Some(path),
+            _ => None,
+        }
     }
 }
 
