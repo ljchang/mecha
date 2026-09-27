@@ -165,15 +165,9 @@ pub async fn execute(args: Args) -> Result<()> {
     // its graceful drain runs alongside the chat drain when the host stops.
     let voice = match (&state.chat, args.voice_port) {
         (Some(chat), port) if port != 0 => {
-            let (agent, provider, model, config, levers_off, rules, outbox_root) =
-                chat.voice_parts();
+            let (follower, outbox_root) = chat.voice_parts();
             match crate::voice::Facade::new(
-                agent,
-                provider,
-                model,
-                config,
-                levers_off,
-                rules,
+                follower,
                 outbox_root,
                 None,
                 crate::voice::Mount {

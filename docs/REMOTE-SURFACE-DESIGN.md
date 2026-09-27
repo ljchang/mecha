@@ -513,6 +513,12 @@ router is `/props`' rule applied to choosing.
 
 ### Who may switch
 
+**One model serves every surface, and a switch from any of them is a switch
+for all of them** (owner's ruling, 2026-09-27: "there is one model serving
+all of them"). Web, voice, Slack, the TUI and background work are not
+isolated from each other's pick, and each surface is meant to be able to
+make one. What follows is who, at those surfaces, may.
+
 Only the owner: the chip, the TUI's existing `/model` picker (today a
 provider switch inside one process), and the CLI. Following D4, the chip's
 serve route runs a `mecha model use <provider>` child, and `mecha model
@@ -586,10 +592,13 @@ and the paths are this machine's.
 2. *Built:* every probe asks `?model=…&autoload=false` —
    `preflight::fetch`, the brief's `/slots`, `model-idle.sh`.
 3. *Built:* `follow_loaded`, the snapshot per process and per trigger fire.
-   Owed: the per-run resolution inside the three processes that hold one
-   agent for their lifetime — `mecha serve` (chat and voice), `voice-serve`
-   and the Slack connector. Until then they follow the pick from their
-   start, so a switch reaches them on a restart. Everything else already
+   *Built 2026-09-27:* the per-turn resolution inside the three processes
+   that hold one agent for their lifetime — `mecha serve` (chat and voice),
+   `voice-serve` and the Slack connector — through one
+   `mecha-cli/src/follow.rs::Follower`. Each turn re-observes the router and,
+   when the loaded model moved, rebuilds through `setup::prepare`, so every
+   provider-derived value (window, compaction threshold, output budget,
+   sampling, vision, subagents) is derived again. Everything else already
    builds its agent per run and follows at once.
 4. *Built:* `mecha model list|use`. Owed: the TUI's `/model` calling it.
 5. The chip's picker and load state.
@@ -611,6 +620,10 @@ made *from the chip* is undone by that chip's own next turn. Two
 consequences: the chip (step 5) cannot ship before that resolution, and
 installing the router before it means switching only holds while those
 surfaces are quiet (or after restarting them).
+*Closed 2026-09-27 by step 3:* measured on a test router at :8090 (one small
+GGUF under two aliases), a `serve` from the branch followed an outside
+`mecha model use` on its next turn and left the new model loaded, while the
+installed binary's `serve`, run in the same world, loaded the old one back.
 
 **The router loads production at start** (`load-on-startup`), so installing
 it ends whatever arm a drop-in was serving. The uncensored arm was ruled to

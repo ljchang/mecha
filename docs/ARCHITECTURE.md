@@ -187,13 +187,30 @@ The parts that bite hardest:
 - **Ask what is served (`GET /props` → `model_alias`), don't assert it.**
   llama-server ignores the request's `model` field, so naming one is not
   selecting it — only deciding what gets recorded.
-- **Router mode inverts that** (`scripts/start-router.sh`, built but not yet
-  installed — `REMOTE-SURFACE-DESIGN.md` §14, `LLAMA-SERVER.md` §Router
+- **Router mode inverts that** (`scripts/start-router.sh`, installed
+  2026-09-27 — `REMOTE-SURFACE-DESIGN.md` §14, `LLAMA-SERVER.md` §Router
   mode). One process serves several models and the request's `model`
   *selects*: a `follow_loaded` provider takes whichever is loaded
   (`provider::router`), every probe must name its model with
   `autoload=false` or it loads it, and a bare `/props` is a placeholder
   (`model_alias: "llama-server"`, `n_ctx: 0`).
+- **A process that outlives a switch follows it per turn**
+  (`mecha-cli/src/follow.rs`: `mecha serve`, its voice facade, `voice-serve`,
+  the Slack connector). An agent resolved at startup names the model loaded
+  then, and in router mode naming it loads it back — a switch from anywhere
+  was undone by the next web, voice or Slack turn. `Follower::follow` runs
+  before each turn, outside every lock the turn holds, and rebuilds through
+  `setup::prepare` only when the loaded model moved; the invariants:
+  - **A run keeps the binding it started with**; a switch is the next turn's.
+  - **An unseen router moves nothing** (`router::observed`): moving to the
+    default during a router restart would load production over the pick.
+  - **A failed rebuild fails the turn**, never falls back to the old binding,
+    whose request would silently undo the switch.
+  - **A conversation that crosses a switch records a fresh `RunConfig`**
+    ahead of the turn (`Bound::generation`), so each run names the model
+    that answered it.
+  - **Incognito's local-only promise is re-checked per turn**: the pick can
+    move onto an entry with a remote fallback mid-chat.
 - **Throughput is wall clock.** The server times a request only while it is
   running, so summing its per-request rates hides queue wait and reads ~4× at
   `-np 1`, on the one configuration that cannot run anything concurrently.

@@ -31,7 +31,9 @@ use axum::Json;
 use serde::Serialize;
 use tokio::sync::{broadcast, Mutex};
 
-use mecha_core::agent::{Agent, AgentEvent, Conversation};
+#[cfg(test)]
+use mecha_core::agent::Agent;
+use mecha_core::agent::{AgentEvent, Conversation};
 use mecha_core::config::{Config, PermissionMode};
 use mecha_core::message::{Block, Message, Role, Usage};
 use mecha_core::outbox::{OutboxRoute, OutboxStore};
@@ -74,28 +76,18 @@ type QuestionRoutes = Arc<
 >;
 
 pub struct ChatState {
-    agent: Arc<Agent>,
+    /// The agent and everything read off its build, following the router's
+    /// loaded model turn by turn (`crate::follow`). Shared with the mounted
+    /// voice facade, so a spoken turn and a typed one run on the same model.
+    follower: Arc<crate::follow::Follower>,
     routes: QuestionRoutes,
+    /// The startup build's resolved config — for what does not change with
+    /// the model: the sandbox, hooks, the image server.
     config: Config,
-    provider_name: String,
-    model: String,
-    /// For `RunConfig::levers_off`, carried from `Prepared` because the
-    /// switches are not readable off the shared agent.
-    levers_off: Vec<mecha_core::harness::Lever>,
-    /// For `RunConfig::rules_hash`, carried the same way.
-    rules: mecha_core::learning::RulesCarried,
-    context_window: Option<u64>,
     outbox_root: PathBuf,
     sessions: Mutex<HashMap<String, WebSession>>,
     stopping: tokio_util::sync::CancellationToken,
     runs: tokio_util::task::TaskTracker,
-    /// The todo tool the shared agent is using, so a resumed session can have
-    /// its plan restored from its own transcript (D15). One handle, many
-    /// sessions: the list is keyed by each run's jail, which for this surface
-    /// is the session key's directory.
-    todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
-    /// Dropping an MCP client kills its server; held for the process lifetime.
-    _mcp: Vec<Arc<mecha_core::mcp::McpClient>>,
 }
 
 /// Where a web session's turns go.
@@ -196,6 +188,11 @@ struct WebSession {
     /// one extra copy of the block costs a few hundred cached tokens,
     /// where omitting it costs a markdown reply read aloud.
     last_turn_spoken: bool,
+    /// Which binding (`follow::Bound::generation`) this conversation's record
+    /// last named. A turn on another one records a fresh `RunConfig` first,
+    /// so a transcript that crossed a switch says which model answered each
+    /// run — `runlog` and `Transcript::config_covering` read it that way.
+    recorded_generation: u64,
 }
 
 struct Live {
@@ -231,7 +228,30 @@ impl ChatState {
             surface: Some(mecha_core::session::SessionKind::Web),
             ..GlobalOpts::default()
         };
-        let mut prepared = setup::prepare(&opts, false).await?;
+        let routes: QuestionRoutes = Arc::default();
+        // Not interactive: no terminal approver — and then `ask_user` IS
+        // registered, against the Slack connector's precedent, because this
+        // front-end can do what that one could not: route the question to
+        // the human who owns the run that asked (the jail's directory name
+        // is the session key; see `present::WebAsker`). An unanswered card
+        // resolves as the tool's measured decline, never a guess.
+        // Registered by the follower on every build, so an agent rebuilt for
+        // a switch is never missing it.
+        let finish: crate::follow::Finish = {
+            let routes = Arc::clone(&routes);
+            Box::new(move |prepared: &mut setup::Prepared| {
+                let routes = Arc::clone(&routes);
+                let lookup: super::present::SessionLookup =
+                    Arc::new(move |key: &str| routes.lock().ok().and_then(|m| m.get(key).cloned()));
+                prepared.agent.registry_mut().insert(Arc::new(
+                    mecha_core::tool::ask::AskUserTool::new(Arc::new(super::present::WebAsker {
+                        lookup,
+                    })),
+                ));
+            })
+        };
+        let follower = Arc::new(crate::follow::Follower::start(opts, finish).await?);
+        let config = follower.current().config.clone();
         // Before the door opens: a `serve` that died with incognito chats
         // open left their rooms, and nothing else will remove them (R1).
         // After the config is loaded, so a start that fails before then
@@ -254,12 +274,6 @@ impl ChatState {
             }
             Err(e) => tracing::info!("incognito chats are unavailable: {e:#}"),
         }
-        // Not interactive: no terminal approver — and then `ask_user` IS
-        // registered, against the Slack connector's precedent, because this
-        // front-end can do what that one could not: route the question to
-        // the human who owns the run that asked (the jail's directory name
-        // is the session key; see `present::WebAsker`). An unanswered card
-        // resolves as the tool's measured decline, never a guess.
         // Still before the door opens: what a dead `serve`'s incognito chats
         // left on the image server — jobs, their records, their files — is
         // taken back as soon as there is a config saying where it is. A
@@ -267,7 +281,7 @@ impl ChatState {
         // because it is a promise not kept rather than a count.
         if !left_on_the_image_server.is_empty() {
             if let Err(e) = super::incognito::take_back(
-                prepared.config.image.as_ref(),
+                config.image.as_ref(),
                 &left_on_the_image_server,
                 super::incognito::TAKE_BACK_LIMIT,
             )
@@ -279,41 +293,18 @@ impl ChatState {
                 );
             }
         }
-        let routes: QuestionRoutes = Arc::default();
-        let lookup: super::present::SessionLookup = {
-            let routes = Arc::clone(&routes);
-            Arc::new(move |key: &str| routes.lock().ok().and_then(|m| m.get(key).cloned()))
-        };
-        prepared
-            .agent
-            .registry_mut()
-            .insert(Arc::new(mecha_core::tool::ask::AskUserTool::new(Arc::new(
-                super::present::WebAsker { lookup },
-            ))));
-        let outbox_root = match prepared.config.outbox.dir.clone() {
+        let outbox_root = match config.outbox.dir.clone() {
             Some(dir) => dir,
             None => OutboxStore::default_root()?,
         };
-        let context_window = prepared
-            .config
-            .providers
-            .get(&prepared.provider_name)
-            .and_then(|p| p.context_window);
         Ok(Self {
-            agent: Arc::new(prepared.agent),
+            follower,
             routes,
-            provider_name: prepared.provider_name.clone(),
-            model: prepared.model.clone(),
-            levers_off: prepared.levers_off.clone(),
-            rules: prepared.rules.clone(),
-            context_window,
+            config,
             outbox_root,
             sessions: Mutex::new(HashMap::new()),
             stopping: Default::default(),
             runs: Default::default(),
-            todo: prepared.todo,
-            config: prepared.config,
-            _mcp: prepared._mcp.clone(),
         })
     }
 }
@@ -340,7 +331,7 @@ impl ChatState {
             if let Some(room) = ws.session.room() {
                 // The same close as End's (`close_incognito_locked`), in the
                 // same order — plan, then room — so the two paths do not drift.
-                if let Some(todo) = &self.todo {
+                if let Some(todo) = &self.follower.current().todo {
                     todo.forget_in(&ws.workspace);
                 }
                 if ws.live.is_none() {
@@ -378,13 +369,14 @@ impl ChatState {
     /// keeps its writes in the room.
     pub(super) async fn open_incognito(self: &Arc<Self>) -> Result<String> {
         anyhow::ensure!(!self.stopping.is_cancelled(), "server is shutting down");
-        super::incognito::provider_is_local(&self.config, &self.provider_name)
+        let bound = self.follower.follow().await?;
+        super::incognito::provider_is_local(&bound.config, &bound.provider_name)
             .map_err(|why| anyhow::anyhow!("an incognito chat needs a local model: {why}"))?;
         super::incognito::hooks_allow(&self.config).map_err(|why| anyhow::anyhow!("{why}"))?;
         let rooms = super::incognito::rooms_root()?;
         let key = super::incognito::new_key();
         let room = Arc::new(super::incognito::Room::open(&rooms, &key)?);
-        let routed: Vec<String> = self
+        let routed: Vec<String> = bound
             .agent
             .context()
             .outbox
@@ -392,7 +384,8 @@ impl ChatState {
             .map(|o| o.routed().map(String::from).collect())
             .unwrap_or_default();
         let withheld = super::incognito::withheld(
-            self.agent
+            bound
+                .agent
                 .registry()
                 .iter()
                 .map(|t| (t.name(), t.read_only())),
@@ -427,6 +420,9 @@ impl ChatState {
                 titled_at: 0,
                 withheld: Arc::from(withheld),
                 task: None,
+                // Nothing is recorded for an incognito chat; the check that
+                // reads this finds no transcript to write to.
+                recorded_generation: bound.generation,
             },
         );
         Ok(key)
@@ -447,6 +443,8 @@ impl ChatState {
         // configuration — never per chat, which would log that one opened.
         let mail = format!("{}__", super::incognito::READABLE_SERVER);
         if !self
+            .follower
+            .current()
             .agent
             .registry()
             .iter()
@@ -520,7 +518,8 @@ impl ChatState {
     }
 
     pub async fn close_mcp(&self) {
-        futures::future::join_all(self._mcp.iter().map(|client| async {
+        let bound = self.follower.current();
+        futures::future::join_all(bound.mcp().iter().map(|client| async {
             if let Err(e) = client.close().await {
                 tracing::warn!(server = client.name(), "MCP shutdown did not finish: {e:#}");
             }
@@ -531,26 +530,8 @@ impl ChatState {
     /// What the mounted voice facade needs from the shared build — the
     /// unification seam: one agent, one prefix, two dialects
     /// (docs/VOICE-RESEARCH.md, the serve unification entry).
-    pub fn voice_parts(
-        &self,
-    ) -> (
-        Arc<Agent>,
-        String,
-        String,
-        mecha_core::config::Config,
-        Vec<mecha_core::harness::Lever>,
-        mecha_core::learning::RulesCarried,
-        PathBuf,
-    ) {
-        (
-            Arc::clone(&self.agent),
-            self.provider_name.clone(),
-            self.model.clone(),
-            self.config.clone(),
-            self.levers_off.clone(),
-            self.rules.clone(),
-            self.outbox_root.clone(),
-        )
+    pub fn voice_parts(&self) -> (Arc<crate::follow::Follower>, PathBuf) {
+        (Arc::clone(&self.follower), self.outbox_root.clone())
     }
 }
 
@@ -1125,7 +1106,7 @@ pub(super) async fn open_task_conversation(
     let seed = crate::commands::tasks::discuss_prompt(
         &task,
         board["today"].as_str().unwrap_or_default(),
-        &crate::commands::tasks::Reach::of(chat.agent.registry()),
+        &crate::commands::tasks::Reach::of(chat.follower.current().agent.registry()),
     );
 
     let (session_id, fresh) = {
@@ -1168,9 +1149,11 @@ pub(super) async fn open_task_conversation(
     // re-opening is picking a conversation back up, and re-seeding it would
     // restate the brief over the top of whatever was agreed.
     if fresh {
+        let bound = chat.follower.follow().await?;
         let mut sessions = chat.sessions.lock().await;
         let _ = begin_turn(
             &chat,
+            &bound,
             &mut sessions,
             &key,
             &seed,
@@ -1329,11 +1312,14 @@ fn ensure_session_as<'a>(
             }
             None => session_workspace(key)?,
         };
+        // What the conversation opens on. Its first turn follows the router
+        // and records a fresh config if the model has moved since.
+        let bound = chat.follower.current();
         let (session, mut conversation) = match recorded {
             Some((meta, path, convo)) => {
                 // The plan comes back with it (D15), from the transcript the
                 // model is about to re-read anyway.
-                if let Some(todo) = &chat.todo {
+                if let Some(todo) = &bound.todo {
                     todo.rehydrate(&workspace, &convo.messages);
                 }
                 (Session { meta, path }, convo)
@@ -1344,8 +1330,8 @@ fn ensure_session_as<'a>(
                     SessionMeta {
                         id: Session::new_id(),
                         created_at: chrono::Utc::now(),
-                        provider: chat.provider_name.clone(),
-                        model: chat.model.clone(),
+                        provider: bound.provider_name.clone(),
+                        model: bound.model.clone(),
                         workspace: workspace.clone(),
                         // `task: …` for a delegation, so the drawer's task filter
                         // and `runlog` see it as the delegation it is rather than as
@@ -1381,11 +1367,11 @@ fn ensure_session_as<'a>(
             }
         }
         session.append(&Record::Config(RunConfig::of(
-            &chat.agent,
-            &chat.config,
-            &chat.provider_name,
-            &chat.levers_off,
-            Some(&chat.rules),
+            &bound.agent,
+            &bound.config,
+            &bound.provider_name,
+            &bound.levers_off,
+            Some(&bound.rules),
         )))?;
         let (events, _) = broadcast::channel(512);
         let questions = super::present::Questions::default();
@@ -1427,6 +1413,7 @@ fn ensure_session_as<'a>(
                 titled_at: 0,
                 withheld: Arc::from(init.withheld),
                 task: init.task,
+                recorded_generation: bound.generation,
             },
         );
     }
@@ -1453,7 +1440,7 @@ fn close_incognito_locked(
     if let Ok(mut routes) = chat.routes.lock() {
         routes.remove(key);
     }
-    if let Some(todo) = &chat.todo {
+    if let Some(todo) = &chat.follower.current().todo {
         todo.forget_in(&ws.workspace);
     }
     if let Some(room) = ws.session.room() {
@@ -1548,6 +1535,16 @@ pub async fn transcript(
     if !valid_key(&key) {
         return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
     }
+    // The chip names the model the next turn will run on, so a page loaded
+    // after a switch made anywhere else shows it. A rebuild that fails here
+    // is the next turn's to report; the page shows what is bound meanwhile.
+    let bound = match chat.follower.follow().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::debug!("the transcript read could not follow the router: {e:#}");
+            chat.follower.current()
+        }
+    };
     let sessions = chat.sessions.lock().await;
     let ws = match sessions.get(&key) {
         Some(ws) => ws,
@@ -1570,7 +1567,7 @@ pub async fn transcript(
     Json(serde_json::json!({
         "session": ws.session.id(),
         "incognito": ws.session.room().is_some(),
-        "model": chat.model,
+        "model": bound.model,
         "mode": mode,
         "running": running,
         // What this conversation is *about*, when it is about a board task.
@@ -1587,7 +1584,7 @@ pub async fn transcript(
         // The page refetches when the SSE stream announces a `todo` result;
         // no new event type is needed because every write already shows up
         // there as a tool call.
-        "todo": chat
+        "todo": bound
             .todo
             .as_ref()
             .map(|t| t.items_in(&ws.workspace))
@@ -1599,7 +1596,7 @@ pub async fn transcript(
         "usage": usage.map(|u| serde_json::json!({
             "prompt_tokens": u.input_tokens + u.cache_read_input_tokens
                 + u.cache_creation_input_tokens,
-            "context_window": chat.context_window,
+            "context_window": bound.context_window,
         })),
     }))
     .into_response()
@@ -1627,6 +1624,14 @@ pub async fn send(
         return (StatusCode::BAD_REQUEST, "empty message\n").into_response();
     }
 
+    // The model this turn will run on, followed before the lock: a rebuild
+    // after a switch can take as long as an MCP server's start, and every
+    // conversation waits on that lock. Said rather than answered on the old
+    // model when it fails — that model's request would load it back.
+    let bound = match chat.follower.follow().await {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}\n")).into_response(),
+    };
     let mut sessions = chat.sessions.lock().await;
     if chat.stopping.is_cancelled() {
         return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
@@ -1664,6 +1669,7 @@ pub async fn send(
 
     match begin_turn(
         &chat,
+        &bound,
         &mut sessions,
         &key,
         &text,
@@ -1893,6 +1899,7 @@ struct Started {
 /// (the Slack connector's pattern).
 fn begin_turn(
     chat: &Arc<ChatState>,
+    bound: &Arc<crate::follow::Bound>,
     sessions: &mut HashMap<String, WebSession>,
     key: &str,
     text: &str,
@@ -1908,6 +1915,32 @@ fn begin_turn(
     // this chat promised not to leave (`INCOGNITO-DESIGN.md` §3.4).
     if opts.spoken && ws.session.room().is_some() {
         return Err(TurnError::Failed("an incognito chat is text-only".into()));
+    }
+    // Incognito's promise, re-checked against the model this turn runs on:
+    // `open_incognito` checked the binding it opened on, and following the
+    // router can move the pick onto an entry with a remote fallback mid-chat.
+    if ws.session.room().is_some() {
+        if let Err(why) = super::incognito::provider_is_local(&bound.config, &bound.provider_name) {
+            return Err(TurnError::Failed(format!(
+                "an incognito chat needs a local model: {why}"
+            )));
+        }
+    }
+    // A conversation that crosses a switch says so in its own record, ahead of
+    // the turn it governs — the per-attach record a resume already writes.
+    if ws.recorded_generation != bound.generation {
+        if let Some(session) = ws.session.kept() {
+            session
+                .append(&Record::Config(RunConfig::of(
+                    &bound.agent,
+                    &bound.config,
+                    &bound.provider_name,
+                    &bound.levers_off,
+                    Some(&bound.rules),
+                )))
+                .map_err(|e| TurnError::Failed(format!("recording: {e:#}")))?;
+        }
+        ws.recorded_generation = bound.generation;
     }
 
     let opts = narrow_for_echo(
@@ -2060,7 +2093,7 @@ fn begin_turn(
             });
     // Per-run context on the shared agent: jail, approver, budget, cancel,
     // steering, and an outbox route stamped with this session's id.
-    let mut cx = (**chat.agent.context()).clone();
+    let mut cx = (**bound.agent.context()).clone();
     cx.tools = Arc::new(ToolCtx {
         // A spoken turn's staged drafts are reviewed by ear, and the model
         // must be told so rather than told about a command line — the
@@ -2109,11 +2142,11 @@ fn begin_turn(
         // And its image jobs are recorded there, for a sweep to take back.
         image_trail: ws.session.room().map(|room| room.image_trail.clone()),
         ..match ws.session.room() {
-            Some(room) => chat
+            Some(room) => bound
                 .agent
                 .ctx()
                 .for_session_in(room.workspace.clone(), room.spill.clone()),
-            None => chat.agent.ctx().for_session(ws.workspace.clone()),
+            None => bound.agent.ctx().for_session(ws.workspace.clone()),
         }
     });
     cx.approver = if opts.approve_all {
@@ -2156,7 +2189,7 @@ fn begin_turn(
     if ws.session.room().is_some() {
         cx.hooks = Arc::new(mecha_core::hooks::HookSet::default());
     }
-    if let Some(shared) = &chat.agent.context().outbox {
+    if let Some(shared) = &bound.agent.context().outbox {
         if let Ok(store) = OutboxStore::open(&chat.outbox_root) {
             let mine = OutboxRoute::new(
                 store,
@@ -2176,15 +2209,18 @@ fn begin_turn(
     // The situation brief's inputs that live on the shared state (B1, 1h):
     // taken here, used inside the run's task below.
     let local_server =
-        crate::setup::local_server_for_brief(&chat.config, &chat.provider_name, &chat.model);
-    let sampled = chat.agent.context().homeostat.is_some();
+        crate::setup::local_server_for_brief(&bound.config, &bound.provider_name, &bound.model);
+    let sampled = bound.agent.context().homeostat.is_some();
 
-    let agent = Arc::clone(&chat.agent);
+    let agent = Arc::clone(&bound.agent);
+    // The whole run — hand-back and naming included — stays on the binding
+    // it started on; a switch mid-run is the next turn's.
+    let bound_for_task = Arc::clone(bound);
     let key_for_task = key.to_string();
     let session = ws.session.clone();
     let bcast = ws.events.clone();
     let last_usage = Arc::clone(&ws.last_usage);
-    let context_window = chat.context_window;
+    let context_window = bound.context_window;
     let state_for_task = Arc::clone(chat);
     let (tap_tx, tap_rx) = tokio::sync::mpsc::unbounded_channel();
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
@@ -2456,7 +2492,7 @@ fn begin_turn(
                     tracing::warn!("a closed incognito room was not removed: {e:#}");
                 }
                 // And its plan, which a late `todo` call re-inserted the same way.
-                if let Some(todo) = &state_for_task.todo {
+                if let Some(todo) = &bound_for_task.todo {
                     todo.forget_in(&room.workspace);
                 }
             }
@@ -2545,8 +2581,8 @@ fn begin_turn(
                 biased;
                 _ = state_for_task.stopping.cancelled() => return,
                 named = mecha_core::title::summarise(
-                    state_for_task.agent.provider(),
-                    &state_for_task.model,
+                    bound_for_task.agent.provider(),
+                    &bound_for_task.model,
                     &owner_turns,
                 ) => named,
             };
@@ -2637,6 +2673,12 @@ impl crate::voice::SessionHost for VoiceHost {
         if !valid_key(key) {
             return Hosted::Unknown;
         }
+        // Followed once, before the lock: a rebuild can take as long as an MCP
+        // server's start, and every conversation waits on that lock.
+        let bound = match self.0.follower.follow().await {
+            Ok(b) => b,
+            Err(e) => return Hosted::Failed(format!("{e:#}")),
+        };
         for _ in 0..BARGE_IN_TRIES {
             {
                 let mut sessions = self.0.sessions.lock().await;
@@ -2661,6 +2703,7 @@ impl crate::voice::SessionHost for VoiceHost {
                 } else if idle {
                     match begin_turn(
                         &self.0,
+                        &bound,
                         &mut sessions,
                         key,
                         utterance,
@@ -3153,7 +3196,8 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
     // read it: the transcript response serves it to the page, and
     // `carried_state` carries it across a compaction so a resumed session that
     // summarises itself keeps its real plan rather than nothing.
-    if let Some(todo) = &chat.todo {
+    let bound = chat.follower.current();
+    if let Some(todo) = &bound.todo {
         if let Some(n) = todo.rehydrate(&workspace, &conversation.messages) {
             tracing::debug!(items = n, "restored the resumed session's todo list");
         }
@@ -3171,11 +3215,11 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
     // On resume as on create: a session picked up under different flags
     // should say so in its own record.
     if let Err(e) = session.append(&Record::Config(RunConfig::of(
-        &chat.agent,
-        &chat.config,
-        &chat.provider_name,
-        &chat.levers_off,
-        Some(&chat.rules),
+        &bound.agent,
+        &bound.config,
+        &bound.provider_name,
+        &bound.levers_off,
+        Some(&bound.rules),
     ))) {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
     }
@@ -3220,6 +3264,7 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
             // both stamp `task: …`, and nothing lets a model set one.
             withheld: Arc::from(withheld),
             task: None,
+            recorded_generation: bound.generation,
         },
     );
     Json(serde_json::json!({ "key": key })).into_response()
@@ -4112,20 +4157,18 @@ pub(super) fn test_chat() -> Arc<ChatState> {
     )
     .unwrap();
     Arc::new(ChatState {
-        agent: Arc::new(agent),
+        follower: Arc::new(crate::follow::Follower::fixed(
+            agent,
+            "test",
+            "test",
+            config.clone(),
+        )),
         routes: Arc::default(),
         config,
-        provider_name: "test".into(),
-        model: "test".into(),
-        levers_off: vec![],
-        rules: Default::default(),
-        context_window: None,
         outbox_root: OutboxStore::default_root().unwrap(),
         sessions: Mutex::new(HashMap::new()),
         stopping: Default::default(),
         runs: Default::default(),
-        todo: None,
-        _mcp: vec![],
     })
 }
 
@@ -4325,20 +4368,18 @@ fn test_chat_from(
     )
     .unwrap();
     Arc::new(ChatState {
-        agent: Arc::new(agent),
+        follower: Arc::new(crate::follow::Follower::fixed(
+            agent,
+            "local",
+            "test",
+            config.clone(),
+        )),
         routes: Arc::default(),
         config,
-        provider_name: "local".into(),
-        model: "test".into(),
-        levers_off: vec![],
-        rules: Default::default(),
-        context_window: None,
         outbox_root: OutboxStore::default_root().unwrap(),
         sessions: Mutex::new(HashMap::new()),
         stopping: Default::default(),
         runs: Default::default(),
-        todo: None,
-        _mcp: vec![],
     })
 }
 
@@ -4423,10 +4464,12 @@ mod workflow_recording_tests {
                     questions: Default::default(),
                     titled_at: 0,
                     last_turn_spoken: false,
+                    recorded_generation: 1,
                 },
             )]);
             let result = begin_turn(
                 &chat,
+                &chat.follower.current(),
                 &mut sessions,
                 case,
                 "next input",

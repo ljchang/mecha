@@ -11245,6 +11245,92 @@ mod tests {
         );
     }
 
+    /// A conversation carried onto an agent with a smaller window compacts
+    /// before that agent's first request (REMOTE-SURFACE-DESIGN §14, trap 4).
+    ///
+    /// This is what a long-lived surface relies on when it follows the router
+    /// from a 262,144-token model to a 32,768-token one mid-conversation: the
+    /// rebuilt agent carries the new window, and the conversation carries its
+    /// last measured size, so the check at the top of the loop fires on the
+    /// first iteration instead of the first request overflowing.
+    ///
+    /// Agent B is scripted with exactly a summary and then "done". Compacting
+    /// first, the summariser takes the summary and the run answers "done";
+    /// asking first, the summary is taken as the answer and the run ends with
+    /// nothing compacted. The control — the same carry onto an agent whose
+    /// window still fits — is what shows the window is the difference.
+    #[tokio::test]
+    async fn a_conversation_carried_onto_a_smaller_window_compacts_before_its_first_request() {
+        fn measured(blocks: Vec<Block>, stop: StopReason) -> CompletionResponse {
+            CompletionResponse {
+                usage: Usage {
+                    input_tokens: 20_000,
+                    output_tokens: 5,
+                    ..Usage::default()
+                },
+                ..assistant(blocks, stop)
+            }
+        }
+        async fn carried() -> Conversation {
+            let mut turns: Vec<CompletionResponse> = (0..4)
+                .map(|i| {
+                    measured(
+                        vec![
+                            Block::text(format!("step {i}")),
+                            Block::ToolUse {
+                                id: format!("t{i}"),
+                                name: "echo".into(),
+                                input: json!({"value": "x"}),
+                            },
+                        ],
+                        StopReason::ToolUse,
+                    )
+                })
+                .collect();
+            turns.push(measured(
+                vec![Block::text("first answer")],
+                StopReason::EndTurn,
+            ));
+            let (agent, _) = agent_with(turns, PermissionMode::Allow);
+            let agent = agent.with_context_window(Some(262_144));
+            let mut convo = Conversation::user("the original task");
+            agent.run(&mut convo, None).await.unwrap();
+            convo.push(Message::user("and now the next thing"));
+            convo
+        }
+        async fn continued_on(window: u64) -> Conversation {
+            let mut convo = carried().await;
+            let (mut agent, _) = agent_with(
+                vec![
+                    assistant(vec![Block::text("the summary")], StopReason::EndTurn),
+                    assistant(vec![Block::text("done")], StopReason::EndTurn),
+                ],
+                PermissionMode::Allow,
+            );
+            agent.cfg.compact_keep_recent = 2;
+            agent.cfg.compact_validate = false;
+            let agent = agent.with_context_window(Some(window));
+            agent.run(&mut convo, None).await.unwrap();
+            convo
+        }
+
+        let small = continued_on(8_192).await;
+        assert!(
+            small.messages[0].text().contains("compacted"),
+            "a transcript measured at 20,000 tokens must be summarised before it is sent \
+             to a model whose threshold is {} — got {:?}",
+            (8_192.0 * crate::config::AgentConfig::COMPACT_FRACTION) as u64,
+            small.messages[0].text()
+        );
+        assert!(crate::compact::orphaned_tool_results(&small.messages).is_empty());
+
+        let large = continued_on(262_144).await;
+        assert!(
+            !large.messages[0].text().contains("compacted"),
+            "the control: the same carry onto a window that still fits must not compact"
+        );
+    }
+
     #[tokio::test]
     async fn compaction_is_off_unless_a_threshold_is_set() {
         // It is lossy, so it must never happen to someone who did not ask.
