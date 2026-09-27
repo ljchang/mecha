@@ -277,7 +277,8 @@ silently answering with a different model.
 
 **`docs/LLAMA-SERVER.md` is the reference** — slot geometry, KV arithmetic,
 the measured `-np` table, and what each flag cost to learn.
-`scripts/start-moe-mtp.sh` is the authority on the flags. The parts that bite
+Since 2026-09-27 `:8080` is a llama-server router, and `scripts/start-router.sh`
+is the authority on its flags (§Router mode there). The parts that bite
 from anywhere:
 
 - **`-c` is divided across slots**: `context_window` must equal `-c / -np`,
