@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unknown`. `outbox show` and the TUI print `by <actor>` beside the reason,
   `sessions appraise` counts the other reasons apart
   (`unattributed_rejections`), and a reject whose reason is not stamped
-  `owner` says why on stderr.
+  `owner` says why — in the terminal, the TUI status line and the web
+  review.
 
 - **Planning examples from what the owner verified** (`APPRAISAL-WIRING-DESIGN.md`
   L2, 2e-4b-1, R40), behind `[agent] success_examples` /

@@ -187,11 +187,11 @@ pub fn attribute_explained(
     shell: &ShellReading,
     ancestor_run: Option<u32>,
 ) -> (Actor, Option<String>) {
-    match decide(env, shell, ancestor_run, None) {
+    match cause(env, shell, ancestor_run, None) {
         Ok((Actor::Owner, _)) => (Actor::Owner, None),
         Ok((actor, _)) => (
             actor,
-            Some("this command was run by a mecha run's shell, behind the approver".into()),
+            Some("this command was run by an interactive mecha run's shell".into()),
         ),
         Err(why) => (Actor::Unknown, Some(why)),
     }
@@ -392,10 +392,22 @@ pub fn decide(
     ancestor_run: Option<u32>,
     flagged: Option<Surface>,
 ) -> std::result::Result<(Actor, Surface), String> {
+    cause(env, shell, ancestor_run, flagged)
+        .map_err(|why| format!("{why}; refusing to close or reopen a task — {OWNERS_ACT}"))
+}
+
+/// [`decide`]'s rules with the refusal's *cause* alone — no remedy — so a
+/// caller that stamps rather than refuses ([`attribute_explained`]) says
+/// why in its own verb's words, not a task closure's (review of #343).
+fn cause(
+    env: &PostureReading,
+    shell: &ShellReading,
+    ancestor_run: Option<u32>,
+    flagged: Option<Surface>,
+) -> std::result::Result<(Actor, Surface), String> {
     if let Some(pid) = ancestor_run {
         return Err(format!(
-            "this command is running inside a delegated or scheduled run (process {pid}); \
-             {OWNERS_ACT}"
+            "this command is running inside a delegated or scheduled run (process {pid})"
         ));
     }
     match (shell, env) {
@@ -414,7 +426,7 @@ pub fn decide(
             _,
         ) => Err(format!(
             "this command was run by a {} run's shell (process {pid}), with nobody in the \
-             conversation; {OWNERS_ACT}",
+             conversation",
             p.as_str()
         )),
         (
@@ -425,18 +437,17 @@ pub fn decide(
             _,
         ) => Err(format!(
             "this command was run by a shell (process {pid}) whose run posture is {word:?}, \
-             which is not one this build can read; refusing to close or reopen a task on its \
-             behalf — {OWNERS_ACT}"
+             which is not one this build can read"
         )),
         (ShellReading::Redirected { pid, root }, _) => Err(format!(
             "this command was run by a shell (process {pid}) registered in {}, but it reads \
-             a different MECHA_HOME — a command inside a run cannot redirect where its \
-             closure is recorded; {OWNERS_ACT}",
+             a different MECHA_HOME — a command inside a run cannot redirect where its act \
+             is recorded",
             root.display()
         )),
         (ShellReading::Unreadable(why), _) => Err(format!(
             "the harness's shell registry could not be read ({why}), so this command's run \
-             posture is unknown; refusing to close or reopen a task — {OWNERS_ACT}"
+             posture is unknown"
         )),
         (ShellReading::NotRegistered, PostureReading::NotInRun) => {
             Ok((Actor::Owner, flagged.unwrap_or(Surface::Cli)))
@@ -444,7 +455,7 @@ pub fn decide(
         (ShellReading::NotRegistered, _) => Err(format!(
             "this command carries {POSTURE_ENV} but no registered mecha shell is among its \
              ancestors — a run's posture is read from the harness's registry, never from the \
-             variable alone; {OWNERS_ACT}"
+             variable alone"
         )),
     }
 }

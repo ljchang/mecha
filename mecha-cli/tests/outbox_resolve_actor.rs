@@ -6,6 +6,8 @@
 // fixture *and* the real `~/.mecha`. Run from inside a mecha run's own
 // `shell`, a live registration there sits above the test process and the
 // owner's case reads `unknown`. Run the suite from a plain terminal.
+// The shell cases need the `/proc` walk; off Linux their helpers are unused.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use mecha_core::agent::Taint;
 use mecha_core::closure::{Actor, RunPosture};
@@ -104,7 +106,7 @@ fn a_reject_at_the_owners_own_door_is_the_owners() {
     let out = f.reject(&item.id, &[]);
     ok(&out);
     assert!(
-        !String::from_utf8_lossy(&out.stderr).contains("not be read as your correction"),
+        !String::from_utf8_lossy(&out.stdout).contains("not be read as your correction"),
         "the owner is not told their words are not theirs"
     );
     let done = f.resolved(&item.id);
@@ -156,12 +158,16 @@ fn a_reject_through_a_models_shell_is_never_the_owners() {
         // Stamped, not refused — and said, so a demotion at the owner's
         // own terminal is never silent (review of #343).
         assert!(
-            String::from_utf8_lossy(&out.stderr).contains(&format!(
-                "recorded as {} rather than yours",
+            String::from_utf8_lossy(&out.stdout).contains(&format!(
+                "note: the reason is recorded as {} rather than yours",
                 expected.as_str()
             )),
             "{}",
-            String::from_utf8_lossy(&out.stderr)
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).contains("closing or reopening a task"),
+            "the note is the outbox's, not a task closure's advice"
         );
         drop(shell);
         let done = f.resolved(&item.id);
@@ -188,5 +194,10 @@ fn a_claimed_posture_with_no_registered_shell_is_not_the_owner() {
         let done = f.resolved(&item.id);
         assert_eq!(done.resolved_by, Some(Actor::Unknown), "{stamp}");
         assert_eq!(done.rejection_reason(), None, "{stamp}");
+        assert_eq!(
+            done.rejection(),
+            Some(Rejection::NotOwners(Actor::Unknown)),
+            "{stamp}"
+        );
     }
 }

@@ -251,14 +251,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
         Cmd::Reject { selection, reason } => {
             let (by, why) = acting_actor_explained();
+            let result = reject(&store, &selection, reason.clone(), by);
+            // On stdout, after the verdict: the web review and the TUI relay
+            // stdout, not stderr, and a demotion at the owner's own door
+            // must reach them (review of #343).
             if let (Some(why), true) = (why, reason.is_some()) {
-                eprintln!(
-                    "note: the reason is recorded as {} rather than yours — {why}; it will not \
-                     be read as your correction",
-                    by.as_str()
-                );
+                println!("{}", demotion_note(by, &why));
             }
-            reject(&store, &selection, reason, by)
+            result
         }
     }
 }
@@ -304,6 +304,20 @@ fn acting_actor_explained() -> (Actor, Option<String>) {
         ancestor,
     )
 }
+
+/// The line a reject prints when its reason will not be read as the owner's:
+/// [`DEMOTION_PREFIX`], so a relay can find it in stdout, then the actor and
+/// the cause.
+pub(crate) fn demotion_note(by: Actor, why: &str) -> String {
+    format!(
+        "{DEMOTION_PREFIX} {} rather than yours ({why}), so it will not be read as your \
+         correction",
+        by.as_str()
+    )
+}
+
+/// How [`demotion_note`] begins — what the TUI and the web review look for.
+pub(crate) const DEMOTION_PREFIX: &str = "note: the reason is recorded as";
 
 /// Owner CLI file, never a model-supplied tool path. Bound the read before parsing.
 pub(crate) fn read_evidence_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {

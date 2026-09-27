@@ -3434,9 +3434,12 @@ release); `owner-approved` under an interactive run's registered shell;
 `unknown` for everything the closure path refuses. **Stamped, not
 refused:** a rejection sends nothing, and the stamp is what keeps its words
 from passing as the owner's. **And said:** a reject whose reason is stamped
-anything but `owner` prints why on stderr (`closure::attribute_explained`),
-so a demotion at the owner's own terminal — an unreadable marker directory,
-say — is never silent (review of #343). Readers take the reason through
+anything but `owner` prints why (`closure::attribute_explained`, the cause
+without `decide`'s task-closure remedy) on **stdout**, because the web
+review and the TUI's `/outbox` relay stdout and drop stderr; the TUI puts
+the note in its status line and the web page shows it in place of
+"Rejected." — so a demotion at the owner's own door, an unreadable marker
+directory say, is never silent (review of #343). Readers take the reason through
 `OutboxItem::rejection` — `OwnersWords(text)` or `NotOwners(actor)`, whose
 `word()` is fixed harness text with none of the reason's bytes — or
 `rejection_reason` / `owners_reason`, which are `None` unless the actor is
