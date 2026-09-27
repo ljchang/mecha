@@ -1767,16 +1767,17 @@ model *is* the choice — every run that takes a provider marked
 no setting to edit. `list` is the default subcommand.
 
 ```
-mecha model [list|use] [ARGS] [--json]
+mecha model [list|use|cancel-switch] [ARGS] [--json]
 ```
 
 | Subcommand | Flag | Description |
 |---|---|---|
 | `list` | | Each router's models, which one is loaded (●), the provider entry naming each, and any entry whose `temperature` disagrees with its model's preset. |
 | `use` | `<NAME>` | A provider entry or a router model name. Loads it and waits until it is resident. |
-| `use` | `--now` | Stop the loaded model even mid-reply instead of waiting for it to go idle; the reply in progress fails. |
-| `use` | `--wait-secs <N>` | Give up after this many seconds (default 600; a cold load measured 33–39 s). |
-| both | `--json` | Machine-readable output. An unreachable router is listed with `"reachable": false`. |
+| `use` | `--now` | Don't wait for the runs using the loaded model: ask each to stop at its next safe point, give them 15 s, then switch. A reply in progress ends early. Without it, the switch waits for every run to finish, with no time limit. |
+| `use` | `--wait-secs <N>` | Give up on the *load* after this many seconds (default 600; a cold load measured 33–39 s). The wait for runs before it is not bounded. |
+| `cancel-switch` | | Withdraw every pending switch, on every router — the way out of one whose `mecha model use` is gone or whose file can't be read, which every run on that router would otherwise wait for. A live switch is better stopped with Ctrl-C where it runs. |
+| `list`, `use` | `--json` | Machine-readable output. An unreachable router is listed with `"reachable": false`. |
 
 Behind a router, `--model` on any command selects as well as names: `mecha run
 --model qwen3.8-27b "…"` loads that model, evicting the one that was loaded,
@@ -1797,4 +1798,4 @@ mecha model use gemma26
 mecha model use qwen3.6-35b-a3b-uncensored --now
 ```
 
-See `follow_loaded` in the [configuration reference](/docs/reference/configuration).
+See [Switching models](/docs/features/models/switching) for what follows a switch and why it waits, and `follow_loaded` in the [configuration reference](/docs/reference/configuration).
