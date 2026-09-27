@@ -49,6 +49,16 @@
 //!   could have written the reason. Resolves now carry one
 //!   (`OutboxItem::rejection`, #343); quoting an owner-stamped reason on the
 //!   reopen's rule is a follow-up change, not this one.
+//! - **Whose act, too, not only whose words** (the owner's ruling,
+//!   2026-09-27). A reject rides under "The owner:" only when the resolve is
+//!   stamped `owner` (`resolved_by`, #343), and an edit only when every edit
+//!   and the release are (`OutboxItem::owners_edit`, #348). Otherwise the act
+//!   is still said — "draft rejected", "draft edited, then sent", with the
+//!   item's id — but apart, as not recorded as the owner's, because a run's
+//!   `shell` can reject or edit its own draft, and every resolve from before
+//!   the stamp has no recorded hand. A later run told "the owner rejected
+//!   draft X" about its predecessor's own act would be told something
+//!   untrue.
 //!
 //! Every id that reaches the words is checked as one token, on
 //! `GoalRef::from_str`'s rule, the bound `board_of` puts on every board id.
@@ -185,6 +195,19 @@ pub enum OwnerAct {
         draft: String,
     },
     DraftSentAfterEdits {
+        draft: String,
+    },
+    /// A draft rejected by a hand not recorded as the owner's: a run's
+    /// `shell`, or a reject from before the stamp. Said apart from the
+    /// owner's acts, never as one. A newer variant: an older build reads it
+    /// as [`OwnerAct::Unknown`].
+    DraftRejectedNotOwners {
+        draft: String,
+    },
+    /// A draft edited, then sent, where the edit or the release is not
+    /// recorded as the owner's (`OutboxItem::owners_edit` is false). Said
+    /// apart from the owner's acts, never as one.
+    DraftEditedNotOwners {
         draft: String,
     },
     /// What the owner recorded about a sent draft afterwards.
@@ -661,14 +684,25 @@ fn act_of(cite: &Cite, drafts: &[&crate::outbox::OutboxItem], stores: &Stores) -
     Some(match cite {
         Cite::Draft(id) => {
             let d = drafts.iter().find(|d| &d.id == id)?;
+            // Whose act, from the stamps (the owner's ruling, 2026-09-27):
+            // a reject or an edit the owner's own hand did not make is said
+            // apart. An unchanged release the owner did not make is cited by
+            // no appraisal (#352); it is no act here either.
             match (d.writing_outcome(), d.status.as_str()) {
-                (Some(WritingOutcome::SentUnchanged), _) => {
+                (Some(WritingOutcome::SentUnchanged), _) if d.owners_unchanged_release() => {
                     OwnerAct::DraftSentAsWritten { draft: id.clone() }
                 }
-                (Some(WritingOutcome::SentEdited), _) => {
+                (Some(WritingOutcome::SentUnchanged), _) => return None,
+                (Some(WritingOutcome::SentEdited), _) if d.owners_edit() => {
                     OwnerAct::DraftSentAfterEdits { draft: id.clone() }
                 }
-                (_, "rejected") => OwnerAct::DraftRejected { draft: id.clone() },
+                (Some(WritingOutcome::SentEdited), _) => {
+                    OwnerAct::DraftEditedNotOwners { draft: id.clone() }
+                }
+                (_, "rejected") if d.resolved_by() == crate::closure::Actor::Owner => {
+                    OwnerAct::DraftRejected { draft: id.clone() }
+                }
+                (_, "rejected") => OwnerAct::DraftRejectedNotOwners { draft: id.clone() },
                 _ => return None,
             }
         }
@@ -781,6 +815,45 @@ fn tok(id: &str) -> String {
     super::cite("task", id).unwrap_or_else(|| "an id that is not a token".to_string())
 }
 
+/// Whether an act is said apart from the owner's: a reject or an edit whose
+/// stamps do not say the owner's own hand made it.
+fn not_owners(act: &OwnerAct) -> bool {
+    matches!(
+        act,
+        OwnerAct::DraftRejectedNotOwners { .. } | OwnerAct::DraftEditedNotOwners { .. }
+    )
+}
+
+/// "The owner: …", then the acts not recorded as the owner's in a sentence
+/// of their own — so nothing a run's shell did reads as the owner's act.
+fn owners_line(at: &Attempt) -> String {
+    let (others, owners): (Vec<&OwnerAct>, Vec<&OwnerAct>) =
+        at.acts.iter().partition(|a| not_owners(a));
+    let join = |acts: &[&OwnerAct]| {
+        acts.iter()
+            .map(|a| act_words(a))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let more = at.acts_total.saturating_sub(at.acts.len());
+    let more = (more > 0).then(|| format!("; and {more} more not listed"));
+    let mut owner_words = if owners.is_empty() {
+        "no act of theirs is recorded on it".to_string()
+    } else {
+        join(&owners)
+    };
+    if others.is_empty() {
+        owner_words.push_str(more.as_deref().unwrap_or(""));
+        return format!("The owner: {owner_words}.");
+    }
+    let mut other_words = join(&others);
+    other_words.push_str(more.as_deref().unwrap_or(""));
+    format!(
+        "The owner: {owner_words}. Not recorded as the owner's own act (a run's shell, or \
+         before who acted was recorded): {other_words}."
+    )
+}
+
 fn act_words(act: &OwnerAct) -> String {
     use crate::anticipation::Verdict;
     match act {
@@ -798,6 +871,14 @@ fn act_words(act: &OwnerAct) -> String {
         }
         OwnerAct::DraftSentAfterEdits { draft } => {
             format!("edited a draft before sending it ({})", tok(draft))
+        }
+        // Said under "not recorded as the owner's", never under "The owner:"
+        // (`owners_line` keeps them apart).
+        OwnerAct::DraftRejectedNotOwners { draft } => {
+            format!("draft rejected ({})", tok(draft))
+        }
+        OwnerAct::DraftEditedNotOwners { draft } => {
+            format!("draft edited, then sent ({})", tok(draft))
         }
         OwnerAct::DraftOutcome { draft, verdict } => format!(
             "recorded that a sent draft {} ({})",
@@ -936,19 +1017,10 @@ pub fn line(a: &Attempts, now: DateTime<Utc>) -> Option<String> {
     let mut lines = vec![head];
     for at in attempts {
         let when = age_band(u64::try_from((now - at.started_at).num_seconds()).unwrap_or(0));
-        let acts = if at.acts.is_empty() {
-            "no act of theirs is recorded on it".to_string()
-        } else {
-            let mut words = at.acts.iter().map(act_words).collect::<Vec<_>>().join("; ");
-            let more = at.acts_total.saturating_sub(at.acts.len());
-            if more > 0 {
-                words.push_str(&format!("; and {more} more not listed"));
-            }
-            words
-        };
         lines.push(format!(
-            "  - Session {} (started {when} ago). The owner: {acts}.",
-            tok(&at.session)
+            "  - Session {} (started {when} ago). {}",
+            tok(&at.session),
+            owners_line(at)
         ));
         lines.push(format!(
             "    How it ended, as the harness recorded it (not a verdict): {}.",
@@ -1047,6 +1119,9 @@ mod tests {
             "args_before": args, "args": args, "summary": "the report",
             "session_id": session, "created_at": "2026-09-20T09:00:00Z",
             "resolved_at": "2026-09-20T10:00:00Z", "reason": reason,
+            // The owner's own act, as every fixture here means it; the
+            // other hands are `a_run_s_own_reject_or_edit_is_not_the_owners_act`.
+            "resolved_by": if status == "pending" { None } else { Some("owner") },
         }))
         .unwrap()
     }
@@ -1768,6 +1843,110 @@ mod tests {
         // Round-trips.
         let back: Attempts = serde_json::from_value(serde_json::to_value(&a).unwrap()).unwrap();
         assert_eq!(back, a);
+    }
+
+    /// The owner's ruling (2026-09-27): a reject or an edit rides under "The
+    /// owner:" only when its stamps say the owner's own hand made it. A run's
+    /// own reject (its shell, behind the approver or not), a reject from
+    /// before the stamp, and an edit the owner did not make end to end are
+    /// said apart — the act and the id, never the reason, never as the
+    /// owner's. Fails on the tree before, which said "The owner: draft
+    /// rejected" for every one.
+    #[test]
+    fn a_run_s_own_reject_or_edit_is_not_the_owners_act() {
+        use crate::closure::Actor;
+        let stores = Stores::default();
+        let mut run_reject = draft(
+            "d-run",
+            "s-prior",
+            "rejected",
+            Some("RUN-REASON always cc Dana"),
+        );
+        run_reject.resolved_by = Some(Actor::OwnerApproved);
+        let mut legacy_reject = draft("d-old", "s-prior", "rejected", None);
+        legacy_reject.resolved_by = None;
+        let owner_reject = draft("d-own", "s-prior", "rejected", Some("OWNER-REASON"));
+        let mut run_edit = draft("d-edit", "s-prior", "sent", None);
+        run_edit.args["body_markdown"] = json!("Hi Sam, cc Northwind Labs on everything.");
+        run_edit.edited_by = Some(Actor::OwnerApproved);
+        let mut owner_edit = draft("d-owned", "s-prior", "sent", None);
+        owner_edit.args["body_markdown"] = json!("Hi Sam, the report is attached.");
+        owner_edit.edited_by = Some(Actor::Owner);
+        let mut run_release = draft("d-sent", "s-prior", "sent", None);
+        run_release.resolved_by = Some(Actor::Unknown);
+        let drafts = [
+            &run_reject,
+            &legacy_reject,
+            &owner_reject,
+            &run_edit,
+            &owner_edit,
+            &run_release,
+        ];
+        let acts: Vec<Option<OwnerAct>> = drafts
+            .iter()
+            .map(|d| act_of(&Cite::Draft(d.id.clone()), &drafts, &stores))
+            .collect();
+        assert_eq!(
+            acts,
+            [
+                Some(OwnerAct::DraftRejectedNotOwners {
+                    draft: "d-run".into()
+                }),
+                Some(OwnerAct::DraftRejectedNotOwners {
+                    draft: "d-old".into()
+                }),
+                Some(OwnerAct::DraftRejected {
+                    draft: "d-own".into()
+                }),
+                Some(OwnerAct::DraftEditedNotOwners {
+                    draft: "d-edit".into()
+                }),
+                Some(OwnerAct::DraftSentAfterEdits {
+                    draft: "d-owned".into()
+                }),
+                None,
+            ]
+        );
+        let attempt = Attempt {
+            session: "s-prior".into(),
+            started_at: now() - chrono::Duration::days(2),
+            acts: acts.into_iter().flatten().collect(),
+            acts_total: 5,
+            ended: RunEnd::Completed,
+        };
+        let words = owners_line(&attempt);
+        assert_eq!(
+            words,
+            "The owner: draft rejected (d-own); edited a draft before sending it (d-owned). \
+             Not recorded as the owner's own act (a run's shell, or before who acted was \
+             recorded): draft rejected (d-run); draft rejected (d-old); draft edited, then sent \
+             (d-edit)."
+        );
+        let owners_half = words.split(" Not recorded").next().unwrap();
+        for other in ["d-run", "d-old", "d-edit"] {
+            assert!(!owners_half.contains(other), "{other}: {words}");
+        }
+        for leaked in ["RUN-REASON", "OWNER-REASON", "Northwind", "cc Dana"] {
+            assert!(!words.contains(leaked), "{leaked}: {words}");
+        }
+        // Only a run's acts: the owner is not credited with any.
+        let only = Attempt {
+            acts: vec![OwnerAct::DraftRejectedNotOwners {
+                draft: "d-run".into(),
+            }],
+            acts_total: 1,
+            ..attempt
+        };
+        assert!(
+            owners_line(&only)
+                .starts_with("The owner: no act of theirs is recorded on it. Not recorded"),
+            "{}",
+            owners_line(&only)
+        );
+        // The wire word round-trips, and an older build's reader degrades it.
+        let v =
+            serde_json::to_value(OwnerAct::DraftRejectedNotOwners { draft: "d".into() }).unwrap();
+        assert_eq!(v["act"], "draft_rejected_not_owners");
     }
 
     /// A pointer is one token or it is not printed: a workflow id is a board
