@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use mecha_core::agent::{is_plain_user_text, Agent, AgentEvent, Conversation};
+use mecha_core::agent::{is_plain_user_text, AgentEvent, Conversation};
 use mecha_core::message::Message;
 use mecha_core::outbox::{OutboxRoute, OutboxStore};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
@@ -473,6 +473,9 @@ mod echo_span_tests {
 struct Slot {
     convo: Conversation,
     session: Session,
+    /// Which binding this slot's record last named; a run on another one
+    /// records a fresh `RunConfig` first (`follow::Bound::generation`).
+    recorded_generation: u64,
 }
 
 /// What the map holds per session id. `Running` carries the cancel handle so
@@ -507,21 +510,16 @@ pub struct Mount {
 }
 
 struct Shared {
-    agent: Arc<Agent>,
+    /// The agent and everything read off its build, following the router's
+    /// loaded model per request (`crate::follow`). Mounted in `serve`, it is
+    /// the chat's own follower, so both doors run on one model.
+    follower: Arc<crate::follow::Follower>,
     mount: Mount,
     slots: Mutex<HashMap<String, SlotState>>,
     stopping: CancellationToken,
     handlers: tokio_util::task::TaskTracker,
     session_dir: PathBuf,
     outbox_root: PathBuf,
-    provider_name: String,
-    model: String,
-    config: mecha_core::config::Config,
-    /// For `RunConfig::levers_off`; the switches are not readable off the
-    /// shared agent, so the front-end that built it hands them over.
-    levers_off: Vec<mecha_core::harness::Lever>,
-    /// For `RunConfig::rules_hash`, handed over the same way.
-    rules: mecha_core::learning::RulesCarried,
     token: Option<String>,
     /// The open "send it?" question per conversation. Lives beside the slots
     /// rather than inside one, because a hosted call (D3) has no slot here
@@ -577,30 +575,20 @@ pub struct Facade {
 impl Facade {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        agent: Arc<Agent>,
-        provider_name: String,
-        model: String,
-        config: mecha_core::config::Config,
-        levers_off: Vec<mecha_core::harness::Lever>,
-        rules: mecha_core::learning::RulesCarried,
+        follower: Arc<crate::follow::Follower>,
         outbox_root: PathBuf,
         token: Option<String>,
         mount: Mount,
     ) -> Result<Self> {
         Ok(Self {
             shared: Arc::new(Shared {
-                agent,
+                follower,
                 mount,
                 slots: Mutex::new(HashMap::new()),
                 stopping: CancellationToken::new(),
                 handlers: Default::default(),
                 session_dir: Session::default_dir()?,
                 outbox_root,
-                provider_name,
-                model,
-                config,
-                levers_off,
-                rules,
                 token,
                 confirmations: confirm::Confirmations::default(),
                 affects: Mutex::new(HashMap::new()),
@@ -684,7 +672,10 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         opts.workspace = Some(dir);
     }
     opts.surface = Some(mecha_core::session::SessionKind::Voice);
-    let prepared = crate::setup::prepare(&opts, false).await?;
+    // Standalone voice-serve follows the router like the mounted facade
+    // does; nothing to add to the build, so `finish` is empty.
+    let follower = Arc::new(crate::follow::Follower::start(opts, Box::new(|_| {})).await?);
+    let first = follower.current();
 
     let global_cfg = mecha_core::config::Config::load_global()?;
     let outbox_root = match global_cfg.outbox.dir.clone() {
@@ -692,14 +683,9 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         None => OutboxStore::default_root()?,
     };
 
-    let workspace = prepared.workspace.clone();
+    let workspace = first.workspace.clone();
     let facade = Facade::new(
-        Arc::new(prepared.agent),
-        prepared.provider_name.clone(),
-        prepared.model.clone(),
-        prepared.config,
-        prepared.levers_off,
-        prepared.rules,
+        Arc::clone(&follower),
         outbox_root,
         args.token.clone(),
         // Standalone: the voice block already rides this agent's system
@@ -712,8 +698,8 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
 
     println!(
         "mecha voice-serve · {} ({}) · listening on http://{LISTEN_HOST}:{}/v1/chat/completions · workspace {}",
-        facade.shared.model,
-        facade.shared.provider_name,
+        first.model,
+        first.provider_name,
         args.port,
         workspace.display()
     );
@@ -733,7 +719,8 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     signals
         .drain_or_force(async {
             facade.shutdown().await;
-            futures::future::join_all(prepared._mcp.iter().map(|client| async {
+            let bound = follower.current();
+            futures::future::join_all(bound.mcp().iter().map(|client| async {
                 if let Err(e) = client.close().await {
                     tracing::warn!(server = client.name(), "MCP shutdown did not finish: {e:#}");
                 }
@@ -1106,6 +1093,7 @@ async fn write_chunk(stream: &mut VoiceStream, data: &[u8]) -> std::io::Result<(
 /// machinery here would outweigh the failure it prevents.
 async fn take_slot(
     shared: &Arc<Shared>,
+    bound: &crate::follow::Bound,
     key: &str,
 ) -> Result<Option<(Box<Slot>, mecha_core::agent::CancelHandle)>> {
     for _ in 0..200 {
@@ -1124,21 +1112,15 @@ async fn take_slot(
                         SessionMeta {
                             id: Session::new_id(),
                             created_at: chrono::Utc::now(),
-                            provider: shared.provider_name.clone(),
-                            model: shared.model.clone(),
-                            workspace: shared.agent.context().tools.workspace.clone(),
+                            provider: bound.provider_name.clone(),
+                            model: bound.model.clone(),
+                            workspace: bound.agent.context().tools.workspace.clone(),
                             title: Some(format!("voice: {key}")),
                             kind: Some(mecha_core::session::SessionKind::Voice),
                         },
                     )
                     .and_then(|session| {
-                        session.append(&Record::Config(RunConfig::of(
-                            &shared.agent,
-                            &shared.config,
-                            &shared.provider_name,
-                            &shared.levers_off,
-                            Some(&shared.rules),
-                        )))?;
+                        session.append(&Record::Config(run_config(bound)))?;
                         Ok(session)
                     });
                     match created {
@@ -1147,6 +1129,7 @@ async fn take_slot(
                                 Box::new(Slot {
                                     convo: Conversation::new(),
                                     session,
+                                    recorded_generation: bound.generation,
                                 }),
                                 token,
                             )))
@@ -1159,7 +1142,16 @@ async fn take_slot(
                         }
                     }
                 }
-                Some(SlotState::Idle(slot)) => {
+                Some(SlotState::Idle(mut slot)) => {
+                    // A conversation that crosses a switch says so in its own
+                    // record, ahead of the run it governs.
+                    if slot.recorded_generation != bound.generation {
+                        if let Err(e) = slot.session.append(&Record::Config(run_config(bound))) {
+                            slots.insert(key.to_string(), SlotState::Idle(slot));
+                            return Err(e);
+                        }
+                        slot.recorded_generation = bound.generation;
+                    }
                     let token = mecha_core::agent::CancelHandle::new();
                     slots.insert(key.to_string(), SlotState::Running(token.clone()));
                     return Ok(Some((slot, token)));
@@ -1177,6 +1169,25 @@ async fn take_slot(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     Ok(None)
+}
+
+/// What a slot's record says this binding is.
+fn run_config(bound: &crate::follow::Bound) -> RunConfig {
+    RunConfig::of(
+        &bound.agent,
+        &bound.config,
+        &bound.provider_name,
+        &bound.levers_off,
+        Some(&bound.rules),
+    )
+}
+
+impl Shared {
+    /// The model name the OpenAI dialect puts on a reply. A label for the
+    /// worker, never recorded; the run itself uses the binding it followed.
+    fn model(&self) -> String {
+        self.follower.current().model.clone()
+    }
 }
 
 /// Stream the reply as the run produces it, or (non-streaming) drain the
@@ -1345,7 +1356,7 @@ async fn hosted_completion(
     let Streamed { disconnected, said } = pump(
         stream,
         id,
-        &shared.model,
+        &shared.model(),
         &mut turn.events,
         &turn.cancel,
         want_stream,
@@ -1415,7 +1426,7 @@ async fn hosted_completion(
             finish_stream(
                 stream,
                 id,
-                &shared.model,
+                &shared.model(),
                 answer.as_ref().err().map(|e| &**e),
             )
             .await;
@@ -1435,7 +1446,7 @@ async fn hosted_completion(
                     "id": id,
                     "object": "chat.completion",
                     "created": chrono::Utc::now().timestamp(),
-                    "model": shared.model,
+                    "model": shared.model(),
                     "choices": [{
                         "index": 0,
                         "message": {"role": "assistant", "content": content},
@@ -1562,7 +1573,7 @@ async fn open_sse(stream: &mut VoiceStream, id: &str, model: &str) -> bool {
 /// wanted. One utterance, one place, so the streaming and blocking paths
 /// cannot word the same fact differently.
 async fn say(stream: &mut VoiceStream, shared: &Arc<Shared>, id: &str, text: &str) -> bool {
-    say_on(stream, id, &shared.model, text).await
+    say_on(stream, id, &shared.model(), text).await
 }
 
 /// The same, without a `Shared` — so the wire format can be tested against a
@@ -1627,7 +1638,7 @@ async fn answer_completion(
     // and sending on a call that is already gone is the surprising outcome.
     // A socket that dies mid-acknowledgement is different — the answer was
     // heard and the work is already under way — and that arm says so.
-    if want_stream && !open_sse(stream, id, &shared.model).await {
+    if want_stream && !open_sse(stream, id, &shared.model()).await {
         return Some(Ok(()));
     }
     match reaction {
@@ -1748,7 +1759,7 @@ async fn finish_with(
 ) -> Result<bool> {
     if want_stream {
         let delivered = say(stream, shared, id, text).await;
-        finish_stream(stream, id, &shared.model, None).await;
+        finish_stream(stream, id, &shared.model(), None).await;
         return Ok(delivered);
     }
     write_json(
@@ -1758,7 +1769,7 @@ async fn finish_with(
             "id": id,
             "object": "chat.completion",
             "created": chrono::Utc::now().timestamp(),
-            "model": shared.model,
+            "model": shared.model(),
             "choices": [{
                 "index": 0,
                 "message": {"role": "assistant", "content": text},
@@ -1904,7 +1915,19 @@ async fn completion(
         }
     }
 
-    let Some((mut slot, cancel)) = take_slot(shared, &key).await? else {
+    // The model this request runs on, followed from the router once and used
+    // for the whole run. A failed rebuild is said rather than answered on the
+    // old model, whose request would load it back.
+    // D13: held first — a switch in progress is waited out, silently: the
+    // worker is holding the line for a reply — then followed. The hold lives
+    // as long as this request, which is the whole run.
+    let (held, bound) = match shared.follower.enter("voice call", |_| {}).await {
+        Ok(entered) => entered,
+        Err(e) => {
+            return write_json(stream, 503, &json!({"error": format!("{e:#}")})).await;
+        }
+    };
+    let Some((mut slot, cancel)) = take_slot(shared, &bound, &key).await? else {
         // The in-flight run would not yield — usually a tool call longer
         // than the barge-in window, which cancellation never interrupts
         // mid-call. An answer the worker can speak beats a dropped socket
@@ -1917,9 +1940,14 @@ async fn completion(
         .await;
     };
 
+    if let Some(h) = &held {
+        let c = cancel.clone();
+        h.on_cancel(move || c.cancel(mecha_core::agent::CancelReason::Stopped));
+    }
+
     // From here the slot must always find its way back into the map, so
     // nothing below uses `?` until it has.
-    let mut cx = (**shared.agent.context()).clone();
+    let mut cx = (**bound.agent.context()).clone();
     // Through the builder, not a field write: the slot's handle carries this
     // run's own reason cell.
     cx = cx.with_cancel_handle(cancel.clone());
@@ -2000,7 +2028,7 @@ async fn completion(
     // one Arc across every session, and the stamp is what attributes a draft
     // to the run that wrote it. Fail closed like the connector: a run that
     // would stage drafts without attribution must not run at all.
-    if let Some(shared_route) = &shared.agent.context().outbox {
+    if let Some(shared_route) = &bound.agent.context().outbox {
         match OutboxStore::open(&shared.outbox_root) {
             Ok(store) => {
                 let mine = OutboxRoute::new(
@@ -2060,14 +2088,14 @@ async fn completion(
     };
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
-    let agent = Arc::clone(&shared.agent);
+    let agent = Arc::clone(&bound.agent);
     let run = tokio::spawn(async move {
         let outcome = agent.run_in(&cx, &mut slot.convo, Some(tx)).await;
         (slot, outcome)
     });
 
     let Streamed { disconnected, said } =
-        pump(stream, &id, &shared.model, &mut rx, &cancel, want_stream).await;
+        pump(stream, &id, &shared.model(), &mut rx, &cancel, want_stream).await;
 
     let (mut slot, outcome) = match run.await {
         Ok(pair) => pair,
@@ -2157,7 +2185,7 @@ async fn completion(
                 }
             }
             let failed = outcome.as_ref().err().map(|e| format!("{e:#}"));
-            finish_stream(stream, &id, &shared.model, failed.as_deref()).await;
+            finish_stream(stream, &id, &shared.model(), failed.as_deref()).await;
         }
     } else {
         match &outcome {
@@ -2173,7 +2201,7 @@ async fn completion(
                         "id": id,
                         "object": "chat.completion",
                         "created": chrono::Utc::now().timestamp(),
-                        "model": shared.model,
+                        "model": shared.model(),
                         "choices": [{
                             "index": 0,
                             "message": {"role": "assistant", "content": content},

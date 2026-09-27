@@ -39,10 +39,14 @@
 //! armed had the model made it; nothing in them came from outside, so
 //! `untrusted` stays unarmed. `docs/TRIFECTA.md` has the row.
 //!
+//! **A re-delegated task's previous attempts** (M5, built as 3a-2 under R42)
+//! are the [`attempts`] submodule: a bounded walk over the task sessions, the
+//! owner's acts read by the pointers `appraisal::of_session` cites, and only
+//! the owner's own words quoted.
+//!
 //! Deferred, named: the owner's recent activity across surfaces (B1 names it,
-//! the 1h row does not), past appraisals of the same situation (I2, phase
-//! 2) and a re-delegated task's previous attempts (M5, deferred from 3a to
-//! its own follow-up, 3a-2: no existing record lists them).
+//! the 1h row does not), and past appraisals of the same situation pushed
+//! into the brief (I2; 2c-2 serves them on demand through `goal_context`).
 
 use crate::charter::Charter;
 use crate::goal::GoalRef;
@@ -54,6 +58,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+pub mod attempts;
+pub use attempts::Attempts;
 
 /// The most ids one pointer list carries. Every list sits beside the count
 /// it was cut from, so a capped list never reads as the whole.
@@ -83,6 +90,14 @@ pub struct SituationBrief {
         deserialize_with = "lenient"
     )]
     pub goal: Option<GoalChain>,
+    /// A re-delegated task's previous attempts (M5, 3a-2), or
+    /// [`Attempts::NotATask`] for a run anchored to anything else.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient"
+    )]
+    pub attempts: Option<Attempts>,
     /// The board, read harness-side and reduced to counts and pointers.
     #[serde(
         default,
@@ -1130,6 +1145,11 @@ pub struct Inputs<'a> {
     /// `TriggerStore::default_root()`, or why it could not be resolved.
     pub triggers_root: Result<PathBuf, String>,
     pub anchor: Option<&'a GoalRef>,
+    /// The task's previous attempts, already read ([`attempts::for_run`],
+    /// or [`attempts::for_run_within`] off the async threads): a walk over
+    /// the session directory and the stores, which a door bounds by its
+    /// deadline as it bounds the board.
+    pub attempts: Attempts,
     /// The `kg_task_list` answer, or why there is none.
     pub board: Result<Value, String>,
     /// The loaded charter, or why it did not load.
@@ -1159,6 +1179,7 @@ pub fn assemble(inputs: Inputs<'_>) -> SituationBrief {
         home,
         triggers_root,
         anchor,
+        attempts,
         board,
         charter,
         homeostat,
@@ -1183,6 +1204,7 @@ pub fn assemble(inputs: Inputs<'_>) -> SituationBrief {
             charter.as_ref().map_err(String::as_str),
             triggers_ref,
         )),
+        attempts: Some(attempts),
         board: Some(board_of(board_ref, own_task)),
         commitments: Some(commitments_of(homeostat)),
         time: Some(local_time(now, zone, policy)),
@@ -1201,11 +1223,14 @@ pub fn assemble(inputs: Inputs<'_>) -> SituationBrief {
 /// the run's context and the conversation already hold, plus the two reads
 /// only the front-end can make (the board, the slots). The anchor is the
 /// conversation's (a seeded structural pointer, or one the owner
-/// confirmed), read after seeding.
+/// confirmed), read after seeding. `attempts` is the third read a door
+/// takes before the run ([`attempts::for_run_within`]), beside the board and
+/// the slots.
 pub fn assemble_for_run(
     agent: &crate::agent::Agent,
     cx: &crate::agent::RunContext,
     convo: &crate::agent::Conversation,
+    attempts: Attempts,
     board: Result<Value, String>,
     slots: Slots,
 ) -> SituationBrief {
@@ -1222,6 +1247,7 @@ pub fn assemble_for_run(
             triggers_root: crate::trigger::TriggerStore::default_root()
                 .map_err(|e| format!("{e:#}")),
             anchor: anchor.as_ref(),
+            attempts,
             board,
             charter,
             homeostat: cx.homeostat.as_ref(),
@@ -1241,6 +1267,7 @@ pub fn assemble_for_run(
                     charter.as_ref().map_err(String::as_str),
                     Err(&why),
                 )),
+                attempts: Some(attempts),
                 board: Some(board_of(
                     board.as_ref().map_err(String::as_str),
                     match &anchor {
@@ -1284,8 +1311,9 @@ pub enum FieldState {
 }
 
 /// The field names, in record order — the readout's rows.
-pub const FIELDS: [&str; 9] = [
+pub const FIELDS: [&str; 10] = [
     "goal",
+    "attempts",
     "board",
     "commitments",
     "time",
@@ -1298,7 +1326,7 @@ pub const FIELDS: [&str; 9] = [
 
 impl SituationBrief {
     /// Each field's state, in [`FIELDS`] order.
-    pub fn fields(&self) -> [(&'static str, FieldState); 9] {
+    pub fn fields(&self) -> [(&'static str, FieldState); 10] {
         use FieldState::*;
         fn of<T>(f: &Option<T>, unread: impl Fn(&T) -> bool) -> FieldState {
             match f {
@@ -1330,6 +1358,12 @@ impl SituationBrief {
                     }
                 }),
             ),
+            // A session file that could not be read, a kind this build
+            // cannot name, or an owner's-acts store that did not load. A walk
+            // that stopped at its designed bound says "at least" in the
+            // words and is not unread, as a capped commitments store is not
+            // (R42's reading, 2026-09-27).
+            ("attempts", of(&self.attempts, Attempts::unread)),
             // A board the server cut, or rows without a readable status,
             // hold counts that are floors: a part not read, on the rule
             // `Seats` and `Flight` apply to a file they could not parse.
@@ -1416,6 +1450,9 @@ pub const BRIEF_STEM: &str = "Situation brief from the harness";
 /// position. The quiet hours are inside or outside, not their bounds; the
 /// time of day is a band; a voice call is in progress or not, not how many
 /// seconds ago. Nothing here is prose off a board row: `board_of` kept none.
+/// A task's previous attempts ([`attempts::line`]) are closed words and
+/// record ids, a count of sessions and the walk's own bound; the only prose
+/// is a reopen reason the owner wrote with their own hand (R42).
 ///
 /// **Unknown is said, never rendered as nothing.** A field its reader could
 /// not read says "could not be read"; a field not on the record says so; a
@@ -1439,6 +1476,12 @@ pub fn render(brief: &SituationBrief) -> String {
         Some(g) => goal_line(g),
         None => missing("Goal"),
     });
+    // A run not anchored to a task has no previous attempts to speak of, so
+    // the line is left out by stated rule, as `Slots::NotLocal` is.
+    match &brief.attempts {
+        Some(a) => lines.extend(attempts::line(a, brief.assembled_at)),
+        None => lines.push(missing("Previous attempts at this task")),
+    }
     lines.push(match &brief.board {
         Some(b) => board_line(b),
         None => missing("Board"),
@@ -2130,6 +2173,7 @@ mod tests {
         let brief = SituationBrief {
             assembled_at: now(),
             goal: None,
+            attempts: None,
             board: Some(Board::Read(c)),
             commitments: None,
             time: None,
@@ -2139,7 +2183,7 @@ mod tests {
             voice: None,
             budget: None,
         };
-        assert_eq!(brief.fields()[1], ("board", FieldState::Unread));
+        assert_eq!(brief.fields()[2], ("board", FieldState::Unread));
     }
 
     #[test]
@@ -2483,6 +2527,7 @@ mod tests {
         let states: BTreeMap<_, _> = SituationBrief {
             assembled_at: now(),
             goal: None,
+            attempts: None,
             board: None,
             commitments: None,
             time: None,
@@ -2663,6 +2708,7 @@ mod tests {
             SituationBrief {
                 assembled_at: now(),
                 goal: Some(goal),
+                attempts: None,
                 board: None,
                 commitments: None,
                 time: None,
@@ -2716,6 +2762,7 @@ mod tests {
         let brief = SituationBrief {
             assembled_at: now(),
             goal: Some(GoalChain::NoAnchor),
+            attempts: Some(Attempts::NotATask),
             board: Some(Board::Unread { why: "x".into() }),
             commitments: Some(Commitments::Unread { why: "y".into() }),
             time: Some(local_time(now(), None, Ok(None))),
@@ -2757,14 +2804,19 @@ mod tests {
         assert_eq!(loaded.slots, None);
         assert_eq!(loaded.voice, brief.voice);
         let states = loaded.fields();
-        assert_eq!(states[6], ("slots", FieldState::Missing));
+        assert_eq!(states[7], ("slots", FieldState::Missing));
         assert_eq!(
             states[0],
             ("goal", FieldState::Known),
             "no anchor is a known fact"
         );
-        assert_eq!(states[1], ("board", FieldState::Unread));
-        assert_eq!(states[3], ("time", FieldState::Unread), "no zone set");
+        assert_eq!(
+            states[1],
+            ("attempts", FieldState::Known),
+            "a run with no task anchor has no attempts to find, and that is known"
+        );
+        assert_eq!(states[2], ("board", FieldState::Unread));
+        assert_eq!(states[4], ("time", FieldState::Unread), "no zone set");
         assert!(!loaded.complete());
         // A brief from before a field existed loads with that field missing.
         let old: SituationBrief =
@@ -2790,6 +2842,13 @@ mod tests {
             home: &home,
             triggers_root: Ok(home.join("triggers")),
             anchor: Some(&anchor),
+            attempts: attempts::previous_attempts(
+                Some(&anchor),
+                Ok(&home.join("sessions")),
+                None,
+                now(),
+                &|| panic!("no attempt was found, so no store is read"),
+            ),
             board: Ok(board()),
             charter: Ok(charter),
             homeostat: None,
@@ -2809,6 +2868,17 @@ mod tests {
             assert_ne!(states[f], FieldState::Missing, "`{f}` was not recorded");
         }
         assert_eq!(states["commitments"], FieldState::Unread, "no homeostat");
+        assert_eq!(
+            brief.attempts,
+            Some(Attempts::Read {
+                attempts: vec![],
+                unsearched: false,
+                unreadable: 0,
+                unnamed_kind: 0,
+                stores_unread: vec![],
+            }),
+            "a home with no sessions holds no attempt, and says so"
+        );
         assert_eq!(brief.slots, Some(Slots::NotLocal));
         assert!(matches!(
             brief.time,
@@ -2835,6 +2905,7 @@ mod tests {
                 },
                 charter: Lines::Unlinked,
             }),
+            attempts: Some(Attempts::NotATask),
             board: Some(board_of(Ok(&board()), Some("task-own"))),
             commitments: Some(Commitments::Read {
                 stores: vec![
@@ -3095,6 +3166,7 @@ mod tests {
                 project: Tier::Unread { why: "x".into() },
                 charter: Lines::Unread { why: "x".into() },
             }),
+            attempts: Some(Attempts::Unread { why: "z".into() }),
             board: Some(Board::Unread { why: "x".into() }),
             commitments: Some(Commitments::Unread { why: "x".into() }),
             time: Some(LocalTime {
@@ -3121,6 +3193,7 @@ mod tests {
         for (lead, says) in [
             ("- Goal:", "its project could not be read"),
             ("- Goal:", "Which charter line it serves could not be read."),
+            ("- Previous attempts at this task:", "could not be read"),
             ("- Board:", "could not be read"),
             ("- Waiting on the owner:", "could not be read"),
             ("- Time:", "the owner's local time is unknown"),
@@ -3140,6 +3213,7 @@ mod tests {
             );
         }
         for lead in [
+            "- Previous attempts at this task:",
             "- Board:",
             "- Waiting on the owner:",
             "- Background seats:",
@@ -3163,6 +3237,7 @@ mod tests {
         let bare = SituationBrief {
             assembled_at: now(),
             goal: None,
+            attempts: None,
             board: None,
             commitments: None,
             time: None,
@@ -3433,6 +3508,9 @@ mod tests {
         };
         let r = render(&brief);
         assert!(!r.contains("Model server"), "{r}");
-        assert_eq!(r.lines().count(), 1 + FIELDS.len() - 1);
+        // The stem, then every field but two left out by stated rule: the
+        // slots here, and the previous attempts of a fixture whose record
+        // says it is not a task run (`Attempts::NotATask`).
+        assert_eq!(r.lines().count(), 1 + FIELDS.len() - 2);
     }
 }

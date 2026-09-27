@@ -187,13 +187,72 @@ The parts that bite hardest:
 - **Ask what is served (`GET /props` → `model_alias`), don't assert it.**
   llama-server ignores the request's `model` field, so naming one is not
   selecting it — only deciding what gets recorded.
-- **Router mode inverts that** (`scripts/start-router.sh`, built but not yet
-  installed — `REMOTE-SURFACE-DESIGN.md` §14, `LLAMA-SERVER.md` §Router
+- **Router mode inverts that** (`scripts/start-router.sh`, installed
+  2026-09-27 — `REMOTE-SURFACE-DESIGN.md` §14, `LLAMA-SERVER.md` §Router
   mode). One process serves several models and the request's `model`
   *selects*: a `follow_loaded` provider takes whichever is loaded
   (`provider::router`), every probe must name its model with
   `autoload=false` or it loads it, and a bare `/props` is a placeholder
   (`model_alias: "llama-server"`, `n_ctx: 0`).
+- **A process that outlives a switch follows it per turn**
+  (`mecha-cli/src/follow.rs`: `mecha serve`, its voice facade, `voice-serve`,
+  the Slack connector). An agent resolved at startup names the model loaded
+  then, and in router mode naming it loads it back — a switch from anywhere
+  was undone by the next web, voice or Slack turn. `Follower::follow` runs
+  before each turn, outside every lock the turn holds, and rebuilds through
+  `setup::prepare` only when the loaded model moved; the invariants:
+  - **A run keeps the binding it started with, and the model with it**
+    (D13, `hold.rs`). The router protects a request, not a run, so a run
+    *holds* the router — a file in `~/.mecha/holds/` — and `mecha model use`
+    waits until no hold remains. A hold is taken *before* the run resolves
+    its model; a run that meets a pending switch yields and waits for it.
+  - **The config is read from disk per turn**, because the rebuild reads it;
+    resolving against the startup file missed providers added since. A file
+    that does not load keeps the binding and says so once.
+  - **Only evidence of where to go moves a surface.** A router unseen by
+    the follower's own probe (`router::observe_seen`, never the shared
+    snapshot another request may have overwritten), mid-swap (two
+    resident), or resident on a model no entry names or several do: the
+    binding stays. Moving to the default on any of those would load
+    production over the pick.
+  - **A failed rebuild fails the turn**, never falls back to the old binding,
+    whose request would silently undo the switch.
+  - **A conversation that crosses a switch records a fresh `RunConfig`**
+    ahead of the turn (`Bound::generation`), so each run names the model
+    that answered it.
+  - **Incognito's gates are re-derived per turn from the binding**
+    (`incognito_gates`): local-only, hooks, and the withheld list computed
+    against the rebuilt registry — a deny-list computed at open let a server
+    that came up after a switch register tools the chat could call.
+- **Holds (`hold.rs`, §14 D13): a switch waits for runs, never for requests.**
+  - **Write, then check, on both sides.** A run writes its hold then looks
+    for a pending switch; a switch writes its file then looks for holds. At
+    least one sees the other, and the run is the side that yields — there is
+    no window where a run starts on the old model after the switch looked.
+  - **Where holds are taken:** per turn in `Follower::enter` (serve, voice),
+    per turn off the loop in Slack (a turn meeting a switch is *deferred* and
+    re-fed through the loop, never waited for on it), per fire in the trigger
+    daemon, and for its whole life by a command that is one run
+    (`main::is_one_run`, exhaustive, per subcommand). **No holder may wait on
+    a `mecha` child that also holds** — the child yields to a pending switch
+    that waits on the parent. `workflow` is unheld for that reason; a trigger
+    fire or a chat turn whose agent runs `shell: mecha run …` meets the same
+    cycle, broken only by `--now` or `cancel-switch` (`model use` names the
+    holder it waits on). There is no inherited "covered by the parent" mark:
+    detached hooks outlive the parent and would run unheld under one. A
+    process's own children that it waits on and that cannot hold for
+    themselves (`exp run`'s trials, under their own home) are covered by pid
+    instead, so `--now` reaches them.
+  - **An unreadable hold is held while its pid lives**, on every router —
+    the fail-closed direction, matching an unreadable switch file.
+  - **Dead holders and switchers are swept, never waited for**; an
+    unreadable switch file reads as pending (waiting is recoverable).
+  - **"Switch now" cancels, it does not only unload**: a hold's cancel file
+    is polled and turned into the run's own cancel (a one-run command gets
+    the SIGINT that Ctrl-C would send), because an unloaded model is loaded
+    back by a multi-request run's next request.
+  - **A hold's label is never user content** — `mecha run "<prompt>"` must
+    not leave the prompt under `~/.mecha/holds`; only the subcommand name.
 - **Throughput is wall clock.** The server times a request only while it is
   running, so summing its per-request rates hides queue wait and reads ~4× at
   `-np 1`, on the one configuration that cannot run anything concurrently.
@@ -667,8 +726,10 @@ guessing. `mecha rules` folds the ledger into per-rule tallies;
 `rules propose-retirements --apply` (nightly, after learn) **retires
 directly** — no queue, no human — once a rule accumulates the attributed
 regressions its leash allows: 3 ordinarily, 2 on probation
-(`PROBATION_RETIRE_AT`) — a deterministic ledger scan, no model anywhere,
-and it resolves any pending retirement proposal it overtakes as superseded.
+(`PROBATION_RETIRE_AT`) — a deterministic ledger scan that calls no model,
+counting only the convictions measured on the model in use
+(`learning::measured_on`; owner's ruling 2026-09-27, REMOTE-SURFACE-DESIGN
+§14), and it resolves any pending retirement proposal it overtakes as superseded.
 Retirement is the brake ungated learning leans on and it is a flag, never a
 deletion: the rule stays in the file as evidence, the learner is shown it as
 "measured harmful — never re-derive" (surviving even a reworded
@@ -4802,10 +4863,9 @@ Decisions, each a bug if undone:
   outbox has written carries it (the field is as old as the store), and
   `reflect`'s edit pass reads the same field on the same terms.
 
-Left for later rows: contrast evidence for the reflector (2e-4b-2, waiting on
-what "the same region" means between a correction and a success); staged
-skill drafts (2e-4c, deferred by R40 until this set has been read on real
-data). Skills stay owner-authored: nothing here writes under
+Contrast evidence for the reflector is 2e-4b-2 (below). Left for a later
+row: staged skill drafts (2e-4c, deferred by R40 until this set has been
+read on real data). Skills stay owner-authored: nothing here writes under
 `~/.mecha/skills/`.
 
 ### Planning examples from what went right
@@ -4890,6 +4950,70 @@ check, which almost never happens; a verified success is the other source.
 - **In an experiment**, `levers_on = ["success_examples"]`; nothing is
   seeded, because the successes are the trial home's own stores, so a
   single trial's arm equals its control until a lifetime's tasks close.
+
+### Contrast evidence beside a correction
+
+`APPRAISAL-WIRING-DESIGN.md` L2, row 2e-4b-2, ruled R43: `mecha reflect`
+may reflect a correction with a verified success from its region beside it
+(`success::ContrastPool`, `learning::Reflector::reflect_beside`), behind
+`[agent] contrast_evidence` — a **stage** lever
+(`experiment::StageLever::ContrastEvidence`), read by `reflect` and never by
+a run — which **ships off**.
+
+- **The region is the loader's match** (R43, the owner's ruling). A
+  correction's recorded situation (`reflect`'s `recorded_situation`: its
+  tool window, trigger and the covering run record's workspace, surface
+  and goal — the value its reflection is stamped with) is in a success's
+  region when its `scope()` `matches` **one of** the success session's run
+  records: every tool in the window is in that run's registry, and
+  workspace, surface and goal agree wherever the correction names them —
+  where a rule learned from the correction would load (2e-5c's
+  `Recurrence::matching`). Session-to-session `region_key` equality would
+  compare a tool window with a whole registry and never hold. A correction
+  whose situation names no key is standing, and so is in every success's
+  region, as a standing rule loads everywhere.
+- **Which corrections.** A transcript steer, denial or followup — the
+  owner's corrections, reflected in the behaviour frame. A mismatch is the
+  harness's observation in its own frame, and the outbox pass (an edit
+  teaches voice; a rejection's situation names only the drafting tool) is
+  not contrasted in this row. One predicate decides both sides
+  (`learning::contrasted`, by trigger): a rejection shares the behaviour
+  frame but is never handed a success, so its prompt does not gain the
+  sentence either (found on review of #345: matching on the frame string
+  told it of a block it could never see).
+- **Which success.** The newest trace `planning::success_traces` lends
+  (`need_goal: false`, so a draft sent unchanged or a goal-less workflow
+  lends too) from a success that does not name the correction's session: a
+  success verified work that may span sessions, and whichever of them the
+  correction was in, the success is its outcome, not a contrast to it — so
+  the exclusion is by success, not by trace (`SuccessTrace::named`; found
+  on review of #345). The traces are 2e-4b-1's: standing successes only, sessions the
+  corpus admits, **recorded taint clean to the end**, every run scoped, and
+  a tool called; read once per pass, newest first, at most 32 transcripts.
+  One `reflect` pass is one read of the stores, so a reopen withdraws a
+  success from the next pass.
+- **Only clean material reaches the reflector.** The block names the
+  owner's act in fixed words (`success::Act::in_words`, the same phrase
+  `goal_context` serves) and the session's tool sequence — registry names.
+  No record id (a lesson must not memorise one), no argument, no prose.
+  The correction's own evidence and `Origin` are decided as before
+  (`evidence_for`); the contrast changes neither.
+- **The prompt.** Off, the system prompt and the user message are the bytes
+  they were — pinned against the old format copied from the tree before the
+  row (`contrast_prompt`). On, a steer's, denial's or followup's system
+  prompt (`REFLECTOR_SYSTEM`) gains `CONTRAST_SENTENCE` on every call, so
+  the prefix stays stable across the pass's corrections, and a contrasted
+  correction's message gains one `<a-verified-success-in-this-region>`
+  block between the aftermath and the closing question. The writing and
+  mismatch frames never move, and nor does a rejection's.
+- **Shadow.** `mecha reflect --dry-run` reads the pool whatever the lever
+  and names, beside each listed steer, denial or followup, the success it
+  would be shown. A real pass reads nothing with the lever off.
+- **Measuring it.** An arm turns it on through its own environment's
+  `config.toml` (`[agent] contrast_evidence = true`); `stages_off =
+  ["contrast_evidence"]` forces it off whatever the environment says. On
+  only after a measured run (R43). A reflection does not record that it
+  was contrasted; the arm does.
 
 ## The goal system
 
@@ -5386,9 +5510,56 @@ when touching it:
   harness text, which its own loop folds again; a block this build cannot
   read costs that block; an extension naming any other message is skipped
   with a warning. The calendar reference's fold rides the same path (see
-  §Timezones). *Deferred:* a re-delegated task's previous attempts
-  (M5, to 3a-2 — no existing record lists them), and a brief on the TUI,
-  `chat`, Slack and unhosted voice turns.
+  §Timezones). *Deferred:* a brief on the TUI, `chat`, Slack and unhosted
+  voice turns.
+- **A task run's brief names its previous attempts, and quotes only the
+  owner (M5, built as 3a-2 under R42).** `brief::attempts` is the brief's
+  tenth field, recorded always and delivered behind the same lever; a run
+  anchored to anything but a task records `Attempts::NotATask`, which is
+  known and renders as nothing, so no other run's words moved and the
+  lever-off requests are the same bytes with or without attempts on the
+  record (`a_task_briefs_previous_attempts_ride_only_behind_the_lever_and_arm_private`).
+  Five things to keep. **The walk is bounded and has no index**
+  (`attempts::walk`): session headers newest first, kind `task` only, never
+  the run's own session (each door passes its id to
+  `attempts::for_run_within`, which runs the walk and the store reads off
+  the async threads, joined with the board read under the same deadline, so
+  a slow disk costs the field — `Unread` — and never the turn),
+  a session's **head** scanned line by line for the task's quoted pointer
+  and stopped at the first message (`attempts::HEAD_BYTES_MAX` at most; both
+  doors that open a task session seed its anchor before the first message),
+  and only a head that names the task read whole, kept when a `GoalAnchor`
+  record names it — so the walk reads the heads plus at most three
+  transcripts, never every task transcript in the window (review of #344);
+  it stops at `ATTEMPTS_MAX` (3) or `WINDOW_DAYS` (90). A session opened on
+  another task and re-anchored to this one later is not found, a named
+  residue. **A failure is `Unread`; the bound is only a floor** (R42's
+  reading, 2026-09-27): a header or body that will not read, a header whose
+  kind this build cannot name (a header with no kind predates kinds and
+  anchors both, and is skipped), or an owner's-acts store read short make
+  the field `Unread` in the completeness readout (`Attempts::unread`); a
+  walk that stopped at its designed bound does not, as a capped commitments
+  store does not, so `Unread` keeps meaning something failed. Either way
+  the words say "at least" and what was not searched (`Attempts::floor`). **The owner's acts are the appraisal's cites,
+  never its numbers**: `appraisal::for_transcript` over `Stores::load`
+  (read only when an attempt was found), each `Cite` mapped to a closed
+  `OwnerAct` by reading the record it names, so a sign, valence or affect
+  label cannot reach the words (R21); a run that recorded no outcome gets an
+  empty one so its drafts still join. **How the run ended is the harness's
+  record**, on its own line and labelled "not a verdict" (`RunEnd`, from the
+  last outcome's `StopCause`). **Only the owner's own words ride**: a
+  reopen's reason is quoted only under `closure::Actor::Owner`, cut to one
+  line (`attempts::one_line`) and capped, and the render checks the actor
+  again rather than trusting the record's `owners_words`; under
+  `OwnerApproved` or an unknown actor the reopen is a fixed phrase and the
+  closure id. An outbox rejection's reason never rides (R42(d), ruled while
+  a resolve recorded no actor); the act is "draft rejected" and the item id.
+  Resolves now carry an actor (`OutboxItem::rejection`, #343), so quoting
+  an owner-stamped reason on the reopen's rule is a follow-up change. Every id in the words is one token (`GoalRef::from_str`'s rule),
+  since a workflow id is a graph-minted task id. The words are inside the
+  brief's block, so delivery arms `private` exactly as before (R35).
+  Residue: a reopen of a `dropped` closure cites nothing in `of_session`,
+  so the brief says nothing about it.
 - **The doctor reads against the owner's number, and names the line.**
   `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
   requests) or the setpoint of the charter line whose sensor watches that
