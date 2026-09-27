@@ -234,11 +234,18 @@ The parts that bite hardest:
     per turn off the loop in Slack (a turn meeting a switch is *deferred* and
     re-fed through the loop, never waited for on it), per fire in the trigger
     daemon, and for its whole life by a command that is one run
-    (`main::is_one_run`, exhaustive, per subcommand). Such a command must not
-    wait on a `mecha` child that also holds — the child would yield to a
-    pending switch that waits on the parent; `workflow` is unheld for that
-    reason. There is no inherited "covered by the parent" mark: detached
-    hooks outlive the parent and would run unheld under one.
+    (`main::is_one_run`, exhaustive, per subcommand). **No holder may wait on
+    a `mecha` child that also holds** — the child yields to a pending switch
+    that waits on the parent. `workflow` is unheld for that reason; a trigger
+    fire or a chat turn whose agent runs `shell: mecha run …` meets the same
+    cycle, broken only by `--now` or `cancel-switch` (`model use` names the
+    holder it waits on). There is no inherited "covered by the parent" mark:
+    detached hooks outlive the parent and would run unheld under one. A
+    process's own children that it waits on and that cannot hold for
+    themselves (`exp run`'s trials, under their own home) are covered by pid
+    instead, so `--now` reaches them.
+  - **An unreadable hold is held while its pid lives**, on every router —
+    the fail-closed direction, matching an unreadable switch file.
   - **Dead holders and switchers are swept, never waited for**; an
     unreadable switch file reads as pending (waiting is recoverable).
   - **"Switch now" cancels, it does not only unload**: a hold's cancel file

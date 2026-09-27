@@ -530,6 +530,15 @@ impl Command {
     /// its own is otherwise right: an inherited "covered by the parent" mark
     /// reached detached `session_end` hooks too, which outlive the parent
     /// and would have run unheld (review of #350).
+    ///
+    /// **The rule is every holder's, not only these commands'.** A trigger
+    /// fire and a web, voice or Slack turn hold for their whole run, and their
+    /// agent can call `shell: mecha run …` (or `tasks work`, `distill`, …): with
+    /// a switch pending, the child waits for the switch, the switch for the
+    /// turn, the turn for its shell call. Nothing breaks the cycle but `mecha
+    /// model use --now` or `mecha model cancel-switch`, and `model use` names
+    /// the holder it waits on (`trigger <name>`, `web chat`) — the place to
+    /// look (review of #350).
     fn is_one_run(&self) -> bool {
         use commands::{exp, frontdoor, harness, mail, questions, sessions, tasks};
         match self {

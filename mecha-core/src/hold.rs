@@ -168,6 +168,18 @@ impl Holds {
                         out.push(h);
                     }
                 }
+                // **Unreadable, and its holder alive: held — on every
+                // router, since which one is unknown.** The same damage
+                // `pending` resolves toward waiting; deleted, a newer
+                // binary's hold format (or a short write on a full disk) let
+                // the switch go ahead under a live run (review of #350).
+                // The pid is in the name; `--now`'s grace is the way past.
+                None if pid_of(&path).is_some_and(crate::process_alive) => out.push(Hold {
+                    pid: pid_of(&path).unwrap_or_default(),
+                    base_url: base.clone(),
+                    what: "(a hold this build cannot read)".into(),
+                    taken_at: DateTime::<Utc>::MIN_UTC,
+                }),
                 _ => {
                     let _ = std::fs::remove_file(&path);
                     let _ = std::fs::remove_file(path.with_extension("cancel"));
@@ -365,13 +377,17 @@ impl Holds {
             if path.extension().and_then(|e| e.to_str()) != Some("hold") {
                 continue;
             }
-            if let Some(h) = read::<Hold>(&path) {
-                if h.base_url == base
-                    && crate::process_alive(h.pid)
-                    && std::fs::write(path.with_extension("cancel"), b"switch now\n").is_ok()
-                {
-                    n += 1;
-                }
+            // An unreadable hold is asked too, by the pid in its name: it is
+            // one `live` counts as holding every router.
+            let (pid, ours) = match read::<Hold>(&path) {
+                Some(h) => (Some(h.pid), h.base_url == base),
+                None => (pid_of(&path), true),
+            };
+            if ours
+                && pid.is_some_and(crate::process_alive)
+                && std::fs::write(path.with_extension("cancel"), b"switch now\n").is_ok()
+            {
+                n += 1;
             }
         }
         n
@@ -384,6 +400,12 @@ impl Holds {
             .collect();
         self.dir.join(format!("switch-{slug}.json"))
     }
+}
+
+/// The pid a hold's file name carries (`{pid}-{uuid}.hold`) — what is left to
+/// go on when the file itself cannot be read.
+fn pid_of(path: &Path) -> Option<u32> {
+    path.file_stem()?.to_str()?.split('-').next()?.parse().ok()
 }
 
 /// Where a mecha home keeps its holds.
@@ -532,6 +554,35 @@ mod tests {
         assert!(h.withdraw_switch(ROUTER).is_some());
         assert!(h.pending(ROUTER).is_none());
         assert_eq!(h.withdraw_switch(ROUTER).map(|s| s.to), None);
+    }
+
+    /// A hold this build cannot read is held while its pid lives — on every
+    /// router, since which is unknown — and `--now` still reaches it; once
+    /// its pid is gone it is swept like any other.
+    #[test]
+    fn an_unreadable_hold_is_held_while_its_process_lives() {
+        let h = holds("unreadable");
+        std::fs::create_dir_all(&h.dir).unwrap();
+        let alive = h.dir.join(format!("{}-x.hold", std::process::id()));
+        std::fs::write(&alive, b"{ a newer format }").unwrap();
+        let live = h.live(ROUTER);
+        assert_eq!(
+            live.len(),
+            1,
+            "an unreadable hold of a live process let a switch go"
+        );
+        assert_eq!(
+            h.live("http://127.0.0.1:9090").len(),
+            1,
+            "held on every router"
+        );
+        assert_eq!(h.cancel_holders(ROUTER), 1, "--now could not reach it");
+        assert!(alive.with_extension("cancel").exists());
+
+        let dead = h.dir.join(format!("{}-y.hold", u32::MAX - 1));
+        std::fs::write(&dead, b"garbage").unwrap();
+        h.live(ROUTER);
+        assert!(!dead.exists(), "a dead holder's unreadable file is swept");
     }
 
     /// "Switch now" reaches the holder, and only holders of that router.
