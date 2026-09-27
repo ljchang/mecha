@@ -516,9 +516,13 @@ router is `/props`' rule applied to choosing.
   `default_provider`'s. The retirement ledger is the reader where a mix
   would act, not just mislead: `rules propose-retirements` and `validate
   --cover` count only the rows measured on the model in use
-  (`learning::measured_on`), so a night on a comparison arm can neither
-  retire a rule nor dilute a regression that production measured (owner's
-  ruling, 2026-09-27: count one model).
+  (`learning::measured_on`; owner's ruling, 2026-09-27: count one model).
+  So another model's rows never dilute a regression this one measured, nor
+  add to its convictions. It is not a production guard: on a night the
+  comparison arm is resident, the arm is the model in use, and its own
+  convictions retire rules that every model loads. Whether a rule was
+  measured at all — probation, and the record the learner consolidates
+  from — is read off the whole ledger.
 
 ### Who may switch
 

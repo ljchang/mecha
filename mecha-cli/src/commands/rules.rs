@@ -89,9 +89,10 @@ pub enum Cmd {
         /// Apply the retirements directly instead of staging a proposal.
         ///
         /// Safe to automate in a way that promotion is not: this scan is a
-        /// deterministic fold over the validation ledger with no model in it,
-        /// it only ever *disables* rules, and a retired rule stays in the file
-        /// as evidence. It is also the precondition for ungated learning —
+        /// deterministic fold over the validation ledger with no model call in
+        /// it — it resolves which model is in use, to count only that model's
+        /// rows, and never asks one anything — it only ever *disables* rules,
+        /// and a retired rule stays in the file as evidence. It is also the precondition for ungated learning —
         /// promotion without a working NoGo path is a ratchet.
         #[arg(long)]
         apply: bool,
