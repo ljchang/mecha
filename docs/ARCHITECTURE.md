@@ -4839,7 +4839,11 @@ a run — which **ships off**.
   owner's corrections, reflected in the behaviour frame. A mismatch is the
   harness's observation in its own frame, and the outbox pass (an edit
   teaches voice; a rejection's situation names only the drafting tool) is
-  not contrasted in this row.
+  not contrasted in this row. One predicate decides both sides
+  (`learning::contrasted`, by trigger): a rejection shares the behaviour
+  frame but is never handed a success, so its prompt does not gain the
+  sentence either (found on review of #345: matching on the frame string
+  told it of a block it could never see).
 - **Which success.** The newest trace `planning::success_traces` lends
   (`need_goal: false`, so a draft sent unchanged or a goal-less workflow
   lends too) whose session is not the correction's own: a correction's own
@@ -4857,11 +4861,12 @@ a run — which **ships off**.
   (`evidence_for`); the contrast changes neither.
 - **The prompt.** Off, the system prompt and the user message are the bytes
   they were — pinned against the old format copied from the tree before the
-  row (`contrast_prompt`). On, the behaviour frame (`REFLECTOR_SYSTEM`)
-  gains `CONTRAST_SENTENCE` on every call, so the prefix stays stable across
-  a pass, and a contrasted correction's message gains one
-  `<a-verified-success-in-this-region>` block between the aftermath and the
-  closing question. The writing and mismatch frames never move.
+  row (`contrast_prompt`). On, a steer's, denial's or followup's system
+  prompt (`REFLECTOR_SYSTEM`) gains `CONTRAST_SENTENCE` on every call, so
+  the prefix stays stable across the pass's corrections, and a contrasted
+  correction's message gains one `<a-verified-success-in-this-region>`
+  block between the aftermath and the closing question. The writing and
+  mismatch frames never move, and nor does a rejection's.
 - **Shadow.** `mecha reflect --dry-run` reads the pool whatever the lever
   and names, beside each listed steer, denial or followup, the success it
   would be shown. A real pass reads nothing with the lever off.
