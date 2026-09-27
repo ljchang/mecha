@@ -162,6 +162,10 @@ export const ROUTES = [
     key.startsWith('incognito-')
       ? { ...fx.transcript, entries: [], todo: [], taint: { private: false, untrusted: false }, usage: null, incognito: true }
       : fx.transcript],
+  // The plan alone, as the transcript read above carries it — an incognito
+  // chat's is empty, like the rest of it.
+  ['GET', /^\/api\/chat\/([^/]+)\/todo$/, (_url, [key]) =>
+    ({ todo: key.startsWith('incognito-') ? [] : fx.transcript.todo ?? [] })],
   ['POST', /^\/api\/chat\/[^/]+$/, () => text('')],
   ['POST', /^\/api\/incognito$/, () => ({ key: 'incognito-demo' })],
   ['POST', /^\/api\/incognito\/[^/]+\/(end|alive)$/, () => text('')],

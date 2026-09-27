@@ -70,9 +70,11 @@ function is(actual, expected, what) {
   p.switchTo('chat-x1');
   const s = p.now();
   is([s.key, s.draft, s.attachments], ['chat-x1', 'half a thought', ['inbox/a.pdf']], 'an ordinary chat still carries its unsent text');
-  // The rail's belt reads `partialRun` on a timer: left set across a switch,
-  // it would catch up the new chat against the old chat's run, and that
-  // read's key check would drop it — leaving the new chat with no catch-up.
+  // The new chat's catch-up state comes from its own first read, and
+  // nothing in between acts on state describing a run in another chat. Left
+  // set, the rail's belt (which reads `partialRun` on a timer, against the
+  // new key) would spend one redundant transcript read on the chat you are
+  // in.
   is([s.partialRun, s.liveFrom], [false, 0], "and what the catch-up knew of the last chat's run is gone");
 }
 {

@@ -226,10 +226,14 @@
   }
 
   async function refreshTodo() {
+    // The chat it was asked for: an answer landing after a switch is that
+    // chat's plan, not this one's.
+    const sessionKey = key;
     try {
-      const res = await fetch(`/api/chat/${key}/todo`);
+      const res = await fetch(`/api/chat/${sessionKey}/todo`);
       if (!res.ok) return;
-      todo = (await res.json()).todo ?? [];
+      const plan = (await res.json()).todo ?? [];
+      if (sessionKey === key) todo = plan;
     } catch {
       // A plan that failed to refresh is stale, not wrong, and saying so
       // in the transcript would be noise about the UI rather than the run.
