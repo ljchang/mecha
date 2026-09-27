@@ -1651,11 +1651,7 @@ pub async fn transcript(
         // The page refetches when the SSE stream announces a `todo` result;
         // no new event type is needed because every write already shows up
         // there as a tool call.
-        "todo": bound
-            .todo
-            .as_ref()
-            .map(|t| t.items_in(&ws.workspace))
-            .unwrap_or_default(),
+        "todo": plan(&bound, ws),
         "entries": entries,
         "taint": taint.map(|t| serde_json::json!({
             "private": t.private, "untrusted": t.untrusted,
@@ -1667,6 +1663,51 @@ pub async fn transcript(
         })),
     }))
     .into_response()
+}
+
+/// GET /api/chat/{key}/todo — the plan, and nothing else.
+///
+/// The page re-reads the plan on every `todo` result a run streams. It used
+/// to take it from the transcript read, which was cheap only while a run
+/// held the conversation and that read returned no entries; since a mid-run
+/// read returns the history the run started from (#358), that was the
+/// whole history rendered and serialised once per plan revision, for one
+/// field.
+pub async fn todo(
+    State(state): Chat,
+    axum::extract::Path(key): axum::extract::Path<String>,
+) -> axum::response::Response {
+    let chat = match chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if !valid_key(&key) {
+        return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
+    }
+    // The handle is carried across a rebuild (`follow::Bound::todo`), so the
+    // binding in hand answers for all of them — no need to follow the router
+    // the way the transcript read does to name the model.
+    let bound = chat.follower.current();
+    let sessions = chat.sessions.lock().await;
+    let ws = match sessions.get(&key) {
+        Some(ws) => ws,
+        None if super::incognito::is_incognito_key(&key) => {
+            return (StatusCode::GONE, format!("{}\n", super::incognito::Closed)).into_response()
+        }
+        None => return (StatusCode::NOT_FOUND, "no such session\n").into_response(),
+    };
+    Json(serde_json::json!({ "todo": plan(&bound, ws) })).into_response()
+}
+
+/// This session's plan, keyed by its jail (D14) — one function for both
+/// reads that carry it, so the plan's own read cannot drift from the one the
+/// transcript read serves.
+fn plan(bound: &crate::follow::Bound, ws: &WebSession) -> Vec<mecha_core::tool::todo::TodoItem> {
+    bound
+        .todo
+        .as_ref()
+        .map(|t| t.items_in(&ws.workspace))
+        .unwrap_or_default()
 }
 
 /// POST /api/chat/{key}/send — start a run, or steer the one in flight.
@@ -4381,6 +4422,26 @@ pub(super) fn test_chat_answering(reply: &'static str, local: bool) -> Arc<ChatS
     )
 }
 
+/// [`test_chat_answering`], with a plan store behind it.
+#[cfg(test)]
+pub(super) fn test_chat_planned(
+    reply: &'static str,
+    todo: Arc<mecha_core::tool::todo::TodoTool>,
+) -> Arc<ChatState> {
+    test_chat_with(
+        Box::new(Answers(reply)),
+        mecha_core::tool::Registry::new(),
+        answering_config(true),
+        Some(todo),
+    )
+}
+
+/// The jail `key`'s session runs in — what its plan is keyed by (D14).
+#[cfg(test)]
+pub(super) async fn test_workspace(chat: &ChatState, key: &str) -> PathBuf {
+    chat.sessions.lock().await[key].workspace.clone()
+}
+
 /// What a switch looks like to a chat's next turn: its follower now holds a
 /// new binding — `model`, behind a loopback URL or (`local` false) a cloud
 /// one — under the next generation, as `Follower::follow` would install it.
@@ -4573,6 +4634,16 @@ fn test_chat_from(
     registry: mecha_core::tool::Registry,
     config: Config,
 ) -> Arc<ChatState> {
+    test_chat_with(provider, registry, config, None)
+}
+
+#[cfg(test)]
+fn test_chat_with(
+    provider: Box<dyn mecha_core::provider::Provider>,
+    registry: mecha_core::tool::Registry,
+    config: Config,
+    todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
+) -> Arc<ChatState> {
     let agent = Agent::new(
         provider,
         registry,
@@ -4584,10 +4655,13 @@ fn test_chat_from(
         None,
     )
     .unwrap();
+    let follower = crate::follow::Follower::fixed(agent, "local", "test", config);
+    let follower = match todo {
+        Some(todo) => follower.with_todo(todo),
+        None => follower,
+    };
     Arc::new(ChatState {
-        follower: Arc::new(crate::follow::Follower::fixed(
-            agent, "local", "test", config,
-        )),
+        follower: Arc::new(follower),
         routes: Arc::default(),
         outbox_root: OutboxStore::default_root().unwrap(),
         sessions: Mutex::new(HashMap::new()),

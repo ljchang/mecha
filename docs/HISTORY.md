@@ -14,6 +14,38 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-27 — a web chat opened or reconnected mid-run keeps its history
+(#358).** Reported from the phone with a screenshot: an incognito chat showed
+no history and no pictures, and its transcript began at whatever tool call
+streamed after the page connected. `serve::chat::transcript` answered
+`entries: []` while a run held the conversation, on the reasoning that "the
+page catches up over SSE". That holds only for a page subscribed since the
+run began. Every stream reconnect calls the page's `load()`, which *replaces*
+the transcript, and nothing re-read at `done`. So a phone whose stream died
+on screen-lock mid-image-edit lost the history, and the `image_generate`
+result the picture renders from, until a manual reload.
+
+#358 (`854c4f35`, four review passes) keeps the run's starting messages on
+`Live::history`, shared with the run's own `before` and rendered only when a
+page reads it. `Live::taint` carries their taint armed for their content by
+`Taint::arm_for_content`, because the loop arms inside the run, after `Live`
+is built. The page records a read taken mid-run (`partialRun`) and re-reads
+at `done`. It carries its page-only cards (`pageOnly`: drafts, notices, and
+words the run never took) in the same step that replaces the list, and drops
+a superseded answer (`loadGen`). It still catches up when a `done` overtakes
+its read (`doneSeq`) or never arrives, the rail's `running` flag being the
+belt for the second, and it follows the view's abort signal.
+
+Measured: `a_transcript_read_mid_run_returns_the_history_the_run_started_from`
+and `a_mid_run_read_is_tainted_by_the_history_it_carries` fail on the old
+arm, with `left: []` and a clean chip over `[image]` respectively.
+`web/test/chat-catchup.mjs` lifts the shipping functions and drives them
+against a `fetch` stub released by hand: 24 checks, and two mutation checks
+that each fail two of them. Deployed 18:15Z (HANDOFF, *Machine state,
+dated*). #362 followed: the plan got its own read (`serve::chat::todo`),
+because `refreshTodo` took the plan from the transcript read, which was cheap
+only while that read returned nothing. The phone itself is unmeasured.
+
 **2026-09-26/27 — model switching, server side: a llama-server router on
 `:8080`, followed per run (#337, #339, #340).** `REMOTE-SURFACE-DESIGN.md`
 §14 (D12) is the authority. The owner asked for the web chip to switch among
@@ -8035,6 +8067,18 @@ before retrying it.
   wrong answer is the one you were hoping for.
 
 ### Containment and state
+
+**A read that answers "unavailable" with an empty list is read as "empty"
+by any caller that replaces its state with the answer.** While a run held a
+web conversation, the transcript read returned `entries: []` and relied on
+the page catching up over SSE. The page's reconnect path called `load()`,
+which replaces the transcript. So on the phone, whose stream drops on every
+screen-lock, a whole chat vanished mid-run, and stayed gone because nothing
+re-read when the run ended (#358). The empty list was a placeholder the
+reader could not tell from a fact. **When a read cannot answer, it must say
+so or return the last thing it can vouch for, and a caller that replaces
+state must know which one it got** — the same shape as a dash rendered as a
+zero, one layer up.
 
 **A fallback in a helper can make a fail-closed guard unreachable on the one
 deployment it was written for.** #243's `Resolved::NeedsZone` refused a
