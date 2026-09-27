@@ -816,12 +816,33 @@ fn tok(id: &str) -> String {
 }
 
 /// Whether an act is said apart from the owner's: a reject or an edit whose
-/// stamps do not say the owner's own hand made it.
+/// stamps do not say the owner's own hand made it, or an act this build
+/// cannot name — a newer build's variant through `lenient_acts`, which is
+/// what the two above become one version back (review of #356). Every
+/// variant is named, so a new one is a build error here, not a silent ride
+/// under "The owner:" (`closure::Actor::least`'s rule).
 fn not_owners(act: &OwnerAct) -> bool {
-    matches!(
-        act,
-        OwnerAct::DraftRejectedNotOwners { .. } | OwnerAct::DraftEditedNotOwners { .. }
-    )
+    match act {
+        OwnerAct::DraftRejectedNotOwners { .. }
+        | OwnerAct::DraftEditedNotOwners { .. }
+        | OwnerAct::Unknown => true,
+        OwnerAct::TaskClosed { .. }
+        | OwnerAct::TaskReopened(_)
+        | OwnerAct::DraftRejected { .. }
+        | OwnerAct::DraftSentAsWritten { .. }
+        | OwnerAct::DraftSentAfterEdits { .. }
+        | OwnerAct::DraftOutcome { .. }
+        | OwnerAct::DraftWaiting { .. }
+        | OwnerAct::QuestionAnswered { .. }
+        | OwnerAct::QuestionAbandoned { .. }
+        | OwnerAct::QuestionWaiting { .. }
+        | OwnerAct::RequestClosed { .. }
+        | OwnerAct::CheckFailed { .. }
+        | OwnerAct::WorkflowClosed { .. }
+        | OwnerAct::WorkflowCancelled { .. }
+        | OwnerAct::WorkflowReopened { .. }
+        | OwnerAct::Corrected { .. } => false,
+    }
 }
 
 /// "The owner: …", then the acts not recorded as the owner's in a sentence
@@ -849,8 +870,8 @@ fn owners_line(at: &Attempt) -> String {
     let mut words = format!("The owner: {owner_words}.");
     if !others.is_empty() {
         words.push_str(&format!(
-            " Not recorded as the owner's own act (a run's shell, or before who acted was \
-             recorded): {}.",
+            " Not recorded as the owner's own act (a run's shell, a hand not on record, or \
+             an act this build cannot name): {}.",
             join(&others)
         ));
     }
@@ -1931,8 +1952,8 @@ mod tests {
         assert_eq!(
             words,
             "The owner: draft rejected (d-own); edited a draft before sending it (d-owned). \
-             Not recorded as the owner's own act (a run's shell, or before who acted was \
-             recorded): draft rejected (d-run); draft rejected (d-old); draft edited, then sent \
+             Not recorded as the owner's own act (a run's shell, a hand not on record, or an \
+             act this build cannot name): draft rejected (d-run); draft rejected (d-old); draft edited, then sent \
              (d-edit)."
         );
         let owners_half = words.split(" Not recorded").next().unwrap();
@@ -1968,8 +1989,23 @@ mod tests {
         assert_eq!(
             owners_line(&cut),
             "The owner: no act of theirs among those listed. Not recorded as the owner's own \
-             act (a run's shell, or before who acted was recorded): draft rejected (d-run). 2 \
+             act (a run's shell, a hand not on record, or an act this build cannot name): draft \
+             rejected (d-run). 2 \
              more acts are not listed, and whose they were is not said here."
+        );
+        // An act this build cannot name — what the two new variants become
+        // one build back — is never credited to the owner (review of #356).
+        let unnamed = Attempt {
+            acts: vec![OwnerAct::Unknown],
+            acts_total: 1,
+            ..only.clone()
+        };
+        assert!(
+            owners_line(&unnamed).starts_with(
+                "The owner: no act of theirs is recorded on it. Not recorded as the owner's own act"
+            ),
+            "{}",
+            owners_line(&unnamed)
         );
         // The wire word round-trips, and an older build's reader degrades it.
         let v =
