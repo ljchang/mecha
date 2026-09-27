@@ -37,6 +37,9 @@ fi
 if [ "$1" = config ] && [ "$2" = show ]; then
     cat "{root}/config.toml"
 fi
+if [ "$1" = sessions ] && [ "$2" = compare ] && [ -n "$STUB_HANG_COMPARE" ]; then
+    sleep 30
+fi
 exit 0
 """
 
@@ -143,13 +146,22 @@ class Scripts(unittest.TestCase):
                 ["reflect"],
                 ["distill"],
                 ["validate"],
+                # The brake right after validate, ahead of every paid pass
+                # (owner, 2026-09-27).
+                ["rules"],
                 ["sessions", "compare"],
                 ["learn"],
+                # ...and again after learn, which can re-widen a narrowing.
                 ["rules"],
                 ["harness", "ruminate"],
                 ["learn"],
             ],
         )
+        # The compare pass reads a bounded window (owner, 2026-09-27).
+        compare = [c for c in self.run_script("ruminate.sh") if c[:2] == ["sessions", "compare"]]
+        self.assertEqual(len(compare), 1, compare)
+        self.assertIn("--days", compare[0])
+        self.assertEqual(compare[0][compare[0].index("--days") + 1], "30", compare[0])
         calls = self.run_script("ruminate.sh", MECHA_RUMINATE_PROVIDER="x", MECHA_RUMINATE_JUDGE="j")
         # `rules propose-retirements` too: it counts only the rows of the
         # model validate measured on, so it must resolve the same one.
@@ -179,6 +191,23 @@ class Scripts(unittest.TestCase):
         self.assert_pinned(calls, "-p", "local", ["reflect", "learn"])
         calls = self.run_script("ruminate.sh", config=OFF_BOX)
         self.assert_pinned(calls, "-p", "local", ["reflect", "learn"])
+
+    def test_a_hung_compare_is_cut_at_its_cap_and_the_night_goes_on(self):
+        # The clock half of the compare bound (review of #355): the stub's
+        # compare hangs for 30 s, the cap is 1 s, and every stage after it
+        # still runs — promptly. On a line with no `timeout` the night waits
+        # the full 30 s.
+        import time
+
+        start = time.monotonic()
+        calls = self.run_script("ruminate.sh", STUB_HANG_COMPARE="1", MECHA_COMPARE_TIMEOUT="1s")
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 15, f"the night waited {elapsed:.0f}s on a hung compare")
+        after = calls[[c[:2] for c in calls].index(["sessions", "compare"]) + 1 :]
+        self.assertEqual(
+            [c[:2] if c[0] == "harness" else c[:1] for c in after],
+            [["learn"], ["rules"], ["harness", "ruminate"], ["learn"]],
+        )
 
     def test_a_missing_pin_rule_stops_every_script(self):
         # Without pin.sh, PIN would be unset and every stage would run on the

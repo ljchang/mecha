@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and never the reason. `mecha outbox list`'s drafting line reads "sent
   unedited" (it counts whoever released), not "sent as drafted".
 
+- **The retirement drill no longer writes into the live comparison store.**
+  `ComparisonStore` honours `MECHA_COMPARISONS_DIR` (as the learning store
+  honours `MECHA_LEARNING_DIR`), `scripts/retirement-drill.sh` sets it, and
+  the drill fails with `DRILL LEAKED` on any exit that left the live
+  `comparisons.jsonl` changed. Two runs on 2026-09-27 had each added a
+  `validation` row about a throwaway session to the owner's store.
 - **A draft released unchanged is your verdict only when you released it**
   (`APPRAISAL-WIRING-DESIGN.md`, R16a's ruling D3 carried to releases). The
   appraisal's +1.0, the owner-verified success set (`mecha sessions
@@ -179,6 +185,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The nightly's `sessions compare` is bounded by the clock and by the
+  corpus** (`scripts/ruminate.sh`, owner 2026-09-27). `timeout` caps its
+  share of the night
+  (`MECHA_COMPARE_TIMEOUT`, default `30m`; a pass cut short keeps what it
+  compared, and a seat it held is reclaimed by the next caller), and
+  `--days` bounds its read (`MECHA_COMPARE_DAYS`, default 30).
+- **The retirement brake runs right after `validate`** — in the nightly
+  (`scripts/ruminate.sh`) and in an experiment lifetime's schedule
+  (`Schedule::due_after`: reflect, validate, retire, learn, ruminate), owner
+  2026-09-27. It reads only validate's rows, so a rule measured harmful
+  leaves the prompt before `sessions compare` or `learn --auto` spends any
+  wall clock, and `learn` measures its candidate without it. The nightly scans a
+  second time after `learn`, whose cross-region widening can re-widen a
+  rule the first scan narrowed — so it is re-narrowed that night.
 - **The counterfactual comparison summary counts one model** (the owner's
   ruling of 2026-09-27). Since the chat server became a router, background
   passes follow whichever model is resident, and `mecha sessions appraise`

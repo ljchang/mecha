@@ -9,7 +9,10 @@
 # remain here as a *sweep*, for sessions whose hook did not fire (a crashed
 # front-end, a machine that was asleep) — not as the primary path.
 #
-# Ordering is the one deliberate choice here. `validate --unprocessed-only`
+# Ordering is the one deliberate choice here. The retirement brake runs
+# right after `validate`, ahead of every paid pass, because it reads only
+# validate's rows, and again after `learn`, which can re-widen a rule the
+# first scan narrowed (owner, 2026-09-27). `validate --unprocessed-only`
 # and `sessions compare` run BEFORE `learn`, because learn marks reflections
 # processed and derives rules from the same steers — measuring afterwards
 # would grade the rules on their own training data. Tonight's fresh
@@ -127,19 +130,45 @@ echo "  so a widened rule is measured in each sub-region it widened over — and
 echo "  first night on a newly loaded model re-buys them, since retirement counts one model)"
 "$MECHA" validate ${PIN[@]+"${PIN[@]}"} ${JUDGE_PIN[@]+"${JUDGE_PIN[@]}"} --unprocessed-only --cover 1
 
+echo "· retirements (deterministic ledger scan; applied, not staged — a rule measured"
+echo "  harmful must leave the prompt without waiting for anyone, and it is the only"
+echo "  brake on rules that now go live when they are derived)"
+# Right after validate, ahead of every paid pass (owner, 2026-09-27): it is
+# a deterministic scan of the rows validate just wrote and takes nothing
+# from compare or learn, so a rule measured harmful leaves the prompt before
+# compare or `learn --auto` spends any wall clock — neither has a bound that
+# would otherwise keep the brake on time. Given the same pin as validate: retirement counts only the rows measured on
+# the model in use (owner's ruling, 2026-09-27). Pinned, that is the model
+# validate measured on. Unpinned, it is whatever is resident *now*, from its
+# own snapshot — a switch since validate ran means tonight's rows are not the
+# ones counted, which errs toward retiring nothing.
+"$MECHA" rules propose-retirements ${PIN[@]+"${PIN[@]}"} --apply
+
 # `sessions compare` runs BEFORE `learn`, for validate's reason (owner,
 # 2026-09-26): its `Rules` arm is the rules deployed now, and its points are
 # the same steers and denials `learn` is about to consume — after learn it
 # would grade tonight's sweep's rules on their own training data. That is
 # all the position buys, and it is NOT a hold-out: `validate`'s comes from
-# `--unprocessed-only`, and this pass has no such filter and draws the whole
-# corpus, while consolidation is live (`learn-live.sh` learns from a session
-# minutes after it closes). So most drawn points already meet a `Rules` arm
+# `--unprocessed-only`, and this pass has no such filter: it draws the last
+# MECHA_COMPARE_DAYS of the corpus, while consolidation is live
+# (`learn-live.sh` learns from a session minutes after it closes) — and a
+# bounded window makes that overlap more complete, not less, since every
+# point in it was one live learning had a chance at. So most drawn points already meet a `Rules` arm
 # learned from them; the `Rules` arm reads as "the deployed rules at points
 # they may have been learned from", never as a held-out measurement (found
-# on review). It is the bounded pass (eight points, a short horizon, one background seat per point,
-# deferring when every seat stays held), so its place ahead of learn costs
-# the night a bounded wait, never a stall; it writes no rule.
+# on review). It writes no rule.
+#
+# **It is bounded by the clock and by the corpus** (owner, 2026-09-27).
+# Turn-bounded is not wall-clock-bounded: eight points of up to three arms
+# each, with a seat wait per point, and this script is not `set -e`, so a
+# slow pass is not skipped, it delays everything after it — `learn`, the
+# harness, the morning's readouts. (The retirement brake no longer waits on
+# it: it runs right after validate.) So `timeout` caps this pass's share
+# (MECHA_COMPARE_TIMEOUT, default 30m). A pass cut short writes what it
+# compared, and a seat it held is reclaimed by the next caller's liveness
+# check (`permit.rs`). And `--days` bounds the read (MECHA_COMPARE_DAYS,
+# default 30): without it every transcript was read each night, and an
+# owner-bound point, never driven so never stored, was re-planned forever.
 #
 # It never drives an owner-bound check point here (owner, 2026-09-26): one is
 # posed as an artifact probe, which executes its task, and this line throws
@@ -150,20 +179,25 @@ echo "· compare (point-wise comparison at recorded decision points, decided by 
 echo "  owner's recorded verdict, before the sweep's learn; not a hold-out — live"
 echo "  learning has already consumed most points; what it separates, tomorrow's"
 echo "  distill writes into the session's appraisal as the losing arm)"
-"$MECHA" sessions compare ${PIN[@]+"${PIN[@]}"}
+timeout "${MECHA_COMPARE_TIMEOUT:-30m}" \
+    "$MECHA" sessions compare ${PIN[@]+"${PIN[@]}"} --days "${MECHA_COMPARE_DAYS:-30}"
+rc=$?
+[ "$rc" -eq 124 ] && echo "  compare stopped at its ${MECHA_COMPARE_TIMEOUT:-30m} cap; what it compared is kept"
 
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
 echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
 "$MECHA" learn ${PIN[@]+"${PIN[@]}"} --holdout 0.25 --auto
 
-echo "· retirements (deterministic ledger scan; applied, not staged — a rule measured"
-echo "  harmful must leave the prompt without waiting for anyone, and it is the only"
-echo "  brake on rules that now go live when they are derived)"
-# Given the same pin as validate: retirement counts only the rows measured on
-# the model in use (owner's ruling, 2026-09-27). Pinned, that is the model
-# validate measured on. Unpinned, it is whatever is resident *now*, from its
-# own snapshot — a switch since validate ran means tonight's rows are not the
-# ones counted, which errs toward retiring nothing.
+echo "· retirements again (after learn: a rule narrowed above that learn re-widened"
+echo "  is re-narrowed tonight, not tomorrow)"
+# The brake's second scan (owner, 2026-09-27). The first ran right after
+# validate so it waits on no paid pass; but narrowing leaves a rule active,
+# and learn's cross-region widening can re-widen it and clear the mark —
+# which makes `tally_for` refold the whole ledger, so the old convictions
+# re-convict at the next scan. Before the reorder that scan was this same
+# night; this one keeps it so (found on review of #355). Idempotent otherwise:
+# a narrowed rule's tally counts only rows since `narrowed_at`, so a scan
+# with no new rows leaves it standing.
 "$MECHA" rules propose-retirements ${PIN[@]+"${PIN[@]}"} --apply
 
 echo "· work clean (retention on generated output; a published bundle's source is never removed)"
