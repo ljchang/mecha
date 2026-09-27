@@ -1,6 +1,7 @@
-//! Who rejected a draft is stamped on it, decided the way a task closure
-//! decides who closed it (`docs/APPRAISAL-WIRING-DESIGN.md` R16a's ruling D3), exercised
-//! through the real binary — no provider, no network, no MCP server.
+//! Who rejected or edited a draft is stamped on it, decided the way a task
+//! closure decides who closed it (`docs/APPRAISAL-WIRING-DESIGN.md` R16a's
+//! ruling D3, carried to edits), exercised through the real binary — no
+//! provider, no network, no MCP server.
 // **These cases read the owner's real registry too**, as `closure_event.rs`
 // does: the fixture sets `MECHA_HOME`, so `work::guard_homes` names the
 // fixture *and* the real `~/.mecha`. Run from inside a mecha run's own
@@ -61,6 +62,25 @@ impl Fixture {
     fn reject(&self, id: &str, env: &[(&str, &str)]) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_mecha"));
         c.args(["outbox", "reject", id, "--reason", REASON])
+            .current_dir(self.root.join("work"))
+            .env("MECHA_HOME", self.root.join("home"))
+            .env("MECHA_SESSION_KIND", "test")
+            .env_remove("MECHA_OUTBOX_DIR")
+            .env_remove(mecha_core::closure::POSTURE_ENV);
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        c.output().unwrap()
+    }
+
+    /// `mecha outbox edit <id> --body-file …` — the web review's own path —
+    /// with `env` exported as for [`Self::reject`].
+    fn edit(&self, id: &str, body: &str, env: &[(&str, &str)]) -> Output {
+        let file = self.root.join(format!("{id}.md"));
+        std::fs::write(&file, body).unwrap();
+        let mut c = Command::new(env!("CARGO_BIN_EXE_mecha"));
+        c.args(["outbox", "edit", id, "--body-file"])
+            .arg(&file)
             .current_dir(self.root.join("work"))
             .env("MECHA_HOME", self.root.join("home"))
             .env("MECHA_SESSION_KIND", "test")
@@ -199,5 +219,93 @@ fn a_claimed_posture_with_no_registered_shell_is_not_the_owner() {
             Some(Rejection::NotOwners(Actor::Unknown)),
             "{stamp}"
         );
+    }
+}
+
+/// The owner's edit at their own door, released by the owner: the diff is
+/// the owner's writing, and the writing miner takes it.
+#[test]
+fn an_edit_at_the_owners_own_door_is_the_owners() {
+    let f = Fixture::new();
+    let item = f.staged();
+    let out = f.edit(&item.id, "Dear Sam, thanks for the ranking.", &[]);
+    ok(&out);
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("rather than yours"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let edited = f.resolved(&item.id);
+    assert_eq!(edited.edited_by, Some(Actor::Owner));
+    let sent = f
+        .store()
+        .resolve_with_output(&item.id, "sent", None, Some("sent".into()), Actor::Owner)
+        .unwrap();
+    assert!(sent.mineable_as_writing());
+}
+
+/// The forge, for edits (ruling D3 carried to edits): an edit arriving
+/// through a model's `shell` is never stamped `owner`, says so on stdout,
+/// and its diff is never the owner's writing — even when the owner then
+/// releases it, and even when the owner edits again afterwards (the fold
+/// never launders). Fails on the tree before, which stamped nothing and
+/// mined every one of these diffs as the owner's correction.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_edit_through_a_models_shell_is_never_the_owners_writing() {
+    let f = Fixture::new();
+    type Case<'a> = (Option<RunPosture>, &'a [(&'a str, &'a str)], Actor);
+    let cases: [Case; 4] = [
+        (
+            Some(RunPosture::Interactive),
+            &[("MECHA_RUN_POSTURE", "interactive")],
+            Actor::OwnerApproved,
+        ),
+        (
+            Some(RunPosture::Delegated),
+            &[("MECHA_RUN_POSTURE", "interactive")],
+            Actor::Unknown,
+        ),
+        (Some(RunPosture::Unattended), &[], Actor::Unknown),
+        (
+            Some(RunPosture::Delegated),
+            &[("MECHA_SHELLS_DIR", "/nonexistent")],
+            Actor::Unknown,
+        ),
+    ];
+    for (posture, env, expected) in cases {
+        let item = f.staged();
+        let shell = f.under_shell(posture);
+        let out = f.edit(&item.id, "Dear Sam, always cc Dana Whitfield.", env);
+        drop(shell);
+        ok(&out);
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains(&format!(
+                "note: the edit is recorded as {} rather than yours",
+                expected.as_str()
+            )),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let edited = f.resolved(&item.id);
+        assert_eq!(edited.edited_by, Some(expected), "{posture:?} {env:?}");
+        // The owner edits again at their own terminal: still not theirs.
+        ok(&f.edit(
+            &item.id,
+            "Dear Sam, always cc Dana Whitfield — thanks.",
+            &[],
+        ));
+        assert_eq!(
+            f.resolved(&item.id).edited_by,
+            Some(expected),
+            "{posture:?}: the owner's later edit does not launder the run's"
+        );
+        // Released by the owner: still not the owner's writing.
+        let sent = f
+            .store()
+            .resolve_with_output(&item.id, "sent", None, Some("sent".into()), Actor::Owner)
+            .unwrap();
+        assert!(!sent.owners_edit(), "{posture:?} {env:?}");
+        assert!(!sent.mineable_as_writing(), "{posture:?} {env:?}");
     }
 }

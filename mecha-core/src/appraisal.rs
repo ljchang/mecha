@@ -3625,6 +3625,7 @@ mod tests {
             created_at: "2026-08-27T00:00:00Z".into(),
             resolved_at: None,
             reason: None,
+            edited_by: None,
             // The owner's own act, as every fixture here means it; the
             // other actors are `an_unchanged_release_is_the_owners_verdict_only_when_the_owner_released_it`.
             resolved_by: (status != "pending").then_some(crate::closure::Actor::Owner),
