@@ -357,8 +357,9 @@ git -C ~/Github/mecha status --porcelain          # expect: empty
   block; do not improvise a `switch main && pull`, which is the version
   that failed silently on a dirty file and would have passed through a
   stale local `main`.
-- **Name the digest.** The launch-script check compares git blob ids
-  (`git rev-parse <ref>:path`, `d76da36c…` that day). A peer re-checking
+- **Name the digest.** The launch-script check used to compare git blob ids
+  (`git rev-parse <ref>:path`, `d76da36c…` that day); it is `git diff
+  --quiet` over the launch files now. A peer re-checking
   with `sha256sum` got a different number for the same bytes and nearly
   read it as "the file changed", which would have restarted `llama-local`
   for nothing. `git diff --quiet A B -- path` is the algorithm-free form.
