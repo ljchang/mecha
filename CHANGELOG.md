@@ -7,8 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A draft released unchanged is your verdict only when you released it**
+  (`APPRAISAL-WIRING-DESIGN.md`, R16a's ruling D3 carried to releases). The
+  appraisal's +1.0, the owner-verified success set (`mecha sessions
+  successes`), its writing exemplars and the planning success examples
+  `goal_context` serves now count an unchanged release only when #343's
+  stamp says `owner`; a run's shell that approves its own draft earns none,
+  and releases from before the stamp count as neither, so the success set
+  starts empty of that history. A run that rejected its own draft sets no
+  point-wise rejected-draft point.
+
 ### Added
 
+- **Every outbox edit records who made it, and an edit is your writing only
+  when you made every edit and the send** (`APPRAISAL-WIRING-DESIGN.md`,
+  R16a's ruling D3 carried to edits). `mecha outbox edit` (and `polls pick`)
+  stamp `edited_by` — `owner`, `owner-approved` or `unknown`, as rejects are
+  stamped — folded across edits so an owner's later edit never launders a
+  run's. `mecha reflect` mines a diff as a writing lesson, the appraiser is
+  shown it as "the owner edited it", and a point-wise comparison takes the
+  released text as its gold only when every edit and the release were
+  stamped `owner`; otherwise the edit is described, not shown. Edits from
+  before this read `unknown`. An edit not stamped `owner` says so when it is
+  saved, in the terminal and the web review. `outbox show` and the TUI name
+  the editor.
 - **Image generation.** With `[image]` configured, the `image_generate`
   tool draws a picture with a local image model (ComfyUI with Qwen-Image 2.1
   today) and saves the PNG under `images/` in the conversation's workspace;
@@ -165,6 +189,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slot list it cannot read, or has been stuck loading for three hours.
 
 ### Changed
+
+- **The counterfactual comparison summary counts one model** (the owner's
+  ruling of 2026-09-27). Since the chat server became a router, background
+  passes follow whichever model is resident, and `mecha sessions appraise`
+  summed the production model's comparisons with a comparison arm's into one
+  separated share. It now counts the model of the newest comparison on
+  record (`mecha sessions compare`: the model it drove) and says the rows
+  under other models beside the summary without counting them. Unposed
+  points, which no model was run on, are counted on their own (`unposed`)
+  rather than inside one model's `inconclusive`. `--json` adds `model`,
+  `other_models` and `no_model` (rows with no model recorded that are not
+  unposed points: unknown, never counted) to `comparisons`; `records`,
+  `inconclusive` and the rest now count that one model's rows. Nothing
+  stored changes.
 
 - A mail thread whose classification fails for a reason of its own (a
   verdict that will not parse, a refusal, a rejected request) is retried on

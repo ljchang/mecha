@@ -262,6 +262,17 @@ pub struct OutboxItem {
     /// A value from a newer build loads as `unknown` (`#[serde(other)]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_by: Option<Actor>,
+    /// Who changed `args` since staging — every `mecha outbox edit` (and
+    /// `polls pick`) folded with [`Actor::least`], so one edit a run's
+    /// `shell` made is never laundered by a later one of the owner's
+    /// (`APPRAISAL-WIRING-DESIGN.md`, R16a's ruling D3 carried to edits,
+    /// 2026-09-27). `mecha outbox edit` is a command a model's `shell` can
+    /// run, and the writing miner reads `diff(args_before, args)` as the
+    /// owner's correction. `None` on an item nobody edited and on every
+    /// item edited before the field existed; the second reads as
+    /// [`Actor::Unknown`] through [`Self::edited_by`], never the owner's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_by: Option<Actor>,
     /// The last release attempt's failure, if any. A failed send stays
     /// `pending` — the draft is still good; the delivery was not.
     #[serde(default)]
@@ -504,8 +515,36 @@ impl OutboxItem {
     ///   from bookkeeping — the same mistake as learning from
     ///   `"Blocked by a hook:"`, which is machine policy read as a human
     ///   correction.
+    ///
+    /// - **The owner's edit, released by the owner** ([`Self::owners_edit`];
+    ///   ruling D3 carried to edits). A diff a run's `shell` wrote, or one
+    ///   the owner's release carried from a model's edit, is not the
+    ///   owner's correction however it reads.
     pub fn mineable_as_writing(&self) -> bool {
-        self.writing_outcome() == Some(WritingOutcome::SentEdited)
+        self.writing_outcome() == Some(WritingOutcome::SentEdited) && self.owners_edit()
+    }
+
+    /// Who edited this item — `None` when nobody did (no edit was recorded
+    /// and its `args` still equal `args_before`), [`Actor::Unknown`] for an
+    /// edit nobody stamped (every item edited before the field). An item
+    /// edited and then edited back keeps its editor: it was edited.
+    pub fn edited_by(&self) -> Option<Actor> {
+        match self.edited_by {
+            Some(a) => Some(a),
+            None if self.edited() => Some(Actor::Unknown),
+            None => None,
+        }
+    }
+
+    /// Whether `diff(args_before, args)` may be read as **the owner's own
+    /// edit**: every edit and the release both made at the owner's own door
+    /// ([`Actor::Owner`]). Release-only would misfire when the owner edits
+    /// and a run's `shell` approves; edit-only when a run's `shell` edits
+    /// and the owner releases without reading the diff as theirs.
+    pub fn owners_edit(&self) -> bool {
+        self.edited()
+            && self.edited_by() == Some(Actor::Owner)
+            && self.resolved_by() == Actor::Owner
     }
 
     /// Who resolved this item — [`Actor::Unknown`] when nobody stamped it
@@ -589,6 +628,25 @@ impl OutboxItem {
             Rejection::OwnersWords(r) => Some(r),
             Rejection::NotOwners(_) => None,
         }
+    }
+
+    /// Whether this item is **the owner's verdict that a model drafted
+    /// well**: a model's message draft released unchanged
+    /// ([`WritingOutcome::SentUnchanged`]) *by the owner* — the release
+    /// stamped [`Actor::Owner`] (`APPRAISAL-WIRING-DESIGN.md`, R16a's ruling
+    /// D3 carried to releases, 2026-09-27). `mecha outbox approve -y` is a
+    /// command a model's `shell` can run, and a run that releases its own
+    /// draft unchanged has not been told it drafted well by anyone. Every
+    /// reader that counts an unchanged release as the owner's +1.0 or as an
+    /// owner-verified success reads this, never `writing_outcome` alone; a
+    /// release from before the stamp (`resolved_by` absent) reads `unknown`
+    /// and counts as neither — fail closed.
+    ///
+    /// `writing_outcome` itself stays structural (what happened to the
+    /// draft), so `WritingTally` keeps its denominator.
+    pub fn owners_unchanged_release(&self) -> bool {
+        self.writing_outcome() == Some(WritingOutcome::SentUnchanged)
+            && self.resolved_by() == Actor::Owner
     }
 
     /// What this item says about the drafting, if it says anything.
@@ -881,6 +939,7 @@ impl OutboxStore {
             resolved_at: None,
             reason: None,
             resolved_by: None,
+            edited_by: None,
             error: None,
             author: author.as_str().to_string(),
             output: None,
@@ -1019,7 +1078,12 @@ impl OutboxStore {
 
     /// Replace a pending item's release arguments. `args_before` is untouched
     /// — it is the baseline the learning capture diffs against.
-    pub fn update_args(&self, id: &str, args: Value) -> Result<OutboxItem> {
+    ///
+    /// `by` is who is editing, as [`crate::closure::attribute`] decided in
+    /// the process doing it; it folds into `edited_by` with every earlier
+    /// edit's ([`Actor::least`]). An item already edited with no stamp
+    /// folds from `unknown`. No default, as for [`Self::resolve`].
+    pub fn update_args(&self, id: &str, args: Value, by: Actor) -> Result<OutboxItem> {
         let mut item = self.item(id)?;
         anyhow::ensure!(
             item.status == "pending",
@@ -1028,6 +1092,15 @@ impl OutboxStore {
             item.status
         );
         item.ensure_delivery_ready()?;
+        // A write that changes nothing is not an edit and stamps nothing:
+        // otherwise a run's no-op `edit` would poison the fold, and every
+        // later owner edit would read as not the owner's (review of #348).
+        if args != item.args {
+            item.edited_by = Some(match item.edited_by() {
+                Some(earlier) => earlier.least(by),
+                None => by,
+            });
+        }
         item.args = args;
         item.summary = summarize(&item.tool, &item.args);
         self.write_item(&item)?;
@@ -2016,7 +2089,11 @@ mod tests {
             .unwrap();
 
         let edited = store
-            .update_args(&item.id, json!({"url": "https://b"}))
+            .update_args(
+                &item.id,
+                json!({"url": "https://b"}),
+                crate::closure::Actor::Owner,
+            )
             .unwrap();
         assert!(edited.edited());
         assert_eq!(edited.args_before, json!({"url": "https://a"}));
@@ -2063,6 +2140,10 @@ mod tests {
             item.status = status.into();
             if edited {
                 item.args = json!({"path": "/tmp/b"});
+                // The owner's edit and the owner's release; the actor cases
+                // are `an_edit_is_the_owners_writing_only_when_the_owner_edited_and_released_it`.
+                item.edited_by = Some(Actor::Owner);
+                item.resolved_by = Some(Actor::Owner);
             }
             assert_eq!(
                 item.mineable_as_writing(),
@@ -2215,6 +2296,163 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// R16a's ruling D3 carried to releases: `owners_unchanged_release` is
+    /// the owner's release of an unchanged model draft and nothing else,
+    /// while `writing_outcome` stays structural. Fails on the tree before,
+    /// where the predicate did not exist and every reader took
+    /// `SentUnchanged` alone.
+    #[test]
+    fn an_unchanged_release_is_the_owners_only_under_the_owners_stamp() {
+        let root = scratch("unchanged-release");
+        let store = OutboxStore::open(&root).unwrap();
+        let release = |by: Actor| {
+            let staged = store
+                .stage(
+                    "mail_send",
+                    OutboxKind::Message,
+                    json!({"to": "sam@example.edu", "body": "Dear Sam,"}),
+                    Taint::default(),
+                    Provenance::default(),
+                )
+                .unwrap();
+            store
+                .resolve_with_output(&staged.id, "sent", None, Some("sent".into()), by)
+                .unwrap()
+        };
+        assert!(release(Actor::Owner).owners_unchanged_release());
+        for by in [Actor::OwnerApproved, Actor::Unknown] {
+            let i = release(by);
+            assert_eq!(i.writing_outcome(), Some(WritingOutcome::SentUnchanged));
+            assert!(!i.owners_unchanged_release(), "{by:?}");
+        }
+        let mut legacy = release(Actor::Owner);
+        legacy.resolved_by = None;
+        assert!(!legacy.owners_unchanged_release(), "pre-stamp: fail closed");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Ruling D3 carried to edits (2026-09-27): `diff(args_before, args)` is
+    /// the owner's writing only when **every** edit and the release were
+    /// stamped `owner`. A run's shell editing (behind the approver or not),
+    /// a run's shell releasing the owner's edit, an owner edit after a run's
+    /// edit (the fold never launders), and an edit from before the stamp are
+    /// all not mineable — while `writing_outcome` still says what happened.
+    /// Fails on the tree before, which mined every one of these as the
+    /// owner's correction.
+    #[test]
+    fn an_edit_is_the_owners_writing_only_when_the_owner_edited_and_released_it() {
+        let root = scratch("edit-actor");
+        let store = OutboxStore::open(&root).unwrap();
+        let draft = |edits: &[Actor], release: Actor| {
+            let staged = store
+                .stage(
+                    "mail_send",
+                    OutboxKind::Message,
+                    json!({"to": "sam@example.edu", "body": "Dear Sam,"}),
+                    Taint::default(),
+                    Provenance::default(),
+                )
+                .unwrap();
+            for (i, by) in edits.iter().enumerate() {
+                store
+                    .update_args(
+                        &staged.id,
+                        json!({"to": "sam@example.edu", "body": format!("Dear Sam, v{i}")}),
+                        *by,
+                    )
+                    .unwrap();
+            }
+            store
+                .resolve_with_output(&staged.id, "sent", None, Some("sent".into()), release)
+                .unwrap()
+        };
+        use Actor::{Owner, OwnerApproved, Unknown};
+
+        let owners = draft(&[Owner, Owner], Owner);
+        assert_eq!(owners.edited_by, Some(Owner), "the edit stamps");
+        assert!(owners.owners_edit());
+        assert!(owners.mineable_as_writing());
+
+        for (edits, release) in [
+            (&[OwnerApproved][..], Owner),
+            (&[Unknown][..], Owner),
+            (&[Owner][..], OwnerApproved),
+            (&[Owner][..], Unknown),
+            (&[OwnerApproved, Owner][..], Owner),
+            (&[Unknown, Owner][..], Owner),
+        ] {
+            let i = draft(edits, release);
+            assert_eq!(
+                i.writing_outcome(),
+                Some(WritingOutcome::SentEdited),
+                "{edits:?} {release:?}"
+            );
+            assert!(!i.owners_edit(), "{edits:?} {release:?}");
+            assert!(!i.mineable_as_writing(), "{edits:?} {release:?}");
+            if edits.iter().any(|a| *a != Owner) {
+                assert_ne!(
+                    i.edited_by(),
+                    Some(Owner),
+                    "{edits:?}: the fold never launders"
+                );
+            }
+        }
+
+        // An item edited before the field existed, then edited again by the
+        // owner: the fold starts from `unknown`, so it stays unknown.
+        let staged = store
+            .stage(
+                "mail_send",
+                OutboxKind::Message,
+                json!({"body": "a"}),
+                Taint::default(),
+                Provenance::default(),
+            )
+            .unwrap();
+        let mut legacy = store.item(&staged.id).unwrap();
+        legacy.args = json!({"body": "edited before the stamp"});
+        store.write_item(&legacy).unwrap();
+        let again = store
+            .update_args(&staged.id, json!({"body": "and by the owner"}), Owner)
+            .unwrap();
+        assert_eq!(again.edited_by, Some(Unknown));
+
+        // A run's `edit` that changes nothing stamps nothing, so it cannot
+        // poison the owner's real edit after it (review of #348).
+        let staged = store
+            .stage(
+                "mail_send",
+                OutboxKind::Message,
+                json!({"body": "Dear Sam,"}),
+                Taint::default(),
+                Provenance::default(),
+            )
+            .unwrap();
+        let noop = store
+            .update_args(&staged.id, json!({"body": "Dear Sam,"}), OwnerApproved)
+            .unwrap();
+        assert_eq!(noop.edited_by, None);
+        let real = store
+            .update_args(&staged.id, json!({"body": "Dear Sam, thanks."}), Owner)
+            .unwrap();
+        assert_eq!(real.edited_by, Some(Owner));
+
+        // The field round-trips, a future actor degrades, and an item nobody
+        // edited has no editor at all.
+        let mut newer = serde_json::to_value(&owners).unwrap();
+        newer["edited_by"] = json!("owner-by-retina");
+        let newer: OutboxItem = serde_json::from_value(newer).unwrap();
+        assert_eq!(newer.edited_by(), Some(Unknown));
+        assert!(!newer.mineable_as_writing());
+        let untouched = draft(&[], Owner);
+        assert_eq!(untouched.edited_by(), None);
+        assert_eq!(
+            untouched.writing_outcome(),
+            Some(WritingOutcome::SentUnchanged)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The signal that had no reader: the owner read a letter written in their
     /// name and sent it as drafted. Positive evidence, and deliberately *not*
     /// a correction — mining it as one would teach voice rules from approval.
@@ -2254,6 +2492,8 @@ mod tests {
         let mut edited = stage(OutboxKind::Message);
         edited.status = "sent".into();
         edited.args = json!({"body": "Dear Dr Baumgartner,"});
+        edited.edited_by = Some(Actor::Owner);
+        edited.resolved_by = Some(Actor::Owner);
         assert_eq!(edited.writing_outcome(), Some(WritingOutcome::SentEdited));
         assert!(edited.mineable_as_writing());
 
@@ -2417,7 +2657,11 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(legacy.author(), Author::Model);
-        assert!(legacy.mineable_as_writing());
+        // A model's draft, edited and sent before who did either was
+        // recorded: still a model's draft, but not the owner's writing
+        // (ruling D3 carried to edits; fail closed).
+        assert_eq!(legacy.writing_outcome(), Some(WritingOutcome::SentEdited));
+        assert!(!legacy.mineable_as_writing());
 
         // A value from a newer binary loads, is nobody's draft, and survives
         // this binary's own read-modify-write verbatim.
@@ -2469,7 +2713,10 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(item.kind, OutboxKind::Message);
-        assert!(item.mineable_as_writing());
+        assert_eq!(item.writing_outcome(), Some(WritingOutcome::SentEdited));
+        // Unstamped, so not the owner's writing (ruling D3 carried to edits).
+        assert_eq!(item.edited_by(), Some(Actor::Unknown));
+        assert!(!item.mineable_as_writing());
         // And the same for the jail it was drafted under: an older item names
         // none, and a release falls back to the reviewer's workspace, which is
         // exactly what it did before the field existed.
@@ -2772,7 +3019,9 @@ mod tests {
             .resolve(&item.id, "rejected", None, crate::closure::Actor::Owner)
             .unwrap_err();
         assert!(err.to_string().contains("not pending"), "{err}");
-        let err = store.update_args(&item.id, json!({"x": 1})).unwrap_err();
+        let err = store
+            .update_args(&item.id, json!({"x": 1}), crate::closure::Actor::Owner)
+            .unwrap_err();
         assert!(err.to_string().contains("not pending"), "{err}");
 
         let _ = std::fs::remove_dir_all(&root);
@@ -3127,7 +3376,11 @@ mod tests {
         assert!(reopened.item(&item.id).unwrap().delivery_uncertain());
         assert!(reopened.begin_delivery(&item.id).is_err());
         assert!(reopened
-            .update_args(&item.id, json!({"body":"different"}))
+            .update_args(
+                &item.id,
+                json!({"body":"different"}),
+                crate::closure::Actor::Owner
+            )
             .is_err());
         assert!(reopened
             .resolve(&item.id, "rejected", None, crate::closure::Actor::Owner)

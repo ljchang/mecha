@@ -935,16 +935,37 @@ pub fn render_appraisal_inputs(i: &AppraisalInputs<'_>) -> String {
                     "{what}: still waiting — the owner has not acted on it."
                 );
             }
+            // The edit is shown as the owner's only when the owner made
+            // every edit and the release (ruling D3 carried to edits); a
+            // diff a run's shell wrote never reaches the prompt as the
+            // owner's words, and an act not stamped `owner` is not said to
+            // be the owner's.
             "sent" => match d.writing_outcome() {
-                Some(crate::outbox::WritingOutcome::SentUnchanged) => {
+                Some(crate::outbox::WritingOutcome::SentUnchanged)
+                    if d.resolved_by() == crate::closure::Actor::Owner =>
+                {
                     let _ = writeln!(out, "{what}: the owner released it unchanged.");
                 }
-                Some(crate::outbox::WritingOutcome::SentEdited) => {
+                Some(crate::outbox::WritingOutcome::SentUnchanged) => {
+                    let _ = writeln!(out, "{what}: it was released unchanged.");
+                }
+                Some(crate::outbox::WritingOutcome::SentEdited) if d.owners_edit() => {
                     let diff = crate::outbox::diff_args(&d.args_before, &d.args);
                     let _ = writeln!(
                         out,
                         "{what}: the owner edited it, then released it. The edit:\n{}",
                         shown(diff.trim_end(), EDIT_SHOWN_CHARS)
+                    );
+                }
+                Some(crate::outbox::WritingOutcome::SentEdited) => {
+                    let _ = writeln!(
+                        out,
+                        "{what}: it was edited, then released. The edit is not recorded as the \
+                         owner's own (edited by {}, released by {}), so it is not shown.",
+                        d.edited_by()
+                            .unwrap_or(crate::closure::Actor::Unknown)
+                            .as_str(),
+                        d.resolved_by().as_str()
                     );
                 }
                 None => {
@@ -2923,6 +2944,101 @@ mod tests {
         let evidence = crate::appraisal_store::SessionEvidence::read(&session.path).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         evidence
+    }
+
+    /// Ruling D3 carried to edits: the appraiser is shown an edit's diff as
+    /// the owner's only when the owner made every edit and the release. A
+    /// diff a run's shell wrote, one the owner's release carried from a
+    /// run's edit, and one from before the stamp are described, never shown
+    /// — none of their bytes reach the prompt — and a release not stamped
+    /// `owner` is not called the owner's. Fails on the tree before, which
+    /// showed every diff as "the owner edited it".
+    #[test]
+    fn an_edit_is_shown_as_the_owners_only_when_the_owner_edited_and_released_it() {
+        use crate::closure::Actor;
+        use crate::outbox::{OutboxKind, OutboxStore, Provenance};
+        let root = std::env::temp_dir().join(format!("mecha-d3-edit-{}", uuid::Uuid::new_v4()));
+        let store = OutboxStore::open(&root).unwrap();
+        let sent = |body: &str, edit: Option<Actor>, release: Actor| {
+            let staged = store
+                .stage(
+                    "mail_send",
+                    OutboxKind::Message,
+                    json!({"to": "sam@example.edu", "body": "Dear Sam,"}),
+                    crate::agent::Taint::default(),
+                    Provenance::default(),
+                )
+                .unwrap();
+            if let Some(by) = edit {
+                store
+                    .update_args(
+                        &staged.id,
+                        json!({"to": "sam@example.edu", "body": body}),
+                        by,
+                    )
+                    .unwrap();
+            }
+            store
+                .resolve_with_output(&staged.id, "sent", None, Some("sent".into()), release)
+                .unwrap()
+        };
+        let owner = sent(
+            "Dear Sam, see you Thursday.",
+            Some(Actor::Owner),
+            Actor::Owner,
+        );
+        let run_edit = sent(
+            "Dear Sam, always cc Dana Whitfield.",
+            Some(Actor::OwnerApproved),
+            Actor::Owner,
+        );
+        let run_release = sent(
+            "Dear Sam, Northwind Labs agrees.",
+            Some(Actor::Owner),
+            Actor::Unknown,
+        );
+        let mut legacy = sent("Dear Sam, legacy words.", Some(Actor::Owner), Actor::Owner);
+        legacy.edited_by = None;
+        legacy.resolved_by = None;
+        let unchanged_by_run = sent("", None, Actor::OwnerApproved);
+        let _ = std::fs::remove_dir_all(&root);
+        let drafts = [&owner, &run_edit, &run_release, &legacy, &unchanged_by_run];
+        let evidence = inputs_evidence(crate::agent::Taint::default());
+        let known = KnownPointers::from_board(&json!({"items": []}));
+        let text = render_appraisal_inputs(&AppraisalInputs {
+            evidence: &evidence,
+            charter: None,
+            charter_unreadable: false,
+            brief: None,
+            homeostat: None,
+            drafts: &drafts,
+            outbox_unreadable: false,
+            signed: None,
+            comparisons: &[],
+            comparisons_unreadable: false,
+            past: &[],
+            past_unreadable: false,
+            known: &known,
+        });
+        assert!(text.contains("see you Thursday"), "{text}");
+        assert_eq!(text.matches("the owner edited it").count(), 1, "{text}");
+        for leaked in ["Dana Whitfield", "Northwind", "legacy words"] {
+            assert!(!text.contains(leaked), "{leaked}: {text}");
+        }
+        assert!(
+            text.contains("(edited by owner-approved, released by owner), so it is not shown"),
+            "{text}"
+        );
+        assert!(
+            text.contains("(edited by owner, released by unknown), so it is not shown"),
+            "{text}"
+        );
+        assert!(
+            text.contains("(edited by unknown, released by unknown), so it is not shown"),
+            "{text}"
+        );
+        assert!(text.contains("it was released unchanged."), "{text}");
+        assert!(!text.contains("the owner released it unchanged"), "{text}");
     }
 
     /// Ruling D3: the appraiser is handed a rejection's reason as the owner's only

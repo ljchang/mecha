@@ -1748,7 +1748,17 @@ pub fn of_session(
             // **The one signal in this system that says something went well.**
             // Recorded since the outbox existed; positive, and it is the reason
             // this record is signed at all.
-            (Some(crate::outbox::WritingOutcome::SentUnchanged), _) => (1.0, Agency::Own),
+            //
+            // Only when the owner released it (R16a's ruling D3 carried to
+            // releases): a run's shell that approves its own draft unchanged
+            // earns nothing, and a release from before the stamp counts as
+            // neither verdict — fail closed.
+            (Some(crate::outbox::WritingOutcome::SentUnchanged), _)
+                if item.owners_unchanged_release() =>
+            {
+                (1.0, Agency::Own)
+            }
+            (Some(crate::outbox::WritingOutcome::SentUnchanged), _) => continue,
             (Some(crate::outbox::WritingOutcome::SentEdited), _) => (-1.0, Agency::Owner),
             // `writing_outcome` returns `None` for a rejected item too (it
             // never went out), so the message-only guard is this arm's to
@@ -3615,7 +3625,10 @@ mod tests {
             created_at: "2026-08-27T00:00:00Z".into(),
             resolved_at: None,
             reason: None,
-            resolved_by: None,
+            edited_by: None,
+            // The owner's own act, as every fixture here means it; the
+            // other actors are `an_unchanged_release_is_the_owners_verdict_only_when_the_owner_released_it`.
+            resolved_by: (status != "pending").then_some(crate::closure::Actor::Owner),
             error: None,
         }
     }
@@ -3655,6 +3668,26 @@ mod tests {
         // the other half.
         assert_eq!(a.label, Affect::Neutral);
         assert!(a.goals.is_empty());
+    }
+
+    /// R16a's ruling D3 carried to releases (2026-09-27): an unchanged
+    /// release is the owner's +1.0 only when the owner released it. A run's
+    /// shell that approved its own draft (`owner-approved`, `unknown`) and a
+    /// release from before the stamp sign nothing at all — neither +1.0 nor
+    /// a stand-in. Fails on the tree before, which signed every one +1.0.
+    #[test]
+    fn an_unchanged_release_is_the_owners_verdict_only_when_the_owner_released_it() {
+        use crate::closure::Actor;
+        for by in [Some(Actor::OwnerApproved), Some(Actor::Unknown), None] {
+            let mut d = draft("o1", "sent", false);
+            d.resolved_by = by;
+            let a = built(&stats(), &[&d], &[]);
+            assert!(a.errors.is_empty(), "{by:?}: {:?}", a.errors);
+        }
+        // The edited and the rejected verdicts are unchanged by this ruling.
+        let mut edited = draft("o2", "sent", true);
+        edited.resolved_by = Some(Actor::OwnerApproved);
+        assert_eq!(built(&stats(), &[&edited], &[]).errors[0].sign, -1.0);
     }
 
     /// The owner's rewrite is what reached the recipient, not mecha's

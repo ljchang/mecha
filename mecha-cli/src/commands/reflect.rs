@@ -142,7 +142,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // is the longest-half-life path anything in this project has, and teaching
     // it voice rules from filesystem noise is the same mistake as learning from
     // `"Blocked by a hook:"`: machine bookkeeping read as a human correction.
-    // The filter is structural, before any prompt is built.
+    // The filter is structural, before any prompt is built. **And only the
+    // owner's edit, released by the owner** (`OutboxItem::owners_edit`,
+    // R16a's ruling D3 carried to edits): `mecha outbox edit` and `approve`
+    // are commands a model's `shell` can run, and a diff a run wrote is not
+    // the user editing mecha's writing. `mineable_as_writing` holds the gate;
+    // an ungated edit is left unmined, never marked.
     let outbox = mecha_core::outbox::OutboxStore::open_existing_default();
     let outbox_mined = store.mined_outbox()?;
     //

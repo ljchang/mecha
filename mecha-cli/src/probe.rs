@@ -144,6 +144,14 @@ impl ProbePrep {
     /// hooks, the outbox and messages — thrown off, as `mecha validate`'s
     /// mismatch probes require. `None` for every replayed probe.
     pub fn unrunnable_under(&self, prepared: &Prepared) -> Option<String> {
+        self.unrunnable_with(&prepared.levers_off)
+    }
+
+    /// [`Self::unrunnable_under`] over the levers alone — the only part of
+    /// the prepared run it reads, so the refusal is testable without one.
+    /// `Some` only for an artifact probe, which is only ever posed for an
+    /// owner-bound check point (`sessions compare` counts it as such).
+    pub fn unrunnable_with(&self, levers_off: &[mecha_core::harness::Lever]) -> Option<String> {
         if !matches!(self.method, ProbeMethod::Artifact { .. }) {
             return None;
         }
@@ -153,7 +161,7 @@ impl ProbePrep {
             mecha_core::harness::Lever::Messages,
         ]
         .into_iter()
-        .find(|lever| !prepared.levers_off.contains(lever))
+        .find(|lever| !levers_off.contains(lever))
         .map(|lever| format!("artifact probes require {lever:?} disabled, as in the recording"))
     }
 
