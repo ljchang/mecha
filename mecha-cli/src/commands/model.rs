@@ -446,22 +446,22 @@ async fn wait_for_runs(
     }
 }
 
-/// Withdraw every pending switch on the routers this config follows.
-fn cancel_switch(cfg: &Config) -> Result<()> {
+/// Withdraw every pending switch — every switch file in `~/.mecha/holds`, not
+/// only those on routers this config still follows, so a switch left on one it
+/// no longer points at is reachable too (review of #350).
+fn cancel_switch(_cfg: &Config) -> Result<()> {
     let holds = mecha_core::hold::Holds::open_default()?;
-    let mut any = false;
-    for base in router_bases(cfg) {
-        if let Some(s) = holds.withdraw_switch(&base) {
-            any = true;
-            eprintln!(
-                "withdrew the switch to {} on {base} (pid {}, since {}); runs waiting for it start now",
-                s.to,
-                s.pid,
-                s.started_at.format("%H:%M:%SZ")
-            );
-        }
+    let withdrawn = holds.withdraw_all_switches();
+    for s in &withdrawn {
+        eprintln!(
+            "withdrew the switch to {} on {} (pid {}, since {}); runs waiting for it start now",
+            s.to,
+            s.base_url,
+            s.pid,
+            s.started_at.format("%H:%M:%SZ")
+        );
     }
-    if !any {
+    if withdrawn.is_empty() {
         eprintln!("no switch is pending");
     }
     Ok(())

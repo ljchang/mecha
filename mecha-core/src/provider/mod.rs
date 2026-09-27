@@ -153,6 +153,11 @@ pub fn halt(reason: impl Into<String>) {
 /// What every provider [`build`] returns: the provider itself, and the
 /// [`halt`] check ahead of each request. Not a retryable error — a halted
 /// request is not transient, and failing over would send it elsewhere.
+///
+/// **Delegate every `Provider` method, including the ones with a default
+/// body.** A method left to its default here silently replaces the real
+/// provider's answer for every request in every process — the shape of the
+/// `Failover::vision` incident. A new trait method must be forwarded here too.
 struct Halting {
     inner: Box<dyn Provider>,
     /// Which flag it checks: [`HALTED`] in every build, a test's own in tests
