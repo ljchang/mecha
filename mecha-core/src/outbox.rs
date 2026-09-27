@@ -524,9 +524,10 @@ impl OutboxItem {
         self.writing_outcome() == Some(WritingOutcome::SentEdited) && self.owners_edit()
     }
 
-    /// Who edited this item — `None` when nobody did (its `args` still
-    /// equal `args_before` and nothing recorded an edit), [`Actor::Unknown`]
-    /// for an edit nobody stamped (every item edited before the field).
+    /// Who edited this item — `None` when nobody did (no edit was recorded
+    /// and its `args` still equal `args_before`), [`Actor::Unknown`] for an
+    /// edit nobody stamped (every item edited before the field). An item
+    /// edited and then edited back keeps its editor: it was edited.
     pub fn edited_by(&self) -> Option<Actor> {
         match self.edited_by {
             Some(a) => Some(a),
@@ -1072,10 +1073,15 @@ impl OutboxStore {
             item.status
         );
         item.ensure_delivery_ready()?;
-        item.edited_by = Some(match item.edited_by() {
-            Some(earlier) => earlier.least(by),
-            None => by,
-        });
+        // A write that changes nothing is not an edit and stamps nothing:
+        // otherwise a run's no-op `edit` would poison the fold, and every
+        // later owner edit would read as not the owner's (review of #348).
+        if args != item.args {
+            item.edited_by = Some(match item.edited_by() {
+                Some(earlier) => earlier.least(by),
+                None => by,
+            });
+        }
         item.args = args;
         item.summary = summarize(&item.tool, &item.args);
         self.write_item(&item)?;
@@ -2356,6 +2362,26 @@ mod tests {
             .update_args(&staged.id, json!({"body": "and by the owner"}), Owner)
             .unwrap();
         assert_eq!(again.edited_by, Some(Unknown));
+
+        // A run's `edit` that changes nothing stamps nothing, so it cannot
+        // poison the owner's real edit after it (review of #348).
+        let staged = store
+            .stage(
+                "mail_send",
+                OutboxKind::Message,
+                json!({"body": "Dear Sam,"}),
+                Taint::default(),
+                Provenance::default(),
+            )
+            .unwrap();
+        let noop = store
+            .update_args(&staged.id, json!({"body": "Dear Sam,"}), OwnerApproved)
+            .unwrap();
+        assert_eq!(noop.edited_by, None);
+        let real = store
+            .update_args(&staged.id, json!({"body": "Dear Sam, thanks."}), Owner)
+            .unwrap();
+        assert_eq!(real.edited_by, Some(Owner));
 
         // The field round-trips, a future actor degrades, and an item nobody
         // edited has no editor at all.

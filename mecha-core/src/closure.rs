@@ -169,10 +169,13 @@ impl Actor {
     /// so a later owner's act cannot launder an earlier one that was not
     /// (an outbox draft edited more than once).
     pub fn least(self, other: Actor) -> Actor {
+        // Every pair spelled: a fourth variant must be a build error here,
+        // not a silent fold to `OwnerApproved` (review of #348).
         match (self, other) {
             (Actor::Owner, Actor::Owner) => Actor::Owner,
             (Actor::Unknown, _) | (_, Actor::Unknown) => Actor::Unknown,
-            _ => Actor::OwnerApproved,
+            (Actor::OwnerApproved, Actor::Owner | Actor::OwnerApproved)
+            | (Actor::Owner, Actor::OwnerApproved) => Actor::OwnerApproved,
         }
     }
 }

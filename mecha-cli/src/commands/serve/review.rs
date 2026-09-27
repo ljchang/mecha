@@ -50,6 +50,10 @@ pub struct Row {
     created_at: String,
     tainted: bool,
     edited: bool,
+    /// Who edited it (`owner`, `owner-approved`, `unknown`), `None` when
+    /// nobody did — so the page says "edited by you" only when it was
+    /// (ruling D3 carried to edits).
+    edited_by: Option<&'static str>,
     /// Which mailbox or calendar account the draft acts as, when it names one.
     account: Option<String>,
     /// An event's start, verbatim (RFC 3339 or a date) — the list shows when
@@ -158,6 +162,7 @@ fn row(item: &OutboxItem) -> Row {
         created_at: item.created_at.clone(),
         tainted: item.taint.trifecta_armed(),
         edited: item.edited(),
+        edited_by: item.edited_by().map(|a| a.as_str()),
         account: item.args["account"].as_str().map(str::to_string),
         // Calendar calls only: another tool's `start_time` is not an event's.
         start_time: is_calendar
@@ -266,6 +271,7 @@ fn detail_json(
         "body": view.body,
         "other": view.other,
         "edited": item.edited(),
+        "edited_by": item.edited_by().map(|a| a.as_str()),
         // Why the last release attempt failed, when one did. The store has
         // carried this since failed sends started surviving as pending, and
         // the page could only ever say "1 of 1 item(s) did not send" — a
@@ -1416,6 +1422,23 @@ mod tests {
             "the file id is noise on a card"
         );
         assert!(row.snippet.contains("Office hours"));
+    }
+
+    /// Ruling D3 carried to edits: the card carries who edited, so the page
+    /// says "edited by you" only for the owner's edit (review of #348). The
+    /// fixture's `args` already differ from `args_before`, with no stamp:
+    /// an edit from before the field, which is nobody's in particular.
+    #[test]
+    fn a_card_says_who_edited_it() {
+        let mut it = item("e", "pending", "2026-08-24T10:00:00Z");
+        assert_eq!(row(&it).edited_by, Some("unknown"));
+        it.edited_by = Some(mecha_core::closure::Actor::OwnerApproved);
+        assert_eq!(row(&it).edited_by, Some("owner-approved"));
+        it.edited_by = Some(mecha_core::closure::Actor::Owner);
+        assert_eq!(row(&it).edited_by, Some("owner"));
+        it.args = it.args_before.clone();
+        it.edited_by = None;
+        assert_eq!(row(&it).edited_by, None, "nobody edited it");
     }
 
     #[test]

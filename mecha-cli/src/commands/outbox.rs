@@ -1360,10 +1360,18 @@ async fn send(
                         "  the draft was edited before sending — `mecha reflect` will \
                          mine the diff as a writing lesson"
                     );
-                } else if item.edited() && item.author() == mecha_core::outbox::Author::Model {
+                } else if let Some(i) = resolved
+                    .as_ref()
+                    .filter(|i| i.edited() && i.author() == mecha_core::outbox::Author::Model)
+                {
+                    // The edit prefix, so the web review finds it in the
+                    // approve response as it does in the edit's (review of
+                    // #348).
                     println!(
-                        "  the draft was edited before sending; the edit or the send is not \
-                         recorded as yours, so it will not be mined as your writing"
+                        "{EDIT_DEMOTION_PREFIX} {} and the send as {}, so the edit will not \
+                         be read as your correction",
+                        i.edited_by().unwrap_or(Actor::Unknown).as_str(),
+                        i.resolved_by().as_str()
                     );
                 }
             }
@@ -1567,7 +1575,7 @@ mod tests {
     /// "Rejected." / "Saved." there (review of #343).
     #[test]
     fn the_web_review_matches_the_demotion_prefixes_the_cli_prints() {
-        let page = include_str!("../../../web/src/lib/Outbox.svelte");
+        let page = include_str!("../../../web/src/lib/outbox-view.js");
         for prefix in [super::DEMOTION_PREFIX, super::EDIT_DEMOTION_PREFIX] {
             assert!(page.contains(&format!("'{prefix}'")), "{prefix}");
             let note = super::demotion_note(
