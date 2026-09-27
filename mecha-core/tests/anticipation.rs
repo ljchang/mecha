@@ -109,7 +109,14 @@ fn guided_check_blocks_release_but_not_editing_or_rejection() {
         .unwrap_err()
         .to_string()
         .contains("draft changed"));
-    f.store.resolve(&item.id, "rejected", None).unwrap();
+    f.store
+        .resolve(
+            &item.id,
+            "rejected",
+            None,
+            mecha_core::closure::Actor::Owner,
+        )
+        .unwrap();
 }
 
 #[test]
@@ -139,7 +146,13 @@ fn a_reassessment_is_not_a_success_or_failure_of_the_original_forecast() {
         .is_err());
     let sent = f
         .store
-        .resolve_with_output(&draft.id, "sent", None, Some("receipt".into()))
+        .resolve_with_output(
+            &draft.id,
+            "sent",
+            None,
+            Some("receipt".into()),
+            mecha_core::closure::Actor::Owner,
+        )
         .unwrap();
     assert_eq!(
         sent.delivery_attempts[0].prediction_id.as_deref(),
@@ -185,7 +198,9 @@ fn delivered_error_and_attributable_impact_have_real_appraisal_producers() {
         .is_err());
     assert_eq!(appraise(&pending).label, Affect::Neutral);
     f.store.begin_delivery(&draft.id).unwrap();
-    f.store.resolve(&draft.id, "sent", None).unwrap();
+    f.store
+        .resolve(&draft.id, "sent", None, mecha_core::closure::Actor::Owner)
+        .unwrap();
     let error = f
         .store
         .record_outcome(&draft.id, feedback(&pid, Verdict::ErrorExposed))
@@ -243,7 +258,10 @@ fn harm_needs_a_commitment_and_an_owner_rewrite_cannot_be_attributed_to_mecha() 
         .id
         .clone();
     f.store.begin_delivery(&draft.id).unwrap();
-    let sent = f.store.resolve(&draft.id, "sent", None).unwrap();
+    let sent = f
+        .store
+        .resolve(&draft.id, "sent", None, mecha_core::closure::Actor::Owner)
+        .unwrap();
     assert_eq!(appraise(&sent).label, Affect::Distress);
     assert!(f
         .store
@@ -293,7 +311,15 @@ fn future_guidance_stays_reviewable_and_raw_but_cannot_release() {
             serde_json::to_value(&edited).unwrap()["predictions"][0],
             raw
         );
-        let rejected = f.store.resolve(&draft.id, "rejected", None).unwrap();
+        let rejected = f
+            .store
+            .resolve(
+                &draft.id,
+                "rejected",
+                None,
+                mecha_core::closure::Actor::Owner,
+            )
+            .unwrap();
         assert_eq!(
             serde_json::to_value(&rejected).unwrap()["predictions"][0],
             raw
@@ -313,7 +339,10 @@ fn an_unknown_outcome_is_preserved_and_never_falls_back_to_a_positive_verdict() 
     let f = Fixture::new();
     let draft = f.draft();
     f.store.begin_delivery(&draft.id).unwrap();
-    let sent = f.store.resolve(&draft.id, "sent", None).unwrap();
+    let sent = f
+        .store
+        .resolve(&draft.id, "sent", None, mecha_core::closure::Actor::Owner)
+        .unwrap();
     let mut value = serde_json::to_value(&sent).unwrap();
     value["outcomes"] = json!([{"id":"future", "observation":{"verdict":"future_verdict"}}]);
     let raw = value["outcomes"].clone();
@@ -339,7 +368,9 @@ fn an_unknown_prediction_cannot_turn_a_known_harm_outcome_into_success() {
     let item = f.store.anticipate(&draft.id, evidence(), false).unwrap();
     let prediction = item.predictions.last().unwrap().known().unwrap().id.clone();
     f.store.begin_delivery(&draft.id).unwrap();
-    f.store.resolve(&draft.id, "sent", None).unwrap();
+    f.store
+        .resolve(&draft.id, "sent", None, mecha_core::closure::Actor::Owner)
+        .unwrap();
     let observed = f
         .store
         .record_outcome(&draft.id, feedback(&prediction, Verdict::Harm))
@@ -610,7 +641,14 @@ fn new_predictions_write_the_record_and_a_legacy_one_on_disk_reads_and_stays_as_
         .expect("a legacy prediction does not block release");
 
     // A rewrite for another reason leaves it in its own shape.
-    f.store.resolve(&item.id, "rejected", None).unwrap();
+    f.store
+        .resolve(
+            &item.id,
+            "rejected",
+            None,
+            mecha_core::closure::Actor::Owner,
+        )
+        .unwrap();
     let after: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(after["predictions"][last], before, "nothing is rewritten");

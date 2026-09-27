@@ -455,7 +455,8 @@ mecha sessions appraise --days 30 --kind web --json
 | `sessions_read`, `sessions_unreadable` | A damaged transcript is missing evidence, not a smaller successful population. |
 | `outbox_read`, `questions_read`, `frontdoor_read`, `learning_read`, `charter_read`, `closures_read`, `workflows_read` | Whether each source was readable. |
 | `owner_acts` | Your acts on runs, by act: `task_closed`, `task_dropped`, `task_reopened`, `workflow_closed`, `workflow_cancelled`, `workflow_reopened`, `workflow_verify_failed`. All are signed on the `commitment` channel. |
-| `reasoned_rejections` | Rejected drafts in this population whose reason reaches the reflector. |
+| `reasoned_rejections` | Rejected drafts in this population whose reason reaches the reflector: yours, made at your own door. |
+| `unattributed_rejections` | Rejected drafts with a reason that is not recorded as yours — a run's `shell` made the reject, or it predates the record of who did. Never mined. |
 | `curation` | Your verdicts on rules (`retired`, `restored`), reflections (`dropped`, `edited`) and harness candidates (`accepted`, `rejected`, `reverted`); a group is `null` when its store could not be read. None of these is a run's score. |
 | `graph_fact_rejections` | Always `null` for now: not readable from mecha. |
 | `tests_hidden`, `experiments_hidden` | Development data excluded from the population. |

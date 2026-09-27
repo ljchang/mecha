@@ -2624,6 +2624,7 @@ mod tests {
             created_at: "2026-08-14T00:00:00Z".into(),
             resolved_at: None,
             reason: None,
+            resolved_by: None,
             error: None,
         }
     }
