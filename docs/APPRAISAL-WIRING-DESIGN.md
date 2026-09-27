@@ -365,7 +365,7 @@ with a `mecha exp` arm against EXPERIMENT-DESIGN §15's appraisal-off preset
 | **2e-4a** | **The success set, derived; writing exemplars, in shadow.** `success.rs` derives the owner-verified successes at read time from the stores that own each act — a model's message draft sent unchanged, a `done` closure no recorded reopen undoes, a workflow close not reopened, an answered question whose session then completed — with no success store, so a reopen withdraws by construction. An exemplar is the sent draft verbatim, with its tool, its situation and an `Origin` from the staging taint; no model call. Read by the owner alone (`mecha sessions successes`, and a count in `sessions appraise`); nothing serves an exemplar to a run. | L2, R40 | 1d | a draft sent unchanged is derived as an exemplar and nothing else is; a success the owner later reopens is withdrawn — *built; see L2* |
 | **2e-4b** | **Planning success examples and contrast evidence** from the standing set: a success example for `planning::examples` whose step is the verified session's tool sequence (R40); a correction in a region that also holds a verified success reflected with the success beside it. Changes what a run and the reflector see, so shadow first and then a lever. *Split in two for review (2026-09-26): the planning half first, since it changes only what `goal_context` can serve; the reflector half waits on a shape question:* | L2, R40 | 2e-4a | a reopened task's session supplies no example; a correction beside a verified success in its region reaches the reflector with it, one outside the region without |
 | **2e-4b-1** | **Planning success examples.** `planning::success_examples`: a standing success toward a goal lends each clean, admitted, scoped session it names, with the session's tool sequence as the step (R40), toward the success's goal, served by `goal_context` only in a run whose situation every run of the session scopes onto, ahead of declared-check examples and in their own shape, behind `Lever::SuccessExamples` (ships off). `sessions successes --examples` is the shadow readout. | L2, R40 | 2e-4a | a reopened task's session supplies no example; with the lever off the answer is unchanged — *built; see L2* |
-| **2e-4b-2** | **Contrast evidence for the reflector**: a correction in a region that also holds a verified success reflected with the success beside it, behind a lever that ships off. *Waits on the owner:* a correction's recorded situation is a tool window and a success's is a whole session, so `Situation::region_key` equality never holds between them; "the same region" is either the correction's scope matching the success session's run records (the loader's match, 2e-5c's precedent) or the two sessions' region keys being equal (2e-6's and I2's precedent). | L2, R40 | 2e-4a | a correction beside a verified success in its region reaches the reflector with it, one outside the region without |
+| **2e-4b-2** | **Contrast evidence for the reflector**: a correction in a region that also holds a verified success reflected with the success beside it, behind a stage lever that ships off. *Ruled R43 (the owner, 2026-09-27): the region is the loader's match — the correction's scope `matches` one of the success session's run records (2e-5c's precedent); the lever may add one sentence to `REFLECTOR_SYSTEM` and one block to the correction's message, and off the prompt is byte-identical.* | L2, R40, R43 | 2e-4a | a correction beside a verified success in its region reaches the reflector with it, one outside the region without — *built; see L2* |
 | **2e-4c** | **A staged skill draft** after k verified successes in one region with a shared tool sequence, proposed only. *Deferred by R40 until the success set has been read on real data; k is unset.* | L2, R40 | 2e-4a | no skill is written without the owner |
 | **2e-5** | **Goal-stamped reflections and per-line tenure**: the anchor as the second source of `Reflexion::goals`; tenure by the Wilson lower bound of the owner-accept rate on the line's owner-verdict channels (`ladder.rs` ported); dormancy for a region that stops recurring (`decay.rs`). Appraisal-weighted tenure only behind R20's guard — the owner's verdict overrides, grounded claims from clean runs only — and as a measured lever against owner-only tenure, with a revert, before it is on. *Split in three for review (2026-09-26), the owner-verdict half only; the appraisal-weighted half stays deferred behind R20 and 2a-2:* | L3, R20, here §5 | 1a, 1d; the appraisal-weighted half 2a-2 | a rule's tenure moves on owner verdicts by the bound, not a streak; an owner verdict overrides an appraisal's bad; the lever reverts |
 | **2e-5a** | **The anchor as the second source of `Reflexion::goals`**: where no plan or question in force names a goal at the intervention, the anchor in force there (`Transcript::anchor_covering`: the anchor the run holding the message ended on, none where a question answered later in that run could have moved it) — never the session's last, never backfilled, and not the situation's goal key. | L3 | 1a | a correction in an anchored run that planned nothing is stamped with its run's anchor and `goal_lessons` serves its rule toward it — *built; see L3* |
@@ -410,7 +410,7 @@ R32 and R33):**
 
 | # | work | proposal |
 |---|---|---|
-| 3a | The situation brief delivered at run start, folded into the seed or first user turn — including a re-delegated task's previous attempts and why they were rejected. *Built as 3a behind `situation_brief` (ships off); the previous attempts deferred to 3a-2* | B1, I3, M5 |
+| 3a | The situation brief delivered at run start, folded into the seed or first user turn — including a re-delegated task's previous attempts and why they were rejected. *Built as 3a behind `situation_brief` (ships off); the previous attempts built as 3a-2 under R42* | B1, I3, M5 |
 | 3b | The agent's situation appraisal, in the run's own slot, after a surprise and before a consequential act | I3 |
 | 3c | Planning as joint optimization in the agent's reasoning, over every live goal and the described state; charter rank resolves conflicts | P1 |
 | 3d | **Plan-time comparison**: on anchored delegated and trigger runs, two candidate plans as text, validated deterministically — tracing to the goal, coverage of declared criteria, budget fit, charter conflicts, what won at similar points before; the loser kept as the fallback | N1 |
@@ -529,8 +529,10 @@ widening.
 | R39 | 2 | How 2e-6's replay priority enters the two draws that feed a gate. **The harness selection**: headroom on the predicted metric above zero is the gate — an episode that can only tie comes after every one that can discriminate — and within each part the order is the priority, then the charter rank, then the id. **Point-wise points**: `mecha sessions compare` ranks its uniform draw by the priority of each point's session; `compare_candidate` inside `harness measure` stays uniform, because its points are R36's confirming sample (no separate holdout) and ranking them would bias the verdict (GOAL-SYSTEM-DESIGN §8.1) | **ruled 2026-09-26** (the owner, on 2e-6's two shape questions); built as 2e-6 |
 | R40 | 2 | Row 2e-4's shape. **The success set is derived at read time** (`success.rs`) from the stores that own each act — a model's message draft sent unchanged, a standing `done` closure with no `undoes` reopen, a workflow closed and not reopened, a question answered whose session completed — with **no new success store**, so a reopen withdraws a success by construction (1d's "read from the store that owns it"). **An exemplar is the sent draft's own text, verbatim**, with its tool, situation and an `Origin` from the staging taint, and no model call; built **in shadow**, served to no run — the lever that serves exemplars to drafting runs is deferred, and must arm `private_data` as the brief does (R35). **2e-4c (staged skill drafts) is deferred** until the success set has been read on real data; k stays unset. The planning success example's step source is the implementer's to choose and justify (2e-4b): the verified session's tool sequence, since few runs write plan steps | **ruled 2026-09-26** (the owner, on 2e-4's shape questions); 2e-4a built |
 | R41 | 2 | 2e-5's owner-verdict half (2e-5b, 2e-5c). **Tenure** sits **beside** retirement, not replacing it: the Wilson lower bound of the owner-accept rate gates release from probation and a "tenured" status, and retirement stays on measured regressions (3 attributed, 2 on probation); nothing leaves the prompt on the bound. **Verdicts** counted toward a rule are the S3 and outbox owner verdicts from runs whose `RunConfig::rule_ids` carried it, each rule its own rate, never a model's account and never counters. **Thresholds** are `ladder.rs`'s: z = 1.96; no bound below 20 verdicts (`None`, "not enough verdicts", never a rate); tenured at a lower bound of 0.65, the ladder's 0.85 and 0.15 floors carried only where they map cleanly (neither does; L3 says why). **Dormancy** is report only: rules whose region has been quiet over 2e-6's `Recurrence` window are named in `mecha rules`; nothing is evicted, no slot changes, nothing stops loading, and ARCHITECTURE's "Acceptance is not tenure" stands as written. Numbered R41 because R40 is taken by the 2e-4 lane (#336, unmerged) | **ruled 2026-09-26 (the owner)**; built as 2e-5b and 2e-5c |
+| R42 | 3 | Row 3a-2's shape: a re-delegated task's previous attempts in the situation brief. **(a) Whose words ride:** a reopen's `reason` is quoted verbatim only when its closure record's actor is `Owner`, marked as the owner's words, one line with newlines stripped and length-capped; under `OwnerApproved` or an unknown actor the reopen is still said, as a fixed phrase and the closure id, and its text is not repeated. **(b) Finding them:** a bounded walk, no new index — newest first over the session headers, kind `task` only, a full read of those alone, keeping the ones whose anchors name `task:<id>`, never the run's own session; it stops at 3 attempts or 90 days back, and a file it cannot read or a window it cut makes the field a floor ("at least"). **(c) What an attempt says:** two lines kept apart — the owner's acts, from the stores `appraisal::of_session` reads, by the pointers its errors cite and never their valence; and how the run ended, labelled as the harness's record, never a verdict. **(d) An outbox rejection reason** rides as the typed word "draft rejected" and the item id, never its text, until outbox resolves carry an actor (a separate lane); once they do, an `Owner`-stamped rejection reason can ride on (a)'s rule. (The stamp landed as #343, `OutboxItem::rejection`; quoting an `Owner`-stamped reason in the brief is a follow-up change, and 3a-2 renders the word and the id.) M5's `goal_context` half is left to 2c-2, which already serves it on demand. Numbered R42, the next free number after R41. **Its reading** (the owner, 2026-09-27, on review of #344): a walk that stopped at its designed bound (`ATTEMPTS_MAX`, `WINDOW_DAYS`) still says "at least" in the words, but does not make the field `Unread` in `sessions health`; only a file that could not be read, a kind this build cannot name, or a store read short does, following the commitments cap's precedent, so `Unread` keeps meaning something failed | **ruled 2026-09-27 (the owner)**, reading added the same day; built as 3a-2 |
+| R43 | 2 | Row 2e-4b-2's shape (contrast evidence). **The region is the loader's match** (2e-5c's precedent): a correction's recorded scope `matches` one of the success session's run records — every tool in the correction's window is in that run's registry, and workspace, surface and goal agree wherever the correction names them — not session-to-session `region_key` equality, which compares a tool window with a whole registry and can never hold. **The reflector's prompt may change behind a stage lever that ships off** (`[agent] contrast_evidence`, `StageLever::ContrastEvidence`): one sentence added to `REFLECTOR_SYSTEM` and one block to the correction's user message; with the lever off the prompt is byte-identical to before (tested), and it is turned on only after a measured run. Numbered R43 because R42 is 3a-2's (#344, open) | **ruled 2026-09-27 (the owner)**; built as 2e-4b-2 |
 
-**Every ruling is settled** (2026-09-24; R30–R37 on 2026-09-25; R38 on 2026-09-25/26; R39, R40 and R41 on 2026-09-26), except the
+**Every ruling is settled** (2026-09-24; R30–R37 on 2026-09-25; R38 on 2026-09-25/26; R39, R40 and R41 on 2026-09-26; R42 and R43 on 2026-09-27), except the
 parked items (R3, R8), the flag (R9), the deferred R7, the declined R2 and
 R29, which is not proposed.
 Phase 5's R28 waited on the bubblewrap upgrade, an ops step; the workstation
@@ -1075,13 +1077,65 @@ same path). Whether the lever ships on is now the arms' measurement, per
 runs trials through `mecha run`, which had no brief, so its two arms would
 have been one condition — `mecha run` now assembles, records and delivers
 one; and the OpenAI-compatible encoder joins a message's text blocks with
-nothing between them, hence the blank line. *Deferred:* M5, a re-delegated
-task's previous attempts, to **3a-2** — no existing record lists them (the
-closure store covers only attempts the owner closed and reopened, and a
-re-delegation without a closure leaves nothing to join), and a reopen's
-reason can be model-authored under `OwnerApproved`, which needs an
-authorship rule before it rides into a prompt. The G4 scan now runs with
-delivery off and on.
+nothing between them, hence the blank line. The G4 scan now runs with
+delivery off and on. M5, a re-delegated task's previous attempts, was
+deferred from 3a because no existing record lists them, and is built as
+3a-2 below.
+
+*Built as 3a-2* (R42): `brief::attempts`, a tenth field on the brief
+(`SituationBrief::attempts`), recorded on every run and delivered behind
+the same lever, so the lever-off requests are the same bytes whether the
+record holds attempts or not. A run not anchored to a task records
+`Attempts::NotATask`, which is known and renders as nothing, as a
+non-local provider's slots do, so no other run's words change. For a task
+run, `brief::attempts::walk` lists the session directory newest first by
+header (`Session::list_counting`), skips every session not of kind `task`
+and the run's own (every door hands its session id to
+`attempts::for_run_within`, which runs the walk off the async threads
+under the door's brief deadline, beside the board read, and records the
+field unread when the walk does not finish in time), scans each remaining
+session's head for the task's pointer, stopping at the first message, and
+reads whole only a session whose head names the task, keeping it when its
+`GoalAnchor` records do (review of #344: reading every task transcript in
+the window whole made the bound a bound on attempts found, not bytes read;
+both doors that open a task session seed the anchor before the first
+message, and one re-anchored to the task later is a named residue). It
+stops at `ATTEMPTS_MAX` (3) or `WINDOW_DAYS` (90). By R42's reading, a
+failure — a header or body it could not read, a header whose kind this
+build cannot name, an owner's-acts store read short — makes the field
+`Unread` in `sessions health`, and the designed bound does not, as a
+capped commitments store does not; both make the words a floor, "at
+least" and what was not searched. A header with no kind at all predates
+kinds (2026-09-02) and the anchor record (2026-09-09), so it is skipped as
+known: 499 of the live store's 611 headers carry none, measured
+2026-09-27, and counting them would have made every task brief a floor
+until December.
+The owner's acts are joined only when an attempt was found, so a task
+with none pays one read of each session header (the listing's, which also
+tells a legacy header from an unnameable kind), the heads of the task
+sessions in the window, and no store read. They go through
+`appraisal::for_transcript` over `Stores::load`, the joins `of_session`
+makes. An empty outcome stands in for a run that recorded none (a run that
+errored still staged drafts the owner may have rejected). Only the
+pointers its errors cite are kept: each cite is mapped to a closed word
+(`OwnerAct`) by reading the record it names, and a sign, a valence or an
+affect label never reaches the words. The drafts and questions from the
+session that still wait on the owner are said beside them. How the run
+ended is the last outcome's `StopCause`, as `RunEnd`, on its own line,
+labelled "as the harness recorded it (not a verdict)". R42(a) is
+`reopen_of`: the reason is kept only under `Actor::Owner`, as
+`brief::attempts::one_line` (line breaks, controls and direction
+overrides to spaces, cut at `REASON_CHARS_MAX` with an ellipsis). The
+render prints it only when the record's actor is `Owner`, whatever else
+the record holds. R42(d): an outbox rejection is "draft rejected" and
+the id; its reason never rides (the resolve's actor stamp has since landed
+as #343, and quoting an owner-stamped reason is a follow-up). Every id in the
+words is checked as one token. Two things found building it:
+`for_transcript` joins nothing for a transcript with no outcome, which
+would have hidden a failed run's rejected drafts; and a reopen of a
+`dropped` closure signs nothing in `of_session`, so, reading cites only,
+the brief says nothing about it either — a residue, named rather than
+patched here, since the cite set is the appraisal's to widen.
 
 #### G4. Numbers never reach the model
 
@@ -1550,9 +1604,8 @@ is recorded* holds the invariants).
   and one line in `sessions appraise` are its only readers. Serving
   exemplars to drafting runs is the deferred lever, and it arms
   `private_data` when it lands.
-- **Left:** 2e-4b-2 — contrast evidence for the reflector, waiting on what
-  "the same region" means between a correction and a success (the PR
-  table's row); 2e-4c, deferred by R40.
+- **Left:** 2e-4c, deferred by R40. (2e-4b-2, contrast evidence, is built
+  below under R43.)
 
 *2e-4b-1 built — planning success examples, behind a lever that ships off*
 (`planning::success_examples`, under R40; ARCHITECTURE's *Planning examples
@@ -1576,6 +1629,29 @@ from what went right* holds the invariants).
   argument). `goal_context` is `private` (R35's arming) and nothing reaches
   the prefix; off, the answer is today's bytes. Shadow readout: `mecha
   sessions successes --examples`. The measured arm is owed.
+
+*2e-4b-2 built — contrast evidence for the reflector, behind a stage lever
+that ships off* (`success::ContrastPool`, `learning::Reflector::
+reflect_beside`, under R43; ARCHITECTURE's *Contrast evidence beside a
+correction* holds the invariants).
+
+- **The region is the loader's match** (R43): a transcript correction —
+  a steer, a denial or a followup — whose recorded scope `matches` one of a
+  success session's run records is reflected with that success beside it,
+  the newest one first; never its own session's.
+- **Only clean material.** The success is a trace `planning::success_traces`
+  lends — a standing success's session whose recorded taint is clean to its
+  end — and what reaches the reflector is the owner's act in fixed words
+  and the session's tool sequence (registry names). No record id rides.
+- **The lever.** `[agent] contrast_evidence`, `StageLever::ContrastEvidence`,
+  ships off: off, the reflector's system prompt and user message are the
+  bytes they were (pinned against the old format). On, a steer's, denial's
+  or followup's frame gains `CONTRAST_SENTENCE` and a contrasted correction
+  gains one block; the writing, mismatch and rejection prompts never move. Shadow: `mecha reflect --dry-run`
+  names the success each correction would be shown. The measured run is
+  owed; an arm turns it on through its environment's `config.toml`.
+- **Not contrasted yet:** the outbox pass (edits teach voice; a rejection's
+  situation names the drafting tool alone).
 
 *2e-1 built — the reflector's lessons against the appraisal's, in shadow*
 (`mecha learn --compare-sources`; ARCHITECTURE's *The reflector's lessons
@@ -1896,6 +1972,15 @@ all until R16a's ruling D3 (2026-09-27, see S3): 3a-2 is to render a rejection
 through `OutboxItem::rejection`, quoting only `OwnersWords` and giving the
 typed word for `NotOwners`; and "valence" as an outcome is a number R21 keeps out of the brief, so
 the outcome has to be said as words (rejected, reopened, a check failed).
+
+*Built as 3a-2 under R42* (B1 has the detail): the owner ruled the three
+questions above and a fourth (an outbox rejection reason rides as a word and
+an id; the actor stamp it waited on has landed as #343, and quoting an
+owner-stamped reason is a follow-up). The brief's
+`attempts` field finds the attempts by a bounded walk, says each as the
+owner's acts and the harness's record of how it ended, and quotes only a
+reopen reason the owner wrote with their own hand. The `goal_context` half of
+this proposal is 2c-2's, which serves clean past appraisals on demand.
 
 #### P1. Planning as joint optimization across goals and state
 

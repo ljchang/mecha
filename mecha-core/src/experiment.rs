@@ -938,6 +938,12 @@ pub enum StageLever {
     /// `[agent] appraisals_in_brief` in the trial home's config — the clean
     /// appraisals' entry into the diagnostician's brief (row 2f).
     AppraisalsInBrief,
+    /// `[agent] contrast_evidence` in the trial home's config — a verified
+    /// success set beside a correction in its region, read by the `reflect`
+    /// stage (row 2e-4b-2, R43). **Ships off**, unlike the two above: an
+    /// arm measures it on through its own environment's `config.toml`, and
+    /// `stages_off` names it to force it off whatever that says.
+    ContrastEvidence,
     /// Not a lever: the principal's call at a position, on the same ledger
     /// so `stage_health` and the judge's hold read it like a stage — a
     /// principal that failed to act is a treatment not known to have
@@ -953,7 +959,7 @@ pub enum StageLever {
 }
 
 impl StageLever {
-    pub const ALL: [StageLever; 7] = [
+    pub const ALL: [StageLever; 8] = [
         StageLever::Reflect,
         StageLever::Learn,
         StageLever::Validate,
@@ -961,6 +967,7 @@ impl StageLever {
         StageLever::Retire,
         StageLever::SensorsInBrief,
         StageLever::AppraisalsInBrief,
+        StageLever::ContrastEvidence,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -973,6 +980,7 @@ impl StageLever {
             StageLever::Principal => "principal",
             StageLever::SensorsInBrief => "sensors_in_brief",
             StageLever::AppraisalsInBrief => "appraisals_in_brief",
+            StageLever::ContrastEvidence => "contrast_evidence",
             StageLever::Unknown => "unknown",
         }
     }
@@ -1004,6 +1012,7 @@ impl StageLever {
             StageLever::Retire => Some(&["rules", "propose-retirements", "--apply"]),
             StageLever::SensorsInBrief
             | StageLever::AppraisalsInBrief
+            | StageLever::ContrastEvidence
             | StageLever::Principal
             | StageLever::Unknown => None,
         }
@@ -3114,14 +3123,18 @@ pub fn child_invocation(
         let change = crate::harness::parse_change(spec)?;
         change.apply_to_agent(&mut config.agent)?;
     }
-    // The two stage levers that are config switches rather than verbs: they
-    // ride in the trial home's config, where `harness ruminate` reads them.
+    // The stage levers that are config switches rather than verbs: they
+    // ride in the trial home's config, where `harness ruminate` (the two
+    // briefs) and `reflect` (contrast evidence) read them.
     let stages = arm.resolve_stages()?;
     if stages.contains(&StageLever::SensorsInBrief) {
         config.agent.sensors_in_brief = false;
     }
     if stages.contains(&StageLever::AppraisalsInBrief) {
         config.agent.appraisals_in_brief = false;
+    }
+    if stages.contains(&StageLever::ContrastEvidence) {
+        config.agent.contrast_evidence = false;
     }
     Ok(ChildInvocation {
         config,
@@ -5321,6 +5334,42 @@ rationale = "r"
         assert!(child.config.agent.sensors_in_brief);
         assert!(child.flags.is_empty(), "a switch, not a flag");
         assert_eq!(StageLever::AppraisalsInBrief.argv(), None);
+    }
+
+    /// Row 2e-4b-2's lever (R43) ships off: a child inherits off, an arm
+    /// whose environment turns it on runs it on, and `stages_off` forces it
+    /// off whatever the environment says. A switch, never a verb.
+    #[test]
+    fn contrast_evidence_ships_off_and_stages_off_forces_it_off() {
+        let mut real = crate::config::Config::default();
+        let mut arm = Arm::default();
+        assert!(
+            !child_invocation(&real, &arm, None)
+                .unwrap()
+                .config
+                .agent
+                .contrast_evidence,
+            "ships off"
+        );
+        real.agent.contrast_evidence = true;
+        assert!(
+            child_invocation(&real, &arm, None)
+                .unwrap()
+                .config
+                .agent
+                .contrast_evidence,
+            "an environment that turns it on is inherited"
+        );
+        arm.stages_off = vec!["contrast_evidence".into()];
+        let child = child_invocation(&real, &arm, None).unwrap();
+        assert!(!child.config.agent.contrast_evidence);
+        assert!(child.config.agent.appraisals_in_brief);
+        assert!(child.flags.is_empty(), "a switch, not a flag");
+        assert_eq!(StageLever::ContrastEvidence.argv(), None);
+        assert_eq!(
+            StageLever::parse("contrast_evidence"),
+            Some(StageLever::ContrastEvidence)
+        );
     }
 
     /// The gate over arm sets: each treatment arm paired with the control by

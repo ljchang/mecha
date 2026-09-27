@@ -26,11 +26,23 @@
 set -uo pipefail
 
 MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
-PROVIDER="${MECHA_LEARN_PROVIDER:-local}"
+# Unset, on a router, means no `-p`: the pass runs on whatever the router has
+# loaded. This runs at every session end, so a `local` default — a pin, and on
+# the router a load — undid the owner's model switch each time a chat closed.
+# Without a router, unset is `-p local` as before. The rule: scripts/pin.sh.
 LEARNING_DIR="${MECHA_LEARNING_DIR:-$HOME/.mecha/learning}"
 LOG_DIR="$LEARNING_DIR/logs"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/live-$(date -u +%Y-%m-%d).log"
+# A pin.sh that is missing or does not define scheduled_pin must stop the
+# run, not leave PIN unset: unset expands to no `-p`, the unpinned run on the
+# default this file exists to decide. Said into the log, because a
+# session_end hook's own output goes nowhere (found on review).
+{ source "$(dirname "$0")/pin.sh" && declare -F scheduled_pin >/dev/null; } || {
+    echo "learn-live: no scheduled_pin from $(dirname "$0")/pin.sh; refusing to run unpinned" >>"$LOG"
+    exit 1
+}
+scheduled_pin "${MECHA_LEARN_PROVIDER:-}"
 
 # One live pass at a time. Held for the whole run, released on exit.
 exec 9>"$LEARNING_DIR/.live.lock"
@@ -63,7 +75,7 @@ flock -n 9 || exit 0
   # A small limit: this fires per session, so there is normally one to mine.
   # The cap is what stops a hook that has not run for a week from turning one
   # session's exit into an hour of inference.
-  "$MECHA" reflect -p "$PROVIDER" --limit 3 2>&1
+  "$MECHA" reflect ${PIN[@]+"${PIN[@]}"} --limit 3 2>&1
   # Self-gating: `learn` refuses below --min and says so, so this is a no-op
   # on most sessions and a consolidation on the ones that tip it over.
   #
@@ -82,7 +94,7 @@ flock -n 9 || exit 0
   # rule `[unmeasured]` forever and retire nothing. The holdout slice is
   # deterministic, so the slices accumulate across sessions into a real
   # measurement set.
-  "$MECHA" learn -p "$PROVIDER" --holdout 0.25 --auto 2>&1
+  "$MECHA" learn ${PIN[@]+"${PIN[@]}"} --holdout 0.25 --auto 2>&1
 } >>"$LOG" 2>&1
 
 exit 0
