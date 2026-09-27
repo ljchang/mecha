@@ -255,15 +255,36 @@ Sending the screenshot that started this (a photo of a laptop screen) through
 | wall clock | 9.4 s | 5.9 s |
 | text read back | correct, verbatim | correct, verbatim |
 
-**The token cost is identical**, because the server tiles the image to a fixed
-count before the model sees it. So resizing buys nothing in context and 32x on
-the wire and in the session file — which is why `mecha_core::image` caps at
-the door rather than per turn: the transcript is append-only and every turn
-resends the whole history, so the resize is paid once and the saving is
-collected on every turn afterwards.
+*Superseded 2026-09-27; kept because the next reader would re-derive it.*
+The table above read as "the server tiles to a fixed count", and on llama.cpp
+`95887577` with a Qwen-VL projector (`qwen3vl_merger`, 16 px patches merged
+2×2, so one token per 32×32 px) that is not what happens: the count scales
+with the image's area, between Qwen's floor and ceiling (8 and 4096 tokens by
+default, `clip.cpp` `set_limit_image_tokens`). Measured with
+`scripts/vision-probe.py` on `qwen3.8-27b-uncensored` — `prompt_tokens` with
+the image minus the same request without it:
+
+| image | image tokens | from the geometry |
+|---|---|---|
+| 320×240 | **82** | 10×8 = 80 |
+| 800×600 | **477** | 25×19 = 475 |
+| 1568×980 | **1521** | 49×31 = 1519 |
+
+So a full screenshot costs ~1100–2400 tokens after mecha's cap, not 294, and
+resizing *does* buy context — the cap at the door (`mecha_core::image`, 1568
+px long edge) bounds it at ~2400. It still pays mostly on the wire and in the
+session file, which is why the cap is at the door rather than per turn: the
+transcript is append-only and every turn resends the whole history, so the
+resize is paid once and the saving is collected on every turn afterwards.
+Why the 2026-08-21 measurement read 294 for both is not re-derived.
 
 - **`--image-min-tokens` / `--image-max-tokens`** bound what one image may
-  cost, if the default tiling is ever the wrong trade.
+  cost. Every Qwen preset sets `image-min-tokens = 1024` (`start-router.sh`
+  `qwen_vision`): Qwen's default floor of 8 lets a small image shrink until
+  grounding fails, and the build warns so at every load (llama.cpp #16842).
+  Measured before the floor, the 320×240 probe grounded 7 of 8 boxes at mean
+  IoU 0.76 against 0.93–0.94 for the two larger sizes. No max: mecha's
+  largest image is under 4096. Gemma sizes its own (70–1120) and never warns.
 - **The `max_tokens` trap above is worse here.** Vision prompts reason
   longer: at `max_tokens: 300` this returned 300 tokens of
   `reasoning_content` and an empty `content`. The rule is unchanged and bites
