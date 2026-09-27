@@ -916,6 +916,14 @@ async fn fire(
     Ok(())
 }
 
+/// "Switch now" cancels `fire` — this fire's own token — and nothing above it:
+/// cancelling the daemon's stop token ended the whole scheduler, and the unit
+/// does not restart a clean exit (review of D13).
+fn stop_this_fire_on_switch_now(held: &mecha_core::hold::Held, fire: &CancellationToken) {
+    let fire = fire.clone();
+    held.on_cancel(move || fire.cancel());
+}
+
 async fn run_agent(
     global: &GlobalOpts,
     t: &Trigger,
@@ -941,8 +949,7 @@ async fn run_agent(
         _ = token.cancelled() => anyhow::bail!("stopped while waiting for a model switch"),
     };
     if let Some(h) = &_held {
-        let fire = token.clone();
-        h.on_cancel(move || fire.cancel());
+        stop_this_fire_on_switch_now(h, &token);
     }
     // The daemon outlives every run it starts, so the snapshot `main` took is
     // the model loaded when the *daemon* started. A scheduled run follows the
@@ -1317,24 +1324,29 @@ fn indent(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    /// "Switch now" cancels the fire, never the daemon: cancelling the stop
-    /// token `run_agent` is handed ended the whole scheduler, and the unit
-    /// does not restart a clean exit (review of D13). Read from the source,
-    /// because the token's provenance is one line of plumbing.
-    #[test]
-    fn switch_now_cancels_the_fire_and_not_the_daemon() {
-        let src = include_str!("trigger.rs");
-        let code = src.split("#[cfg(test)]\nmod tests {").next().unwrap_or(src);
-        let run_agent = code
-            .split("async fn run_agent(")
-            .nth(1)
-            .expect("run_agent exists");
-        let body = run_agent.split("\nasync fn ").next().unwrap_or(run_agent);
-        assert!(body.contains("h.on_cancel(move || fire.cancel())"));
-        assert!(
-            !body.contains("stop.cancel()"),
-            "run_agent cancels the daemon's token"
-        );
+    /// "Switch now" cancels the fire, never the daemon — measured on the
+    /// tokens: cancelling the daemon's stop token ended the whole scheduler,
+    /// and the unit does not restart a clean exit (review of D13).
+    #[tokio::test]
+    async fn switch_now_cancels_the_fire_and_not_the_daemon() {
+        // Under the environment lock: a serve test points $TMPDIR at a
+        // directory it deletes, which took this test's hold file with it —
+        // its watcher then saw the hold gone and never cancelled.
+        let home = crate::testenv::HomeGuard::new("fire-switch-now");
+        let holds = mecha_core::hold::Holds::new(home.dir.join("holds"));
+        let daemon = CancellationToken::new();
+        let fire = daemon.child_token();
+        let held = holds
+            .try_hold("http://127.0.0.1:8080", "trigger t")
+            .unwrap()
+            .unwrap();
+        super::stop_this_fire_on_switch_now(&held, &fire);
+        assert_eq!(holds.cancel_holders("http://127.0.0.1:8080"), 1);
+        tokio::time::timeout(std::time::Duration::from_secs(5), fire.cancelled())
+            .await
+            .expect("switch now never reached the fire");
+        assert!(!daemon.is_cancelled(), "switch now stopped the daemon");
+        drop(held);
     }
 
     /// The unit has to name the binary that printed it, by absolute path.

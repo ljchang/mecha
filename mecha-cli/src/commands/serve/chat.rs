@@ -1157,12 +1157,12 @@ pub(super) async fn open_task_conversation(
     // re-opening is picking a conversation back up, and re-seeding it would
     // restate the brief over the top of whatever was agreed.
     if fresh {
-        let (held, bound) = chat.follower.enter("task conversation", |_| {}).await?;
+        let (mut held, bound) = chat.follower.enter("task conversation", |_| {}).await?;
         let mut sessions = chat.sessions.lock().await;
         let _ = begin_turn(
             &chat,
             &bound,
-            held,
+            &mut held,
             &mut sessions,
             &key,
             &seed,
@@ -1725,7 +1725,7 @@ pub async fn send(
     // model when it fails — that model's request would load it back.
     // D13: the turn holds the router first — waiting out a switch in
     // progress, which the open page is told about — then follows it.
-    let (held, bound) = match chat
+    let (mut held, bound) = match chat
         .follower
         .enter("web chat", |switch| {
             if let Some(tx) = &notices {
@@ -1758,7 +1758,7 @@ pub async fn send(
     match begin_turn(
         &chat,
         &bound,
-        held,
+        &mut held,
         &mut sessions,
         &key,
         &text,
@@ -1992,7 +1992,12 @@ fn begin_turn(
     // The run's hold on the router (D13), kept by the spawned run until it
     // and the title named after it end — dropping it is what lets a waiting
     // switch go. `None` off a router.
-    held: Option<mecha_core::hold::Held>,
+    //
+    // Borrowed, and taken only once the run is committed: taken by value, an
+    // early return (`TurnError::Held` most of all) dropped it, and the voice
+    // host's barge-in retry then started its run holding nothing — the switch
+    // D13 exists to make wait went ahead under it (review of #350).
+    held: &mut Option<mecha_core::hold::Held>,
     sessions: &mut HashMap<String, WebSession>,
     key: &str,
     text: &str,
@@ -2161,6 +2166,8 @@ fn begin_turn(
     });
 
     let cancel = mecha_core::agent::CancelHandle::new();
+    // Committed: no early return below, so the run takes the hold here.
+    let held = held.take();
     // "Switch now" stops this run at its next safe point, the way the page's
     // stop button does — rather than leaving it to load its model back.
     // The cards go first, as the page's own stop does: a run parked on an
@@ -2822,7 +2829,7 @@ impl crate::voice::SessionHost for VoiceHost {
                     match begin_turn(
                         &self.0,
                         &bound,
-                        held.take(),
+                        &mut held,
                         &mut sessions,
                         key,
                         utterance,
@@ -4547,6 +4554,79 @@ fn test_chat_from(
 }
 
 #[cfg(test)]
+mod held_tests {
+    use super::*;
+
+    /// A turn refused because a finished run is still landing leaves the hold
+    /// with its caller. Taken by value, it was dropped on this return, and the
+    /// voice host's barge-in retry started its run holding nothing — so a
+    /// waiting switch went ahead under it (review of #350).
+    #[test]
+    fn a_turn_refused_as_held_leaves_the_hold_with_the_caller() {
+        let home = crate::testenv::HomeGuard::new("held-kept");
+        let chat = test_chat();
+        let workspace = home.dir.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session = Session::create(
+            &workspace,
+            SessionMeta {
+                id: "held-kept".into(),
+                created_at: chrono::Utc::now(),
+                provider: "test".into(),
+                model: "test".into(),
+                workspace: workspace.clone(),
+                title: None,
+                kind: Some(mecha_core::session::SessionKind::Test),
+            },
+        )
+        .unwrap();
+        let (events, _) = broadcast::channel(4);
+        let mut sessions = HashMap::from([(
+            "k".to_string(),
+            WebSession {
+                // Still held by a finished run landing: the `Held` return.
+                conversation: None,
+                session: Recording::Kept(Arc::new(session)),
+                workspace,
+                live: None,
+                events,
+                last_usage: Arc::default(),
+                withheld: Arc::from([]),
+                task: None,
+                mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                questions: Default::default(),
+                titled_at: 0,
+                last_turn_spoken: false,
+                recorded_generation: 1,
+            },
+        )]);
+        let holds = mecha_core::hold::Holds::new(home.dir.join("holds"));
+        let router = "http://127.0.0.1:8080";
+        let mut held = Some(holds.try_hold(router, "voice call").unwrap().unwrap());
+        let result = begin_turn(
+            &chat,
+            &chat.follower.current(),
+            &mut held,
+            &mut sessions,
+            "k",
+            "hello",
+            TurnOpts {
+                request_id: None,
+                spoken: true,
+                approve_all: false,
+            },
+        );
+        assert!(matches!(result, Err(TurnError::Held)));
+        assert!(held.is_some(), "the refused turn took the hold with it");
+        assert_eq!(
+            holds.live(router).len(),
+            1,
+            "and the switch no longer sees it"
+        );
+    }
+}
+
+#[cfg(test)]
 mod workflow_recording_tests {
     use super::*;
 
@@ -4633,7 +4713,7 @@ mod workflow_recording_tests {
             let result = begin_turn(
                 &chat,
                 &chat.follower.current(),
-                None,
+                &mut None,
                 &mut sessions,
                 case,
                 "next input",

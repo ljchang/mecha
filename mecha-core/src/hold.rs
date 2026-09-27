@@ -72,8 +72,17 @@ pub struct Held {
 
 /// A pending switch, withdrawn on drop — so a switch that fails, is refused
 /// or is cancelled with Ctrl-C never leaves every surface waiting.
+///
+/// **An identity, not a path.** The path is a function of the router alone,
+/// so after `cancel-switch` another switch's file can land at the same name;
+/// a withdrawn switcher that tested only "does the file exist" read the new
+/// one as its own, kept waiting, and loaded its model beside the new switch —
+/// and either one's drop deleted the other's marker (review of #350). The
+/// pid and start time say whose file it is.
 pub struct Switching {
     path: PathBuf,
+    pid: u32,
+    started_at: DateTime<Utc>,
 }
 
 impl Drop for Held {
@@ -84,17 +93,22 @@ impl Drop for Held {
 }
 
 impl Switching {
-    /// Is this switch's file still there? `false` once `mecha model
-    /// cancel-switch` withdrew it — the switch then stops rather than load a
-    /// model nobody is waiting for any more.
+    /// Is *this* switch still the pending one? `false` once `mecha model
+    /// cancel-switch` withdrew it — including when another switch has since
+    /// taken the same path, which is not this one. The switch then stops
+    /// rather than load a model nobody is waiting for any more.
     pub fn still_pending(&self) -> bool {
-        self.path.exists()
+        read::<Switch>(&self.path)
+            .is_some_and(|s| s.pid == self.pid && s.started_at == self.started_at)
     }
 }
 
 impl Drop for Switching {
+    /// Removes the file only while it is still this switch's.
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if self.still_pending() {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -261,6 +275,16 @@ impl Holds {
         from: Option<&str>,
         to: &str,
     ) -> Result<std::result::Result<Switching, Switch>> {
+        self.begin_switch_try(base_url, from, to, true)
+    }
+
+    fn begin_switch_try(
+        &self,
+        base_url: &str,
+        from: Option<&str>,
+        to: &str,
+        retry: bool,
+    ) -> Result<std::result::Result<Switching, Switch>> {
         let base = crate::provider::router::base(base_url);
         crate::create_private_dir(&self.dir)?;
         if let Some(existing) = self.pending(&base) {
@@ -282,12 +306,21 @@ impl Holds {
         let linked = std::fs::hard_link(&tmp, &path);
         let _ = std::fs::remove_file(&tmp);
         match linked {
-            Ok(()) => Ok(Ok(Switching { path })),
+            Ok(()) => Ok(Ok(Switching {
+                path,
+                pid: switch.pid,
+                started_at: switch.started_at,
+            })),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 match self.pending(&switch.base_url) {
                     Some(existing) => Ok(Err(existing)),
-                    // Swept between the check and the link: one retry.
-                    None => self.begin_switch(&switch.base_url, from, to),
+                    // Swept between the check and the link: one retry, and
+                    // only one.
+                    None if retry => self.begin_switch_try(&switch.base_url, from, to, false),
+                    None => anyhow::bail!(
+                        "a switch file on {} keeps appearing and going; try again",
+                        switch.base_url
+                    ),
                 }
             }
             Err(e) => Err(e).with_context(|| format!("writing {}", path.display())),
@@ -473,7 +506,21 @@ mod tests {
             "the switcher must see it was withdrawn"
         );
         assert!(h.try_hold(ROUTER, "next").unwrap().is_ok());
+
+        // The recovery the command documents: withdraw, then switch again.
+        // The withdrawn switcher must not read the new file as its own, nor
+        // remove it when it drops.
+        let next = h.begin_switch(ROUTER, Some("a"), "c").unwrap().unwrap();
+        assert!(
+            !switching.still_pending(),
+            "a withdrawn switch took the next one's file"
+        );
         drop(switching);
+        assert!(
+            next.still_pending(),
+            "a withdrawn switch's drop removed the next one"
+        );
+        drop(next);
 
         std::fs::write(h.switch_path(ROUTER), b"not json").unwrap();
         assert!(h.pending(ROUTER).is_some(), "unreadable reads as pending");
