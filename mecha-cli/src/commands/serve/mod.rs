@@ -2094,6 +2094,70 @@ mod boundary_tests {
         assert_eq!(v["entries"].as_array().unwrap().len(), 4, "{v}");
     }
 
+    /// The chip beside a mid-run history answers for that history: an image
+    /// in it arms `private` even though the loop has not yet armed the
+    /// conversation for it (it does that inside the run, after `Live` was
+    /// built), or the page would draw `[image]` under a clean chip.
+    #[tokio::test]
+    async fn a_mid_run_read_is_tainted_by_the_history_it_carries() {
+        let _home = crate::testenv::HomeGuard::new("mid-run-taint");
+        let go = Arc::new(tokio::sync::Notify::new());
+        let chat = chat::test_chat_waiting(go.clone());
+        let app = app(chat.clone());
+        let key = "midrun-taint";
+
+        go.notify_one();
+        converse(&app, key, "first question").await;
+        chat::test_plant_image(&chat, key).await;
+
+        let sent = app
+            .clone()
+            .oneshot(json_post(
+                &format!("/api/chat/{key}/send"),
+                serde_json::json!({ "text": "what is in it?" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert!(sent.status().is_success(), "{}", sent.status());
+        let v = body(
+            app.clone()
+                .oneshot(get(&format!("/api/chat/{key}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(v["held_by_run"], true, "the run is not in flight: {v}");
+        assert!(
+            v["entries"].to_string().contains("[image]"),
+            "the history does not carry the image: {v}"
+        );
+        assert_eq!(
+            v["taint"]["private"], true,
+            "an image under a clean chip: {v}"
+        );
+
+        let release = tokio::spawn(async move {
+            loop {
+                go.notify_one();
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        });
+        for _ in 0..200 {
+            let v = body(
+                app.clone()
+                    .oneshot(get(&format!("/api/chat/{key}")))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            if v["running"] == false && v["held_by_run"] == false {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        release.abort();
+    }
+
     #[tokio::test]
     async fn incognito_refuses_a_model_that_is_not_on_this_machine() {
         let _home = crate::testenv::HomeGuard::new("incognito-cloud");

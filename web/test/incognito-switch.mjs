@@ -36,6 +36,7 @@ function page(start) {
      let goneNote = 'incognito is unavailable: no local model';
      let entries = ['x'], streaming = 'y', usage = 1, taint = 1;
      let affect = 1, valence = 1, sawAffectThisRun = true;
+     let partialRun = true, liveFrom = 3;
      const receivedInputs = new Set(), inputDelivery = new Map();
      ${switchToSrc}
      return { switchTo, now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote }) };`,
