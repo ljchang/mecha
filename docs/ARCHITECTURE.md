@@ -532,9 +532,10 @@ conversation, so the capabilities do not change. Two rules:
   the model name the right reference; the change is the owner's to describe.
 
 The model sees what it made on request — `image_view` on the result's path
-(§Images) — and the result hands the seed back: revising is an edited prompt with the same seed. The web chat shows the picture under the
-call, reading the path off the result's first line (`image: images/…png`),
-matched strictly so no other text in a preview is taken for a path to fetch
+(§Images) — and the result hands the seed back: revising is an edited prompt
+with the same seed. The web chat shows the picture under the call, reading the
+path off the result's first line (`image: images/…png`), matched strictly so
+no other text in a preview is taken for a path to fetch
 (`web/test/generated-image.mjs`). The TUI shows the path.
 
 **The request is shaped like stable-diffusion.cpp's API, not ComfyUI's.**

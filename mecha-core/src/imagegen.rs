@@ -1366,8 +1366,8 @@ impl Tool for ImageGenerate {
          the exact words in quotes. To edit, pass the picture's path in reference_images (one \
          the user attached, or an earlier result) and say in the prompt what to change and \
          what to keep, e.g. \"Keep <image1> unchanged except: the jacket is now yellow\". The \
-         result is not shown to you. Look at it with image_view only when the task needs you \
-         to see it — the user asked you to check, compare or describe it, or an edit depends on \
+         result is not shown to you. If image_view is among your tools, look at it only when the \
+         task needs you to see it — the user asked you to check, compare or describe it, or an edit depends on \
          what is where — not to confirm that it worked."
     }
 
