@@ -174,10 +174,17 @@ class StartRouter(unittest.TestCase):
         self.cache.production()
         for name in ("gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", "mmproj-BF16.gguf", "mtp-gemma-4-26B-A4B-it.gguf"):
             self.cache.put(g, "w", name)
+        hh = "HauhauCS--Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive"
+        self.cache.put(hh, "r", "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf")
+        self.cache.put(hh, "r", "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf")
         _, _, err, ini = self.run_script()
-        self.assertEqual(self.section(ini, "qwen3.6-35b-a3b").get("image-min-tokens"), "1024", err)
-        self.assertNotIn("image-min-tokens", self.section(ini, "gemma-4-26b-a4b"), err)
-        self.assertNotIn("image-min-tokens", self.section(ini, "*"), err)
+        for qwen in ("qwen3.6-35b-a3b", "qwen3.6-35b-a3b-uncensored"):
+            self.assertEqual(self.section(ini, qwen).get("image-min-tokens"), "1024", (qwen, err))
+        # The negatives must not pass on a section that was never written.
+        gemma, shared = self.section(ini, "gemma-4-26b-a4b"), self.section(ini, "*")
+        self.assertTrue(gemma and shared, err)
+        self.assertNotIn("image-min-tokens", gemma, err)
+        self.assertNotIn("image-min-tokens", shared, err)
 
     def test_gemmas_draft_comes_from_its_weights_snapshot(self):
         g = "unsloth--gemma-4-26B-A4B-it-GGUF"
@@ -258,6 +265,19 @@ class SingleModelScripts(unittest.TestCase):
             ["bash", str(SCRIPT.with_name(name))], env=env, capture_output=True, text=True, timeout=30
         )
         return out.returncode, out.stdout, out.stderr
+
+    def test_the_qwen_rollbacks_floor_image_tokens_too(self):
+        # A rollback must serve what the router preset does, or rolling back
+        # quietly changes how images are read (#361).
+        self.cache.put(PROD, "r1", PROD_FILE)
+        self.cache.put(PROD, "r1", "mmproj-BF16.gguf")
+        self.cache.put(Q38, "r1", "Qwen3.8-27B-UD-Q4_K_XL.gguf")
+        self.cache.put(Q38, "r1", "mmproj-BF16.gguf")
+        for name in ("start-moe-mtp.sh", "start-qwen38.sh"):
+            with self.subTest(script=name):
+                code, out, err = self.run_script(name)
+                self.assertEqual(code, 0, err)
+                self.assertIn("--image-min-tokens 1024", out, out)
 
     def test_a_missing_projector_stops_the_rollback_before_the_server(self):
         for name, repo, weights in self.SCRIPTS:

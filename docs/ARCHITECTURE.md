@@ -302,7 +302,8 @@ Four decisions, each a bug if undone:
   already fits is passed through **byte for byte**: re-encoding a crisp
   screenshot of text is a real loss, and that is the case this exists for.
   On the Qwen-VL presets an image costs one token per 32×32 px between a
-  floor and a ceiling — 1521 tokens measured for a 1568×980 screenshot
+  floor (1024 once `image-min-tokens` is set, so small images cost more than
+  their area) and a ceiling — 1521 tokens measured for a 1568×980 screenshot
   (`LLAMA-SERVER.md` §What it costs, which also keeps the superseded
   "fixed 294" reading) — so the cap bounds context as well as bytes.
 - **`recall` returns the filename, never the payload.** Base64 is a haystack

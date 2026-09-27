@@ -48,10 +48,23 @@ def post(url, body, timeout=600):
         return json.load(r)
 
 
+KNOWN = {"unloaded", "loading", "loaded", "sleeping", "downloading"}
+RESIDENT = {"loaded", "sleeping", "loading"}
+
+
 def resident(base):
-    """The one loaded model's id, or exit: naming any other would load it."""
+    """The one resident model's id, or exit: naming any other would load it.
+
+    The same reading as `served_model` in scripts/served-props.sh and
+    `RouterModel::is_resident`: `loading` counts, since mid-swap (A sleeping,
+    B loading) is two, not A; and a status this does not know refuses, since
+    it could be hiding a second resident (found on review of #361)."""
     data = get(f"{base}/models").get("data", [])
-    loaded = [m["id"] for m in data if m.get("status", {}).get("value") in ("loaded", "sleeping")]
+    statuses = {m["id"]: m.get("status", {}).get("value") for m in data}
+    unknown = {i: s for i, s in statuses.items() if s not in KNOWN}
+    if not data or unknown:
+        sys.exit(f"vision-probe: cannot read /models fully ({unknown or 'empty'}); refusing to name a model")
+    loaded = [i for i, s in statuses.items() if s in RESIDENT]
     if len(loaded) != 1:
         sys.exit(f"vision-probe: need exactly one resident model, found {loaded or 'none'}; refusing to name one")
     return loaded[0]
@@ -96,7 +109,9 @@ def ask(base, model, png=None):
         "model": model,
         "messages": [{"role": "user", "content": content}],
         "temperature": 0,
-        "max_tokens": 2048,
+        # Above every preset's reasoning-budget (4096): below it, a reply can
+        # be HTTP 200 with empty content (LLAMA-SERVER.md).
+        "max_tokens": 8192,
         "chat_template_kwargs": {"enable_thinking": False},
     }
     return post(f"{base}/v1/chat/completions", body)
@@ -136,7 +151,17 @@ def main():
     for w, h in SIZES:
         png, truth = draw(w, h)
         r = ask(args.base, model, png)
-        got = parse(r["choices"][0]["message"].get("content") or "")
+        choice = r["choices"][0]
+        content = choice["message"].get("content") or ""
+        got = parse(content)
+        # Check the envelope before scoring: a refused, truncated or prose
+        # reply scored 0.0 would read as grounding that failed, and argue for
+        # reverting a change that worked (found on review of #361).
+        if choice.get("finish_reason") != "stop" or not content.strip() or not got:
+            sys.exit(
+                f"vision-probe: {w}x{h}: unusable reply (finish_reason={choice.get('finish_reason')}, "
+                f"{len(content)} chars, {len(got)} boxes parsed): {content[:200]!r}"
+            )
         scores = [iou(truth[k], got[k]) if k in got else 0.0 for k in LABELS]
         rows.append(
             {
