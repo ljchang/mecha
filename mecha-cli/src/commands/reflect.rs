@@ -656,10 +656,7 @@ fn contrast_for(
     intervention: &Intervention,
     session: &str,
 ) -> Option<mecha_core::success::Contrast> {
-    if !matches!(
-        intervention.trigger,
-        Trigger::Steer | Trigger::Denial | Trigger::Followup
-    ) {
+    if !mecha_core::learning::contrasted(intervention.trigger) {
         return None;
     }
     pool?.beside(Some(&recorded_situation(t, intervention)), session)

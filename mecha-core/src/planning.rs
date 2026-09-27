@@ -1395,9 +1395,6 @@ mod success_example_tests {
         assert_eq!(sources(&[close("c1", "s-dana")], true), vec!["s-asked"]);
     }
 
-    /// A compacted session lends its whole trace, not the tail the
-    /// compaction left in the loaded list — here a tail with no call at
-    /// all, which read as "no tool calls" (found on review of #342).
     /// A model that records the one request it is sent and has no lesson.
     #[derive(Clone, Default)]
     struct Heard(std::sync::Arc<std::sync::Mutex<Option<crate::message::CompletionRequest>>>);
@@ -1525,6 +1522,9 @@ mod success_example_tests {
         assert!(pool.beside(None, "s-steered").is_none());
     }
 
+    /// A compacted session lends its whole trace, not the tail the
+    /// compaction left in the loaded list — here a tail with no call at
+    /// all, which read as "no tool calls" (found on review of #342).
     #[test]
     fn a_compacted_session_lends_every_call_it_made() {
         let root = crate::mismatch::Workspace::new().unwrap();

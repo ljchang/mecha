@@ -1564,9 +1564,9 @@ correction* holds the invariants).
   and the session's tool sequence (registry names). No record id rides.
 - **The lever.** `[agent] contrast_evidence`, `StageLever::ContrastEvidence`,
   ships off: off, the reflector's system prompt and user message are the
-  bytes they were (pinned against the old format). On, the behaviour frame
-  gains `CONTRAST_SENTENCE` and a contrasted correction gains one block; the
-  writing and mismatch frames never move. Shadow: `mecha reflect --dry-run`
+  bytes they were (pinned against the old format). On, a steer's, denial's
+  or followup's frame gains `CONTRAST_SENTENCE` and a contrasted correction
+  gains one block; the writing, mismatch and rejection prompts never move. Shadow: `mecha reflect --dry-run`
   names the success each correction would be shown. The measured run is
   owed; an arm turns it on through its environment's `config.toml`.
 - **Not contrasted yet:** the outbox pass (edits teach voice; a rejection's

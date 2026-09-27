@@ -3189,6 +3189,20 @@ pub struct Reflector {
 /// with the lever on only.
 pub const CONTRAST_SENTENCE: &str = "A <a-verified-success-in-this-region> block, when present, is work the owner accepted in the same situation, shown as the tools that session called: use it to see what the correction asks to be done differently, and never draw a lesson from the success alone.";
 
+/// The corrections contrast evidence applies to (R43): the owner's steer,
+/// denial or followup, found in a transcript and reflected in the
+/// behaviour frame. A mismatch is the harness's observation, in its own
+/// frame; an edit teaches voice; a rejection shares the behaviour frame
+/// but comes from the outbox pass, which sets no success beside it. One
+/// spelling, read by the prompt and by `reflect`'s matching, so the two
+/// agree by construction.
+pub fn contrasted(trigger: Trigger) -> bool {
+    matches!(
+        trigger,
+        Trigger::Steer | Trigger::Denial | Trigger::Followup
+    )
+}
+
 /// The block contrast evidence adds to the reflector's user message (R43):
 /// the owner's act in words and the success session's tool sequence —
 /// fixed text and registry names, nothing a model wrote.
@@ -3264,7 +3278,10 @@ impl Reflector {
         contrast: Option<&crate::success::Contrast>,
     ) -> (String, String) {
         let (system, _) = reflector_frames(i.trigger);
-        let behaviour = self.contrast && system == REFLECTOR_SYSTEM;
+        // By trigger, never by frame: a rejection shares the behaviour frame
+        // and is never handed a success, so it must not be told of one
+        // (found on review of #345).
+        let behaviour = self.contrast && contrasted(i.trigger);
         let body = format!(
             "<what-the-assistant-was-doing>\n{}\n</what-the-assistant-was-doing>\n\n\
              <intervention kind=\"{}\">\n{}\n</intervention>\n\n\
@@ -7965,8 +7982,10 @@ mod contrast_prompt {
         let (_, user) = on.prompt(&steer(), None);
         assert_eq!(user, before);
 
-        // The writing and mismatch frames never move.
-        for trigger in [Trigger::Edit, Trigger::Mismatch] {
+        // The writing and mismatch frames never move, and nor does a
+        // rejection, which shares the behaviour frame but is never handed a
+        // success (found on review of #345).
+        for trigger in [Trigger::Edit, Trigger::Mismatch, Trigger::Reject] {
             let i = Intervention { trigger, ..steer() };
             let (system, user) = on.prompt(&i, Some(&success()));
             assert_eq!(system, reflector_frames(trigger).0);
