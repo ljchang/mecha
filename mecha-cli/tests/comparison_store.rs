@@ -234,3 +234,94 @@ async fn a_probe_run_leaves_comparisons_a_second_read_returns_and_tainted_sessio
         "{row:?}"
     );
 }
+
+/// Count one model (the owner's ruling of 2026-09-27), through the free
+/// readout: a store holding rows from the production model and a comparison
+/// arm is counted for the newest driven row's model, the other model's rows
+/// and an unposed point (no model's) said beside it — never summed in.
+#[tokio::test]
+async fn the_free_readout_counts_one_model_of_a_mixed_store() {
+    use mecha_core::comparison::{Arm, Comparison, Outcome, Pointers};
+    let root = Root(
+        std::env::temp_dir().join(format!("mecha-comparison-one-model-{}", Session::new_id())),
+    );
+    let home = root.0.join("home");
+    let work = root.0.join("work");
+    std::fs::create_dir_all(home.join("comparisons")).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    let row = |model: &str, unsteered: Outcome| {
+        Comparison::new(
+            Kind::SteerProbe,
+            None,
+            None,
+            None,
+            vec![
+                Arm::new(Role::Recorded, None, Outcome::Pass),
+                Arm::new(Role::WithoutIntervention, None, unsteered),
+            ],
+            Validator::StructuralSteer,
+            Pointers {
+                session_id: "s-ravi".into(),
+                ..Pointers::default()
+            },
+            model,
+        )
+    };
+    let unposed = Comparison::new(
+        Kind::PointSurprise,
+        None,
+        None,
+        None,
+        Vec::new(),
+        Validator::Unposed,
+        Pointers::default(),
+        "",
+    );
+    // The comparison arm separated all three; the production model, newest,
+    // one of two. Summed, the share would read 4 of 5.
+    let rows = [
+        row("arm-model", Outcome::Fail),
+        row("arm-model", Outcome::Fail),
+        row("arm-model", Outcome::Fail),
+        row("prod-model", Outcome::Fail),
+        row("prod-model", Outcome::Pass),
+        unposed,
+    ];
+    let wire: String = rows
+        .iter()
+        .map(|c| serde_json::to_string(c).unwrap() + "\n")
+        .collect();
+    std::fs::write(home.join("comparisons").join("comparisons.jsonl"), wire).unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_mecha"))
+        .args(["sessions", "appraise", "--json", "--include-tests"])
+        .env("MECHA_HOME", &home)
+        .env_remove("MECHA_SESSION_DIR")
+        .env_remove("MECHA_LEARNING_DIR")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENAI_API_KEY")
+        .current_dir(&work)
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "appraise failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let c = &v["comparisons"];
+    assert_eq!(c["model"], "prod-model", "{c:#}");
+    assert_eq!(c["records"], 2, "{c:#}");
+    assert_eq!(
+        (c["separated"].clone(), c["tied"].clone()),
+        (json!(1), json!(1))
+    );
+    assert_eq!(c["separated_share"], 0.5, "never 4 of 5: {c:#}");
+    assert_eq!(c["other_models"], 3, "{c:#}");
+    assert_eq!(c["unposed"], 1, "no model's, still said: {c:#}");
+    assert_eq!(c["no_model"], 0, "{c:#}");
+    assert_eq!(c["inconclusive"], 0, "{c:#}");
+    assert_eq!(c["read"], true);
+}
