@@ -66,6 +66,16 @@ impl Tool for ImageView {
             return Ok(ToolOutput::err("missing required string argument `path`"));
         };
         let path = ctx.resolve(raw)?;
+        // Named by where it is, not by how the model spelled it: the result's
+        // first line is what the web chat reads to draw the picture for the
+        // owner, and `./images/a.png` or an absolute path would not match.
+        let shown = ctx
+            .workspace
+            .canonicalize()
+            .ok()
+            .and_then(|root| path.strip_prefix(root).ok().map(|p| p.to_path_buf()))
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| raw.to_string());
         if crate::message::image_media_type(&path).is_none() {
             return Ok(ToolOutput::err(format!(
                 "{raw} is not an image this can show — PNG, JPEG, GIF and WebP only."
@@ -86,12 +96,12 @@ impl Tool for ImageView {
             Ok(b) => b,
             Err(e) => return Ok(ToolOutput::err(format!("cannot read {raw}: {e}"))),
         };
-        let name = raw.to_string();
+        let name = shown.clone();
         let block =
             tokio::task::spawn_blocking(move || crate::image::rendered_block(&bytes, Some(name)))
                 .await?;
         match block {
-            Ok(block) => Ok(ToolOutput::ok(format!("image: {raw}")).with_image(block)),
+            Ok(block) => Ok(ToolOutput::ok(format!("image: {shown}")).with_image(block)),
             Err(e) => Ok(ToolOutput::err(format!("{raw} could not be shown: {e:#}"))),
         }
     }
@@ -125,10 +135,14 @@ mod tests {
         std::fs::write(dir.join("images/a.png"), &png).unwrap();
 
         let out = ImageView
-            .call(json!({"path": "images/a.png"}), &ctx(&dir))
+            .call(json!({"path": "./images/../images/a.png"}), &ctx(&dir))
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            out.content, "image: images/a.png",
+            "named by where it is, the line the web chat reads"
+        );
         let Some(Block::Image { source, .. }) = &out.image else {
             panic!("expected pixels, got {:?}", out.image)
         };
