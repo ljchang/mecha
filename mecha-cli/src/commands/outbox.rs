@@ -527,20 +527,29 @@ fn list(store: &OutboxStore, kind: Option<&str>, via: Option<&str>) -> Result<()
             println!("  {}", line(item));
         }
     }
-    // The one measure here that says something went *well*: drafts the owner
-    // read and sent as written. Omitted rather than shown as 0% when nothing
-    // has been sent — "nothing was edited" and "nothing has gone out" are
-    // opposite findings, and `unchanged_rate` returns `None` for exactly that
-    // reason.
-    if let Some(rate) = tally.unchanged_rate() {
-        println!(
-            "\ndrafting: {} of {} sent as drafted ({:.0}%)",
+    // How many released model drafts went out unedited. Structural: it counts
+    // whoever released them — a run's shell can `approve -y` its own draft —
+    // so it says "sent unedited" and never that the owner approved them (the
+    // owner's verdict is `owners_unchanged_release`). Omitted rather than
+    // shown as 0% when nothing has been sent — "nothing was edited" and
+    // "nothing has gone out" are opposite findings, and `unchanged_rate`
+    // returns `None` for exactly that reason.
+    if let Some(line) = tally_line(&tally) {
+        println!("\n{line}");
+    }
+    Ok(())
+}
+
+/// `list`'s drafting line, `None` when nothing has been sent.
+fn tally_line(tally: &mecha_core::outbox::WritingTally) -> Option<String> {
+    tally.unchanged_rate().map(|rate| {
+        format!(
+            "drafting: {} of {} sent unedited ({:.0}%)",
             tally.unchanged,
             tally.sent(),
             rate * 100.0
-        );
-    }
-    Ok(())
+        )
+    })
 }
 
 fn line(item: &OutboxItem) -> String {
@@ -1569,6 +1578,25 @@ fn indent(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The drafting line counts structurally — a run's shell can approve its
+    /// own draft unchanged — so it never reads as the owner's approval
+    /// ("sent as drafted" did; review of #352).
+    #[test]
+    fn the_drafting_line_says_unedited_never_approved() {
+        let tally = mecha_core::outbox::WritingTally {
+            unchanged: 3,
+            edited: 1,
+        };
+        assert_eq!(
+            super::tally_line(&tally).as_deref(),
+            Some("drafting: 3 of 4 sent unedited (75%)")
+        );
+        assert_eq!(
+            super::tally_line(&mecha_core::outbox::WritingTally::default()),
+            None,
+            "nothing sent is not 0%"
+        );
+    }
     /// The web review finds a demotion note by its prefix, held as a
     /// literal in the page; this pins the page to the constants, so a
     /// reword here cannot silently turn the note back into a bare

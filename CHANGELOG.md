@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A previous attempt says whose act it was** (`APPRAISAL-WIRING-DESIGN.md`
+  R42, the owner's ruling of 2026-09-27). The situation brief's previous
+  attempts put a draft reject or edit under "The owner:" only when it is
+  stamped as the owner's; a run's own reject or edit, and one from before
+  the stamp, is said apart as not recorded as the owner's, with the item id
+  and never the reason. `mecha outbox list`'s drafting line reads "sent
+  unedited" (it counts whoever released), not "sent as drafted".
+
 - **A draft released unchanged is your verdict only when you released it**
   (`APPRAISAL-WIRING-DESIGN.md`, R16a's ruling D3 carried to releases). The
   appraisal's +1.0, the owner-verified success set (`mecha sessions
