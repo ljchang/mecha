@@ -58,8 +58,8 @@ The rest follows from that:
   [Hooks](/docs/features/security/hooks) receive tool inputs and outputs, and
   the voice worker logs what it hears. So none of them runs.
 - **The browser keeps nothing either.** Every incognito response carries
-  `Cache-Control: no-store`, and a test fails the build if the web app ever
-  calls a browser storage API. A generated picture is shown but not linked,
+  `Cache-Control: no-store`, and a test in the web app's suite fails if it
+  ever calls a browser storage API. A generated picture is shown but not linked,
   because opening it in a tab would put its address in your browser history.
 
 ## What it can reach
