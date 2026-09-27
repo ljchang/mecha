@@ -513,8 +513,8 @@ router is `/props`' rule applied to choosing.
   "wait until idle", widened from requests to runs), or runs that re-follow
   between requests and change model mid-run. **Ruled 2026-09-27: a switch
   waits until no run holds the model** ("wait to switch until ready"), so a
-  run is answered by one model start to finish. Not built; nothing records
-  runs across processes yet (permits cover background runs only).
+  run is answered by one model start to finish. *Built 2026-09-27* as D13
+  below (`mecha-core/src/hold.rs`).
 - **Nightly passes run on whatever is loaded, and the record says which**
   (owner's ruling, 2026-09-26). Learn, validate, ruminate and appraisal are
   not deferred or skipped on a non-production model. The per-run `model`
@@ -584,6 +584,10 @@ filesystem (permits' reason), so the mechanism is `permit.rs`'s shape:
   file (`runmarker`'s shape), which its run polls and turns into a cancel
   at the next safe point. Unloading alone is not enough — a multi-request
   run would load its model back on the next request.
+- **Not yet:** `mecha chat` and the TUI neither follow nor hold — one agent
+  per process, resolved at start — so a switch does not wait for them and
+  their next turn loads their model back. They join with step 4 (the TUI's
+  `/model` calling `mecha model use`).
 - **What the owner sees.** `mecha model use` prints what it waits on and
   updates as holds drop; the chip (step 5) shows "switching to X — waiting
   for: …" with "switch now"; a surface whose turn waits says so in the

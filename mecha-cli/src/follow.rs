@@ -134,7 +134,8 @@ pub struct Follower {
     rebuilding: tokio::sync::Mutex<()>,
     generations: AtomicU64,
     /// `observe` returns the same warning every turn while its cause stands;
-    /// each is logged once per process, not once per message.
+    /// each is logged once per occurrence — forgotten when its condition
+    /// clears (`observe`) — not once per message.
     warned: Mutex<HashSet<String>>,
 }
 
@@ -161,15 +162,71 @@ impl Follower {
     }
 
     fn warn_once(&self, w: String) {
-        if self.warned.lock().expect("follower lock").insert(w.clone()) {
+        if self
+            .warned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(w.clone())
+        {
             tracing::warn!("{w}");
         }
+    }
+
+    /// The router this surface's model is served from, when it is a local
+    /// server on this machine — what a run's hold is keyed by (D13).
+    pub fn router_base(&self) -> Option<String> {
+        let bound = self.current();
+        let url = bound
+            .config
+            .providers
+            .get(&bound.provider_name)
+            .filter(|p| p.kind == "local")?
+            .base_url
+            .as_deref()?;
+        mecha_core::provider::router::is_loopback(url)
+            .then(|| mecha_core::provider::router::base(url))
+    }
+
+    /// A turn's start under D13: hold the router — waiting out any pending
+    /// switch, and telling `on_wait` which — *then* follow it. In that order,
+    /// so a turn can never resolve the old model and then wait out the switch
+    /// that replaces it. The caller keeps the hold until the run, and the
+    /// title named after it, have ended; dropping it is what lets a switch go.
+    pub async fn enter(
+        &self,
+        what: &str,
+        on_wait: impl FnMut(&mecha_core::hold::Switch),
+    ) -> Result<(Option<mecha_core::hold::Held>, Arc<Bound>)> {
+        let held = match self.router_base() {
+            Some(base) => Some(
+                mecha_core::hold::Holds::open_default()?
+                    .hold_when_clear(&base, what, on_wait)
+                    .await?,
+            ),
+            None => None,
+        };
+        Ok((held, self.follow().await?))
+    }
+
+    /// [`enter`](Self::enter)'s hold without the wait, for a surface that must
+    /// not wait in place (the Slack connector's single event loop): `Err` is
+    /// the pending switch, and the caller defers the turn until it clears.
+    pub fn try_hold(
+        &self,
+        what: &str,
+    ) -> Result<std::result::Result<Option<mecha_core::hold::Held>, mecha_core::hold::Switch>> {
+        let Some(base) = self.router_base() else {
+            return Ok(Ok(None));
+        };
+        Ok(mecha_core::hold::Holds::open_default()?
+            .try_hold(&base, what)?
+            .map(Some))
     }
 
     /// The binding as it stands, without asking the router. For what is not a
     /// turn: the page's session listing, a health probe.
     pub fn current(&self) -> Arc<Bound> {
-        Arc::clone(&self.current.read().expect("follower lock"))
+        Arc::clone(&self.current.read().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// The binding the next turn should run on: re-observe the router, and
@@ -225,7 +282,7 @@ impl Follower {
             bound.provider_name,
             bound.model
         );
-        *self.current.write().expect("follower lock") = Arc::clone(&bound);
+        *self.current.write().unwrap_or_else(|e| e.into_inner()) = Arc::clone(&bound);
         Ok(bound)
     }
 }
@@ -261,6 +318,37 @@ impl Follower {
     }
 }
 
+/// A hold on the router `provider` (the default when `None`) is served from,
+/// for a process that is not a long-lived surface: a command that is one run
+/// (`main`), and each trigger fire. `None` when that provider is not a local
+/// server on this machine — nothing to switch there. Waits out a pending
+/// switch first, saying so on stderr, which is where these processes speak.
+pub async fn hold_router(
+    cfg: &Config,
+    provider: Option<&str>,
+    what: &str,
+) -> Result<Option<mecha_core::hold::Held>> {
+    let name = provider.unwrap_or(&cfg.default_provider);
+    let Some(url) = cfg
+        .providers
+        .get(name)
+        .filter(|p| p.kind == "local")
+        .and_then(|p| p.base_url.as_deref())
+        .filter(|u| mecha_core::provider::router::is_loopback(u))
+    else {
+        return Ok(None);
+    };
+    let held = mecha_core::hold::Holds::open_default()?
+        .hold_when_clear(&mecha_core::provider::router::base(url), what, |switch| {
+            eprintln!(
+                "mecha: the model is switching to {} — waiting for it to load",
+                switch.to
+            )
+        })
+        .await?;
+    Ok(Some(held))
+}
+
 #[cfg(test)]
 impl Follower {
     /// Install a new binding under the next generation — what a turn sees
@@ -280,18 +368,18 @@ impl Follower {
             generation,
             _mcp: Vec::new(),
         };
-        *self.current.write().expect("follower lock") = Arc::new(bound);
+        *self.current.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(bound);
     }
 }
 
-/// Re-observe the routers `cfg` follows, logging each warning once per process.
+/// Re-observe the routers `cfg` follows, logging each warning once.
 ///
 /// Once per *occurrence*, not per process: a warning whose condition has
 /// cleared is forgotten, so the same condition coming back weeks later into
 /// a `serve` is logged again rather than never.
 async fn observe(cfg: &Config, pinned: bool, warned: &Mutex<HashSet<String>>) {
     let warnings = mecha_core::provider::router::observe(cfg, !pinned).await;
-    let mut warned = warned.lock().expect("follower lock");
+    let mut warned = warned.lock().unwrap_or_else(|e| e.into_inner());
     warned.retain(|w| warnings.contains(w));
     for w in warnings {
         if warned.insert(w.clone()) {

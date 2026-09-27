@@ -511,6 +511,67 @@ impl Command {
     /// loopback round trip. So unsure is `true` — except where the command
     /// promises no network, which `mecha doctor`'s module doc does (found on
     /// review).
+    /// Whether this command is **one run** for its whole life, and so holds
+    /// the router until it returns (D13): a switch waits for it, and it waits
+    /// for a switch before it starts. The long-lived ones — which serve many
+    /// runs, and hold per turn or per fire themselves — are `false`, or a
+    /// switch would wait for a daemon forever; so are the readers that build
+    /// a registry without running a model.
+    ///
+    /// **Exhaustive, no wildcard**, like [`runs_a_model`](Self::runs_a_model):
+    /// a new subcommand decides. Consulted only where that one is `true`.
+    fn is_one_run(&self) -> bool {
+        match self {
+            Command::Run(_)
+            | Command::Batch(_)
+            | Command::Eval(_)
+            | Command::Reflect(_)
+            | Command::Learn(_)
+            | Command::Distill(_)
+            | Command::Validate(_)
+            | Command::Setup(_)
+            | Command::Diagnose(_)
+            | Command::Harness(_)
+            | Command::Exp(_)
+            | Command::Frontdoor(_)
+            | Command::Mail(_)
+            | Command::Tasks(_)
+            | Command::Workflow(_)
+            | Command::Questions(_)
+            | Command::Gossip(_)
+            | Command::Corroborate(_)
+            | Command::Vet(_)
+            | Command::Replay(_)
+            | Command::Rules(_) => true,
+            // Long-lived: hold per turn (`follow::Follower::enter`) or per
+            // fire (`trigger::run_agent`), or do not follow yet (`chat`,
+            // `tui` — REMOTE-SURFACE-DESIGN §14 step 4).
+            Command::Chat(_)
+            | Command::Tui(_)
+            | Command::VoiceServe(_)
+            | Command::Serve(_)
+            | Command::Slack(_)
+            | Command::Trigger(_)
+            // Build a registry; run no model.
+            | Command::Outbox(_)
+            | Command::Kg(_)
+            | Command::Tools(_)
+            | Command::Sessions(_)
+            | Command::Reflections(_)
+            | Command::LearningReport(_)
+            | Command::Msg(_)
+            | Command::Work(_)
+            | Command::Doctor(_)
+            | Command::Polls(_)
+            | Command::Proposals(_)
+            | Command::Review(_)
+            | Command::Skills(_)
+            | Command::Charter(_)
+            | Command::Config(_)
+            | Command::Model(_) => false,
+        }
+    }
+
     fn runs_a_model(&self) -> bool {
         match self {
             Command::Run(_)
@@ -565,6 +626,61 @@ impl Command {
     }
 }
 
+/// This process's hold on the router (D13), for a command that is one run.
+///
+/// "Switch now" stops it as Ctrl-C would: the signal a run started through
+/// `interrupt::run_interruptible` turns into a cancel at its next safe point,
+/// keeping the partial answer. A command that does not catch it ends — which
+/// is what the owner asked for by not waiting.
+async fn hold_for_this_run(global: &GlobalOpts) -> Result<Option<mecha_core::hold::Held>> {
+    // **A child of a held run is covered by its parent's hold.** `workflow`
+    // and `exp` start `mecha` children; one that took its own hold would, with
+    // a switch pending, yield to the switch — which waits for the parent,
+    // which waits for the child. Deadlocked until "switch now".
+    if std::env::var_os(HELD_BY_PARENT).is_some() {
+        return Ok(None);
+    }
+    let Ok(cfg) = load_config(global) else {
+        // The command reports its own config error.
+        return Ok(None);
+    };
+    // The subcommand's name and nothing after it: `mecha run "<prompt>"`
+    // must not leave the prompt in a file under ~/.mecha/holds.
+    let sub = std::env::args()
+        .skip(1)
+        .find(|a| !a.starts_with('-'))
+        .filter(|a| a.len() <= 24 && a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .unwrap_or_default();
+    let held =
+        crate::follow::hold_router(&cfg, global.provider.as_deref(), &format!("mecha {sub}"))
+            .await?;
+    if held.is_some() {
+        std::env::set_var(HELD_BY_PARENT, "1");
+    }
+    if let Some(h) = &held {
+        h.on_cancel(|| {
+            // SAFETY: signalling this process; no memory is touched.
+            unsafe {
+                libc::kill(libc::getpid(), libc::SIGINT);
+            }
+        });
+    }
+    Ok(held)
+}
+
+/// Set by a one-run command holding the router, for its children (D13).
+const HELD_BY_PARENT: &str = "MECHA_ROUTER_HELD";
+
+fn load_config(global: &GlobalOpts) -> Result<mecha_core::config::Config> {
+    if global.global_config_only {
+        mecha_core::config::Config::load_global()
+    } else {
+        std::env::current_dir()
+            .map_err(anyhow::Error::from)
+            .and_then(|cwd| mecha_core::config::Config::load(&cwd))
+    }
+}
+
 /// Which model the llama-server router has loaded, snapshotted once for this
 /// process so every default provider in it follows the owner's pick
 /// (`provider::router`, REMOTE-SURFACE-DESIGN §14). Best-effort by design: a
@@ -572,14 +688,7 @@ impl Command {
 /// router that is down leaves the default standing — one loopback round trip
 /// when it is up, nothing when nothing listens.
 async fn follow_the_loaded_model(global: &GlobalOpts, may_follow: bool) {
-    let cfg = if global.global_config_only {
-        mecha_core::config::Config::load_global()
-    } else {
-        std::env::current_dir()
-            .map_err(anyhow::Error::from)
-            .and_then(|cwd| mecha_core::config::Config::load(&cwd))
-    };
-    let Ok(cfg) = cfg else { return };
+    let Ok(cfg) = load_config(global) else { return };
     // A process given `--model` or `--provider` has named what it runs, so it
     // does not follow — the passes that resolve `cfg.provider(global.provider)`
     // themselves (lesson, pointwise, gossip, …) never reach `setup`'s pin. It
@@ -615,6 +724,14 @@ async fn main() {
 
 async fn dispatch() -> Result<()> {
     let cli = Cli::parse();
+    // D13: a command that is one run holds the router for its whole life,
+    // taken before the snapshot below so it can never resolve the model a
+    // pending switch is replacing. Dropped when the command returns.
+    let _held = if cli.command.runs_a_model() && cli.command.is_one_run() {
+        hold_for_this_run(&cli.global).await?
+    } else {
+        None
+    };
     if cli.command.runs_a_model() {
         follow_the_loaded_model(&cli.global, cli.command.may_follow()).await;
     }

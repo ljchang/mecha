@@ -285,6 +285,33 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
         return report(cfg, &base, &model, 0.0, json);
     }
 
+    // D13 (owner's rulings, 2026-09-27): the switch waits until no *run*
+    // holds the router — not only no request — so a run is answered by one
+    // model start to finish; runs that start meanwhile wait for the switch;
+    // no time limit, `--now` is the way out and Ctrl-C withdraws the switch.
+    // Held to the end of this function, past the load and R1's rollback, so
+    // the runs waiting on it resume on whatever is actually loaded.
+    let holds = mecha_core::hold::Holds::open_default()?;
+    let _switching = match holds.begin_switch(&base, previous.as_deref(), &model)? {
+        Ok(s) => s,
+        Err(other) => bail!(
+            "a switch to {} is already waiting on {base} (pid {}, since {}) — let it finish, \
+             or stop it with Ctrl-C where it runs",
+            other.to,
+            other.pid,
+            other.started_at.format("%H:%M:%SZ")
+        ),
+    };
+    if now {
+        let asked = holds.cancel_holders(&base);
+        if asked > 0 {
+            eprintln!("asking {asked} run(s) to stop now");
+        }
+        wait_for_runs(&holds, &base, Some(Duration::from_secs(15))).await?;
+    } else {
+        wait_for_runs(&holds, &base, None).await?;
+    }
+
     // R2: the resident model mid-reply is waited for, or — `--now` — cut off.
     if let Some(prev) = &previous {
         let busy = match mecha_core::brief::read_slots(&base, Some(prev)).await {
@@ -332,6 +359,49 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
                 Err(back) => Err(failed.context(format!(
                     "{model} did not load, and loading {prev} back failed too: {back:#}"
                 ))),
+            }
+        }
+    }
+}
+
+/// Wait until no run holds the router at `base` (D13), saying what it waits
+/// on whenever that changes. `limit` is `--now`'s grace for the runs it asked
+/// to stop; without one there is none, by ruling, and Ctrl-C withdraws the
+/// switch — the pending file goes with `use_`'s guard, and the model stays.
+async fn wait_for_runs(
+    holds: &mecha_core::hold::Holds,
+    base: &str,
+    limit: Option<Duration>,
+) -> Result<()> {
+    let started = Instant::now();
+    let mut said = String::new();
+    loop {
+        let live = holds.live(base);
+        if live.is_empty() {
+            return Ok(());
+        }
+        if limit.is_some_and(|l| started.elapsed() >= l) {
+            eprintln!(
+                "{} run(s) did not stop within {}s; switching anyway",
+                live.len(),
+                limit.unwrap_or_default().as_secs()
+            );
+            return Ok(());
+        }
+        let what: Vec<&str> = live.iter().map(|h| h.what.as_str()).collect();
+        let now_saying = format!(
+            "waiting for {} run(s) to finish: {} (--now stops them, Ctrl-C cancels the switch)",
+            live.len(),
+            what.join(", ")
+        );
+        if now_saying != said {
+            eprintln!("{now_saying}");
+            said = now_saying;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = tokio::signal::ctrl_c() => {
+                bail!("switch cancelled; the loaded model stays");
             }
         }
     }

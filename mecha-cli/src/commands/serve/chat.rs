@@ -1135,11 +1135,12 @@ pub(super) async fn open_task_conversation(
     // re-opening is picking a conversation back up, and re-seeding it would
     // restate the brief over the top of whatever was agreed.
     if fresh {
-        let bound = chat.follower.follow().await?;
+        let (held, bound) = chat.follower.enter("task conversation", |_| {}).await?;
         let mut sessions = chat.sessions.lock().await;
         let _ = begin_turn(
             &chat,
             &bound,
+            held,
             &mut sessions,
             &key,
             &seed,
@@ -1649,8 +1650,29 @@ pub async fn send(
     // after a switch can take as long as an MCP server's start, and every
     // conversation waits on that lock. Said rather than answered on the old
     // model when it fails — that model's request would load it back.
-    let bound = match chat.follower.follow().await {
-        Ok(b) => b,
+    // D13: the turn holds the router first — waiting out a switch in
+    // progress, which the open page is told about — then follows it.
+    let notices = chat
+        .sessions
+        .lock()
+        .await
+        .get(&key)
+        .map(|ws| ws.events.clone());
+    let (held, bound) = match chat
+        .follower
+        .enter("web chat", |switch| {
+            if let Some(tx) = &notices {
+                let _ = tx.send(WireEvent::Notice {
+                    text: format!(
+                        "Switching the model to {} — this turn starts once it is loaded.",
+                        switch.to
+                    ),
+                });
+            }
+        })
+        .await
+    {
+        Ok(entered) => entered,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}\n")).into_response(),
     };
     let mut sessions = chat.sessions.lock().await;
@@ -1691,6 +1713,7 @@ pub async fn send(
     match begin_turn(
         &chat,
         &bound,
+        held,
         &mut sessions,
         &key,
         &text,
@@ -1921,6 +1944,10 @@ struct Started {
 fn begin_turn(
     chat: &Arc<ChatState>,
     bound: &Arc<crate::follow::Bound>,
+    // The run's hold on the router (D13), kept by the spawned run until it
+    // and the title named after it end — dropping it is what lets a waiting
+    // switch go. `None` off a router.
+    held: Option<mecha_core::hold::Held>,
     sessions: &mut HashMap<String, WebSession>,
     key: &str,
     text: &str,
@@ -2089,6 +2116,12 @@ fn begin_turn(
     });
 
     let cancel = mecha_core::agent::CancelHandle::new();
+    // "Switch now" stops this run at its next safe point, the way the page's
+    // stop button does — rather than leaving it to load its model back.
+    if let Some(h) = &held {
+        let c = cancel.clone();
+        h.on_cancel(move || c.cancel(mecha_core::agent::CancelReason::Stopped));
+    }
     let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
     let queued_ids: Arc<StdMutex<VecDeque<String>>> = Arc::default();
     ws.live = Some(Live {
@@ -2238,6 +2271,7 @@ fn begin_turn(
     // The whole run — hand-back and naming included — stays on the binding
     // it started on; a switch mid-run is the next turn's.
     let bound_for_task = Arc::clone(bound);
+    let held_for_task = held;
     let key_for_task = key.to_string();
     let session = ws.session.clone();
     let bcast = ws.events.clone();
@@ -2248,6 +2282,7 @@ fn begin_turn(
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
 
     chat.runs.spawn(async move {
+        let _held = held_for_task;
         let mut cx = cx;
         // **This run's conditions, not the process's.** The shared context's
         // homeostat was sampled when `serve` built its agent, so every web
@@ -2706,8 +2741,8 @@ impl crate::voice::SessionHost for VoiceHost {
         }
         // Followed once, before the lock: a rebuild can take as long as an MCP
         // server's start, and every conversation waits on that lock.
-        let bound = match self.0.follower.follow().await {
-            Ok(b) => b,
+        let (mut held, bound) = match self.0.follower.enter("voice call", |_| {}).await {
+            Ok(entered) => entered,
             Err(e) => return Hosted::Failed(format!("{e:#}")),
         };
         for _ in 0..BARGE_IN_TRIES {
@@ -2735,6 +2770,7 @@ impl crate::voice::SessionHost for VoiceHost {
                     match begin_turn(
                         &self.0,
                         &bound,
+                        held.take(),
                         &mut sessions,
                         key,
                         utterance,
@@ -4524,6 +4560,7 @@ mod workflow_recording_tests {
             let result = begin_turn(
                 &chat,
                 &chat.follower.current(),
+                None,
                 &mut sessions,
                 case,
                 "next input",
