@@ -15,9 +15,11 @@
 # the probation release keyed on coverage, which conviction evidence always
 # supplies, so the 2-threshold could never convict anything.
 #
-# The drill is fully isolated: MECHA_SESSION_DIR and MECHA_LEARNING_DIR
-# point every stage at a throwaway world, so the live learning store never
-# sees a fabricated ledger row. The surface store (~/.mecha/surface) is
+# The drill is fully isolated: MECHA_SESSION_DIR, MECHA_LEARNING_DIR and
+# MECHA_COMPARISONS_DIR point every stage at a throwaway world, so the live
+# learning store never sees a fabricated ledger row and the live comparison
+# store never sees a probe of a throwaway session — the last was not so until
+# 2026-09-27, and the drill now checks it on every exit. The surface store (~/.mecha/surface) is
 # shared on purpose — it is content-addressed, and the recording's blob is
 # real. The scenario is seeded (a steer inserted into an honest recording,
 # by mecha-core's own types, never jq), because a *seeded regression* is
@@ -50,13 +52,28 @@ SEED="$(pwd)/target/release/examples/retirement_drill_seed"
 DRILL="$(mktemp -d /tmp/mecha-retirement-drill.XXXXXX)"
 export MECHA_SESSION_DIR="$DRILL/sessions"
 export MECHA_LEARNING_DIR="$DRILL/learning"
+# validate writes a counterfactual comparison per probe; without this it
+# landed in the owner's live store (found 2026-09-27), so the drill also
+# proves, at its end, that the live store did not move.
+export MECHA_COMPARISONS_DIR="$DRILL/comparisons"
+LIVE_COMPARISONS="${MECHA_HOME:-$HOME/.mecha}/comparisons/comparisons.jsonl"
+live_digest() { sha256sum "$LIVE_COMPARISONS" 2>/dev/null | cut -d' ' -f1 || echo absent; }
+LIVE_BEFORE="$(live_digest)"
 mkdir -p "$DRILL/ws"
 cleanup() {
+    local rc=$?
+    # Checked on every exit, a failed drill included: both of the leaks this
+    # guards against came from drills that failed.
+    if [ "$(live_digest)" != "$LIVE_BEFORE" ]; then
+        echo "DRILL LEAKED: the live comparison store changed ($LIVE_COMPARISONS)" >&2
+        rc=1
+    fi
     if [ -n "${MECHA_DRILL_KEEP:-}" ]; then
         echo "drill world kept at $DRILL"
     else
         rm -rf "$DRILL"
     fi
+    exit "$rc"
 }
 trap cleanup EXIT
 
