@@ -122,10 +122,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   summed the production model's comparisons with a comparison arm's into one
   separated share. It now counts the model of the newest comparison on
   record (`mecha sessions compare`: the model it drove) and says the rows
-  under other models, and the unposed points that have no model, beside the
-  summary without counting them. `--json` adds `model`, `other_models` and
-  `no_model` to `comparisons`; `records`, `unposed` and the rest now count
-  that one model's rows. Nothing stored changes.
+  under other models beside the summary without counting them. Unposed
+  points, which no model was run on, are counted on their own (`unposed`)
+  rather than inside one model's `inconclusive`. `--json` adds `model`,
+  `other_models` and `no_model` (rows with no model recorded that are not
+  unposed points: unknown, never counted) to `comparisons`; `records`,
+  `inconclusive` and the rest now count that one model's rows. Nothing
+  stored changes.
 
 - A mail thread whose classification fails for a reason of its own (a
   verdict that will not parse, a refusal, a rejected request) is retried on

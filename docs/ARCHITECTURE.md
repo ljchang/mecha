@@ -4437,16 +4437,18 @@ whichever model is resident, so the store holds the production model's rows
 beside a comparison arm's, and a share summed over both describes neither.
 `Summary::of(rows, model)` counts the rows under the model the caller names
 — `sessions compare` names the one it drove — else under the model of the
-newest row that has one (the free `sessions appraise` readout loads no
-config, so it names none — the rule `lesson_source::report` set). Rows
-under any other model are `other_models` and rows with no model are
-`no_model`, both said beside the summary and never summed in. The only row
-this build stores with no model is an unposed point (nothing was driven,
-and `pointwise::already_compared` keeps one per point whatever model is
-resident), so it belongs to no model: it could not move a rate, and
-counting it would charge one model's `inconclusive` with a point it never
-saw. The stored format is unchanged; `--json` gains `model`,
-`other_models` and `no_model`.
+newest driven row (the free `sessions appraise` readout loads no config, so
+it names none — the rule `lesson_source::report` set). Rows under any other
+model are `other_models`, said beside the summary and never summed in. **An
+unposed point is no model's**: its arms are not driven, and this build
+stores it with an empty model, once whatever model is resident
+(`pointwise::already_compared` keys it on the empty model). So `unposed`
+counts those points store-wide, apart from `records` and `inconclusive`
+rather than inside them — it could never move a rate, and counting it would
+charge one model with points it never saw, yet "never askable" stays
+visible. Any other row with no model is `no_model`: unknown, never counted,
+and never labelled an unposed point (found on review). The stored format is
+unchanged; `--json` gains `model`, `other_models` and `no_model`.
 
 ### Point-wise comparison at decision points
 
@@ -4521,8 +4523,8 @@ through the store above (a `point-*` `Kind` per point kind).
   (`pointwise::already_compared`) is not compared again, so the nightly
   cost falls on new points and new rule sets. The store summary a pass
   prints after it is for the model it drove (see "Every comparison is
-  stored"): rows under other models, and unposed points, which have none,
-  are said beside it and never counted in.
+  stored"): rows under other models are said beside it and never counted
+  in, and unposed points, which are no model's, are counted on their own.
 - **One background seat per point** (`permit.rs`, `tasks::permits`), taken
   before its arms and dropped after, waited on for up to five minutes and
   then the rest of the pass deferred and counted — never the owner's

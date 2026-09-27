@@ -237,8 +237,8 @@ async fn a_probe_run_leaves_comparisons_a_second_read_returns_and_tainted_sessio
 
 /// Count one model (the owner's ruling of 2026-09-27), through the free
 /// readout: a store holding rows from the production model and a comparison
-/// arm is counted for the newest row's model, the other model's rows and an
-/// unposed point (no model) said beside it — never summed into the share.
+/// arm is counted for the newest driven row's model, the other model's rows
+/// and an unposed point (no model's) said beside it — never summed in.
 #[tokio::test]
 async fn the_free_readout_counts_one_model_of_a_mixed_store() {
     use mecha_core::comparison::{Arm, Comparison, Outcome, Pointers};
@@ -320,6 +320,8 @@ async fn the_free_readout_counts_one_model_of_a_mixed_store() {
     );
     assert_eq!(c["separated_share"], 0.5, "never 4 of 5: {c:#}");
     assert_eq!(c["other_models"], 3, "{c:#}");
-    assert_eq!(c["no_model"], 1, "{c:#}");
+    assert_eq!(c["unposed"], 1, "no model's, still said: {c:#}");
+    assert_eq!(c["no_model"], 0, "{c:#}");
+    assert_eq!(c["inconclusive"], 0, "{c:#}");
     assert_eq!(c["read"], true);
 }
