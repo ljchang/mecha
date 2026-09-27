@@ -170,7 +170,22 @@ pub fn front_end_interactive(
 /// Build an agent. `interactive` decides whether an un-approved tool call can
 /// prompt a human or must fall back to the configured [`PermissionMode`].
 pub async fn prepare(opts: &GlobalOpts, interactive: bool) -> Result<Prepared> {
-    let tools = prepare_tools(opts, interactive).await?;
+    prepare_carrying(opts, interactive, None).await
+}
+
+/// [`prepare`], registering `todo` — a handle from a previous build — where a
+/// fresh one would go. A long-lived surface rebuilding for a model switch
+/// (`crate::follow`) passes its old one, so the plan every open conversation
+/// holds survives the switch — and it has to be passed *in*, not swapped in
+/// afterwards: subagents are built from the registry as it stands at that
+/// point, and a handle swapped in later leaves every child writing to a list
+/// the parent and the page never read (review of #347).
+pub async fn prepare_carrying(
+    opts: &GlobalOpts,
+    interactive: bool,
+    todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
+) -> Result<Prepared> {
+    let tools = prepare_tools_carrying(opts, interactive, todo).await?;
     preflight_provider(&tools.config, opts).await;
     build(tools, opts)
 }
@@ -202,10 +217,19 @@ async fn preflight_provider(cfg: &mecha_core::config::Config, opts: &GlobalOpts)
     // request reports far better than a startup line can, and printing it
     // here would put a warning in front of every command on a machine whose
     // model is not running yet.
-    let Some(props) = mecha_core::provider::preflight::fetch(base_url).await else {
+    // The run's model: under `--model` it is the one that answers, and a
+    // router is asked about the model named (found on review).
+    let model = opts.model.as_deref().or(pcfg.model.as_deref());
+    let Some(props) = mecha_core::provider::preflight::fetch(base_url, model).await else {
         return;
     };
-    for line in mecha_core::provider::preflight::disagreements(&name, pcfg, &props) {
+    // Compared as the run's model, not the entry's: behind a router the
+    // props asked for are that model's, and comparing them with the entry's
+    // printed "llama-server ignores the `model` field" — the one thing a
+    // router does not do (found on review).
+    let mut checked = pcfg.clone();
+    checked.model = model.map(str::to_string);
+    for line in mecha_core::provider::preflight::disagreements(&name, &checked, &props) {
         eprintln!("warning: {line}");
     }
 }
@@ -671,6 +695,32 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
             },
         });
     }
+    // Planning success examples for `goal_context` to serve on demand
+    // (L2, 2e-4b-1, R40), behind `Lever::SuccessExamples` — never the
+    // prefix. Keyed as past appraisals are, on what the run record will
+    // keep: the whole pool rides, and the loop re-keys it on the registry
+    // the run starts with (`ServedSuccesses::for_registry`), since a
+    // front-end may withhold or insert a tool after this point (found on
+    // review of #342). Served ahead of the declared-check examples: an
+    // owner's act is the stronger evidence. Private by the tool that serves
+    // them (`goal_context` is `private`), which is R35's arming.
+    if agent_cfg.success_examples {
+        let run = mecha_core::situation::Situation::of_run(
+            &registry
+                .iter()
+                .map(|t| t.name().to_string())
+                .collect::<Vec<_>>(),
+            rules.workspace.as_deref(),
+        )
+        .on(rules.surface)
+        .toward(rules.goal.clone());
+        if let Ok(dir) = mecha_core::session::Session::default_dir() {
+            ctx.success_examples = Some(mecha_core::planning::ServedSuccesses::select(
+                mecha_core::planning::success_examples_at(&dir),
+                &run,
+            ));
+        }
+    }
 
     let mut agent = Agent::new(
         provider,
@@ -846,6 +896,7 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
             Lever::CarriedState => !agent.carried_state,
             Lever::SituationBrief => !agent.situation_brief,
             Lever::PastAppraisals => !agent.past_appraisals,
+            Lever::SuccessExamples => !agent.success_examples,
         })
         .collect()
 }
@@ -876,6 +927,7 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::CarriedState => opts.no_carried_state = true,
         Lever::SituationBrief => opts.no_situation_brief = true,
         Lever::PastAppraisals => opts.no_past_appraisals = true,
+        Lever::SuccessExamples => opts.no_success_examples = true,
     }
 }
 
@@ -964,6 +1016,7 @@ pub(crate) fn fold_agent_switches(agent: &mut mecha_core::config::AgentConfig, o
     agent.carried_state = agent.carried_state && !opts.no_carried_state;
     agent.situation_brief = agent.situation_brief && !opts.no_situation_brief;
     agent.past_appraisals = agent.past_appraisals && !opts.no_past_appraisals;
+    agent.success_examples = agent.success_examples && !opts.no_success_examples;
 }
 
 /// The `ToolCtx` shape `compact_requested` already established: presence is
@@ -975,8 +1028,29 @@ fn step_escalation_slot(
     enabled.then(|| Arc::new(std::sync::Mutex::new(None)))
 }
 
+/// `--model` pins, as `MECHA_MODEL` does (`Config::merge_env_from`). `build`
+/// applies the flag's model *after* resolving the provider, so without this
+/// a following default resolved to the sibling naming the resident model and
+/// only its model string was replaced — `--model qwen3.8-27b` ran under
+/// Gemma's entry and its 32,768-token window (found on review). The TUI's
+/// `/model` rebuilds through here and is pinned the same way.
+fn pin_named_model(cfg: &mut Config, opts: &GlobalOpts) {
+    if opts.model.is_some() {
+        cfg.pin_provider(opts.provider.as_deref());
+    }
+}
+
 /// Resolve config, workspace, tools, and the approval policy.
 pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<PreparedTools> {
+    prepare_tools_carrying(opts, interactive, None).await
+}
+
+/// [`prepare_tools`], with the todo handle a rebuild carries ([`prepare_carrying`]).
+async fn prepare_tools_carrying(
+    opts: &GlobalOpts,
+    interactive: bool,
+    carried_todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
+) -> Result<PreparedTools> {
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
     let mut cfg = if opts.global_config_only {
         Config::load_global()?
@@ -985,6 +1059,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     };
 
     // --- flags override config ---
+    pin_named_model(&mut cfg, opts);
     if let Some(effort) = opts.effort {
         cfg.agent.effort = Some(effort);
     }
@@ -1281,7 +1356,8 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     }
 
     let todo = registry.get("todo").is_some().then(|| {
-        let handle = Arc::new(mecha_core::tool::todo::TodoTool::new());
+        let handle =
+            carried_todo.unwrap_or_else(|| Arc::new(mecha_core::tool::todo::TodoTool::new()));
         registry.insert(Arc::clone(&handle) as Arc<dyn mecha_core::tool::Tool>);
         handle
     });
@@ -1796,9 +1872,18 @@ pub const BRIEF_BOARD_TIMEOUT_INTERACTIVE: std::time::Duration = std::time::Dura
 pub fn local_server_for_brief(
     config: &mecha_core::config::Config,
     provider: &str,
-) -> Option<String> {
+    model: &str,
+) -> Option<mecha_core::brief::LocalServer> {
     let (_, pcfg) = config.provider(Some(provider)).ok()?;
-    (pcfg.kind == "local").then(|| pcfg.base_url.clone())?
+    if pcfg.kind != "local" {
+        return None;
+    }
+    // The run's model, not the entry's: under `--model` they differ, and a
+    // router answers `/slots` for the model named (found on review).
+    Some(mecha_core::brief::LocalServer {
+        base_url: pcfg.base_url.clone()?,
+        model: Some(model.to_string()),
+    })
 }
 
 /// Assemble this run's situation brief and put it on the run's context —
@@ -1816,15 +1901,23 @@ pub async fn brief_run(
     provider: &str,
     cx: &mut mecha_core::agent::RunContext,
     convo: &mecha_core::agent::Conversation,
+    session: Option<&str>,
     deadline: std::time::Duration,
 ) {
-    let local = local_server_for_brief(config, provider);
-    // The two reads that wait on another process, taken together.
-    let (board, slots) = tokio::join!(
+    let local = local_server_for_brief(config, provider, agent.model());
+    // The reads that wait on another process or the disk, taken together;
+    // the previous-attempts walk (3a-2) under the board's deadline.
+    let (board, slots, attempts) = tokio::join!(
         read_board_for_brief(agent.registry(), &cx.tools, deadline),
-        mecha_core::brief::slots_for(local.as_deref()),
+        mecha_core::brief::slots_for(local.as_ref()),
+        mecha_core::brief::attempts::for_run_within(
+            convo.goal_anchor.clone(),
+            session.map(str::to_string),
+            agent.now(),
+            deadline,
+        ),
     );
-    let brief = mecha_core::brief::assemble_for_run(agent, cx, convo, board, slots);
+    let brief = mecha_core::brief::assemble_for_run(agent, cx, convo, attempts, board, slots);
     cx.brief = Some(Arc::new(brief));
 }
 
@@ -2118,9 +2211,55 @@ mod surface_only_tests {
 mod tests {
     use super::{
         build_subagent, excluded_by_allowlist, fold_agent_switches, front_end_interactive,
-        levers_off, posture_for, step_escalation_enabled, step_escalation_slot,
+        levers_off, pin_named_model, posture_for, step_escalation_enabled, step_escalation_slot,
     };
     use crate::GlobalOpts;
+
+    /// `--model` pins: the default no longer follows the router to a sibling
+    /// whose window and prices belong to another model.
+    #[test]
+    fn a_named_model_stops_the_default_following_the_router() {
+        use mecha_core::config::{Config, ProviderConfig};
+        use mecha_core::provider::router::{followed, Seen};
+        let mut cfg = Config {
+            default_provider: "local".into(),
+            ..Default::default()
+        };
+        for (name, model, follow) in [
+            ("local", "qwen3.6-35b-a3b", true),
+            ("gemma26", "gemma-4-26b-a4b", false),
+        ] {
+            cfg.providers.insert(
+                name.into(),
+                ProviderConfig {
+                    kind: "local".into(),
+                    base_url: Some("http://127.0.0.1:8080".into()),
+                    model: Some(model.into()),
+                    follow_loaded: follow,
+                    ..Default::default()
+                },
+            );
+        }
+        let seen = [Seen {
+            base_url: "http://127.0.0.1:8080".into(),
+            resident: Some("gemma-4-26b-a4b".into()),
+            slots: Some(1),
+        }];
+
+        let mut unnamed = cfg.clone();
+        pin_named_model(&mut unnamed, &GlobalOpts::default());
+        assert_eq!(
+            followed(&unnamed, "local", &seen).as_deref(),
+            Some("gemma26")
+        );
+
+        let named = GlobalOpts {
+            model: Some("qwen3.8-27b".into()),
+            ..GlobalOpts::default()
+        };
+        pin_named_model(&mut cfg, &named);
+        assert_eq!(followed(&cfg, "local", &seen), None);
+    }
 
     /// A front end is a person only with a terminal and no run's shell above
     /// it: a nested or piped one refuses a closure (review of #294).
@@ -2381,6 +2520,46 @@ mod tests {
     ///
     /// The two halves are inherited by different mechanisms — the channel on
     /// the context, the threshold on the agent — and only one made the trip.
+    /// A rebuild's todo handle is the one the new registry holds — registered
+    /// where a fresh one would be, before the subagents are built from that
+    /// registry — not swapped in afterwards, which left every child writing
+    /// to a list the parent and the page never read (review of #347).
+    #[tokio::test]
+    async fn a_carried_todo_handle_is_the_one_the_new_registry_holds() {
+        use super::prepare_tools_carrying;
+        use std::sync::Arc;
+        let home = crate::testenv::HomeGuard::new("carried-todo");
+        let workspace = home
+            .dir
+            .parent()
+            .unwrap()
+            .join(format!("carried-todo-ws-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let opts = GlobalOpts {
+            global_config_only: true,
+            workspace: Some(workspace.clone()),
+            ..GlobalOpts::default()
+        };
+        let carried = Arc::new(mecha_core::tool::todo::TodoTool::new());
+        let tools = prepare_tools_carrying(&opts, false, Some(Arc::clone(&carried)))
+            .await
+            .unwrap();
+        let held = tools.todo.as_ref().expect("the todo tool is on by default");
+        assert!(
+            Arc::ptr_eq(held, &carried),
+            "PreparedTools holds a fresh handle"
+        );
+        let in_registry = tools.registry.get("todo").expect("todo registered");
+        assert!(
+            std::ptr::eq(
+                Arc::as_ptr(in_registry) as *const u8,
+                Arc::as_ptr(&carried) as *const u8
+            ),
+            "the registry subagents are built from holds a different todo list"
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
     /// Fails on the old `build_subagent`, which never called
     /// `with_context_window`.
     #[test]

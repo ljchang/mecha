@@ -5,8 +5,10 @@ server, written down on 2026-08-20 when the two stopped running separate
 engines. Most of it was learned by measuring something that had already gone
 wrong, so each item carries the measurement rather than the conclusion alone.
 
-The flags themselves live in `scripts/start-moe-mtp.sh`, which is the
-authority; this file is the reasoning and the numbers.
+The flags themselves live in the start scripts — `scripts/start-router.sh` for
+the chat models once the router is installed (§Router mode), and
+`scripts/start-moe-mtp.sh` and its siblings until then and as the rollback;
+this file is the reasoning and the numbers.
 
 ## Two servers, one model each
 
@@ -19,6 +21,9 @@ llama-server holds **one model per process**. So:
 
 Pointing both at one port silently sends embedding requests to the chat model.
 There is a test asserting `DEFAULT_EMBED_URL != llm::DEFAULT_BASE_URL`.
+
+Router mode (below) keeps this true — each loaded model is still its own
+child process — and keeps the embedder out of the router on purpose.
 
 **Why ollama was removed.** It ran its own `llama-server` underneath, so the
 choice was never about the engine — only about who sets the flags. What it
@@ -397,9 +402,71 @@ machine from starting is one people turn off.
 - Measured full re-embed of 27,140 vectors (20,444 episodes + 6,696 facts):
   **0.6B ≈ 9–10 min, 4B ≈ 27 min** and double the storage.
 
+## Router mode — one port, the model chosen per request
+
+`scripts/start-router.sh` runs llama-server with no `-m` and a generated
+`--models-preset`: one router process on :8080, one child server per loaded
+model, and the request's `model` field choosing the child. `--models-max 1`,
+because memory decides it. The design and the rulings are
+`REMOTE-SURFACE-DESIGN.md` §14 (D12); mecha's side is `provider::router`.
+Measured on 2026-09-26 against `c841aee`, unless a bullet names another build:
+
+- **The section name is the model name.** The router overwrites `--alias`
+  with it, so `[providers.*] model` must equal it — and in router mode that
+  string *selects*, so a record naming it is naming what answered.
+- **Swaps evict only an idle model.** A request for another model queues;
+  the resident one finishes what it has in flight, is stopped (2.7 s), and
+  the new one loads.
+- **Load time is the disk.** Cold: Gemma 33 s, Qwen3.8 39 s. With the file
+  in the page cache: 9 s (the uncensored arm's 20 GB). `mecha model use`
+  measured 22–24 s partly cached.
+- **Stopping the router stops the children.** SIGINT runs
+  `server_models::unload_all`, which tells each child to exit over stdin and
+  waits; a child that hangs is killed after `stop-timeout` (10 s).
+- **The router offers every GGUF in the Hugging Face cache** — sixteen
+  models here, embedders and an MTP-only draft file among them, each
+  loadable by name with bare flags (no projector, default context). The
+  script points `LLAMA_CACHE` at an empty directory; the children load by
+  absolute path and never read it.
+- **Bare `GET /props` is a placeholder:** 200 with `role: "router"`,
+  `model_alias: "llama-server"`, `n_ctx: 0`. Every reader asks
+  `/props?model=…` instead.
+- **A GET naming a model loads it** unless it adds `autoload=false`; then a
+  model that is not resident is a 400 `model is not loaded`. Every probe here
+  — `preflight::fetch`, the brief's `/slots`, `model-idle.sh` — says
+  `autoload=false`, or a health check would be the thing that swaps the model.
+- **An unknown model is a loud 400** (`model 'x' not found`), where a
+  single-model server silently answers with whatever it has.
+- **The router looks a file up across every snapshot of its repo**, newest
+  first (`hub_file`). A repo gains a snapshot each time a file is fetched
+  from a newer revision, while files already on disk stay in the old one;
+  a "first snapshot, then the file" lookup lost the Qwen3.8 Q4_K_M and its
+  projector the moment the UD-Q4_K_XL was downloaded beside them.
+- **Qwen3.8-27B, four builds, measured 2026-09-26** on llama.cpp `95887577`
+  (single stream, 400 tokens, same prompt and flags): unsloth Q4_K_M 21.1
+  tok/s at 0.38 MTP draft acceptance, UD-Q4_K_XL 22.9 at 0.45, HauhauCS
+  uncensored Q4_K_P 26.8 at 0.57, huihui abliterated UD-Q4_K_XL 22.1 at
+  0.42; all four read an image and passed a reasoning check. The same
+  Q4_K_M was 18.2 tok/s at 0.36 on `c841aee` against 20.7 on `95887577`,
+  both through `start-qwen38.sh` as a single-model server, back to back —
+  that pair is the build's +14%; the 21.1 above is the same file on the
+  new build through a router, a separate run.
+  The router serves the UD-Q4_K_XL and both uncensored builds.
+- **`reasoning-preserve` is pinned in every Qwen preset**, because the new
+  build flipped its default (#28174: "template default" → enabled) and the
+  templates disagree about what unset means. Qwen3.6:
+  `preserve_thinking is defined and preserve_thinking is true` — drop unless
+  told. Qwen3.8 (all three builds): `is undefined or … is true` — keep unless
+  told. Read out of each GGUF's header. Owner's ruling: keep.
+- **Sampling is per model, in its preset.** Gemma runs on llama-server's
+  defaults; the Qwens carry their model cards' values. Nothing sampling-shaped
+  goes in `[*]`, or it silently retunes Gemma.
+
 ## Related
 
-- `scripts/start-moe-mtp.sh` — the flags, and the history behind each number
+- `scripts/start-router.sh` — every chat model's flags, as router presets
+- `scripts/start-moe-mtp.sh` — the single-model flags, and the history behind each number
+- `provider/router.rs` — which model is resident, and following it
 - `scripts/mmproj.sh` — the projector guard every start script sources
 - `provider/preflight.rs` — one `GET /props`, checked against config
 - `scripts/bench-slots.sh` — throughput

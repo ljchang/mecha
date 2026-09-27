@@ -17,7 +17,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
-use mecha_core::agent::{Conversation, RunContext};
+use mecha_core::agent::{CancelHandle, Conversation, RunContext};
 use mecha_core::config::PermissionMode;
 use mecha_core::message::Message;
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
@@ -628,7 +628,14 @@ fn check_cost_cap(t: &Trigger) -> Result<()> {
     let Some(cap) = t.max_cost_usd else {
         return Ok(());
     };
-    let cfg = mecha_core::config::Config::load_global()?;
+    let mut cfg = mecha_core::config::Config::load_global()?;
+    // The entry the run will use: a trigger's own `model` pins the default,
+    // as `setup::pin_named_model` does for the run, or the cap would price the
+    // sibling the router has loaded while the run bills the pinned entry
+    // (found on review).
+    if t.model.is_some() {
+        cfg.pin_provider(t.provider.as_deref());
+    }
     let (name, provider) = cfg.provider(t.provider.as_deref())?;
     anyhow::ensure!(
         provider.pricing().is_some(),
@@ -909,17 +916,54 @@ async fn fire(
     Ok(())
 }
 
+/// "Switch now" cancels `fire` — this fire's own handle — and nothing above it:
+/// cancelling the daemon's stop token ended the whole scheduler, and the unit
+/// does not restart a clean exit (review of D13). With a reason, `Stopped`, as
+/// every other holder records it: the bare token recorded `Interrupted`, the
+/// unknown-which cause (review of #350).
+fn stop_this_fire_on_switch_now(held: &mecha_core::hold::Held, fire: &CancelHandle) {
+    let fire = fire.clone();
+    held.on_cancel(move || fire.cancel(mecha_core::agent::CancelReason::Stopped));
+}
+
 async fn run_agent(
     global: &GlobalOpts,
     t: &Trigger,
     record: &mut RunRecord,
     stop: Option<&CancellationToken>,
 ) -> Result<String> {
-    check_cost_cap(t)?;
-
     // The global config only — a scheduled run must not inherit the tool
     // surface of whatever repository the daemon was started in.
     let cfg = mecha_core::config::Config::load_global()?;
+    // This fire's own token: a child of the daemon's, so a SIGTERM reaches
+    // the run (see where it is handed to the run below) — and made here, so
+    // "switch now" can cancel *this fire* and nothing above it. Cancelling
+    // `stop` itself would end the daemon, and the unit does not restart a
+    // clean exit (review of D13).
+    let token = stop.map(CancellationToken::child_token).unwrap_or_default();
+    // D13: this fire holds the router its run will use until it returns,
+    // taken before the observation below. A shutdown while it waits out a
+    // switch stops the wait.
+    let provider = t.provider.as_deref().or(global.provider.as_deref());
+    let what = format!("trigger {}", t.name);
+    let _held = tokio::select! {
+        held = crate::follow::hold_router(&cfg, provider, &what) => held?,
+        _ = token.cancelled() => anyhow::bail!("stopped while waiting for a model switch"),
+    };
+
+    // The daemon outlives every run it starts, so the snapshot `main` took is
+    // the model loaded when the *daemon* started. A scheduled run follows the
+    // owner's pick as it stands now (`provider::router`, D12) — and before
+    // the cost cap, which must price the entry this run will use, not the one
+    // resident when the daemon started (found on review).
+    // The daemon's own `--model`/`--provider`, if it was given one, still
+    // pins every fire; a trigger's own fields pin through `prepare_tools`.
+    let follows = global.model.is_none() && global.provider.is_none();
+    for warning in mecha_core::provider::router::observe(&cfg, follows).await {
+        eprintln!("mecha: {warning}");
+    }
+    check_cost_cap(t)?;
+
     let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
     let system = if base.is_empty() {
         UNATTENDED.to_string()
@@ -1028,7 +1072,6 @@ async fn run_agent(
     // however long the run had left — up to the trigger's whole timeout — and
     // systemd would SIGKILL it, losing the partial answer and the ledger row
     // that says what happened.
-    let token = stop.map(CancellationToken::child_token).unwrap_or_default();
     let mut cx = RunContext::clone(prepared.agent.context()).with_cancel(token.clone());
     // The situation brief (B1, 1h), after the anchor is seeded: recorded on
     // the run, and delivered into its first user turn only behind
@@ -1040,6 +1083,7 @@ async fn run_agent(
         &prepared.provider_name,
         &mut cx,
         &convo,
+        Some(&session.meta.id),
         setup::BRIEF_BOARD_TIMEOUT,
     )
     .await;
@@ -1053,6 +1097,11 @@ async fn run_agent(
     // a service restart mid-run recorded the unknown-which `Interrupted`,
     // indistinguishable from a cancel nobody classified (found on review).
     let handle = cx.cancel_handle().expect("with_cancel just set it");
+    // Registered here, where the handle exists: the hold's watcher polls a
+    // file, so a "switch now" that landed earlier is still seen.
+    if let Some(h) = &_held {
+        stop_this_fire_on_switch_now(h, &handle);
+    }
     let limit = t
         .timeout_duration()
         .to_std()
@@ -1280,6 +1329,43 @@ fn indent(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// "Switch now" cancels the fire, never the daemon — measured on the
+    /// tokens: cancelling the daemon's stop token ended the whole scheduler,
+    /// and the unit does not restart a clean exit (review of D13).
+    #[tokio::test]
+    async fn switch_now_cancels_the_fire_and_not_the_daemon() {
+        // Under the environment lock: a serve test points $TMPDIR at a
+        // directory it deletes, which took this test's hold file with it —
+        // its watcher then saw the hold gone and never cancelled.
+        let home = crate::testenv::HomeGuard::new("fire-switch-now");
+        let holds = mecha_core::hold::Holds::new(home.dir.join("holds"));
+        let daemon = CancellationToken::new();
+        // The fire's context as `run_agent` builds it: a child of the daemon.
+        let cx = RunContext::new(
+            mecha_core::tool::ToolCtx::default(),
+            std::sync::Arc::new(mecha_core::tool::ModeApprover {
+                mode: mecha_core::config::PermissionMode::ReadOnly,
+            }),
+        )
+        .with_cancel(daemon.child_token());
+        let fire = cx.cancel_handle().unwrap();
+        let held = holds
+            .try_hold("http://127.0.0.1:8080", "trigger t")
+            .unwrap()
+            .unwrap();
+        super::stop_this_fire_on_switch_now(&held, &fire);
+        assert_eq!(holds.cancel_holders("http://127.0.0.1:8080"), 1);
+        tokio::time::timeout(std::time::Duration::from_secs(5), fire.cancelled())
+            .await
+            .expect("switch now never reached the fire");
+        assert!(!daemon.is_cancelled(), "switch now stopped the daemon");
+        assert_eq!(
+            cx.cancel_stop_cause(),
+            mecha_core::agent::StopCause::Stopped,
+            "a fire stopped by switch now recorded the unknown-which cause"
+        );
+        drop(held);
+    }
 
     /// The unit has to name the binary that printed it, by absolute path.
     ///

@@ -140,7 +140,13 @@ for PASS in 1 2; do
 the probe did not regress on the bad rule (model behaviour drifted? read the ledger above)"
 
     echo "── retirement scan after pass $PASS ──"
-    "$MECHA" rules propose-retirements --apply || fail "the retirement scan errored"
+    # Pinned and placed like the run and validate above: retirement counts
+    # only the rows of the model it resolves, and that resolution reads the
+    # config from the cwd — unpinned, or from a checkout whose `mecha.toml`
+    # names another model, it would count none of the rows validate wrote
+    # and fail pass 2 with a false cause.
+    (cd "$DRILL/ws" && "$MECHA" rules propose-retirements -p local --apply) \
+        || fail "the retirement scan errored"
     ACTIVE="$(rule_state r-drill-bad active)"
     if [ "$PASS" -eq 1 ]; then
         [ "$ACTIVE" = "true" ] || fail "one conviction retired the rule — the leash is 2, not 1"

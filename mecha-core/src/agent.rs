@@ -1801,10 +1801,19 @@ impl Agent {
             // Past appraisals are keyed on the tool set the run record will
             // name — this registry, after whatever a front-end withheld
             // since the block was rendered (`PastAppraisals::for_registry`).
-            if let Some(past) = tools.goal_appraisals.as_mut() {
+            if tools.goal_appraisals.is_some() || tools.success_examples.is_some() {
                 let names: Vec<String> =
                     self.registry.iter().map(|t| t.name().to_string()).collect();
-                past.for_registry(&names);
+                if let Some(past) = tools.goal_appraisals.as_mut() {
+                    past.for_registry(&names);
+                }
+                // And success examples (2e-4b-1), on the same registry, for
+                // the same reason — and less what the owner has reopened
+                // since the pool was read, since one build drives many runs
+                // (both found on review of #342).
+                if let Some(successes) = tools.success_examples.as_mut() {
+                    successes.at_run_start(&names);
+                }
             }
             // Fresh counters, the caller's anchor: a question resume seeds
             // the goal the owner just answered, and it must reach this run
@@ -5372,6 +5381,7 @@ mod tests {
         SituationBrief {
             assembled_at: "2026-09-14T13:21:33Z".parse().unwrap(),
             goal: Some(GoalChain::NoAnchor),
+            attempts: Some(Attempts::NotATask),
             board: Some(Board::Unread {
                 why: "no graph server in this fixture".into(),
             }),
@@ -5463,6 +5473,107 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// 3a-2: a task run's brief carries its previous attempts — the
+    /// owner's acts as words and pointers, the owner's own reopen words —
+    /// into the first user turn behind the lever, and arms `private` there
+    /// as the rest of the brief does (R35). With the lever off, every
+    /// request is the same bytes whether the recorded brief holds attempts
+    /// or not: nothing of them reaches a provider.
+    #[tokio::test]
+    async fn a_task_briefs_previous_attempts_ride_only_behind_the_lever_and_arm_private() {
+        use crate::brief::attempts::*;
+        let with_attempts = || {
+            let mut b = a_brief(1);
+            b.goal = Some(crate::brief::GoalChain::Anchored {
+                anchor: "task:task-northwind-report".into(),
+                project: crate::brief::Tier::Absent,
+                charter: crate::brief::Lines::Unlinked,
+            });
+            b.attempts = Some(crate::brief::Attempts::Read {
+                attempts: vec![Attempt {
+                    session: "20260925T090000-dana0001".into(),
+                    started_at: "2026-09-12T09:00:00Z".parse().unwrap(),
+                    acts: vec![
+                        OwnerAct::DraftRejected {
+                            draft: "draft-lakeside".into(),
+                        },
+                        OwnerAct::TaskReopened(Reopen {
+                            closure: "close-northwind".into(),
+                            by: ReopenedBy::Owner,
+                            owners_words: Some("the totals are for Lakeside".into()),
+                            reason_withheld: false,
+                        }),
+                    ],
+                    acts_total: 2,
+                    ended: RunEnd::TurnLimit,
+                }],
+                unsearched: false,
+                unreadable: 0,
+                unnamed_kind: 0,
+                stores_unread: vec![],
+            });
+            b
+        };
+        let without_attempts = || {
+            let mut b = with_attempts();
+            b.attempts = Some(crate::brief::Attempts::NotATask);
+            b
+        };
+        let run = |lever: bool, brief: crate::brief::SituationBrief| async move {
+            let (mut agent, provider) = agent_with_tools(
+                sleep_then_answer(),
+                vec![Arc::new(SleepTool(
+                    Arc::new(crate::clock::TestClock::at("2026-09-14T13:21:33Z")),
+                    chrono::Duration::zero(),
+                ))],
+                PermissionMode::Allow,
+            );
+            agent.cfg.situation_brief = lever;
+            let cx = with_brief(&agent, brief);
+            let mut convo = Conversation::user("pick the Northwind report back up");
+            agent.run_in(&cx, &mut convo, None).await.unwrap();
+            let seen = provider.seen.lock().unwrap().clone();
+            (seen, convo.taint)
+        };
+
+        let (on, taint) = run(true, with_attempts()).await;
+        let block = brief_blocks(&on[0]).pop().expect("delivered");
+        assert!(
+            block.contains("- Previous attempts at this task: 1 earlier session"),
+            "{block}"
+        );
+        assert!(block.contains("draft rejected (draft-lakeside)"), "{block}");
+        assert!(
+            block.contains("in the owner's own words: \"the totals are for Lakeside\""),
+            "{block}"
+        );
+        assert!(
+            block.contains("(not a verdict): it hit the turn limit"),
+            "{block}"
+        );
+        assert!(taint.private, "delivering the brief arms private (R35)");
+        assert!(!on[0]
+            .system
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Previous attempts"));
+
+        let (off, off_taint) = run(false, with_attempts()).await;
+        assert!(!off_taint.private, "and only the delivery arms it");
+        let (off_bare, _) = run(false, without_attempts()).await;
+        let bytes = |reqs: &[CompletionRequest]| {
+            reqs.iter()
+                .map(|r| format!("{:?}|{:?}|{:?}", r.system, r.messages, r.tools))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bytes(&off), bytes(&off_bare), "lever off: the same bytes");
+        for req in &off {
+            let text = format!("{:?}", req.messages);
+            assert!(!text.contains("Previous attempts"), "{text}");
+            assert!(!text.contains("the totals are for Lakeside"), "{text}");
         }
     }
 
@@ -5561,6 +5672,116 @@ mod tests {
         assert!(
             !served.contains("s-tainted"),
             "a tainted appraisal is never served"
+        );
+    }
+
+    /// L2 (2e-4b-1): a planning success example reaches a run only through
+    /// the `goal_context` result — the prefix is the same bytes with the
+    /// lever on and off, the first request carries none of it — and the
+    /// call that serves it arms `private`, which is R35's arming for the
+    /// owner's own work. The set is re-keyed on the registry the run starts
+    /// with, as past appraisals are. Fails if the lever touched the prefix,
+    /// pushed the sequence, served it from a tool that does not arm, or kept
+    /// the build's selection (found on review of #342).
+    #[tokio::test]
+    async fn success_examples_reach_a_run_only_through_goal_context_and_arm_private() {
+        let ask = || {
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "g1".into(),
+                        name: "goal_context".into(),
+                        input: json!({"serves": "task:task-northwind-report"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ]
+        };
+        let mut seen_by_lever = Vec::new();
+        for lever in [false, true] {
+            let (agent, provider) = agent_with_tools(
+                ask(),
+                vec![Arc::new(crate::tool::goal_context::GoalContext)],
+                PermissionMode::Allow,
+            );
+            let mut cx = (**agent.context()).clone();
+            let mut tools = (*cx.tools).clone();
+            if lever {
+                // Selected against the registry as rendered, before the
+                // front-end changed it (found on review of #342): there
+                // `kg_task_update` was registered and `goal_context` not
+                // yet, so the build served the example the run is *not* in
+                // the situation of and withheld the one it is. The loop
+                // re-keys on the registry the run starts with.
+                let goal = "task:task-northwind-report";
+                let pool = crate::planning::SuccessExamples {
+                    examples: vec![
+                        crate::planning::test_success(
+                            goal,
+                            "fs_read → shell ×2 → fs_write",
+                            "s-dana",
+                            &["goal_context"],
+                        ),
+                        crate::planning::test_success(
+                            goal,
+                            "kg_task_update → mail_send",
+                            "s-chat",
+                            &["kg_task_update"],
+                        ),
+                    ],
+                    withheld: Vec::new(),
+                };
+                let built = crate::situation::Situation::of_run(&["kg_task_update".into()], None);
+                let served = crate::planning::ServedSuccesses::fixed(pool, &built);
+                assert_eq!(
+                    served
+                        .served()
+                        .iter()
+                        .map(|e| e.source.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["s-chat"],
+                    "not vacuous: the build's registry picks the other one"
+                );
+                tools.success_examples = Some(served);
+            }
+            cx.tools = Arc::new(tools);
+            let mut convo = Conversation::user("pick up the Northwind Labs report");
+            agent.run_in(&cx, &mut convo, None).await.unwrap();
+            assert!(convo.taint.private, "goal_context arms private");
+            let seen = provider.seen.lock().unwrap().clone();
+            assert_eq!(seen.len(), 2);
+            let first = serde_json::to_string(&seen[0].messages).unwrap();
+            assert!(!first.contains("fs_write"), "never pushed");
+            seen_by_lever.push(seen);
+        }
+        let (off, on) = (&seen_by_lever[0], &seen_by_lever[1]);
+        for i in 0..2 {
+            assert_eq!(
+                serde_json::to_string(&off[i].tools).unwrap(),
+                serde_json::to_string(&on[i].tools).unwrap(),
+                "the tool list is the same bytes with the lever on and off"
+            );
+            assert_eq!(off[i].system, on[i].system, "and so is the system prompt");
+        }
+        let result = |reqs: &Vec<CompletionRequest>| -> String {
+            reqs[1]
+                .messages
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .find_map(|b| match b {
+                    Block::ToolResult { content, .. } => Some(content.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert!(!result(off).contains("tools_in_order"));
+        let served = result(on);
+        assert!(served.contains("fs_read → shell ×2 → fs_write"), "{served}");
+        assert!(served.contains("closure:c1"));
+        assert!(
+            !served.contains("s-chat"),
+            "keyed on the registry the run started with, not the build's"
         );
     }
 
@@ -11123,6 +11344,92 @@ mod tests {
         assert!(
             first.contains("step 0") && !first.contains("compacted"),
             "the snapshot must be the pre-compaction transcript: {first}"
+        );
+    }
+
+    /// A conversation carried onto an agent with a smaller window compacts
+    /// before that agent's first request (REMOTE-SURFACE-DESIGN §14, trap 4).
+    ///
+    /// This is what a long-lived surface relies on when it follows the router
+    /// from a 262,144-token model to a 32,768-token one mid-conversation: the
+    /// rebuilt agent carries the new window, and the conversation carries its
+    /// last measured size, so the check at the top of the loop fires on the
+    /// first iteration instead of the first request overflowing.
+    ///
+    /// Agent B is scripted with exactly a summary and then "done". Compacting
+    /// first, the summariser takes the summary and the run answers "done";
+    /// asking first, the summary is taken as the answer and the run ends with
+    /// nothing compacted. The control — the same carry onto an agent whose
+    /// window still fits — is what shows the window is the difference.
+    #[tokio::test]
+    async fn a_conversation_carried_onto_a_smaller_window_compacts_before_its_first_request() {
+        fn measured(blocks: Vec<Block>, stop: StopReason) -> CompletionResponse {
+            CompletionResponse {
+                usage: Usage {
+                    input_tokens: 20_000,
+                    output_tokens: 5,
+                    ..Usage::default()
+                },
+                ..assistant(blocks, stop)
+            }
+        }
+        async fn carried() -> Conversation {
+            let mut turns: Vec<CompletionResponse> = (0..4)
+                .map(|i| {
+                    measured(
+                        vec![
+                            Block::text(format!("step {i}")),
+                            Block::ToolUse {
+                                id: format!("t{i}"),
+                                name: "echo".into(),
+                                input: json!({"value": "x"}),
+                            },
+                        ],
+                        StopReason::ToolUse,
+                    )
+                })
+                .collect();
+            turns.push(measured(
+                vec![Block::text("first answer")],
+                StopReason::EndTurn,
+            ));
+            let (agent, _) = agent_with(turns, PermissionMode::Allow);
+            let agent = agent.with_context_window(Some(262_144));
+            let mut convo = Conversation::user("the original task");
+            agent.run(&mut convo, None).await.unwrap();
+            convo.push(Message::user("and now the next thing"));
+            convo
+        }
+        async fn continued_on(window: u64) -> Conversation {
+            let mut convo = carried().await;
+            let (mut agent, _) = agent_with(
+                vec![
+                    assistant(vec![Block::text("the summary")], StopReason::EndTurn),
+                    assistant(vec![Block::text("done")], StopReason::EndTurn),
+                ],
+                PermissionMode::Allow,
+            );
+            agent.cfg.compact_keep_recent = 2;
+            agent.cfg.compact_validate = false;
+            let agent = agent.with_context_window(Some(window));
+            agent.run(&mut convo, None).await.unwrap();
+            convo
+        }
+
+        let small = continued_on(8_192).await;
+        assert!(
+            small.messages[0].text().contains("compacted"),
+            "a transcript measured at 20,000 tokens must be summarised before it is sent \
+             to a model whose threshold is {} — got {:?}",
+            (8_192.0 * crate::config::AgentConfig::COMPACT_FRACTION) as u64,
+            small.messages[0].text()
+        );
+        assert!(crate::compact::orphaned_tool_results(&small.messages).is_empty());
+
+        let large = continued_on(262_144).await;
+        assert!(
+            !large.messages[0].text().contains("compacted"),
+            "the control: the same carry onto a window that still fits must not compact"
         );
     }
 

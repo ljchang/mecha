@@ -2655,6 +2655,22 @@ pub fn retire_threshold_for(rule: &Rule, ordinary: u32) -> u32 {
     }
 }
 
+/// The ledger rows measured on `model`, and how many were not.
+///
+/// A retirement argues from one model's rows (owner's ruling, 2026-09-27):
+/// the nightly measures on whatever the router has loaded, so the ledger can
+/// hold several models' verdicts, and [`ValidationRecord::model`]'s rule —
+/// tallies are only comparable within one — has to be applied by the reader.
+/// Summed across models, a night on a comparison arm could retire a rule, or
+/// dilute a real regression below the threshold, on probes of a model that
+/// never ships.
+pub fn measured_on(records: Vec<ValidationRecord>, model: &str) -> (Vec<ValidationRecord>, usize) {
+    let total = records.len();
+    let kept: Vec<_> = records.into_iter().filter(|r| r.model == model).collect();
+    let other = total - kept.len();
+    (kept, other)
+}
+
 /// Fold ledger rows into per-rule tallies.
 pub fn rule_tallies(records: &[ValidationRecord]) -> std::collections::BTreeMap<String, RuleTally> {
     let mut out: std::collections::BTreeMap<String, RuleTally> = Default::default();
@@ -7938,5 +7954,30 @@ mod correction_attribution {
         assert!(with("behavior", "mismatch").attribution_admits());
         assert!(with("writing", "edit").attribution_admits());
         assert!(with(TRIAGE_DOMAIN, "bucket").attribution_admits());
+    }
+
+    #[test]
+    fn measured_on_keeps_one_models_rows_and_counts_the_rest() {
+        let row = |model: &str| ValidationRecord {
+            reflexion_id: "r".into(),
+            trigger: "steer".into(),
+            domain: "behavior".into(),
+            rules_hash: String::new(),
+            rule_ids: vec![],
+            outcome: "improved".into(),
+            attributed_rule_id: None,
+            model: model.into(),
+            created_at: String::new(),
+            region: None,
+        };
+        let (kept, other) = measured_on(vec![row("a"), row("b"), row("a")], "a");
+        assert_eq!((kept.len(), other), (2, 1));
+        assert!(kept.iter().all(|r| r.model == "a"));
+        let (kept, other) = measured_on(vec![row("b")], "a");
+        assert_eq!(
+            (kept.len(), other),
+            (0, 1),
+            "no rows of its own is an empty tally, not all rows"
+        );
     }
 }

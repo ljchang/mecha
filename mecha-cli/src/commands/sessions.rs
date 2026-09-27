@@ -194,6 +194,43 @@ pub enum Args {
         json: bool,
     },
 
+    /// What went right, as the owner said so: drafts sent unchanged, tasks
+    /// closed `done`, workflows closed, questions answered whose session
+    /// then finished — each read from the store that owns the act, never
+    /// stored, so a success the owner later reopens is listed as withdrawn.
+    ///
+    /// Read-only and free. The drafts sent unchanged are writing exemplars,
+    /// and this readout is their only reader: nothing serves one to a run.
+    /// A success toward a goal lends its session's tool sequence as a
+    /// planning example, served by `goal_context` only with `[agent]
+    /// success_examples` on; `--examples` lists what it would serve.
+    Successes {
+        /// Print each writing exemplar verbatim — the draft as it went out.
+        #[arg(long)]
+        exemplars: bool,
+
+        /// List the planning success examples the set lends — each one's
+        /// goal, session, tool sequence and the situations it is served in —
+        /// and why each success that lends none does not. Reads up to 32
+        /// transcripts.
+        #[arg(long)]
+        examples: bool,
+
+        /// Cap each listing at this many, newest first. The counts are
+        /// always the whole set's.
+        #[arg(long, short = 'n')]
+        limit: Option<usize>,
+
+        /// Count successes in smoke-test sessions (`MECHA_SESSION_KIND=test`)
+        /// too. Off by default: they are the harness measuring itself.
+        #[arg(long)]
+        include_tests: bool,
+
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Total token usage — and cost, where prices are configured — across
     /// saved sessions, grouped by provider and model.
     Stats {
@@ -277,6 +314,23 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             )
             .await?
         }
+
+        Args::Successes {
+            exemplars,
+            examples,
+            limit,
+            include_tests,
+            json,
+        } => crate::success_readout::run(
+            &dir,
+            crate::success_readout::Show {
+                json,
+                exemplars,
+                examples,
+                limit,
+                include_tests,
+            },
+        )?,
 
         Args::Compare {
             points,
@@ -1597,15 +1651,23 @@ async fn appraise(
     // R16a: rejections of this population's drafts that carry the owner's
     // reason — the words `reflect` hands the reflector. Counted off the
     // drafts, since the reject's own sign is already on the edit channel.
-    let reasoned_rejections = drafts
-        .iter()
-        .filter(|d| {
-            d.rejection_reason().is_some()
-                && d.session_id
-                    .as_deref()
-                    .is_some_and(|s| appraised_ids.contains(s))
-        })
-        .count();
+    // And, apart, the reasoned rejections whose words are *not* the
+    // owner's (R16a's ruling D3: a model's shell, or a reject resolved
+    // before the stamp) — so a zero above reads as "no reason is
+    // attributable to the owner", never as "the owner gave none" (review
+    // of #343).
+    let (mut reasoned_rejections, mut unattributed_rejections) = (0usize, 0usize);
+    for d in drafts.iter().filter(|d| {
+        d.session_id
+            .as_deref()
+            .is_some_and(|s| appraised_ids.contains(s))
+    }) {
+        match d.rejection() {
+            Some(mecha_core::outbox::Rejection::OwnersWords(_)) => reasoned_rejections += 1,
+            Some(mecha_core::outbox::Rejection::NotOwners(_)) => unattributed_rejections += 1,
+            None => {}
+        }
+    }
     for a in &appraisals {
         *labels.entry(enum_key(a.label)).or_default() += 1;
         if !a.goals.is_empty() {
@@ -1652,6 +1714,25 @@ async fn appraise(
     // Lessons by source (row 2e-1): read from the learning, appraisal and
     // comparison stores — free, so it is read every time.
     let lesson_sources = crate::lesson_pass::on_record();
+    // Owner-verified successes (row 2e-4a): derived from the stores read
+    // above, store-wide whatever `--days` narrowed the sessions to — a
+    // task can be closed long after the session that did its work.
+    // The same test admission as the walk, so one readout counts one
+    // population.
+    let successes = crate::success_readout::derive(
+        dir,
+        include_tests || kind == Some(mecha_core::session::SessionKind::Test),
+        &mecha_core::success::Sources {
+            drafts: &drafts,
+            outbox_unreadable,
+            closures: &closures,
+            closures_unreadable,
+            workflows: &workflows,
+            workflows_unreadable,
+            questions: &questions,
+            questions_unreadable,
+        },
+    );
 
     if json {
         println!(
@@ -1701,6 +1782,10 @@ async fn appraise(
                 // the words `reflect` hands the reflector (R16a). The
                 // reject's own sign is on the `edit` channel.
                 "reasoned_rejections": reasoned_rejections,
+                // Rejections with a reason that is not the owner's words
+                // (owner-approved, unknown, or resolved before the stamp):
+                // never mined, shown to the appraiser as a typed word.
+                "unattributed_rejections": unattributed_rejections,
                 // R16f–h: verdicts on the rule, the reflection and the
                 // candidate — never a run's score. A group is `null` when
                 // its store could not be fully read.
@@ -1722,6 +1807,10 @@ async fn appraise(
                 // `null` over nothing decided, and an unreadable store is
                 // `read: false`, never an empty report.
                 "lesson_sources": lesson_sources_json(&lesson_sources),
+                // Row 2e-4a: owner-verified successes by kind, derived from
+                // the stores that own each act; `exemplars.served` is
+                // `false` — nothing hands one to a run yet.
+                "successes": crate::success_readout::summary_json(&successes),
                 // Anticipation's predictions scored (row 2b-1): store-wide,
                 // whatever `--days` narrowed the sessions to — a draft's
                 // outcome can arrive long after its session. Coverage
@@ -1816,6 +1905,7 @@ async fn appraise(
         println!("  {line}");
     }
     println!();
+    println!("  {}\n", crate::success_readout::line(&successes));
     println!("  {}\n", predictions_line(&calibration, outbox_unreadable));
     println!(
         "  {}\n",
@@ -1912,7 +2002,12 @@ async fn appraise(
     }
     println!(
         "    {:<24} {:>5}  — the reason reaches the reflector; the reject signs once, on `edit`",
-        "rejected with a reason", reasoned_rejections
+        "rejected, owner's reason", reasoned_rejections
+    );
+    println!(
+        "    {:<24} {:>5}  — a reason not the owner's own words (a run's shell, or before who was \
+         recorded): never mined",
+        "rejected, other reason", unattributed_rejections
     );
     // Then the ones that are never a run's score (R16f–h).
     println!("\n  owner verdicts on the learner (never a run's score)");

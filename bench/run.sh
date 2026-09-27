@@ -26,6 +26,12 @@ FORWARD_PORT=18080
 # the run measures whatever is on that port under the wrong name:
 #
 #   MECHA_BENCH_MODEL_PORT=8083 MECHA_BENCH_MODEL=local/qwen3.8-27b bench/run.sh -t <task>
+#
+# **That arm's file changed on 2026-09-26** under an unchanged alias: before,
+# start-qwen38.sh served unsloth's Q4_K_M; from then on the UD-Q4_K_XL (the
+# Q4_K_M was withdrawn upstream). Two qwen3.8-27b scorecards either side of
+# that date are not the same condition — the served file is in the server's
+# `/props` (`model_path`) if a run needs to say which.
 MODEL_PORT="${MECHA_BENCH_MODEL_PORT:-8080}"
 MODEL="${MECHA_BENCH_MODEL:-local/qwen3.6-35b-a3b}"
 
@@ -37,7 +43,24 @@ export MECHA_BENCH_BINARY="$(pwd)/target-musl/release/mecha"
 # Refuse to measure against a misconfigured server: 4 default slots quarter
 # the context to 8192 and the model returns empty completions past it — the
 # confound that voided a day of scorecards. See scripts/start-moe-mtp.sh.
-slots=$(curl -s "http://127.0.0.1:${MODEL_PORT}/props" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_slots", 0))')
+# Asked of the benchmarked model itself, never a router's placeholder, and
+# never in a way that loads it (scripts/served-props.sh).
+source scripts/served-props.sh
+# The scorecard is filed under MECHA_BENCH_MODEL, so the server has to be
+# serving it. A router refuses a model it is not serving (below); a
+# single-model server ignores the name, so it is compared here (found on
+# review) — the "measures whatever is on that port under the wrong name"
+# hazard the header above describes.
+served="$(served_model "http://127.0.0.1:${MODEL_PORT}")" || exit 1
+if [ "$served" != "${MODEL#*/}" ]; then
+  echo "refusing to run: :${MODEL_PORT} is serving ${served}, but MECHA_BENCH_MODEL names ${MODEL#*/}." >&2
+  exit 1
+fi
+props=$(served_props "http://127.0.0.1:${MODEL_PORT}" "${MODEL#*/}") || {
+  echo "refusing to run: cannot read the props of ${MODEL#*/} on :${MODEL_PORT} (above)." >&2
+  exit 1
+}
+slots=$(printf '%s' "$props" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_slots", 0))')
 if [ "$slots" != "1" ]; then
   echo "refusing to run: llama-server on :${MODEL_PORT} has ${slots} slots, not 1 (-np 1)." >&2
   exit 1
