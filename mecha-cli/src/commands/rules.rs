@@ -165,6 +165,10 @@ fn measured_model(global: &crate::GlobalOpts) -> Result<String> {
     let (_, entry) = cfg.provider(global.provider.as_deref())?;
     Ok(match global.model.clone().or_else(|| entry.model.clone()) {
         Some(model) => model,
+        // Building a provider can fail on credentials alone (an anthropic
+        // entry with no key), and a store fold must not stop on that: the
+        // anthropic default is a constant, read without one (found on review).
+        None if entry.kind == "anthropic" => mecha_core::provider::anthropic::DEFAULT_MODEL.into(),
         None => mecha_core::provider::build(entry)?
             .default_model()
             .to_string(),
@@ -1169,8 +1173,8 @@ fn propose(
                     r.id.as_deref().unwrap(),
                     against,
                     match &r.narrowed_at {
-                        Some(at) => format!("since it was narrowed at {at}"),
-                        None => "in the validation ledger".to_string(),
+                        Some(at) => format!("since it was narrowed at {at}, on {model}"),
+                        None => format!("in the validation ledger's rows measured on {model}"),
                     },
                     t.observations,
                     t.improved,

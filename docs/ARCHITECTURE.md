@@ -726,8 +726,10 @@ guessing. `mecha rules` folds the ledger into per-rule tallies;
 `rules propose-retirements --apply` (nightly, after learn) **retires
 directly** — no queue, no human — once a rule accumulates the attributed
 regressions its leash allows: 3 ordinarily, 2 on probation
-(`PROBATION_RETIRE_AT`) — a deterministic ledger scan, no model anywhere,
-and it resolves any pending retirement proposal it overtakes as superseded.
+(`PROBATION_RETIRE_AT`) — a deterministic ledger scan that calls no model,
+counting only the convictions measured on the model in use
+(`learning::measured_on`; owner's ruling 2026-09-27, REMOTE-SURFACE-DESIGN
+§14), and it resolves any pending retirement proposal it overtakes as superseded.
 Retirement is the brake ungated learning leans on and it is a flag, never a
 deletion: the rule stays in the file as evidence, the learner is shown it as
 "measured harmful — never re-derive" (surviving even a reworded

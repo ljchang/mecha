@@ -1357,9 +1357,10 @@ mecha rules [list|show|retire|restore|propose-retirements] [ARGS]
 | `propose-retirements` | `--apply` | Apply measured retirements or scope narrowing directly instead of staging a proposal. |
 
 Retirement is a flag, never a deletion: the rule stays in the file as evidence and
-`rules restore` undoes it. `propose-retirements` is a deterministic ledger scan with
-no model anywhere; what it stages goes through the same proposal gate as any other
-rule change.
+`rules restore` undoes it. `propose-retirements` is a deterministic ledger scan that
+calls no model; it counts only the regressions measured on the model in use, so a
+night on another model neither adds to nor dilutes them. What it stages goes through
+the same proposal gate as any other rule change.
 
 ```bash
 mecha rules
