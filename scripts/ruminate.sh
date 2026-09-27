@@ -122,7 +122,10 @@ echo "  --auto measures the candidate and applies it, or refuses it, without sta
 echo "· retirements (deterministic ledger scan; applied, not staged — a rule measured"
 echo "  harmful must leave the prompt without waiting for anyone, and it is the only"
 echo "  brake on rules that now go live when they are derived)"
-"$MECHA" rules propose-retirements --apply
+# Given the same pin as validate: retirement counts only the rows measured on
+# the model in use (owner's ruling, 2026-09-27), so it must resolve the model
+# validate just measured on — resident, or the one this night pinned.
+"$MECHA" rules propose-retirements "${PIN[@]}" --apply
 
 echo "· work clean (retention on generated output; a published bundle's source is never removed)"
 "$MECHA" work clean
