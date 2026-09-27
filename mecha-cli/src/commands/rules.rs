@@ -6,7 +6,8 @@
 //! rules, age. `retire` and `restore` are the human acting directly, the
 //! apply-with-git-undo path, same standing as a direct `mecha learn`.
 //! `propose-retirements` is the unattended path: a deterministic scan of the
-//! ledger — no model anywhere — that stages an `enabled = false` +
+//! ledger — no model called; it resolves which model is in use only to count
+//! that model's rows — that stages an `enabled = false` +
 //! `retired_*` diff through the same proposal gate every other rule change
 //! passes. Retirement is a flag, never a deletion: the rule stays in the
 //! file as evidence, the learner is told it was measured harmful, and
@@ -89,9 +90,10 @@ pub enum Cmd {
         /// Apply the retirements directly instead of staging a proposal.
         ///
         /// Safe to automate in a way that promotion is not: this scan is a
-        /// deterministic fold over the validation ledger with no model in it,
-        /// it only ever *disables* rules, and a retired rule stays in the file
-        /// as evidence. It is also the precondition for ungated learning —
+        /// deterministic fold over the validation ledger with no model call in
+        /// it — it resolves which model is in use, to count only that model's
+        /// rows, and never asks one anything — it only ever *disables* rules,
+        /// and a retired rule stays in the file as evidence. It is also the precondition for ungated learning —
         /// promotion without a working NoGo path is a ratchet.
         #[arg(long)]
         apply: bool,
@@ -141,9 +143,36 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
             if let Some(why) = &owner.store_unreadable {
                 println!("owner tenure: {why}; no rule is released on it this pass");
             }
-            propose(&store, min_attributed, apply, Some(&owner))
+            let model = measured_model(global)?;
+            propose(&store, &model, min_attributed, apply, Some(&owner))
         }
     }
+}
+
+/// The model whose ledger rows a retirement argues from, resolved exactly as
+/// `validate` resolves the model it records — `--model`, else the provider
+/// entry's `model`, else that provider's default — the entry being the
+/// router's resident model (`main` observed it: `Rules` is a
+/// `runs_a_model` command) unless `-p` pins one. Owner's ruling,
+/// 2026-09-27: count one model.
+fn measured_model(global: &crate::GlobalOpts) -> Result<String> {
+    let cfg = if global.global_config_only {
+        mecha_core::config::Config::load_global()?
+    } else {
+        let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+        mecha_core::config::Config::load(&cwd)?
+    };
+    let (_, entry) = cfg.provider(global.provider.as_deref())?;
+    Ok(match global.model.clone().or_else(|| entry.model.clone()) {
+        Some(model) => model,
+        // Building a provider can fail on credentials alone (an anthropic
+        // entry with no key), and a store fold must not stop on that: the
+        // anthropic default is a constant, read without one (found on review).
+        None if entry.kind == "anthropic" => mecha_core::provider::anthropic::DEFAULT_MODEL.into(),
+        None => mecha_core::provider::build(entry)?
+            .default_model()
+            .to_string(),
+    })
 }
 
 /// The workspace/surface/goal keys some run's rules block was matched
@@ -999,13 +1028,27 @@ fn show(store: &LearningStore, id: &str, goals: &Goals, standing: Option<&Standi
 
 fn propose(
     store: &LearningStore,
+    model: &str,
     min_attributed: u32,
     apply: bool,
     owner: Option<&Tally>,
 ) -> Result<()> {
     let _lock = store.lock()?;
-    let records = store.validations()?;
-    let tallies = rule_tallies(&records);
+    // Two folds of one ledger (owner's ruling, 2026-09-27: count one model).
+    // The convictions a retirement counts are this model's rows only; whether
+    // a rule was measured beyond its convictions — the probation release — is
+    // a fact about the whole ledger, written to disk and read on every model
+    // (found on review of #346).
+    let ledger = store.validations()?;
+    let tallies = rule_tallies(&ledger);
+    let (records, other) = mecha_core::learning::measured_on(ledger, model);
+    if other > 0 {
+        println!(
+            "retirement counts {} ledger row(s) measured on {model}; {other} from other models \
+             are not counted (tallies are comparable only within one model)",
+            records.len()
+        );
+    }
     let proposals = store.proposals()?;
     let mut staged = 0u32;
 
@@ -1130,8 +1173,8 @@ fn propose(
                     r.id.as_deref().unwrap(),
                     against,
                     match &r.narrowed_at {
-                        Some(at) => format!("since it was narrowed at {at}"),
-                        None => "in the validation ledger".to_string(),
+                        Some(at) => format!("since it was narrowed at {at}, on {model}"),
+                        None => format!("in the validation ledger's rows measured on {model}"),
                     },
                     t.observations,
                     t.improved,
@@ -1292,8 +1335,8 @@ fn propose(
     }
     if staged == 0 {
         println!(
-            "no rule has {min_attributed}+ attributed regressions — nothing to retire \
-             (`mecha rules` shows the tallies)"
+            "no rule has {min_attributed}+ attributed regressions on {model} — nothing to \
+             retire (`mecha rules` shows the tallies, every model's rows together)"
         );
     }
     Ok(())
@@ -1352,6 +1395,31 @@ mod tests {
         }
     }
 
+    /// Retirement argues from one model's rows (owner's ruling, 2026-09-27).
+    /// Regressions a comparison arm recorded do not retire a rule measured
+    /// on the model in use, however many there are; the same regressions
+    /// recorded on that model do. Fails on the old fold, which summed every
+    /// row whatever model drove it.
+    #[test]
+    fn another_models_regressions_do_not_retire_a_rule() {
+        let store = temp_store();
+        store
+            .write_learned_rules("behavior", &[rule("Bad rule.", "r-bad")])
+            .unwrap();
+        for i in 0..5 {
+            let mut row = regression("r-bad", &format!("2026-09-2{i}T00:00:00Z"));
+            row.model = "comparison-arm".into();
+            store.append_validation(&row).unwrap();
+        }
+        propose(&store, "qwen", 3, true, None).unwrap();
+        assert!(
+            store.learned_rules("behavior").unwrap()[0].active(),
+            "five regressions on another model retire nothing here"
+        );
+        propose(&store, "comparison-arm", 3, true, None).unwrap();
+        assert!(!store.learned_rules("behavior").unwrap()[0].active());
+    }
+
     #[test]
     fn retirement_is_proposed_at_the_threshold_and_through_the_gate() {
         let store = temp_store();
@@ -1371,13 +1439,13 @@ mod tests {
         }
 
         // Below threshold: nothing staged.
-        propose(&store, 4, false, None).unwrap();
+        propose(&store, "qwen", 4, false, None).unwrap();
         assert!(store.proposals().unwrap().is_empty());
 
         // At threshold: one pending proposal that retires r-bad, keeps r-ok,
         // and consumes no reflections. The live rules must be untouched —
         // only acceptance deploys.
-        propose(&store, 3, false, None).unwrap();
+        propose(&store, "qwen", 3, false, None).unwrap();
         let all = store.proposals().unwrap();
         assert_eq!(all.len(), 1);
         let p = &all[0];
@@ -1408,7 +1476,7 @@ mod tests {
         );
 
         // Re-running while the proposal is pending must not stage a twin.
-        propose(&store, 3, false, None).unwrap();
+        propose(&store, "qwen", 3, false, None).unwrap();
         assert_eq!(store.proposals().unwrap().len(), 1);
 
         std::fs::remove_dir_all(store.root()).ok();
@@ -1435,11 +1503,11 @@ mod tests {
         }
 
         // Staged first, as the nightly would have before --apply existed.
-        propose(&store, 3, false, None).unwrap();
+        propose(&store, "qwen", 3, false, None).unwrap();
         assert_eq!(store.proposals().unwrap()[0].status, "pending");
 
         // The direct path retires the rule and resolves the paper.
-        propose(&store, 3, true, None).unwrap();
+        propose(&store, "qwen", 3, true, None).unwrap();
         let all = store.proposals().unwrap();
         assert_eq!(all.len(), 1, "no twin staged");
         assert_eq!(all[0].status, "superseded");
@@ -1480,7 +1548,7 @@ mod tests {
         }
 
         // Below threshold, --apply must be as inert as staging is.
-        propose(&store, 4, true, None).unwrap();
+        propose(&store, "qwen", 4, true, None).unwrap();
         assert!(
             store
                 .learned_rules("behavior")
@@ -1490,7 +1558,7 @@ mod tests {
             "an unconvicted rule must survive an --apply scan"
         );
 
-        propose(&store, 3, true, None).unwrap();
+        propose(&store, "qwen", 3, true, None).unwrap();
 
         // The live file moved, and nothing was queued for anyone to accept.
         assert!(
@@ -1588,7 +1656,7 @@ mod tests {
             ))
             .unwrap();
 
-        propose(&store, 3, true, None).unwrap();
+        propose(&store, "qwen", 3, true, None).unwrap();
 
         let live = store.learned_rules("behavior").unwrap();
         let wide = live
@@ -1616,7 +1684,7 @@ mod tests {
 
         // The convictions that narrowed it lie outside where it now loads:
         // a second scan finds nothing against it.
-        propose(&store, 3, true, None).unwrap();
+        propose(&store, "qwen", 3, true, None).unwrap();
         let again = store.learned_rules("behavior").unwrap();
         let wide = again
             .iter()
@@ -2206,8 +2274,8 @@ mod tests {
                 scope: None,
             })
             .unwrap();
-        propose(&store, 3, false, None).unwrap();
-        propose(&store, 3, false, None).unwrap();
+        propose(&store, "qwen", 3, false, None).unwrap();
+        propose(&store, "qwen", 3, false, None).unwrap();
         let proposals = store.proposals().unwrap();
         assert_eq!(
             proposals.len(),
@@ -2271,7 +2339,14 @@ mod tests {
                 .unwrap();
         }
 
-        propose(&store, mecha_core::learning::DEFAULT_RETIRE_AT, true, None).unwrap();
+        propose(
+            &store,
+            "qwen",
+            mecha_core::learning::DEFAULT_RETIRE_AT,
+            true,
+            None,
+        )
+        .unwrap();
 
         let live = store.learned_rules("behavior").unwrap();
         let bad = live
@@ -2344,6 +2419,7 @@ mod tests {
             }
             propose(
                 &store,
+                "qwen",
                 mecha_core::learning::DEFAULT_RETIRE_AT,
                 true,
                 Some(&tally),
