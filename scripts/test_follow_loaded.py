@@ -150,6 +150,11 @@ class Scripts(unittest.TestCase):
                 ["learn"],
             ],
         )
+        # The compare pass reads a bounded window (owner, 2026-09-27).
+        compare = [c for c in self.run_script("ruminate.sh") if c[:2] == ["sessions", "compare"]]
+        self.assertEqual(len(compare), 1, compare)
+        self.assertIn("--days", compare[0])
+        self.assertEqual(compare[0][compare[0].index("--days") + 1], "30", compare[0])
         calls = self.run_script("ruminate.sh", MECHA_RUMINATE_PROVIDER="x", MECHA_RUMINATE_JUDGE="j")
         # `rules propose-retirements` too: it counts only the rows of the
         # model validate measured on, so it must resolve the same one.
