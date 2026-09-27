@@ -1414,12 +1414,10 @@ async fn prepare_tools_carrying(
         }
     }
     // Image generation, on the same rule as search: only with a server
-    // configured — and `image_view` beside it for a model that can see, the way
-    // a run that drew a picture checks it on request (`tool::image_view`). A
-    // configuration naming a server off this machine is refused rather than
-    // registered, because the tool's no-egress declaration would then be false
-    // — said loudly, since a tool missing from the list is otherwise
-    // indistinguishable from one never configured.
+    // configured. A configuration naming a server off this machine is refused
+    // rather than registered, because the tool's no-egress declaration would
+    // then be false — said loudly, since a tool missing from the list is
+    // otherwise indistinguishable from one never configured.
     if let Some(image) = cfg.image.clone() {
         let wants = opts.tools.is_empty() || opts.tools.iter().any(|t| t == "image_generate");
         if wants {
@@ -1430,16 +1428,27 @@ async fn prepare_tools_carrying(
                 Err(e) => eprintln!("mecha: image_generate not registered — {e:#}"),
             }
         }
-        // Only for a model with eyes: to a blind one every look is a decode
-        // whose pixels the loop throws away — the TUI's drop path makes the
-        // same call (`dropped_images`). A later `/model` switch to a blind
-        // provider keeps the tool, and the loop tells the model in words.
+    }
+    // `image_view` reaches no server, so it is not `[image]`'s: it is how any
+    // model with eyes looks at a workspace picture — a result, or an
+    // attachment it was not shown (found on review of #365). Only for such a
+    // model: to a blind one every look is a decode whose pixels the loop
+    // throws away, the TUI's drop path's call (`dropped_images`). A later
+    // `/model` switch to a blind provider keeps the tool, and the loop tells
+    // the model in words. `[tools]` narrows it like any builtin.
+    let asked = opts.tools.iter().any(|t| t == "image_view");
+    if (opts.tools.is_empty() || asked) && cfg.tools.registers("image_view") {
         let sees = cfg
             .provider(opts.provider.as_deref())
             .ok()
             .is_some_and(|(_, p)| p.vision_enabled());
-        if sees && (opts.tools.is_empty() || opts.tools.iter().any(|t| t == "image_view")) {
+        if sees {
             registry.insert(Arc::new(mecha_core::tool::image_view::ImageView));
+        } else if asked {
+            eprintln!(
+                "mecha: image_view not registered — this provider cannot see images \
+                 (`[providers.*] vision`)"
+            );
         }
     }
     let mut clients = Vec::new();

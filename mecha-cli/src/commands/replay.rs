@@ -3,7 +3,9 @@
 //! Tool answers come from the recording, but current output limits and warning
 //! envelopes still apply. Legacy unknown provenance is conservatively external;
 //! that can change presentation and live-send policy. The report discloses this
-//! limitation so harness differences are not mistaken for model regressions.
+//! limitation so harness differences are not mistaken for model regressions,
+//! and counts the pictures a tool showed the model, which replay without their
+//! pixels.
 //!
 //! The run is rebuilt from the session's `RunConfig` — its system prompt, tool
 //! surface, budgets — not from today's flags, because a replay under different
@@ -99,6 +101,23 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     });
     if let Some(note) = &provenance_note {
         eprintln!("note: {note}");
+    }
+    // A picture a tool put in front of the model (`ToolOutput::image`) rides
+    // in the results turn, which the driver does not replay, and a recorded
+    // answer carries text only — so a replayed look answers without the
+    // pixels. Said, so a divergence there is not read as the model's.
+    let tool_pictures = convo
+        .messages
+        .iter()
+        .filter(|m| !mecha_core::agent::is_plain_user_text(m))
+        .flat_map(|m| &m.content)
+        .filter(|b| matches!(b, mecha_core::message::Block::Image { .. }))
+        .count();
+    if tool_pictures > 0 {
+        eprintln!(
+            "note: {tool_pictures} picture(s) a tool showed the model (image_view) are \
+             replayed without their pixels, so a divergence after one may be the harness"
+        );
     }
     if trajectory.steered {
         eprintln!(
@@ -259,6 +278,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 "model": model,
                 "recorded_calls": report.recorded_calls,
                 "legacy_provenance_calls": legacy_provenance_calls,
+                "tool_pictures_without_pixels": tool_pictures,
                 "provenance_note": provenance_note,
                 "replayed_calls": report.replayed_calls.len(),
                 "turns": report.turns,

@@ -17,7 +17,9 @@
 //! count as external, even if the original result was harness-owned. They may
 //! gain a warning, or a second envelope when the recording already had one.
 //! Under live divergence the stronger taint can also block a send the original
-//! run allowed. These are harness differences, not evidence of model regression;
+//! run allowed. A picture a tool showed the model (`ToolOutput::image`) is not
+//! replayed: it rode in the results turn, and a recorded answer is text. These
+//! are harness differences, not evidence of model regression;
 //! `mecha replay` discloses them in its note and JSON report. Both comparison
 //! arms must replay under the same policy. Never mark unknown results clean to
 //! improve fidelity: live divergence can execute real tools.
@@ -340,6 +342,8 @@ impl Tool for ReplayTool {
                 external: external.unwrap_or(true),
                 refusal: false,
                 not_dispatched: false,
+                // The recorded pixels are not re-sent; `mecha replay` counts
+                // and discloses them (`tool_pictures_without_pixels`).
                 image: None,
             }),
             Action::Refuse(msg) => Ok(ToolOutput::err(msg)),
