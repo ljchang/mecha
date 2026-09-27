@@ -944,6 +944,18 @@ impl State {
             Ok(w) => w,
             Err(e) => {
                 tracing::warn!("no workspace for {key}: {e}");
+                // Said, like the failure below: the turn — and anything added
+                // to it while it was starting — did not run.
+                let _ = chat::post_message(
+                    &self.slack,
+                    &channel,
+                    Some(&thread_ts),
+                    &format!(
+                        "I could not open this thread's workspace, so this did not run{also}: {e}"
+                    ),
+                    None,
+                )
+                .await;
                 return;
             }
         };

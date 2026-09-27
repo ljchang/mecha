@@ -2064,6 +2064,8 @@ async fn run_one(
         .wait_with_output()
         .await
         .context("waiting for mecha run")?;
+    // Uncovered once reaped: the pid may belong to something else now.
+    drop(_covered);
     let trial_dir = store.workspace_for(&trial.id);
     let log = trial_dir
         .parent()
