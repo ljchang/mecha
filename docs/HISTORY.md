@@ -59,12 +59,29 @@ evicted the comparison arm a minute after it was selected (removed then,
 with the `morning` trigger's `provider` line). mecha-graph read the
 router's placeholder as its served model, so the 01:30Z graph nightly sent
 `model: "llama-server"` on every request, the router refused them all, and
-`extract` marked 100 episodes attempted and lost 30 summaries
-(mecha-graph#22 settles whose a failure is by asking the server a canary
-request instead of comparing error strings). And `ruminate.sh`'s `-p local`
-default loaded production over the arm at 03:30:14Z, with `frontdoor.sh`
-and `learn-live.sh` carrying the same default (#346, which also makes
-retirement count one model's ledger rows, by the owner's ruling).
+`extract` marked 100 episodes attempted and lost 30 summaries. And
+`ruminate.sh`'s `-p local` default loaded production over the arm at
+03:30:14Z, with `frontdoor.sh` and `learn-live.sh` carrying the same
+default.
+
+Both fixes merged the next morning at the owner's direction, after 15 and
+10 review passes whose findings kept narrowing rather than ending; what was
+left is owed in each PR's closing comment. mecha-graph#22 (`139d6e48`)
+reads a router's one resident model from `/models`, and settles whose a
+failed request is by asking: the same request with an empty input (the
+canary) — failing it too stops the run with nothing marked, answering it
+charges the episode, and a charge records why (`extract_state.failure`,
+V026; `extract --charged`). Comparing error strings could not do this,
+because the messages are built from values constant across a batch; a
+reply the server's own setup explains (reasoning that ate the allowance) is
+classified instead, since an empty input always fits. #346 (`cb76adf3`)
+makes the scheduled scripts follow the router — `scripts/pin.sh` drops the
+pin only when the default provider is one mecha follows, and keeps `-p
+local` otherwise, so an install whose default is a paid API is never billed
+by the change — and, by the owner's ruling, makes a retirement count only
+the convictions measured on the model in use, while whether a rule was ever
+measured (probation, and what the learner consolidates from) is still read
+off the whole ledger.
 
 **2026-09-25/26 — appraisal wiring, phase 2 continued: the gate's
 acceptance rule completed, the appraisal's prediction scored, and learning
