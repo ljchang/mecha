@@ -43,11 +43,12 @@
 //!   or an actor this build cannot name, the reopen is still said, because
 //!   the act is the owner's approval, but the reason is not repeated. A fixed
 //!   phrase says so and points at the closure record.
-//! - An outbox rejection reason is never quoted. The outbox records no
-//!   actor on a resolve, so a model's `shell` behind the approver could have
-//!   written it. The act rides as "draft rejected" with the item's id. Once
-//!   outbox resolves carry an actor, the brief can quote an owner-stamped
-//!   rejection reason on the reopen's rule.
+//! - An outbox rejection reason is never quoted here (R42(d)): the act rides
+//!   as "draft rejected" with the item's id. When the rule was ruled, a
+//!   resolve recorded no actor, so a model's `shell` behind the approver
+//!   could have written the reason. Resolves now carry one
+//!   (`OutboxItem::rejection`, #343); quoting an owner-stamped reason on the
+//!   reopen's rule is a follow-up change, not this one.
 //!
 //! Every id that reaches the words is checked as one token, on
 //! `GoalRef::from_str`'s rule, the bound `board_of` puts on every board id.

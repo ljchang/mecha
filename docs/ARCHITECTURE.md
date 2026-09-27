@@ -5405,10 +5405,10 @@ when touching it:
   line (`attempts::one_line`) and capped, and the render checks the actor
   again rather than trusting the record's `owners_words`; under
   `OwnerApproved` or an unknown actor the reopen is a fixed phrase and the
-  closure id. An outbox rejection's reason never rides, because a resolve
-  records no actor; the act is "draft rejected" and the item id, and an
-  owner-stamped reason can ride on the reopen's rule once resolves carry an
-  actor. Every id in the words is one token (`GoalRef::from_str`'s rule),
+  closure id. An outbox rejection's reason never rides (R42(d), ruled while
+  a resolve recorded no actor); the act is "draft rejected" and the item id.
+  Resolves now carry an actor (`OutboxItem::rejection`, #343), so quoting
+  an owner-stamped reason on the reopen's rule is a follow-up change. Every id in the words is one token (`GoalRef::from_str`'s rule),
   since a workflow id is a graph-minted task id. The words are inside the
   brief's block, so delivery arms `private` exactly as before (R35).
   Residue: a reopen of a `dropped` closure cites nothing in `of_session`,

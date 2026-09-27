@@ -52,8 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   record id; and how the run ended, as the harness recorded it, never as a
   verdict. A reopen reason is quoted only when the owner wrote it with their
   own hand; one written in a conversation with the owner's approval is
-  said to exist and not repeated, and an outbox rejection reason is never
-  quoted. A walk cut by its bound, or a session file that cannot be read,
+  said to exist and not repeated, and an outbox rejection is said as "draft
+  rejected" and the item id, without its reason. A walk cut by its bound, or a session file that cannot be read,
   says "at least". Recorded on every run; delivered only behind `[agent]
   situation_brief`, which still ships off. `sessions health` reports the
   field's completeness beside the other nine, and counts it unread only
