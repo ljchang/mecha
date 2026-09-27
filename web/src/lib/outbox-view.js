@@ -554,3 +554,41 @@ export function shouldReread(had, now = Date.now()) {
   if (had.status === 'error') return age >= LIVE_RETRY_MS;
   return age >= LIVE_FRESH_MS;
 }
+
+/** How `mecha outbox reject` / `edit` / `approve` begin the line that says the
+ *  words are not recorded as yours — `DEMOTION_PREFIX` and
+ *  `EDIT_DEMOTION_PREFIX` in mecha-cli's commands/outbox.rs, where a test
+ *  reads this file so the two cannot part. */
+export const DEMOTION_PREFIXES = ['note: the reason is recorded as', 'note: the edit is recorded as'];
+
+/** That line, out of a verb's `{ ok, output }` response text; `null` when the
+ *  words are yours or the text is not such a response. */
+export function demotionLine(text) {
+  try {
+    const out = JSON.parse(text)?.output ?? '';
+    return (
+      String(out)
+        .split('\n')
+        .map((l) => l.trim())
+        .find((l) => DEMOTION_PREFIXES.some((p) => l.startsWith(p))) ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** A notice and the demotion notes that ride with it, in order, each once. */
+export function withNotes(sentence, ...notes) {
+  const seen = new Set();
+  const kept = notes.filter((n) => n && !seen.has(n) && seen.add(n));
+  return [sentence, ...kept].join(' ');
+}
+
+/** Who edited a draft, as the page says it: "edited by you" only when the
+ *  harness stamped the edit as yours. `null` for a draft nobody edited. */
+export function editedLabel(edited, editedBy) {
+  if (!edited) return null;
+  if (editedBy === 'owner') return 'edited by you';
+  if (editedBy === 'owner-approved') return 'edited by the assistant';
+  return 'edited — not recorded as yours';
+}

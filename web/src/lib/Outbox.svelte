@@ -7,6 +7,7 @@
     threadOf, ROUTING_KEYS, toolSuffix, threadMessages, answeredMessage, msgWhen,
     rowSummary, docEdit, DOC_EDIT_KEYS, REJECT_REASONS, tooSoon,
     replySubject, liveThread, sinceDrafted, readOf, shouldReread,
+    demotionLine, withNotes, editedLabel,
   } from './outbox-view.js';
 
   // The outbox: every draft waiting on the owner, and the one place any of
@@ -294,7 +295,10 @@
   // Never on a draft that appeared under your finger or pointer: after a
   // send the next draft opens in the same place, instantly from the cache,
   // and a second press or click would send it unread.
-  async function approve() {
+  // `pending`: a note the save before this send gave, kept through the
+  // send's own sentence rather than overwritten by it.
+  async function approve(pending = null) {
+    if (typeof pending !== 'string') pending = null;
     if (!detail || busy || detail.delivery_uncertain) return;
     if (tooSoon(openedAt)) {
       say('This draft just opened — press again to send it.');
@@ -303,7 +307,7 @@
     const id = detail.id;
     const out = await act('approve');
     if (out !== null) {
-      say(sentLine(out) ?? 'Sent.');
+      say(withNotes(sentLine(out) ?? 'Sent.', pending, demotionLine(out)));
       next();
     } else {
       // Reread it: a failed send changes the draft (its error, and whether
@@ -313,18 +317,6 @@
       if (selectedId === id) open(id, { keepError: true, fresh: true });
     }
   }
-  /** `mecha outbox reject`'s / `edit`'s note when the words are not recorded
-   *  as yours. The literals are `DEMOTION_PREFIX` and `EDIT_DEMOTION_PREFIX`
-   *  in commands/outbox.rs; a test there reads this file. */
-  const DEMOTION_PREFIXES = ['note: the reason is recorded as', 'note: the edit is recorded as'];
-  const demotionLine = (text) => {
-    try {
-      const out = JSON.parse(text)?.output ?? '';
-      return out.split('\n').find((l) => DEMOTION_PREFIXES.some((p) => l.startsWith(p))) ?? null;
-    } catch {
-      return null;
-    }
-  };
   /** The tool's own one-line answer out of the verb's stdout, if it gave one. */
   const sentLine = (out) =>
     out.split('\n').slice(1).map((l) => l.trim()).find((l) => /^(sent|replied|created|added)\b/i.test(l)) ?? null;
@@ -340,8 +332,7 @@
       rejectReason = '';
       // A reason the harness could not attribute to you is said, never
       // swallowed: it will not be read as your correction.
-      const note = demotionLine(text);
-      say(note ? `Rejected. ${note}` : 'Rejected.');
+      say(withNotes('Rejected.', demotionLine(text)));
       next();
     }
   }
@@ -371,8 +362,8 @@
     const text = await act('edit', { body: editDraft });
     if (text === null) return;
     const note = demotionLine(text);
-    if (note) say(`Saved. ${note}`);
-    if (andSend) return approve();
+    if (andSend) return approve(note);
+    if (note) say(withNotes('Saved.', note));
     open(id, { fresh: true });
   }
   async function saveEvent(andSend = false) {
@@ -385,8 +376,8 @@
     const text = await act('edit', { args: out.args });
     if (text === null) return;
     const note = demotionLine(text);
-    if (note) say(`Saved. ${note}`);
-    if (andSend) return approve();
+    if (andSend) return approve(note);
+    if (note) say(withNotes('Saved.', note));
     open(id, { fresh: true });
   }
 
@@ -601,7 +592,7 @@
                 {@const d = docEdit(item.tool, cache[item.id]?.args)}
                 <span class="rsnip">replace “{d.find}” → “{d.replace}”</span>
               {:else if item.snippet}<span class="rsnip">{item.snippet}</span>{/if}
-              {#if item.edited}<span class="edited">edited by you</span>{/if}
+              {#if item.edited}<span class="edited">{editedLabel(item.edited, item.edited_by)}</span>{/if}
             </span>
           </button>
         {:else}
@@ -627,7 +618,7 @@
           {/if}
           <span class="kpill k-{kind}">{@render kindGlyph(kind, 13)}{detail.label}</span>
           <span class="grow"></span>
-          <span class="muted mono">staged {ago(detail.created_at)}{detail.edited ? ' · edited by you' : ''}</span>
+          <span class="muted mono">staged {ago(detail.created_at)}{detail.edited ? ` · ${editedLabel(detail.edited, detail.edited_by)}` : ''}</span>
         </div>
         {#if title}<h1>{title}</h1>{/if}
 
@@ -936,7 +927,7 @@
               </form>
             </div>
           {:else if mode === 'read'}
-            <button class="btn primary big" disabled={busy} onclick={approve}>
+            <button class="btn primary big" disabled={busy} onclick={() => approve()}>
               {busy ? 'sending…' : approveLabel}{#if wide}<kbd>a</kbd>{/if}
             </button>
             <button class="btn" disabled={busy || !canEdit} onclick={startEdit}>Edit{#if wide}<kbd>e</kbd>{/if}</button>

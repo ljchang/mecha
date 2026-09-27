@@ -3478,9 +3478,13 @@ then, and otherwise described by its two stamps with none of its bytes; a
 release not stamped `owner` is "it was released", never "the owner
 released it"), and `pointwise::draft_kind` (the released text is the gold a
 harness candidate is judged against only then). An edit not stamped `owner`
-prints `note: the edit is recorded as …` on stdout, which the web review
-shows beside "Saved."; the page holds both note prefixes as literals, and a
-test in `commands/outbox.rs` reads the page. `writing_outcome` itself still
+prints `note: the edit is recorded as …` on stdout (so does an `approve` whose
+edit is not mined), which the web review
+shows beside "Saved." and carries through Save & send into "Sent."; its
+cards say "edited by you" only for an `owner` edit (`edited_by` rides the
+review payload). A run's `edit` that changes nothing stamps nothing. The
+page holds both note prefixes as literals (`outbox-view.js`), and a
+test in `commands/outbox.rs` reads that file. `writing_outcome` itself still
 says what happened to the draft — `SentEdited` is structural — so the
 appraisal's `edit`-channel sign and 2b-2's `ExpectedAct::Edited` stay
 actor-blind, like the reject's −1.0: **the words are gated, the act is
