@@ -200,6 +200,13 @@ struct Live {
     cancel: mecha_core::agent::CancelHandle,
     queue: Arc<StdMutex<VecDeque<String>>>,
     queued_ids: Arc<StdMutex<VecDeque<String>>>,
+    /// The conversation as this run found it, rendered once at its start —
+    /// what a transcript read returns while the run holds the real one. A
+    /// page that loads mid-run (or a phone whose stream dropped and
+    /// reconnected) was handed nothing and replaced its whole history with
+    /// that nothing; the run's own events still reach it over SSE, and the
+    /// page re-reads at `done` for the stretch it missed.
+    history: Arc<[Entry]>,
 }
 
 impl ChatState {
@@ -1605,10 +1612,13 @@ pub async fn transcript(
         None => return (StatusCode::NOT_FOUND, "no such session\n").into_response(),
     };
     let running = ws.live.is_some();
-    let (entries, taint) = match &ws.conversation {
-        Some(convo) => (transcript_entries(&convo.messages), Some(convo.taint)),
-        // A run holds the conversation; the page catches up over SSE.
-        None => (Vec::new(), None),
+    let (entries, taint) = match (&ws.conversation, &ws.live) {
+        (Some(convo), _) => (transcript_entries(&convo.messages), Some(convo.taint)),
+        // A run holds the conversation: the history it started from, and the
+        // page takes the run itself over SSE — then re-reads at `done`,
+        // because what streamed before it subscribed is not in either.
+        (None, Some(live)) => (live.history.to_vec(), None),
+        (None, None) => (Vec::new(), None),
     };
     let usage = ws.last_usage.lock().ok().and_then(|u| u.clone());
     let mode = ws.mode.lock().map(|m| mode_wire(*m)).unwrap_or("read_only");
@@ -2188,6 +2198,7 @@ fn begin_turn(
         cancel: cancel.clone(),
         queue: Arc::clone(&queue),
         queued_ids: Arc::clone(&queued_ids),
+        history: transcript_entries(&before).into(),
     });
 
     // What was already waiting, before this run staged anything. Taken here

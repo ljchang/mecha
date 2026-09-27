@@ -2009,6 +2009,86 @@ mod boundary_tests {
         assert!(!room.root.exists(), "the run left its room behind");
     }
 
+    /// A page that loads while a run holds the conversation — or a phone
+    /// whose stream reconnected mid-run — replaces its transcript with this
+    /// read. It used to be empty, and the whole history vanished from the
+    /// page for as long as the run lasted (an image edit, on a phone: until
+    /// a manual reload after it finished).
+    #[tokio::test]
+    async fn a_transcript_read_mid_run_returns_the_history_the_run_started_from() {
+        let _home = crate::testenv::HomeGuard::new("mid-run-history");
+        let go = Arc::new(tokio::sync::Notify::new());
+        let chat = chat::test_chat_waiting(go.clone());
+        let app = app(chat.clone());
+        let key = "midrun";
+
+        // One finished turn: the provider answers once it is let go.
+        go.notify_one();
+        converse(&app, key, "first question").await;
+
+        // A second turn, held in flight.
+        let sent = app
+            .clone()
+            .oneshot(json_post(
+                &format!("/api/chat/{key}/send"),
+                serde_json::json!({ "text": "second question" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert!(sent.status().is_success(), "{}", sent.status());
+        let v = body(
+            app.clone()
+                .oneshot(get(&format!("/api/chat/{key}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            v["held_by_run"], true,
+            "the second run is not in flight: {v}"
+        );
+        let texts: Vec<&str> = v["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["text"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            texts,
+            ["first question", "late", "second question"],
+            "a mid-run read must carry the history up to this run's own input"
+        );
+
+        // Released until drained: the first turn's title generation waits on
+        // the same provider, and either may take a single permit.
+        let release = tokio::spawn(async move {
+            loop {
+                go.notify_one();
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        });
+        let mut settled = None;
+        for _ in 0..200 {
+            let v = body(
+                app.clone()
+                    .oneshot(get(&format!("/api/chat/{key}")))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            if v["running"] == false && v["held_by_run"] == false {
+                settled = Some(v);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        release.abort();
+        // And once it is over, the read is the whole conversation again —
+        // the one the page's re-read at `done` relies on.
+        let v = settled.expect("the second run never finished");
+        assert_eq!(v["entries"].as_array().unwrap().len(), 4, "{v}");
+    }
+
     #[tokio::test]
     async fn incognito_refuses_a_model_that_is_not_on_this_machine() {
         let _home = crate::testenv::HomeGuard::new("incognito-cloud");

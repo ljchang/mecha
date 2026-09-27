@@ -264,6 +264,30 @@
     }
   }
 
+  // **A read taken mid-run is the history, not the run.** While a run holds
+  // the conversation the server answers with what the run started from; the
+  // run itself reaches this page only as the events it streams after the
+  // page subscribed. A page opened mid-run — or a phone whose stream died
+  // in the background and reconnected, which is most runs long enough to
+  // lock the screen over (an image edit) — has missed the stretch between,
+  // and that stretch is where a picture's `image_generate` result lives.
+  // So `done` re-reads when the last read found a run in flight.
+  let partialRun = false;
+  // Where this page's own additions start — the drafts and notices the
+  // transcript does not hold, which a re-read must carry over rather than
+  // drop.
+  let liveFrom = 0;
+
+  async function catchUp(sessionKey) {
+    const own = entries
+      .slice(liveFrom)
+      .filter((e) => e.kind === 'draft' || e.kind === 'notice');
+    await load(sessionKey);
+    if (sessionKey !== key) return;
+    entries.push(...own);
+    scrollDown();
+  }
+
   async function load(sessionKey = key, signal) {
     try {
       const res = await fetch(`/api/chat/${sessionKey}`, { signal });
@@ -280,6 +304,8 @@
         e.kind === 'tool' ? { ...e, pending: false } : e
       );
       running = data.running;
+      partialRun = !!data.held_by_run;
+      liveFrom = entries.length;
       // What this conversation is about, when it is about a board task.
       // Absent for an ordinary chat, which renders exactly as before.
       task = data.task ?? null;
@@ -484,6 +510,12 @@
           entries = entries.map((e) =>
             e.kind === 'tool' && e.pending ? { ...e, pending: false, unfinished: true } : e
           );
+          // The conversation is back in the server's hands by now (it is
+          // handed back before `done` is sent), so this read is the whole of it.
+          if (partialRun) {
+            partialRun = false;
+            catchUp(sessionKey);
+          }
           break;
       }
     };

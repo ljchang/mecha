@@ -261,6 +261,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A web chat opened or reconnected mid-run keeps its history.** While a
+  run held the conversation the transcript read returned no entries, and
+  the page replaced everything it showed with that — so a phone whose
+  stream dropped in the background during an image edit lost the whole
+  chat, and the picture with it, until a manual reload. The read now
+  returns the history the run started from, and the page re-reads at
+  `done` when it may have missed part of the run.
 - A leading `~` in a config path now means the home directory. Nothing ran
   these through a shell, so `command = "~/.cargo/bin/mecha-mail"` — the line
   the mail and documents pages printed — named a directory called `~`, the
