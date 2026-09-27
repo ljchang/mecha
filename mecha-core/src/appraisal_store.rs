@@ -1580,7 +1580,14 @@ pub fn observe(
         let model = d.author() == crate::outbox::Author::Model;
         match (model, d.status.as_str()) {
             (true, "sent") if d.edited() => seen.push((at, ExpectedAct::Edited)),
-            (true, "sent") => seen.push((at, ExpectedAct::ReleasedUnchanged)),
+            // Released unchanged is the owner's act only when the owner
+            // released it (R16a's ruling D3 carried to releases); a run's
+            // own release, or one from before the stamp, is an act whose
+            // author is not known — unread, never scored as the owner's.
+            (true, "sent") if d.resolved_by() == crate::closure::Actor::Owner => {
+                seen.push((at, ExpectedAct::ReleasedUnchanged))
+            }
+            (true, "sent") => unread.push(at),
             (true, "rejected") => seen.push((at, ExpectedAct::Rejected)),
             // An author or a status word this build cannot read: an act was
             // taken, and which one is not known.
@@ -3355,6 +3362,48 @@ mod tests {
             observe("s-2", None, end, &acts(&rejected), end + hours(47)),
             ObservedAct::Pending { .. }
         ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// R16a's ruling D3 carried to releases: an unchanged release inside
+    /// the window is the owner's `released_unchanged` only when the owner
+    /// released it. A run's own release, or one from before the stamp, is
+    /// an act whose author is not known — never scored as the owner's.
+    /// Fails on the tree before, which scored all three as the owner's act.
+    #[test]
+    fn an_unchanged_release_is_the_owners_act_only_when_the_owner_released_it() {
+        let root = temp_root("release-actor");
+        let end: DateTime<Utc> = "2026-09-20T12:00:00Z".parse().unwrap();
+        let at = end + chrono::Duration::hours(2);
+        let later = end + chrono::Duration::hours(100);
+        let mut owners = draft_of(&root, "s-1", "sent", Some(at));
+        owners.resolved_by = Some(crate::closure::Actor::Owner);
+        assert_eq!(
+            observe("s-1", None, end, &acts(&[owners]), later),
+            ObservedAct::Act {
+                act: ExpectedAct::ReleasedUnchanged,
+                at
+            }
+        );
+        for by in [
+            Some(crate::closure::Actor::OwnerApproved),
+            Some(crate::closure::Actor::Unknown),
+            None,
+        ] {
+            let mut d = draft_of(&root, "s-1", "sent", Some(at));
+            d.resolved_by = by;
+            let seen = observe("s-1", None, end, &acts(&[d]), later);
+            assert!(
+                !matches!(
+                    seen,
+                    ObservedAct::Act {
+                        act: ExpectedAct::ReleasedUnchanged,
+                        ..
+                    } | ObservedAct::NoAct { .. }
+                ),
+                "{by:?}: {seen:?}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

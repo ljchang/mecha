@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A draft released unchanged is your verdict only when you released it**
+  (`APPRAISAL-WIRING-DESIGN.md`, R16a's ruling D3 carried to releases). The
+  appraisal's +1.0, the owner-verified success set (`mecha sessions
+  successes`), its writing exemplars and the planning success examples
+  `goal_context` serves now count an unchanged release only when #343's
+  stamp says `owner`; a run's shell that approves its own draft earns none,
+  and releases from before the stamp count as neither, so the success set
+  starts empty of that history. A run that rejected its own draft sets no
+  point-wise rejected-draft point.
+
 ### Added
 
 - **Every outbox resolve records who made it** (`APPRAISAL-WIRING-DESIGN.md`,

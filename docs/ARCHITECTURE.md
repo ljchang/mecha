@@ -3520,7 +3520,20 @@ delivered` resolves without `resolve_with_output` and stamps the same actor
 **Items resolved before the field existed carry no actor and read as
 `unknown`** — fail closed, on the append-only rule; every such reasoned
 reject on the live store had already been mined when this landed. The
-release is stamped the same way, and nothing reads that stamp yet.
+release is stamped the same way, and **an unchanged release is the owner's
+verdict only when the owner made it** (the owner's ruling, 2026-09-27):
+`OutboxItem::owners_unchanged_release` is `SentUnchanged` *and*
+`resolved_by == owner`, and every reader that counts an unchanged release as
+the owner's +1.0 or as an owner-verified success reads it — the appraisal's
+`edit`-channel sign, `success::derive` (standing successes and writing
+exemplars, and through them `planning::success_examples` and
+`goal_context`) — while 2b-2's observed act reads a non-owner release as an
+act whose author is unknown, never `released_unchanged`. A run's shell that
+`approve -y`s its own draft unchanged earns nothing, and a release from
+before the stamp counts as neither. `writing_outcome` stays structural, so
+`WritingTally` keeps its denominator. The same ruling gates the point-wise
+**rejected-draft** point on an owner reject: a run that rejected its own
+draft sets no "nothing sent" point.
 **The residue is the closure path's** (see "Closing a task is a recorded
 event"): a command that detaches from its shell and clears the variable, a
 shell that edits `~/.mecha/outbox/` directly, and — named here because the
@@ -4774,9 +4787,15 @@ learning store holds corrections only; an **owner-verified success** is the
 other half, and every kind is an act the owner already performs, in the
 store that owns it:
 
-- a model's message draft **sent unchanged** (`writing_outcome` is
+- a model's message draft **sent unchanged by the owner**
+  (`OutboxItem::owners_unchanged_release`: `writing_outcome` is
   `SentUnchanged` — a publish, a harness-authored item and an edited or
-  rejected draft are not);
+  rejected draft are not — *and* the release is stamped `owner`; a run's
+  shell approving its own draft is no success). **The set starts from
+  stamped releases, so it is empty of pre-stamp history by design**
+  (the owner's ruling, 2026-09-27): on the live store the day it landed, 29
+  of 30 standing successes were unstamped unchanged releases and left the
+  set;
 - a task closed **`done`** (1b's closure record) that no reopen undoes;
 - a workflow the owner **closed** (after its verification passed) that no
   `workflow reopen` took back (`Workflow::owner_dispositions`);
