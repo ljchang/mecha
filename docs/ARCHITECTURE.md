@@ -207,10 +207,12 @@ The parts that bite hardest:
   - **The config is read from disk per turn**, because the rebuild reads it;
     resolving against the startup file missed providers added since. A file
     that does not load keeps the binding and says so once.
-  - **Only evidence of where to go moves a surface.** A router unseen
-    (`router::observed`), mid-swap (two resident), or resident on a model no
-    entry names or several do: the binding stays. Moving to the default on
-    any of those would load production over the pick.
+  - **Only evidence of where to go moves a surface.** A router unseen by
+    the follower's own probe (`router::observe_seen`, never the shared
+    snapshot another request may have overwritten), mid-swap (two
+    resident), or resident on a model no entry names or several do: the
+    binding stays. Moving to the default on any of those would load
+    production over the pick.
   - **A failed rebuild fails the turn**, never falls back to the old binding,
     whose request would silently undo the switch.
   - **A conversation that crosses a switch records a fresh `RunConfig`**
