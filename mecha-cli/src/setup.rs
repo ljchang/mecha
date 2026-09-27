@@ -1876,15 +1876,23 @@ pub async fn brief_run(
     provider: &str,
     cx: &mut mecha_core::agent::RunContext,
     convo: &mecha_core::agent::Conversation,
+    session: Option<&str>,
     deadline: std::time::Duration,
 ) {
     let local = local_server_for_brief(config, provider, agent.model());
-    // The two reads that wait on another process, taken together.
-    let (board, slots) = tokio::join!(
+    // The reads that wait on another process or the disk, taken together;
+    // the previous-attempts walk (3a-2) under the board's deadline.
+    let (board, slots, attempts) = tokio::join!(
         read_board_for_brief(agent.registry(), &cx.tools, deadline),
         mecha_core::brief::slots_for(local.as_ref()),
+        mecha_core::brief::attempts::for_run_within(
+            convo.goal_anchor.clone(),
+            session.map(str::to_string),
+            agent.now(),
+            deadline,
+        ),
     );
-    let brief = mecha_core::brief::assemble_for_run(agent, cx, convo, board, slots);
+    let brief = mecha_core::brief::assemble_for_run(agent, cx, convo, attempts, board, slots);
     cx.brief = Some(Arc::new(brief));
 }
 
