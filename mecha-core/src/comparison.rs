@@ -479,10 +479,33 @@ struct StoreLock {
 }
 
 impl ComparisonStore {
-    /// `~/.mecha/comparisons`, under [`crate::work::mecha_home`] (which
-    /// honours `MECHA_HOME`, so a trial home keeps its own).
+    /// `~/.mecha/comparisons` under [`crate::work::mecha_home`] (which
+    /// honours `MECHA_HOME`, so a trial home keeps its own), or
+    /// `$MECHA_COMPARISONS_DIR` — the override `MECHA_LEARNING_DIR`
+    /// already gives the learning store, so a drill or a test that
+    /// isolates its sessions and ledger isolates its comparisons too
+    /// (found 2026-09-27: `scripts/retirement-drill.sh`'s `validate`
+    /// wrote two rows about throwaway sessions into the live store). A
+    /// moved-home test clears it (`STORE_OVERRIDES`, in `work` and in the
+    /// CLI's `testenv`).
     pub fn default_root() -> Result<PathBuf> {
-        Ok(crate::work::mecha_home()?.join("comparisons"))
+        Self::root_from(
+            std::env::var_os("MECHA_COMPARISONS_DIR"),
+            crate::work::mecha_home,
+        )
+    }
+
+    /// [`Self::default_root`]'s rule over what the environment said, so it
+    /// is tested without setting a process-wide variable. An empty value is
+    /// no override.
+    fn root_from(
+        dir: Option<std::ffi::OsString>,
+        home: impl FnOnce() -> Result<PathBuf>,
+    ) -> Result<PathBuf> {
+        match dir {
+            Some(d) if !d.is_empty() => Ok(PathBuf::from(d)),
+            _ => Ok(home()?.join("comparisons")),
+        }
     }
 
     /// Open, creating the directory. The write paths open before they drive
@@ -700,6 +723,24 @@ impl Summary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The override isolates the store; unset or empty, it is the home's.
+    #[test]
+    fn the_comparison_store_root_honours_its_override() {
+        let home = || Ok(PathBuf::from("/home/dana/.mecha"));
+        assert_eq!(
+            ComparisonStore::root_from(Some("/tmp/drill/comparisons".into()), home).unwrap(),
+            PathBuf::from("/tmp/drill/comparisons")
+        );
+        assert_eq!(
+            ComparisonStore::root_from(None, home).unwrap(),
+            PathBuf::from("/home/dana/.mecha/comparisons")
+        );
+        assert_eq!(
+            ComparisonStore::root_from(Some("".into()), home).unwrap(),
+            PathBuf::from("/home/dana/.mecha/comparisons")
+        );
+    }
     use crate::agent::Taint;
     use crate::message::Message;
     use crate::session::{Record, Session, SessionMeta};

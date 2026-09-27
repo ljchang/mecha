@@ -124,6 +124,7 @@ async fn mecha(home: &Path, work: &Path, args: &[&str]) -> std::process::Output 
             .env_remove("MECHA_OUTBOX_DIR")
             .env_remove("MECHA_QUESTIONS_DIR")
             .env_remove("MECHA_LEARNING_DIR")
+            .env_remove("MECHA_COMPARISONS_DIR")
             .env_remove("ANTHROPIC_API_KEY")
             .env_remove("OPENAI_API_KEY")
             .current_dir(work)

@@ -45,6 +45,7 @@ impl Fixture {
             .env("MECHA_HOME", self.home())
             .env_remove("MECHA_SESSION_DIR")
             .env_remove("MECHA_LEARNING_DIR")
+            .env_remove("MECHA_COMPARISONS_DIR")
             .env_remove("MECHA_OUTBOX_DIR")
             .env("MECHA_SESSION_KIND", "test")
             .output()
