@@ -14,6 +14,17 @@
 //! `external` (nothing in it came from outside), and the answer frames it
 //! as an interpretation — hearsay about a past run, never a verified fact
 //! about this one — beside the grounding it was stored with.
+//!
+//! **Planning success examples** (L2, built as 2e-4b-1, R40): behind
+//! `Lever::SuccessExamples`, `examples` may carry the tool sequence of a
+//! clean session the owner verified — a task closed `done` and not
+//! reopened, a workflow closed, a question answered whose session then
+//! completed — toward the goal asked about, in the run's situation. Ahead
+//! of the declared-check examples, and in their own shape (`tools_in_order`,
+//! `verified_by`, the act in words, and its limit), so a call trace is never
+//! read as a plan step. Off, no such entry exists and a declared-check
+//! example renders as it always has. The tool is `private`, and that is the
+//! arming R35 asks of anything serving the owner's work.
 use super::{Capabilities, Tool, ToolCtx, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -53,8 +64,14 @@ impl Tool for GoalContext {
             .take(4)
             .map(|l| json!({"source":l.source,"lesson":crate::step::ellipsize(&l.text, 800)}))
             .collect();
-        let examples: Vec<Value> = ctx.goal_examples.iter().filter(|e| Some(&e.goal) == goal.as_ref()).take(2)
-            .map(|e| json!({"session":e.source,"step":crate::step::ellipsize(&e.step,400),"expected":e.expected.as_ref().map(|s| crate::step::ellipsize(s,400)),"evidence":"declared check passed at that time"})).collect();
+        // Success examples first (2e-4b-1): an owner's act is the stronger
+        // evidence. With the lever off there are none, and the list is the
+        // declared-check examples as it always was.
+        let examples: Vec<Value> = ctx.success_examples.iter().flat_map(|s| s.served()).chain(&ctx.goal_examples).filter(|e| Some(&e.goal) == goal.as_ref()).take(2)
+            .map(|e| match &e.owner_act {
+                None => json!({"session":e.source,"step":crate::step::ellipsize(&e.step,400),"expected":e.expected.as_ref().map(|s| crate::step::ellipsize(s,400)),"evidence":"declared check passed at that time"}),
+                Some(act) => success_example(&e.source, &e.step, act),
+            }).collect();
         let mut answer = json!({"serves":goal,"confirmed_goal":anchor,"lessons":lessons,"examples":examples,
             "evidence_limit":"These are applicable learned rules, not proof that this goal has been achieved. Declare the expected outcome and a relevant check in the plan."});
         if let Some(past) = &ctx.goal_appraisals {
@@ -62,6 +79,35 @@ impl Tool for GoalContext {
         }
         Ok(ToolOutput::ok(answer.to_string()))
     }
+}
+
+/// The words beside every served success example: what the sequence is,
+/// and what it is not.
+pub const SUCCESS_EXAMPLE_LIMIT: &str = "tools_in_order is what that session called, in order: how work the owner verified went then — not a plan it wrote, and not proof that the same calls fit this run.";
+
+/// One success example as the answer carries it (L2, 2e-4b-1, R40): the
+/// session, its tool sequence, the owner's act that verified it, and that
+/// act in words. Registry names and a record pointer — nothing a model
+/// wrote rides here.
+fn success_example(session: &str, sequence: &str, act: &crate::success::Act) -> Value {
+    use crate::success::Act;
+    let evidence = match act {
+        Act::TaskDone { .. } => "the owner closed this task done and has not reopened it",
+        Act::WorkflowClosed { .. } => {
+            "the owner closed this workflow after its verification passed and has not reopened it"
+        }
+        Act::QuestionAnswered { .. } => {
+            "the owner answered this session's question and the session then completed"
+        }
+        Act::SentUnchanged { .. } => "the owner sent this session's draft as it was written",
+    };
+    json!({
+        "session": session,
+        "tools_in_order": crate::step::ellipsize(sequence, 400),
+        "verified_by": act.pointer(),
+        "evidence": evidence,
+        "limit": SUCCESS_EXAMPLE_LIMIT,
+    })
 }
 
 /// How much of an appraisal's prose rides in one answer.
@@ -225,5 +271,81 @@ mod tests {
             .unwrap()
             .contains("permission denied"));
         assert!(GoalContext.capabilities().private_data);
+    }
+
+    fn check_example(goal: &str) -> crate::planning::Example {
+        crate::planning::Example {
+            goal: goal.parse().unwrap(),
+            step: "draft the Lakeside Institute summary".into(),
+            expected: Some("summary.md exists".into()),
+            source: "s-plan".into(),
+            owner_act: None,
+        }
+    }
+
+    /// L2 (2e-4b-1): a success example rides in `examples` in its own shape
+    /// — the tool sequence under `tools_in_order`, the owner's act by
+    /// pointer and in words, and the limit — never as a plan step, and
+    /// only toward its goal; a declared-check example renders the bytes it
+    /// did before success examples existed, so the lever off is today's
+    /// answer. Fails on the tree before 2e-4b-1, where an example had one
+    /// shape and no owner's act.
+    #[tokio::test]
+    async fn a_success_example_is_served_in_its_own_shape_and_a_check_example_is_unchanged() {
+        let ask = |ctx: &ToolCtx, serves: &str| {
+            let ctx = ctx.clone();
+            let serves = serves.to_string();
+            async move {
+                let out = GoalContext
+                    .call(json!({"serves": serves}), &ctx)
+                    .await
+                    .unwrap();
+                assert!(!out.external, "the owner's own record, not third-party");
+                serde_json::from_str::<Value>(&out.content).unwrap()
+            }
+        };
+        let mut ctx = ToolCtx {
+            goal_examples: vec![check_example("task:t-budget")],
+            ..Default::default()
+        };
+        let v = ask(&ctx, "task:t-budget").await;
+        assert_eq!(
+            v["examples"].to_string(),
+            r#"[{"evidence":"declared check passed at that time","expected":"summary.md exists","session":"s-plan","step":"draft the Lakeside Institute summary"}]"#,
+            "a declared-check example is the bytes it always was"
+        );
+
+        let pool = crate::planning::SuccessExamples {
+            examples: vec![crate::planning::test_success(
+                "task:t-budget",
+                "fs_read → shell ×2 → fs_write",
+                "s-dana",
+                &["goal_context"],
+            )],
+            withheld: Vec::new(),
+        };
+        let run = crate::situation::Situation::of_run(&["goal_context".into()], None);
+        ctx.success_examples = Some(crate::planning::ServedSuccesses::fixed(pool, &run));
+        let v = ask(&ctx, "task:t-budget").await;
+        let served = v["examples"].as_array().unwrap();
+        assert_eq!(served.len(), 2);
+        assert_eq!(served[0]["session"], "s-dana");
+        assert_eq!(served[0]["tools_in_order"], "fs_read → shell ×2 → fs_write");
+        assert!(
+            served[0].get("step").is_none(),
+            "a call trace is not a step"
+        );
+        assert_eq!(served[0]["verified_by"], "closure:c1");
+        assert!(served[0]["evidence"]
+            .as_str()
+            .unwrap()
+            .contains("has not reopened it"));
+        assert_eq!(served[0]["limit"], SUCCESS_EXAMPLE_LIMIT);
+        assert!(SUCCESS_EXAMPLE_LIMIT.contains("not a plan it wrote"));
+        assert_eq!(served[1]["session"], "s-plan");
+
+        // Toward another goal it is not served.
+        let v = ask(&ctx, "task:t-other").await;
+        assert!(v["examples"].as_array().unwrap().is_empty());
     }
 }

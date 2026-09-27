@@ -3913,7 +3913,9 @@ Two rules are structural rather than instructed:
   - **The brief is the only door.** The diagnostician's run is narrowed off
     past appraisals (`no_past_appraisals`, beside `no_learned_rules`), so
     `goal_context` — a second reader of the store with no holdout filter —
-    cannot serve it a held-out episode's appraisal on demand.
+    cannot serve it a held-out episode's appraisal on demand — and, since
+    2e-4b-1, off success examples (`no_success_examples`), which name a
+    session and its tool sequence and could name a held-out one.
   - Nothing in a note reaches the gate. `judge_drawn` and `combine` read
     replay pairs and the point-wise tally, and the class comes from the
     proposal's own text.
@@ -4724,10 +4726,94 @@ Decisions, each a bug if undone:
   outbox has written carries it (the field is as old as the store), and
   `reflect`'s edit pass reads the same field on the same terms.
 
-Left for later rows: planning success examples and contrast evidence for the
-reflector (2e-4b); staged skill drafts (2e-4c, deferred by R40 until this set
-has been read on real data). Skills stay owner-authored: nothing here writes
-under `~/.mecha/skills/`.
+Left for later rows: contrast evidence for the reflector (2e-4b-2, waiting on
+what "the same region" means between a correction and a success); staged
+skill drafts (2e-4c, deferred by R40 until this set has been read on real
+data). Skills stay owner-authored: nothing here writes under
+`~/.mecha/skills/`.
+
+### Planning examples from what went right
+
+`APPRAISAL-WIRING-DESIGN.md` L2, row 2e-4b-1, ruled R40:
+`planning::success_examples`, served by `goal_context` behind
+`Lever::SuccessExamples` (`[agent] success_examples`, `--no-success-examples`),
+which **ships off**. `planning::examples` was gated on a passed declared
+check, which almost never happens; a verified success is the other source.
+
+- **Derived from the success set, never stored.** `setup::build` with the
+  lever on reads the four owning stores (`success::Owned`, not the whole
+  `appraisal::Stores`), the session headers and up to 32 transcripts, newest
+  success first, at most 64 examples. Only `standing` successes lend, so **a
+  reopen withdraws the example by construction**, as it withdraws the
+  success — and since `chat`, the TUI, `serve` and Slack drive many runs off
+  one build, **every run start** re-reads the closure and workflow stores
+  and drops each example whose act no longer stands, by `success::derive`'s
+  own reading (`ServedSuccesses::at_run_start` → `restand`); a store that
+  cannot be read then withdraws every example of its kind, since whether it
+  stands is unknown (found on review of #342). A success verified after the
+  build is missed until the next one — a miss, never a retraction ignored.
+- **The step is the session's tool sequence** (R40: 4 of 79 long runs wrote a
+  plan): registry names in call order, the harness's own calls left out, a
+  consecutive repeat folded to `name ×n`, the first 24 spelled out and the
+  rest counted (`planning::tool_sequence`), over **every message the session
+  ever held** (`Session::messages_ever`, off the same bytes the transcript
+  is parsed from) — the loaded list is what survived a compaction, and a
+  long session's tail served as its whole trace overstated it (found on
+  review of #342). Never an argument, never prose:
+  a key a model can author is a key an injection can set, and the same holds
+  for what rides into a later run.
+- **Who lends.** A standing success toward a goal (`Success::goal`: a
+  `done` closure's task, a task-bound workflow's, a question's) and, of the
+  sessions it names, each one the corpus admits (`SessionIndex::
+  admitted_path` — a smoke test named beside a real session lends nothing),
+  at most 2 MB, **whose recorded taint covering its last message is clean**
+  (`learning::classify_origin`; no checkpoint is unknown, never clean — the
+  timeline is cumulative, so clean there is clean throughout), whose every
+  run record names the workspace and surface its rules were matched on
+  (`planning::examples`' "unscoped" rule), and that called a tool. Every
+  refusal is named (`planning::Withheld`) for the owner's readout, never a
+  quiet empty list. A success toward no goal lends none, since an example is
+  served only toward its goal.
+- **Served only in the session's situation.** `SuccessExamples::for_run`
+  keeps an example when **every** run of its session scopes onto the asking
+  run (`Situation::matches`, the rules block's own match), keyed as past
+  appraisals are, on what the run record keeps: `RulesCarried`'s workspace,
+  surface and goal, and **the registry the run starts with**. The whole
+  pool rides in `ToolCtx::success_examples` (`planning::ServedSuccesses`)
+  and the loop re-keys it beside `PastAppraisals::for_registry`, because
+  `tasks work` and `questions answer` withhold `kg_task_update` and insert
+  `ask_user` after `setup::build`, and a subset match on the build's
+  registry both withheld the example a re-delegated question's run is in
+  the situation of and served one it is not (found on review of #342).
+  With learned rules off the record names no workspace, so no success
+  example matches — as with past appraisals. The isolated artifact probe
+  (`mismatch::drive`) clears it beside `goal_appraisals`.
+- **Goal-keyed, and so narrow.** A success is keyed to a board task, and an
+  example serves only a run toward that task: a re-delegation of a task
+  whose question the owner answered, or a run toward a task a workflow
+  closed. A task closed `done` is seldom run toward again, and a reopen
+  withdraws it. This is `planning::examples`' contract (an example serves
+  its goal) and the scope rule "an absent goal never widens"; serving
+  examples across goals by region would be a new shape, not taken here.
+- **Its own shape in the answer.** `goal_context` puts success examples
+  ahead of declared-check ones (an owner's act is the stronger evidence)
+  and renders them as `tools_in_order`, `verified_by` (the act's pointer),
+  the act in words and `SUCCESS_EXAMPLE_LIMIT` — never as a `step`, so a
+  call trace is not read as a plan. A declared-check example renders the
+  bytes it always did, so the lever off is today's answer.
+- **Private, on demand, never the prefix.** `goal_context` is `private`,
+  which is the arming R35 asks of anything serving the owner's work;
+  nothing is pushed, and the tool's description and schema do not move.
+  The diagnostician's run is narrowed off it (`--no-success-examples`), on
+  2f's holdout argument: a success example names a session, and a held-out
+  one could lend it. `mecha eval` forces it off with every lever.
+- **Shadow readout.** `mecha sessions successes --examples` lists each
+  example (goal, session, act, sequence, and the region key of each of its
+  runs) and each success or session that lends none, with why
+  (`planning_examples` in `--json`, `served_by_default: false`).
+- **In an experiment**, `levers_on = ["success_examples"]`; nothing is
+  seeded, because the successes are the trial home's own stores, so a
+  single trial's arm equals its control until a lifetime's tasks close.
 
 ## The goal system
 
