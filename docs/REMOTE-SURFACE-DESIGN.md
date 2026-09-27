@@ -502,6 +502,19 @@ router is `/props`' rule applied to choosing.
   owner switches to Y keeps naming X, so its next request waits for Y to
   go idle and then swaps X back. The owner's next turn swaps again. This
   costs at most one extra pair of swaps per run, and it is accepted.
+  *Superseded as a bound on 2026-09-27, open for the owner:* once the
+  long-lived surfaces follow the router (step 3), "the owner's next turn"
+  no longer swaps again — it follows, and the router is back on X. A run
+  in flight at the moment of a switch therefore undoes it outright, from any
+  process (a trigger, a delegated task, a web chat's own run and the title
+  named after it), because the router protects one *request*, not a run:
+  between requests the model is idle and the switch completes. Two shapes,
+  neither built: a switch that waits until no *run* holds the model (R2's
+  "wait until idle", widened from requests to runs), or runs that re-follow
+  between requests and change model mid-run. **Ruled 2026-09-27: a switch
+  waits until no run holds the model** ("wait to switch until ready"), so a
+  run is answered by one model start to finish. *Built 2026-09-27* as D13
+  below (`mecha-core/src/hold.rs`).
 - **Nightly passes run on whatever is loaded, and the record says which**
   (owner's ruling, 2026-09-26). Learn, validate, ruminate and appraisal are
   not deferred or skipped on a non-production model, and not pinned either:
@@ -530,6 +543,12 @@ router is `/props`' rule applied to choosing.
 
 ### Who may switch
 
+**One model serves every surface, and a switch from any of them is a switch
+for all of them** (owner's ruling, 2026-09-27: "there is one model serving
+all of them"). Web, voice, Slack, the TUI and background work are not
+isolated from each other's pick, and each surface is meant to be able to
+make one. What follows is who, at those surfaces, may.
+
 Only the owner: the chip, the TUI's existing `/model` picker (today a
 provider switch inside one process), and the CLI. Following D4, the chip's
 serve route runs a `mecha model use <provider>` child, and `mecha model
@@ -544,6 +563,52 @@ policy like any other command. A `[[policy]]` rule that forbids the
 `mecha model use` prefix closes that for the owner who wants it closed
 (found on review). The chip reads the router's `GET /models/sse` stream, so
 "loading…" is a status the server reports, not a guess made by a timer.
+
+### D13 — a switch waits for runs, not requests (2026-09-27)
+
+**Owner's rulings, 2026-09-27:** a switch waits until no *run* holds the
+model, so a run is answered by one model from start to finish; a run that
+*starts* while a switch waits waits for the switch ("switching to X…"); and
+there is no time limit — the page shows what the switch is waiting on, with
+R2's "switch now" as the way out, and Ctrl-C cancels a switch at the CLI.
+
+Nothing recorded runs across processes, and they share only the
+filesystem (permits' reason), so the mechanism is `permit.rs`'s shape:
+
+- **Holds.** A run on a router-served model holds a file,
+  `~/.mecha/holds/<pid>-<uuid>.hold` — the router it holds, what it is (a
+  web chat, a trigger, `tasks work`), when it began. Dropped when the run
+  ends; a file whose process is gone is swept, never waited for.
+- **A pending switch** is one file beside them, created exclusively by
+  `mecha model use` (a second switch while one waits is refused, naming the
+  first). It is removed when the switch completes, fails, or is cancelled;
+  one whose switcher died is swept.
+- **The handshake.** Each side writes its own file *before* reading the
+  other's: a run creates its hold, then looks for a pending switch — and if
+  there is one, drops the hold and waits for the switch to clear; a switch
+  creates its file, then waits until no live hold names its router. At
+  least one side always sees the other, and a run always yields, so there
+  is no window in which a run starts on the old model after the switch
+  looked.
+- **Where holds are taken.** A run's hold is taken *before* it resolves its
+  model, so it can never resolve the old model and then wait out the
+  switch. The long-lived surfaces take it in `Follower` ahead of observing
+  the router, and keep it until the run *and* the title named after it
+  end; the trigger daemon per fire; a command that is one run
+  (`mecha run`, `tasks work`, the nightly passes, `eval`, `batch`) for the
+  process's life — an eval sweep is one model by D12 already.
+- **Switch now** does not wait, and cancels: each hold carries a cancel
+  file (`runmarker`'s shape), which its run polls and turns into a cancel
+  at the next safe point. Unloading alone is not enough — a multi-request
+  run would load its model back on the next request.
+- **Not yet:** `mecha chat` and the TUI neither follow nor hold — one agent
+  per process, resolved at start — so a switch does not wait for them and
+  their next turn loads their model back. They join with step 4 (the TUI's
+  `/model` calling `mecha model use`).
+- **What the owner sees.** `mecha model use` prints what it waits on and
+  updates as holds drop; the chip (step 5) shows "switching to X — waiting
+  for: …" with "switch now"; a surface whose turn waits says so in the
+  turn.
 
 ### Traps found in the source
 
@@ -603,10 +668,13 @@ and the paths are this machine's.
 2. *Built:* every probe asks `?model=…&autoload=false` —
    `preflight::fetch`, the brief's `/slots`, `model-idle.sh`.
 3. *Built:* `follow_loaded`, the snapshot per process and per trigger fire.
-   Owed: the per-run resolution inside the three processes that hold one
-   agent for their lifetime — `mecha serve` (chat and voice), `voice-serve`
-   and the Slack connector. Until then they follow the pick from their
-   start, so a switch reaches them on a restart. Everything else already
+   *Built 2026-09-27:* the per-turn resolution inside the three processes
+   that hold one agent for their lifetime — `mecha serve` (chat and voice),
+   `voice-serve` and the Slack connector — through one
+   `mecha-cli/src/follow.rs::Follower`. Each turn re-observes the router and,
+   when the loaded model moved, rebuilds through `setup::prepare`, so every
+   provider-derived value (window, compaction threshold, output budget,
+   sampling, vision, subagents) is derived again. Everything else already
    builds its agent per run and follows at once.
 4. *Built:* `mecha model list|use`. Owed: the TUI's `/model` calling it.
 5. The chip's picker and load state.
@@ -628,6 +696,10 @@ made *from the chip* is undone by that chip's own next turn. Two
 consequences: the chip (step 5) cannot ship before that resolution, and
 installing the router before it means switching only holds while those
 surfaces are quiet (or after restarting them).
+*Closed 2026-09-27 by step 3:* measured on a test router at :8090 (one small
+GGUF under two aliases), a `serve` from the branch followed an outside
+`mecha model use` on its next turn and left the new model loaded, while the
+installed binary's `serve`, run in the same world, loaded the old one back.
 
 **The router loads production at start** (`load-on-startup`), so installing
 it ends whatever arm a drop-in was serving. The uncensored arm was ruled to

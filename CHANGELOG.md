@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every outbox resolve records who made it** (`APPRAISAL-WIRING-DESIGN.md`,
+  R16a's ruling D3). `mecha outbox reject`, `review` and `approve` stamp
+  `resolved_by` on the item — `owner` at the owner's terminal or a
+  surface's own child (web, TUI, Slack, voice), `owner-approved` under an
+  interactive run's `shell`, `unknown` otherwise — decided by the task
+  closure store's rules (`closure::attribute`). A rejection's reason reads
+  as the owner's words only under `owner`: the reflector no longer mines a
+  reason a model's `shell` typed, the appraiser's input shows a typed word
+  in its place, and the meeting-poll sweep puts "No time found" rather than
+  that text on the participants' page. Items resolved before this load as
+  `unknown`. `outbox show` and the TUI print `by <actor>` beside the reason,
+  `sessions appraise` counts the other reasons apart
+  (`unattributed_rejections`), and a reject whose reason is not stamped
+  `owner` says why — in the terminal, the TUI status line and the web
+  review.
+
 - **Planning examples from what the owner verified** (`APPRAISAL-WIRING-DESIGN.md`
   L2, 2e-4b-1, R40), behind `[agent] success_examples` /
   `Lever::SuccessExamples`, which **ships off** until an experiment measures
@@ -26,6 +42,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --examples` lists what would be served and why each success lends none
   (`planning_examples` in `--json`). Nothing reaches the prefix; the answer
   with the lever off is unchanged.
+- **A task run's situation brief names the task's previous attempts**
+  (`APPRAISAL-WIRING-DESIGN.md` M5, 3a-2, R42). The brief gains an
+  `attempts` field: for a run anchored to a board task, up to three earlier
+  `task` sessions on the same task from the last 90 days, newest first, each
+  said in two lines — what the owner did with its work (a draft rejected,
+  sent as written or after edits, a question answered or let go, the task
+  closed or reopened, an artifact check failing, what still waits), by
+  record id; and how the run ended, as the harness recorded it, never as a
+  verdict. A reopen reason is quoted only when the owner wrote it with their
+  own hand; one written in a conversation with the owner's approval is
+  said to exist and not repeated, and an outbox rejection is said as "draft
+  rejected" and the item id, without its reason. A walk cut by its bound, or a session file that cannot be read,
+  says "at least". Recorded on every run; delivered only behind `[agent]
+  situation_brief`, which still ships off. `sessions health` reports the
+  field's completeness beside the other nine, and counts it unread only
+  when something failed: an unreadable file or store, or a session kind
+  this build cannot name — never the walk's own bound.
 - **A rule's owner tenure, beside retirement** (`APPRAISAL-WIRING-DESIGN.md`
   2e-5b/2e-5c, R41). `mecha rules list`/`show` print `owner: <tenure> ·
   region: <quiet>` per learned rule, and `--json` gains `owner` and `quiet`.

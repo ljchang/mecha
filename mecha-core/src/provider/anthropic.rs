@@ -1911,6 +1911,35 @@ text = "Leave work better than you found it."
                 Ok(&charter),
                 Err("no trigger store in this fixture"),
             )),
+            // A re-delegated task's previous attempts (3a-2): the owner's
+            // acts as words and pointers, and how the run ended as the
+            // harness's record — never the attempt's valence.
+            attempts: Some(Attempts::Read {
+                attempts: vec![attempts::Attempt {
+                    session: "20260914T090000-g4prior".into(),
+                    started_at: now - chrono::Duration::days(2),
+                    acts: vec![
+                        attempts::OwnerAct::DraftRejected {
+                            draft: "draft-g4-rejected".into(),
+                        },
+                        attempts::OwnerAct::TaskReopened(attempts::Reopen {
+                            closure: "close-g4-reopen".into(),
+                            by: attempts::ReopenedBy::Owner,
+                            owners_words: Some("the figures belong to Lakeside".into()),
+                            reason_withheld: false,
+                        }),
+                        attempts::OwnerAct::CheckFailed {
+                            workflow: "task-g4-own".into(),
+                        },
+                    ],
+                    acts_total: 3,
+                    ended: attempts::RunEnd::TurnLimit,
+                }],
+                unsearched: false,
+                unreadable: 0,
+                unnamed_kind: 0,
+                stores_unread: vec![],
+            }),
             board: Some(board_of(Ok(&board), Some("task-g4-own"))),
             commitments: Some(commitments_of(Some(&homeostat))),
             time: Some(local_time(
@@ -2116,6 +2145,7 @@ text = "Leave work better than you found it."
             serde_json::to_string(&b.slots),
             serde_json::to_string(&b.voice),
             serde_json::to_string(&b.budget),
+            serde_json::to_string(&b.attempts),
         ] {
             out.push(Needle {
                 what: "situation brief field",
@@ -2145,6 +2175,30 @@ text = "Leave work better than you found it."
                 what: "situation brief pointer",
                 text: id.clone(),
             });
+        }
+        // 3a-2: a previous attempt's session, the record the owner acted
+        // on, and the owner's own reopen words are pointers the delivered
+        // brief carries and an undelivered one must not.
+        if let Some(crate::brief::Attempts::Read { attempts, .. }) = &b.attempts {
+            for at in attempts {
+                out.push(Needle {
+                    what: "situation brief pointer",
+                    text: at.session.clone(),
+                });
+                for act in &at.acts {
+                    let text = match act {
+                        crate::brief::attempts::OwnerAct::DraftRejected { draft } => draft.clone(),
+                        crate::brief::attempts::OwnerAct::TaskReopened(r) => {
+                            r.owners_words.clone().unwrap_or_else(|| r.closure.clone())
+                        }
+                        _ => continue,
+                    };
+                    out.push(Needle {
+                        what: "situation brief pointer",
+                        text,
+                    });
+                }
+            }
         }
         if let Some(crate::brief::Seats::Read { holders, .. }) = &b.seats {
             for h in holders {

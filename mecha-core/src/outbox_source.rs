@@ -505,6 +505,7 @@ mod tests {
             created_at: "now".into(),
             resolved_at: None,
             reason: None,
+            resolved_by: None,
             error: None,
             call_id: None,
             filled_defaults: Vec::new(),
