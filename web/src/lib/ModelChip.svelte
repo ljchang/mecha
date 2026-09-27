@@ -6,7 +6,7 @@
   // what is loaded, loading, or waiting is the router's own report, read
   // through `model list --json`, never a guess from a timer.
   import { apiFetch as fetch } from './api.js';
-  import { routerOf, unavailable, rows, phase, busy, chipLabel, waitingLine, outcomeNote } from './model-chip.js';
+  import { routerOf, unavailable, rows, phase, busy, pollEvery, chipLabel, waitingLine, outcomeNote } from './model-chip.js';
 
   /// `model` is what this chat's agent is bound to — the label until the
   /// router has been read. An incognito chat runs only on the model on this
@@ -18,15 +18,15 @@
   let open = $state(false);
   let acting = $state(false);
   let actError = $state(null);
-  // When this page last asked for a switch: an outcome older than that is
-  // someone else's, and not this tap's to report.
-  let askedAt = $state(0);
+  // The server's record of the last switch as it stood just before this
+  // page's tap: an outcome that is still that one is not this tap's to report.
+  let asked = $state(null);
   let wrapEl = $state(null);
 
   const router = $derived(routerOf(data));
   const ph = $derived(phase(router));
   const list = $derived(rows(router));
-  const note = $derived(busy(ph) ? null : outcomeNote(data, askedAt));
+  const note = $derived(busy(ph) ? null : outcomeNote(data, asked));
   const down = $derived(data ? unavailable(data) : readError);
 
   let reading = false;
@@ -53,12 +53,12 @@
     if (incognito) return;
     refresh();
   });
-  // A boolean, so a read that changes nothing but the data does not restart
+  // A number, so a read that changes nothing but the data does not restart
   // the timer.
-  const polling = $derived(!incognito && (open || busy(ph)));
+  const every = $derived(incognito ? null : pollEvery(ph, open));
   $effect(() => {
-    if (!polling) return;
-    const t = setInterval(refresh, 2000);
+    if (!every) return;
+    const t = setInterval(refresh, every);
     return () => clearInterval(t);
   });
 
@@ -71,7 +71,11 @@
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body ?? {}),
       });
-      if (!res.ok) actError = (await res.text()).trim() || `HTTP ${res.status}`;
+      if (!res.ok) {
+        actError = (await res.text()).trim() || `HTTP ${res.status}`;
+        // Said here already; the recorded outcome would say it twice.
+        asked = null;
+      }
     } catch (e) {
       actError = `${e?.message ?? e}`;
     } finally {
@@ -80,9 +84,13 @@
     }
   }
 
-  function pick(row) {
+  async function pick(row) {
     if (row.current || row.disabled || acting || ph.kind === 'switching') return;
-    askedAt = Date.now();
+    acting = true;
+    // Fresh, so a switch that ended since the last read is not taken for
+    // this one's outcome.
+    await refresh();
+    asked = { before: data?.last_switch?.at ?? null };
     post('/api/model/use', { name: row.name });
   }
 
@@ -92,6 +100,8 @@
     post('/api/model/use', { name: row?.name ?? ph.to, now: true });
   }
 
+  // `cancel-switch` withdraws every pending switch on every router — one and
+  // the same here, where the chip speaks for the one router there is.
   function cancelSwitch() {
     post('/api/model/cancel');
   }

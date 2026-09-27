@@ -688,7 +688,8 @@ and the paths are this machine's.
    /api/model`, `POST /api/model/use` and `POST /api/model/cancel` in
    `serve/model.rs`, each a `mecha model` verb as a child (D4). `model list
    --json` gained `pending_switch` (target and `waiting_on`) and each model's
-   `would_not_follow` (`router::unfollowable`, the one rule), and the menu
+   `would_not_follow` (`router::would_not_follow`, `unfollowable`'s rule
+   worded for a model not yet loaded), and the menu
    greys out what runs would not follow or R4 would refuse. **Switch now** on
    a switch that is already waiting is `mecha model use <same> --now`, which
    hurries that switch through `Holds::request_now` rather than being refused

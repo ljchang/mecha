@@ -92,7 +92,8 @@ struct Model {
     /// `mecha model use` refuses the model while any remain (R4).
     sampling_mismatches: Vec<String>,
     /// Why default runs would not follow this model once it is loaded — no
-    /// entry names it, or several do (`router::unfollowable`, the one rule).
+    /// entry names it, or several do (`router::would_not_follow`:
+    /// `unfollowable`'s rule, worded for a model that may not be loaded).
     /// The chip offers only models runs would follow.
     would_not_follow: Option<String>,
 }
@@ -171,7 +172,7 @@ fn router_of(cfg: &Config, base: &str, list: &[router::RouterModel]) -> Router {
                     .map(str::to_string)
                     .collect(),
                 sampling_mismatches: router::sampling_mismatches(cfg, base, m),
-                would_not_follow: router::unfollowable(cfg, base, &m.id),
+                would_not_follow: router::would_not_follow(cfg, base, &m.id),
             })
             .collect(),
         unserved,
@@ -352,7 +353,11 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
         // started). Only for the same model: a different one is a second
         // switch, and still refused.
         Err(other) if now && other.to == model => {
-            return match holds.request_now(&base)? {
+            // `request_now` checks the target again as it marks: between the
+            // refusal above and the marker, the switch could have been
+            // withdrawn and replaced by one to another model, which must not
+            // be hurried in this one's name (found on review).
+            return match holds.request_now(&base, &model)? {
                 Some(s) => {
                     eprintln!(
                         "asked the waiting switch to {} (pid {}) to go now",
@@ -737,7 +742,7 @@ mod wait_tests {
             !asked.load(std::sync::atomic::Ordering::SeqCst),
             "asked before anyone hurried it"
         );
-        holds.request_now(ROUTER).unwrap().unwrap();
+        holds.request_now(ROUTER, "b").unwrap().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !asked.load(std::sync::atomic::Ordering::SeqCst) {
             assert!(

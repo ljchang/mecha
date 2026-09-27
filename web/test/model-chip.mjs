@@ -5,7 +5,7 @@
 // would then stand, and evict the owner's pick), a model offered that runs
 // would not follow, a switch's wait shown as a load, and an outcome from some
 // earlier switch reported as this tap's.
-import { routerOf, unavailable, rows, phase, busy, chipLabel, waitingLine, outcomeNote } from '../src/lib/model-chip.js';
+import { routerOf, unavailable, rows, phase, busy, pollEvery, chipLabel, waitingLine, outcomeNote } from '../src/lib/model-chip.js';
 
 let pass = 0;
 let fail = 0;
@@ -80,14 +80,22 @@ t('switching shows where it is going', chipLabel(pw, 'old') === '→ gemma-b');
 t('before the router is read, the chat\'s own model', chipLabel(phase(null), 'bound-model') === 'bound-model');
 t('nothing at all is an ellipsis', chipLabel(phase(null), '') === '…');
 
+// ---- polling ----
+t('an open menu reads fast', pollEvery(phase(r1), true) === 2000);
+t('a closed chip at rest does not read', pollEvery(phase(r1), false) === null);
+t('a closed chip over a waiting switch reads slowly', pollEvery(pw, false) === 15000);
+t('a closed chip over a load reads fast', pollEvery(phase(loadingNow), false) === 2000);
+
 // ---- outcome ----
-const at = Date.parse('2026-09-27T20:00:00Z');
+// Server timestamps only: the baseline is the record as it stood before the
+// tap, so no browser clock is ever compared with the server's.
 const failed = { last_switch: { to: 'gemma-b', ok: false, message: 'gemma-b did not load; qwen-a is loaded again', at: '2026-09-27T20:01:00Z' } };
-t('a failure after the tap is reported', outcomeNote(failed, at)?.tone === 'bad');
-t('a failure before the tap is someone else\'s', outcomeNote(failed, at + 120_000) === null);
-t('nothing tapped reports nothing', outcomeNote(failed, 0) === null);
-t('a clean success needs no line', outcomeNote({ last_switch: { to: 'x', ok: true, message: '', at: '2026-09-27T20:01:00Z' } }, at) === null);
-t('a success with a warning says it', outcomeNote({ last_switch: { to: 'x', ok: true, message: 'runs will not follow', at: '2026-09-27T20:01:00Z' } }, at)?.tone === 'warn');
+t('a failure after the tap is reported', outcomeNote(failed, { before: null })?.tone === 'bad');
+t('a failure after an earlier record is reported', outcomeNote(failed, { before: '2026-09-27T19:00:00Z' })?.tone === 'bad');
+t('the record from before the tap is someone else\'s', outcomeNote(failed, { before: '2026-09-27T20:01:00Z' }) === null);
+t('nothing tapped reports nothing', outcomeNote(failed, null) === null);
+t('a clean success needs no line', outcomeNote({ last_switch: { to: 'x', ok: true, message: '', at: '2026-09-27T20:01:00Z' } }, { before: null }) === null);
+t('a success with a warning says it', outcomeNote({ last_switch: { to: 'x', ok: true, message: 'runs will not follow', at: '2026-09-27T20:01:00Z' } }, { before: null })?.tone === 'warn');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
