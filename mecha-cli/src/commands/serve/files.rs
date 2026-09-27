@@ -3,10 +3,10 @@
 //! motivating case.
 //!
 //! Uploads follow the Slack door's shape: the original lands in
-//! `<workspace>/inbox/` and the *path* is what reaches the conversation —
-//! announced by the page in the message text, never injected as content, so
-//! the taint arms through `fs_read` (which already declares `private_data`)
-//! rather than a parallel route someone has to label by hand.
+//! `<workspace>/inbox/`, the page names the path in the message text, and a
+//! picture also rides on the turn as pixels for a model that can see
+//! (`chat::attached_images`), which is what arms `private_data` — see
+//! `ARCHITECTURE.md` §Images for why the path alone was not enough.
 //!
 //! Downloads prove containment the way every model-supplied path does:
 //! canonicalize, require containment, then open canonical components through
