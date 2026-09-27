@@ -793,8 +793,24 @@ reflector skips the rest, the appraiser's input (2a-2) shows the typed
 word, and the poll sweep writes "No time found" on the participants' page.
 Items resolved before the stamp read as `unknown`; every reasoned reject
 on the live store had already been mined when it landed. Built by
-`feat/outbox-resolve-actor`; ARCHITECTURE's outbox section holds the
-detail and the residue.
+`feat/outbox-resolve-actor` (#343); ARCHITECTURE's outbox section holds the
+detail and the residue. **Carried to edits (the owner, 2026-09-27):**
+`mecha outbox edit` stamps `edited_by` the same way, folded across edits so
+a later owner's edit never launders a run's, and the edit is the owner's
+writing only when the owner made every edit *and* the release
+(`OutboxItem::owners_edit`) — the writing miner, the appraiser's input and
+the pointwise edited-draft gold read it only then. Old edits read
+`unknown`. Not chosen, left as residue: refusing `approve` from a
+non-interactive run's shell, and Slack's fixed "rejected from Slack"
+reason. Built by `feat/outbox-edit-actor`.
+**Carried to releases (the owner, 2026-09-27):**
+a draft released unchanged is the owner's +1.0 and an owner-verified
+success only when the release is stamped `owner`
+(`OutboxItem::owners_unchanged_release`), and a pre-stamp release counts
+as neither; the point-wise rejected-draft point needs an owner reject, and
+2b-2's observed act reads a release, a reject or an edit the owner did not
+make as unknown, never as the owner's act. Built by
+`feat/unchanged-release-owner`.
 
 **S3b — declined 2026-09-24 (here §1, decision 2).** A one-tap verdict
 asks the owner for work the system is meant to infer. Kept below for the
@@ -1491,9 +1507,24 @@ the point, one background seat per point, eight driven points a pass by
 default, local model only (R29). Left for later: the candidate arm and the
 acceptance rule (2d-2, since built), the losing arm into the appraisal (2d-3,
 O3, since built), ranked points (2e-6, since built under R39 — for
-`sessions compare`; a candidate's points stay uniform), surprise sources beyond forecast misses (2b-1's resolved
-predictions, 2b-2's scored appraisal predictions), and the nightly wiring —
-a line in `scripts/ruminate.sh`, a deploy change offered rather than made.
+`sessions compare`; a candidate's points stay uniform), surprise sources
+beyond forecast misses (2b-1's resolved predictions, 2b-2's scored appraisal
+predictions). The nightly wiring is made (owner, 2026-09-26):
+`scripts/ruminate.sh` runs `mecha sessions compare` **before `learn`**, for
+validate's reason (owner, 2026-09-26): its `Rules` arm is the deployed rule
+set and its points are the steers `learn` consumes, so after learn it would
+grade the sweep's new rules on their own training data. That is all the
+position buys, and it is **not a hold-out** (found on review): `validate`'s
+hold-out is `--unprocessed-only`, while `sessions compare` draws the whole
+corpus and live consolidation (`learn-live.sh`) has usually learned from a
+point's steer within minutes of its session closing, so its `Rules` arm
+mostly measures the deployed rules at points they may have come from. `mecha learn
+--compare-sources`, which reads no rule, runs last. **It never
+drives an owner-bound check point** (owner, 2026-09-26): such a point is
+posed as an artifact probe, which executes its task, and the nightly throws
+none of the levers that would let it run unattended — so the tally counts
+those points as *owner-bound, not driven*, apart from `unavailable`, and
+"none in the corpus" and "refused by the pass" stay two different numbers.
 
 **R36 completes the combination** (ruled 2026-09-25, built as 2d-2 in
 `candidate::combine`): point-wise for and no numeric regression accepts;
@@ -1575,6 +1606,13 @@ use. Evaluated budget-matched, because the gain may be zero on this model
 *2e-4a built — the success set, derived, and writing exemplars in shadow*
 (`success.rs`, under R40; ARCHITECTURE's *What went right, derived where it
 is recorded* holds the invariants).
+
+**The success set starts from stamped releases** (the owner's ruling,
+2026-09-27, R16a's D3 carried to releases): a draft sent unchanged is a
+success only when its release is stamped `owner`, so the set is empty of
+pre-stamp history by design — on the live store the day it landed, standing
+successes went from 30 to 1 (all 29 unchanged releases were unstamped), and
+the planning examples and exemplars drawn from them with it.
 
 - **Derived, never stored.** `success::derive` reads the outbox, the
   closure, workflow and question stores and the session headers on every
@@ -1677,9 +1715,10 @@ same decided interventions.
   appraisal lessons reach `learn`.
 - **Left:** the measurement on real sessions (on this install at most about
   14% of real runs are clean, and fewer carry a steer or a denial, so the
-  decided set will be small — a nightly line accumulates it; wiring it into
-  the nightly is a deploy change, not made here); the appraisal's arm
-  carries the session's whole lesson set (up to three) where the
+  decided set will be small — the nightly line accumulates it, in
+  `scripts/ruminate.sh` since 2026-09-26; its arms run to the recording's own
+  turn limit, so it is the unbounded half of the nightly's wall clock); the
+  appraisal's arm carries the session's whole lesson set (up to three) where the
   reflector's carries one, which is each source as it would be learned
   from, not a per-lesson attribution.
 

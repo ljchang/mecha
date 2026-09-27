@@ -1579,9 +1579,28 @@ pub fn observe(
         };
         let model = d.author() == crate::outbox::Author::Model;
         match (model, d.status.as_str()) {
-            (true, "sent") if d.edited() => seen.push((at, ExpectedAct::Edited)),
-            (true, "sent") => seen.push((at, ExpectedAct::ReleasedUnchanged)),
-            (true, "rejected") => seen.push((at, ExpectedAct::Rejected)),
+            // An edit is the owner's act only when the owner made every edit
+            // and the release (`OutboxItem::owners_edit`; review of #352: a
+            // run's shell can `edit --args-file` and `approve -y` its own
+            // draft, and scoring that as the owner's `edited` is the same
+            // free hit as the two arms below).
+            (true, "sent") if d.edited() && d.owners_edit() => seen.push((at, ExpectedAct::Edited)),
+            (true, "sent") if d.edited() => unread.push(at),
+            // Released unchanged is the owner's act only when the owner
+            // released it (R16a's ruling D3 carried to releases); a run's
+            // own release, or one from before the stamp, is an act whose
+            // author is not known — unread, never scored as the owner's.
+            (true, "sent") if d.resolved_by() == crate::closure::Actor::Owner => {
+                seen.push((at, ExpectedAct::ReleasedUnchanged))
+            }
+            (true, "sent") => unread.push(at),
+            // The same for a reject (review of #352): a run's own reject is
+            // not the owner's `rejected`, and scoring it as one would hand
+            // an appraisal that expected it a free hit.
+            (true, "rejected") if d.resolved_by() == crate::closure::Actor::Owner => {
+                seen.push((at, ExpectedAct::Rejected))
+            }
+            (true, "rejected") => unread.push(at),
             // An author or a status word this build cannot read: an act was
             // taken, and which one is not known.
             _ => unread.push(at),
@@ -1589,7 +1608,10 @@ pub fn observe(
     }
     // An actor this build cannot read is not taken as the owner's hand: the
     // act is not established to be the owner's, the direction `observe`
-    // fails closed toward everywhere.
+    // fails closed toward everywhere. (A non-owner *draft* act above is
+    // `unread`, not skipped: skipping would let a run turn the owner's
+    // silence into "no act" by resolving its own draft. A closure a run
+    // could not make — `tasks set` refuses it — is filtered.)
     for c in acts.closures.iter().filter(owners) {
         match c.kind {
             crate::closure::Move::Close => seen.push((c.at, ExpectedAct::Closed)),
@@ -1621,7 +1643,8 @@ pub fn observe(
         .any(|t| *t <= closes_at && first.as_ref().is_none_or(|(f, _)| t <= f))
     {
         return unknown(
-            "an owner act on this session's output is recorded in a form this build cannot read",
+            "an act on this session's output is recorded in a form this build cannot read, or \
+             is not recorded as the owner's",
         );
     }
     if let Some((at, act)) = first {
@@ -3274,6 +3297,9 @@ mod tests {
             .unwrap();
         item.status = status.to_string();
         item.resolved_at = resolved_at.map(|t| t.to_rfc3339());
+        // The owner's own act, as every fixture here means it; the other
+        // actors are `an_unchanged_release_is_the_owners_act_only_when_the_owner_released_it`.
+        item.resolved_by = (status != "pending").then_some(crate::closure::Actor::Owner);
         item
     }
 
@@ -3355,6 +3381,71 @@ mod tests {
             observe("s-2", None, end, &acts(&rejected), end + hours(47)),
             ObservedAct::Pending { .. }
         ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// R16a's ruling D3 carried to releases: an unchanged release inside
+    /// the window is the owner's `released_unchanged` only when the owner
+    /// released it. A run's own release, or one from before the stamp, is
+    /// an act whose author is not known — never scored as the owner's.
+    /// Fails on the tree before, which scored all three as the owner's act.
+    #[test]
+    fn an_unchanged_release_is_the_owners_act_only_when_the_owner_released_it() {
+        let root = temp_root("release-actor");
+        let end: DateTime<Utc> = "2026-09-20T12:00:00Z".parse().unwrap();
+        let at = end + chrono::Duration::hours(2);
+        let later = end + chrono::Duration::hours(100);
+        let mut owners = draft_of(&root, "s-1", "sent", Some(at));
+        owners.resolved_by = Some(crate::closure::Actor::Owner);
+        assert_eq!(
+            observe("s-1", None, end, &acts(&[owners]), later),
+            ObservedAct::Act {
+                act: ExpectedAct::ReleasedUnchanged,
+                at
+            }
+        );
+        for by in [
+            Some(crate::closure::Actor::OwnerApproved),
+            Some(crate::closure::Actor::Unknown),
+            None,
+        ] {
+            for (status, edited) in [("sent", false), ("rejected", false), ("sent", true)] {
+                let mut d = draft_of(&root, "s-1", status, Some(at));
+                d.resolved_by = by;
+                if edited {
+                    d.args = json!({"to": "idris.vale@example.org", "body": "Friday instead."});
+                    d.edited_by = Some(crate::closure::Actor::Owner);
+                }
+                let seen = observe("s-1", None, end, &acts(&[d]), later);
+                assert!(
+                    !matches!(seen, ObservedAct::Act { .. } | ObservedAct::NoAct { .. }),
+                    "{status} {by:?}: {seen:?}"
+                );
+            }
+        }
+        // An owner's release of a run's edit is not the owner's `edited`,
+        // and the owner's edit released by the owner is.
+        let mut run_edit = draft_of(&root, "s-1", "sent", Some(at));
+        run_edit.args = json!({"to": "idris.vale@example.org", "body": "Friday instead."});
+        run_edit.edited_by = Some(crate::closure::Actor::OwnerApproved);
+        assert!(!matches!(
+            observe(
+                "s-1",
+                None,
+                end,
+                &acts(std::slice::from_ref(&run_edit)),
+                later
+            ),
+            ObservedAct::Act { .. } | ObservedAct::NoAct { .. }
+        ));
+        run_edit.edited_by = Some(crate::closure::Actor::Owner);
+        assert_eq!(
+            observe("s-1", None, end, &acts(&[run_edit]), later),
+            ObservedAct::Act {
+                act: ExpectedAct::Edited,
+                at
+            }
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

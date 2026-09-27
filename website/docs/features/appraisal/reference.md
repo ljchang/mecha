@@ -327,7 +327,7 @@ from.
 
 | Outcome | Signed contribution |
 |---|---|
-| A message draft sent unchanged | `+1.0`; the model's text reached its recipient. |
+| A message draft you sent unchanged | `+1.0`; the model's text reached its recipient. Only when the send was yours: one a mecha run's `shell` approved, or one from before who sent it was recorded, counts as nothing. |
 | A message draft edited before sending or rejected | `−1.0`, owner agency; this is a verdict, not proof the model was wrong. |
 | A parked question answered and the resumed session completed | `+0.5`. |
 | A question abandoned | `−0.5`, owner agency. |
@@ -461,6 +461,7 @@ mecha sessions appraise --days 30 --kind web --json
 | `graph_fact_rejections` | Always `null` for now: not readable from mecha. |
 | `tests_hidden`, `experiments_hidden` | Development data excluded from the population. |
 | `probe` | Results of the optional paid pass; `null` when it did not run. |
+| `comparisons` | The comparison store, counted for **one model**: `model` is the model of the newest comparison a model was run on, and `records`, the verdict counts (`separated`, `tied`, `inconclusive`, `unreadable_verdict`), `judge_decided`, `by_kind` and `separated_share` are that model's only. Comparisons under other models (`other_models`) are counted beside it, never in it, because a share summed across models describes none of them. `unposed` counts the moments no structural test could pose, across the store: no model was run on them, so they belong to none. `no_model` counts any other comparison with no model recorded, which is unknown and never counted. `separated_share` is `null` when nothing was decided; `read` is `false` when a line could not be read. |
 | `appraiser` | Always `null`: the counts-only appraiser is retired. Kept so a reader of the old shape still finds the key. |
 | `predictions` | Anticipation's predictions scored (store-wide): per response and per concern kind, `predictions`, `scored`, `materialized`, `clean`, the reasons the rest are not yet a point (`unscored`), and `materialized_rate`, which is `null` when nothing was scored; plus `total`, `unreadable`, and whether the outbox was fully `read`. See [anticipation](/docs/features/appraisal/anticipation#how-well-the-predictions-held-up). |
 | `expectations` | The appraisals' own predictions (their expected act) checked against what you did: `with_expectation`, `scored`, `hits`, `surprises` (and `clean_surprises`), `pending` (the waiting period is still open), `unknown` (a store, the board or the patience could not be read), `board_not_read` (task outputs this readout cannot window, because it reads no board; `mecha distill` scores them), and `hit_rate`, which is `null` over no scores. `read: false` when the store could not be read. |
@@ -478,7 +479,9 @@ Most of what mecha learns from is a correction: you stepped in, and it asks
 what to do differently. The other half is what you accepted as it was, and
 you already say that with acts you perform anyway:
 
-- you **sent a draft as mecha wrote it**;
+- you **sent a draft as mecha wrote it** — yourself: a draft a mecha run's
+  `shell` approved is no success, and neither is one sent before who sent it
+  was recorded, so the set starts from the first stamped send;
 - you **closed a task `done`**;
 - you **closed a workflow** after its check passed;
 - you **answered a question** mecha parked, and the work then finished.

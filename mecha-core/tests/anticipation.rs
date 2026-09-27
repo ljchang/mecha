@@ -100,6 +100,7 @@ fn guided_check_blocks_release_but_not_editing_or_rejection() {
         .update_args(
             &item.id,
             json!({"to":"test@example.invalid","body":"Meeting at 11"}),
+            mecha_core::closure::Actor::Owner,
         )
         .unwrap();
     assert_eq!(edited.prediction_resolution(&original), Resolution::Changed);
@@ -243,7 +244,11 @@ fn harm_needs_a_commitment_and_an_owner_rewrite_cannot_be_attributed_to_mecha() 
     let _lock = f.store.lock().unwrap();
     let draft = f.draft();
     f.store
-        .update_args(&draft.id, json!({"body":"owner's different words"}))
+        .update_args(
+            &draft.id,
+            json!({"body":"owner's different words"}),
+            mecha_core::closure::Actor::Owner,
+        )
         .unwrap();
     let pending = f
         .store
@@ -305,7 +310,11 @@ fn future_guidance_stays_reviewable_and_raw_but_cannot_release() {
         assert!(f.store.begin_delivery(&draft.id).is_err());
         let edited = f
             .store
-            .update_args(&draft.id, json!({"body":"revised"}))
+            .update_args(
+                &draft.id,
+                json!({"body":"revised"}),
+                mecha_core::closure::Actor::Owner,
+            )
             .unwrap();
         assert_eq!(
             serde_json::to_value(&edited).unwrap()["predictions"][0],

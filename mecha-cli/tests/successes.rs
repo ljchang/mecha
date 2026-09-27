@@ -62,6 +62,7 @@ fn home() -> Root {
             "args_before": {"to": "sam@example.edu", "subject": "Lakeside visit", "body_markdown": BODY},
             "args": args, "summary": "a reply", "session_id": SESSION,
             "created_at": "2026-09-20T09:00:00Z", "resolved_at": sent,
+            "resolved_by": "owner",
         })
     };
     for (id, sent, args) in [

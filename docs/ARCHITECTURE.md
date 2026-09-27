@@ -169,7 +169,9 @@ after it — body decoding, deltas, tool dispatch — is inside any retry.
 
 **`docs/LLAMA-SERVER.md` is the reference** — slot geometry, the KV arithmetic,
 the measured `-np` table, the request contract, and what each flag cost to
-learn. `scripts/start-moe-mtp.sh` is the authority on the flags themselves.
+learn. `scripts/start-router.sh` is the authority on the flags themselves
+since 2026-09-27, with `scripts/start-moe-mtp.sh` and its siblings as the
+rollback.
 Read the doc before changing anything there; most of its content exists because
 something had already gone wrong.
 
@@ -177,9 +179,11 @@ The parts that bite hardest:
 
 - **`-c` is divided across slots**, so `context_window` must equal `-c / -np`,
   not `-c`. Confirm from the startup line (`n_ctx_slot = …`), not by arithmetic.
-- **Two servers, one model each** — :8080 chat, :8081 embeddings. llama-server
-  holds one model per process, so pointing both at one port sends embedding
-  requests to the chat model.
+- **Two servers, one model each at a time** — :8080 chat (a router since
+  2026-09-27: several presets, one resident), :8081 embeddings. A process
+  holds one model at a time, so pointing both at one port sends embedding
+  requests to the chat model — and on the router, a swap would evict the
+  embedder.
 - **`max_tokens` must sit comfortably above `--reasoning-budget`**, or the
   thinking block eats the allowance and the reply is HTTP 200 with an empty
   `content`. Any client here refuses that by name rather than treating it as an
@@ -3520,15 +3524,66 @@ delivered` resolves without `resolve_with_output` and stamps the same actor
 **Items resolved before the field existed carry no actor and read as
 `unknown`** — fail closed, on the append-only rule; every such reasoned
 reject on the live store had already been mined when this landed. The
-release is stamped the same way, and nothing reads that stamp yet.
+release is stamped the same way, and **an unchanged release is the owner's
+verdict only when the owner made it** (the owner's ruling, 2026-09-27):
+`OutboxItem::owners_unchanged_release` is `SentUnchanged` *and*
+`resolved_by == owner`, and every reader that counts an unchanged release as
+the owner's +1.0 or as an owner-verified success reads it — the appraisal's
+`edit`-channel sign, `success::derive` (standing successes and writing
+exemplars, and through them `planning::success_examples` and
+`goal_context`) — while 2b-2's observed act reads a non-owner release, a
+non-owner reject, and an edit that is not `owners_edit` (below) as an act
+whose author is unknown, never the owner's `released_unchanged`, `rejected`
+or `edited` (review of #352: a run's own act would otherwise be a free hit
+for an appraisal that expected it). A run's shell that
+`approve -y`s its own draft unchanged earns nothing, and a release from
+before the stamp counts as neither. `writing_outcome` stays structural, so
+`WritingTally` keeps its denominator. The same ruling gates the point-wise
+**rejected-draft** point on an owner reject: a run that rejected its own
+draft sets no "nothing sent" point.
+
+**An edit is the owner's writing only when the owner made every edit and
+the release** (the same ruling carried to edits, 2026-09-27). `mecha outbox
+edit` — `$EDITOR`, `--body-file`, `--args-file`, and `polls pick` — stamps
+`edited_by` through `update_args`, which takes an `Actor` with no default,
+decided by the same `acting_actor`. Several edits **fold** with
+`Actor::least`, so an owner's later edit never launders a run's earlier one,
+and an item already edited with no stamp folds from `unknown`.
+`OutboxItem::owners_edit` is `edited_by == owner && resolved_by == owner`:
+release-only would misfire when the owner edits and a run's shell approves,
+edit-only when a run's shell edits and the owner releases. What reads an
+edit as the owner's words is gated on it: `mineable_as_writing` (the
+writing miner — the diff becomes a `writing` rule in the cached prefix),
+the appraiser's input (the diff is shown as "the owner edited it" only
+then, and otherwise described by its two stamps with none of its bytes; a
+release not stamped `owner` is "it was released", never "the owner
+released it"), and `pointwise::draft_kind` (the released text is the gold a
+harness candidate is judged against only then). An edit not stamped `owner`
+prints `note: the edit is recorded as …` on stdout (so does an `approve` whose
+edit is not mined), which the web review
+shows beside "Saved." and carries through Save & send into "Sent."; its
+cards say "edited by you" only for an `owner` edit (`edited_by` rides the
+review payload). A run's `edit` that changes nothing stamps nothing. The
+page holds both note prefixes as literals (`outbox-view.js`), and a
+test in `commands/outbox.rs` reads that file. `writing_outcome` itself still
+says what happened to the draft — `SentEdited` is structural — so the
+appraisal's `edit`-channel sign stays actor-blind, like the reject's
+−1.0: **the words are gated, the sign is not**; 2b-2's observed act is
+gated on it too (above). Every edited send on the live store had been mined
+when this landed.
+
 **The residue is the closure path's** (see "Closing a task is a recorded
 event"): a command that detaches from its shell and clears the variable, a
 shell that edits `~/.mecha/outbox/` directly, and — named here because the
 outbox makes it concrete — a local process that calls `mecha serve`'s
 loopback port with the `Tailscale-User-Login` header set, which the web
 review's child then stamps `owner`. The answer to all three is the sandbox,
-as there. `outbox edit` is not a resolve and is not stamped; the writing
-miner still reads `diff(args_before, args)` as the owner's edit.
+as there. **Two more, left as they are by the owner's ruling (2026-09-27):**
+`mecha outbox approve` from a non-interactive run's shell is stamped
+`unknown` but not refused, so such a run can still release a draft; and
+Slack's reject button (`slack::actions::Action::OutboxReject`) sends the
+fixed reason "rejected from Slack", which the tap's child stamps `owner`, so
+that harness sentence is mined as the owner's words.
 
 ## Assistant workflows
 
@@ -4491,6 +4546,26 @@ unreadable file as an error; `sessions appraise` prints the store's
 `comparison::Summary` on every call, with the separated share `null` over
 nothing decided.
 
+**The summary counts one model** (the owner's ruling of 2026-09-27, "count
+one model"; the same rule validation tallies follow). Since `:8080` became
+a router (`REMOTE-SURFACE-DESIGN.md` §14), background passes follow
+whichever model is resident, so the store holds the production model's rows
+beside a comparison arm's, and a share summed over both describes neither.
+`Summary::of(rows, model)` counts the rows under the model the caller names
+— `sessions compare` names the one it drove — else under the model of the
+newest driven row (the free `sessions appraise` readout loads no config, so
+it names none — the rule `lesson_source::report` set). Rows under any other
+model are `other_models`, said beside the summary and never summed in. **An
+unposed point is no model's**: its arms are not driven, and this build
+stores it with an empty model, once whatever model is resident
+(`pointwise::already_compared` keys it on the empty model). So `unposed`
+counts those points store-wide, apart from `records` and `inconclusive`
+rather than inside them — it could never move a rate, and counting it would
+charge one model with points it never saw, yet "never askable" stays
+visible. Any other row with no model is `no_model`: unknown, never counted,
+and never labelled an unposed point (found on review). The stored format is
+unchanged; `--json` gains `model`, `other_models` and `no_model`.
+
 ### Point-wise comparison at decision points
 
 `APPRAISAL-WIRING-DESIGN.md` O1, row 2d-1: `mecha sessions compare`
@@ -4538,6 +4613,14 @@ through the store above (a `point-*` `Kind` per point kind).
   the point); a declared check is the agent's own (R11) and a surprise has
   no owner act, so both are `Validator::Unposed`: **stored with no arms and
   a derived `Inconclusive`, nothing driven, never judged**.
+- **An owner-bound check point is counted, never driven, where the levers
+  stay on.** Its artifact repeat executes the task, so it runs only with
+  hooks, the outbox and messages off (`ProbePrep::unrunnable_under`); the
+  nightly line throws none of them, by the owner's ruling (2026-09-26), and
+  the tally reports those points as `owner_bound` ("owner-bound, not
+  driven"), apart from `unavailable`. Folded together, "the corpus holds
+  none" and "this pass refuses them all" read as one number and call for
+  opposite fixes (found on review of #333).
 - **The arms are policies** (`pointwise::distinct_policies`): the recorded
   prompt (`WithoutIntervention`), the rules deployed today for the run's
   situation (`Rules`, `validate`'s `RuleSurface`), and none (`RulesFree`) —
@@ -4562,7 +4645,10 @@ through the store above (a `point-*` `Kind` per point kind).
   driven points; unposed points cost nothing and are not charged. A point
   already on record under the same policies and model
   (`pointwise::already_compared`) is not compared again, so the nightly
-  cost falls on new points and new rule sets.
+  cost falls on new points and new rule sets. The store summary a pass
+  prints after it is for the model it drove (see "Every comparison is
+  stored"): rows under other models are said beside it and never counted
+  in, and unposed points, which are no model's, are counted on their own.
 - **One background seat per point** (`permit.rs`, `tasks::permits`), taken
   before its arms and dropped after, waited on for up to five minutes and
   then the rest of the pass deferred and counted — never the owner's
@@ -4774,9 +4860,17 @@ learning store holds corrections only; an **owner-verified success** is the
 other half, and every kind is an act the owner already performs, in the
 store that owns it:
 
-- a model's message draft **sent unchanged** (`writing_outcome` is
+- a model's message draft **sent unchanged by the owner**
+  (`OutboxItem::owners_unchanged_release`: `writing_outcome` is
   `SentUnchanged` — a publish, a harness-authored item and an edited or
-  rejected draft are not);
+  rejected draft are not — *and* the release is stamped `owner`; a run's
+  shell approving its own draft is no success, and one whose actor cannot
+  be read — every release from before the stamp — is listed as unknown,
+  never standing, so the readout says what it left out). **The set starts
+  from stamped releases, so it is empty of pre-stamp history by design**
+  (the owner's ruling, 2026-09-27): on the live store the day it landed, 29
+  of 30 standing successes were unstamped unchanged releases and left the
+  set;
 - a task closed **`done`** (1b's closure record) that no reopen undoes;
 - a workflow the owner **closed** (after its verification passed) that no
   `workflow reopen` took back (`Workflow::owner_dispositions`);
@@ -6756,10 +6850,16 @@ comparison over a chosen set**, with the design written before the run.
   `rules propose-retirements --apply` (the one brake on rules that go
   live as they are derived; a loop without it flatters the learn arm),
   `harness ruminate`, **the nightly's own order and argv**
-  (`scripts/ruminate.sh`): validate is the held-out measurement and
-  learn marks reflections processed, so learn first would grade the
-  rules on their own training data and measure a loop that does not
-  ship (the first cut did; found on review) — as child `mecha` verbs
+  (`scripts/ruminate.sh`, less its two shadow measurement passes —
+  `sessions compare`, before learn, and `learn --compare-sources`, last —
+  which change nothing the next run carries, so an arm would buy only wall
+  clock; the lesson-source comparison because it is never taught
+  (`kind_phrase` has no phrase for it), point-wise comparison only while
+  nothing reads the counterfactuals `distill` writes into a prompt, so a
+  reader added there must revisit this): validate is the held-out
+  measurement and learn marks reflections processed, so learn first would
+  grade the rules on their own training data and measure a loop that does
+  not ship (the first cut did; found on review) — as child `mecha` verbs
   against that home from a scratch workspace beside the ledger (a
   path jail from the home itself is refused), on the run child's
   environment allowlist and session kind,
