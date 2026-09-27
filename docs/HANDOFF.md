@@ -33,8 +33,9 @@ waits for the runs holding the model) merged the same morning and are
 installed; they are that lane's to record. A switch is `mecha model use
 <entry>`, which a `[[rule]]` forbids `shell` from running. What is open:
 
-- **The chip (§14 step 5), and `mecha chat` / `mecha tui`,** which neither
-  follow the router nor hold it yet (§14 D13, *Not yet*).
+- **The chip (§14 step 5), and `mecha chat` / `mecha tui`,** which take
+  the router's resident model at start but neither follow it per turn nor
+  hold it yet (§14 D13, *Not yet*).
 - **Owed follow-ups from #346,** listed in its closing comment: `pin.sh`'s
   `-p local` fallback is silent; `ruminate.sh`'s "errs toward retiring
   nothing" overstates it for an unpinned scan; `rules list` and
@@ -1090,6 +1091,11 @@ earlier binary, service and factory-version claims.
 > git rev-parse main:scripts/start-moe-mtp.sh      # equal => the switch cannot move the server
 > ```
 >
+> Since 2026-09-27 run it for `scripts/start-router.sh` and
+> `scripts/mmproj.sh` too (the paragraph below): `start-moe-mtp.sh` is the
+> rollback now, and nothing edits it, so it alone comes back equal on every
+> branch.
+>
 > Equal hashes mean a branch switch here is invisible to systemd. Unequal —
 > or a *dirty* working copy of that path, which no branch comparison can see —
 > means stop and use a worktree.
@@ -1502,10 +1508,12 @@ outside any pane's cgroup. 8082 has not been restarted.
 to 4 parallel slots and silently splits `-c` across them; the story of what
 that cost is in [`HISTORY.md`](HISTORY.md) under Traps → Environment.
 
-Start scripts are in `scripts/` (`start-moe-mtp.sh`, `start-e4b.sh`,
-`start-gemma26.sh`); they resolve the model through `$HOME` with `HF_HUB` and
-`LLAMA_SERVER` overrides. Config is `~/.mecha/config.toml` (providers `local`,
-`small`, `gemma26`, `anthropic`).
+Start scripts are in `scripts/` — `start-router.sh` (what `llama-local`
+runs since 2026-09-27, generating every preset), and the single-model
+`start-moe-mtp.sh` (its rollback), `start-qwen38.sh`, `start-gemma26.sh` and
+`start-e4b.sh`; they resolve the model through `$HOME` with `HF_HUB` and
+`LLAMA_SERVER` overrides. Config is `~/.mecha/config.toml`, whose router
+entries are listed in *Machine state, dated* (2026-09-27, 01:27Z).
 
 **A release key sits on an agent machine, and that is against the rule the
 factory wrote down.** `~/.mecha/factory/release.key` exists here (mode 0600,
@@ -1645,7 +1653,8 @@ is exactly the set holding a long-lived process.
   router install; `learn-live.sh`'s default is #346's).
 - **Nightly rumination**: `mecha-ruminate.timer` (systemd user, 03:30,
   `Persistent=true`, linger on) runs `scripts/ruminate.sh`: reflect → distill →
-  validate `--unprocessed-only` (judge: gemma26) → learn
+  validate `--unprocessed-only` (judge: the stages' model, via
+  `scripts/pin.sh` since #346 — the resident model unless pinned) → learn
   `--holdout 0.25 --propose` → `rules propose-retirements` → `work clean` →
   `harness ruminate --sessions 16` (added 2026-08-22: the self-improvement
   pass — see that section). Logs land in
@@ -1990,7 +1999,7 @@ git -C $R fetch origin \
      || git -C $R merge-base --is-ancestor refs/heads/main origin/main; } \
 && wt=$(git -C $R for-each-ref --format='%(worktreepath)' refs/heads/main) \
 && { test -z "$wt" || test "$wt" = "$(realpath $R)"; } \
-&& git -C $R diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
+&& git -C $R diff --quiet HEAD origin/main -- scripts/start-router.sh scripts/mmproj.sh scripts/start-moe-mtp.sh \
 && git -C $R diff --quiet HEAD origin/main -- scripts/voice/parakeet_server.py \
 && p=$(git -C $R status --porcelain) \
 && { test -z "$p" || test "$p" = " M docs/README.md"; } \
@@ -2035,7 +2044,7 @@ p=$(git -C $R status --porcelain) \
      || git -C $R merge-base --is-ancestor refs/heads/main origin/main; } \
 && wt=$(git -C $R for-each-ref --format='%(worktreepath)' refs/heads/main) \
 && { test -z "$wt" || test "$wt" = "$(realpath $R)"; } \
-&& git -C $R diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
+&& git -C $R diff --quiet HEAD origin/main -- scripts/start-router.sh scripts/mmproj.sh scripts/start-moe-mtp.sh \
 && git -C $R diff --quiet HEAD origin/main -- scripts/voice/parakeet_server.py \
 && { test -z "$p" || test "$(git -C $R hash-object docs/README.md)" = "$h"; } \
 && { test -z "$p" || git -C $R checkout -- docs/README.md; } \
