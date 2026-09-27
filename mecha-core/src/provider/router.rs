@@ -246,6 +246,15 @@ static SNAPSHOT: RwLock<Snapshot> = RwLock::new(Snapshot {
 /// the resident model's own; a refused connection costs nothing and leaves
 /// the default standing.
 pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
+    observe_seen(cfg, follows).await.0
+}
+
+/// [`observe`], also returning what *this* call saw. A caller that resolves
+/// from its own probe must use this, not read the snapshot back: concurrent
+/// observes can finish out of order, and a slower, earlier one overwrites a
+/// newer one — a long-lived surface resolving from the global could then
+/// rebuild onto the superseded model (review of #347).
+pub async fn observe_seen(cfg: &Config, follows: bool) -> (Vec<String>, Vec<Seen>) {
     let mut seen = Vec::new();
     let mut unreadable = Vec::new();
     for b in followed_bases(cfg) {
@@ -285,6 +294,11 @@ pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
                      follows would be a guess — runs use the default provider, which may swap \
                      one of them out"
                 ));
+                // Not recorded as seen: "nothing resident" would read the same,
+                // and a process that outlives a switch moves to the default on
+                // that. A swap in flight (one stopping, one loading) is exactly
+                // this state, so it is unseen until it settles.
+                continue;
             }
             // R4 wherever a model became resident — `load-on-startup`, a
             // `--model` run's autoload, a default run after a restart — not
@@ -329,9 +343,12 @@ pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
         }
     }
     if let Ok(mut slot) = SNAPSHOT.write() {
-        *slot = Snapshot { seen, follows };
+        *slot = Snapshot {
+            seen: seen.clone(),
+            follows,
+        };
     }
-    warnings
+    (warnings, seen)
 }
 
 /// How many background runs may hold the model at once, under this process's
@@ -973,11 +990,15 @@ mod tests {
 
         let two = r#"{"data":[{"id":"a","status":{"value":"loaded"}},{"id":"b","status":{"value":"loaded"}}]}"#;
         let (url, server) = stub(vec![router, two]).await;
-        let w = observe(&config_at(&url), true).await;
+        let (w, seen) = observe_seen(&config_at(&url), true).await;
         server.await.unwrap();
         assert!(
             w.iter().any(|w| w.contains("more than one model resident")),
             "{w:?}"
+        );
+        assert!(
+            seen.iter().all(|s| s.base_url != base(&url)),
+            "two resident is not \"nothing resident\": a long-lived surface must not move on it"
         );
         observe(&Config::default(), false).await;
     }

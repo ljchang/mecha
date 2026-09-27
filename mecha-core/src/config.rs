@@ -2579,6 +2579,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `scripts/pin.sh` decides a scheduled script's `-p` by reading
+    /// `mecha config show` — `toml::to_string_pretty(&Config)` — for the
+    /// default provider's `follow_loaded`, `kind` and `base_url`, the three
+    /// clauses of `router::follows_here`. A rename or a skipped field here
+    /// would read as "does not follow" and quietly put `-p local` back on a
+    /// router; this pins the keys that script parses (found on review of
+    /// #346).
+    #[test]
+    fn config_show_prints_what_pin_sh_reads() {
+        let mut cfg = Config {
+            default_provider: "local".into(),
+            ..Default::default()
+        };
+        cfg.providers.insert(
+            "local".into(),
+            ProviderConfig {
+                kind: "local".into(),
+                base_url: Some("http://127.0.0.1:8080".into()),
+                follow_loaded: true,
+                ..Default::default()
+            },
+        );
+        let shown: toml::Value = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert_eq!(shown["default_provider"].as_str(), Some("local"));
+        let entry = &shown["providers"]["local"];
+        assert_eq!(entry["follow_loaded"].as_bool(), Some(true));
+        assert_eq!(entry["kind"].as_str(), Some("local"));
+        assert_eq!(entry["base_url"].as_str(), Some("http://127.0.0.1:8080"));
+    }
+
     #[test]
     fn every_field_of_config_is_reachable_from_a_file() {
         // The bug this exists for: `hooks` was added to `Config` and not to

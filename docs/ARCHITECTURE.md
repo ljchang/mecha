@@ -187,13 +187,72 @@ The parts that bite hardest:
 - **Ask what is served (`GET /props` → `model_alias`), don't assert it.**
   llama-server ignores the request's `model` field, so naming one is not
   selecting it — only deciding what gets recorded.
-- **Router mode inverts that** (`scripts/start-router.sh`, built but not yet
-  installed — `REMOTE-SURFACE-DESIGN.md` §14, `LLAMA-SERVER.md` §Router
+- **Router mode inverts that** (`scripts/start-router.sh`, installed
+  2026-09-27 — `REMOTE-SURFACE-DESIGN.md` §14, `LLAMA-SERVER.md` §Router
   mode). One process serves several models and the request's `model`
   *selects*: a `follow_loaded` provider takes whichever is loaded
   (`provider::router`), every probe must name its model with
   `autoload=false` or it loads it, and a bare `/props` is a placeholder
   (`model_alias: "llama-server"`, `n_ctx: 0`).
+- **A process that outlives a switch follows it per turn**
+  (`mecha-cli/src/follow.rs`: `mecha serve`, its voice facade, `voice-serve`,
+  the Slack connector). An agent resolved at startup names the model loaded
+  then, and in router mode naming it loads it back — a switch from anywhere
+  was undone by the next web, voice or Slack turn. `Follower::follow` runs
+  before each turn, outside every lock the turn holds, and rebuilds through
+  `setup::prepare` only when the loaded model moved; the invariants:
+  - **A run keeps the binding it started with, and the model with it**
+    (D13, `hold.rs`). The router protects a request, not a run, so a run
+    *holds* the router — a file in `~/.mecha/holds/` — and `mecha model use`
+    waits until no hold remains. A hold is taken *before* the run resolves
+    its model; a run that meets a pending switch yields and waits for it.
+  - **The config is read from disk per turn**, because the rebuild reads it;
+    resolving against the startup file missed providers added since. A file
+    that does not load keeps the binding and says so once.
+  - **Only evidence of where to go moves a surface.** A router unseen by
+    the follower's own probe (`router::observe_seen`, never the shared
+    snapshot another request may have overwritten), mid-swap (two
+    resident), or resident on a model no entry names or several do: the
+    binding stays. Moving to the default on any of those would load
+    production over the pick.
+  - **A failed rebuild fails the turn**, never falls back to the old binding,
+    whose request would silently undo the switch.
+  - **A conversation that crosses a switch records a fresh `RunConfig`**
+    ahead of the turn (`Bound::generation`), so each run names the model
+    that answered it.
+  - **Incognito's gates are re-derived per turn from the binding**
+    (`incognito_gates`): local-only, hooks, and the withheld list computed
+    against the rebuilt registry — a deny-list computed at open let a server
+    that came up after a switch register tools the chat could call.
+- **Holds (`hold.rs`, §14 D13): a switch waits for runs, never for requests.**
+  - **Write, then check, on both sides.** A run writes its hold then looks
+    for a pending switch; a switch writes its file then looks for holds. At
+    least one sees the other, and the run is the side that yields — there is
+    no window where a run starts on the old model after the switch looked.
+  - **Where holds are taken:** per turn in `Follower::enter` (serve, voice),
+    per turn off the loop in Slack (a turn meeting a switch is *deferred* and
+    re-fed through the loop, never waited for on it), per fire in the trigger
+    daemon, and for its whole life by a command that is one run
+    (`main::is_one_run`, exhaustive, per subcommand). **No holder may wait on
+    a `mecha` child that also holds** — the child yields to a pending switch
+    that waits on the parent. `workflow` is unheld for that reason; a trigger
+    fire or a chat turn whose agent runs `shell: mecha run …` meets the same
+    cycle, broken only by `--now` or `cancel-switch` (`model use` names the
+    holder it waits on). There is no inherited "covered by the parent" mark:
+    detached hooks outlive the parent and would run unheld under one. A
+    process's own children that it waits on and that cannot hold for
+    themselves (`exp run`'s trials, under their own home) are covered by pid
+    instead, so `--now` reaches them.
+  - **An unreadable hold is held while its pid lives**, on every router —
+    the fail-closed direction, matching an unreadable switch file.
+  - **Dead holders and switchers are swept, never waited for**; an
+    unreadable switch file reads as pending (waiting is recoverable).
+  - **"Switch now" cancels, it does not only unload**: a hold's cancel file
+    is polled and turned into the run's own cancel (a one-run command gets
+    the SIGINT that Ctrl-C would send), because an unloaded model is loaded
+    back by a multi-request run's next request.
+  - **A hold's label is never user content** — `mecha run "<prompt>"` must
+    not leave the prompt under `~/.mecha/holds`; only the subcommand name.
 - **Throughput is wall clock.** The server times a request only while it is
   running, so summing its per-request rates hides queue wait and reads ~4× at
   `-np 1`, on the one configuration that cannot run anything concurrently.
@@ -667,8 +726,10 @@ guessing. `mecha rules` folds the ledger into per-rule tallies;
 `rules propose-retirements --apply` (nightly, after learn) **retires
 directly** — no queue, no human — once a rule accumulates the attributed
 regressions its leash allows: 3 ordinarily, 2 on probation
-(`PROBATION_RETIRE_AT`) — a deterministic ledger scan, no model anywhere,
-and it resolves any pending retirement proposal it overtakes as superseded.
+(`PROBATION_RETIRE_AT`) — a deterministic ledger scan that calls no model,
+counting only the convictions measured on the model in use
+(`learning::measured_on`; owner's ruling 2026-09-27, REMOTE-SURFACE-DESIGN
+§14), and it resolves any pending retirement proposal it overtakes as superseded.
 Retirement is the brake ungated learning leans on and it is a flag, never a
 deletion: the rule stays in the file as evidence, the learner is shown it as
 "measured harmful — never re-derive" (surviving even a reworded

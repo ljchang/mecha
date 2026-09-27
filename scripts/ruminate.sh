@@ -28,7 +28,22 @@
 set -uo pipefail
 
 MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
-PROVIDER="${MECHA_RUMINATE_PROVIDER:-local}"
+# **Unset, on a router, means no `-p`: the night runs on whatever the router
+# has loaded.** The owner's ruling (REMOTE-SURFACE-DESIGN §14): background
+# work never defers and never swaps, it runs on the resident model and the
+# run's record names it. On a router a pin is a load — on 2026-09-27 this
+# line's old `-p local` default pulled production over the comparison arm at
+# 03:30:14. Without a router, unset is `-p local` as it always was, so a
+# default that is a paid API does not start billing nightly. The rule lives
+# in scripts/pin.sh, shared with frontdoor.sh and learn-live.sh. Set the
+# variable to pin a night deliberately, knowing it swaps the router.
+# A pin.sh that is missing or does not define scheduled_pin must stop the
+# run, not leave PIN unset: unset expands to no `-p`, the unpinned run on the
+# default this file exists to decide (found on review).
+{ source "$(dirname "$0")/pin.sh" && declare -F scheduled_pin >/dev/null; } || {
+    echo "ruminate: no scheduled_pin from $(dirname "$0")/pin.sh; refusing to run unpinned" >&2
+    exit 1
+}
 # **The judge is the model under test, deliberately and provisionally.**
 # A different family is the better methodology — a model grading trajectories
 # it produced shares the blind spot that caused them, which is why
@@ -38,10 +53,19 @@ PROVIDER="${MECHA_RUMINATE_PROVIDER:-local}"
 # correlated judge beats an unavailable independent one, and this is Luke's
 # call (2026-08-29) rather than a discovery.
 #
-# Set MECHA_RUMINATE_JUDGE=gemma26 after starting scripts/start-gemma26.sh to
-# put the independence back. Judge-graded rows in the ledger are only as good
-# as this line.
-JUDGE="${MECHA_RUMINATE_JUDGE:-local}"
+# Set MECHA_RUMINATE_JUDGE=gemma26 to put the independence back — at a cost
+# the router made concrete: gemma26 is a preset on :8080 now, one model is
+# resident at a time, so a judge on another model swaps the router on every
+# judge call (tens of seconds each way). Judge-graded rows in the ledger are
+# only as good as this line. Unset, the judge is the stages' model: the one
+# MECHA_RUMINATE_PROVIDER pins, else scripts/pin.sh's choice (the loaded model
+# on a router, `local` otherwise). Resolved apart from a pinned stage, it
+# would judge on the default entry and swap the router on every judge call
+# (found on review).
+scheduled_pin "${MECHA_RUMINATE_JUDGE:-${MECHA_RUMINATE_PROVIDER:-}}"
+JUDGE_PIN=()
+[ -n "${PIN[*]-}" ] && JUDGE_PIN=(--judge-provider "${PIN[1]}")
+scheduled_pin "${MECHA_RUMINATE_PROVIDER:-}"
 HEALTH="${MECHA_RUMINATE_HEALTH:-http://127.0.0.1:8080/health}"
 
 LOG_DIR="${MECHA_LEARNING_DIR:-$HOME/.mecha/learning}/logs"
@@ -91,24 +115,30 @@ if ! curl -sf -m 5 "$HEALTH" >/dev/null; then
 fi
 
 echo "· reflect (catches whatever the session_end hook missed; live mining is learn-live.sh)"
-"$MECHA" reflect -p "$PROVIDER"
+"$MECHA" reflect ${PIN[@]+"${PIN[@]}"}
 
 echo "· distill (episodes → the knowledge graph; catches whatever a hook missed)"
-"$MECHA" distill -p "$PROVIDER"
+"$MECHA" distill ${PIN[@]+"${PIN[@]}"}
 
 echo "· validate (the measurement: held-out + fresh, before learn consumes them;"
-echo "  --cover 1 buys one probe per (rule, region) pair the ledger has never graded,"
-echo "  so a widened rule is measured in each sub-region it widened over)"
-"$MECHA" validate -p "$PROVIDER" --judge-provider "$JUDGE" --unprocessed-only --cover 1
+echo "  --cover 1 buys one probe per (rule, region) pair never graded on this model,"
+echo "  so a widened rule is measured in each sub-region it widened over — and the"
+echo "  first night on a newly loaded model re-buys them, since retirement counts one model)"
+"$MECHA" validate ${PIN[@]+"${PIN[@]}"} ${JUDGE_PIN[@]+"${JUDGE_PIN[@]}"} --unprocessed-only --cover 1
 
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
 echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
-"$MECHA" learn -p "$PROVIDER" --holdout 0.25 --auto
+"$MECHA" learn ${PIN[@]+"${PIN[@]}"} --holdout 0.25 --auto
 
 echo "· retirements (deterministic ledger scan; applied, not staged — a rule measured"
 echo "  harmful must leave the prompt without waiting for anyone, and it is the only"
 echo "  brake on rules that now go live when they are derived)"
-"$MECHA" rules propose-retirements --apply
+# Given the same pin as validate: retirement counts only the rows measured on
+# the model in use (owner's ruling, 2026-09-27). Pinned, that is the model
+# validate measured on. Unpinned, it is whatever is resident *now*, from its
+# own snapshot — a switch since validate ran means tonight's rows are not the
+# ones counted, which errs toward retiring nothing.
+"$MECHA" rules propose-retirements ${PIN[@]+"${PIN[@]}"} --apply
 
 echo "· work clean (retention on generated output; a published bundle's source is never removed)"
 "$MECHA" work clean
@@ -117,7 +147,7 @@ echo "· harness (diagnose one change from the run corpus, measure it by counter
 echo "  replay of recent sessions, and dispose through the candidate gate — a measured,"
 echo "  holdout-confirmed config win auto-applies to the override layer, reversibly;"
 echo "  prose, architecture and anything unmeasurable stages for review)"
-"$MECHA" harness ruminate -p "$PROVIDER" --sessions 16
+"$MECHA" harness ruminate ${PIN[@]+"${PIN[@]}"} --sessions 16
 
 echo "· proposals awaiting review"
 "$MECHA" proposals
