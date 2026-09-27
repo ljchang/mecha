@@ -67,6 +67,18 @@ struct Router {
     /// Entries pointing at this router whose model it does not serve: every
     /// run on one is a 400 (`model '…' not found`).
     unserved: Vec<String>,
+    /// The switch waiting on this router, if any, and what it waits for
+    /// (D13) — what the chip shows as "switching to X — waiting for: …".
+    pending_switch: Option<Pending>,
+}
+
+#[derive(Serialize)]
+struct Pending {
+    to: String,
+    from: Option<String>,
+    started_at: chrono::DateTime<chrono::Utc>,
+    /// The runs holding the router, oldest first, as each described itself.
+    waiting_on: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -79,7 +91,14 @@ struct Model {
     /// Entries whose `temperature` disagrees with this model's preset;
     /// `mecha model use` refuses the model while any remain (R4).
     sampling_mismatches: Vec<String>,
+    /// Why default runs would not follow this model once it is loaded — no
+    /// entry names it, or several do (`router::unfollowable`, the one rule).
+    /// The chip offers only models runs would follow.
+    would_not_follow: Option<String>,
 }
+
+/// How long `--now` (or a hurried switch) gives the runs it asked to stop.
+const NOW_GRACE: Duration = Duration::from_secs(15);
 
 fn load_config(global: &GlobalOpts) -> Result<Config> {
     if global.global_config_only {
@@ -97,12 +116,22 @@ fn router_bases(cfg: &Config) -> Vec<String> {
 
 async fn survey(cfg: &Config) -> Vec<(String, Option<Router>)> {
     let mut out = Vec::new();
+    let holds = mecha_core::hold::Holds::open_default().ok();
     for base in router_bases(cfg) {
         let Some(list) = router::models(&base).await else {
             out.push((base, None));
             continue;
         };
-        out.push((base.clone(), Some(router_of(cfg, &base, &list))));
+        let mut r = router_of(cfg, &base, &list);
+        r.pending_switch = holds.as_ref().and_then(|h| {
+            h.pending(&base).map(|s| Pending {
+                to: s.to,
+                from: s.from,
+                started_at: s.started_at,
+                waiting_on: h.live(&base).into_iter().map(|h| h.what).collect(),
+            })
+        });
+        out.push((base.clone(), Some(r)));
     }
     out
 }
@@ -142,9 +171,11 @@ fn router_of(cfg: &Config, base: &str, list: &[router::RouterModel]) -> Router {
                     .map(str::to_string)
                     .collect(),
                 sampling_mismatches: router::sampling_mismatches(cfg, base, m),
+                would_not_follow: router::unfollowable(cfg, base, &m.id),
             })
             .collect(),
         unserved,
+        pending_switch: None,
         base_url: base.to_string(),
     }
 }
@@ -223,11 +254,23 @@ async fn list(cfg: &Config, json: bool) -> Result<()> {
         for n in &r.unserved {
             println!("  ! [providers.{n}] names a model this router does not serve");
         }
+        if let Some(p) = &r.pending_switch {
+            println!(
+                "  switching to {} (since {}) — waiting for: {}",
+                p.to,
+                p.started_at.format("%H:%M:%SZ"),
+                if p.waiting_on.is_empty() {
+                    "nothing; the load is under way".to_string()
+                } else {
+                    p.waiting_on.join(", ")
+                }
+            );
+        }
     }
     Ok(())
 }
 
-async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -> Result<()> {
+async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: bool) -> Result<()> {
     let bases = router_bases(cfg);
     // A provider entry on one of the routers, then a model id one serves.
     let target = match cfg.providers.get(name) {
@@ -303,6 +346,34 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
     let holds = mecha_core::hold::Holds::open_default()?;
     let _switching = match holds.begin_switch(&base, previous.as_deref(), &model)? {
         Ok(s) => s,
+        // `--now` for the switch already waiting: hurry that one rather than
+        // refuse — the chip's "switch now" is this, since the switch it shows
+        // belongs to another process (the one the page, or a terminal,
+        // started). Only for the same model: a different one is a second
+        // switch, and still refused.
+        Err(other) if now && other.to == model => {
+            return match holds.request_now(&base)? {
+                Some(s) => {
+                    eprintln!(
+                        "asked the waiting switch to {} (pid {}) to go now",
+                        s.to, s.pid
+                    );
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "base_url": base, "model": model, "hurried": true,
+                            })
+                        );
+                    }
+                    Ok(())
+                }
+                None => bail!(
+                    "the switch to {model} on {base} is no longer waiting — `mecha model list` \
+                     shows what is loaded"
+                ),
+            };
+        }
         Err(other) => bail!(
             "a switch to {} is already waiting on {base} (pid {}, since {}) — let it finish, \
              stop it with Ctrl-C where it runs, or withdraw it with `mecha model cancel-switch`",
@@ -323,16 +394,11 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
         if asked > 0 {
             eprintln!("asking {asked} run(s) to stop now");
         }
-        wait_for_runs(
-            &holds,
-            &_switching,
-            &base,
-            Some(Duration::from_secs(15)),
-            &mut interrupt,
-        )
-        .await?;
-    } else {
-        wait_for_runs(&holds, &_switching, &base, None, &mut interrupt).await?;
+        wait_for_runs(&holds, &_switching, &base, Some(NOW_GRACE), &mut interrupt).await?;
+    } else if wait_for_runs(&holds, &_switching, &base, None, &mut interrupt).await? {
+        // Hurried while it waited: from here it is the `--now` it was asked
+        // to become, so R2 below cuts off a reply in flight too.
+        now = true;
     }
     // Re-read after the wait, which can last hours: R1's rollback target and
     // "already resident" are about what is loaded now, not when this began.
@@ -438,22 +504,35 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
 /// on whenever that changes. `limit` is `--now`'s grace for the runs it asked
 /// to stop; without one there is none, by ruling, and Ctrl-C withdraws the
 /// switch — the pending file goes with `use_`'s guard, and the model stays.
+///
+/// A wait without a limit can be hurried from outside
+/// ([`Holds::request_now`](mecha_core::hold::Holds::request_now), the chip's
+/// "switch now"): it then does what `--now` does from that moment — asks the
+/// runs to stop and gives them the same grace — and returns `true`.
 async fn wait_for_runs(
     holds: &mecha_core::hold::Holds,
     switching: &mecha_core::hold::Switching,
     base: &str,
-    limit: Option<Duration>,
+    mut limit: Option<Duration>,
     interrupt: &mut tokio::signal::unix::Signal,
-) -> Result<()> {
-    let started = Instant::now();
+) -> Result<bool> {
+    let mut started = Instant::now();
     let mut said = String::new();
+    let mut hurried = false;
     loop {
         if !switching.still_pending() {
             bail!("the switch was withdrawn (`mecha model cancel-switch`); the loaded model stays");
         }
+        if limit.is_none() && switching.now_requested() {
+            let asked = holds.cancel_holders(base);
+            eprintln!("asked to switch now — asking {asked} run(s) to stop");
+            limit = Some(NOW_GRACE);
+            started = Instant::now();
+            hurried = true;
+        }
         let live = holds.live(base);
         if live.is_empty() {
-            return Ok(());
+            return Ok(hurried);
         }
         if let Some(l) = limit.filter(|l| started.elapsed() >= *l) {
             eprintln!(
@@ -461,7 +540,7 @@ async fn wait_for_runs(
                 live.len(),
                 l.as_secs()
             );
-            return Ok(());
+            return Ok(hurried);
         }
         let what: Vec<&str> = live.iter().map(|h| h.what.as_str()).collect();
         let now_saying = format!(
@@ -631,6 +710,49 @@ mod wait_tests {
         .unwrap_err();
         assert!(err.to_string().contains("withdrawn"), "{err}");
         drop(held);
+    }
+
+    /// "Switch now" from outside hurries a wait that has no limit: the runs
+    /// are asked to stop, and the wait says it was hurried, so `use_` goes on
+    /// as `--now` would.
+    #[tokio::test]
+    async fn a_hurried_wait_asks_the_runs_to_stop() {
+        let home = crate::testenv::HomeGuard::new("model-wait-hurried");
+        let holds = std::sync::Arc::new(Holds::new(home.dir.join("holds")));
+        let held = holds.try_hold(ROUTER, "web chat").unwrap().unwrap();
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let asked = std::sync::Arc::clone(&asked);
+            held.on_cancel(move || asked.store(true, std::sync::atomic::Ordering::SeqCst));
+        }
+        let switching = holds.begin_switch(ROUTER, Some("a"), "b").unwrap().unwrap();
+        let waiting = {
+            let holds = std::sync::Arc::clone(&holds);
+            tokio::spawn(async move {
+                wait_for_runs(&holds, &switching, ROUTER, None, &mut interrupt()).await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(
+            !asked.load(std::sync::atomic::Ordering::SeqCst),
+            "asked before anyone hurried it"
+        );
+        holds.request_now(ROUTER).unwrap().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !asked.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(
+                Instant::now() < deadline,
+                "the hurried wait never asked the run to stop"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        drop(held);
+        let hurried = tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("the wait never ended after the run stopped")
+            .unwrap()
+            .unwrap();
+        assert!(hurried, "the wait did not say it was hurried");
     }
 
     /// The wait ends when the last hold drops — and not before.

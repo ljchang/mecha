@@ -92,6 +92,15 @@ impl Drop for Held {
     }
 }
 
+/// Which switch a "switch now" was asked of — by identity, for `Switching`'s
+/// reason: the marker's name is a function of the router alone, so one left
+/// by a withdrawn switch must not hurry the next.
+#[derive(Serialize, Deserialize)]
+struct NowFor {
+    pid: u32,
+    started_at: DateTime<Utc>,
+}
+
 impl Switching {
     /// Is *this* switch still the pending one? `false` once `mecha model
     /// cancel-switch` withdrew it — including when another switch has since
@@ -101,11 +110,23 @@ impl Switching {
         read::<Switch>(&self.path)
             .is_some_and(|s| s.pid == self.pid && s.started_at == self.started_at)
     }
+
+    /// Has the owner asked *this* waiting switch to go now
+    /// ([`Holds::request_now`])? The chip's "switch now" reaches a switch
+    /// another process is already making — `mecha model use` started without
+    /// `--now`, from the page or a terminal.
+    pub fn now_requested(&self) -> bool {
+        read::<NowFor>(&self.path.with_extension("now"))
+            .is_some_and(|n| n.pid == self.pid && n.started_at == self.started_at)
+    }
 }
 
 impl Drop for Switching {
     /// Removes the file only while it is still this switch's.
     fn drop(&mut self) {
+        if self.now_requested() {
+            let _ = std::fs::remove_file(self.path.with_extension("now"));
+        }
         if self.still_pending() {
             let _ = std::fs::remove_file(&self.path);
         }
@@ -398,6 +419,28 @@ impl Holds {
         out
     }
 
+    /// Ask the switch waiting on `base_url` to stop waiting — it then does
+    /// what `--now` does (asks the runs to stop, gives them its grace) — and
+    /// say which switch was asked. `None` when nothing is pending, or when the
+    /// pending file cannot be read: no switcher is there to hear it, and
+    /// `cancel-switch` is that one's way out.
+    pub fn request_now(&self, base_url: &str) -> Result<Option<Switch>> {
+        let Some(switch) = self.pending(base_url).filter(|s| s.pid != 0) else {
+            return Ok(None);
+        };
+        let path = self.switch_path(base_url).with_extension("now");
+        let tmp = path.with_extension("now.tmp");
+        std::fs::write(
+            &tmp,
+            serde_json::to_string(&NowFor {
+                pid: switch.pid,
+                started_at: switch.started_at,
+            })?,
+        )?;
+        std::fs::rename(&tmp, &path).with_context(|| format!("writing {}", path.display()))?;
+        Ok(Some(switch))
+    }
+
     /// "Switch now": ask every run holding `base_url` to stop at its next safe
     /// point. Returns how many were asked.
     pub fn cancel_holders(&self, base_url: &str) -> usize {
@@ -588,6 +631,42 @@ mod tests {
         assert!(h.withdraw_switch(ROUTER).is_some());
         assert!(h.pending(ROUTER).is_none());
         assert_eq!(h.withdraw_switch(ROUTER).map(|s| s.to), None);
+    }
+
+    /// "Switch now" reaches the switch that is waiting, and only that one: a
+    /// marker left by a withdrawn switch does not hurry the next, and nothing
+    /// pending is nothing to ask.
+    #[test]
+    fn switch_now_reaches_the_waiting_switch_and_no_later_one() {
+        let h = holds("now");
+        assert!(h.request_now(ROUTER).unwrap().is_none(), "nothing pending");
+        let first = h.begin_switch(ROUTER, Some("a"), "b").unwrap().unwrap();
+        assert!(!first.now_requested());
+        assert_eq!(
+            h.request_now(ROUTER).unwrap().map(|s| s.to),
+            Some("b".into())
+        );
+        assert!(first.now_requested());
+
+        // Withdrawn with its marker still on disk, then a new switch.
+        h.withdraw_switch(ROUTER).unwrap();
+        let next = h.begin_switch(ROUTER, Some("a"), "c").unwrap().unwrap();
+        assert!(
+            !next.now_requested(),
+            "a withdrawn switch's marker hurried the next"
+        );
+        drop(first);
+        drop(next);
+
+        // A finished switch takes its marker with it.
+        let s = h.begin_switch(ROUTER, Some("a"), "d").unwrap().unwrap();
+        h.request_now(ROUTER).unwrap().unwrap();
+        drop(s);
+        assert!(!h.switch_path(ROUTER).with_extension("now").exists());
+
+        // An unreadable switch file has no switcher to hear it.
+        std::fs::write(h.switch_path(ROUTER), b"not json").unwrap();
+        assert!(h.request_now(ROUTER).unwrap().is_none());
     }
 
     /// A hold this build cannot read is held while its pid lives — on every

@@ -35,6 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The web chat's model chip switches the model** (`REMOTE-SURFACE-DESIGN.md`
+  §14, step 5). Tap it for what the router serves, with a dot beside the
+  loaded model; tap another to switch the whole machine. It runs `mecha model
+  use` on the server, so R1's rollback, R4's refusal and D13's wait for runs
+  all apply unchanged. While a switch waits, the chip reads **→ *model***,
+  and the menu names the runs it waits for, with **switch now** and
+  **cancel**. A failed switch turns the chip amber and says why. `mecha model
+  list --json` now reports each router's `pending_switch` and each model's
+  `would_not_follow`. `mecha model use X --now` hurries a switch already
+  waiting on X instead of refusing it as a second switch.
+
 - **Every outbox edit records who made it, and an edit is your writing only
   when you made every edit and the send** (`APPRAISAL-WIRING-DESIGN.md`,
   R16a's ruling D3 carried to edits). `mecha outbox edit` (and `polls pick`)

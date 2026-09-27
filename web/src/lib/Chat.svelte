@@ -1,6 +1,7 @@
 <script>
   import { tick } from 'svelte';
   import { apiFetch as fetch } from './api.js';
+  import ModelChip from './ModelChip.svelte';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   // The chat view: a rendering of the conversation the server owns, plus a
   // live SSE feed of the run in flight. Sending during a run steers it —
@@ -1378,7 +1379,7 @@
         onclick={nextMode}
         title="read-only: reads run, sends stage · ask: every other call becomes an approval card · allow: nothing asks (the interlock still refuses sends once this conversation holds private and untrusted content)"
       >{MODE_LABEL[mode] ?? mode}</button>
-      <span class="chip" title={incognito ? 'an incognito chat runs only on the model on this machine' : undefined}>{model || '…'}</span>
+      <ModelChip {model} {incognito} />
       {#if incognito && !gone}
         <button class="chip endchip" onclick={endIncognito} title="end this chat now — everything in it is deleted">End</button>
       {/if}
