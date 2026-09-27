@@ -504,7 +504,11 @@ router is `/props`' rule applied to choosing.
   costs at most one extra pair of swaps per run, and it is accepted.
 - **Nightly passes run on whatever is loaded, and the record says which**
   (owner's ruling, 2026-09-26). Learn, validate, ruminate and appraisal are
-  not deferred or skipped on a non-production model. The per-run `model`
+  not deferred or skipped on a non-production model, and not pinned either:
+  a script or hook that starts one names no provider, because on a router
+  `-p` is a pin and a pin is a load (`scripts/test_follow_loaded.py`). On
+  2026-09-27 `ruminate.sh`'s `-p local` default pulled production over the
+  comparison arm at 03:30:14. The per-run `model`
   in the session record is what makes that safe: a reader comparing runs
   slices by the model that answered, instead of the scheduler keeping
   models apart. That makes the recorded `model` load-bearing for every

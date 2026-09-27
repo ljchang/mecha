@@ -24,7 +24,13 @@ set -uo pipefail
 MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
 FACTORY="${FACTORY_PUBLISH_BIN:-$HOME/.cargo/bin/factory-publish}"
 MAIL="${MECHA_MAIL_BIN:-$HOME/.cargo/bin/mecha-mail}"
-PROVIDER="${MECHA_FRONTDOOR_PROVIDER:-local}"
+# Unset means no `-p`: each tick runs on whatever the router has loaded, and
+# the run's record names it. A default of `local` was a pin, and on the router
+# a pin is a load — hourly, over whatever the owner switched to. Reasoning in
+# ruminate.sh.
+PROVIDER="${MECHA_FRONTDOOR_PROVIDER:-}"
+PIN=()
+[ -n "$PROVIDER" ] && PIN=(-p "$PROVIDER")
 HEALTH="${MECHA_FRONTDOOR_HEALTH:-http://127.0.0.1:8080/health}"
 
 LOG_DIR="$HOME/.mecha/requests/logs"
@@ -69,9 +75,9 @@ if ! curl -sf -m 5 "$HEALTH" >/dev/null; then
 fi
 
 echo "· extract (the quarantined pass: no tools, no history)"
-"$MECHA" frontdoor extract -p "$PROVIDER"
+"$MECHA" frontdoor extract "${PIN[@]}"
 
 echo "· triage (drafts into the outbox; refuses to run unrouted)"
-"$MECHA" frontdoor triage -p "$PROVIDER" --read-only
+"$MECHA" frontdoor triage "${PIN[@]}" --read-only
 
 echo "── frontdoor tick done $(date -Is) ──"
