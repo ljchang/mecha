@@ -59,14 +59,10 @@ installed; they are that lane's to record. A switch is `mecha model use
 - **The chip (§14 step 5), and `mecha chat` / `mecha tui`,** which take
   the router's resident model at start but neither follow it per turn nor
   hold it yet (§14 D13, *Not yet*).
-- **Owed follow-ups from #346,** listed in its closing comment: `pin.sh`'s
-  `-p local` fallback is silent; `ruminate.sh`'s "errs toward retiring
-  nothing" overstates it for an unpinned scan; `rules list` and
-  `learning-report` fold every model's rows while retirement counts one.
-- **Owed follow-up from mecha-graph#22,** in its closing comment:
-  `extract --charged`'s count of unexplained marks also counts clean
-  extractions that proposed nothing, so it grows nightly and buries the
-  pre-V026 marks it exists to surface.
+- **What #360 left of #346's follow-ups:** `learning-report` still folds
+  every model's rows with no note; `mecha rules` now says so above its
+  listing when the ledger mixes models. (#360 and mecha-graph#23 closed the
+  rest; HISTORY, 2026-09-27.)
 - **Review the graph candidates the re-extraction staged.** The 100
   extractions the nightly lost were re-run one at a time with
   `mecha-graph extract --episode` on 2026-09-27 (11:42–11:47Z and
@@ -78,10 +74,12 @@ installed; they are that lane's to record. A switch is `mecha model use
   concurrent workspace builds beside the 31.6 GB router child ran it low
   twice that morning (~04:35Z, ~11:47Z), and Claude Code reaped background
   jobs both times. Stagger heavy builds across lanes.
-- **Minors banked:** the new llama.cpp build warns that Qwen-VL wants
-  `--image-min-tokens 1024` (not acted on), and the rollback scripts'
-  `S=$(ls -d …/snapshots/*/)` breaks the day a repo gains a second snapshot
-  (none has one today).
+- **Minors banked:** the rollback scripts' `S=$(ls -d …/snapshots/*/)`
+  breaks the day a repo gains a second snapshot (none has one today); and
+  #361's two, in its closing comment — `scripts/vision-probe.py` exits
+  mid-loop on an unusable reply and discards the rows already measured, and
+  `qwen_vision` sits between `qwen_sampling` and the `reasoning-preserve`
+  comment that describes it.
 
 **2026-09-26 — image generation shipped; incognito chat is live.** The
 arcs are in HISTORY under 2026-09-25 and 2026-09-25/26. `image_generate`
@@ -3039,6 +3037,36 @@ adds is `#[cfg(test)]`. Verified by asking the artifacts:
   run held the conversation answered `held_by_run: true` with the message in
   `entries`; the old binary answers `[]`. The chat was then ended (`204`),
   and a read after that answers `410`.
+
+**Installed 2026-09-27 17:44–17:50Z, by the model-switching lane:
+mecha-graph#23 (`1bc355d`), #360 and #361 (`970be371`), and a
+`llama-local` restart for #361's image floor.** Verified by asking the
+artifacts:
+
+- `~/Github/mecha-graph` fast-forwarded to `1bc355d`; release build and both
+  crates installed. `strings … | grep -cF 'written before reasons were kept'`
+  prints 1 for `target/release/mecha-graph` and `~/.cargo/bin/mecha-graph`,
+  and `'reason_recorded INTEGER'` 1 for `mecha-graph-mcp`; all 0 before. V027
+  applied to the live graph on first open, and `mecha-graph extract
+  --charged` reports 4318 unexplained marks — the figure measured on the
+  superseded query before the merge.
+- The shared checkout fast-forwarded `218fd600` → `970be371`. Its launch
+  files did change, deliberately: `git diff 218fd600 origin/main --
+  scripts/start-router.sh scripts/start-moe-mtp.sh` showed only
+  `qwen_vision` and `--image-min-tokens 1024`; `mmproj.sh` and
+  `scripts/voice/` unchanged. `mecha` reinstalled (`'tallies fold every
+  model'`: 0 → 1); no unit restarted, since #360's Rust is `mecha rules`
+  alone.
+- `llama-local` restarted at 17:47:03Z with no run holding the model
+  (`~/.mecha/holds` empty). The regenerated INI carries `image-min-tokens =
+  1024` on all five Qwen presets and not on Gemma; the journal's Qwen-VL
+  "require at minimum 1024 image tokens" warning count since the restart is
+  0. **A restart comes back on production** (`load-on-startup`), so the
+  owner's pick was restored with `mecha model use qwen38-uncensored` (26.5 s).
+- `scripts/vision-probe.py` on `qwen3.8-27b-uncensored`, before → after the
+  floor: 320×240 82 → 1038 image tokens, mean IoU 0.758 → 0.935, 7/8 → 8/8;
+  800×600 477 → 1038, 0.926 → 0.950; the 1568×980 control 1521 → 1521,
+  0.942 → 0.940.
 
 ## What the measurements say
 

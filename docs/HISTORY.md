@@ -14,6 +14,28 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-27 — the router arc's follow-ups, and a Qwen-VL image floor
+(#360, #361, mecha-graph#23).** #360 made `scripts/pin.sh` say why on
+stderr when it cannot tell whether the default follows a router — parsing
+`config show`'s stdout alone, since a warning mixed into the TOML read a
+router box as unreadable and pinned it, the load the message exists to
+report — corrected `ruminate.sh`'s claim that an unpinned retirement scan
+after a switch errs toward retiring nothing, and has `mecha rules` say when
+its tallies mix models. mecha-graph#23 records on each `extract_state` row
+whether its writer kept a reason (`reason_recorded`, V027), so `extract
+--charged`'s unexplained count stops growing with every clean night; its
+first revision read the boundary from `_migrations`, which no copy path
+carries, so a fork or snapshot reverted the count. #361 floors every Qwen
+preset's images at 1024 tokens (`image-min-tokens`), after the build warned
+at every load since 2026-08-21 that grounding needs it (llama.cpp #16842);
+`scripts/vision-probe.py` — a synthetic UI with exact boxes, scored by IoU,
+naming only the resident model — measured the floor lifting a 320×240
+image's IoU from 0.758 to 0.935 with a full-size control unmoved. The same
+probe overturned the docs' "an image costs a fixed 294 tokens": on this
+build a Qwen image costs one token per 32×32 px (82 / 477 / 1521 measured at
+three sizes), which `LLAMA-SERVER.md` records beside the superseded reading.
+Installed 17:44–17:50Z (HANDOFF, *Machine state*).
+
 **2026-09-27 — a web chat opened or reconnected mid-run keeps its history
 (#358).** Reported from the phone with a screenshot: an incognito chat showed
 no history and no pictures, and its transcript began at whatever tool call
