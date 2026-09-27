@@ -1536,7 +1536,8 @@ impl Tool for ImageGenerate {
             text.push_str(&format!(
                 "Generated a {size} image in {secs} s (seed {}, {} steps) and saved it to {path} \
                  in the workspace. To revise it, call image_generate again with an edited prompt and seed {} \
-                 to keep the composition, or edit it by passing {path} in reference_images.",
+                 to keep the composition, or edit it by passing {path} in reference_images. You have \
+                 not seen it, so do not describe what it shows.",
                 req.seed, req.steps, req.seed
             ));
         } else {
@@ -1544,7 +1545,7 @@ impl Tool for ImageGenerate {
             text.push_str(&format!(
                 "Edited {} into a {size} image in {secs} s (seed {}, {} steps) and saved it to \
                  {path} in the workspace; the original is unchanged. To change it further, edit \
-                 {path} next.",
+                 {path} next. You have not seen it, so do not describe what it shows.",
                 sources.join(", "),
                 req.seed,
                 req.steps

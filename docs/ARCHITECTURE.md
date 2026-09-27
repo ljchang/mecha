@@ -320,7 +320,12 @@ Three rules on the fold, each a bug if undone:
 
 - **Only for a model that can see.** To a blind one the image would render
   as a placeholder line on every turn for the life of the conversation; it is
-  told in the result instead, and nothing is armed on its account.
+  told in the result instead. The *fold* arms nothing then; the tool's own
+  declaration still does — `image_view` is `private()`, and `run_tools` arms
+  from a declaration whatever the result — because a read of the owner's
+  file is private whether or not anyone could see it (found on review of
+  #365: the sentence used to say nothing was armed, which read as licence
+  to drop the declaration).
 - **A look arms `private_data`**, from the turn the pixels arrive — what
   `arm_for_content` reads off any image at the next run's start anyway, and
   what `image_view` declares: it is `fs_read` for pictures. Drawing arms

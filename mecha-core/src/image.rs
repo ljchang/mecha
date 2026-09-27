@@ -88,7 +88,7 @@ pub fn block_from_bytes(
         return Ok(Block::image(media_type, &bytes, name));
     }
 
-    let img = image::load_from_memory(&bytes)
+    let img = decode(&bytes)
         .with_context(|| format!("{what} is named as an image but did not decode"))?;
     // `thumbnail` preserves the aspect ratio and takes the *bound* rather
     // than a target, so an image that is oversized in only one dimension is
@@ -131,7 +131,11 @@ pub fn block_from_bytes(
 /// every one above [`PASS_THROUGH_BYTES`], resent every turn for the rest of
 /// the conversation. The file on disk stays the original.
 pub fn rendered_block(bytes: &[u8], name: Option<String>) -> Result<Block> {
-    let img = image::load_from_memory(bytes).context("the image did not decode")?;
+    // Decoded even when it will pass through untouched: the decode is the
+    // proof it is a picture. A good header on a broken body would otherwise
+    // ride into the transcript, and a picture the provider rejects fails
+    // every later request of that conversation, not just this one.
+    let img = decode(bytes).context("the image did not decode")?;
     if bytes.len() <= PASS_THROUGH_BYTES && img.width().max(img.height()) <= MAX_EDGE {
         let media_type = match image::guess_format(bytes) {
             Ok(image::ImageFormat::Png) => "image/png",
@@ -165,6 +169,25 @@ pub fn rendered_block(bytes: &[u8], name: Option<String>) -> Result<Block> {
         );
     }
     Ok(Block::image("image/jpeg", &out, name))
+}
+
+/// Largest side decoded, and the most a decode may allocate. The header is
+/// the file's claim about itself: a flat-colour PNG of a few hundred kilobytes
+/// can declare 40000×40000 and ask the decoder for ~4.8 GB, in `serve`, which
+/// holds every session and every live run (found on review of #366; the
+/// Slack door had the same exposure). Every decode here goes through this, so
+/// the bound covers all the doors at once.
+const MAX_DECODE_EDGE: u32 = 16_384;
+const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
+
+fn decode(bytes: &[u8]) -> Result<image::DynamicImage> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_EDGE);
+    limits.max_image_height = Some(MAX_DECODE_EDGE);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    reader.limits(limits);
+    Ok(reader.decode()?)
 }
 
 fn human(bytes: usize) -> String {
@@ -330,6 +353,17 @@ mod tests {
         );
         assert!(w.max(h) <= MAX_EDGE, "long edge {w}x{h} bounded");
         assert!(rendered_block(b"not a png", None).is_err());
+    }
+
+    /// A picture past the decode bound is refused at the header, not
+    /// allocated: 17000×1 is tiny on disk and in memory, so this passes
+    /// without the limits too — except that it would decode, and the
+    /// assertion is that it does not. Fails with `load_from_memory` back.
+    #[test]
+    fn a_picture_past_the_decode_bound_is_refused_rather_than_allocated() {
+        let wide = png(MAX_DECODE_EDGE + 616, 1);
+        assert!(rendered_block(&wide, None).is_err());
+        assert!(block_from_bytes("image/png", wide, None, "wide.png").is_err());
     }
 
     /// A caller must be able to tell "not an image" from "an image that

@@ -6,9 +6,10 @@
 //
 // **Why it needs a test.** The page turns text into a URL it fetches. The
 // text is the tool's own first line, but a preview is whatever came back, so
-// the match has to be strict: only `image_generate`, only a finished call,
-// only `images/<plain name>.png` — never a path with a slash beyond that, a
-// `..`, or anything a different tool happened to print.
+// the match has to be strict: only `image_generate` (`images/<plain name>.png`)
+// or `image_view` (a workspace-relative path of plain segments, none starting
+// with a dot, with an image extension), only a finished call — never a `..`,
+// a leading `/`, or anything a different tool happened to print.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

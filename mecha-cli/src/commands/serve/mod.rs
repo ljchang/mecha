@@ -1885,7 +1885,7 @@ mod boundary_tests {
         vision: bool,
         files: &[(&str, Vec<u8>)],
         extra: &[&str],
-    ) -> mecha_core::message::Message {
+    ) -> (mecha_core::message::Message, serde_json::Value) {
         let (chat, seen) = chat::test_chat_seeing(vision);
         let app = app(chat);
         let mut paths = Vec::new();
@@ -1921,9 +1921,10 @@ mod boundary_tests {
             .await
             .unwrap();
         assert!(sent.status().is_success(), "{}", sent.status());
+        let reply = body(sent).await;
         for _ in 0..200 {
             if let Some(req) = seen.lock().unwrap().first() {
-                return req.messages.last().unwrap().clone();
+                return (req.messages.last().unwrap().clone(), reply);
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
@@ -1946,13 +1947,14 @@ mod boundary_tests {
     #[tokio::test]
     async fn an_uploaded_picture_rides_on_the_turn_for_a_model_that_can_see() {
         let _home = crate::testenv::HomeGuard::new("web-attach-pixels");
-        let user = send_with_attachments(
+        let (user, reply) = send_with_attachments(
             true,
             &[("shot.png", png(40, 20)), ("notes.txt", b"hello".to_vec())],
             &[],
         )
         .await;
         assert_eq!(images(&user), vec![Some("inbox/shot.png".to_string())]);
+        assert_eq!(reply["pictures_not_shown"], 0, "{reply}");
         assert!(user.text().contains("Attached file at inbox/shot.png"));
         assert!(user.text().contains("Attached file at inbox/notes.txt"));
     }
@@ -1962,8 +1964,12 @@ mod boundary_tests {
     #[tokio::test]
     async fn a_blind_model_or_an_escaping_path_gets_no_pixels() {
         let home = crate::testenv::HomeGuard::new("web-attach-blind");
-        let user = send_with_attachments(false, &[("shot.png", png(8, 8))], &[]).await;
+        let (user, reply) = send_with_attachments(false, &[("shot.png", png(8, 8))], &[]).await;
         assert!(images(&user).is_empty(), "{:?}", user.content);
+        // Said to the page, which cleared the chip on send (found on review
+        // of #366): one picture named, none shown, and why.
+        assert_eq!(reply["pictures_not_shown"], 1, "{reply}");
+        assert_eq!(reply["model_sees"], false, "{reply}");
 
         // One real upload beside the escaping paths, so the session and its
         // workspace exist: without it `send` has no workspace to read and
@@ -1971,13 +1977,14 @@ mod boundary_tests {
         // reason (found on review of #366).
         let outside = home.dir.join("outside.png");
         std::fs::write(&outside, png(8, 8)).unwrap();
-        let user = send_with_attachments(
+        let (user, reply) = send_with_attachments(
             true,
             &[("inside.png", png(8, 8))],
-            &["../../outside.png", outside.to_str().unwrap()],
+            &["../../../outside.png", outside.to_str().unwrap()],
         )
         .await;
         assert_eq!(images(&user), vec![Some("inbox/inside.png".to_string())]);
+        assert_eq!(reply["pictures_not_shown"], 2, "{reply}");
     }
 
     /// An upload survives the chat leaving the map before the send — a
