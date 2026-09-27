@@ -3524,7 +3524,23 @@ delivered` resolves without `resolve_with_output` and stamps the same actor
 **Items resolved before the field existed carry no actor and read as
 `unknown`** — fail closed, on the append-only rule; every such reasoned
 reject on the live store had already been mined when this landed. The
-release is stamped the same way.
+release is stamped the same way, and **an unchanged release is the owner's
+verdict only when the owner made it** (the owner's ruling, 2026-09-27):
+`OutboxItem::owners_unchanged_release` is `SentUnchanged` *and*
+`resolved_by == owner`, and every reader that counts an unchanged release as
+the owner's +1.0 or as an owner-verified success reads it — the appraisal's
+`edit`-channel sign, `success::derive` (standing successes and writing
+exemplars, and through them `planning::success_examples` and
+`goal_context`) — while 2b-2's observed act reads a non-owner release, a
+non-owner reject, and an edit that is not `owners_edit` (below) as an act
+whose author is unknown, never the owner's `released_unchanged`, `rejected`
+or `edited` (review of #352: a run's own act would otherwise be a free hit
+for an appraisal that expected it). A run's shell that
+`approve -y`s its own draft unchanged earns nothing, and a release from
+before the stamp counts as neither. `writing_outcome` stays structural, so
+`WritingTally` keeps its denominator. The same ruling gates the point-wise
+**rejected-draft** point on an owner reject: a run that rejected its own
+draft sets no "nothing sent" point.
 
 **An edit is the owner's writing only when the owner made every edit and
 the release** (the same ruling carried to edits, 2026-09-27). `mecha outbox
@@ -3551,9 +3567,10 @@ review payload). A run's `edit` that changes nothing stamps nothing. The
 page holds both note prefixes as literals (`outbox-view.js`), and a
 test in `commands/outbox.rs` reads that file. `writing_outcome` itself still
 says what happened to the draft — `SentEdited` is structural — so the
-appraisal's `edit`-channel sign and 2b-2's `ExpectedAct::Edited` stay
-actor-blind, like the reject's −1.0: **the words are gated, the act is
-not.** Every edited send on the live store had been mined when this landed.
+appraisal's `edit`-channel sign stays actor-blind, like the reject's
+−1.0: **the words are gated, the sign is not**; 2b-2's observed act is
+gated on it too (above). Every edited send on the live store had been mined
+when this landed.
 
 **The residue is the closure path's** (see "Closing a task is a recorded
 event"): a command that detaches from its shell and clears the variable, a
@@ -4843,9 +4860,17 @@ learning store holds corrections only; an **owner-verified success** is the
 other half, and every kind is an act the owner already performs, in the
 store that owns it:
 
-- a model's message draft **sent unchanged** (`writing_outcome` is
+- a model's message draft **sent unchanged by the owner**
+  (`OutboxItem::owners_unchanged_release`: `writing_outcome` is
   `SentUnchanged` — a publish, a harness-authored item and an edited or
-  rejected draft are not);
+  rejected draft are not — *and* the release is stamped `owner`; a run's
+  shell approving its own draft is no success, and one whose actor cannot
+  be read — every release from before the stamp — is listed as unknown,
+  never standing, so the readout says what it left out). **The set starts
+  from stamped releases, so it is empty of pre-stamp history by design**
+  (the owner's ruling, 2026-09-27): on the live store the day it landed, 29
+  of 30 standing successes were unstamped unchanged releases and left the
+  set;
 - a task closed **`done`** (1b's closure record) that no reopen undoes;
 - a workflow the owner **closed** (after its verification passed) that no
   `workflow reopen` took back (`Workflow::owner_dispositions`);

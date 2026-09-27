@@ -803,6 +803,14 @@ the pointwise edited-draft gold read it only then. Old edits read
 `unknown`. Not chosen, left as residue: refusing `approve` from a
 non-interactive run's shell, and Slack's fixed "rejected from Slack"
 reason. Built by `feat/outbox-edit-actor`.
+**Carried to releases (the owner, 2026-09-27):**
+a draft released unchanged is the owner's +1.0 and an owner-verified
+success only when the release is stamped `owner`
+(`OutboxItem::owners_unchanged_release`), and a pre-stamp release counts
+as neither; the point-wise rejected-draft point needs an owner reject, and
+2b-2's observed act reads a release, a reject or an edit the owner did not
+make as unknown, never as the owner's act. Built by
+`feat/unchanged-release-owner`.
 
 **S3b — declined 2026-09-24 (here §1, decision 2).** A one-tap verdict
 asks the owner for work the system is meant to infer. Kept below for the
@@ -1598,6 +1606,13 @@ use. Evaluated budget-matched, because the gain may be zero on this model
 *2e-4a built — the success set, derived, and writing exemplars in shadow*
 (`success.rs`, under R40; ARCHITECTURE's *What went right, derived where it
 is recorded* holds the invariants).
+
+**The success set starts from stamped releases** (the owner's ruling,
+2026-09-27, R16a's D3 carried to releases): a draft sent unchanged is a
+success only when its release is stamped `owner`, so the set is empty of
+pre-stamp history by design — on the live store the day it landed, standing
+successes went from 30 to 1 (all 29 unchanged releases were unstamped), and
+the planning examples and exemplars drawn from them with it.
 
 - **Derived, never stored.** `success::derive` reads the outbox, the
   closure, workflow and question stores and the session headers on every

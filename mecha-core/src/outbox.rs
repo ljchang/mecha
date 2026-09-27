@@ -630,6 +630,25 @@ impl OutboxItem {
         }
     }
 
+    /// Whether this item is **the owner's verdict that a model drafted
+    /// well**: a model's message draft released unchanged
+    /// ([`WritingOutcome::SentUnchanged`]) *by the owner* — the release
+    /// stamped [`Actor::Owner`] (`APPRAISAL-WIRING-DESIGN.md`, R16a's ruling
+    /// D3 carried to releases, 2026-09-27). `mecha outbox approve -y` is a
+    /// command a model's `shell` can run, and a run that releases its own
+    /// draft unchanged has not been told it drafted well by anyone. Every
+    /// reader that counts an unchanged release as the owner's +1.0 or as an
+    /// owner-verified success reads this, never `writing_outcome` alone; a
+    /// release from before the stamp (`resolved_by` absent) reads `unknown`
+    /// and counts as neither — fail closed.
+    ///
+    /// `writing_outcome` itself stays structural (what happened to the
+    /// draft), so `WritingTally` keeps its denominator.
+    pub fn owners_unchanged_release(&self) -> bool {
+        self.writing_outcome() == Some(WritingOutcome::SentUnchanged)
+            && self.resolved_by() == Actor::Owner
+    }
+
     /// What this item says about the drafting, if it says anything.
     ///
     /// **The signed half of the outbox's evidence, and the cheapest signal in
@@ -2274,6 +2293,41 @@ mod tests {
             store.item(&owner.id).unwrap().resolved_by,
             Some(Actor::Owner)
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// R16a's ruling D3 carried to releases: `owners_unchanged_release` is
+    /// the owner's release of an unchanged model draft and nothing else,
+    /// while `writing_outcome` stays structural. Fails on the tree before,
+    /// where the predicate did not exist and every reader took
+    /// `SentUnchanged` alone.
+    #[test]
+    fn an_unchanged_release_is_the_owners_only_under_the_owners_stamp() {
+        let root = scratch("unchanged-release");
+        let store = OutboxStore::open(&root).unwrap();
+        let release = |by: Actor| {
+            let staged = store
+                .stage(
+                    "mail_send",
+                    OutboxKind::Message,
+                    json!({"to": "sam@example.edu", "body": "Dear Sam,"}),
+                    Taint::default(),
+                    Provenance::default(),
+                )
+                .unwrap();
+            store
+                .resolve_with_output(&staged.id, "sent", None, Some("sent".into()), by)
+                .unwrap()
+        };
+        assert!(release(Actor::Owner).owners_unchanged_release());
+        for by in [Actor::OwnerApproved, Actor::Unknown] {
+            let i = release(by);
+            assert_eq!(i.writing_outcome(), Some(WritingOutcome::SentUnchanged));
+            assert!(!i.owners_unchanged_release(), "{by:?}");
+        }
+        let mut legacy = release(Actor::Owner);
+        legacy.resolved_by = None;
+        assert!(!legacy.owners_unchanged_release(), "pre-stamp: fail closed");
         let _ = std::fs::remove_dir_all(&root);
     }
 
