@@ -1060,6 +1060,10 @@
 
   async function send() {
     let text = draft.trim();
+    // Named in the text, so the model has a path to hand a tool, and listed
+    // beside it, so the server can put each picture on the turn for a model
+    // that can see (REMOTE-SURFACE-DESIGN D6) — the Slack door's pairing.
+    const attached = [...attachments];
     if (attachments.length) {
       const lines = attachments.map((p) => `Attached file at ${p}`).join('\n');
       text = text ? `${text}\n\n${lines}` : lines;
@@ -1076,7 +1080,7 @@
       const res = await fetch(`/api/chat/${sessionKey}/send`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text, request_id }),
+        body: JSON.stringify({ text, request_id, attachments: attached }),
       });
       if (res.status === 410) {
         if (sessionKey === key) closeIncognito('closed');
