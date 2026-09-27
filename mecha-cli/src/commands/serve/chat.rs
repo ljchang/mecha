@@ -200,6 +200,22 @@ struct Live {
     cancel: mecha_core::agent::CancelHandle,
     queue: Arc<StdMutex<VecDeque<String>>>,
     queued_ids: Arc<StdMutex<VecDeque<String>>>,
+    /// The conversation as this run found it — what a transcript read
+    /// renders while the run holds the real one. A page that loads mid-run
+    /// (or a phone whose stream dropped and reconnected) was handed nothing
+    /// and replaced its whole history with that nothing; the run's own
+    /// events still reach it over SSE, and the page re-reads at `done` for
+    /// the stretch it missed. Shared with the run's own `before`, and
+    /// rendered only when a page asks.
+    history: Arc<[Message]>,
+    /// And the taint of those messages, beside them: a transcript shown
+    /// without its chip reads as clean, which is the dash rendered as a
+    /// zero. Armed for their content here, because the loop only does that
+    /// inside the run (`Taint::arm_for_content`), after this was taken — an
+    /// `[image]` in the history would otherwise ride under a clean chip.
+    /// Taint only grows, so this is a floor; what the run adds arrives at
+    /// `done`.
+    taint: mecha_core::agent::Taint,
 }
 
 impl ChatState {
@@ -1605,10 +1621,13 @@ pub async fn transcript(
         None => return (StatusCode::NOT_FOUND, "no such session\n").into_response(),
     };
     let running = ws.live.is_some();
-    let (entries, taint) = match &ws.conversation {
-        Some(convo) => (transcript_entries(&convo.messages), Some(convo.taint)),
-        // A run holds the conversation; the page catches up over SSE.
-        None => (Vec::new(), None),
+    let (entries, taint) = match (&ws.conversation, &ws.live) {
+        (Some(convo), _) => (transcript_entries(&convo.messages), Some(convo.taint)),
+        // A run holds the conversation: the history it started from, and the
+        // page takes the run itself over SSE — then re-reads at `done`,
+        // because what streamed before it subscribed is not in either.
+        (None, Some(live)) => (transcript_entries(&live.history), Some(live.taint)),
+        (None, None) => (Vec::new(), None),
     };
     let usage = ws.last_usage.lock().ok().and_then(|u| u.clone());
     let mode = ws.mode.lock().map(|m| mode_wire(*m)).unwrap_or("read_only");
@@ -2184,10 +2203,15 @@ fn begin_turn(
     }
     let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
     let queued_ids: Arc<StdMutex<VecDeque<String>>> = Arc::default();
+    let before: Arc<[Message]> = before.into();
+    let mut history_taint = conversation.taint;
+    history_taint.arm_for_content(&before);
     ws.live = Some(Live {
         cancel: cancel.clone(),
         queue: Arc::clone(&queue),
         queued_ids: Arc::clone(&queued_ids),
+        history: Arc::clone(&before),
+        taint: history_taint,
     });
 
     // What was already waiting, before this run staged anything. Taken here
@@ -2488,7 +2512,7 @@ fn begin_turn(
             // than in the hand-back below so there is one rolled-back state
             // and both readers of it (the file, the next request) agree.
             Err(_) => {
-                conversation.roll_back_failed_turn(before.clone());
+                conversation.roll_back_failed_turn(before.to_vec());
                 // The one write whose failure reproduces the resume-time 400
                 // this arm exists to prevent — it must not fail silently.
                 if let Some(session) = &kept {
@@ -4521,6 +4545,24 @@ pub(super) fn test_chat_waiting(go: Arc<tokio::sync::Notify>) -> Arc<ChatState> 
         mecha_core::tool::Registry::new(),
         config,
     )
+}
+
+/// Put an image into `key`'s idle conversation the way a TUI or Slack turn
+/// carries one — straight into the messages, with the taint left for the
+/// loop to arm at the next run's start. The web door has no path that does
+/// this yet, which is exactly why a reader of `Live::taint` must not trust
+/// the conversation's taint to already cover it.
+#[cfg(test)]
+pub(super) async fn test_plant_image(chat: &ChatState, key: &str) {
+    let mut sessions = chat.sessions.lock().await;
+    let convo = sessions
+        .get_mut(key)
+        .and_then(|ws| ws.conversation.as_mut())
+        .expect("an idle conversation");
+    let mut look = Message::user("look at this");
+    look.content
+        .push(mecha_core::message::Block::image("image/png", b"png", None));
+    convo.messages.push(look);
 }
 
 /// A chat on `provider`, serving `registry`, under `config`: the parts the

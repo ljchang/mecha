@@ -264,22 +264,81 @@
     }
   }
 
-  async function load(sessionKey = key, signal) {
+  // **A read taken mid-run is the history, not the run.** While a run holds
+  // the conversation the server answers with what the run started from; the
+  // run itself reaches this page only as the events it streams after the
+  // page subscribed. A page opened mid-run — or a phone whose stream died
+  // in the background and reconnected, which is most runs long enough to
+  // lock the screen over (an image edit) — has missed the stretch between,
+  // and that stretch is where a picture's `image_generate` result lives.
+  // So `done` re-reads when the last read found a run in flight.
+  let partialRun = false;
+  // How many `done`s this page has taken. The stream is opened before the
+  // read, so a `done` can overtake a read that then reports the run in
+  // flight; the read compares against this to know it is already stale.
+  let doneSeq = 0;
+  // Where this page's own additions start — what the transcript does not
+  // hold, which a re-read must carry over rather than drop.
+  let liveFrom = 0;
+
+  // What only this page holds, and a re-read must carry over: a draft card,
+  // a notice, and words the run never took — never folded into the
+  // conversation, so they sit beside the notice saying send again. A
+  // delivered message is in the transcript; carrying it would draw it twice.
+  const pageOnly = (e) =>
+    e.kind === 'draft' ||
+    e.kind === 'notice' ||
+    (e.kind === 'user' && !!e.queued && e.delivery !== 'delivered');
+
+  // The chat on screen's signal, aborted by the stream effect's cleanup when
+  // the page switches away or unmounts, so a catch-up still on the wire
+  // writes nothing into a view that has moved on.
+  let viewSignal = null;
+  // Which read is the latest. Two can be on the wire at once — the stream's
+  // own and a catch-up, or two catch-ups — and an older answer landing last
+  // would put back the run the newer one saw end.
+  let loadGen = 0;
+
+  // A re-read that keeps what only this page holds. The cards are taken in
+  // `load`, in the same step that replaces the list, never before its
+  // `await`: a card pushed while the read is on the wire is in the list by
+  // then, and a read that fails, is superseded, or finds the chat gone
+  // replaces nothing and so carries nothing — no duplicate, and nothing put
+  // back into an incognito chat that `forget` has just emptied.
+  function catchUp(sessionKey) {
+    return load(sessionKey, viewSignal, { carry: true });
+  }
+
+  // True when it replaced the transcript with the server's.
+  async function load(sessionKey = key, signal, { carry = false } = {}) {
+    const seq = doneSeq;
+    const gen = ++loadGen;
     try {
       const res = await fetch(`/api/chat/${sessionKey}`, { signal });
       // Reaped between the open and this read: the gone screen, not an
       // error strip (review of #326).
       if (res.status === 410) {
         if (!signal?.aborted && sessionKey === key) closeIncognito('closed');
-        return;
+        return false;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).trim()}`);
       const data = await res.json();
-      if (signal?.aborted || sessionKey !== key) return;
+      if (signal?.aborted || sessionKey !== key || gen !== loadGen) return false;
+      const carried = carry ? entries.slice(liveFrom).filter(pageOnly) : [];
       entries = data.entries.map((e) =>
         e.kind === 'tool' ? { ...e, pending: false } : e
       );
       running = data.running;
+      partialRun = !!data.held_by_run;
+      // Before the carried cards, so they stay page-only for the next re-read.
+      liveFrom = entries.length;
+      entries.push(...carried);
+      // A `done` landed while this read was on the wire, and the read still
+      // saw the run: that run is over and nothing will say so again.
+      if (partialRun && doneSeq !== seq) {
+        partialRun = false;
+        queueMicrotask(() => catchUp(sessionKey));
+      }
       // What this conversation is about, when it is about a board task.
       // Absent for an ordinary chat, which renders exactly as before.
       task = data.task ?? null;
@@ -311,9 +370,11 @@
       }
       error = null;
       scrollDown();
+      return true;
     } catch (e) {
       if (!signal?.aborted && sessionKey === key) error = String(e?.message ?? e);
     }
+    return false;
   }
 
   // A POST can resolve before or after its broadcast. Correlate by request,
@@ -457,6 +518,7 @@
           for (const id of ev.ids) offerDraft(id);
           break;
         case 'done':
+          doneSeq += 1;
           flushStreaming();
           running = false;
           taint = { private: ev.taint_private, untrusted: ev.taint_untrusted };
@@ -484,6 +546,12 @@
           entries = entries.map((e) =>
             e.kind === 'tool' && e.pending ? { ...e, pending: false, unfinished: true } : e
           );
+          // The conversation is back in the server's hands by now (it is
+          // handed back before `done` is sent), so this read is the whole of it.
+          if (partialRun) {
+            partialRun = false;
+            catchUp(sessionKey);
+          }
           break;
       }
     };
@@ -543,6 +611,17 @@
     try {
       const res = await fetch('/api/sessions');
       if (res.ok) rail = (await res.json()).sessions;
+      // The belt under `done`: one the page never received — dropped with a
+      // lagged batch, or sent before this page's stream subscribed — leaves
+      // `partialRun` set with nothing left to clear it. The rail already
+      // says whether each chat's run is live, every 20 seconds, so a run it
+      // calls over is caught up here. Only on a row that says so: a chat
+      // missing from the rail is not evidence the run ended.
+      const sessionKey = key;
+      if (partialRun && rail?.find((s) => s.key === sessionKey)?.running === false) {
+        partialRun = false;
+        catchUp(sessionKey);
+      }
     } catch {
       // the rail is a convenience; the transcript is the truth
     }
@@ -557,6 +636,12 @@
     streaming = '';
     usage = null;
     taint = null;
+    // What the catch-up knew of the last chat. The new key's first read sets
+    // both again; reset here so nothing in between (the rail's belt) acts on
+    // the old chat's run. `doneSeq` is a counter compared by a read against
+    // its own start, and a read for the old key is dropped by its key check.
+    partialRun = false;
+    liveFrom = 0;
     // Same rule as everywhere else this readout guards against staleness
     // (the TUI's `/clear`, voice's `Hosted::Unknown` fall-through): the
     // tint describes the *previous* conversation's last run, and nothing
@@ -775,6 +860,7 @@
     // cleanup below runs — and is not reopened for a chat that is over.
     if (gone) return;
     const controller = new AbortController();
+    viewSignal = controller.signal;
     let source;
     let retry;
     let retryDelay = 1500;
