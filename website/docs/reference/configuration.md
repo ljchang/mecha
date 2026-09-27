@@ -702,6 +702,7 @@ Manage them with `mecha trigger add` / `edit` / `rm`, or edit the files directly
 | `MECHA_OUTBOX_DIR` | Where outbox items are staged. Default `~/.mecha/outbox`. |
 | `MECHA_MESSAGES_DIR` | The inter-agent mailbox. Default `~/.mecha/messages`. |
 | `MECHA_LEARNING_DIR` | The learning store. Default `~/.mecha/learning`. |
+| `MECHA_COMPARISONS_DIR` | The comparison store (point-wise and counterfactual comparisons). Default `~/.mecha/comparisons`. |
 | `MECHA_TRIGGERS_DIR` | Trigger definitions and their ledger. Default `~/.mecha/triggers`. |
 | `MECHA_QUESTIONS_DIR` | Questions a delegated run is waiting on you to answer. Default `~/.mecha/questions`. |
 | `MECHA_MAIL_DIR` | The mail account registry and its per-account credentials. Default `~/.mecha/mail`. |
