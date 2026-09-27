@@ -153,13 +153,14 @@ Measured on a 2222x1548 photo of a laptop screen:
 | | raw | after the caps |
 |---|---|---|
 | file | 5.7 MB PNG | 179 KB JPEG, 1568px long edge |
-| `prompt_tokens` | **294** | **294** |
+| `prompt_tokens` | **294** | **294** (superseded: see below) |
 
-**The token cost is identical**, because the server tiles the image to a fixed
-count before the model sees it. So the resize buys nothing in context and 32x
-on the wire and in the session file — which matters more than it sounds: one
-un-resized screenshot was **99% of a session transcript**, re-sent whole on
-every subsequent turn.
+That reading turned out to be specific to that day's server. On the Qwen
+vision models an image costs roughly one token per 32×32 pixels, so a
+1568×980 screenshot is about 1,500 tokens and the cap bounds context as well.
+The larger saving is still on the wire and in the session file — which
+matters more than it sounds: one un-resized screenshot was **99% of a session
+transcript**, re-sent whole on every subsequent turn.
 
 The caps are 1568px on the long edge and 5 MB encoded. Five is Anthropic's hard
 per-image limit and is applied to local servers too, because a conversation is

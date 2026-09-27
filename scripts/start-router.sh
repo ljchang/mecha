@@ -111,6 +111,21 @@ qwen_sampling() {
 # user turn instead of re-reading from the first dropped block — at the cost
 # of context that fills sooner. Gemma's template has no such rule.
 #
+# A Qwen projector's image-token floor. Qwen's own default lets an image
+# shrink to 8 tokens (clip.cpp `set_limit_image_tokens(8, 4096)`), and the
+# build warns at every load that grounding — bounding boxes — needs at least
+# 1024: with small images Qwen3-VL placed boxes wrongly, and raising the floor
+# "significantly improves the results" (llama.cpp #16842, fixed by #16878's
+# smart resize). mecha's own cap (image.rs, 1568 px long edge) already puts a
+# full screenshot at ~1100–2400 tokens, so the floor only lifts images under
+# about a megapixel — at most ~+1000 tokens each, 0.4% of a 262,144-token
+# slot. No max: mecha's largest image is under the default 4096. Gemma sizes
+# its own images (70–1120 tokens) and never warns, so it gets neither line.
+# Both builds take the flag (asked of `--help` on 95887577 and c841aee).
+qwen_vision() {
+  printf '%s\n' "image-min-tokens = 1024"
+}
+
 # Both builds take the flag — asked of the binaries, not the changelog, on
 # 2026-09-26: the installed c841aee's `--help` lists `--reasoning-preserve,
 # --no-reasoning-preserve … (default: template default)`, 95887577's the same
@@ -134,6 +149,7 @@ cat >>"$OUT" <<EOF
 [qwen3.6-35b-a3b]
 model = $F
 mmproj = $MP
+$(qwen_vision)
 ctx-size = ${MECHA_LLAMA_CTX:-1048576}
 parallel = ${MECHA_LLAMA_NP:-4}
 cache-ram = ${MECHA_LLAMA_CRAM:-32768}
@@ -154,6 +170,7 @@ if [ -n "$F" ] && [ -n "$MP" ]; then
 [qwen3.6-35b-a3b-uncensored]
 model = $F
 mmproj = $MP
+$(qwen_vision)
 ctx-size = ${MECHA_LLAMA_CTX:-1048576}
 parallel = ${MECHA_LLAMA_NP:-4}
 cache-ram = ${MECHA_LLAMA_CRAM:-32768}
@@ -173,6 +190,7 @@ qwen38() {
 [$1]
 model = $2
 mmproj = $3
+$(qwen_vision)
 ctx-size = 262144
 parallel = 1
 spec-type = draft-mtp
