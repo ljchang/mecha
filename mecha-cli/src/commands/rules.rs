@@ -1028,7 +1028,14 @@ fn propose(
     owner: Option<&Tally>,
 ) -> Result<()> {
     let _lock = store.lock()?;
-    let (records, other) = mecha_core::learning::measured_on(store.validations()?, model);
+    // Two folds of one ledger (owner's ruling, 2026-09-27: count one model).
+    // The convictions a retirement counts are this model's rows only; whether
+    // a rule was measured beyond its convictions — the probation release — is
+    // a fact about the whole ledger, written to disk and read on every model
+    // (found on review of #346).
+    let ledger = store.validations()?;
+    let tallies = rule_tallies(&ledger);
+    let (records, other) = mecha_core::learning::measured_on(ledger, model);
     if other > 0 {
         println!(
             "retirement counts {} ledger row(s) measured on {model}; {other} from other models \
@@ -1036,7 +1043,6 @@ fn propose(
             records.len()
         );
     }
-    let tallies = rule_tallies(&records);
     let proposals = store.proposals()?;
     let mut staged = 0u32;
 
@@ -1323,8 +1329,8 @@ fn propose(
     }
     if staged == 0 {
         println!(
-            "no rule has {min_attributed}+ attributed regressions — nothing to retire \
-             (`mecha rules` shows the tallies)"
+            "no rule has {min_attributed}+ attributed regressions on {model} — nothing to \
+             retire (`mecha rules` shows the tallies, every model's rows together)"
         );
     }
     Ok(())

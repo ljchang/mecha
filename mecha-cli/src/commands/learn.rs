@@ -555,14 +555,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let learner = Learner::new(provider, model);
     eprintln!("learning with {} ({provider_name})", learner.model());
 
-    // The ledger, folded per rule, so the consolidation can drop what has
-    // been measured harmful instead of guessing from the rule text. Read once
-    // for every domain: it is a scan of one append-only file. Only this
-    // model's rows — the one `validate` measured on, resolved the same way —
-    // because probation release sets the retirement threshold, and a leash
-    // lengthened on another model's grades is the mix the owner's ruling of
-    // 2026-09-27 (count one model) rules out.
-    let (rows, _) = mecha_core::learning::measured_on(store.validations()?, learner.model());
+    // The ledger, folded per rule, read once for every domain (a scan of one
+    // append-only file) and folded twice, because it answers two questions
+    // (owner's ruling, 2026-09-27: count one model):
+    // - **Harm is per model.** The consolidation drops what has been measured
+    //   harmful, so it reads only the rows measured on this model — the one
+    //   `validate` measured on, resolved the same way.
+    // - **Whether a rule was ever measured is a fact about the ledger.**
+    //   Probation is written to disk and read on every model; stamped from
+    //   one model's rows, a rule graded only on the previous resident model
+    //   would read as never graded and be put back on the short leash for
+    //   good (found on review of #346).
+    let ledger = store.validations()?;
+    let ledger_tallies = mecha_core::learning::rule_tallies(&ledger);
+    let (rows, _) = mecha_core::learning::measured_on(ledger, learner.model());
     let tallies = mecha_core::learning::rule_tallies(&rows);
 
     // The gate replays against the recorded tool surface, which needs the
@@ -823,7 +829,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // thing probation exists to remember.
             let Disposition { status, probation } = dispose(args.auto, regressed, measured);
             if probation {
-                stamp_probation(&mut rules, &tallies, region);
+                stamp_probation(&mut rules, &ledger_tallies, region);
             }
             let applied = status == "auto_applied" || status == "auto_applied_probation";
             // The proposal is written whichever way this went. Under `--auto`

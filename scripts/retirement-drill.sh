@@ -140,7 +140,10 @@ for PASS in 1 2; do
 the probe did not regress on the bad rule (model behaviour drifted? read the ledger above)"
 
     echo "── retirement scan after pass $PASS ──"
-    "$MECHA" rules propose-retirements --apply || fail "the retirement scan errored"
+    # Pinned like the run and validate above: retirement counts only the rows
+    # of the model it resolves, and unpinned that is whatever the router has
+    # resident — not necessarily `local`, which wrote these rows.
+    "$MECHA" rules propose-retirements -p local --apply || fail "the retirement scan errored"
     ACTIVE="$(rule_state r-drill-bad active)"
     if [ "$PASS" -eq 1 ]; then
         [ "$ACTIVE" = "true" ] || fail "one conviction retired the rule — the leash is 2, not 1"
