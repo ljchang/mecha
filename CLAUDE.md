@@ -285,11 +285,16 @@ from anywhere:
   confirmed from the startup line (`n_ctx_slot = …`), and if you change the
   server's `-c` you must change `context_window` to match — the compaction
   threshold and the tool-output budget derive from it and trust it.
-- **Two servers, one model each** — :8080 chat, :8081 embeddings.
+- **Two servers** — :8080 chat (a router: several presets, one resident at
+  a time), :8081 embeddings.
 - **`max_tokens` must sit comfortably above `--reasoning-budget`**, or the
   reply is HTTP 200 with empty `content`; clients here refuse that by name.
-- **Ask what is served (`GET /props` → `model_alias`), don't assert it** —
-  llama-server ignores the request's `model` field.
+- **Ask what is served, don't assert it.** On the router the request's
+  `model` field *selects*, and a bare `GET /props` is a placeholder
+  (`model_alias: "llama-server"`) — reading it as the served model lost a
+  night of graph extraction on 2026-09-27. Ask `GET /models` for the
+  resident one, or `/props?model=<id>&autoload=false`; a probe that names a
+  model without `autoload=false` loads it.
 - **Throughput is wall clock**; the server's per-request rates hide queue wait.
 
 ## Security model
