@@ -50,8 +50,11 @@ pub enum Cmd {
 #[derive(Serialize)]
 struct Router {
     base_url: String,
-    /// `None` when nothing is loaded.
+    /// `None` when nothing is loaded — or when `readable` is false.
     resident: Option<String>,
+    /// Whether the router's model list is one this build fully reads. When
+    /// it is not, `resident: None` means "unknown", not "nothing loaded".
+    readable: bool,
     models: Vec<Model>,
     /// Entries pointing at this router whose model it does not serve: every
     /// run on one is a 400 (`model '…' not found`).
@@ -91,33 +94,51 @@ async fn survey(cfg: &Config) -> Vec<(String, Option<Router>)> {
             out.push((base, None));
             continue;
         };
-        let served: Vec<&str> = list.iter().map(|m| m.id.as_str()).collect();
-        let unserved = cfg
-            .providers
-            .iter()
-            .filter(|(_, p)| p.base_url.as_deref().map(router::base).as_deref() == Some(&base))
-            .filter(|(_, p)| p.model.as_deref().is_some_and(|m| !served.contains(&m)))
-            .map(|(n, _)| n.clone())
-            .collect();
-        let r = Router {
-            resident: router::resident(&list).map(str::to_string),
-            models: list
-                .iter()
-                .map(|m| Model {
-                    id: m.id.clone(),
-                    status: m.status.value.clone(),
-                    providers: router::namers(cfg, &base, &m.id)
-                        .map(str::to_string)
-                        .collect(),
-                    sampling_mismatches: router::sampling_mismatches(cfg, &base, m),
-                })
-                .collect(),
-            unserved,
-            base_url: base.clone(),
-        };
-        out.push((base, Some(r)));
+        out.push((base.clone(), Some(router_of(cfg, &base, &list))));
     }
     out
+}
+
+/// What one router's `/models` answer says, against config — the pure half of
+/// `survey`, so the readability rules are tested without a server.
+fn router_of(cfg: &Config, base: &str, list: &[router::RouterModel]) -> Router {
+    let served: Vec<&str> = list.iter().map(|m| m.id.as_str()).collect();
+    // An *empty* list would name every entry "not served" under the banner
+    // saying it cannot be read — two opposite claims about one answer. An
+    // unknown *status* does not touch this: the ids are complete either
+    // way, and an entry the router does not serve 400s on every run
+    // (found on review, twice). `resident` below is the claim about
+    // statuses, and is gated on `readable`.
+    let readable = router::readable(list);
+    let unserved = if list.is_empty() {
+        Vec::new()
+    } else {
+        cfg.providers
+            .iter()
+            .filter(|(_, p)| p.base_url.as_deref().map(router::base).as_deref() == Some(base))
+            .filter(|(_, p)| p.model.as_deref().is_some_and(|m| !served.contains(&m)))
+            .map(|(n, _)| n.clone())
+            .collect()
+    };
+    Router {
+        resident: readable
+            .then(|| router::resident(list).map(str::to_string))
+            .flatten(),
+        readable,
+        models: list
+            .iter()
+            .map(|m| Model {
+                id: m.id.clone(),
+                status: m.status.value.clone(),
+                providers: router::namers(cfg, base, &m.id)
+                    .map(str::to_string)
+                    .collect(),
+                sampling_mismatches: router::sampling_mismatches(cfg, base, m),
+            })
+            .collect(),
+        unserved,
+        base_url: base.to_string(),
+    }
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
@@ -169,6 +190,12 @@ async fn list(cfg: &Config, json: bool) -> Result<()> {
             continue;
         };
         println!("{base}");
+        if !r.readable {
+            println!(
+                "  ! this router's model list is one this build cannot fully read (empty, or a \
+                 status it does not know) — which model is loaded is unknown"
+            );
+        }
         for m in &r.models {
             let here = if r.resident.as_deref() == Some(m.id.as_str()) {
                 "●"
@@ -228,6 +255,15 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
     let list = router::models(&base)
         .await
         .with_context(|| format!("{base} is not a llama-server router (or is not up)"))?;
+    // What is loaded now, only from a list this reads: on an unreadable one
+    // `previous` would be `None`, and both rulings that depend on it — R2's
+    // `--now` and R1's rollback — would silently not happen (found on review).
+    anyhow::ensure!(
+        router::readable(&list),
+        "the router at {base} answered /models with a list this build cannot read (empty, or \
+         a status it does not know), so what is loaded now is unknown — refusing to switch \
+         without it; `mecha model list` shows what it sees"
+    );
     let previous = router::resident(&list).map(str::to_string);
 
     // R4: a preset whose temperature the config would override is refused.
@@ -323,4 +359,74 @@ fn report(cfg: &Config, base: &str, model: &str, secs: f64, json: bool) -> Resul
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::config::ProviderConfig;
+
+    const BASE: &str = "http://127.0.0.1:8080";
+
+    fn cfg() -> Config {
+        let mut c = Config {
+            default_provider: "local".into(),
+            ..Default::default()
+        };
+        for (name, model) in [("local", "qwen3.6-35b-a3b"), ("stale", "gone-model")] {
+            c.providers.insert(
+                name.into(),
+                ProviderConfig {
+                    kind: "local".into(),
+                    base_url: Some(BASE.into()),
+                    model: Some(model.into()),
+                    follow_loaded: name == "local",
+                    ..Default::default()
+                },
+            );
+        }
+        c
+    }
+
+    fn list(json: &str) -> Vec<router::RouterModel> {
+        serde_json::from_str::<serde_json::Value>(json)
+            .and_then(|v| serde_json::from_value(v["data"].clone()))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_readable_list_names_what_is_loaded_and_what_is_not_served() {
+        let r = router_of(
+            &cfg(),
+            BASE,
+            &list(r#"{"data":[{"id":"qwen3.6-35b-a3b","status":{"value":"loaded"}}]}"#),
+        );
+        assert!(r.readable);
+        assert_eq!(r.resident.as_deref(), Some("qwen3.6-35b-a3b"));
+        assert_eq!(r.unserved, vec!["stale".to_string()]);
+    }
+
+    /// An unknown status makes "what is loaded" unknown — never "nothing" —
+    /// but the ids are still complete, so "not served" still holds.
+    #[test]
+    fn an_unknown_status_hides_the_resident_but_not_the_unserved() {
+        let r = router_of(
+            &cfg(),
+            BASE,
+            &list(r#"{"data":[{"id":"qwen3.6-35b-a3b","status":{"value":"resident"}}]}"#),
+        );
+        assert!(!r.readable);
+        assert_eq!(r.resident, None);
+        assert_eq!(r.unserved, vec!["stale".to_string()]);
+    }
+
+    /// An empty list says nothing about ids either: no "not served" claims
+    /// under a banner saying the list cannot be read.
+    #[test]
+    fn an_empty_list_claims_nothing() {
+        let r = router_of(&cfg(), BASE, &list(r#"{"data":[]}"#));
+        assert!(!r.readable);
+        assert_eq!(r.resident, None);
+        assert!(r.unserved.is_empty());
+    }
 }

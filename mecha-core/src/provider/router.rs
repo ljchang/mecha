@@ -189,6 +189,9 @@ async fn list_on(http: &reqwest::Client, b: &str) -> Option<Vec<RouterModel>> {
     Some(body.json::<ModelList>().await.ok()?.data)
 }
 
+/// Every model status this build knows how to read (`c841aee`).
+pub const KNOWN_STATUSES: [&str; 5] = ["unloaded", "loading", "loaded", "sleeping", "downloading"];
+
 /// Whether a `/models` answer is one this can draw a conclusion from: a
 /// non-empty list whose every status is one it knows. **"Nothing resident"
 /// is a claim, and a list this does not fully understand cannot support it**
@@ -196,11 +199,10 @@ async fn list_on(http: &reqwest::Client, b: &str) -> Option<Vec<RouterModel>> {
 /// evict the owner's pick without a word. The same rule `model-idle.sh`
 /// applies to the same answer (found on review).
 pub fn readable(models: &[RouterModel]) -> bool {
-    const KNOWN: [&str; 5] = ["unloaded", "loading", "loaded", "sleeping", "downloading"];
     !models.is_empty()
         && models
             .iter()
-            .all(|m| KNOWN.contains(&m.status.value.as_str()))
+            .all(|m| KNOWN_STATUSES.contains(&m.status.value.as_str()))
 }
 
 /// The resident model, if exactly one is. `--models-max 1` means at most one;
@@ -509,16 +511,27 @@ pub async fn unload(base_url: &str, model: &str, wait: Duration) -> Result<()> {
         // Gone is a list that answered and does not hold it resident —
         // absent counts, should a router ever drop unloaded entries (this one
         // keeps them listed). No answer is not gone.
-        // Readable first: an empty or unknown-status list is not "gone"
-        // either (the module's rule, found on review).
-        let gone = list_on(&http, &b).await.is_some_and(|l| {
-            readable(&l)
-                && l.iter()
-                    .find(|m| m.id == model)
-                    .is_none_or(|m| !m.is_resident())
-        });
-        if gone {
-            return Ok(());
+        // Readable first: an empty or unknown-status list is not "gone" —
+        // and, as in `load`, it is not a reason to keep waiting either: it
+        // says nothing about whether the unload is coming, so it fails now
+        // rather than holding `mecha model use --now` for `wait` (found on
+        // review).
+        if let Some(l) = list_on(&http, &b).await {
+            // An empty list *does* answer this narrower question — "is this
+            // model resident?" — no; only an unknown status leaves it open
+            // (found on review).
+            if !l.is_empty() && !readable(&l) {
+                bail!(
+                    "the router's model list has a status this build does not know — \
+                     `mecha model list` shows what it sees"
+                );
+            }
+            if l.iter()
+                .find(|m| m.id == model)
+                .is_none_or(|m| !m.is_resident())
+            {
+                return Ok(());
+            }
         }
         if tokio::time::Instant::now() >= deadline {
             bail!(
@@ -591,6 +604,14 @@ pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
                         m.status
                             .exit_code
                             .map_or_else(|| "unknown".to_string(), |c| c.to_string())
+                    ),
+                    // A status this build does not know — renamed, or absent
+                    // (an empty value, by `serde(default)`) — says nothing about
+                    // whether the load is coming: fail now rather than wait
+                    // out `wait` on it (found on review).
+                    other if !KNOWN_STATUSES.contains(&other) => bail!(
+                        "the router reports {model} as {other:?}, a status this build does not \
+                         know — `mecha model list` shows what it sees"
                     ),
                     // Unloaded and not failed: either the load has not been
                     // picked up yet (it waits for the resident model to go
@@ -983,6 +1004,118 @@ mod tests {
             "{w:?}"
         );
         observe(&Config::default(), false).await;
+    }
+
+    /// `load` stops at once on a status this build does not know, instead of
+    /// polling until `wait` runs out — the old behaviour this would pass on.
+    #[tokio::test]
+    async fn a_load_that_reports_an_unknown_status_fails_at_once() {
+        let router = r#"{"role":"router","model_alias":"llama-server"}"#;
+        let unloaded = r#"{"data":[{"id":"m","status":{"value":"unloaded"}}]}"#;
+        let renamed = r#"{"data":[{"id":"m","status":{"value":"resident"}}]}"#;
+        let (url, server) = stub(vec![router, unloaded, r#"{"success":true}"#, renamed]).await;
+        let started = std::time::Instant::now();
+        let err = load(&url, "m", Duration::from_secs(30)).await.unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(format!("{err:#}").contains("\"resident\""), "{err:#}");
+        let lines = server.await.unwrap();
+        assert_eq!(lines[2], "POST /models/load HTTP/1.1");
+    }
+
+    /// The status lists the shell and Python tools carry by hand are this
+    /// one: a status added here and missed there would make two tools
+    /// disagree about what is loaded, and nothing else would fail (found on
+    /// review). Each copy must quote every known status and the resident set.
+    #[test]
+    fn the_scripts_carry_the_same_status_lists() {
+        let scripts = [
+            (
+                "served-props.sh",
+                include_str!("../../../scripts/served-props.sh"),
+            ),
+            (
+                "model-idle.sh",
+                include_str!("../../../scripts/model-idle.sh"),
+            ),
+            (
+                "appraisal-validity.py",
+                include_str!("../../../scripts/appraisal-validity.py"),
+            ),
+        ];
+        let resident: Vec<&str> = KNOWN_STATUSES
+            .iter()
+            .copied()
+            .filter(|v| {
+                RouterModel {
+                    id: String::new(),
+                    status: Status {
+                        value: v.to_string(),
+                        ..Default::default()
+                    },
+                }
+                .is_resident()
+            })
+            .collect();
+        assert_eq!(resident, ["loading", "loaded", "sleeping"]);
+        for (name, text) in scripts {
+            for status in KNOWN_STATUSES {
+                assert!(
+                    text.contains(&format!("\"{status}\"")),
+                    "{name} does not know {status:?}"
+                );
+            }
+            assert!(
+                text.contains(r#"("loaded", "loading", "sleeping")"#),
+                "{name}'s resident set is not loaded/loading/sleeping"
+            );
+        }
+    }
+
+    /// `unload` stops at once on a list it cannot read, instead of holding
+    /// `--now` for its whole wait.
+    #[tokio::test]
+    async fn an_unload_that_reads_an_unknown_status_fails_at_once() {
+        let renamed = r#"{"data":[{"id":"m","status":{"value":"resident"}}]}"#;
+        let (url, server) = stub(vec![r#"{"success":true}"#, renamed]).await;
+        let started = std::time::Instant::now();
+        let err = unload(&url, "m", Duration::from_secs(30))
+            .await
+            .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(format!("{err:#}").contains("does not know"), "{err:#}");
+        assert_eq!(server.await.unwrap()[0], "POST /models/unload HTTP/1.1");
+    }
+
+    /// The boundary that arm sits on: `downloading` is a status this build
+    /// knows, so a load reporting it is waited for, not failed.
+    #[tokio::test]
+    async fn a_load_that_is_downloading_is_waited_for() {
+        let router = r#"{"role":"router","model_alias":"llama-server"}"#;
+        let unloaded = r#"{"data":[{"id":"m","status":{"value":"unloaded"}}]}"#;
+        let downloading = r#"{"data":[{"id":"m","status":{"value":"downloading"}}]}"#;
+        let (url, server) = stub(vec![
+            router,
+            unloaded,
+            r#"{"success":true}"#,
+            downloading,
+            downloading,
+            downloading,
+            downloading,
+        ])
+        .await;
+        let err = load(&url, "m", Duration::from_secs(1)).await.unwrap_err();
+        let said = format!("{err:#}");
+        assert!(said.contains("was not loaded after 1s"), "{said}");
+        assert!(!said.contains("does not know"), "{said}");
+        server.abort();
     }
 
     #[tokio::test]
