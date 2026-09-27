@@ -27,10 +27,10 @@ The first of these ends it:
   you closed cannot tell the server, so the timeout is what ends that chat.
 - **`mecha serve` stopping**, for any reason.
 
-A closed chat is gone for good. The page says so and offers a new one, and the
-drawer that lists earlier conversations never shows it — there is nothing to
-reopen, and no "save this conversation" button, by design. While it is open,
-the drawer lists it as *incognito chat*, with no title.
+While it is open, the drawer lists it as *incognito chat*, with no title. A
+closed chat is gone for good: the page says so and offers a new one, and the
+drawer never shows a closed one among earlier conversations — there is
+nothing to reopen, and no "save this conversation" button, by design.
 
 ## How it keeps nothing
 

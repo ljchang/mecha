@@ -61,9 +61,9 @@ apply per entry. The keys are in the
 ## Switching
 
 ```bash
-mecha model                   # what each router serves, and what is loaded (●)
-mecha model use gemma26       # by provider entry
-mecha model use qwen3.8-27b   # or by the router's model name
+mecha model                       # what each router serves, and what is loaded (●)
+mecha model use gemma26           # by provider entry
+mecha model use gemma-4-26b-a4b   # or by the router's model name
 ```
 
 `use` loads the model and waits until it is ready. A load runs at disk speed:
