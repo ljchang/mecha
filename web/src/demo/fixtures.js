@@ -1048,6 +1048,28 @@ export const history = {
 // The conversation the demo opens on. It has already run once, so the page
 // shows a transcript rather than an empty state — and the run it shows is one
 // where the interlock did its job, because that is the thing worth seeing.
+// The chip's picker: `mecha model list --json` for a router with the loaded
+// model first among three. The demo cannot switch — the use/cancel routes are
+// on the demo boundary — but the menu it opens is the real one.
+export const modelList = {
+  routers: [
+    {
+      base_url: 'http://127.0.0.1:8080',
+      reachable: true,
+      readable: true,
+      resident: 'qwen3.6-35b-a3b',
+      models: [
+        { id: 'qwen3.6-35b-a3b', status: 'loaded', providers: ['local'], sampling_mismatches: [], would_not_follow: null },
+        { id: 'qwen3.8-27b', status: 'unloaded', providers: ['qwen38'], sampling_mismatches: [], would_not_follow: null },
+        { id: 'gemma-4-26b-a4b', status: 'unloaded', providers: ['gemma26'], sampling_mismatches: [], would_not_follow: null },
+      ],
+      unserved: [],
+      pending_switch: null,
+    },
+  ],
+  last_switch: null,
+};
+
 export const transcript = {
   key: 'main',
   path: '~/.mecha/work/web/main',

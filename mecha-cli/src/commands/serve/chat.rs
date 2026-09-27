@@ -991,6 +991,12 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
         match message.role {
             Role::User => {
                 let mut text = String::new();
+                // A picture beside tool results is one a tool put in front
+                // of the model (`ToolOutput::image`, from `image_view`). The
+                // page draws it under that tool's row, from the result's
+                // `image: <path>` line (`pictureOf` in Chat.svelte); an
+                // `[image]` here would read as something the owner attached.
+                let results = !mecha_core::agent::is_plain_user_text(message);
                 for block in &message.content {
                     match block {
                         // The owner's bubble carries the owner's words. A
@@ -1032,6 +1038,7 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                                 preview: Some(result_preview(content)),
                             });
                         }
+                        Block::Image { .. } if results => {}
                         Block::Image { .. } => {
                             if !text.is_empty() {
                                 text.push('\n');
@@ -4105,6 +4112,43 @@ mod wire_tests {
                 },
             ]
         );
+    }
+
+    /// A picture a tool showed the model rides in the results turn behind its
+    /// caption; the history draws the tool's row and no owner bubble — not
+    /// the caption, not an `[image]`. Fails on the old renderer, which
+    /// appended `[image]` to an owner entry for any image in a user message.
+    #[test]
+    fn a_tools_picture_is_not_drawn_as_something_the_owner_attached() {
+        let messages = vec![
+            Message::user("is the hat on the right person?"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "v1".into(),
+                name: "image_view".into(),
+                input: serde_json::json!({"path": "images/a.png"}),
+            }]),
+            Message::tool_results(vec![
+                Block::ToolResult {
+                    tool_use_id: "v1".into(),
+                    content: "image: images/a.png".into(),
+                    is_error: false,
+                },
+                Block::text("[picture returned by image_view: images/a.png]"),
+                Block::image("image/png", b"png", Some("images/a.png".into())),
+            ]),
+        ];
+        let entries = transcript_entries(&messages);
+        let owner: Vec<_> = entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::User { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(owner, vec!["is the hat on the right person?"]);
+        assert!(entries
+            .iter()
+            .any(|e| matches!(e, Entry::Tool { name, .. } if name == "image_view")));
     }
 
     #[test]

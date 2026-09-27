@@ -255,6 +255,22 @@ The parts that bite hardest:
     is polled and turned into the run's own cancel (a one-run command gets
     the SIGINT that Ctrl-C would send), because an unloaded model is loaded
     back by a multi-request run's next request.
+  - **A waiting switch is hurried by a marker keyed to its identity, never
+    its path** (`Holds::request_now`, the chip's "switch now"). The marker's
+    name is a function of the router alone, so it carries the switch's pid
+    and start time, and `request_now` checks the pending switch's target
+    against the one asked for as it writes: one left by a withdrawn or killed
+    switcher must not hurry the next switch, and a switch replaced by one to
+    another model is never hurried in the first's name.
+    `Switching`'s own drop and `withdraw_switch` remove it; `cancel-switch`
+    sweeps any left over. Its sibling `.past` (`Switching::past_the_wait`),
+    written once the wait returns, is keyed the same way and is why the chip
+    stops offering "switch now" during the unload. It is a separate file, not
+    a field rewritten into the switch file: a rewrite racing `cancel-switch`
+    could restore a withdrawn switch that the switcher's `still_pending`
+    would then believe. Markers are written through a uniquely named temp
+    file each, so two hurries never race on one. The same lesson as `Switching::still_pending`
+    (review of #350).
   - **A hold's label is never user content** — `mecha run "<prompt>"` must
     not leave the prompt under `~/.mecha/holds`; only the subcommand name.
 - **Throughput is wall clock.** The server times a request only while it is
@@ -279,8 +295,67 @@ OpenAI dialect's `role: "tool"` messages carry a string and nothing else. A
 tool returning pixels would work on one backend and silently lose them on the
 other, in the one place where the missing thing is what the whole turn was
 about. So an image enters the way a person hands one over — the connector and
-the TUI attach it to the turn — and "look at the chart you just made" is
-deliberately not built.
+the TUI attach it to the turn — and a tool's picture takes the same road:
+**beside the results, never inside one.** `ToolOutput::image` carries it out
+of the tool; `run_tools` folds it into the user turn that carries the
+results — the slot steering uses — after every `tool_result` (Anthropic wants
+those first; the OpenAI dialect lifts them into `role: "tool"` messages ahead
+of the parts array anyway), behind a caption naming the call and the file.
+
+**`image_view` is the one producer, and a look is on request.**
+`image_generate` returns a path and a seed and says to call `image_view` to
+check; the owner's ruling (2026-09-27) is that the pixels are not returned by
+default, because a picture costs context by its *pixels* — about 1000 tokens
+for a square generation on the Qwen-VL presets — for the rest of the
+conversation, and most pictures are not ones the model was asked to check.
+Before it, a model could not look at all: `fs_read` returns PNG bytes as
+noise, and the result said "You cannot see it", so each edit was composed
+from the user's description of the last. `image_view` reads any workspace
+image through the path jail — a result under `images/`, an attachment under
+`inbox/` — and is registered for any model that can see, `[image]` or not: it
+reaches no server (found on review of #365). `--tool image_view` on a blind
+provider is refused out loud.
+
+Three rules on the fold, each a bug if undone:
+
+- **Only for a model that can see.** To a blind one the image would render
+  as a placeholder line on every turn for the life of the conversation; it is
+  told in the result instead, and nothing is armed on its account.
+- **A look arms `private_data`**, from the turn the pixels arrive — what
+  `arm_for_content` reads off any image at the next run's start anyway, and
+  what `image_view` declares: it is `fs_read` for pictures. Drawing arms
+  nothing, because `image_generate` returns no pixels.
+- **The caption is a registered harness voice** (`TOOL_IMAGE_STEM`), and the
+  web chat does not draw an image in a results turn as an owner bubble. It
+  rides in a user message, so unregistered it would be mined as a steer and
+  shown as something the owner said and attached.
+
+The door is `image::rendered_block`: a picture at or under
+`PASS_THROUGH_BYTES` (1 MiB) that fits `MAX_EDGE` passes through byte for
+byte, because a small file is most often a screenshot of text, where JPEG's
+artefacts close up glyphs; anything larger is re-encoded to JPEG, including a
+picture that fits both caps — a generated picture is a photograph's kind of
+content and its PNG is not small (the first twenty here ran 1.05–2.35 MB,
+every one above the threshold), and every later turn would resend it. The file
+on disk is untouched. An MCP server's `image` content is not taken: those
+would be a third party's pixels.
+
+Three things the fold does not do, stated so nobody reads them as covered:
+
+- **The compaction forecast does not see a look.** `pressure::message_bytes`
+  excludes image payloads (`image_payloads_are_not_counted_as_growth`),
+  decided when an image was the owner's rare act; a run can now add ~1000
+  tokens per look on its own initiative. Reported `prompt_tokens` catches up
+  a turn later, so nothing overflows that did not before, but twenty looks
+  are most of a local slot the forecast cannot see coming.
+- **A look arms `private_data` only.** A workspace picture can hold text a
+  third party wrote — an injection rendered into pixels — and `image_view`
+  does not arm `untrusted` for it, exactly as `fs_read` does not for a text
+  file of the same provenance. The stance is the workspace's, not this
+  tool's; an MCP server's pixels are refused above for that reason.
+- **Replay drops the pixels.** The picture rides in the results turn, which
+  the driver does not replay, and a recorded answer is text; `mecha replay`
+  counts them (`tool_pictures_without_pixels`) and says so.
 
 Four decisions, each a bug if undone:
 
@@ -504,11 +579,11 @@ conversation, so the capabilities do not change. Two rules:
   `Edit images/…png: ` in the input, cursor after it. The path is what lets
   the model name the right reference; the change is the owner's to describe.
 
-The model cannot see what it made — images enter a conversation on user turns
-only (§Images) — so the result says so and hands the seed back: revising is
-an edited prompt with the same seed. The web chat shows the picture under the
-call, reading the path off the result's first line (`image: images/…png`),
-matched strictly so no other text in a preview is taken for a path to fetch
+The model sees what it made on request — `image_view` on the result's path
+(§Images) — and the result hands the seed back: revising is an edited prompt
+with the same seed. The web chat shows the picture under the call, reading the
+path off the result's first line (`image: images/…png`), matched strictly so
+no other text in a preview is taken for a path to fetch
 (`web/test/generated-image.mjs`). The TUI shows the path.
 
 **The request is shaped like stable-diffusion.cpp's API, not ComfyUI's.**

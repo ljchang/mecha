@@ -1,6 +1,7 @@
 <script>
   import { tick } from 'svelte';
   import { apiFetch as fetch } from './api.js';
+  import ModelChip from './ModelChip.svelte';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   // The chat view: a rendering of the conversation the server owns, plus a
   // live SSE feed of the run in flight. Sending during a run steers it —
@@ -1116,15 +1117,25 @@
   const uploading = $derived(uploads > 0);
   let attachments = $state([]); // workspace-relative paths, announced on send
 
-  // The file `image_generate` saved, read off the first line of its own
-  // result — matched strictly, so no other text in a preview is ever taken
-  // for a path to fetch. A refusal or failure has no picture.
-  function generatedImage(entry) {
-    if (entry.name !== 'image_generate' || entry.pending || entry.is_error || entry.blocked) {
+  // The picture under a row: the file `image_generate` saved, or the one
+  // `image_view` put in front of the model — which the owner must be able to
+  // see too, since the model's answer is about it. Read off the first line of
+  // the tool's own result and matched strictly, so no other text in a preview
+  // is ever taken for a path to fetch: `image_generate` only ever writes
+  // `images/<name>.png`; `image_view` reports a workspace-relative path of
+  // plain segments, none starting with a dot. A refusal or failure has no
+  // picture.
+  const PICTURE = {
+    image_generate: /^image: (images\/[A-Za-z0-9._-]+\.png)$/,
+    image_view: /^image: ((?:[A-Za-z0-9_-][A-Za-z0-9._ -]*\/)*[A-Za-z0-9_-][A-Za-z0-9._ -]*\.(?:png|jpe?g|gif|webp))$/i,
+  };
+  function pictureOf(entry) {
+    const pattern = Object.hasOwn(PICTURE, entry.name) ? PICTURE[entry.name] : null;
+    if (!pattern || entry.pending || entry.is_error || entry.blocked) {
       return null;
     }
     const first = (entry.preview ?? '').split('\n', 1)[0];
-    const m = /^image: (images\/[A-Za-z0-9._-]+\.png)$/.exec(first);
+    const m = pattern.exec(first);
     return m ? m[1] : null;
   }
 
@@ -1390,7 +1401,7 @@
         onclick={nextMode}
         title="read-only: reads run, sends stage · ask: every other call becomes an approval card · allow: nothing asks (the interlock still refuses sends once this conversation holds private and untrusted content)"
       >{MODE_LABEL[mode] ?? mode}</button>
-      <span class="chip" title={incognito ? 'an incognito chat runs only on the model on this machine' : undefined}>{model || '…'}</span>
+      <ModelChip {model} {incognito} />
       {#if incognito && !gone}
         <button class="chip endchip" onclick={endIncognito} title="end this chat now — everything in it is deleted">End</button>
       {/if}
@@ -1553,7 +1564,7 @@
              echo it, so this page displays them, never interprets them. -->
         {@const digest = toolDigest(entry.draft)}
         {@const detail = !!(entry.draft || entry.args || entry.preview)}
-        {@const picture = generatedImage(entry)}
+        {@const picture = pictureOf(entry)}
         <div class="tool" class:err={entry.is_error} class:blocked={entry.blocked}>
           <button
             class="toolhead"

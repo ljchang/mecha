@@ -44,6 +44,7 @@ mod files;
 mod frontdoor;
 mod incognito;
 mod mail;
+mod model;
 mod present;
 mod proposals;
 mod questions;
@@ -329,6 +330,11 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
                 .layer(axum::extract::DefaultBodyLimit::max(26_214_400)),
         )
         .route("/api/chat/{key}/file", get(files::download))
+        // The chip (§14 step 5). The owner's only: every route here is behind
+        // `owner_guard`, and no tool reaches these.
+        .route("/api/model", get(model::state))
+        .route("/api/model/use", axum::routing::post(model::switch))
+        .route("/api/model/cancel", axum::routing::post(model::cancel))
         .route("/api/outbox", get(review::list))
         .route("/api/outbox/{id}", get(review::detail))
         .route(
@@ -1075,6 +1081,64 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_model_routes_sit_behind_the_owner_guard() {
+        // The chip's routes move the model every surface on the machine
+        // answers with (§14, D12), so they are the owner's alone: no header
+        // is a 403 on all three, and the owner's header without the
+        // request-verification header is a 403 on the two that act — the
+        // cross-site form the guard exists for. Covered by the whole-router
+        // layer today; pinned because a route added later is exactly the
+        // one an earlier guard test cannot be covering.
+        for (method, uri, owner) in [
+            ("GET", "/api/model", false),
+            ("POST", "/api/model/use", false),
+            ("POST", "/api/model/cancel", false),
+            ("POST", "/api/model/use", true),
+            ("POST", "/api/model/cancel", true),
+        ] {
+            let mut req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json");
+            if owner {
+                req = req.header("Tailscale-User-Login", "owner@example.com");
+            }
+            let response = test_router()
+                .oneshot(req.body(Body::from(r#"{"name":"x"}"#)).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{method} {uri} owner={owner}"
+            );
+        }
+        // …and the guard is guarding *these* routes: a 403 alone would pass
+        // on a misspelled URI too (review, pass 3). The owner, verified,
+        // reaches the handler — which refuses an empty name before it spawns
+        // anything, so no switch is made against the developer's machine.
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/model/use")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
+                    .header("sec-fetch-site", "same-origin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"  "}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "the owner did not reach the use handler"
+        );
     }
 
     #[tokio::test]

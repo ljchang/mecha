@@ -66,6 +66,19 @@ mecha model use gemma26           # by provider entry
 mecha model use gemma-4-26b-a4b   # or by the router's model name
 ```
 
+Or tap the **model chip** in the web chat's header. It lists what the router
+serves, with a dot beside the loaded model, and tapping another switches to
+it. The chip runs the same `mecha model use` on the server, so everything on
+this page applies to it unchanged. While a switch waits, the chip reads
+**→ *model*** and the menu says what it is waiting for, with **switch now**
+and **cancel** beside it. A switch that fails turns the chip amber, and its
+title says why: the old model loaded back, say, or the load timing out.
+
+The menu greys out a model that runs would not follow — one no provider
+entry names, or several do — and one whose preset temperature disagrees with
+its entry. It doesn't offer what `use` would refuse or what would be swapped
+straight back.
+
 `use` loads the model and waits until it is ready. A load runs at disk speed:
 33–39 s from cold, about 9 s when the file is already in the page cache. If
 the new model fails to come up, the one it replaced is loaded back.
@@ -133,7 +146,10 @@ waiting for 2 run(s) to finish: web chat, trigger morning-brief (--now stops the
   *load* after the wait.
 - **`--now` stops the runs instead.** Each one is asked to stop at its next
   safe point, as Ctrl-C would stop it, and gets 15 seconds before the switch
-  goes ahead. A reply in progress ends early.
+  goes ahead. A reply in progress ends early. Given for a switch that is
+  already waiting on the same model, `--now` hurries that switch rather than
+  being refused. The chip's **switch now** works this way, so it can hurry a
+  switch started from a terminal.
 - **Ctrl-C cancels the switch**, and the loaded model stays.
 - **`mecha model cancel-switch` withdraws a stuck switch**: one whose
   `mecha model use` is gone, or whose file can't be read. Every run on that
@@ -166,7 +182,9 @@ one model's results never convict a rule on another's behalf.
 
 ## Who may switch
 
-Only you: `mecha model use` at the terminal. **There is no tool for it.** No
+Only you: `mecha model use` at the terminal, or the web chat's model chip,
+which runs it behind the same owner check as every other page action.
+**There is no tool for it.** No
 model is handed a way to choose the model, because an injection that could
 move the machine onto a different model would be choosing who reads every
 later turn.
@@ -184,10 +202,9 @@ match = ["mecha model use gemma26"]
 justification = "Only the owner switches the model."
 ```
 
-Switching from the web chat's model chip is designed and not built yet. The
-chip shows which model answered, and in an
-[incognito chat](/docs/features/interfaces/incognito) it notes that only the
-local model is allowed.
+In an [incognito chat](/docs/features/interfaces/incognito) the chip is a
+plain label: that chat runs only on the model on this machine, and it offers
+no picker.
 
 ## See also
 

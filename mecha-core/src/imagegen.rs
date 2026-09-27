@@ -21,10 +21,13 @@
 //! once in one directory (`fixed_workspace`), while `mecha serve` jails each
 //! chat session separately and serves downloads from that jail only.
 //!
-//! **The model cannot see what it made** — images enter a conversation on user
-//! turns only (`ARCHITECTURE.md` §Images) — so the result says so, and gives
-//! the seed back. Revising a new image means editing the prompt and reusing
-//! its seed; editing one means passing it in `reference_images`, and an edit
+//! **The model sees what it made on request, not by default**: the result is a
+//! path and a seed, and `image_view` puts the picture in front of it when the
+//! task needs a look (`tool::image_view`). Returning the pixels every time
+//! would spend ~1000 tokens of context per picture for the rest of the
+//! conversation, most of them on pictures nobody asked the model to check.
+//! The seed comes back too: revising a new image means editing the prompt and
+//! reusing its seed; editing one means passing it in `reference_images`, and an edit
 //! always samples at a fresh seed (see `call`).
 //!
 //! **What the server keeps, it is asked to drop.** Every job's history entry
@@ -1362,8 +1365,10 @@ impl Tool for ImageGenerate {
          PNG in the workspace. Takes about a minute. It renders text inside images well — put \
          the exact words in quotes. To edit, pass the picture's path in reference_images (one \
          the user attached, or an earlier result) and say in the prompt what to change and \
-         what to keep, e.g. \"Keep <image1> unchanged except: the jacket is now yellow\". You \
-         will not see the result; the user will."
+         what to keep, e.g. \"Keep <image1> unchanged except: the jacket is now yellow\". The \
+         result is not shown to you. If image_view is among your tools, look at it only when the \
+         task needs you to see it — the user asked you to check, compare or describe it, or an edit depends on \
+         what is where — not to confirm that it worked."
     }
 
     fn input_schema(&self) -> Value {
@@ -1530,8 +1535,7 @@ impl Tool for ImageGenerate {
         if req.references.is_empty() {
             text.push_str(&format!(
                 "Generated a {size} image in {secs} s (seed {}, {} steps) and saved it to {path} \
-                 in the workspace. You cannot see it; the user can, so do not describe what it \
-                 shows. To revise it, call image_generate again with an edited prompt and seed {} \
+                 in the workspace. To revise it, call image_generate again with an edited prompt and seed {} \
                  to keep the composition, or edit it by passing {path} in reference_images.",
                 req.seed, req.steps, req.seed
             ));
@@ -1539,8 +1543,8 @@ impl Tool for ImageGenerate {
             let sources: Vec<&str> = req.references.iter().map(|r| r.path.as_str()).collect();
             text.push_str(&format!(
                 "Edited {} into a {size} image in {secs} s (seed {}, {} steps) and saved it to \
-                 {path} in the workspace; the original is unchanged. You cannot see it; the user \
-                 can, so do not describe what it shows. To change it further, edit {path} next.",
+                 {path} in the workspace; the original is unchanged. To change it further, edit \
+                 {path} next.",
                 sources.join(", "),
                 req.seed,
                 req.steps
