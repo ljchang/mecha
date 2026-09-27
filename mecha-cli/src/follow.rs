@@ -139,7 +139,8 @@ pub struct Follower {
     rebuilding: tokio::sync::Mutex<()>,
     generations: AtomicU64,
     /// `observe` returns the same warning every turn while its cause stands;
-    /// each is logged once per process, not once per message.
+    /// each is logged once per occurrence — forgotten when its condition
+    /// clears (`observe`) — not once per message.
     warned: Mutex<HashSet<String>>,
 }
 
@@ -175,15 +176,76 @@ impl Follower {
     }
 
     fn warn_once(&self, w: String) {
-        if self.warned.lock().expect("follower lock").insert(w.clone()) {
+        if self
+            .warned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(w.clone())
+        {
             tracing::warn!("{w}");
         }
+    }
+
+    /// The router this surface's model is served from, when it is a local
+    /// server on this machine — what a run's hold is keyed by (D13).
+    ///
+    /// Wider than what `mecha model use` switches (routers a `follow_loaded`
+    /// entry points at) on purpose: holding a local server that no switch
+    /// targets costs nothing, and the narrower rule would let a pinned run on
+    /// a switchable router go unheld. Do not "fix" the asymmetry.
+    pub fn router_base(&self) -> Option<String> {
+        let bound = self.current();
+        let url = bound
+            .config
+            .providers
+            .get(&bound.provider_name)
+            .filter(|p| p.kind == "local")?
+            .base_url
+            .as_deref()?;
+        mecha_core::provider::router::is_loopback(url)
+            .then(|| mecha_core::provider::router::base(url))
+    }
+
+    /// A turn's start under D13: hold the router — waiting out any pending
+    /// switch, and telling `on_wait` which — *then* follow it. In that order,
+    /// so a turn can never resolve the old model and then wait out the switch
+    /// that replaces it. The caller keeps the hold until the run, and the
+    /// title named after it, have ended; dropping it is what lets a switch go.
+    pub async fn enter(
+        &self,
+        what: &str,
+        on_wait: impl FnMut(&mecha_core::hold::Switch),
+    ) -> Result<(Option<mecha_core::hold::Held>, Arc<Bound>)> {
+        let held = match self.router_base() {
+            Some(base) => Some(
+                mecha_core::hold::Holds::open_default()?
+                    .hold_when_clear(&base, what, on_wait)
+                    .await?,
+            ),
+            None => None,
+        };
+        Ok((held, self.follow().await?))
+    }
+
+    /// [`enter`](Self::enter)'s hold without the wait, for a surface that must
+    /// not wait in place (the Slack connector's single event loop): `Err` is
+    /// the pending switch, and the caller defers the turn until it clears.
+    pub fn try_hold(
+        &self,
+        what: &str,
+    ) -> Result<std::result::Result<Option<mecha_core::hold::Held>, mecha_core::hold::Switch>> {
+        let Some(base) = self.router_base() else {
+            return Ok(Ok(None));
+        };
+        Ok(mecha_core::hold::Holds::open_default()?
+            .try_hold(&base, what)?
+            .map(Some))
     }
 
     /// The binding as it stands, without asking the router. For what is not a
     /// turn: the page's session listing, a health probe.
     pub fn current(&self) -> Arc<Bound> {
-        Arc::clone(&self.current.read().expect("follower lock"))
+        Arc::clone(&self.current.read().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// The binding the next turn should run on: re-observe the router, and
@@ -248,7 +310,7 @@ impl Follower {
             bound.provider_name,
             bound.model
         );
-        *self.current.write().expect("follower lock") = Arc::clone(&bound);
+        *self.current.write().unwrap_or_else(|e| e.into_inner()) = Arc::clone(&bound);
         Ok(bound)
     }
 }
@@ -283,6 +345,82 @@ impl Follower {
             warned: Mutex::new(HashSet::new()),
         }
     }
+}
+
+/// Children a held one-run process covers with its hold: processes it waits on
+/// that run a model but cannot hold for themselves — `exp run`'s trials, whose
+/// holds would land in their own `MECHA_HOME` where no switch looks. "Switch
+/// now" reaches them by pid: the signal a one-run process sends itself reaches
+/// only itself, where a terminal Ctrl-C reaches the whole group, and a trial
+/// left running loads the old model back over the switch (review of #350).
+/// Signalling the group instead would also reach whatever started `mecha` —
+/// a hook, or `serve`.
+static COVERED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// Covered while this guard lives.
+pub struct Covered(u32);
+
+impl Drop for Covered {
+    fn drop(&mut self) {
+        let mut covered = COVERED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = covered.iter().position(|p| *p == self.0) {
+            covered.swap_remove(i);
+        }
+    }
+}
+
+/// Cover the child with `pid` until the guard drops.
+pub fn cover_child(pid: u32) -> Covered {
+    COVERED.lock().unwrap_or_else(|e| e.into_inner()).push(pid);
+    Covered(pid)
+}
+
+/// Send each covered child the interrupt a terminal Ctrl-C would. Returns how
+/// many were asked.
+pub fn interrupt_covered_children() -> usize {
+    let covered = COVERED.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    for pid in &covered {
+        if let Ok(pid) = libc::pid_t::try_from(*pid) {
+            // SAFETY: signalling a process this one started and still covers.
+            unsafe {
+                libc::kill(pid, libc::SIGINT);
+            }
+        }
+    }
+    covered.len()
+}
+
+/// A hold on the router `provider` (the default when `None`) is served from,
+/// for a process that is not a long-lived surface: a command that is one run
+/// (`main`), and each trigger fire. `None` when that provider is not a local
+/// server on this machine — nothing to switch there. Waits out a pending
+/// switch first, saying so on stderr, which is where these processes speak.
+pub async fn hold_router(
+    cfg: &Config,
+    provider: Option<&str>,
+    what: &str,
+) -> Result<Option<mecha_core::hold::Held>> {
+    let name = provider.unwrap_or(&cfg.default_provider);
+    let Some(url) = cfg
+        .providers
+        .get(name)
+        .filter(|p| p.kind == "local")
+        .and_then(|p| p.base_url.as_deref())
+        .filter(|u| mecha_core::provider::router::is_loopback(u))
+    else {
+        return Ok(None);
+    };
+    let held = mecha_core::hold::Holds::open_default()?
+        .hold_when_clear(&mecha_core::provider::router::base(url), what, |switch| {
+            eprintln!(
+                "mecha: the model is switching to {} (since {}) — waiting for it to load; \
+                 `mecha model cancel-switch` withdraws a switch that is stuck",
+                switch.to,
+                switch.started_at.format("%H:%M:%SZ")
+            )
+        })
+        .await?;
+    Ok(Some(held))
 }
 
 #[cfg(test)]
@@ -334,11 +472,11 @@ impl Follower {
             generation,
             _mcp: Vec::new(),
         };
-        *self.current.write().expect("follower lock") = Arc::new(bound);
+        *self.current.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(bound);
     }
 }
 
-/// Re-observe the routers `cfg` follows, logging each warning once per process.
+/// Re-observe the routers `cfg` follows, logging each warning once.
 ///
 /// Once per *occurrence*, not per process: a warning whose condition has
 /// cleared is forgotten, so the same condition coming back weeks later into
@@ -349,7 +487,7 @@ async fn observe(
     warned: &Mutex<HashSet<String>>,
 ) -> Vec<mecha_core::provider::router::Seen> {
     let (warnings, seen) = mecha_core::provider::router::observe_seen(cfg, !pinned).await;
-    let mut warned = warned.lock().expect("follower lock");
+    let mut warned = warned.lock().unwrap_or_else(|e| e.into_inner());
     warned.retain(|w| warnings.contains(w));
     for w in warnings {
         if warned.insert(w.clone()) {
@@ -560,6 +698,31 @@ mod tests {
         assert_eq!(
             resolve_seen(&cfg(true), true, seen(Some("gemma-4-26b-a4b"))),
             None
+        );
+    }
+
+    /// "Switch now" reaches a covered child — a real process, stopped by the
+    /// interrupt — and a child no longer covered is left alone.
+    #[tokio::test]
+    async fn switch_now_reaches_a_covered_child() {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let covered = cover_child(child.id().unwrap());
+        assert!(interrupt_covered_children() >= 1);
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+            .await
+            .expect("the covered child was not stopped")
+            .unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGINT));
+        let pid = covered.0;
+        drop(covered);
+        assert!(
+            !COVERED.lock().unwrap().contains(&pid),
+            "a child stays covered after its guard dropped"
         );
     }
 

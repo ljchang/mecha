@@ -1918,8 +1918,11 @@ async fn completion(
     // The model this request runs on, followed from the router once and used
     // for the whole run. A failed rebuild is said rather than answered on the
     // old model, whose request would load it back.
-    let bound = match shared.follower.follow().await {
-        Ok(b) => b,
+    // D13: held first — a switch in progress is waited out, silently: the
+    // worker is holding the line for a reply — then followed. The hold lives
+    // as long as this request, which is the whole run.
+    let (held, bound) = match shared.follower.enter("voice call", |_| {}).await {
+        Ok(entered) => entered,
         Err(e) => {
             return write_json(stream, 503, &json!({"error": format!("{e:#}")})).await;
         }
@@ -1936,6 +1939,11 @@ async fn completion(
         )
         .await;
     };
+
+    if let Some(h) = &held {
+        let c = cancel.clone();
+        h.on_cancel(move || c.cancel(mecha_core::agent::CancelReason::Stopped));
+    }
 
     // From here the slot must always find its way back into the map, so
     // nothing below uses `?` until it has.
