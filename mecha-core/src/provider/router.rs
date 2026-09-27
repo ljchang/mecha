@@ -440,6 +440,38 @@ fn orphans(cfg: &Config, seen: &[Seen]) -> Vec<String> {
 /// however many pinned aliases name it too: `followed` stands on it, and
 /// "leave one" would be wrong advice.
 pub fn unfollowable(cfg: &Config, b: &str, model: &str) -> Option<String> {
+    Some(match unfollowed_namers(cfg, b, model)? {
+        0 => format!(
+            "the router at {b} has {model:?} loaded, but no [providers.*] entry names it with \
+             that base_url — runs will use the default provider and swap it back out. Add an \
+             entry with model = {model:?}."
+        ),
+        n => format!(
+            "the router at {b} has {model:?} loaded, and {n} [providers.*] entries name it — \
+             which one answered would be a guess, so runs keep the default provider. Leave one."
+        ),
+    })
+}
+
+/// [`unfollowable`]'s rule for a model that is *not* loaded — what a picker
+/// says before the load, where "has it loaded" would be false (found on
+/// review of the chip). The same rule, only the tense differs.
+pub fn would_not_follow(cfg: &Config, b: &str, model: &str) -> Option<String> {
+    Some(match unfollowed_namers(cfg, b, model)? {
+        0 => format!(
+            "no [providers.*] entry names {model:?} with base_url {b} — once loaded, runs would \
+             use the default provider and swap it back out. Add an entry with model = {model:?}."
+        ),
+        n => format!(
+            "{n} [providers.*] entries name {model:?} — once loaded, which one answered would be \
+             a guess, so runs would keep the default provider. Leave one."
+        ),
+    })
+}
+
+/// How many entries name `model` on `b`, when that count means runs would not
+/// follow it (none, or several) — `None` when they would.
+fn unfollowed_namers(cfg: &Config, b: &str, model: &str) -> Option<usize> {
     let default_names = cfg.providers.get(&cfg.default_provider).is_some_and(|p| {
         follows_here(p)
             && p.base_url.as_deref().map(base).as_deref() == Some(b)
@@ -450,15 +482,7 @@ pub fn unfollowable(cfg: &Config, b: &str, model: &str) -> Option<String> {
     }
     match namers(cfg, b, model).count() {
         1 => None,
-        0 => Some(format!(
-            "the router at {b} has {model:?} loaded, but no [providers.*] entry names it with \
-             that base_url — runs will use the default provider and swap it back out. Add an \
-             entry with model = {model:?}."
-        )),
-        n => Some(format!(
-            "the router at {b} has {model:?} loaded, and {n} [providers.*] entries name it — \
-             which one answered would be a guess, so runs keep the default provider. Leave one."
-        )),
+        n => Some(n),
     }
 }
 
@@ -780,6 +804,44 @@ mod tests {
         let s = seen(Some("gemma-4-26b-a4b"));
         assert_eq!(followed(&c, "local", &s), None);
         assert!(orphans(&c, &s)[0].contains("2 [providers.*] entries"));
+    }
+
+    /// The picker's reading is the same rule as the loaded one's, and never
+    /// claims the model is loaded — it is asked about models that are not.
+    #[test]
+    fn would_not_follow_is_unfollowable_without_claiming_a_load() {
+        let mut c = cfg();
+        c.providers.insert(
+            "gemma-again".into(),
+            entry("gemma-4-26b-a4b", "http://127.0.0.1:8080", false),
+        );
+        let b = "http://127.0.0.1:8080";
+        for m in [
+            "qwen3.6-35b-a3b",
+            "gemma-4-26b-a4b",
+            "qwen3.6-35b-a3b-uncensored",
+        ] {
+            let (before, after) = (would_not_follow(&c, b, m), unfollowable(&c, b, m));
+            assert_eq!(
+                before.is_some(),
+                after.is_some(),
+                "{m}: one rule, two tenses"
+            );
+            if let Some(w) = before {
+                assert!(!w.contains(&format!("has {m:?} loaded")), "{m}: {w}");
+                assert!(w.contains("once loaded"), "{m}: {w}");
+            }
+        }
+        assert!(
+            would_not_follow(&c, b, "qwen3.6-35b-a3b").is_none(),
+            "the default"
+        );
+        assert!(would_not_follow(&c, b, "gemma-4-26b-a4b")
+            .unwrap()
+            .contains("2 [providers.*]"));
+        assert!(would_not_follow(&c, b, "qwen3.6-35b-a3b-uncensored")
+            .unwrap()
+            .contains("no [providers.*] entry names"));
     }
 
     #[test]

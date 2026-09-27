@@ -561,8 +561,13 @@ owns the setting.) "No tool" is not "unreachable": a run holding
 unconfined `shell` can type `mecha model use`, and meets the approval
 policy like any other command. A `[[policy]]` rule that forbids the
 `mecha model use` prefix closes that for the owner who wants it closed
-(found on review). The chip reads the router's `GET /models/sse` stream, so
-"loading…" is a status the server reports, not a guess made by a timer.
+(found on review). The chip's "loading…" is a status the server reports,
+not a guess made by a timer. *As built (step 5):* it polls `mecha model list
+--json` every 2 s while its menu is open or a switch or load is under way,
+and not otherwise. It does not read `GET /models/sse`, because the router's
+`status` is only half of what the chip shows. The pending switch and the
+runs it waits for live in `~/.mecha/holds`, where the SSE stream cannot see
+them, and one read through the CLI verb (D4's rule for reads) carries both.
 
 ### D13 — a switch waits for runs, not requests (2026-09-27)
 
@@ -678,7 +683,22 @@ and the paths are this machine's.
    sampling, vision, subagents) is derived again. Everything else already
    builds its agent per run and follows at once.
 4. *Built:* `mecha model list|use`. Owed: the TUI's `/model` calling it.
-5. The chip's picker and load state.
+5. *Built 2026-09-27:* the chip's picker and load state —
+   `web/src/lib/ModelChip.svelte` over `model-chip.js`, and `GET
+   /api/model`, `POST /api/model/use` and `POST /api/model/cancel` in
+   `serve/model.rs`, each a `mecha model` verb as a child (D4). `model list
+   --json` gained `pending_switch` (target and `waiting_on`) and each model's
+   `would_not_follow` (`router::would_not_follow`, `unfollowable`'s rule
+   worded for a model not yet loaded), and the menu
+   greys out what runs would not follow or R4 would refuse. **Switch now** on
+   a switch that is already waiting is `mecha model use <same> --now`, which
+   hurries that switch through `Holds::request_now` rather than being refused
+   as a second. The switch belongs to another process (the page's earlier
+   child, or a terminal), and its identity-keyed `.now` marker is the only
+   way to reach it. The use route answers with the child's result if it ends
+   within 3 s (a refusal, an already-resident model), and otherwise with
+   `202`; the outcome is kept for the next read, so a failure the owner did
+   not stay to watch still shows on the chip.
 6. Retire the drop-in swap and the single-model scripts, moving their
    comments' reasoning into `LLAMA-SERVER.md` (the `CLAUDE.md` line naming
    the flags' authority moved to `start-router.sh` on 2026-09-27, #354).
