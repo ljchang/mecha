@@ -501,16 +501,6 @@ impl Command {
         !matches!(self, Command::Eval(_))
     }
 
-    /// Whether this command may resolve a default provider — run a model, or
-    /// build an agent — and so needs [`follow_the_loaded_model`]'s snapshot.
-    ///
-    /// **Exhaustive, no wildcard, on purpose:** a new subcommand has to
-    /// decide. The two mistakes cost differently. A model-running command
-    /// wrongly listed `false` names the default model and silently swaps the
-    /// owner's pick back out; an observer wrongly listed `true` pays a
-    /// loopback round trip. So unsure is `true` — except where the command
-    /// promises no network, which `mecha doctor`'s module doc does (found on
-    /// review).
     /// Whether this command is **one run** for its whole life, and so holds
     /// the router until it returns (D13): a switch waits for it, and it waits
     /// for a switch before it starts. The long-lived ones — which serve many
@@ -618,6 +608,16 @@ impl Command {
         }
     }
 
+    /// Whether this command may resolve a default provider — run a model, or
+    /// build an agent — and so needs [`follow_the_loaded_model`]'s snapshot.
+    ///
+    /// **Exhaustive, no wildcard, on purpose:** a new subcommand has to
+    /// decide. The two mistakes cost differently. A model-running command
+    /// wrongly listed `false` names the default model and silently swaps the
+    /// owner's pick back out; an observer wrongly listed `true` pays a
+    /// loopback round trip. So unsure is `true` — except where the command
+    /// promises no network, which `mecha doctor`'s module doc does (found on
+    /// review).
     fn runs_a_model(&self) -> bool {
         match self {
             Command::Run(_)

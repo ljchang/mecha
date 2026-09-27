@@ -1854,15 +1854,6 @@ impl State {
         }
     }
 
-    /// Refuse every approval a thread is waiting on, so a stopped run actually
-    /// stops.
-    ///
-    /// `RunContext::cancel` is checked at turn boundaries and against the
-    /// provider stream — never around `approve()`. A run parked in the
-    /// approver therefore ignored Stop entirely and sat there for the whole
-    /// timeout with its card still clickable, while the thread reported
-    /// `cancelled`. Dropping the reply channels makes the approver return
-    /// `Blocked` at once, which is what makes the state truthful.
     /// "Switch now" (D13) for `key`'s run: the stop button's two steps, in its
     /// order. Cancelling alone leaves a run parked on an approval card, and
     /// when someone taps it later the run resumes on its old binding — whose
@@ -1874,6 +1865,15 @@ impl State {
         self.refuse_pending_for(key).await;
     }
 
+    /// Refuse every approval a thread is waiting on, so a stopped run actually
+    /// stops.
+    ///
+    /// `RunContext::cancel` is checked at turn boundaries and against the
+    /// provider stream — never around `approve()`. A run parked in the
+    /// approver therefore ignored Stop entirely and sat there for the whole
+    /// timeout with its card still clickable, while the thread reported
+    /// `cancelled`. Dropping the reply channels makes the approver return
+    /// `Blocked` at once, which is what makes the state truthful.
     async fn refuse_pending_for(&mut self, thread_key: &str) {
         let theirs: Vec<String> = self
             .pending

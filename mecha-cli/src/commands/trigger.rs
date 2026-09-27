@@ -17,7 +17,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
-use mecha_core::agent::{Conversation, RunContext};
+use mecha_core::agent::{CancelHandle, Conversation, RunContext};
 use mecha_core::config::PermissionMode;
 use mecha_core::message::Message;
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
@@ -916,12 +916,14 @@ async fn fire(
     Ok(())
 }
 
-/// "Switch now" cancels `fire` — this fire's own token — and nothing above it:
+/// "Switch now" cancels `fire` — this fire's own handle — and nothing above it:
 /// cancelling the daemon's stop token ended the whole scheduler, and the unit
-/// does not restart a clean exit (review of D13).
-fn stop_this_fire_on_switch_now(held: &mecha_core::hold::Held, fire: &CancellationToken) {
+/// does not restart a clean exit (review of D13). With a reason, `Stopped`, as
+/// every other holder records it: the bare token recorded `Interrupted`, the
+/// unknown-which cause (review of #350).
+fn stop_this_fire_on_switch_now(held: &mecha_core::hold::Held, fire: &CancelHandle) {
     let fire = fire.clone();
-    held.on_cancel(move || fire.cancel());
+    held.on_cancel(move || fire.cancel(mecha_core::agent::CancelReason::Stopped));
 }
 
 async fn run_agent(
@@ -948,9 +950,7 @@ async fn run_agent(
         held = crate::follow::hold_router(&cfg, provider, &what) => held?,
         _ = token.cancelled() => anyhow::bail!("stopped while waiting for a model switch"),
     };
-    if let Some(h) = &_held {
-        stop_this_fire_on_switch_now(h, &token);
-    }
+
     // The daemon outlives every run it starts, so the snapshot `main` took is
     // the model loaded when the *daemon* started. A scheduled run follows the
     // owner's pick as it stands now (`provider::router`, D12) — and before
@@ -1097,6 +1097,11 @@ async fn run_agent(
     // a service restart mid-run recorded the unknown-which `Interrupted`,
     // indistinguishable from a cancel nobody classified (found on review).
     let handle = cx.cancel_handle().expect("with_cancel just set it");
+    // Registered here, where the handle exists: the hold's watcher polls a
+    // file, so a "switch now" that landed earlier is still seen.
+    if let Some(h) = &_held {
+        stop_this_fire_on_switch_now(h, &handle);
+    }
     let limit = t
         .timeout_duration()
         .to_std()
@@ -1335,7 +1340,15 @@ mod tests {
         let home = crate::testenv::HomeGuard::new("fire-switch-now");
         let holds = mecha_core::hold::Holds::new(home.dir.join("holds"));
         let daemon = CancellationToken::new();
-        let fire = daemon.child_token();
+        // The fire's context as `run_agent` builds it: a child of the daemon.
+        let cx = RunContext::new(
+            mecha_core::tool::ToolCtx::default(),
+            std::sync::Arc::new(mecha_core::tool::ModeApprover {
+                mode: mecha_core::config::PermissionMode::ReadOnly,
+            }),
+        )
+        .with_cancel(daemon.child_token());
+        let fire = cx.cancel_handle().unwrap();
         let held = holds
             .try_hold("http://127.0.0.1:8080", "trigger t")
             .unwrap()
@@ -1346,6 +1359,11 @@ mod tests {
             .await
             .expect("switch now never reached the fire");
         assert!(!daemon.is_cancelled(), "switch now stopped the daemon");
+        assert_eq!(
+            cx.cancel_stop_cause(),
+            mecha_core::agent::StopCause::Stopped,
+            "a fire stopped by switch now recorded the unknown-which cause"
+        );
         drop(held);
     }
 
