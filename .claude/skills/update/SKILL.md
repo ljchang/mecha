@@ -348,11 +348,13 @@ git -C ~/Github/mecha status --porcelain          # expect: empty
 - **The switch has a runnable recipe in `docs/HANDOFF.md`** (§Machine
   state, dated, 2026-09-03), reviewed pass after pass until it graded as code: prove the fast-forward
   for *both* `HEAD` and `refs/heads/main`, prove `scripts/start-router.sh`,
-  `scripts/mmproj.sh` and `scripts/voice/parakeet_server.py` unchanged
-  across the move (the first is `llama-local`'s `ExecStart` since
-  2026-09-27, through the drop-in `llama-local.service.d/router.conf`, and
-  sources the second; the third is what `mecha-parakeet` runs from this
-  tree), read any dirty file before discarding it, land on
+  `scripts/mmproj.sh`, `scripts/start-moe-mtp.sh` and
+  `scripts/voice/parakeet_server.py` unchanged across the move (the first is
+  `llama-local`'s `ExecStart` since 2026-09-27, through the drop-in
+  `llama-local.service.d/router.conf`, and sources the second; the third is
+  the rollback the unit's own `ExecStart` names; the fourth is what
+  `mecha-parakeet` runs from this tree), read any dirty file before
+  discarding it, land on
   `origin/main` in one hop, and only then restart the worker. Copy that
   block; do not improvise a `switch main && pull`, which is the version
   that failed silently on a dirty file and would have passed through a

@@ -6,9 +6,9 @@ engines. Most of it was learned by measuring something that had already gone
 wrong, so each item carries the measurement rather than the conclusion alone.
 
 The flags themselves live in the start scripts — `scripts/start-router.sh` for
-the chat models once the router is installed (§Router mode), and
-`scripts/start-moe-mtp.sh` and its siblings until then and as the rollback;
-this file is the reasoning and the numbers.
+the chat models since the router was installed on 2026-09-27 (§Router mode),
+and `scripts/start-moe-mtp.sh` and its siblings as the rollback; this file is
+the reasoning and the numbers.
 
 ## Two servers, one model each
 
