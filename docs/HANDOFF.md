@@ -49,8 +49,9 @@ install is in *Machine state, dated* below. What is open:
 router, installed, and every long-lived surface follows it; the chip is not
 built.** `REMOTE-SURFACE-DESIGN.md` §14 (D12, D13) is the authority, with the
 owner's rulings. This lane's #337, #339, #340, #346, #360 and #361 and
-mecha-graph#22 and #23 are merged and installed; what each built is in HISTORY under 2026-09-26/27, and
-the installs are in *Machine state, dated* below. A peer lane's #347 (serve,
+mecha-graph#22 and #23 are merged and installed; what each built is in
+HISTORY under 2026-09-26/27, and the installs are in *Machine state, dated*
+below. A peer lane's #347 (serve,
 voice and Slack resolve the resident model per turn) and #350 (D13: a switch
 waits for the runs holding the model) merged the same morning and are
 installed; they are that lane's to record. A switch is `mecha model use
@@ -61,8 +62,15 @@ installed; they are that lane's to record. A switch is `mecha model use
   hold it yet (§14 D13, *Not yet*).
 - **What #360 left of #346's follow-ups:** `learning-report` still folds
   every model's rows with no note; `mecha rules` now says so above its
-  listing when the ledger mixes models. (#360 and mecha-graph#23 closed the
-  rest; HISTORY, 2026-09-27.)
+  listing when the ledger mixes models. (#360 closed the rest; HISTORY,
+  2026-09-27.)
+- **The graph's 4318 unexplained marks stay unexplained.** mecha-graph#23
+  stops the count growing — every write since records whether it had a
+  reason — but the marks written before V026 cannot say whether each was a
+  charge or held nothing, so `extract --charged` counts them and cannot list
+  them. The measured 4318 is that residue, not a remaining defect; only
+  re-extracting (`extract --episode`, or a `PROMPT_VERSION` bump) resolves
+  one.
 - **Review the graph candidates the re-extraction staged.** The 100
   extractions the nightly lost were re-run one at a time with
   `mecha-graph extract --episode` on 2026-09-27 (11:42–11:47Z and
@@ -3025,8 +3033,8 @@ artifacts:
   scripts/start-router.sh scripts/start-moe-mtp.sh` showed only
   `qwen_vision` and `--image-min-tokens 1024`; `mmproj.sh` and
   `scripts/voice/` unchanged. `mecha` reinstalled (`'tallies fold every
-  model'`: 0 → 1); no unit restarted, since #360's Rust is `mecha rules`
-  alone.
+  model'`: 0 → 1); no `mecha` unit was restarted, since #360's Rust is
+  `mecha rules` alone (the `llama-local` restart below is #361's).
 - `llama-local` restarted at 17:47:03Z with no run holding the model
   (`~/.mecha/holds` empty). The regenerated INI carries `image-min-tokens =
   1024` on all five Qwen presets and not on Gemma; the journal's Qwen-VL
