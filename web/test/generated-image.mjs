@@ -1,4 +1,5 @@
-// Behaviour checks for the chat's inline picture under an `image_generate` row.
+// Behaviour checks for the chat's inline picture under an `image_generate` or
+// `image_view` row.
 //
 // `npm test` in web/. Plain node, same rig as `tool-digest.mjs`, and the
 // function is read OUT of the component so this exercises the text that ships.
@@ -22,8 +23,9 @@ function readOut(marker, end = '\n  }\n') {
 }
 
 const generatedImage = new Function(
-  `${readOut('  function generatedImage(entry) {')}
-   return generatedImage;`
+  `${readOut('  const PICTURE = {', '\n  };\n')}
+   ${readOut('  function pictureOf(entry) {')}
+   return pictureOf;`
 )();
 
 let passed = 0;
@@ -70,6 +72,28 @@ for (const bad of [
 ]) {
   is(generatedImage(done(bad)), null, `refuses ${bad}`);
 }
+
+// `image_view`: what the model looked at, wherever in the workspace it is.
+const viewed = (preview, extra = {}) => done(preview, { name: 'image_view', ...extra });
+for (const [line, path] of [
+  ['image: images/20260925-153000-7.png', 'images/20260925-153000-7.png'],
+  ['image: inbox/Screenshot 2026-09-27 at 10.02.jpg', 'inbox/Screenshot 2026-09-27 at 10.02.jpg'],
+  ['image: uploads/a.WEBP', 'uploads/a.WEBP'],
+]) {
+  is(generatedImage(viewed(line)), path, `a look shows ${path}`);
+}
+is(generatedImage(viewed('image: images/a.png', { is_error: true })), null, 'a failed look has none');
+for (const bad of [
+  'image: ../secrets.png',
+  'image: images/../../x.png',
+  'image: .hidden/x.png',
+  'image: /etc/passwd.png',
+  'image: notes.txt',
+  'image: images/x.png.html',
+]) {
+  is(generatedImage(viewed(bad)), null, `a look refuses ${bad}`);
+}
+is(generatedImage(done('x', { name: 'constructor' })), null, 'a prototype key is no tool');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

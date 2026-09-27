@@ -991,10 +991,11 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
         match message.role {
             Role::User => {
                 let mut text = String::new();
-                // A picture beside tool results is one a tool made
-                // (`ToolOutput::image`), shown to the model to check — the
-                // result's own chip already carries it, and an `[image]`
-                // here would read as something the owner attached.
+                // A picture beside tool results is one a tool put in front
+                // of the model (`ToolOutput::image`, from `image_view`). The
+                // page draws it under that tool's row, from the result's
+                // `image: <path>` line (`pictureOf` in Chat.svelte); an
+                // `[image]` here would read as something the owner attached.
                 let results = !mecha_core::agent::is_plain_user_text(message);
                 for block in &message.content {
                     match block {
