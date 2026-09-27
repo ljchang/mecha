@@ -125,6 +125,7 @@ async fn the_retired_appraise_flag_asks_no_model_and_says_where_the_appraisal_we
             .env("MECHA_SESSION_KIND", "test")
             .env_remove("MECHA_SESSION_DIR")
             .env_remove("MECHA_LEARNING_DIR")
+            .env_remove("MECHA_COMPARISONS_DIR")
             .env_remove("ANTHROPIC_API_KEY")
             .env_remove("OPENAI_API_KEY")
             .current_dir(&work)
