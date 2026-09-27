@@ -281,15 +281,17 @@
   // hold, which a re-read must carry over rather than drop.
   let liveFrom = 0;
 
+  // What only this page holds, and a re-read must carry over: a draft card,
+  // a notice, and words the run never took — never folded into the
+  // conversation, so they sit beside the notice saying send again. A
+  // delivered message is in the transcript; carrying it would draw it twice.
+  const pageOnly = (e) =>
+    e.kind === 'draft' ||
+    e.kind === 'notice' ||
+    (e.kind === 'user' && !!e.queued && e.delivery !== 'delivered');
+
   async function catchUp(sessionKey) {
-    const own = entries.slice(liveFrom).filter(
-      (e) =>
-        e.kind === 'draft' ||
-        e.kind === 'notice' ||
-        // Words the run never took: never folded into the conversation, so
-        // only this page holds them, beside the notice saying send again.
-        (e.kind === 'user' && e.queued && e.delivery !== 'delivered')
-    );
+    const own = entries.slice(liveFrom).filter(pageOnly);
     // A read that failed replaced nothing, and one that found the chat gone
     // has emptied the tab on purpose (`forget`): carrying the cards over
     // either would duplicate them, or keep an ended incognito chat's drafts
@@ -597,6 +599,17 @@
     try {
       const res = await fetch('/api/sessions');
       if (res.ok) rail = (await res.json()).sessions;
+      // The belt under `done`: one the page never received — dropped with a
+      // lagged batch, or sent before this page's stream subscribed — leaves
+      // `partialRun` set with nothing left to clear it. The rail already
+      // says whether each chat's run is live, every 20 seconds, so a run it
+      // calls over is caught up here. Only on a row that says so: a chat
+      // missing from the rail is not evidence the run ended.
+      const sessionKey = key;
+      if (partialRun && rail?.find((s) => s.key === sessionKey)?.running === false) {
+        partialRun = false;
+        catchUp(sessionKey);
+      }
     } catch {
       // the rail is a convenience; the transcript is the truth
     }
