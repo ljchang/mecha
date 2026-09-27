@@ -3527,8 +3527,10 @@ verdict only when the owner made it** (the owner's ruling, 2026-09-27):
 the owner's +1.0 or as an owner-verified success reads it — the appraisal's
 `edit`-channel sign, `success::derive` (standing successes and writing
 exemplars, and through them `planning::success_examples` and
-`goal_context`) — while 2b-2's observed act reads a non-owner release as an
-act whose author is unknown, never `released_unchanged`. A run's shell that
+`goal_context`) — while 2b-2's observed act reads a non-owner release, and
+a non-owner reject, as an act whose author is unknown, never the owner's
+`released_unchanged` or `rejected` (review of #352: a run's own reject would
+otherwise be a free hit for an appraisal that expected it). A run's shell that
 `approve -y`s its own draft unchanged earns nothing, and a release from
 before the stamp counts as neither. `writing_outcome` stays structural, so
 `WritingTally` keeps its denominator. The same ruling gates the point-wise
@@ -4791,8 +4793,10 @@ store that owns it:
   (`OutboxItem::owners_unchanged_release`: `writing_outcome` is
   `SentUnchanged` — a publish, a harness-authored item and an edited or
   rejected draft are not — *and* the release is stamped `owner`; a run's
-  shell approving its own draft is no success). **The set starts from
-  stamped releases, so it is empty of pre-stamp history by design**
+  shell approving its own draft is no success, and one whose actor cannot
+  be read — every release from before the stamp — is listed as unknown,
+  never standing, so the readout says what it left out). **The set starts
+  from stamped releases, so it is empty of pre-stamp history by design**
   (the owner's ruling, 2026-09-27): on the live store the day it landed, 29
   of 30 standing successes were unstamped unchanged releases and left the
   set;

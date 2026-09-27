@@ -410,13 +410,15 @@ fn placed(out: &mut Successes, success: &Success, facts: &dyn SessionFacts) -> b
     }
 }
 
-/// A model's message draft the owner sent as written — the release stamped
-/// `owner` (`OutboxItem::owners_unchanged_release`, R16a's ruling D3
-/// carried to releases). A run's shell that approves its own draft, and
-/// every release from before the stamp, is no success: the set starts from
-/// stamped releases, empty of pre-stamp history by design.
+/// A model's message draft sent as written, whoever released it — the
+/// candidates; [`derive`] keeps the owner's (`OutboxItem::
+/// owners_unchanged_release`, R16a's ruling D3 carried to releases). A run's
+/// shell that approves its own draft is no success; a release whose actor
+/// this build cannot read — every release from before the stamp — is listed
+/// as unknown, never standing: the set starts from stamped releases, empty
+/// of pre-stamp history by design, and says what it left out.
 fn sent_unchanged(item: &OutboxItem) -> bool {
-    item.owners_unchanged_release()
+    item.writing_outcome() == Some(crate::outbox::WritingOutcome::SentUnchanged)
 }
 
 /// Derive the success set from the stores that own each act.
@@ -435,6 +437,11 @@ pub fn derive(src: &Sources<'_>, facts: &dyn SessionFacts) -> Successes {
 
     // --- Drafts sent unchanged, each with its exemplar ---
     for item in src.drafts.iter().filter(|i| sent_unchanged(i)) {
+        // A readable non-owner release (a run's shell behind the approver)
+        // is no owner act at all: not a success, not an unknown one.
+        if item.resolved_by() == Actor::OwnerApproved {
+            continue;
+        }
         let sent_at = item.resolved_at.as_deref().and_then(parse_at);
         let success = Success {
             act: Act::SentUnchanged {
@@ -445,6 +452,18 @@ pub fn derive(src: &Sources<'_>, facts: &dyn SessionFacts) -> Successes {
             at: sent_at,
         };
         if !placed(&mut out, &success, facts) {
+            continue;
+        }
+        // Who released it must be the owner's hand: an actor this build
+        // cannot read — including every release from before the stamp — is
+        // listed, as a closure by an unreadable actor is below, so the
+        // readout says what it left out (review of #352).
+        if !item.owners_unchanged_release() {
+            out.unknown.push(Unknown {
+                pointer: success.act.pointer(),
+                why: "released by an actor this build cannot read (or before who released it \
+                      was recorded)",
+            });
             continue;
         }
         out.exemplars.push(Exemplar {
@@ -738,6 +757,11 @@ mod tests {
         );
         assert_eq!(set.exemplars.len(), 1);
         assert_eq!(set.exemplars[0].item, "ob-owner");
+        // Said, not dropped: the unreadable releases are listed as unknown
+        // (review of #352); the run's own release is no owner act at all.
+        let mut unknown: Vec<_> = set.unknown.iter().map(|u| u.pointer.clone()).collect();
+        unknown.sort();
+        assert_eq!(unknown, vec!["outbox:ob-legacy", "outbox:ob-unknown"]);
     }
 
     /// Provenance is the staging taint's, fail-closed: a draft written with

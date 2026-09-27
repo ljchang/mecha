@@ -169,5 +169,9 @@ fn a_runs_own_unchanged_release_is_no_success() {
         );
         assert_eq!(set["exemplars"]["count"], 0, "{posture:?}: {set:#}");
         assert_eq!(set["standing"], 0, "{posture:?}: {set:#}");
+        // An actor that cannot be read is said, not dropped; the owner's
+        // approval of a run's act is no owner act at all (review of #352).
+        let unknown = if expected == Actor::Unknown { 1 } else { 0 };
+        assert_eq!(set["unknown"], unknown, "{posture:?}: {set:#}");
     }
 }
