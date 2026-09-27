@@ -79,6 +79,10 @@ struct Pending {
     started_at: chrono::DateTime<chrono::Utc>,
     /// The runs holding the router, oldest first, as each described itself.
     waiting_on: Vec<String>,
+    /// `false` for a switch file nobody can read (`Holds::pending` reports it
+    /// as pending, the fail-closed way). No switcher is there to hurry, so
+    /// "switch now" cannot work on it; `cancel-switch` is its way out.
+    readable: bool,
 }
 
 #[derive(Serialize)]
@@ -126,6 +130,9 @@ async fn survey(cfg: &Config) -> Vec<(String, Option<Router>)> {
         let mut r = router_of(cfg, &base, &list);
         r.pending_switch = holds.as_ref().and_then(|h| {
             h.pending(&base).map(|s| Pending {
+                // `pending`'s placeholder for an unreadable file is pid 0 —
+                // the same test `request_now` refuses it by.
+                readable: s.pid != 0,
                 to: s.to,
                 from: s.from,
                 started_at: s.started_at,
@@ -255,7 +262,12 @@ async fn list(cfg: &Config, json: bool) -> Result<()> {
         for n in &r.unserved {
             println!("  ! [providers.{n}] names a model this router does not serve");
         }
-        if let Some(p) = &r.pending_switch {
+        if r.pending_switch.as_ref().is_some_and(|p| !p.readable) {
+            println!(
+                "  ! a switch file here cannot be read; every run on this router waits for it — \
+                 `mecha model cancel-switch` withdraws it"
+            );
+        } else if let Some(p) = &r.pending_switch {
             println!(
                 "  switching to {} (since {}) — waiting for: {}",
                 p.to,

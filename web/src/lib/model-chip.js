@@ -62,9 +62,14 @@ export function phase(router) {
   if (!router) return { kind: 'unknown' };
   const p = router.pending_switch;
   if (p) {
+    // A switch file nobody can read: pending (the fail-closed way), with no
+    // switcher behind it — so nothing is loading and nothing can hurry it.
+    // `readable` absent is an older build's list, whose files were readable.
+    if (p.readable === false) return { kind: 'switching', stuck: true, to: null, loading: false, waitingOn: [] };
     const loading = (router.models ?? []).some((m) => m.id === p.to && m.status === 'loading');
     return {
       kind: 'switching',
+      stuck: false,
       to: p.to,
       loading,
       waitingOn: loading ? [] : p.waiting_on ?? [],
@@ -74,6 +79,29 @@ export function phase(router) {
   if (loading) return { kind: 'loading', id: loading.id };
   if (!router.readable) return { kind: 'unknown' };
   return { kind: 'idle', resident: router.resident ?? null };
+}
+
+/// One read on the wire at a time, and a way to ask for one that *starts*
+/// after the asking. `refresh` shares a read in flight — polls need no more.
+/// `fresh` waits one out and then reads again, because a read that began
+/// before the tap may predate a switch that has ended since: sharing it let
+/// `pick` take a stale baseline and report that switch's outcome as this
+/// tap's (found on review).
+export function reader(read) {
+  let inflight = null;
+  const refresh = () =>
+    (inflight ??= (async () => {
+      try {
+        return await read();
+      } finally {
+        inflight = null;
+      }
+    })());
+  const fresh = async () => {
+    if (inflight) await inflight;
+    return refresh();
+  };
+  return { refresh, fresh };
 }
 
 /// Poll while something is moving; stop when the router is at rest.
@@ -97,7 +125,7 @@ export function pollEvery(ph, open) {
 export function chipLabel(ph, fallback) {
   switch (ph.kind) {
     case 'switching':
-      return `→ ${ph.to}`;
+      return ph.stuck ? 'switch stuck' : `→ ${ph.to}`;
     case 'loading':
       return `loading ${ph.id}`;
     case 'idle':
@@ -111,6 +139,9 @@ export function chipLabel(ph, fallback) {
 /// the words each run gave its hold (D13's "waiting for: …").
 export function waitingLine(ph) {
   if (ph.kind !== 'switching') return null;
+  if (ph.stuck) {
+    return 'a switch file here cannot be read, and every run on this router waits for it — cancel withdraws it';
+  }
   if (ph.loading) return `loading ${ph.to}…`;
   if (!ph.waitingOn.length) return `switching to ${ph.to}…`;
   return `waiting for: ${ph.waitingOn.join(', ')}`;

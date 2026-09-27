@@ -6,7 +6,7 @@
   // what is loaded, loading, or waiting is the router's own report, read
   // through `model list --json`, never a guess from a timer.
   import { apiFetch as fetch } from './api.js';
-  import { routerOf, unavailable, rows, phase, busy, pollEvery, chipLabel, waitingLine, outcomeNote } from './model-chip.js';
+  import { reader, routerOf, unavailable, rows, phase, busy, pollEvery, chipLabel, waitingLine, outcomeNote } from './model-chip.js';
 
   /// `model` is what this chat's agent is bound to — the label until the
   /// router has been read. An incognito chat runs only on the model on this
@@ -29,10 +29,9 @@
   const note = $derived(busy(ph) ? null : outcomeNote(data, asked));
   const down = $derived(data ? unavailable(data) : readError);
 
-  let reading = false;
-  async function refresh() {
-    if (reading) return;
-    reading = true;
+  // `refresh` for polls, which share a read on the wire; `fresh` for the
+  // tap's baseline, which must be a read that starts after it.
+  const { refresh, fresh } = reader(async () => {
     try {
       const res = await fetch('/api/model');
       if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
@@ -40,10 +39,8 @@
       readError = null;
     } catch (e) {
       readError = `the model list could not be read: ${e?.message ?? e}`;
-    } finally {
-      reading = false;
     }
-  }
+  });
 
   // Read once for the label; again whenever the menu is open or something is
   // moving, and not otherwise — every read is a child process on the server.
@@ -89,13 +86,13 @@
     acting = true;
     // Fresh, so a switch that ended since the last read is not taken for
     // this one's outcome.
-    await refresh();
+    await fresh();
     asked = { before: data?.last_switch?.at ?? null };
     post('/api/model/use', { name: row.name });
   }
 
   function switchNow() {
-    if (ph.kind !== 'switching') return;
+    if (ph.kind !== 'switching' || ph.stuck) return;
     const row = list.find((r) => r.id === ph.to);
     post('/api/model/use', { name: row?.name ?? ph.to, now: true });
   }
@@ -172,7 +169,12 @@
           {#if ph.kind === 'switching'}
             <div class="pending">
               <p class="line">{waitingLine(ph)}</p>
-              {#if !ph.loading}
+              {#if ph.stuck}
+                <!-- No switcher to hurry: cancel is the only way out. -->
+                <div class="acts">
+                  <button class="act quiet" onclick={cancelSwitch} disabled={acting} title="withdraw the unreadable switch; the loaded model stays">cancel</button>
+                </div>
+              {:else if !ph.loading}
                 <div class="acts">
                   <!-- R2's way out of D13's wait: the runs it names stop at
                        their next safe point, and a reply in progress ends
