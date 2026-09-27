@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The retirement drill no longer writes into the live comparison store.**
+  `ComparisonStore` honours `MECHA_COMPARISONS_DIR` (as the learning store
+  honours `MECHA_LEARNING_DIR`), `scripts/retirement-drill.sh` sets it, and
+  the drill fails with `DRILL LEAKED` on any exit that left the live
+  `comparisons.jsonl` changed. Two runs on 2026-09-27 had each added a
+  `validation` row about a throwaway session to the owner's store.
 - **A draft released unchanged is your verdict only when you released it**
   (`APPRAISAL-WIRING-DESIGN.md`, R16a's ruling D3 carried to releases). The
   appraisal's +1.0, the owner-verified success set (`mecha sessions
