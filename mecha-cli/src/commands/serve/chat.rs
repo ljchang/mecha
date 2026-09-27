@@ -519,6 +519,20 @@ impl ChatState {
     pub fn voice_parts(&self) -> (Arc<crate::follow::Follower>, PathBuf) {
         (Arc::clone(&self.follower), self.outbox_root.clone())
     }
+
+    /// The binding a path that opens or configures a session — not a turn —
+    /// heads it with: followed, so a chat opened after an outside switch is
+    /// not headed with the model that will not answer it. A rebuild that
+    /// fails here is the next turn's to report; the page gets what is bound.
+    async fn followed_or_current(&self) -> Arc<crate::follow::Bound> {
+        match self.follower.follow().await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::debug!("opening a session could not follow the router: {e:#}");
+                self.follower.current()
+            }
+        }
+    }
 }
 
 fn producer_root() -> Result<PathBuf> {
@@ -546,6 +560,11 @@ pub(super) async fn attachment_workspace(
     create: bool,
 ) -> Result<PathBuf, Box<axum::response::Response>> {
     let chat = chat_state(state).map_err(Box::new)?;
+    let bound = if create {
+        Some(chat.followed_or_current().await)
+    } else {
+        None
+    };
     let mut sessions = chat.sessions.lock().await;
     if !create {
         return sessions
@@ -553,7 +572,8 @@ pub(super) async fn attachment_workspace(
             .map(|session| session.workspace.clone())
             .ok_or_else(|| Box::new((StatusCode::NOT_FOUND, "no such session\n").into_response()));
     }
-    let session = ensure_session(chat, &mut sessions, key).map_err(|e| {
+    let bound = bound.expect("followed above when creating");
+    let session = ensure_session(chat, &bound, &mut sessions, key).map_err(|e| {
         Box::new((super::incognito::status_of(&e), format!("{e:#}\n")).into_response())
     })?;
     // An upload is use, as a turn is (the page's ping covers it too).
@@ -1095,10 +1115,12 @@ pub(super) async fn open_task_conversation(
         &crate::commands::tasks::Reach::of(chat.follower.current().agent.registry()),
     );
 
+    let opened_on = chat.followed_or_current().await;
     let (session_id, fresh) = {
         let mut sessions = chat.sessions.lock().await;
         let ws = ensure_session_as(
             &chat,
+            &opened_on,
             &mut sessions,
             &key,
             SessionInit {
@@ -1260,16 +1282,23 @@ pub(super) struct SessionInit {
     pub task: Option<serde_json::Value>,
 }
 
+/// `bound` is what a session this call creates is headed and first recorded
+/// with — a *followed* binding, never `current()`: after a switch made outside
+/// this process, `current()` is the model that will not answer, and the page
+/// opens a chat (`POST /api/chat/{key}`) before its first turn follows
+/// (review of #347).
 fn ensure_session<'a>(
     chat: &Arc<ChatState>,
+    bound: &crate::follow::Bound,
     sessions: &'a mut HashMap<String, WebSession>,
     key: &str,
 ) -> Result<&'a mut WebSession> {
-    ensure_session_as(chat, sessions, key, SessionInit::default())
+    ensure_session_as(chat, bound, sessions, key, SessionInit::default())
 }
 
 fn ensure_session_as<'a>(
     chat: &Arc<ChatState>,
+    bound: &crate::follow::Bound,
     sessions: &'a mut HashMap<String, WebSession>,
     key: &str,
     init: SessionInit,
@@ -1299,9 +1328,6 @@ fn ensure_session_as<'a>(
             }
             None => session_workspace(key)?,
         };
-        // What the conversation opens on. Its first turn follows the router
-        // and records a fresh config if the model has moved since.
-        let bound = chat.follower.current();
         let (session, mut conversation) = match recorded {
             Some((meta, path, convo)) => {
                 // The plan comes back with it (D15), from the transcript the
@@ -1679,19 +1705,18 @@ pub async fn send(
     // switch. Holding first swallowed a steer during a pending switch: it
     // waited out the run it meant to steer, then started as a new turn
     // (review of D13).
+    // Read-only: a session is created only once the turn has followed, so it
+    // is headed with the model that answers it (review of #347).
     let notices = {
-        let mut sessions = chat.sessions.lock().await;
+        let sessions = chat.sessions.lock().await;
         if chat.stopping.is_cancelled() {
             return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
         }
-        let ws = match ensure_session(&chat, &mut sessions, &key) {
-            Ok(ws) => ws,
-            Err(e) => return (super::incognito::status_of(&e), format!("{e:#}\n")).into_response(),
-        };
-        if ws.live.is_some() {
-            return steer(ws, text, request_id);
+        match sessions.get(&key) {
+            Some(ws) if ws.live.is_some() => return steer(ws, text, request_id),
+            Some(ws) => Some(ws.events.clone()),
+            None => None,
         }
-        ws.events.clone()
     };
 
     // The model this turn will run on, followed before the lock: a rebuild
@@ -1703,12 +1728,14 @@ pub async fn send(
     let (held, bound) = match chat
         .follower
         .enter("web chat", |switch| {
-            let _ = notices.send(WireEvent::Notice {
-                text: format!(
-                    "Switching the model to {} — this turn starts once it is loaded.",
-                    switch.to
-                ),
-            });
+            if let Some(tx) = &notices {
+                let _ = tx.send(WireEvent::Notice {
+                    text: format!(
+                        "Switching the model to {} — this turn starts once it is loaded.",
+                        switch.to
+                    ),
+                });
+            }
         })
         .await
     {
@@ -1719,7 +1746,7 @@ pub async fn send(
     if chat.stopping.is_cancelled() {
         return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
     }
-    let ws = match ensure_session(&chat, &mut sessions, &key) {
+    let ws = match ensure_session(&chat, &bound, &mut sessions, &key) {
         Ok(ws) => ws,
         Err(e) => return (super::incognito::status_of(&e), format!("{e:#}\n")).into_response(),
     };
@@ -2773,7 +2800,7 @@ impl crate::voice::SessionHost for VoiceHost {
         for _ in 0..BARGE_IN_TRIES {
             {
                 let mut sessions = self.0.sessions.lock().await;
-                let (live, idle) = match ensure_session(&self.0, &mut sessions, key) {
+                let (live, idle) = match ensure_session(&self.0, &bound, &mut sessions, key) {
                     Ok(ws) => (ws.live.is_some(), ws.conversation.is_some()),
                     Err(e) => return Hosted::Failed(format!("{e:#}")),
                 };
@@ -2990,11 +3017,12 @@ pub async fn set_mode(
                 .into_response()
         }
     };
+    let bound = chat.followed_or_current().await;
     let mut sessions = chat.sessions.lock().await;
     if chat.stopping.is_cancelled() {
         return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
     }
-    let ws = match ensure_session(chat, &mut sessions, &key) {
+    let ws = match ensure_session(chat, &bound, &mut sessions, &key) {
         Ok(ws) => ws,
         Err(e) => return (super::incognito::status_of(&e), format!("{e:#}\n")).into_response(),
     };
@@ -4339,6 +4367,26 @@ pub(super) fn test_switch(chat: &ChatState, reply: &'static str, model: &str, lo
     )
     .unwrap();
     chat.follower.switch_to(agent, "local", model, config);
+}
+
+/// [`test_switch`], seen only by the next `follow` — an outside switch this
+/// chat has not asked about yet.
+#[cfg(test)]
+pub(super) fn test_switch_unseen(chat: &ChatState, reply: &'static str, model: &str) {
+    let config = answering_config(true);
+    let agent = Agent::new(
+        Box::new(Answers(reply)),
+        mecha_core::tool::Registry::new(),
+        Arc::new(mecha_core::tool::ModeApprover {
+            mode: PermissionMode::ReadOnly,
+        }),
+        ToolCtx::default(),
+        config.agent.clone(),
+        Some(model.into()),
+    )
+    .unwrap();
+    chat.follower
+        .switch_on_next_follow(agent, "local", model, config);
 }
 
 /// A chat whose model, asked anything, draws `prompt` with `image_generate`
