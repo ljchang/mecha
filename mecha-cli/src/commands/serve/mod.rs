@@ -315,6 +315,7 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
             axum::routing::post(chat::incognito_alive),
         )
         .route("/api/chat/{key}", get(chat::transcript).post(chat::open))
+        .route("/api/chat/{key}/todo", get(chat::todo))
         .route("/api/chat/{key}/send", axum::routing::post(chat::send))
         .route("/api/chat/{key}/cancel", axum::routing::post(chat::cancel))
         .route("/api/chat/{key}/events", get(chat::events))
@@ -2156,6 +2157,42 @@ mod boundary_tests {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         release.abort();
+    }
+
+    /// The page re-reads the plan on every `todo` result a run streams; this
+    /// read is the plan and nothing else, so a mid-run revision does not pay
+    /// for the history the transcript read now carries.
+    #[tokio::test]
+    async fn the_plan_read_carries_the_plan_and_not_the_history() {
+        let _home = crate::testenv::HomeGuard::new("plan-read");
+        let app = app(chat::test_chat_answering("noted", true));
+        converse(&app, "planned", "first question").await;
+
+        let plan = body(
+            app.clone()
+                .oneshot(get("/api/chat/planned/todo"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let whole = body(app.clone().oneshot(get("/api/chat/planned")).await.unwrap()).await;
+        assert_eq!(
+            plan["todo"], whole["todo"],
+            "the two reads disagree on the plan"
+        );
+        assert!(plan["todo"].is_array(), "{plan}");
+        assert_eq!(
+            plan.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["todo"],
+            "the plan read carries more than the plan: {plan}"
+        );
+
+        let missing = app
+            .clone()
+            .oneshot(get("/api/chat/nobody-here/todo"))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

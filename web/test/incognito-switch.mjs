@@ -39,7 +39,7 @@ function page(start) {
      let partialRun = true, liveFrom = 3;
      const receivedInputs = new Set(), inputDelivery = new Map();
      ${switchToSrc}
-     return { switchTo, now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote }) };`,
+     return { switchTo, now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom }) };`,
   )(start);
 }
 
@@ -70,6 +70,10 @@ function is(actual, expected, what) {
   p.switchTo('chat-x1');
   const s = p.now();
   is([s.key, s.draft, s.attachments], ['chat-x1', 'half a thought', ['inbox/a.pdf']], 'an ordinary chat still carries its unsent text');
+  // The rail's belt reads `partialRun` on a timer: left set across a switch,
+  // it would catch up the new chat against the old chat's run, and that
+  // read's key check would drop it — leaving the new chat with no catch-up.
+  is([s.partialRun, s.liveFrom], [false, 0], "and what the catch-up knew of the last chat's run is gone");
 }
 {
   const p = page({ key: 'incognito-ab', draft: 'KUMQUAT', attachments: [], incognito: true, gone: 'ended' });

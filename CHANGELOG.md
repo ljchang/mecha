@@ -261,6 +261,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The web chat's plan has its own read** (`GET /api/chat/{key}/todo`).
+  The page re-reads the plan on every `todo` result a run streams, and took
+  it from the transcript read — which, since the entry below, carries the
+  whole history mid-run, rendered and serialised once per plan revision.
 - **A web chat opened or reconnected mid-run keeps its history.** While a
   run held the conversation the transcript read returned no entries, and
   the page replaced everything it showed with that — so a phone whose

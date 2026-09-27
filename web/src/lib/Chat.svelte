@@ -227,7 +227,7 @@
 
   async function refreshTodo() {
     try {
-      const res = await fetch(`/api/chat/${key}`);
+      const res = await fetch(`/api/chat/${key}/todo`);
       if (!res.ok) return;
       todo = (await res.json()).todo ?? [];
     } catch {
@@ -445,8 +445,9 @@
           }
           // Every plan change already arrives here as a tool call, so the
           // list needs no event of its own — re-read on the one that means
-          // it changed. Cheap while a run holds the conversation, because
-          // the transcript read returns no entries then.
+          // it changed. The plan's own read, not the transcript's: a
+          // mid-run transcript read carries the whole history, and a
+          // model revising its plan often would pay for it every time.
           if (ev.name === 'todo' && !ev.is_error) refreshTodo();
           break;
         }
