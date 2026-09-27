@@ -2994,7 +2994,9 @@ mod tests {
         assert!(!text.contains("Dana Whitfield"), "{text}");
         assert!(!text.contains("Northwind"), "{text}");
         assert!(
-            text.contains("not the owner's (the owner approved the reject) — not quoted"),
+            text.contains(
+                "the assistant's words, from its own shell command, not the owner's — not quoted"
+            ),
             "{text}"
         );
         assert!(

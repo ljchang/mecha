@@ -4139,7 +4139,16 @@ fn handle_outbox_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     args.extend(["--reason", reason.as_str()]);
                 }
                 modal.status = Some(match self_cli(&args) {
-                    Ok(_) => format!("rejected `{}`; nothing was sent", input.id),
+                    Ok(out) => match out
+                        .lines()
+                        .find(|l| l.starts_with(crate::commands::outbox::DEMOTION_PREFIX))
+                    {
+                        // A reason the harness could not attribute to the
+                        // owner says so here, not only on a stderr the TUI
+                        // drops (review of #343).
+                        Some(note) => format!("rejected `{}`; {note}", input.id),
+                        None => format!("rejected `{}`; nothing was sent", input.id),
+                    },
                     Err(e) => format!("could not reject `{}`: {e}", input.id),
                 });
                 reload_outbox(app);
