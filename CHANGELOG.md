@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Image generation.** With `[image]` configured, the `image_generate`
+  tool draws a picture with a local image model (ComfyUI with Qwen-Image 2.1
+  today) and saves the PNG under `images/` in the conversation's workspace;
+  web chat shows it inline. The workflow the server runs is fixed in mecha's
+  code, and the model only fills in a prompt, a size and a seed. See
+  *Image generation* in the published docs.
+- **Incognito web chat.** A second new-chat button opens a chat that writes
+  no transcript, title or count, keeps its files on tmpfs, and is gone when
+  you tap End, after 30 idle minutes, or when `mecha serve` stops. It reaches
+  an allowlist (mail and calendar reads, web search, its own folder), runs
+  only on a local provider without fallbacks, and refuses to open rather than
+  weaken any of that (`docs/INCOGNITO-DESIGN.md`).
+- **Model switching behind a llama-server router.** `mecha model use <name>`
+  loads a model and every default run follows it, including web chat, voice,
+  Slack and the trigger daemon, which re-check before each turn or fire.
+  A switch waits for the runs still using the old model (`--now` stops them;
+  `mecha model cancel-switch` withdraws a stuck switch), and each run records
+  the model that answered. Opt in with `follow_loaded = true` on the default
+  provider entry (`REMOTE-SURFACE-DESIGN.md` §14).
 - **Every outbox resolve records who made it** (`APPRAISAL-WIRING-DESIGN.md`,
   R16a's ruling D3). `mecha outbox reject`, `review` and `approve` stamp
   `resolved_by` on the item — `owner` at the owner's terminal or a
