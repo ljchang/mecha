@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The model can look at an image, on request** (`image_view`, the owner's
+  ruling of 2026-09-27). It takes a workspace path — a picture
+  `image_generate` saved, an attachment under `inbox/` — and the loop puts
+  the picture in the user turn beside the results (`ToolOutput::image`),
+  for a model that can see; a blind one is told in words. Before it, a model
+  could not check what it drew: `image_generate` said "You cannot see it"
+  and `fs_read` returns a PNG as noise, so positional edits ("the second
+  person from the left") were composed blind. Not returned by default,
+  because a look costs ~1000 tokens for the rest of the conversation; a
+  look arms `private_data`, like `fs_read`. Registered for any model that
+  can see; a small picture (≤ 1 MiB, a screenshot most often) reaches it
+  byte for byte, a larger one as JPEG.
+
 ### Changed
 
 - **A previous attempt says whose act it was** (`APPRAISAL-WIRING-DESIGN.md`

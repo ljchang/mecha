@@ -515,6 +515,9 @@ impl McpClient {
                 self.trust_result_claims,
                 is_error,
             ),
+            // A server's `image` content is not taken: those would be a third
+            // party's pixels, and only a builtin earns the fold.
+            image: None,
         })
     }
 }

@@ -65,6 +65,7 @@ const ALLOWED_BUILTINS: &[&str] = &[
     "web_open",
     "http_fetch",
     "image_generate",
+    "image_view",
 ];
 
 /// The MCP server whose read-only tools an incognito chat may call (R3:
