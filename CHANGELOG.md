@@ -40,7 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quoted. A walk cut by its bound, or a session file that cannot be read,
   says "at least". Recorded on every run; delivered only behind `[agent]
   situation_brief`, which still ships off. `sessions health` reports the
-  field's completeness beside the other nine.
+  field's completeness beside the other nine, and counts it unread only
+  when something failed: an unreadable file or store, or a session kind
+  this build cannot name — never the walk's own bound.
 - **A rule's owner tenure, beside retirement** (`APPRAISAL-WIRING-DESIGN.md`
   2e-5b/2e-5c, R41). `mecha rules list`/`show` print `owner: <tenure> ·
   region: <quiet>` per learned rule, and `--json` gains `owner` and `quiet`.

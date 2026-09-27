@@ -8,12 +8,19 @@
 //! common re-delegation, a run that ended without a closure, is found by a
 //! **bounded walk** over the session directory ([`walk`]) and not by an
 //! index. That is R42(b): newest first over the sessions' header lines, kind
-//! `task` only, a full read of those alone (and only when the file holds the
-//! task's pointer at all), keeping the ones whose anchors name `task:<id>`,
-//! never the run's own session. The walk stops at [`ATTEMPTS_MAX`] attempts
-//! or [`WINDOW_DAYS`] back. A session file that cannot be read, or task
-//! sessions the bound left unread, make the field a floor: the words say
-//! "at least" and name what was not searched.
+//! `task` only, never the run's own session. Each candidate's **head** is
+//! scanned for the task's pointer, stopping at the first message
+//! ([`HEAD_BYTES_MAX`] at most), and only a session whose head names the
+//! task is read whole and kept when its anchors name `task:<id>`, so the
+//! bytes the walk reads are the heads plus at most [`ATTEMPTS_MAX`]
+//! transcripts. The walk stops at [`ATTEMPTS_MAX`] attempts or
+//! [`WINDOW_DAYS`] back. Two things set the field apart, by R42's reading of
+//! 2026-09-27: **a failure** — a session file that cannot be read, a kind
+//! this build cannot name, an owner's-acts store read short — makes it
+//! `Unread` in `sessions health` ([`Attempts::unread`]); **the designed
+//! bound** does not, as a capped commitments store does not. Both make the
+//! words a floor ([`Attempts::floor`]): they say "at least" and name what
+//! was not searched.
 //!
 //! **What an attempt says, in two lines kept apart** (R42(c)). The first is
 //! the owner's acts, read from the stores `appraisal::of_session` reads,
@@ -86,6 +93,11 @@ pub enum Attempts {
         /// body. Their kind or anchor is unknown, so the list is a floor.
         #[serde(default, skip_serializing_if = "is_zero")]
         unreadable: u32,
+        /// Sessions in the window whose header names a kind this build
+        /// cannot read (a newer build's surface). Any of them may be a task
+        /// session, so the list is a floor.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        unnamed_kind: u32,
         /// The stores the owner's acts are read from that could not be read
         /// in full, by name. The acts are then partial.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -100,18 +112,36 @@ fn is_zero(n: &u32) -> bool {
 }
 
 impl Attempts {
-    /// A part of it was not read: the completeness readout's `Unread`.
-    pub fn partial(&self) -> bool {
+    /// Something failed: a session file that could not be read, a kind
+    /// this build cannot name, a store read short, or no walk at all. The
+    /// completeness readout's `Unread`, which keeps meaning "something
+    /// failed" (R42's reading, 2026-09-27).
+    pub fn unread(&self) -> bool {
         match self {
             Attempts::NotATask => false,
             Attempts::Read {
-                unsearched,
                 unreadable,
+                unnamed_kind,
                 stores_unread,
                 ..
-            } => *unsearched || *unreadable > 0 || !stores_unread.is_empty(),
+            } => *unreadable > 0 || *unnamed_kind > 0 || !stores_unread.is_empty(),
             Attempts::Unread { .. } => true,
         }
+    }
+
+    /// The list may be short: anything [`Self::unread`] counts, or a walk
+    /// that stopped at its designed bound ([`ATTEMPTS_MAX`], [`WINDOW_DAYS`]).
+    /// The words say "at least"; the readout does not call a bound a
+    /// failure, as a commitments store's `capped` is not one (R42's reading).
+    pub fn floor(&self) -> bool {
+        self.unread()
+            || matches!(
+                self,
+                Attempts::Read {
+                    unsearched: true,
+                    ..
+                }
+            )
     }
 }
 
@@ -317,6 +347,90 @@ pub struct Walk {
     pub found: Vec<(SessionMeta, Transcript)>,
     pub unsearched: bool,
     pub unreadable: u32,
+    pub unnamed_kind: u32,
+}
+
+/// The most bytes the walk reads of a session's head, looking for the
+/// task's pointer, before it counts the file as unread. A real head (the
+/// header, the run config, the seeded anchor) was at most 20 KB on the live
+/// store, measured 2026-09-27; a head longer than this is not a session
+/// the walk can vouch for.
+pub const HEAD_BYTES_MAX: u64 = 256 * 1024;
+
+/// What a session's head says about the task.
+#[derive(Debug, PartialEq, Eq)]
+enum Head {
+    /// The head holds the task's pointer: read the whole file.
+    Names,
+    /// The first message arrived, or the file ended, with no pointer: the
+    /// session was not opened on this task.
+    Not,
+    /// The head could not be read, or ran past [`HEAD_BYTES_MAX`].
+    Unreadable,
+}
+
+/// Scan a session's head, line by line, for the task's pointer, stopping at
+/// the pointer, at the first message, or at [`HEAD_BYTES_MAX`].
+///
+/// **Why the head is enough.** Both doors that open a `task` session — `tasks
+/// work` and the board chat — seed the task's anchor before the first
+/// message is written (`run::seed_goal_anchor`), so a session opened on the
+/// task names it before any message. A session opened on another task and
+/// re-anchored to this one later, by the owner's answer to a question, is
+/// not found: a named residue, accepted so that the bytes the walk reads
+/// are bounded by the heads, not by every transcript in the window (found
+/// on review of #344: the whole-file read made the walk's cost every task
+/// transcript in ninety days, paid per turn in a board chat).
+fn head_names(path: &Path, needle: &str) -> Head {
+    use std::io::{BufRead, Read};
+    let Ok(file) = std::fs::File::open(path) else {
+        return Head::Unreadable;
+    };
+    // One byte past the cap, so a head that reaches it is told apart from
+    // one that ends exactly there.
+    let mut reader = std::io::BufReader::new(file.take(HEAD_BYTES_MAX + 1));
+    let mut read = 0u64;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Err(_) => return Head::Unreadable,
+            Ok(0) if read > HEAD_BYTES_MAX => return Head::Unreadable,
+            Ok(0) => return Head::Not,
+            Ok(n) => read += n as u64,
+        }
+        if read > HEAD_BYTES_MAX {
+            return Head::Unreadable;
+        }
+        if line.contains(needle) {
+            return Head::Names;
+        }
+        // The record tag is serialised first, and a quote inside any string
+        // value is escaped, so this prefix is a message record and nothing
+        // else.
+        if line.trim_start().starts_with("{\"record\":\"message\"") {
+            return Head::Not;
+        }
+    }
+}
+
+/// Whether a header whose kind loaded as nothing names a kind at all: a
+/// kind this build cannot read (`Some(true)`), or no kind field, a header
+/// written before kinds existed (`Some(false)`). `None` when the header
+/// cannot be read now.
+fn names_a_kind(path: &Path) -> Option<bool> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    let mut first = String::new();
+    for line in std::io::BufReader::new(file).lines() {
+        let line = line.ok()?;
+        if !line.trim().is_empty() {
+            first = line;
+            break;
+        }
+    }
+    let header: Value = serde_json::from_str(&first).ok()?;
+    Some(header.get("kind").is_some_and(|k| !k.is_null()))
 }
 
 /// Whether any `GoalAnchor` record in the transcript names `task`.
@@ -338,33 +452,55 @@ pub fn walk(
     let (listed, headless) = Session::list_counting(dir).map_err(|e| format!("{e:#}"))?;
     let horizon = now - chrono::Duration::days(WINDOW_DAYS);
     // The file names the pointer as `GoalRef`'s wire form, quoted, in every
-    // anchor record: a file without it cannot name the task, and is not
-    // parsed.
+    // anchor record: a head without it was not opened on the task.
     let needle = format!("\"{}\"", GoalRef::Task(task.to_string()));
     let mut w = Walk {
         found: Vec::new(),
         unsearched: false,
         unreadable: u32::try_from(headless).unwrap_or(u32::MAX),
+        unnamed_kind: 0,
     };
     for (meta, path) in listed {
-        if meta.kind != Some(SessionKind::Task) || current == Some(meta.id.as_str()) {
+        if current == Some(meta.id.as_str()) {
             continue;
         }
+        // Known and not a task: not an attempt. A kind this build cannot
+        // name may be one, so it is counted, never skipped as known (found
+        // on review of #344). A header with no kind at all was written
+        // before 2026-09-02, when every session began to record one, and
+        // the `GoalAnchor` record only exists from 2026-09-09, so no such
+        // file was written with a task anchor: it is skipped as known.
+        let named = match meta.kind {
+            Some(SessionKind::Task) => true,
+            Some(_) => continue,
+            None => match names_a_kind(&path) {
+                Some(false) => continue,
+                Some(true) => false,
+                None => {
+                    w.unreadable = w.unreadable.saturating_add(1);
+                    continue;
+                }
+            },
+        };
         if w.found.len() >= ATTEMPTS_MAX || meta.created_at < horizon {
             w.unsearched = true;
             break;
         }
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(_) => {
+        if !named {
+            w.unnamed_kind = w.unnamed_kind.saturating_add(1);
+            continue;
+        }
+        match head_names(&path, &needle) {
+            Head::Not => continue,
+            Head::Unreadable => {
                 w.unreadable = w.unreadable.saturating_add(1);
                 continue;
             }
-        };
-        if !text.contains(&needle) {
-            continue;
+            Head::Names => {}
         }
-        match Session::parse(&path, &text) {
+        // At most ATTEMPTS_MAX files are read whole: only one whose head
+        // names the task.
+        match Session::read(&path) {
             Ok(t) if names_task(&t, task) => w.found.push((meta, t)),
             Ok(_) => {}
             Err(_) => w.unreadable = w.unreadable.saturating_add(1),
@@ -388,6 +524,7 @@ pub fn attempts_of(walk: Walk, task: &str, stores: &Stores) -> Attempts {
         attempts,
         unsearched: walk.unsearched,
         unreadable: walk.unreadable,
+        unnamed_kind: walk.unnamed_kind,
         stores_unread: stores
             .unreadable()
             .into_iter()
@@ -424,6 +561,7 @@ pub fn previous_attempts(
             attempts: Vec::new(),
             unsearched: w.unsearched,
             unreadable: w.unreadable,
+            unnamed_kind: w.unnamed_kind,
             stores_unread: Vec::new(),
         },
         Ok(w) => attempts_of(w, task, &load()),
@@ -747,7 +885,8 @@ fn reopen_words(r: &Reopen) -> String {
 /// a count of sessions, the walk's own bound, and a front-door request's
 /// sequence number, none of them a score.
 pub fn line(a: &Attempts, now: DateTime<Utc>) -> Option<String> {
-    let (attempts, unsearched, unreadable, stores_unread) = match a {
+    let floor = a.floor();
+    let (attempts, unsearched, unreadable, unnamed_kind, stores_unread) = match a {
         Attempts::NotATask => return None,
         Attempts::Unread { .. } => {
             return Some("- Previous attempts at this task: could not be read.".into());
@@ -756,10 +895,16 @@ pub fn line(a: &Attempts, now: DateTime<Utc>) -> Option<String> {
             attempts,
             unsearched,
             unreadable,
+            unnamed_kind,
             stores_unread,
-        } => (attempts, *unsearched, *unreadable, stores_unread),
+        } => (
+            attempts,
+            *unsearched,
+            *unreadable,
+            *unnamed_kind,
+            stores_unread,
+        ),
     };
-    let floor = unsearched || unreadable > 0;
     let mut head = if attempts.is_empty() {
         format!(
             "- Previous attempts at this task: none found in the last {WINDOW_DAYS} days{}.",
@@ -785,6 +930,13 @@ pub fn line(a: &Attempts, now: DateTime<Utc>) -> Option<String> {
         head.push_str(&format!(
             " {} could not be read, so there may be more.",
             count(unreadable, "session file", "session files")
+        ));
+    }
+    if unnamed_kind > 0 {
+        head.push_str(&format!(
+            " {} of a kind this build cannot name {} not searched, so there may be more.",
+            count(unnamed_kind, "session", "sessions"),
+            if unnamed_kind == 1 { "was" } else { "were" }
         ));
     }
     if !stores_unread.is_empty() && !attempts.is_empty() {
@@ -988,7 +1140,14 @@ mod tests {
         assert_eq!(ids, ["s-1", "s-2", "s-3"], "newest first, three at most");
         assert!(w.unsearched);
         let field = attempts_of(w, TASK, &Stores::default());
-        assert!(field.partial());
+        assert!(
+            field.floor(),
+            "a walk cut by its bound is a floor in the words"
+        );
+        assert!(
+            !field.unread(),
+            "and not a failure in the readout (R42's reading)"
+        );
         let words = line(&field, now()).unwrap();
         assert!(
             words.starts_with("- Previous attempts at this task: at least 3 earlier sessions"),
@@ -1021,7 +1180,8 @@ mod tests {
             TASK,
             &Stores::default(),
         );
-        assert!(!field.partial());
+        assert!(!field.floor());
+        assert!(!field.unread());
         let words = line(&field, now()).unwrap();
         assert!(
             words.starts_with("- Previous attempts at this task: 1 earlier session, newest first."),
@@ -1039,7 +1199,8 @@ mod tests {
         let w = walk(&dir, TASK, None, now()).unwrap();
         assert_eq!(w.unreadable, 1);
         let field = attempts_of(w, TASK, &Stores::default());
-        assert!(field.partial());
+        assert!(field.unread());
+        assert!(field.floor());
         let words = line(&field, now()).unwrap();
         assert!(words.contains("at least 1 earlier session"), "{words}");
         assert!(
@@ -1063,6 +1224,183 @@ mod tests {
         );
     }
 
+    /// A header with its `kind` rewritten: to a word this build cannot
+    /// read, or removed, as a session from before kinds existed.
+    fn rekind(dir: &Path, id: &str, kind: Option<&str>) {
+        let path = dir.join(format!("{id}.jsonl"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let (first, rest) = text.split_once('\n').unwrap();
+        let mut header: Value = serde_json::from_str(first).unwrap();
+        match kind {
+            Some(k) => header["kind"] = json!(k),
+            None => {
+                header.as_object_mut().unwrap().remove("kind");
+            }
+        }
+        std::fs::write(&path, format!("{header}\n{rest}")).unwrap();
+    }
+
+    /// A kind this build cannot name may be a task session: counted, a
+    /// failure in the readout and a floor in the words, never skipped as a
+    /// known non-task (found on review of #344). A header with no kind at
+    /// all predates both kinds and anchors, and is skipped as known.
+    #[test]
+    fn a_kind_this_build_cannot_name_is_a_floor_and_a_header_with_none_is_not() {
+        let dir = scratch("unnamed");
+        let a = anchor();
+        session(&dir, "s-future", SessionKind::Task, 1, Some(&a), None);
+        rekind(&dir, "s-future", Some("hologram"));
+        session(&dir, "s-legacy", SessionKind::Task, 2, None, None);
+        rekind(&dir, "s-legacy", None);
+        let w = walk(&dir, TASK, None, now()).unwrap();
+        assert!(w.found.is_empty());
+        assert_eq!(
+            (w.unnamed_kind, w.unreadable),
+            (1, 0),
+            "only the unnameable one"
+        );
+        let field = attempts_of(w, TASK, &Stores::default());
+        assert!(field.unread() && field.floor());
+        let words = line(&field, now()).unwrap();
+        assert!(
+            words.contains("none found in the last 90 days among the sessions searched"),
+            "{words}"
+        );
+        assert!(
+            words.contains("1 session of a kind this build cannot name was not searched"),
+            "{words}"
+        );
+        let brief = crate::brief::SituationBrief {
+            assembled_at: now(),
+            goal: None,
+            attempts: Some(field),
+            board: None,
+            commitments: None,
+            time: None,
+            seats: None,
+            runs: None,
+            slots: None,
+            voice: None,
+            budget: None,
+        };
+        assert_eq!(
+            brief.fields()[1],
+            ("attempts", crate::brief::FieldState::Unread)
+        );
+
+        let legacy_only = scratch("legacy");
+        session(&legacy_only, "s-legacy", SessionKind::Task, 2, None, None);
+        rekind(&legacy_only, "s-legacy", None);
+        let field = attempts_of(
+            walk(&legacy_only, TASK, None, now()).unwrap(),
+            TASK,
+            &Stores::default(),
+        );
+        assert!(!field.floor(), "{field:?}");
+    }
+
+    /// R42's reading (2026-09-27): a walk that stopped at its designed bound
+    /// says "at least" and is not `Unread` in `sessions health`; only a
+    /// failure is.
+    #[test]
+    fn a_walk_cut_by_its_bound_is_known_in_the_readout_and_a_failure_is_not() {
+        let brief = |attempts: Attempts| crate::brief::SituationBrief {
+            assembled_at: now(),
+            goal: None,
+            attempts: Some(attempts),
+            board: None,
+            commitments: None,
+            time: None,
+            seats: None,
+            runs: None,
+            slots: None,
+            voice: None,
+            budget: None,
+        };
+        let read =
+            |unsearched, unreadable, unnamed_kind, stores_unread: Vec<String>| Attempts::Read {
+                attempts: vec![],
+                unsearched,
+                unreadable,
+                unnamed_kind,
+                stores_unread,
+            };
+        use crate::brief::FieldState::{Known, Unread};
+        for (field, state) in [
+            (read(true, 0, 0, vec![]), Known),
+            (read(false, 0, 0, vec![]), Known),
+            (read(false, 1, 0, vec![]), Unread),
+            (read(true, 0, 1, vec![]), Unread),
+            (read(false, 0, 0, vec!["outbox".into()]), Unread),
+            (Attempts::Unread { why: "x".into() }, Unread),
+        ] {
+            let floor = field.floor();
+            let b = brief(field.clone());
+            assert_eq!(b.fields()[1], ("attempts", state), "{field:?}");
+            if let Attempts::Read {
+                unsearched: true, ..
+            } = field
+            {
+                assert!(floor, "a bound is still a floor in the words");
+            }
+        }
+    }
+
+    /// The walk reads a session's head, not its whole transcript: it stops
+    /// at the task's pointer or at the first message. So a session opened on
+    /// another task whose body this reader could not decode costs nothing —
+    /// the whole-file read counted it unreadable and made every brief on
+    /// the task a floor (found on review of #344, whose finding was the
+    /// bytes read).
+    #[test]
+    fn the_walk_reads_a_sessions_head_and_stops_at_the_first_message() {
+        let dir = scratch("head");
+        session(
+            &dir,
+            "s-other",
+            SessionKind::Task,
+            1,
+            Some("task:task-lakeside-visit"),
+            None,
+        );
+        let other = dir.join("s-other.jsonl");
+        let mut bytes = std::fs::read(&other).unwrap();
+        bytes.extend_from_slice(b"\xff\xfe not text, and never read\n");
+        std::fs::write(&other, bytes).unwrap();
+        let w = walk(&dir, TASK, None, now()).unwrap();
+        assert_eq!(
+            w.unreadable, 0,
+            "the body past the first message is not read"
+        );
+        assert!(w.found.is_empty());
+
+        let needle = format!("\"{}\"", GoalRef::Task(TASK.into()));
+        // Named in the head: found.
+        session(&dir, "s-mine", SessionKind::Task, 1, Some(&anchor()), None);
+        assert_eq!(head_names(&dir.join("s-mine.jsonl"), &needle), Head::Names);
+        // Named only after the first message (a later re-anchor): the
+        // stated residue, not found.
+        session(&dir, "s-late", SessionKind::Task, 1, None, None);
+        let late = Session {
+            meta: Session::peek_meta(&dir.join("s-late.jsonl")).unwrap(),
+            path: dir.join("s-late.jsonl"),
+        };
+        late.append(&Record::GoalAnchor {
+            goal: Some(anchor().parse().unwrap()),
+        })
+        .unwrap();
+        assert_eq!(head_names(&late.path, &needle), Head::Not);
+        // A head past the cap with no message and no pointer: unread.
+        let long = dir.join("s-long.jsonl");
+        let pad = "x".repeat(HEAD_BYTES_MAX as usize);
+        std::fs::write(
+            &long,
+            format!("{{\"record\":\"meta\",\"pad\":\"{pad}\"}}\n"),
+        )
+        .unwrap();
+        assert_eq!(head_names(&long, &needle), Head::Unreadable);
+    }
+
     /// A run anchored to anything but a task has no attempts: the field is
     /// known and silent, and nothing is walked or read. A task with no
     /// attempt reads no store.
@@ -1076,7 +1414,7 @@ mod tests {
             let field =
                 previous_attempts(anchor.as_ref(), Err("never asked"), None, now(), &no_stores);
             assert_eq!(field, Attempts::NotATask);
-            assert!(!field.partial());
+            assert!(!field.unread() && !field.floor());
             assert_eq!(line(&field, now()), None);
         }
         let dir = scratch("none");
@@ -1340,7 +1678,7 @@ mod tests {
             }]
         );
         assert_eq!(stores_unread, &["outbox"]);
-        assert!(field.partial());
+        assert!(field.unread());
         let words = line(&field, now()).unwrap();
         assert!(
             words.contains(
