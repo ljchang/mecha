@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can see; a small picture (≤ 1 MiB, a screenshot most often) reaches it
   byte for byte, a larger one as JPEG.
 
+### Fixed
+
+- **A picture uploaded in the web chat reaches the model as pixels**
+  (`REMOTE-SURFACE-DESIGN.md` D6, built half-way on 2026-08-24). The page
+  named an upload's path and nothing else, so the model could not see what
+  it was sent — `fs_read` cannot read a picture. The page now lists its
+  uploads beside the text and `serve` puts each image on the turn, capped at
+  the door, for a model that can see; the path stays in the text, so it can
+  still be handed to `image_generate`. Up to 8 per turn; an attached picture
+  arms `private_data`, as the Slack door's does — so a web chat with a
+  picture in it now refuses a model-chosen send (`http_fetch`) once outside
+  content has also entered, where before only an opened file armed it.
+
 ### Changed
 
 - **A previous attempt says whose act it was** (`APPRAISAL-WIRING-DESIGN.md`

@@ -389,10 +389,21 @@ Four decisions, each a bug if undone:
   *prose* call, so the payload could only arrive as literal text in a request
   whose whole purpose is to be smaller than what it replaces.
 
-**Three doors, and which one you can use is decided by where you are
+**Four doors, and which one you can use is decided by where you are
 sitting.** The Slack connector and the remote-control inbox attach an image to
-the turn after landing the file in the workspace; `mecha run --image` is the
+the turn after landing the file in the workspace; **the web chat** does the
+same for a picture uploaded from the page; `mecha run --image` is the
 scripted one; and **dropping a file on the TUI prompt** is the local one.
+
+The web door was built path-only on 2026-08-24 — the upload named in the
+text, taint left to "arm through `fs_read`" — which half-built
+`REMOTE-SURFACE-DESIGN.md` D6: `fs_read` cannot read a picture, so the model
+never saw one. The page now also lists the uploads (`SendBody::attachments`)
+and `serve` reads each image through `WorkspaceFiles::read`, the download
+route's containment walk, *before* the sessions lock, and only when the bound
+model can see; at most `MAX_ATTACHED_IMAGES` ride on one turn and the rest are
+named by path. A steer carries text only, so a picture sent while a run is in
+flight is named, not shown.
 
 That last is not a drop protocol: a terminal converts a drop into a *bracketed
 paste of the path*, which is why one `Event::Paste` arm serves both — and why
@@ -420,7 +431,7 @@ Two rules on the drop path:
   path unchanged, which is what a dropped `.csv` wants.
 
 **What lands on disk differs by door, and the difference is an affordance
-rather than an inconsistency.** The Slack and remote-control doors write the
+rather than an inconsistency.** The Slack, remote-control and web doors write the
 **original** into `<workspace>/inbox/` and *also* name the path in the prompt,
 so the model gets both bytes it can look at and a path it can `shell`. The
 terminal doors copy nothing: the file stays where the person had it, and — for
