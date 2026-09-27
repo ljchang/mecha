@@ -680,6 +680,12 @@ async fn hold_for_this_run(global: &GlobalOpts) -> Result<Option<mecha_core::hol
     }
     if let Some(h) = &held {
         h.on_cancel(|| {
+            // First, no further model request leaves this process: the
+            // interrupt stops the run in flight, but a loop that runs one
+            // agent per item (`frontdoor triage`, mail drafting) would start
+            // the next on its startup binding and load the old model back
+            // (review of D13).
+            mecha_core::provider::halt("the model was switched with `mecha model use --now`");
             // SAFETY: signalling this process; no memory is touched.
             unsafe {
                 libc::kill(libc::getpid(), libc::SIGINT);

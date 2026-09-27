@@ -188,6 +188,11 @@ impl Follower {
 
     /// The router this surface's model is served from, when it is a local
     /// server on this machine — what a run's hold is keyed by (D13).
+    ///
+    /// Wider than what `mecha model use` switches (routers a `follow_loaded`
+    /// entry points at) on purpose: holding a local server that no switch
+    /// targets costs nothing, and the narrower rule would let a pinned run on
+    /// a switchable router go unheld. Do not "fix" the asymmetry.
     pub fn router_base(&self) -> Option<String> {
         let bound = self.current();
         let url = bound
