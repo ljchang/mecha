@@ -389,27 +389,36 @@ fn head_names(path: &Path, needle: &str) -> Head {
     // One byte past the cap, so a head that reaches it is told apart from
     // one that ends exactly there.
     let mut reader = std::io::BufReader::new(file.take(HEAD_BYTES_MAX + 1));
+    let needle = needle.as_bytes();
     let mut read = 0u64;
-    let mut line = String::new();
+    let mut line: Vec<u8> = Vec::new();
     loop {
         line.clear();
-        match reader.read_line(&mut line) {
+        // Bytes, not a `String`: the cap can cut a line inside a multi-byte
+        // character, and that is a line cut short, not a file unread.
+        match reader.read_until(b'\n', &mut line) {
             Err(_) => return Head::Unreadable,
             Ok(0) if read > HEAD_BYTES_MAX => return Head::Unreadable,
             Ok(0) => return Head::Not,
             Ok(n) => read += n as u64,
         }
-        if read > HEAD_BYTES_MAX {
-            return Head::Unreadable;
-        }
-        if line.contains(needle) {
+        if line.windows(needle.len()).any(|w| w == needle) {
             return Head::Names;
         }
         // The record tag is serialised first, and a quote inside any string
         // value is escaped, so this prefix is a message record and nothing
-        // else.
-        if line.trim_start().starts_with("{\"record\":\"message\"") {
+        // else. Asked before the cap: the first message may itself be longer
+        // than the cap (an inline image is base64 in the record), and its
+        // prefix is all this needs — the head has ended, and that is not a
+        // failure (found on review of #344).
+        if line
+            .trim_ascii_start()
+            .starts_with(b"{\"record\":\"message\"")
+        {
             return Head::Not;
+        }
+        if read > HEAD_BYTES_MAX {
+            return Head::Unreadable;
         }
     }
 }
@@ -939,7 +948,7 @@ pub fn line(a: &Attempts, now: DateTime<Utc>) -> Option<String> {
             if unnamed_kind == 1 { "was" } else { "were" }
         ));
     }
-    if !stores_unread.is_empty() && !attempts.is_empty() {
+    if !stores_unread.is_empty() {
         head.push_str(&format!(
             " The owner's acts may be incomplete: the {} could not be read in full.",
             stores_unread.join(", the ")
@@ -947,11 +956,7 @@ pub fn line(a: &Attempts, now: DateTime<Utc>) -> Option<String> {
     }
     let mut lines = vec![head];
     for at in attempts {
-        let when = age_band(
-            u64::try_from((now - at.started_at).num_seconds())
-                .ok()
-                .unwrap_or(0),
-        );
+        let when = age_band(u64::try_from((now - at.started_at).num_seconds()).unwrap_or(0));
         let acts = if at.acts.is_empty() {
             "no act of theirs is recorded on it".to_string()
         } else {
@@ -1390,6 +1395,26 @@ mod tests {
         })
         .unwrap();
         assert_eq!(head_names(&late.path, &needle), Head::Not);
+        // A first message longer than the cap (an inline image), cut inside
+        // a multi-byte character: the head ended, which is not a failure.
+        let big = dir.join("s-big.jsonl");
+        session(
+            &dir,
+            "s-big",
+            SessionKind::Task,
+            1,
+            Some("task:task-lakeside-visit"),
+            None,
+        );
+        let header = std::fs::read_to_string(&big).unwrap();
+        let header = header.lines().next().unwrap();
+        let image = "é".repeat(HEAD_BYTES_MAX as usize);
+        std::fs::write(
+            &big,
+            format!("{header}\n{{\"record\":\"message\",\"data\":\"{image}\"}}\n"),
+        )
+        .unwrap();
+        assert_eq!(head_names(&big, &needle), Head::Not);
         // A head past the cap with no message and no pointer: unread.
         let long = dir.join("s-long.jsonl");
         let pad = "x".repeat(HEAD_BYTES_MAX as usize);
