@@ -343,8 +343,13 @@ async fn a_compare_pass_leaves_a_comparison_per_point_a_second_read_returns() {
     assert_eq!(pass["arms_driven"], 8, "{first:#}");
     assert_eq!(pass["unposed"], 2, "{first:#}");
     assert_eq!(pass["stored"]["written"], 6, "{first:#}");
-    assert_eq!(first["comparisons"]["records"], 6, "{first:#}");
+    // Counted for the model the pass drove; the two unposed points drove
+    // none, so they are said beside it, never in its counts.
+    assert_eq!(first["comparisons"]["model"], first["model"], "{first:#}");
+    assert_eq!(first["comparisons"]["records"], 4, "{first:#}");
     assert_eq!(first["comparisons"]["unposed"], 2, "{first:#}");
+    assert_eq!(first["comparisons"]["no_model"], 0, "{first:#}");
+    assert_eq!(first["comparisons"]["other_models"], 0, "{first:#}");
 
     // The second read: a fresh handle on the store the binary wrote.
     let rows = ComparisonStore::open(home.join("comparisons"))
