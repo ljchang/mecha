@@ -3615,6 +3615,7 @@ mod tests {
             created_at: "2026-08-27T00:00:00Z".into(),
             resolved_at: None,
             reason: None,
+            edited_by: None,
             resolved_by: None,
             error: None,
         }

@@ -163,6 +163,18 @@ impl Actor {
             Actor::Unknown => "unknown",
         }
     }
+
+    /// The less attributable of two actors — `owner` only if both are,
+    /// `unknown` if either is. What several acts on one record fold to,
+    /// so a later owner's act cannot launder an earlier one that was not
+    /// (an outbox draft edited more than once).
+    pub fn least(self, other: Actor) -> Actor {
+        match (self, other) {
+            (Actor::Owner, Actor::Owner) => Actor::Owner,
+            (Actor::Unknown, _) | (_, Actor::Unknown) => Actor::Unknown,
+            _ => Actor::OwnerApproved,
+        }
+    }
 }
 
 /// Who performed an owner's act that is **stamped rather than refused** —

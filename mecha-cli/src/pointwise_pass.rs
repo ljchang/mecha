@@ -1307,6 +1307,7 @@ mod tests {
             .update_args(
                 &edited.id,
                 json!({"to": "dirk@example.invalid", "body": "Totals attached; the Q3 sheet follows.", "urgent": false}),
+                mecha_core::closure::Actor::Owner,
             )
             .unwrap();
         outbox

@@ -313,11 +313,14 @@
       if (selectedId === id) open(id, { keepError: true, fresh: true });
     }
   }
-  /** `mecha outbox reject`'s note when the reason is not recorded as yours. */
+  /** `mecha outbox reject`'s / `edit`'s note when the words are not recorded
+   *  as yours. The literals are `DEMOTION_PREFIX` and `EDIT_DEMOTION_PREFIX`
+   *  in commands/outbox.rs; a test there reads this file. */
+  const DEMOTION_PREFIXES = ['note: the reason is recorded as', 'note: the edit is recorded as'];
   const demotionLine = (text) => {
     try {
       const out = JSON.parse(text)?.output ?? '';
-      return out.split('\n').find((l) => l.startsWith('note: the reason is recorded as')) ?? null;
+      return out.split('\n').find((l) => DEMOTION_PREFIXES.some((p) => l.startsWith(p))) ?? null;
     } catch {
       return null;
     }
@@ -337,7 +340,8 @@
       rejectReason = '';
       // A reason the harness could not attribute to you is said, never
       // swallowed: it will not be read as your correction.
-      say(demotionLine(text) ?? 'Rejected.');
+      const note = demotionLine(text);
+      say(note ? `Rejected. ${note}` : 'Rejected.');
       next();
     }
   }
@@ -364,7 +368,10 @@
   // the commonest review there is, "fix a word and send it".
   async function saveProse(andSend = false) {
     const id = detail.id;
-    if ((await act('edit', { body: editDraft })) === null) return;
+    const text = await act('edit', { body: editDraft });
+    if (text === null) return;
+    const note = demotionLine(text);
+    if (note) say(`Saved. ${note}`);
     if (andSend) return approve();
     open(id, { fresh: true });
   }
@@ -375,7 +382,10 @@
       return;
     }
     const id = detail.id;
-    if ((await act('edit', { args: out.args })) === null) return;
+    const text = await act('edit', { args: out.args });
+    if (text === null) return;
+    const note = demotionLine(text);
+    if (note) say(`Saved. ${note}`);
     if (andSend) return approve();
     open(id, { fresh: true });
   }

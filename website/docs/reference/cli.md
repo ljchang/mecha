@@ -605,7 +605,10 @@ mecha outbox [list|show|edit|review|approve|reconcile|reject|anticipate|outcome]
 | `outcome` | `<ID> --file <FILE>` | Record post-delivery owner feedback linked to the prediction; revisions explicitly supersede prior feedback. |
 
 `approve` is the current verb; `send` remains an alias. The original draft is
-kept after editing, and `mecha reflect` mines the edit into writing lessons.
+kept after editing, and `mecha reflect` mines the edit into writing lessons
+when you made every edit and the approval yourself; `show` names who edited
+(`edited since drafting (by owner)`), and an edit a mecha run's `shell` made
+says so when it is saved.
 Delivery attempts are recorded durably. An uncertain outcome blocks retries
 until the owner checks the destination and reconciles it; see
 [delivery recovery](/docs/features/security/outbox#delivery-recovery).
