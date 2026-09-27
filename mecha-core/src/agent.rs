@@ -2754,7 +2754,10 @@ impl Agent {
                     // The API rejects the next request unless every tool_use id
                     // has a matching tool_result, so this must never be empty
                     // when the model asked for tools.
-                    if results.is_empty() {
+                    if !results
+                        .iter()
+                        .any(|b| matches!(b, Block::ToolResult { .. }))
+                    {
                         let mut outcome = self.finish(
                             text,
                             &response,
