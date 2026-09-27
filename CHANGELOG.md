@@ -159,6 +159,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The counterfactual comparison summary counts one model** (the owner's
+  ruling of 2026-09-27). Since the chat server became a router, background
+  passes follow whichever model is resident, and `mecha sessions appraise`
+  summed the production model's comparisons with a comparison arm's into one
+  separated share. It now counts the model of the newest comparison on
+  record (`mecha sessions compare`: the model it drove) and says the rows
+  under other models beside the summary without counting them. Unposed
+  points, which no model was run on, are counted on their own (`unposed`)
+  rather than inside one model's `inconclusive`. `--json` adds `model`,
+  `other_models` and `no_model` (rows with no model recorded that are not
+  unposed points: unknown, never counted) to `comparisons`; `records`,
+  `inconclusive` and the rest now count that one model's rows. Nothing
+  stored changes.
+
 - A mail thread whose classification fails for a reason of its own (a
   verdict that will not parse, a refusal, a rejected request) is retried on
   a backoff — an hour after the first failure, doubling, at most a day apart

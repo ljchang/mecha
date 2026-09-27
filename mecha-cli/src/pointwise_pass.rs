@@ -719,7 +719,7 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
         }
     }
 
-    let on_record_summary = crate::commands::sessions::comparisons_on_record();
+    let on_record_summary = crate::commands::sessions::comparisons_on_record(Some(&model));
     if opts.json {
         println!(
             "{}",
@@ -1519,8 +1519,15 @@ mod tests {
         assert!(rows
             .iter()
             .all(|c| c.verdict == Verdict::Inconclusive && c.preferred.is_empty()));
-        let summary = mecha_core::comparison::Summary::of(&rows);
-        assert_eq!((summary.inconclusive, summary.unposed), (6, 2));
+        // The two unposed points drove no model, so they are no model's
+        // inconclusive: counted apart from the four the model drove, and
+        // still said.
+        let summary = mecha_core::comparison::Summary::of(&rows, Some("scripted"));
+        assert_eq!(
+            (summary.records, summary.inconclusive, summary.unposed),
+            (4, 4, 2)
+        );
+        assert_eq!((summary.no_model, summary.other_models), (0, 0));
 
         let (again, _) = plan_and_store(&home, &drafts, &undecided);
         assert_eq!((again.already_compared, again.stored.written), (6, 0));
