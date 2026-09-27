@@ -65,14 +65,22 @@ export function phase(router) {
     // A switch file nobody can read: pending (the fail-closed way), with no
     // switcher behind it — so nothing is loading and nothing can hurry it.
     // `readable` absent is an older build's list, whose files were readable.
-    if (p.readable === false) return { kind: 'switching', stuck: true, to: null, loading: false, waitingOn: [] };
+    if (p.readable === false) {
+      return { kind: 'switching', stuck: true, past: false, to: null, loading: false, waitingOn: [] };
+    }
     const loading = (router.models ?? []).some((m) => m.id === p.to && m.status === 'loading');
+    // Past its wait, the switch is unloading or about to load: no run is
+    // holding it any more, and "switch now" or cancel would do nothing. The
+    // router reports `loading` only once the load has begun, so this is the
+    // switcher's own word for the seconds before (found on review of #364).
+    const past = p.past_the_wait === true;
     return {
       kind: 'switching',
       stuck: false,
+      past,
       to: p.to,
       loading,
-      waitingOn: loading ? [] : p.waiting_on ?? [],
+      waitingOn: loading || past ? [] : p.waiting_on ?? [],
     };
   }
   const loading = (router.models ?? []).find((m) => m.status === 'loading');
@@ -135,6 +143,13 @@ export function chipLabel(ph, fallback) {
   }
 }
 
+/// Whether "switch now" and cancel can still do anything: only while a
+/// readable switch is waiting for runs — not once it is loading or past its
+/// wait, and not for a stuck one (which offers cancel alone).
+export function canHurry(ph) {
+  return ph.kind === 'switching' && !ph.stuck && !ph.past && !ph.loading;
+}
+
 /// The line under the menu while a switch is pending: what it waits for, in
 /// the words each run gave its hold (D13's "waiting for: …").
 export function waitingLine(ph) {
@@ -143,7 +158,7 @@ export function waitingLine(ph) {
     return 'a switch file here cannot be read, and every run on this router waits for it — cancel withdraws it';
   }
   if (ph.loading) return `loading ${ph.to}…`;
-  if (!ph.waitingOn.length) return `switching to ${ph.to}…`;
+  if (ph.past || !ph.waitingOn.length) return `switching to ${ph.to}…`;
   return `waiting for: ${ph.waitingOn.join(', ')}`;
 }
 

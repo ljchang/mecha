@@ -83,6 +83,9 @@ struct Pending {
     /// as pending, the fail-closed way). No switcher is there to hurry, so
     /// "switch now" cannot work on it; `cancel-switch` is its way out.
     readable: bool,
+    /// The switch has stopped waiting for runs and is unloading or loading:
+    /// nothing is left for "switch now" to hurry, or for cancel to stop.
+    past_the_wait: bool,
 }
 
 #[derive(Serialize)]
@@ -133,6 +136,7 @@ async fn survey(cfg: &Config) -> Vec<(String, Option<Router>)> {
                 // `pending`'s placeholder for an unreadable file is pid 0 —
                 // the same test `request_now` refuses it by.
                 readable: s.pid != 0,
+                past_the_wait: h.is_past_the_wait(&base, &s),
                 to: s.to,
                 from: s.from,
                 started_at: s.started_at,
@@ -277,7 +281,7 @@ async fn list(cfg: &Config, json: bool) -> Result<()> {
                 "  switching to {} (since {}) — waiting for: {}",
                 p.to,
                 p.started_at.format("%H:%M:%SZ"),
-                if p.waiting_on.is_empty() {
+                if p.past_the_wait || p.waiting_on.is_empty() {
                     "nothing; the load is under way".to_string()
                 } else {
                     p.waiting_on.join(", ")
@@ -421,6 +425,13 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
         // Hurried while it waited: from here it is the `--now` it was asked
         // to become, so R2 below cuts off a reply in flight too.
         now = true;
+    }
+    // The wait is over, so "switch now" has nothing left to hurry: say so,
+    // and the chip stops offering a button that would do nothing (found on
+    // review of #364). A hint, not a guard — a marker that cannot be
+    // written costs only that, so the switch goes on.
+    if let Err(e) = _switching.past_the_wait() {
+        eprintln!("warning: {e:#}");
     }
     // Re-read after the wait, which can last hours: R1's rollback target and
     // "already resident" are about what is loaded now, not when this began.

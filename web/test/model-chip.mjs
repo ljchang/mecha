@@ -5,7 +5,7 @@
 // would then stand, and evict the owner's pick), a model offered that runs
 // would not follow, a switch's wait shown as a load, and an outcome from some
 // earlier switch reported as this tap's.
-import { reader, routerOf, unavailable, rows, phase, busy, pollEvery, chipLabel, waitingLine, outcomeNote } from '../src/lib/model-chip.js';
+import { reader, canHurry, routerOf, unavailable, rows, phase, busy, pollEvery, chipLabel, waitingLine, outcomeNote } from '../src/lib/model-chip.js';
 
 let pass = 0;
 let fail = 0;
@@ -74,6 +74,14 @@ t('a stuck switch is not named as a target', chipLabel(stuck, 'x') === 'switch s
 t('a stuck switch points at cancel', waitingLine(stuck).includes('cancel withdraws it'));
 t('a readable switch is not stuck', pw.stuck === false);
 t('an older list without the flag is not stuck', phase(router([m('a', 'loaded')], { pending_switch: { to: 'b', waiting_on: [] } })).stuck === false);
+const past = phase(router([m('qwen-a', 'loaded'), m('gemma-b', 'unloaded')], {
+  pending_switch: { to: 'gemma-b', from: 'qwen-a', started_at: '2026-09-27T20:00:00Z', waiting_on: [], readable: true, past_the_wait: true },
+}));
+t('a waiting switch can be hurried', canHurry(pw));
+t('a switch past its wait cannot', past.past && !canHurry(past));
+t('past its wait it says it is switching, not waiting', waitingLine(past) === 'switching to gemma-b…');
+t('a stuck switch cannot be hurried', !canHurry(stuck));
+t('an older list without the flag is still waiting', phase(router([m('a', 'loaded')], { pending_switch: { to: 'b', waiting_on: ['x'] } })).past === false);
 const loadingNow = router([m('qwen-a', 'unloaded'), m('gemma-b', 'loading')], {
   pending_switch: { to: 'gemma-b', from: 'qwen-a', started_at: '2026-09-27T20:00:00Z', waiting_on: [] },
 });
