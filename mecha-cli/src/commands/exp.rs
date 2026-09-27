@@ -249,6 +249,7 @@ async fn source_call(
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning the task source `{exe}`"))?;
+    let _covered = child.id().map(crate::follow::cover_child);
     let mut pipe = child.stdin.take().context("the task source's stdin")?;
     let payload = stdin.unwrap_or_default();
     let exchange = async move {
@@ -1345,6 +1346,7 @@ async fn principal_call(
         let mut child = cmd
             .spawn()
             .with_context(|| format!("spawning the principal `{exe}`"))?;
+        let _covered = child.id().map(crate::follow::cover_child);
         let mut stdin = child.stdin.take().context("the principal's stdin")?;
         let payload = serde_json::to_string(&input)?;
         let exchange = async move {
@@ -1574,9 +1576,14 @@ async fn principal_call(
                     // with no ceiling used to wedge the driver on a running
                     // line (found on review).
                     cmd.kill_on_drop(true);
+                    let mut child = cmd
+                        .spawn()
+                        .with_context(|| format!("running `mecha {}`", act.verb.join(" ")))?;
+                    // Covered like a trial: a resumed run runs a model (D13).
+                    let _covered = child.id().map(crate::follow::cover_child);
                     match tokio::time::timeout(
                         std::time::Duration::from_secs(principal.timeout_secs),
-                        cmd.status(),
+                        child.wait(),
                     )
                     .await
                     {
@@ -2045,7 +2052,18 @@ async fn run_one(
             .context("clearing refusals no principal scripted")?;
     }
     cmd.stderr(std::process::Stdio::piped());
-    let output = cmd.output().await.context("spawning mecha run")?;
+    // Spawned and covered rather than `output()`: the trial runs under its own
+    // `MECHA_HOME`, so its hold is invisible to a switch, and this process's
+    // hold is what covers it — "switch now" must reach it (D13).
+    let child = cmd
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .context("spawning mecha run")?;
+    let _covered = child.id().map(crate::follow::cover_child);
+    let output = child
+        .wait_with_output()
+        .await
+        .context("waiting for mecha run")?;
     let trial_dir = store.workspace_for(&trial.id);
     let log = trial_dir
         .parent()

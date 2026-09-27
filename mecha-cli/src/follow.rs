@@ -347,6 +347,49 @@ impl Follower {
     }
 }
 
+/// Children a held one-run process covers with its hold: processes it waits on
+/// that run a model but cannot hold for themselves — `exp run`'s trials, whose
+/// holds would land in their own `MECHA_HOME` where no switch looks. "Switch
+/// now" reaches them by pid: the signal a one-run process sends itself reaches
+/// only itself, where a terminal Ctrl-C reaches the whole group, and a trial
+/// left running loads the old model back over the switch (review of #350).
+/// Signalling the group instead would also reach whatever started `mecha` —
+/// a hook, or `serve`.
+static COVERED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// Covered while this guard lives.
+pub struct Covered(u32);
+
+impl Drop for Covered {
+    fn drop(&mut self) {
+        let mut covered = COVERED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = covered.iter().position(|p| *p == self.0) {
+            covered.swap_remove(i);
+        }
+    }
+}
+
+/// Cover the child with `pid` until the guard drops.
+pub fn cover_child(pid: u32) -> Covered {
+    COVERED.lock().unwrap_or_else(|e| e.into_inner()).push(pid);
+    Covered(pid)
+}
+
+/// Send each covered child the interrupt a terminal Ctrl-C would. Returns how
+/// many were asked.
+pub fn interrupt_covered_children() -> usize {
+    let covered = COVERED.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    for pid in &covered {
+        if let Ok(pid) = libc::pid_t::try_from(*pid) {
+            // SAFETY: signalling a process this one started and still covers.
+            unsafe {
+                libc::kill(pid, libc::SIGINT);
+            }
+        }
+    }
+    covered.len()
+}
+
 /// A hold on the router `provider` (the default when `None`) is served from,
 /// for a process that is not a long-lived surface: a command that is one run
 /// (`main`), and each trigger fire. `None` when that provider is not a local
@@ -655,6 +698,31 @@ mod tests {
         assert_eq!(
             resolve_seen(&cfg(true), true, seen(Some("gemma-4-26b-a4b"))),
             None
+        );
+    }
+
+    /// "Switch now" reaches a covered child — a real process, stopped by the
+    /// interrupt — and a child no longer covered is left alone.
+    #[tokio::test]
+    async fn switch_now_reaches_a_covered_child() {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let covered = cover_child(child.id().unwrap());
+        assert!(interrupt_covered_children() >= 1);
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+            .await
+            .expect("the covered child was not stopped")
+            .unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGINT));
+        let pid = covered.0;
+        drop(covered);
+        assert!(
+            !COVERED.lock().unwrap().contains(&pid),
+            "a child stays covered after its guard dropped"
         );
     }
 
