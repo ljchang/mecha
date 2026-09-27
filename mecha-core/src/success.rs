@@ -6,8 +6,11 @@
 //! and it needs no new recording, because each kind is an act the owner
 //! already performs, in the store that already owns it:
 //!
-//! - **a draft sent unchanged** — a model-written message the owner released
-//!   as drafted (`OutboxItem::writing_outcome` is `SentUnchanged`);
+//! - **a draft sent unchanged by the owner** — a model-written message the
+//!   owner released as drafted: `OutboxItem::owners_unchanged_release`, the
+//!   release stamped `owner` (#352). A run's shell approving its own draft is
+//!   no success, and a release whose actor cannot be read (every one from
+//!   before the stamp) is listed as unknown;
 //! - **a task closed `done`** that no recorded reopen undoes (1b's closure
 //!   record, by `undoes`);
 //! - **a workflow the owner closed** — `workflow close` runs after a passing
@@ -24,7 +27,8 @@
 //! from outliving the owner taking it back.
 //!
 //! **Self-judged success is never one of these.** Every kind is an act of the
-//! owner's (a release, a closure, a close, an answer); nothing a model says
+//! owner's (a release stamped `owner`, a closure, a close, an answer); nothing
+//! a model does through its own shell, nothing a model says
 //! about its own work, and no appraisal's `good`, enters the set. The one
 //! harness fact read is the question arm's recorded stop cause, which says
 //! the resumed run finished — the same fact the appraisal signs on.

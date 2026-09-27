@@ -659,13 +659,20 @@ impl OutboxItem {
     /// and the `writing` domain learned only from what displeased.
     ///
     /// This needed no new recording. `args_before` has always been kept beside
-    /// `args`, so "the owner read a letter written in their name and sent it as
-    /// drafted" was already on disk and simply had no reader.
+    /// `args`, so whether a draft went out as written was already on disk and
+    /// simply had no reader.
     ///
-    /// **It is the owner's judgement, not the agent's**, which is what makes it
-    /// immune to the failure that rules out scoring your own work: nothing the
-    /// model does can produce a `SentUnchanged` except drafting something a
-    /// person then chose to send unaltered.
+    /// **It is structural — what happened to the draft, not who did it.** A
+    /// model's `shell` can run `mecha outbox approve -y` on its own draft, and
+    /// that is a `SentUnchanged` too (#352), so this is never read as the
+    /// owner's judgement on its own. The owner's verdict is
+    /// [`Self::owners_unchanged_release`] (the release stamped `owner`) and,
+    /// for an edit, [`Self::owners_edit`]; every reader that counts a release
+    /// as the owner's +1.0, an owner-verified success or the owner's writing
+    /// reads those. Two readers take this alone: `WritingTally`, labelled as
+    /// the structural count it is ("sent unedited"), and
+    /// `success::sent_unchanged`, which yields only the *candidates* that
+    /// `success::derive` then gates on `owners_unchanged_release`.
     ///
     /// `None` for anything that says nothing about drafting — a pending item
     /// (undecided), a rejected one (never went out, and its reason is the
@@ -723,16 +730,21 @@ impl Rejection<'_> {
     }
 }
 
-/// What a released draft says about how it was written.
+/// What happened to a released model draft — structural, not who did it
+/// (see [`OutboxItem::writing_outcome`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WritingOutcome {
-    /// The owner sent it as drafted. Positive evidence.
+    /// It went out as drafted. Positive evidence of the owner's only under
+    /// [`OutboxItem::owners_unchanged_release`].
     SentUnchanged,
-    /// The owner rewrote it before sending. The correction `reflect` mines.
+    /// It was rewritten before it went out. The owner's correction, which
+    /// `reflect` mines, only under [`OutboxItem::owners_edit`].
     SentEdited,
 }
 
-/// How the drafting has been going, counted over released items.
+/// What happened to released model drafts, counted — structural, whoever
+/// released them, so it is shown as "sent unedited" and never as the owner's
+/// approval (`owners_unchanged_release` is that).
 ///
 /// Deliberately counts and never judges — the threshold for "well enough"
 /// belongs to whoever acts on it, the same division `runlog` keeps.
