@@ -1588,7 +1588,13 @@ pub fn observe(
                 seen.push((at, ExpectedAct::ReleasedUnchanged))
             }
             (true, "sent") => unread.push(at),
-            (true, "rejected") => seen.push((at, ExpectedAct::Rejected)),
+            // The same for a reject (review of #352): a run's own reject is
+            // not the owner's `rejected`, and scoring it as one would hand
+            // an appraisal that expected it a free hit.
+            (true, "rejected") if d.resolved_by() == crate::closure::Actor::Owner => {
+                seen.push((at, ExpectedAct::Rejected))
+            }
+            (true, "rejected") => unread.push(at),
             // An author or a status word this build cannot read: an act was
             // taken, and which one is not known.
             _ => unread.push(at),
@@ -1596,7 +1602,10 @@ pub fn observe(
     }
     // An actor this build cannot read is not taken as the owner's hand: the
     // act is not established to be the owner's, the direction `observe`
-    // fails closed toward everywhere.
+    // fails closed toward everywhere. (A non-owner *draft* act above is
+    // `unread`, not skipped: skipping would let a run turn the owner's
+    // silence into "no act" by resolving its own draft. A closure a run
+    // could not make — `tasks set` refuses it — is filtered.)
     for c in acts.closures.iter().filter(owners) {
         match c.kind {
             crate::closure::Move::Close => seen.push((c.at, ExpectedAct::Closed)),
@@ -1628,7 +1637,8 @@ pub fn observe(
         .any(|t| *t <= closes_at && first.as_ref().is_none_or(|(f, _)| t <= f))
     {
         return unknown(
-            "an owner act on this session's output is recorded in a form this build cannot read",
+            "an act on this session's output is recorded in a form this build cannot read, or \
+             is not recorded as the owner's",
         );
     }
     if let Some((at, act)) = first {
@@ -3281,6 +3291,9 @@ mod tests {
             .unwrap();
         item.status = status.to_string();
         item.resolved_at = resolved_at.map(|t| t.to_rfc3339());
+        // The owner's own act, as every fixture here means it; the other
+        // actors are `an_unchanged_release_is_the_owners_act_only_when_the_owner_released_it`.
+        item.resolved_by = (status != "pending").then_some(crate::closure::Actor::Owner);
         item
     }
 
@@ -3390,19 +3403,15 @@ mod tests {
             Some(crate::closure::Actor::Unknown),
             None,
         ] {
-            let mut d = draft_of(&root, "s-1", "sent", Some(at));
-            d.resolved_by = by;
-            let seen = observe("s-1", None, end, &acts(&[d]), later);
-            assert!(
-                !matches!(
-                    seen,
-                    ObservedAct::Act {
-                        act: ExpectedAct::ReleasedUnchanged,
-                        ..
-                    } | ObservedAct::NoAct { .. }
-                ),
-                "{by:?}: {seen:?}"
-            );
+            for status in ["sent", "rejected"] {
+                let mut d = draft_of(&root, "s-1", status, Some(at));
+                d.resolved_by = by;
+                let seen = observe("s-1", None, end, &acts(&[d]), later);
+                assert!(
+                    !matches!(seen, ObservedAct::Act { .. } | ObservedAct::NoAct { .. }),
+                    "{status} {by:?}: {seen:?}"
+                );
+            }
         }
         let _ = std::fs::remove_dir_all(&root);
     }
