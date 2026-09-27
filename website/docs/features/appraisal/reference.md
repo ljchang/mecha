@@ -197,8 +197,8 @@ What the words may and may not say:
   the ids of what you did it to. The reason you gave when you reopened a task
   is quoted only when you reopened it yourself; if a chat reopened it with your
   approval, the brief says a reason exists and does not repeat it. A reason you
-  gave for rejecting a draft is never quoted, because the outbox does not yet
-  record who rejected it. How an earlier run ended is labelled as mecha's
+  gave for rejecting a draft is not quoted yet: the brief says the draft was
+  rejected and names it. How an earlier run ended is labelled as mecha's
   record, not a verdict on the work.
 
 In a long web chat, a new brief is sent only when its words change. The time,
