@@ -546,6 +546,31 @@ Calling `goal_context` already counts as reading private data, and that
 covers these examples too. `mecha eval` and the nightly diagnostician never
 see them.
 
+#### Corrections beside what went right
+
+When you correct mecha mid-run, `mecha reflect` turns the correction into a
+lesson. With `contrast_evidence` on, a correction also gets a success you
+verified from the same situation: the same workspace, surface and goal
+wherever the correction names them, and a run that had every tool the
+correction was about. The reflector then sees what worked there beside what
+you asked to change. Each correction gets at most one success, the newest,
+never from its own session, and only from a session that read no
+third-party content. The reflector sees your act in fixed words and the
+order of tools that session called, nothing else.
+
+```bash
+mecha reflect --dry-run   # each correction, and the success it would be shown
+```
+
+```toml
+[agent]
+contrast_evidence = true   # off by default
+```
+
+This changes only what the reflector is shown when it writes a lesson. No
+run's prompt changes. The setting ships off until an experiment has
+measured it.
+
 ### Text appraisals
 
 A **text appraisal** is mecha's own interpretation of a session, in prose:

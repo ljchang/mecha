@@ -25,6 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `owner` says why — in the terminal, the TUI status line and the web
   review.
 
+- **Contrast evidence for the reflector** (`APPRAISAL-WIRING-DESIGN.md` L2,
+  2e-4b-2, R43), behind `[agent] contrast_evidence` /
+  `StageLever::ContrastEvidence`, a stage lever that **ships off**. On,
+  `mecha reflect` reflects a steer, denial or followup with a verified
+  success from its region beside it — the newest trace of a clean, scoped
+  session the owner verified, from another session, whose run records the
+  correction's scope matches (the loader's match, R43). The reflector sees
+  the owner's act in fixed words and the session's tool sequence; its
+  behaviour frame gains one sentence and the correction one block. Off, the
+  reflector's prompt is byte-identical to before. `mecha reflect --dry-run`
+  names the success each correction would be shown. An experiment arm
+  measures it on through its environment's `config.toml`; `stages_off =
+  ["contrast_evidence"]` forces it off.
 - **Planning examples from what the owner verified** (`APPRAISAL-WIRING-DESIGN.md`
   L2, 2e-4b-1, R40), behind `[agent] success_examples` /
   `Lever::SuccessExamples`, which **ships off** until an experiment measures
