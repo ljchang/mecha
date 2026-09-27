@@ -137,11 +137,15 @@ echo "  brake on rules that now go live when they are derived)"
 # a deterministic scan of the rows validate just wrote and takes nothing
 # from compare or learn, so a rule measured harmful leaves the prompt before
 # compare or `learn --auto` spends any wall clock — neither has a bound that
-# would otherwise keep the brake on time. Given the same pin as validate: retirement counts only the rows measured on
-# the model in use (owner's ruling, 2026-09-27). Pinned, that is the model
-# validate measured on. Unpinned, it is whatever is resident *now*, from its
-# own snapshot — a switch since validate ran means tonight's rows are not the
-# ones counted, which errs toward retiring nothing.
+# would otherwise keep the brake on time.
+#
+# Given the same pin as validate: retirement counts only the rows measured
+# on the model in use (owner's ruling, 2026-09-27). Pinned, that is the
+# model validate measured on. Unpinned, it is whatever is resident *now*,
+# from its own snapshot. A switch since validate ran means the scan counts
+# the newly resident model's rows — its whole ledger history, not tonight's
+# probes — which can convict on another night's evidence; it retires
+# nothing only when that model has no rows (found on review of #346).
 "$MECHA" rules propose-retirements ${PIN[@]+"${PIN[@]}"} --apply
 
 # `sessions compare` runs BEFORE `learn`, for validate's reason (owner,

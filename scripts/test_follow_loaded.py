@@ -35,6 +35,7 @@ if [ "$1" = work ] && [ "$2" = path ]; then
     mkdir -p "{root}/work/$3" && echo "{root}/work/$3"
 fi
 if [ "$1" = config ] && [ "$2" = show ]; then
+    [ -n "$STUB_WARN" ] && echo "WARN mecha: overrides.toml could not be read" >&2
     cat "{root}/config.toml"
 fi
 if [ "$1" = sessions ] && [ "$2" = compare ] && [ -n "$STUB_HANG_COMPARE" ]; then
@@ -109,6 +110,7 @@ class Scripts(unittest.TestCase):
                 timeout=60,
             )
             self.assertEqual(done.returncode, rc, done.stderr)
+            self.stderr = done.stderr
             calls = log.read_text().splitlines() if log.exists() else []
         # Only the calls that reach a model — or, for `rules`, resolve one:
         # `work path`, `work clean` and the listings take no provider.
@@ -189,6 +191,19 @@ class Scripts(unittest.TestCase):
         # An unreadable config is not a router, nor is a flag mecha ignores.
         calls = self.run_script("ruminate.sh", config="not toml [")
         self.assert_pinned(calls, "-p", "local", ["reflect", "learn"])
+        # ...and "cannot tell" says so, where "no router" stays quiet: on a
+        # router box that fallback is a load over the owner's pick (found on
+        # review of #346).
+        self.assertIn("cannot read the config", self.stderr)
+        self.run_script("frontdoor.sh", config=NO_ROUTER)
+        self.assertNotIn("pin.sh:", self.stderr)
+        # A warning on `config show`'s stderr beside a good config is noise,
+        # not an unreadable config: the router is still followed, quietly
+        # (found on review of #360 — merging it in pinned a router box).
+        self.assert_follows(
+            self.run_script("frontdoor.sh", STUB_WARN="1"), [["frontdoor", "extract"], ["frontdoor", "triage"]]
+        )
+        self.assertNotIn("pin.sh:", self.stderr)
         calls = self.run_script("ruminate.sh", config=OFF_BOX)
         self.assert_pinned(calls, "-p", "local", ["reflect", "learn"])
 
