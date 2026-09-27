@@ -1123,8 +1123,13 @@ mod tests {
         let rejected = stage("wrong tone");
         let replacement = stage("corrected reply");
         let _lock = out.lock().unwrap();
-        out.resolve(&rejected.id, "rejected", Some("replace this draft".into()))
-            .unwrap();
+        out.resolve(
+            &rejected.id,
+            "rejected",
+            Some("replace this draft".into()),
+            crate::closure::Actor::Owner,
+        )
+        .unwrap();
         let mut w = h.workflow();
         w.outbox = vec![rejected.id.clone(), replacement.id.clone()];
         fs::write(h.0.join("reply.md"), "corrected reply").unwrap();
@@ -1145,7 +1150,8 @@ mod tests {
         w.observe(Some(&out), None, now);
         w.check_evidence(Some(&out), now).unwrap();
         assert!(!w.verified(), "an uncertain replacement is unresolved");
-        out.resolve(&replacement.id, "sent", None).unwrap();
+        out.resolve(&replacement.id, "sent", None, crate::closure::Actor::Owner)
+            .unwrap();
         w.observe(Some(&out), None, now);
         w.check_evidence(Some(&out), now).unwrap();
         assert!(

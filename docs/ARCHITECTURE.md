@@ -3416,6 +3416,44 @@ Batch outbox rejection retains delivery-uncertainty refusals, continues with
 eligible items, and reports counts with a failing exit status when any item
 could not be rejected.
 
+**Every resolve records who made it, and a reason is the owner's words only
+when the owner's own door stamped it** (`APPRAISAL-WIRING-DESIGN.md`,
+R16a's ruling D3, 2026-09-27 — not row 2e-3's D3 correction contract). `mecha outbox reject --reason …` is a command a model's
+`shell` can run — nothing refuses it — and R16a hands a rejection's reason
+to the reflector as an owner correction, whose rule rides every future
+prompt's cached prefix; the appraiser's input quoted it as "the owner's
+reason", and the poll sweep put it on a page every participant reads. So
+`OutboxStore::resolve` takes an `Actor` with no default and writes it as
+`resolved_by`, and `mecha outbox` decides it once per process with the
+closure store's rules (`closure::attribute`, which is `closure::decide`
+with its refusals mapped to `unknown`, so the two cannot drift): `owner`
+with no registered shell, no live delegated or scheduled run above, and no
+posture variable — the owner's terminal, or a surface's own child (the web
+review's reject and approve, the TUI's `/outbox`, a Slack tap, voice's
+release); `owner-approved` under an interactive run's registered shell;
+`unknown` for everything the closure path refuses. **Stamped, not
+refused:** a rejection sends nothing, and the stamp is what keeps its words
+from passing as the owner's. Readers take the reason through
+`OutboxItem::rejection` — `OwnersWords(text)` or `NotOwners(actor)`, whose
+`word()` is fixed harness text with none of the reason's bytes — or
+`rejection_reason` / `owners_reason`, which are `None` unless the actor is
+`owner`. The reflector skips a non-owner reason (and leaves it unmarked in
+the mined ledger), the appraiser's input shows the typed word, the poll
+sweep writes "No time found", and `outbox show` and the TUI print the text
+with `by <actor>` beside it, because the owner is reading their own store.
+**Items resolved before the field existed carry no actor and read as
+`unknown`** — fail closed, on the append-only rule; every such reasoned
+reject on the live store had already been mined when this landed. The
+release is stamped the same way, and nothing reads that stamp yet.
+**The residue is the closure path's** (see "Closing a task is a recorded
+event"): a command that detaches from its shell and clears the variable, a
+shell that edits `~/.mecha/outbox/` directly, and — named here because the
+outbox makes it concrete — a local process that calls `mecha serve`'s
+loopback port with the `Tailscale-User-Login` header set, which the web
+review's child then stamps `owner`. The answer to all three is the sandbox,
+as there. `outbox edit` is not a resolve and is not stamped; the writing
+miner still reads `diff(args_before, args)` as the owner's edit.
+
 ## Assistant workflows
 
 `workflow.rs` owns orchestration references, never a second task board. The graph
