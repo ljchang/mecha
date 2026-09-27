@@ -818,7 +818,7 @@ timeout_secs = 10                  # a timeout denies, like every non-zero outco
 
 [[hook]]
 event = "session_end"
-command = "nohup mecha reflect -p local >/dev/null 2>&1 &"
+command = "nohup mecha reflect >/dev/null 2>&1 &"
 
 # ---------------------------------------------------------------------- mcp --
 

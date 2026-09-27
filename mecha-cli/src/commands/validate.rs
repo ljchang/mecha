@@ -424,7 +424,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // for coverage from one on fresh evidence.
     let mut covering: BTreeMap<String, String> = BTreeMap::new();
     if let Some(all) = for_cover {
-        let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
+        // Graded means graded on this model: retirement counts one model's
+        // rows, so a pair another model graded is still unmeasured here.
+        let (rows, _) = mecha_core::learning::measured_on(store.validations()?, &model);
+        let tallies = mecha_core::learning::rule_tallies(&rows);
         // The replayable half of what this pass was asked to probe: an
         // explicit `--trigger` narrows the cover pool too, and a followup
         // has no trace-verifiable region to credit.
