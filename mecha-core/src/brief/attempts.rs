@@ -124,6 +124,13 @@ pub struct Attempt {
     /// on them. An act from a newer build loads as [`OwnerAct::Unknown`].
     #[serde(default, deserialize_with = "lenient_acts")]
     pub acts: Vec<OwnerAct>,
+    /// How many acts there were before the list was cut to
+    /// [`super::POINTERS_MAX`] — the brief's rule that a capped list sits
+    /// beside the count it was cut from (found on review: a session that
+    /// staged forty drafts rendered all forty). Absent on an older record,
+    /// which never cut: then `acts` is the whole.
+    #[serde(default)]
+    pub acts_total: usize,
     /// How the session's last run ended, as the harness recorded it.
     #[serde(default = "RunEnd::unknown", deserialize_with = "lenient_end")]
     pub ended: RunEnd,
@@ -509,10 +516,13 @@ fn attempt_of(meta: SessionMeta, mut t: Transcript, task: &str, stores: &Stores)
             });
         }
     }
+    let acts_total = acts.len();
+    acts.truncate(super::POINTERS_MAX);
     Attempt {
         session: meta.id,
         started_at: meta.created_at,
         acts,
+        acts_total,
         ended,
     }
 }
@@ -793,7 +803,12 @@ pub fn line(a: &Attempts, now: DateTime<Utc>) -> Option<String> {
         let acts = if at.acts.is_empty() {
             "no act of theirs is recorded on it".to_string()
         } else {
-            at.acts.iter().map(act_words).collect::<Vec<_>>().join("; ")
+            let mut words = at.acts.iter().map(act_words).collect::<Vec<_>>().join("; ");
+            let more = at.acts_total.saturating_sub(at.acts.len());
+            if more > 0 {
+                words.push_str(&format!("; and {more} more not listed"));
+            }
+            words
         };
         lines.push(format!(
             "  - Session {} (started {when} ago). The owner: {acts}.",
@@ -1334,6 +1349,32 @@ mod tests {
             "{words}"
         );
         assert!(words.contains("no outcome was recorded"), "{words}");
+    }
+
+    /// The acts are a pointer list like every other in the brief: cut to
+    /// `POINTERS_MAX`, with the count it was cut from said beside it, so a
+    /// session that staged many drafts cannot flood the first turn and a
+    /// cut list never reads as the whole (found on review).
+    #[test]
+    fn an_attempts_acts_are_capped_and_say_how_many_were_left_out() {
+        let dir = scratch("capped-acts");
+        session(&dir, "s-busy", SessionKind::Task, 1, Some(&anchor()), None);
+        let n = super::super::POINTERS_MAX + 4;
+        let stores = Stores {
+            drafts: (0..n)
+                .map(|i| draft(&format!("draft-{i:02}"), "s-busy", "pending", None))
+                .collect(),
+            ..Stores::default()
+        };
+        let field = attempts_of(walk(&dir, TASK, None, now()).unwrap(), TASK, &stores);
+        let Attempts::Read { attempts, .. } = &field else {
+            panic!("{field:?}")
+        };
+        assert_eq!(attempts[0].acts.len(), super::super::POINTERS_MAX);
+        assert_eq!(attempts[0].acts_total, n);
+        let words = line(&field, now()).unwrap();
+        assert!(words.contains("; and 4 more not listed"), "{words}");
+        assert!(!words.contains(&format!("draft-{:02}", n - 1)), "{words}");
     }
 
     /// The doors' async entry answers a run not anchored to a task at once,

@@ -5507,6 +5507,7 @@ mod tests {
                             reason_withheld: false,
                         }),
                     ],
+                    acts_total: 2,
                     ended: RunEnd::TurnLimit,
                 }],
                 unsearched: false,

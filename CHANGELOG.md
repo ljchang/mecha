@@ -41,7 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says "at least". Recorded on every run; delivered only behind `[agent]
   situation_brief`, which still ships off. `sessions health` reports the
   field's completeness beside the other nine.
-
 - **A rule's owner tenure, beside retirement** (`APPRAISAL-WIRING-DESIGN.md`
   2e-5b/2e-5c, R41). `mecha rules list`/`show` print `owner: <tenure> ·
   region: <quiet>` per learned rule, and `--json` gains `owner` and `quiet`.

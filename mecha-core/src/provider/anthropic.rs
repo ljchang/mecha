@@ -1932,6 +1932,7 @@ text = "Leave work better than you found it."
                             workflow: "task-g4-own".into(),
                         },
                     ],
+                    acts_total: 3,
                     ended: attempts::RunEnd::TurnLimit,
                 }],
                 unsearched: false,
@@ -2143,6 +2144,7 @@ text = "Leave work better than you found it."
             serde_json::to_string(&b.slots),
             serde_json::to_string(&b.voice),
             serde_json::to_string(&b.budget),
+            serde_json::to_string(&b.attempts),
         ] {
             out.push(Needle {
                 what: "situation brief field",
