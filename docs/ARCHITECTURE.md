@@ -234,9 +234,11 @@ The parts that bite hardest:
     per turn off the loop in Slack (a turn meeting a switch is *deferred* and
     re-fed through the loop, never waited for on it), per fire in the trigger
     daemon, and for its whole life by a command that is one run
-    (`main::is_one_run`, exhaustive). A held command's children inherit it
-    (`MECHA_ROUTER_HELD`) — one that took its own would deadlock against a
-    pending switch.
+    (`main::is_one_run`, exhaustive, per subcommand). Such a command must not
+    wait on a `mecha` child that also holds — the child would yield to a
+    pending switch that waits on the parent; `workflow` is unheld for that
+    reason. There is no inherited "covered by the parent" mark: detached
+    hooks outlive the parent and would run unheld under one.
   - **Dead holders and switchers are swept, never waited for**; an
     unreadable switch file reads as pending (waiting is recoverable).
   - **"Switch now" cancels, it does not only unload**: a hold's cancel file
