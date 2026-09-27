@@ -1871,6 +1871,163 @@ mod boundary_tests {
         panic!("the turn in {key} never finished");
     }
 
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        image::RgbImage::from_pixel(w, h, image::Rgb([10, 200, 90]))
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    /// Upload each of `files`, send `text` naming them the way the page
+    /// does, and return the last user message the model was sent.
+    async fn send_with_attachments(
+        vision: bool,
+        files: &[(&str, Vec<u8>)],
+        extra: &[&str],
+    ) -> mecha_core::message::Message {
+        let (chat, seen) = chat::test_chat_seeing(vision);
+        let app = app(chat);
+        let mut paths = Vec::new();
+        for (name, bytes) in files {
+            let up = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/api/chat/pix/upload?name={name}"))
+                        .header(TAILSCALE_LOGIN, "owner@example.com")
+                        .header("x-mecha-request", "1")
+                        .body(Body::from(bytes.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(up.status(), StatusCode::OK);
+            paths.push(body(up).await["path"].as_str().unwrap().to_string());
+        }
+        paths.extend(extra.iter().map(|p| p.to_string()));
+        let text = paths
+            .iter()
+            .map(|p| format!("Attached file at {p}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let sent = app
+            .clone()
+            .oneshot(json_post(
+                "/api/chat/pix/send",
+                serde_json::json!({ "text": text, "attachments": paths }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert!(sent.status().is_success(), "{}", sent.status());
+        for _ in 0..200 {
+            if let Some(req) = seen.lock().unwrap().first() {
+                return req.messages.last().unwrap().clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("the model was never asked");
+    }
+
+    fn images(m: &mecha_core::message::Message) -> Vec<Option<String>> {
+        m.content
+            .iter()
+            .filter_map(|b| match b {
+                mecha_core::message::Block::Image { source, .. } => Some(source.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// D6's second half: a picture uploaded from the page rides on the turn
+    /// as pixels beside the path the text names; a non-image rides as its
+    /// path alone. Fails on the old door, which put only the text on the turn.
+    #[tokio::test]
+    async fn an_uploaded_picture_rides_on_the_turn_for_a_model_that_can_see() {
+        let _home = crate::testenv::HomeGuard::new("web-attach-pixels");
+        let user = send_with_attachments(
+            true,
+            &[("shot.png", png(40, 20)), ("notes.txt", b"hello".to_vec())],
+            &[],
+        )
+        .await;
+        assert_eq!(images(&user), vec![Some("inbox/shot.png".to_string())]);
+        assert!(user.text().contains("Attached file at inbox/shot.png"));
+        assert!(user.text().contains("Attached file at inbox/notes.txt"));
+    }
+
+    /// A blind model gets the paths and nothing else, and a path the page
+    /// names outside the jail attaches nothing and fails nothing.
+    #[tokio::test]
+    async fn a_blind_model_or_an_escaping_path_gets_no_pixels() {
+        let home = crate::testenv::HomeGuard::new("web-attach-blind");
+        let user = send_with_attachments(false, &[("shot.png", png(8, 8))], &[]).await;
+        assert!(images(&user).is_empty(), "{:?}", user.content);
+
+        // One real upload beside the escaping paths, so the session and its
+        // workspace exist: without it `send` has no workspace to read and
+        // the escapes are never resolved at all — passing for the wrong
+        // reason (found on review of #366).
+        let outside = home.dir.join("outside.png");
+        std::fs::write(&outside, png(8, 8)).unwrap();
+        let user = send_with_attachments(
+            true,
+            &[("inside.png", png(8, 8))],
+            &["../../outside.png", outside.to_str().unwrap()],
+        )
+        .await;
+        assert_eq!(images(&user), vec![Some("inbox/inside.png".to_string())]);
+    }
+
+    /// An upload survives the chat leaving the map before the send — a
+    /// `serve` restart, a handover — and still rides as pixels, read from the
+    /// directory the send re-creates the session in. Fails on the first-look
+    /// lookup alone, which found no session and dropped them silently.
+    #[tokio::test]
+    async fn an_upload_still_rides_after_its_chat_left_the_map() {
+        let _home = crate::testenv::HomeGuard::new("web-attach-restart");
+        let (chat, seen) = chat::test_chat_seeing(true);
+        let app = app(Arc::clone(&chat));
+        let up = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/chat/pix/upload?name=shot.png")
+                    .header(TAILSCALE_LOGIN, "owner@example.com")
+                    .header("x-mecha-request", "1")
+                    .body(Body::from(png(8, 8)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(up.status(), StatusCode::OK);
+        chat::test_forget_session(&chat, "pix").await;
+        let sent = app
+            .clone()
+            .oneshot(json_post(
+                "/api/chat/pix/send",
+                serde_json::json!({
+                    "text": "Attached file at inbox/shot.png",
+                    "attachments": ["inbox/shot.png"],
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        assert!(sent.status().is_success(), "{}", sent.status());
+        for _ in 0..200 {
+            if let Some(req) = seen.lock().unwrap().first() {
+                let user = req.messages.last().unwrap();
+                assert_eq!(images(user), vec![Some("inbox/shot.png".to_string())]);
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("the model was never asked");
+    }
+
     #[tokio::test]
     async fn an_incognito_chat_leaves_no_trace_and_an_ordinary_one_does() {
         let home = crate::testenv::HomeGuard::new("incognito-trace");

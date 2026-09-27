@@ -173,7 +173,8 @@ Slack connector structurally cannot do. Three rules:
 - **Inbound**: upload lands in `<session-jail>/inbox/` and the path is
   named in the prompt — the Slack door verbatim. An image also attaches to
   the user turn as `Block::Image`, arming `private_data` (captured, not
-  composed).
+  composed). *(The pixels half shipped on 2026-09-27; until then the door
+  named the path only — `ARCHITECTURE.md` §Images.)*
 - **Outbound**: the page **pulls** over authenticated GET. Any path in a
   download route resolves through the same containment proof as tool input
   — a URL is model-adjacent data and `ToolCtx::resolve`'s rule applies to
