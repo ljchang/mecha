@@ -1084,6 +1084,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_model_routes_sit_behind_the_owner_guard() {
+        // The chip's routes move the model every surface on the machine
+        // answers with (§14, D12), so they are the owner's alone: no header
+        // is a 403 on all three, and the owner's header without the
+        // request-verification header is a 403 on the two that act — the
+        // cross-site form the guard exists for. Covered by the whole-router
+        // layer today; pinned because a route added later is exactly the
+        // one an earlier guard test cannot be covering.
+        for (method, uri, owner) in [
+            ("GET", "/api/model", false),
+            ("POST", "/api/model/use", false),
+            ("POST", "/api/model/cancel", false),
+            ("POST", "/api/model/use", true),
+            ("POST", "/api/model/cancel", true),
+        ] {
+            let mut req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json");
+            if owner {
+                req = req.header("Tailscale-User-Login", "owner@example.com");
+            }
+            let response = test_router()
+                .oneshot(req.body(Body::from(r#"{"name":"x"}"#)).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{method} {uri} owner={owner}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn an_invalid_charter_save_is_refused_at_the_handler() {
         // The module doc's claim measured where it is made: a document the
         // runs' own reader refuses comes back 422 from the handler — the

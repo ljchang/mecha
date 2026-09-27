@@ -81,6 +81,16 @@ export function busy(ph) {
   return ph.kind === 'switching' || ph.kind === 'loading';
 }
 
+/// How often to re-read, in ms — or null for not at all. Every read is a
+/// child process on the server, and D13's wait for runs has no time limit,
+/// so a closed chip over a switch that is only *waiting* reads slowly; an
+/// open menu, or a load (seconds from done), reads fast (found on review).
+export function pollEvery(ph, open) {
+  if (open || (ph.kind === 'switching' && ph.loading) || ph.kind === 'loading') return 2000;
+  if (ph.kind === 'switching') return 15000;
+  return null;
+}
+
 /// The chip's text. `fallback` is the model this chat's agent is bound to,
 /// shown until the router has been read (and on an incognito chat, which
 /// never offers the picker).
@@ -106,12 +116,16 @@ export function waitingLine(ph) {
   return `waiting for: ${ph.waitingOn.join(', ')}`;
 }
 
-/// How the switch this page started ended, once the router is at rest and the
-/// outcome is newer than the tap — or null. Only a failure or a warning is
-/// worth a line; success shows as the chip's new label.
-export function outcomeNote(data, since) {
+/// How the switch this page started ended — or null. `asked` is what the
+/// server's own record said just before the tap (`{ before: <last_switch.at
+/// or null> }`), so "newer than the tap" compares the server's clock with
+/// itself: a browser clock ahead of the server's dropped the very failure
+/// this exists to report, and one behind showed an older switch's as this
+/// one's (found on review). Only a failure or a warning is worth a line;
+/// success shows as the chip's new label.
+export function outcomeNote(data, asked) {
   const last = data?.last_switch;
-  if (!last || !since || Date.parse(last.at) < since) return null;
+  if (!last || !asked || last.at === asked.before) return null;
   if (!last.ok) return { tone: 'bad', text: last.message || `the switch to ${last.to} failed` };
   if (last.message) return { tone: 'warn', text: last.message };
   return null;
