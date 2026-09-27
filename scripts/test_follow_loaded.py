@@ -40,7 +40,13 @@ fi
 exit 0
 """
 
-ROUTER = 'default_provider = "local"\n[providers.local]\nfollow_loaded = true\n'
+ROUTER = (
+    'default_provider = "local"\n[providers.local]\nkind = "local"\n'
+    'base_url = "http://127.0.0.1:8080"\nfollow_loaded = true\n'
+)
+# The flag on an entry mecha will not follow (`router::follows_here`: local
+# kind, loopback URL) is ignored there, so it must not drop the pin here.
+OFF_BOX = ROUTER.replace("127.0.0.1", "10.0.0.5")
 NO_ROUTER = 'default_provider = "anthropic"\n[providers.anthropic]\n[providers.local]\n'
 
 
@@ -70,7 +76,7 @@ class Scripts(unittest.TestCase):
     def tearDownClass(cls):
         cls.health.shutdown()
 
-    def run_script(self, name, config=ROUTER, **env):
+    def run_script(self, name, config=ROUTER, script_dir=None, rc=0, **env):
         """Run `name` with every binary stubbed; return the mecha calls."""
         with tempfile.TemporaryDirectory() as root:
             (Path(root) / "config.toml").write_text(config)
@@ -93,13 +99,13 @@ class Scripts(unittest.TestCase):
             }
             (Path(root) / "learning").mkdir()
             done = subprocess.run(
-                ["bash", str(HERE / name)],
+                ["bash", str((script_dir or HERE) / name)],
                 env={**base, **env},
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
-            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(done.returncode, rc, done.stderr)
             calls = log.read_text().splitlines() if log.exists() else []
         # Only the calls that reach a model — or, for `rules`, resolve one:
         # `work path`, `work clean` and the listings take no provider.
@@ -142,9 +148,20 @@ class Scripts(unittest.TestCase):
             calls, "-p", "local", ["reflect", "distill", "validate", "learn", "propose-retirements", "ruminate"]
         )
         self.assert_pinned(calls, "--judge-provider", "local", ["validate"])
-        # An unreadable config is not a router.
+        # An unreadable config is not a router, nor is a flag mecha ignores.
         calls = self.run_script("ruminate.sh", config="not toml [")
         self.assert_pinned(calls, "-p", "local", ["reflect", "learn"])
+        calls = self.run_script("ruminate.sh", config=OFF_BOX)
+        self.assert_pinned(calls, "-p", "local", ["reflect", "learn"])
+
+    def test_a_missing_pin_rule_stops_every_script(self):
+        # Without pin.sh, PIN would be unset and every stage would run on the
+        # default, unpinned — so each script refuses before any model stage.
+        with tempfile.TemporaryDirectory() as bare:
+            for name in ("ruminate.sh", "frontdoor.sh", "learn-live.sh"):
+                (Path(bare) / name).write_text((HERE / name).read_text())
+                calls = self.run_script(name, script_dir=Path(bare), rc=1)
+                self.assertEqual(calls, [], f"{name} ran stages without its pin rule")
 
     def test_frontdoor_follows_unless_pinned(self):
         self.assert_follows(

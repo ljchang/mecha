@@ -27,11 +27,32 @@ scheduled_pin() {
         PIN=(-p "$1")
         return 0
     fi
+    # The same test as `provider::router::follows_here`: `follow_loaded`, a
+    # `local` kind, and a loopback base URL — the flag on anything else is
+    # ignored (and warned about) by mecha, so reading it alone here would
+    # drop the pin for a run that then follows nothing (found on review).
     if (cd / && "$MECHA" config show 2>/dev/null) | python3 -c '
-import sys, tomllib
+import ipaddress, sys, tomllib
+from urllib.parse import urlsplit
 c = tomllib.loads(sys.stdin.read())
 entry = c.get("providers", {}).get(c.get("default_provider", ""), {})
-sys.exit(0 if entry.get("follow_loaded") is True else 1)
+def loopback(url):
+    try:
+        host = urlsplit(url).hostname or ""
+    except ValueError:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+follows = (
+    entry.get("follow_loaded") is True
+    and entry.get("kind") == "local"
+    and loopback(entry.get("base_url") or "")
+)
+sys.exit(0 if follows else 1)
 ' 2>/dev/null; then
         return 0
     fi

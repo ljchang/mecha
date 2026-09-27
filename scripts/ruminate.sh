@@ -37,7 +37,10 @@ MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
 # default that is a paid API does not start billing nightly. The rule lives
 # in scripts/pin.sh, shared with frontdoor.sh and learn-live.sh. Set the
 # variable to pin a night deliberately, knowing it swaps the router.
-source "$(dirname "$0")/pin.sh"
+# A missing pin.sh must stop the run, not leave PIN unset: unset expands to
+# no `-p`, which is the unpinned run on the default this file exists to
+# decide (found on review).
+source "$(dirname "$0")/pin.sh" || { echo "ruminate: cannot read $(dirname "$0")/pin.sh; refusing to run unpinned" >&2; exit 1; }
 # **The judge is the model under test, deliberately and provisionally.**
 # A different family is the better methodology — a model grading trajectories
 # it produced shares the blind spot that caused them, which is why

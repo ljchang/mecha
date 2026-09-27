@@ -30,7 +30,10 @@ MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
 # loaded. This runs at every session end, so a `local` default — a pin, and on
 # the router a load — undid the owner's model switch each time a chat closed.
 # Without a router, unset is `-p local` as before. The rule: scripts/pin.sh.
-source "$(dirname "$0")/pin.sh"
+# A missing pin.sh must stop the run, not leave PIN unset: unset expands to
+# no `-p`, which is the unpinned run on the default this file exists to
+# decide (found on review).
+source "$(dirname "$0")/pin.sh" || { echo "learn-live: cannot read $(dirname "$0")/pin.sh; refusing to run unpinned" >&2; exit 1; }
 scheduled_pin "${MECHA_LEARN_PROVIDER:-}"
 LEARNING_DIR="${MECHA_LEARNING_DIR:-$HOME/.mecha/learning}"
 LOG_DIR="$LEARNING_DIR/logs"

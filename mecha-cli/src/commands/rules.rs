@@ -6,7 +6,8 @@
 //! rules, age. `retire` and `restore` are the human acting directly, the
 //! apply-with-git-undo path, same standing as a direct `mecha learn`.
 //! `propose-retirements` is the unattended path: a deterministic scan of the
-//! ledger — no model anywhere — that stages an `enabled = false` +
+//! ledger — no model called; it resolves which model is in use only to count
+//! that model's rows — that stages an `enabled = false` +
 //! `retired_*` diff through the same proposal gate every other rule change
 //! passes. Retirement is a flag, never a deletion: the rule stays in the
 //! file as evidence, the learner is told it was measured harmful, and

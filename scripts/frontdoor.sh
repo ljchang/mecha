@@ -28,7 +28,10 @@ MAIL="${MECHA_MAIL_BIN:-$HOME/.cargo/bin/mecha-mail}"
 # loaded, and the run's record names it; a `local` default was a pin, and on
 # the router a pin is a load — hourly, over whatever the owner switched to.
 # Without a router, unset is `-p local` as before. The rule: scripts/pin.sh.
-source "$(dirname "$0")/pin.sh"
+# A missing pin.sh must stop the run, not leave PIN unset: unset expands to
+# no `-p`, which is the unpinned run on the default this file exists to
+# decide (found on review).
+source "$(dirname "$0")/pin.sh" || { echo "frontdoor: cannot read $(dirname "$0")/pin.sh; refusing to run unpinned" >&2; exit 1; }
 scheduled_pin "${MECHA_FRONTDOOR_PROVIDER:-}"
 HEALTH="${MECHA_FRONTDOOR_HEALTH:-http://127.0.0.1:8080/health}"
 
