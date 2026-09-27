@@ -793,8 +793,16 @@ reflector skips the rest, the appraiser's input (2a-2) shows the typed
 word, and the poll sweep writes "No time found" on the participants' page.
 Items resolved before the stamp read as `unknown`; every reasoned reject
 on the live store had already been mined when it landed. Built by
-`feat/outbox-resolve-actor`; ARCHITECTURE's outbox section holds the
-detail and the residue.
+`feat/outbox-resolve-actor` (#343); ARCHITECTURE's outbox section holds the
+detail and the residue. **Carried to edits (the owner, 2026-09-27):**
+`mecha outbox edit` stamps `edited_by` the same way, folded across edits so
+a later owner's edit never launders a run's, and the edit is the owner's
+writing only when the owner made every edit *and* the release
+(`OutboxItem::owners_edit`) — the writing miner, the appraiser's input and
+the pointwise edited-draft gold read it only then. Old edits read
+`unknown`. Not chosen, left as residue: refusing `approve` from a
+non-interactive run's shell, and Slack's fixed "rejected from Slack"
+reason. Built by `feat/outbox-edit-actor`.
 
 **S3b — declined 2026-09-24 (here §1, decision 2).** A one-tap verdict
 asks the owner for work the system is meant to infer. Kept below for the

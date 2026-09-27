@@ -68,13 +68,17 @@ writing pass takes the store's writer lock *before* reading what has been mined,
 so two concurrent closes cannot mine the same session twice.
 
 `mecha reflect` also mines the [outbox](/docs/features/security/outbox): an item that was
-sent with edits yields a `writing`-domain reflection from `diff(staged, sent)`,
-and a message draft you rejected **with a reason** (`mecha outbox reject <id>
+sent with edits yields a `writing`-domain reflection from `diff(staged, sent)`
+— when you made every edit and the send yourself (an edit or a send a mecha
+run's `shell` made is recorded as `owner-approved` or `unknown` and never
+mined, and neither is an edit from before who made it was recorded) — and a
+message draft you rejected **with a reason** (`mecha outbox reject <id>
 --reason "…"`) yields a `behavior`-domain reflection (trigger `reject`) from
 your words — when the reject was yours: made at your terminal, the web
 review, the TUI or Slack. A reject a mecha run's `shell` made, even one you
 approved, is recorded as `owner-approved` or `unknown` beside its reason and
-is never mined, and so is every reject from before who made it was recorded. When the draft was written while third-party content was in the
+is never mined, and so is every reject from before who made it was recorded.
+When the draft was written while third-party content was in the
 conversation, the reflector sees only your reason and the tool name, never the
 draft.
 
