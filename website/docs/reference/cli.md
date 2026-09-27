@@ -1774,10 +1774,10 @@ mecha model [list|use|cancel-switch] [ARGS] [--json]
 |---|---|---|
 | `list` | | Each router's models, which one is loaded (●), the provider entry naming each, and any entry whose `temperature` disagrees with its model's preset. |
 | `use` | `<NAME>` | A provider entry or a router model name. Loads it and waits until it is resident. |
-| `use` | `--now` | Don't wait for the runs using the loaded model: ask each to stop at its next safe point, give them 15 s, then switch. A reply in progress ends early. Without it, the switch waits for every run to finish, with no time limit. |
+| `use` | `--now` | Don't wait for the runs using the loaded model: ask each to stop at its next safe point, give them 15 s, then switch. A reply in progress ends early. Without it, the switch waits for every run to finish, with no time limit. For a switch already waiting on the same model, `--now` hurries that switch instead of being refused as a second one. |
 | `use` | `--wait-secs <N>` | Give up on the *load* after this many seconds (default 600; a cold load measured 33–39 s). The wait for runs before it is not bounded. |
 | `cancel-switch` | | Withdraw every pending switch, on every router — the way out of one whose `mecha model use` is gone or whose file can't be read, which every run on that router would otherwise wait for. A live switch is better stopped with Ctrl-C where it runs. |
-| `list`, `use` | `--json` | Machine-readable output. An unreachable router is listed with `"reachable": false`. |
+| `list`, `use` | `--json` | Machine-readable output. An unreachable router is listed with `"reachable": false`. `list` also gives each router's `pending_switch` (its target, the runs it waits for, and `readable: false` for a switch file nobody can read, which only `cancel-switch` clears) and, per model, `would_not_follow`: why default runs would not follow it once it is loaded. The web chat's model chip reads this. |
 
 Behind a router, `--model` on any command selects as well as names: `mecha run
 --model qwen3.8-27b "…"` loads that model, evicting the one that was loaded,
