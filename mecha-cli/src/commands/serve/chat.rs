@@ -368,7 +368,9 @@ impl ChatState {
     pub(super) async fn open_incognito(self: &Arc<Self>) -> Result<String> {
         anyhow::ensure!(!self.stopping.is_cancelled(), "server is shutting down");
         let bound = self.follower.follow().await?;
-        let withheld = incognito_gates(&bound).map_err(|why| anyhow::anyhow!("{why}"))?;
+        // Checked here so a chat that could not run is never opened; the list
+        // itself is re-derived on every turn (`begin_turn`), never stored.
+        incognito_gates(&bound).map_err(|why| anyhow::anyhow!("{why}"))?;
         let rooms = super::incognito::rooms_root()?;
         let key = super::incognito::new_key();
         let room = Arc::new(super::incognito::Room::open(&rooms, &key)?);
@@ -395,7 +397,11 @@ impl ChatState {
                 questions,
                 last_turn_spoken: false,
                 titled_at: 0,
-                withheld: Arc::from(withheld),
+                // Empty on purpose: an incognito chat's withheld tools are
+                // re-derived per turn from the binding it runs on
+                // (`incognito_gates`). Stored here, a second copy of a
+                // security list would go stale at the first switch.
+                withheld: Arc::from([]),
                 task: None,
                 // Nothing is recorded for an incognito chat; the check that
                 // reads this finds no transcript to write to.
@@ -494,6 +500,9 @@ impl ChatState {
         self.runs.wait().await;
     }
 
+    /// Closes the current binding's servers. A binding superseded by a switch
+    /// is dropped as soon as the last run holding it ends, and dropping an
+    /// `McpClient` kills its server — so nothing outlives a run.
     pub async fn close_mcp(&self) {
         let bound = self.follower.current();
         futures::future::join_all(bound.mcp().iter().map(|client| async {
@@ -4181,37 +4190,40 @@ pub(super) fn test_chat() -> Arc<ChatState> {
     })
 }
 
-/// A chat whose model answers every turn with `reply`, behind a local
-/// loopback provider — the only kind an incognito chat opens on. `local`
-/// false puts the same model behind a cloud URL, for the refusal.
+/// A model that answers every request with its reply — the chat tests' model.
 #[cfg(test)]
-pub(super) fn test_chat_answering(reply: &'static str, local: bool) -> Arc<ChatState> {
-    struct Answers(&'static str);
-    #[async_trait::async_trait]
-    impl mecha_core::provider::Provider for Answers {
-        fn id(&self) -> &str {
-            "local"
-        }
-        fn default_model(&self) -> &str {
-            "test"
-        }
-        async fn complete(
-            &self,
-            _: &mecha_core::message::CompletionRequest,
-            _: Option<&mecha_core::provider::StreamSink>,
-        ) -> Result<mecha_core::message::CompletionResponse> {
-            Ok(mecha_core::message::CompletionResponse {
-                message: Message::assistant(vec![mecha_core::message::Block::Text {
-                    text: self.0.into(),
-                }]),
-                stop_reason: mecha_core::message::StopReason::EndTurn,
-                usage: Usage::default(),
-                refusal: None,
-                model: "test".into(),
-                malformed_tool_args: 0,
-            })
-        }
+struct Answers(&'static str);
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl mecha_core::provider::Provider for Answers {
+    fn id(&self) -> &str {
+        "local"
     }
+    fn default_model(&self) -> &str {
+        "test"
+    }
+    async fn complete(
+        &self,
+        _: &mecha_core::message::CompletionRequest,
+        _: Option<&mecha_core::provider::StreamSink>,
+    ) -> Result<mecha_core::message::CompletionResponse> {
+        Ok(mecha_core::message::CompletionResponse {
+            message: Message::assistant(vec![mecha_core::message::Block::Text {
+                text: self.0.into(),
+            }]),
+            stop_reason: mecha_core::message::StopReason::EndTurn,
+            usage: Usage::default(),
+            refusal: None,
+            model: "test".into(),
+            malformed_tool_args: 0,
+        })
+    }
+}
+
+/// `[providers.local]` on a loopback URL, or — `local` false — a cloud one.
+#[cfg(test)]
+fn answering_config(local: bool) -> Config {
     let mut config = Config::default();
     config.providers.insert(
         "local".into(),
@@ -4224,11 +4236,39 @@ pub(super) fn test_chat_answering(reply: &'static str, local: bool) -> Arc<ChatS
             ..Default::default()
         },
     );
+    config
+}
+
+/// A chat whose model answers every turn with `reply`, behind a local
+/// loopback provider — the only kind an incognito chat opens on. `local`
+/// false puts the same model behind a cloud URL, for the refusal.
+#[cfg(test)]
+pub(super) fn test_chat_answering(reply: &'static str, local: bool) -> Arc<ChatState> {
     test_chat_from(
         Box::new(Answers(reply)),
         mecha_core::tool::Registry::new(),
-        config,
+        answering_config(local),
     )
+}
+
+/// What a switch looks like to a chat's next turn: its follower now holds a
+/// new binding — `model`, behind a loopback URL or (`local` false) a cloud
+/// one — under the next generation, as `Follower::follow` would install it.
+#[cfg(test)]
+pub(super) fn test_switch(chat: &ChatState, reply: &'static str, model: &str, local: bool) {
+    let config = answering_config(local);
+    let agent = Agent::new(
+        Box::new(Answers(reply)),
+        mecha_core::tool::Registry::new(),
+        Arc::new(mecha_core::tool::ModeApprover {
+            mode: PermissionMode::ReadOnly,
+        }),
+        ToolCtx::default(),
+        config.agent.clone(),
+        Some(model.into()),
+    )
+    .unwrap();
+    chat.follower.switch_to(agent, "local", model, config);
 }
 
 /// A chat whose model, asked anything, draws `prompt` with `image_generate`

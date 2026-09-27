@@ -346,9 +346,10 @@ fn agent_opts(global: &GlobalOpts, cfg: &mecha_core::config::SlackConfig) -> Res
         // thread, which is the same trade as per-thread MCP isolation above.
         no_skills: true,
         surface: Some(mecha_core::session::SessionKind::Slack),
-        ..GlobalOpts::default() // Not interactive: no terminal approver, and no `ask_user` — the registry
-                                // belongs to the agent and one agent serves every thread, so a shared
-                                // `ask_user` could not know which thread asked. See SLACK-DESIGN.md §4.
+        // Not interactive: no terminal approver, and no `ask_user` — the registry
+        // belongs to the agent and one agent serves every thread, so a shared
+        // `ask_user` could not know which thread asked. See SLACK-DESIGN.md §4.
+        ..GlobalOpts::default()
     })
 }
 

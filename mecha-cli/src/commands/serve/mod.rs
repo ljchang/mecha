@@ -2027,6 +2027,75 @@ mod boundary_tests {
         assert!(why.contains("local model"), "{why}");
     }
 
+    /// A conversation that crosses a switch says which model answered each
+    /// run (`follow::Bound::generation`): the corpus pairs an outcome with the
+    /// config record before it, so without the second record every turn after
+    /// a switch would be credited to the model the chat opened on.
+    #[tokio::test]
+    async fn a_conversation_that_crosses_a_switch_records_the_model_of_each_turn() {
+        let _home = crate::testenv::HomeGuard::new("follow-crossing");
+        let chat = chat::test_chat_answering("noted", true);
+        let app = app(Arc::clone(&chat));
+        converse(&app, "crossing", "first").await;
+        chat::test_switch(&chat, "noted", "test-b", true);
+        converse(&app, "crossing", "second").await;
+        converse(&app, "crossing", "third").await;
+
+        let dir = mecha_core::session::Session::default_dir().unwrap();
+        let recorded: Vec<Vec<String>> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+            .map(|e| {
+                mecha_core::session::Session::run_configs(&e.path())
+                    .unwrap()
+                    .into_iter()
+                    .map(|c| c.model)
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![vec!["test".to_string(), "test-b".to_string()]],
+            "one record on open, one at the switch — and none for a turn on the same binding"
+        );
+    }
+
+    /// Incognito's gates are re-derived from the binding each turn runs on,
+    /// not kept from the one it opened on: a switch onto a model behind a
+    /// cloud URL stops the next turn, as `open_incognito` would have refused it.
+    #[tokio::test]
+    async fn an_incognito_turn_is_regated_against_the_binding_it_runs_on() {
+        let _home = crate::testenv::HomeGuard::new("follow-incognito-regate");
+        let Some(_runtime) = RuntimeDir::new() else {
+            return;
+        };
+        let chat = chat::test_chat_answering("noted", true);
+        let app = app(Arc::clone(&chat));
+        let opened = app
+            .clone()
+            .oneshot(post("/api/incognito", ""))
+            .await
+            .unwrap();
+        assert_eq!(opened.status(), StatusCode::OK);
+        let key = body(opened).await["key"].as_str().unwrap().to_string();
+        converse(&app, &key, "first").await;
+
+        chat::test_switch(&chat, "noted", "cloud-model", false);
+        let sent = app
+            .clone()
+            .oneshot(json_post(
+                &format!("/api/chat/{key}/send"),
+                serde_json::json!({ "text": "second" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert!(!sent.status().is_success(), "{}", sent.status());
+        let why =
+            String::from_utf8(to_bytes(sent.into_body(), 10_000).await.unwrap().to_vec()).unwrap();
+        assert!(why.contains("local model"), "{why}");
+    }
+
     /// A ComfyUI stand-in for the image leg: answers what `image_generate`
     /// asks, writes the preview into `temp` when a job is submitted (as the
     /// real server does), and records every request — and every file it
