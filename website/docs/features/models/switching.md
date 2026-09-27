@@ -71,8 +71,8 @@ mecha model use qwen3.8-27b   # or by the router's model name
 the new model fails to come up, the one it replaced is loaded back.
 
 It refuses a model whose preset temperature disagrees with its provider entry.
-mecha sends `temperature` on every request, so the mismatch would silently
-retune the model on every call; the refusal names the entry to fix.
+An entry that sets `temperature` sends it on every request, so the mismatch
+would silently retune the model on every call; the refusal names the entry to fix.
 
 ## Who follows
 
@@ -97,7 +97,10 @@ for all of them.**
 - **Not yet: `mecha chat` and the TUI.** They read the router once at start,
   like a one-shot command, but they don't re-check per turn and a switch
   doesn't wait for them. Their next turn loads their model back. `/model` in
-  either one changes only that process's model.
+  the TUI is a pin, and on a router a pin is a load: it switches the model for
+  the whole machine, without waiting for the runs still on the old one. Use
+  `mecha model use` instead. In `mecha chat`, `/model` only shows the active
+  model.
 
 A router in an ambiguous state — mid-swap, or with a model loaded that no
 entry names, or that two entries name — does not move a long-lived surface.
@@ -136,8 +139,9 @@ waiting for 2 run(s) to finish: web chat, trigger morning-brief (--now stops the
   `mecha model use` is gone, or whose file can't be read. Every run on that
   router would otherwise wait for it.
 
-Only one switch can be pending at a time. A second `mecha model use` is
-refused and names the first.
+Only one switch can be pending on a router at a time. A second
+`mecha model use` is refused and names the first. `cancel-switch` withdraws
+every pending switch, on every router.
 
 **One way to wedge it:** a run whose agent starts another run through
 `shell` — a chat turn that calls `mecha run …`, say. With a switch pending,
