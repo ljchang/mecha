@@ -3433,13 +3433,17 @@ review's reject and approve, the TUI's `/outbox`, a Slack tap, voice's
 release); `owner-approved` under an interactive run's registered shell;
 `unknown` for everything the closure path refuses. **Stamped, not
 refused:** a rejection sends nothing, and the stamp is what keeps its words
-from passing as the owner's. Readers take the reason through
+from passing as the owner's. **And said:** a reject whose reason is stamped
+anything but `owner` prints why on stderr (`closure::attribute_explained`),
+so a demotion at the owner's own terminal — an unreadable marker directory,
+say — is never silent (review of #343). Readers take the reason through
 `OutboxItem::rejection` — `OwnersWords(text)` or `NotOwners(actor)`, whose
 `word()` is fixed harness text with none of the reason's bytes — or
 `rejection_reason` / `owners_reason`, which are `None` unless the actor is
 `owner`. The reflector skips a non-owner reason (and leaves it unmarked in
 the mined ledger), the appraiser's input shows the typed word and says the
-draft "was rejected" rather than that the owner rejected it, the poll sweep
+draft "was rejected" rather than that the owner rejected it (with or without
+a reason) unless the owner's door stamped it, the poll sweep
 writes "No time found", `sessions appraise` counts owner-reasoned and
 other-reasoned rejections apart (`reasoned_rejections`,
 `unattributed_rejections`), and `outbox show` and the TUI print the text
