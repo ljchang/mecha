@@ -1854,6 +1854,20 @@ pub async fn send(
         }
     };
     let (notices, workspace) = notices.unzip();
+    // A chat that left the map between its upload and this send — a `serve`
+    // restart, a handover — is re-created below by `ensure_session` in
+    // `session_workspace(key)`, where the upload still is. Named here without
+    // creating anything, so a send that fails leaves no directory; never for
+    // an incognito key, which is not re-created (found on review of #366).
+    let workspace = workspace.or_else(|| {
+        if super::incognito::is_incognito_key(&key) || body.attachments.is_empty() {
+            return None;
+        }
+        work::producer_dir("web")
+            .ok()
+            .map(|dir| dir.join(&key))
+            .filter(|dir| dir.is_dir())
+    });
 
     // The model this turn will run on, followed before the lock: a rebuild
     // after a switch can take as long as an MCP server's start, and every
@@ -1881,9 +1895,7 @@ pub async fn send(
     };
     // Read before the sessions lock, which every conversation waits on, and
     // only for a model that can see: to a blind one the pixels would render
-    // as a placeholder every turn, and the path is already in the text. An
-    // attachment needs an upload, which creates the session, so a chat not
-    // yet open has none to read.
+    // as a placeholder every turn, and the path is already in the text.
     let images = match workspace {
         Some(workspace) if bound.agent.vision() && !body.attachments.is_empty() => {
             let paths = body.attachments;
@@ -4497,6 +4509,12 @@ impl mecha_core::provider::Provider for Answers {
             malformed_tool_args: 0,
         })
     }
+}
+
+/// Drop `key` from the map, as a `serve` restart or a handover leaves it.
+#[cfg(test)]
+pub(super) async fn test_forget_session(chat: &ChatState, key: &str) {
+    chat.sessions.lock().await.remove(key);
 }
 
 /// A chat whose model can see (or, `vision` false, cannot), answering "ok"
