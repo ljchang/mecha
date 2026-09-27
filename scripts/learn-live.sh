@@ -26,13 +26,12 @@
 set -uo pipefail
 
 MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
-# Unset means no `-p`: the pass runs on whatever the router has loaded. This
-# runs at every session end, so a default of `local` — a pin, and on the
-# router a load — undid the owner's model switch each time a chat closed.
-# Reasoning in ruminate.sh.
-PROVIDER="${MECHA_LEARN_PROVIDER:-}"
-PIN=()
-[ -n "$PROVIDER" ] && PIN=(-p "$PROVIDER")
+# Unset, on a router, means no `-p`: the pass runs on whatever the router has
+# loaded. This runs at every session end, so a `local` default — a pin, and on
+# the router a load — undid the owner's model switch each time a chat closed.
+# Without a router, unset is `-p local` as before. The rule: scripts/pin.sh.
+source "$(dirname "$0")/pin.sh"
+scheduled_pin "${MECHA_LEARN_PROVIDER:-}"
 LEARNING_DIR="${MECHA_LEARNING_DIR:-$HOME/.mecha/learning}"
 LOG_DIR="$LEARNING_DIR/logs"
 mkdir -p "$LOG_DIR"

@@ -24,13 +24,12 @@ set -uo pipefail
 MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
 FACTORY="${FACTORY_PUBLISH_BIN:-$HOME/.cargo/bin/factory-publish}"
 MAIL="${MECHA_MAIL_BIN:-$HOME/.cargo/bin/mecha-mail}"
-# Unset means no `-p`: each tick runs on whatever the router has loaded, and
-# the run's record names it. A default of `local` was a pin, and on the router
-# a pin is a load — hourly, over whatever the owner switched to. Reasoning in
-# ruminate.sh.
-PROVIDER="${MECHA_FRONTDOOR_PROVIDER:-}"
-PIN=()
-[ -n "$PROVIDER" ] && PIN=(-p "$PROVIDER")
+# Unset, on a router, means no `-p`: each tick runs on whatever the router has
+# loaded, and the run's record names it; a `local` default was a pin, and on
+# the router a pin is a load — hourly, over whatever the owner switched to.
+# Without a router, unset is `-p local` as before. The rule: scripts/pin.sh.
+source "$(dirname "$0")/pin.sh"
+scheduled_pin "${MECHA_FRONTDOOR_PROVIDER:-}"
 HEALTH="${MECHA_FRONTDOOR_HEALTH:-http://127.0.0.1:8080/health}"
 
 LOG_DIR="$HOME/.mecha/requests/logs"

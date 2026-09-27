@@ -28,18 +28,16 @@
 set -uo pipefail
 
 MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
-# **Unset means no `-p`: the night runs on whatever the router has loaded.**
-# The owner's ruling for the router (REMOTE-SURFACE-DESIGN §14): background
+# **Unset, on a router, means no `-p`: the night runs on whatever the router
+# has loaded.** The owner's ruling (REMOTE-SURFACE-DESIGN §14): background
 # work never defers and never swaps, it runs on the resident model and the
-# run's record names it. An explicit `-p local` is a pin, and on a router a pin
-# is a load — on 2026-09-27 this line's old default pulled production over the
-# comparison arm at 03:30:14, the moment the first stage started. Set the
+# run's record names it. On a router a pin is a load — on 2026-09-27 this
+# line's old `-p local` default pulled production over the comparison arm at
+# 03:30:14. Without a router, unset is `-p local` as it always was, so a
+# default that is a paid API does not start billing nightly. The rule lives
+# in scripts/pin.sh, shared with frontdoor.sh and learn-live.sh. Set the
 # variable to pin a night deliberately, knowing it swaps the router.
-PROVIDER="${MECHA_RUMINATE_PROVIDER:-}"
-PIN=()
-[ -n "$PROVIDER" ] && PIN=(-p "$PROVIDER")
-# Expanded as ${PIN[@]+"${PIN[@]}"} throughout: an empty array under `set -u`
-# is an unbound variable on bash older than 4.4 (drain-follow.sh does the same).
+source "$(dirname "$0")/pin.sh"
 # **The judge is the model under test, deliberately and provisionally.**
 # A different family is the better methodology — a model grading trajectories
 # it produced shares the blind spot that caused them, which is why
@@ -53,11 +51,12 @@ PIN=()
 # the router made concrete: gemma26 is a preset on :8080 now, one model is
 # resident at a time, so a judge on another model swaps the router on every
 # judge call (tens of seconds each way). Judge-graded rows in the ledger are
-# only as good as this line. Unset, the judge follows the loaded model, as
-# the stages do.
-JUDGE="${MECHA_RUMINATE_JUDGE:-}"
+# only as good as this line. Unset, the judge is chosen as the stages are
+# (scripts/pin.sh): the loaded model on a router, `local` otherwise.
+scheduled_pin "${MECHA_RUMINATE_JUDGE:-}"
 JUDGE_PIN=()
-[ -n "$JUDGE" ] && JUDGE_PIN=(--judge-provider "$JUDGE")
+[ -n "${PIN[*]-}" ] && JUDGE_PIN=(--judge-provider "${PIN[1]}")
+scheduled_pin "${MECHA_RUMINATE_PROVIDER:-}"
 HEALTH="${MECHA_RUMINATE_HEALTH:-http://127.0.0.1:8080/health}"
 
 LOG_DIR="${MECHA_LEARNING_DIR:-$HOME/.mecha/learning}/logs"

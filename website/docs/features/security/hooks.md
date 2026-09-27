@@ -169,7 +169,9 @@ command = "nohup mecha reflect >/dev/null 2>&1 &"
 It names no provider on purpose. Unpinned, it runs on the default — and on a
 llama-server router with `follow_loaded`, on whatever model is loaded. A
 `-p` there is a pin, and on a router a pin loads that model, so every
-session's close would undo a model switch.
+session's close would undo a model switch. Without a router, add `-p` for
+the model you want the pass on; unpinned, it runs on your default provider,
+which may be a paid API.
 
 ## Where to go next
 
