@@ -92,13 +92,37 @@ impl Drop for Held {
     }
 }
 
-/// Which switch a "switch now" was asked of — by identity, for `Switching`'s
-/// reason: the marker's name is a function of the router alone, so one left
-/// by a withdrawn switch must not hurry the next.
+/// Which switch a marker beside the switch file is about — "switch now"
+/// (`.now`) or "past the wait" (`.past`) — by identity, for `Switching`'s
+/// reason: a marker's name is a function of the router alone, so one left by a
+/// withdrawn switch must not speak for the next.
 #[derive(Serialize, Deserialize)]
 struct NowFor {
     pid: u32,
     started_at: DateTime<Utc>,
+}
+
+/// Does the marker at `path` name the switch `(pid, started_at)`?
+fn marks(path: &Path, pid: u32, started_at: DateTime<Utc>) -> bool {
+    read::<NowFor>(path).is_some_and(|n| n.pid == pid && n.started_at == started_at)
+}
+
+/// Write a marker whole, through a temp sibling of its own: two writers (two
+/// "switch now" taps) each rename their own file into place, where one fixed
+/// temp name let the second's rename fail on the first's, and report a
+/// failure for a hurry that landed (found on review of #364).
+fn write_marker(path: &Path, pid: u32, started_at: DateTime<Utc>) -> Result<()> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("marker");
+    let tmp = path.with_extension(format!("{ext}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    let written = std::fs::write(&tmp, serde_json::to_string(&NowFor { pid, started_at })?)
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written.with_context(|| format!("writing {}", path.display()))
 }
 
 impl Switching {
@@ -116,16 +140,28 @@ impl Switching {
     /// another process is already making — `mecha model use` started without
     /// `--now`, from the page or a terminal.
     pub fn now_requested(&self) -> bool {
-        read::<NowFor>(&self.path.with_extension("now"))
-            .is_some_and(|n| n.pid == self.pid && n.started_at == self.started_at)
+        marks(&self.path.with_extension("now"), self.pid, self.started_at)
+    }
+
+    /// Say that this switch has stopped waiting for runs: from here it is
+    /// unloading and loading, which "switch now" cannot hurry and
+    /// `cancel-switch` no longer stops. A marker of its own rather than a
+    /// field rewritten into the switch file — a rewrite racing
+    /// `cancel-switch` could put back a switch just withdrawn, and the
+    /// switcher's own `still_pending` would then believe it.
+    pub fn past_the_wait(&self) -> Result<()> {
+        write_marker(&self.path.with_extension("past"), self.pid, self.started_at)
     }
 }
 
 impl Drop for Switching {
     /// Removes the file only while it is still this switch's.
     fn drop(&mut self) {
-        if self.now_requested() {
-            let _ = std::fs::remove_file(self.path.with_extension("now"));
+        for ext in ["now", "past"] {
+            let marker = self.path.with_extension(ext);
+            if marks(&marker, self.pid, self.started_at) {
+                let _ = std::fs::remove_file(marker);
+            }
         }
         if self.still_pending() {
             let _ = std::fs::remove_file(&self.path);
@@ -385,6 +421,7 @@ impl Holds {
         });
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("now"));
+        let _ = std::fs::remove_file(path.with_extension("past"));
         Some(was)
     }
 
@@ -400,11 +437,24 @@ impl Holds {
             let path = entry.path();
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            // A "switch now" marker whose switcher was killed before its drop
-            // could remove it: harmless (it names a switch that is gone), and
-            // swept here so it does not sit in the directory for ever.
-            if name.starts_with("switch-") && name.ends_with(".now") {
+            // A marker whose switcher was killed before its drop could remove
+            // it: harmless (it names a switch that is gone), and swept here so
+            // it does not sit in the directory for ever. A temp file is swept
+            // only once it is old: a young one is a write in progress.
+            if name.starts_with("switch-") && (name.ends_with(".now") || name.ends_with(".past")) {
                 let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            if name.starts_with("switch-") && name.ends_with(".tmp") {
+                let old = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > Duration::from_secs(60));
+                if old {
+                    let _ = std::fs::remove_file(&path);
+                }
                 continue;
             }
             if !(name.starts_with("switch-") && name.ends_with(".json")) {
@@ -435,20 +485,29 @@ impl Holds {
     /// pending file cannot be read: no switcher is there to hear it, and
     /// `cancel-switch` is that one's way out.
     pub fn request_now(&self, base_url: &str, to: &str) -> Result<Option<Switch>> {
-        let Some(switch) = self.pending(base_url).filter(|s| s.pid != 0 && s.to == to) else {
+        let Some(switch) = self
+            .pending(base_url)
+            .filter(|s| s.pid != 0 && s.to == to && !self.is_past_the_wait(base_url, s))
+        else {
             return Ok(None);
         };
-        let path = self.switch_path(base_url).with_extension("now");
-        let tmp = path.with_extension("now.tmp");
-        std::fs::write(
-            &tmp,
-            serde_json::to_string(&NowFor {
-                pid: switch.pid,
-                started_at: switch.started_at,
-            })?,
+        write_marker(
+            &self.switch_path(base_url).with_extension("now"),
+            switch.pid,
+            switch.started_at,
         )?;
-        std::fs::rename(&tmp, &path).with_context(|| format!("writing {}", path.display()))?;
         Ok(Some(switch))
+    }
+
+    /// Has `switch` (pending on `base_url`) stopped waiting for runs
+    /// ([`Switching::past_the_wait`])? Then "switch now" has nothing left to
+    /// hurry: the chip stops offering it, and `request_now` refuses.
+    pub fn is_past_the_wait(&self, base_url: &str, switch: &Switch) -> bool {
+        marks(
+            &self.switch_path(base_url).with_extension("past"),
+            switch.pid,
+            switch.started_at,
+        )
     }
 
     /// "Switch now": ask every run holding `base_url` to stop at its next safe
@@ -701,6 +760,96 @@ mod tests {
             .request_now(ROUTER, "(unreadable switch file)")
             .unwrap()
             .is_none());
+    }
+
+    /// Two "switch now" taps at once both land: each writes through its own
+    /// temp file, where one fixed name let the second's rename fail on the
+    /// first's and report a failure for a hurry that had worked.
+    #[test]
+    fn concurrent_hurries_all_land() {
+        let h = std::sync::Arc::new(holds("now-race"));
+        let s = h.begin_switch(ROUTER, Some("a"), "b").unwrap().unwrap();
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let h = std::sync::Arc::clone(&h);
+                std::thread::spawn(move || {
+                    (0..50)
+                        .map(|_| h.request_now(ROUTER, "b"))
+                        .filter(|r| !matches!(r, Ok(Some(_))))
+                        .count()
+                })
+            })
+            .collect();
+        let failed: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+        assert_eq!(failed, 0, "a concurrent hurry reported failure");
+        assert!(s.now_requested());
+        let temps = std::fs::read_dir(&h.dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(temps, 0, "a hurry left its temp file behind");
+    }
+
+    /// Past its wait, a switch has nothing for "switch now" to hurry:
+    /// `request_now` refuses it, and the marker is keyed like `.now` — one
+    /// left by a withdrawn switch says nothing about the next, and every way
+    /// a switch ends takes it.
+    #[test]
+    fn a_switch_past_its_wait_is_not_hurried() {
+        let h = holds("past");
+        let marker = h.switch_path(ROUTER).with_extension("past");
+        let first = h.begin_switch(ROUTER, Some("a"), "b").unwrap().unwrap();
+        let pending = h.pending(ROUTER).unwrap();
+        assert!(!h.is_past_the_wait(ROUTER, &pending));
+        first.past_the_wait().unwrap();
+        assert!(h.is_past_the_wait(ROUTER, &pending));
+        assert!(
+            h.request_now(ROUTER, "b").unwrap().is_none(),
+            "hurried a switch that had stopped waiting"
+        );
+        assert!(!first.now_requested());
+
+        // A stale marker (put back as a killed switcher would leave it)
+        // says nothing about the next switch.
+        let stale = std::fs::read(&marker).unwrap();
+        h.withdraw_switch(ROUTER).unwrap();
+        assert!(!marker.exists(), "withdrawing left the marker");
+        std::fs::write(&marker, &stale).unwrap();
+        let next = h.begin_switch(ROUTER, Some("a"), "c").unwrap().unwrap();
+        assert!(!h.is_past_the_wait(ROUTER, &h.pending(ROUTER).unwrap()));
+        assert!(h.request_now(ROUTER, "c").unwrap().is_some());
+        drop(next);
+
+        // `cancel-switch` sweeps what is left, old temp files included, and
+        // leaves a young one — a write in progress.
+        let old_tmp = h.dir.join("switch-x.now.old.tmp");
+        let young_tmp = h.dir.join("switch-x.now.young.tmp");
+        std::fs::write(&old_tmp, b"").unwrap();
+        std::fs::write(&young_tmp, b"").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&old_tmp)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(600))
+            .unwrap();
+        // `first` (withdrawn, not dropped) stands for a killed switcher: its
+        // marker is still on disk for the sweep to take.
+        assert!(marker.exists());
+        h.withdraw_all_switches();
+        assert!(!marker.exists(), "cancel-switch left a stale .past");
+        drop(first);
+        assert!(!old_tmp.exists(), "cancel-switch left an old temp file");
+        assert!(
+            young_tmp.exists(),
+            "cancel-switch swept a write in progress"
+        );
+
+        // A switch that ends normally takes its own marker.
+        let s = h.begin_switch(ROUTER, Some("a"), "d").unwrap().unwrap();
+        s.past_the_wait().unwrap();
+        drop(s);
+        assert!(!marker.exists());
     }
 
     /// A hold this build cannot read is held while its pid lives — on every

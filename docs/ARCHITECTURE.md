@@ -263,7 +263,13 @@ The parts that bite hardest:
     switcher must not hurry the next switch, and a switch replaced by one to
     another model is never hurried in the first's name.
     `Switching`'s own drop and `withdraw_switch` remove it; `cancel-switch`
-    sweeps any left over. The same lesson as `Switching::still_pending`
+    sweeps any left over. Its sibling `.past` (`Switching::past_the_wait`),
+    written once the wait returns, is keyed the same way and is why the chip
+    stops offering "switch now" during the unload. It is a separate file, not
+    a field rewritten into the switch file: a rewrite racing `cancel-switch`
+    could restore a withdrawn switch that the switcher's `still_pending`
+    would then believe. Markers are written through a uniquely named temp
+    file each, so two hurries never race on one. The same lesson as `Switching::still_pending`
     (review of #350).
   - **A hold's label is never user content** — `mecha run "<prompt>"` must
     not leave the prompt under `~/.mecha/holds`; only the subcommand name.
