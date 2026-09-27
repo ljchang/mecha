@@ -364,6 +364,38 @@ impl Holds {
         Some(was)
     }
 
+    /// Withdraw every switch file in the directory, whatever router it names —
+    /// the way out of one on a router the config no longer follows, which
+    /// [`withdraw_switch`](Self::withdraw_switch) keyed by router cannot reach.
+    pub fn withdraw_all_switches(&self) -> Vec<Switch> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !(name.starts_with("switch-") && name.ends_with(".json")) {
+                continue;
+            }
+            out.push(
+                read::<Switch>(&path).unwrap_or(Switch {
+                    pid: 0,
+                    base_url: name
+                        .trim_start_matches("switch-")
+                        .trim_end_matches(".json")
+                        .into(),
+                    from: None,
+                    to: "(unreadable switch file)".into(),
+                    started_at: Utc::now(),
+                }),
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+        out
+    }
+
     /// "Switch now": ask every run holding `base_url` to stop at its next safe
     /// point. Returns how many were asked.
     pub fn cancel_holders(&self, base_url: &str) -> usize {
@@ -583,6 +615,28 @@ mod tests {
         std::fs::write(&dead, b"garbage").unwrap();
         h.live(ROUTER);
         assert!(!dead.exists(), "a dead holder's unreadable file is swept");
+    }
+
+    /// `cancel-switch` reaches every switch file there is, whichever router it
+    /// names and whether or not it can be read.
+    #[test]
+    fn every_switch_file_can_be_withdrawn() {
+        let h = holds("withdraw-all");
+        let _a = h.begin_switch(ROUTER, Some("a"), "b").unwrap().unwrap();
+        let _b = h
+            .begin_switch("http://127.0.0.1:9090", None, "c")
+            .unwrap()
+            .unwrap();
+        std::fs::write(h.dir.join("switch-elsewhere.json"), b"damaged").unwrap();
+        let mut to: Vec<String> = h
+            .withdraw_all_switches()
+            .into_iter()
+            .map(|s| s.to)
+            .collect();
+        to.sort();
+        assert_eq!(to, ["(unreadable switch file)", "b", "c"]);
+        assert!(h.pending(ROUTER).is_none());
+        assert!(h.pending("http://127.0.0.1:9090").is_none());
     }
 
     /// "Switch now" reaches the holder, and only holders of that router.

@@ -410,7 +410,9 @@ struct State {
     /// Threads whose run is being started off the loop (`Followed`), with
     /// any message that arrived meanwhile — added to the run's first turn,
     /// so a thread never has two runs and nothing said is lost.
-    starting: HashMap<String, Vec<String>>,
+    /// Each message's text *and* its attachments: the run has not started,
+    /// so its files can still reach it (review of #350).
+    starting: HashMap<String, Vec<(String, Vec<FileRef>)>>,
     my_user_id: String,
     live: HashMap<String, Live>,
     conversations: HashMap<String, Conversation>,
@@ -765,7 +767,7 @@ impl State {
         }
         // Being started off the loop: joins the run's first turn.
         if let Some(pending) = self.starting.get_mut(&record.key) {
-            pending.push(text);
+            pending.push((text, event.files));
             return;
         }
 
@@ -820,7 +822,7 @@ impl State {
             return;
         }
         if let Some(pending) = self.starting.get_mut(&d.record.key) {
-            pending.push(d.prompt);
+            pending.push((d.prompt, d.files));
             return;
         }
         self.start_run(d.record, d.prompt, d.files).await;
@@ -916,7 +918,7 @@ impl State {
         let Followed {
             record,
             prompt,
-            files,
+            mut files,
             held,
             bound,
         } = f;
@@ -931,8 +933,10 @@ impl State {
             0 => String::new(),
             n => format!(" (nor did the {n} message(s) you added while it was starting)"),
         };
+        let (texts, attached): (Vec<String>, Vec<Vec<FileRef>>) = early.into_iter().unzip();
+        files.extend(attached.into_iter().flatten());
         let prompt = std::iter::once(prompt)
-            .chain(early)
+            .chain(texts)
             .collect::<Vec<_>>()
             .join("\n\n");
 
