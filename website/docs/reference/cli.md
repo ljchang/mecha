@@ -1773,7 +1773,7 @@ mecha model [list|use|cancel-switch] [ARGS] [--json]
 | `use` | `<NAME>` | A provider entry or a router model name. Loads it and waits until it is resident. |
 | `use` | `--now` | Don't wait for the runs using the loaded model: ask each to stop at its next safe point, give them 15 s, then switch. A reply in progress ends early. Without it, the switch waits for every run to finish, with no time limit. |
 | `use` | `--wait-secs <N>` | Give up on the *load* after this many seconds (default 600; a cold load measured 33–39 s). The wait for runs before it is not bounded. |
-| `cancel-switch` | | Withdraw a pending switch — one whose `mecha model use` is gone or whose file can't be read, which every run on the router would otherwise wait for. A live switch is better stopped with Ctrl-C where it runs. |
+| `cancel-switch` | | Withdraw every pending switch, on every router — the way out of one whose `mecha model use` is gone or whose file can't be read, which every run on that router would otherwise wait for. A live switch is better stopped with Ctrl-C where it runs. |
 | `list`, `use` | `--json` | Machine-readable output. An unreachable router is listed with `"reachable": false`. |
 
 Behind a router, `--model` on any command selects as well as names: `mecha run
