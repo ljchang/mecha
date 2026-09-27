@@ -132,9 +132,11 @@ echo "  first night on a newly loaded model re-buys them, since retirement count
 # the same steers and denials `learn` is about to consume — after learn it
 # would grade tonight's sweep's rules on their own training data. That is
 # all the position buys, and it is NOT a hold-out: `validate`'s comes from
-# `--unprocessed-only`, and this pass has no such filter and draws the whole
-# corpus, while consolidation is live (`learn-live.sh` learns from a session
-# minutes after it closes). So most drawn points already meet a `Rules` arm
+# `--unprocessed-only`, and this pass has no such filter: it draws the last
+# MECHA_COMPARE_DAYS of the corpus, while consolidation is live
+# (`learn-live.sh` learns from a session minutes after it closes) — and a
+# bounded window makes that overlap more complete, not less, since every
+# point in it was one live learning had a chance at. So most drawn points already meet a `Rules` arm
 # learned from them; the `Rules` arm reads as "the deployed rules at points
 # they may have been learned from", never as a held-out measurement (found
 # on review). It writes no rule.
@@ -144,8 +146,11 @@ echo "  first night on a newly loaded model re-buys them, since retirement count
 # eight points of up to three arms each, with a seat wait per point, run
 # ahead of `rules propose-retirements --apply` — the one brake on rules that
 # go live as they are derived — and this script is not `set -e`, so a slow
-# pass is not skipped, it makes the brake late. So `timeout` caps it
-# (MECHA_COMPARE_TIMEOUT, default 30m); a pass cut short writes what it
+# pass is not skipped, it makes the brake late. So `timeout` caps this
+# pass's share (MECHA_COMPARE_TIMEOUT, default 30m) — its share only: the
+# `learn --auto` between it and the brake pays probe pairs and has no
+# wall-clock bound of its own, so this does not bound when the brake fires
+# (found on review). A pass cut short writes what it
 # compared, and a seat it held is reclaimed by the next caller's liveness
 # check (`permit.rs`). And `--days` bounds the read (MECHA_COMPARE_DAYS,
 # default 30): without it every transcript was read each night, and an
@@ -163,7 +168,7 @@ echo "  distill writes into the session's appraisal as the losing arm)"
 timeout "${MECHA_COMPARE_TIMEOUT:-30m}" \
     "$MECHA" sessions compare ${PIN[@]+"${PIN[@]}"} --days "${MECHA_COMPARE_DAYS:-30}"
 rc=$?
-[ "$rc" -eq 124 ] && echo "  compare stopped at ${MECHA_COMPARE_TIMEOUT:-30m}: the brake below runs on time"
+[ "$rc" -eq 124 ] && echo "  compare stopped at its ${MECHA_COMPARE_TIMEOUT:-30m} cap; what it compared is kept"
 
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
 echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
