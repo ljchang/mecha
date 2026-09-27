@@ -3459,15 +3459,45 @@ delivered` resolves without `resolve_with_output` and stamps the same actor
 **Items resolved before the field existed carry no actor and read as
 `unknown`** — fail closed, on the append-only rule; every such reasoned
 reject on the live store had already been mined when this landed. The
-release is stamped the same way, and nothing reads that stamp yet.
+release is stamped the same way.
+
+**An edit is the owner's writing only when the owner made every edit and
+the release** (the same ruling carried to edits, 2026-09-27). `mecha outbox
+edit` — `$EDITOR`, `--body-file`, `--args-file`, and `polls pick` — stamps
+`edited_by` through `update_args`, which takes an `Actor` with no default,
+decided by the same `acting_actor`. Several edits **fold** with
+`Actor::least`, so an owner's later edit never launders a run's earlier one,
+and an item already edited with no stamp folds from `unknown`.
+`OutboxItem::owners_edit` is `edited_by == owner && resolved_by == owner`:
+release-only would misfire when the owner edits and a run's shell approves,
+edit-only when a run's shell edits and the owner releases. What reads an
+edit as the owner's words is gated on it: `mineable_as_writing` (the
+writing miner — the diff becomes a `writing` rule in the cached prefix),
+the appraiser's input (the diff is shown as "the owner edited it" only
+then, and otherwise described by its two stamps with none of its bytes; a
+release not stamped `owner` is "it was released", never "the owner
+released it"), and `pointwise::draft_kind` (the released text is the gold a
+harness candidate is judged against only then). An edit not stamped `owner`
+prints `note: the edit is recorded as …` on stdout, which the web review
+shows beside "Saved."; the page holds both note prefixes as literals, and a
+test in `commands/outbox.rs` reads the page. `writing_outcome` itself still
+says what happened to the draft — `SentEdited` is structural — so the
+appraisal's `edit`-channel sign and 2b-2's `ExpectedAct::Edited` stay
+actor-blind, like the reject's −1.0: **the words are gated, the act is
+not.** Every edited send on the live store had been mined when this landed.
+
 **The residue is the closure path's** (see "Closing a task is a recorded
 event"): a command that detaches from its shell and clears the variable, a
 shell that edits `~/.mecha/outbox/` directly, and — named here because the
 outbox makes it concrete — a local process that calls `mecha serve`'s
 loopback port with the `Tailscale-User-Login` header set, which the web
 review's child then stamps `owner`. The answer to all three is the sandbox,
-as there. `outbox edit` is not a resolve and is not stamped; the writing
-miner still reads `diff(args_before, args)` as the owner's edit.
+as there. **Two more, left as they are by the owner's ruling (2026-09-27):**
+`mecha outbox approve` from a non-interactive run's shell is stamped
+`unknown` but not refused, so such a run can still release a draft; and
+Slack's reject button (`slack::actions::Action::OutboxReject`) sends the
+fixed reason "rejected from Slack", which the tap's child stamps `owner`, so
+that harness sentence is mined as the owner's words.
 
 ## Assistant workflows
 
