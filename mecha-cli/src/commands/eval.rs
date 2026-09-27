@@ -1631,6 +1631,9 @@ mod tests {
             // Off by default too: retrieved appraisals are model-written
             // text a machine's config.toml could turn on.
             ("past appraisals", opts.no_past_appraisals),
+            // And success examples: the owner's verified sessions, which a
+            // machine's config.toml could turn on.
+            ("success examples", opts.no_success_examples),
         ] {
             assert!(
                 on,
@@ -1958,10 +1961,11 @@ mod tests {
                 Lever::StepEscalation,
                 Lever::GoalGuidance,
                 Lever::SituationBrief,
-                Lever::PastAppraisals
+                Lever::PastAppraisals,
+                Lever::SuccessExamples
             ],
-            "messaging, step escalation, goal guidance, the brief's delivery and past \
-             appraisals ship off"
+            "messaging, step escalation, goal guidance, the brief's delivery, past \
+             appraisals and success examples ship off"
         );
     }
 

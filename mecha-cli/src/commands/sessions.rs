@@ -201,10 +201,20 @@ pub enum Args {
     ///
     /// Read-only and free. The drafts sent unchanged are writing exemplars,
     /// and this readout is their only reader: nothing serves one to a run.
+    /// A success toward a goal lends its session's tool sequence as a
+    /// planning example, served by `goal_context` only with `[agent]
+    /// success_examples` on; `--examples` lists what it would serve.
     Successes {
         /// Print each writing exemplar verbatim — the draft as it went out.
         #[arg(long)]
         exemplars: bool,
+
+        /// List the planning success examples the set lends — each one's
+        /// goal, session, tool sequence and the situations it is served in —
+        /// and why each success that lends none does not. Reads up to 32
+        /// transcripts.
+        #[arg(long)]
+        examples: bool,
 
         /// Cap each listing at this many, newest first. The counts are
         /// always the whole set's.
@@ -307,10 +317,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
         Args::Successes {
             exemplars,
+            examples,
             limit,
             include_tests,
             json,
-        } => crate::success_readout::run(&dir, json, exemplars, limit, include_tests)?,
+        } => crate::success_readout::run(
+            &dir,
+            crate::success_readout::Show {
+                json,
+                exemplars,
+                examples,
+                limit,
+                include_tests,
+            },
+        )?,
 
         Args::Compare {
             points,

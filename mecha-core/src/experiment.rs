@@ -2022,6 +2022,7 @@ fn config_switch(lever: Lever) -> Option<fn(&mut crate::config::Config) -> &mut 
         Lever::CarriedState => Some(|c| &mut c.agent.carried_state),
         Lever::SituationBrief => Some(|c| &mut c.agent.situation_brief),
         Lever::PastAppraisals => Some(|c| &mut c.agent.past_appraisals),
+        Lever::SuccessExamples => Some(|c| &mut c.agent.success_examples),
         Lever::Messages => Some(|c| &mut c.messages.enabled),
         Lever::Mcp
         | Lever::LearnedRules
@@ -3093,6 +3094,7 @@ pub fn child_invocation(
             Lever::CarriedState => config.agent.carried_state = false,
             Lever::SituationBrief => config.agent.situation_brief = false,
             Lever::PastAppraisals => config.agent.past_appraisals = false,
+            Lever::SuccessExamples => config.agent.success_examples = false,
             Lever::Messages => {
                 config.messages.enabled = false;
                 flags.push("--no-messages".into());
@@ -3962,6 +3964,7 @@ rationale = "no notice, fewer turns"
         real.agent.carried_state = false;
         real.agent.situation_brief = false;
         real.agent.past_appraisals = false;
+        real.agent.success_examples = false;
         real.messages.enabled = false;
         let names = [
             "step_escalation",
@@ -3973,6 +3976,7 @@ rationale = "no notice, fewer turns"
             "carried_state",
             "situation_brief",
             "past_appraisals",
+            "success_examples",
             "messages",
         ];
         let arm = Arm {
@@ -3990,6 +3994,7 @@ rationale = "no notice, fewer turns"
         assert!(c.agent.carried_state);
         assert!(c.agent.situation_brief);
         assert!(c.agent.past_appraisals);
+        assert!(c.agent.success_examples);
         assert!(c.messages.enabled);
 
         // Unnamed switches still inherit the operator's value.

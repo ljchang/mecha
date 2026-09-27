@@ -717,7 +717,11 @@ situation brief into the run's first user turn — it ships off, so its arm is
 `levers_on = ["situation_brief"]` against a control that leaves it off;
 `past_appraisals` (2c-2) likewise ships off and is measured as
 `levers_on = ["past_appraisals"]`, over an environment whose `appraisals/`
-directory is seeded into each home. `plan_reinjection`,
+directory is seeded into each home; `success_examples` (2e-4b-1) ships off
+too and is measured as `levers_on = ["success_examples"]` — nothing is
+seeded for it, since the successes are the trial home's own (its outbox,
+closures, workflows and questions), so a single trial's arm is the control
+until a lifetime's tasks close. `plan_reinjection`,
 `declared_checks` and `appraiser` are not levers until their switch
 exists. The stage levers as built are `reflect`, `learn`, `validate`,
 `retire`, `ruminate`, `sensors_in_brief` and `appraisals_in_brief` (`experiment::StageLever`; the last since `APPRAISAL-WIRING-DESIGN.md` 2f).
