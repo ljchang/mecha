@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every outbox resolve records who made it** (`APPRAISAL-WIRING-DESIGN.md`,
+  R16a's ruling D3). `mecha outbox reject`, `review` and `approve` stamp
+  `resolved_by` on the item — `owner` at the owner's terminal or a
+  surface's own child (web, TUI, Slack, voice), `owner-approved` under an
+  interactive run's `shell`, `unknown` otherwise — decided by the task
+  closure store's rules (`closure::attribute`). A rejection's reason reads
+  as the owner's words only under `owner`: the reflector no longer mines a
+  reason a model's `shell` typed, the appraiser's input shows a typed word
+  in its place, and the meeting-poll sweep puts "No time found" rather than
+  that text on the participants' page. Items resolved before this load as
+  `unknown`. `outbox show` and the TUI print `by <actor>` beside the reason,
+  `sessions appraise` counts the other reasons apart
+  (`unattributed_rejections`), and a reject whose reason is not stamped
+  `owner` says why — in the terminal, the TUI status line and the web
+  review.
+
 - **Planning examples from what the owner verified** (`APPRAISAL-WIRING-DESIGN.md`
   L2, 2e-4b-1, R40), behind `[agent] success_examples` /
   `Lever::SuccessExamples`, which **ships off** until an experiment measures

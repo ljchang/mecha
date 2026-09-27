@@ -1969,7 +1969,9 @@ mod tests {
         assert_eq!(s.front.reconcile(&s.outbox).unwrap(), vec![]);
         assert_eq!(s.front.record(1).unwrap().state, AWAITING_ME);
 
-        s.outbox.resolve(&id, "sent", None).unwrap();
+        s.outbox
+            .resolve(&id, "sent", None, crate::closure::Actor::Owner)
+            .unwrap();
         let moved = s.front.reconcile(&s.outbox).unwrap();
         assert_eq!(moved.len(), 1);
         assert_eq!(moved[0].to, ANSWERED);
@@ -1986,7 +1988,12 @@ mod tests {
         s.front.write(&awaiting(1, &[&id])).unwrap();
 
         s.outbox
-            .resolve(&id, "rejected", Some("too formal".into()))
+            .resolve(
+                &id,
+                "rejected",
+                Some("too formal".into()),
+                crate::closure::Actor::Owner,
+            )
             .unwrap();
         let moved = s.front.reconcile(&s.outbox).unwrap();
 
@@ -2007,11 +2014,15 @@ mod tests {
         let (a, b) = (s.draft(), s.draft());
         s.front.write(&awaiting(1, &[&a, &b])).unwrap();
 
-        s.outbox.resolve(&a, "sent", None).unwrap();
+        s.outbox
+            .resolve(&a, "sent", None, crate::closure::Actor::Owner)
+            .unwrap();
         assert_eq!(s.front.reconcile(&s.outbox).unwrap(), vec![]);
         assert_eq!(s.front.record(1).unwrap().state, AWAITING_ME);
 
-        s.outbox.resolve(&b, "sent", None).unwrap();
+        s.outbox
+            .resolve(&b, "sent", None, crate::closure::Actor::Owner)
+            .unwrap();
         assert_eq!(s.front.reconcile(&s.outbox).unwrap().len(), 1);
         assert_eq!(s.front.record(1).unwrap().state, ANSWERED);
     }
@@ -2033,9 +2044,16 @@ mod tests {
             .write(&awaiting(1, &[older.as_str(), newest.as_str()]))
             .unwrap();
         s.outbox
-            .resolve(&older, "rejected", Some("used the other one".into()))
+            .resolve(
+                &older,
+                "rejected",
+                Some("used the other one".into()),
+                crate::closure::Actor::Owner,
+            )
             .unwrap();
-        s.outbox.resolve(&newest, "sent", None).unwrap();
+        s.outbox
+            .resolve(&newest, "sent", None, crate::closure::Actor::Owner)
+            .unwrap();
 
         let moved = s.front.reconcile(&s.outbox).unwrap();
         assert_eq!(moved.len(), 1, "{moved:?}");
@@ -2056,7 +2074,9 @@ mod tests {
         let (a, b) = (s.draft(), s.draft());
         let (old_sent, new_rejected) = if a < b { (a, b) } else { (b, a) };
         // The first round: draft sent, long since resolved.
-        s.outbox.resolve(&old_sent, "sent", None).unwrap();
+        s.outbox
+            .resolve(&old_sent, "sent", None, crate::closure::Actor::Owner)
+            .unwrap();
         // The re-triage merged both ids onto the record.
         s.front
             .write(&awaiting(1, &[old_sent.as_str(), new_rejected.as_str()]))
@@ -2066,6 +2086,7 @@ mod tests {
                 &new_rejected,
                 "rejected",
                 Some("does not answer what they re-asked".into()),
+                crate::closure::Actor::Owner,
             )
             .unwrap();
 
@@ -2090,12 +2111,19 @@ mod tests {
         let (a, b) = (s.draft(), s.draft());
         let (old_rejected, new_sent) = if a < b { (a, b) } else { (b, a) };
         s.outbox
-            .resolve(&old_rejected, "rejected", Some("too formal".into()))
+            .resolve(
+                &old_rejected,
+                "rejected",
+                Some("too formal".into()),
+                crate::closure::Actor::Owner,
+            )
             .unwrap();
         let mut record = awaiting(1, &[old_rejected.as_str(), new_sent.as_str()]);
         record.note = Some("too formal".into());
         s.front.write(&record).unwrap();
-        s.outbox.resolve(&new_sent, "sent", None).unwrap();
+        s.outbox
+            .resolve(&new_sent, "sent", None, crate::closure::Actor::Owner)
+            .unwrap();
 
         let moved = s.front.reconcile(&s.outbox).unwrap();
         assert_eq!(moved.len(), 1, "{moved:?}");
@@ -2118,7 +2146,9 @@ mod tests {
         s.front
             .write(&awaiting(1, &[sent.as_str(), pending.as_str()]))
             .unwrap();
-        s.outbox.resolve(&sent, "sent", None).unwrap();
+        s.outbox
+            .resolve(&sent, "sent", None, crate::closure::Actor::Owner)
+            .unwrap();
 
         assert_eq!(s.front.reconcile(&s.outbox).unwrap(), vec![]);
         assert_eq!(s.front.record(1).unwrap().state, AWAITING_ME);
@@ -2168,7 +2198,9 @@ mod tests {
         record.note = Some("the draft was rejected".into());
         s.front.write(&record).unwrap();
 
-        s.outbox.resolve(&id, "sent", None).unwrap();
+        s.outbox
+            .resolve(&id, "sent", None, crate::closure::Actor::Owner)
+            .unwrap();
         let moved = s.front.reconcile(&s.outbox).unwrap();
         assert_eq!(moved[0].to, ANSWERED);
 
@@ -2203,7 +2235,9 @@ mod tests {
         record.state = CLOSED.into();
         s.front.write(&record).unwrap();
 
-        s.outbox.resolve(&id, "sent", None).unwrap();
+        s.outbox
+            .resolve(&id, "sent", None, crate::closure::Actor::Owner)
+            .unwrap();
         assert_eq!(s.front.reconcile(&s.outbox).unwrap(), vec![]);
         assert_eq!(s.front.record(1).unwrap().state, CLOSED);
     }
