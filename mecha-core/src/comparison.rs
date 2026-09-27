@@ -479,14 +479,15 @@ struct StoreLock {
 }
 
 impl ComparisonStore {
-    /// `~/.mecha/comparisons`, under [`crate::work::mecha_home`] (which
-    /// honours `MECHA_HOME`, so a trial home keeps its own).
-    /// `~/.mecha/comparisons`, or `$MECHA_COMPARISONS_DIR` — the override
-    /// `MECHA_LEARNING_DIR` already gives the learning store, so a drill or
-    /// a test that isolates its sessions and ledger isolates its
-    /// comparisons too (found 2026-09-27: `scripts/retirement-drill.sh`'s
-    /// `validate` wrote two rows about throwaway sessions into the live
-    /// store).
+    /// `~/.mecha/comparisons` under [`crate::work::mecha_home`] (which
+    /// honours `MECHA_HOME`, so a trial home keeps its own), or
+    /// `$MECHA_COMPARISONS_DIR` — the override `MECHA_LEARNING_DIR`
+    /// already gives the learning store, so a drill or a test that
+    /// isolates its sessions and ledger isolates its comparisons too
+    /// (found 2026-09-27: `scripts/retirement-drill.sh`'s `validate`
+    /// wrote two rows about throwaway sessions into the live store). A
+    /// moved-home test clears it (`STORE_OVERRIDES`, in `work` and in the
+    /// CLI's `testenv`).
     pub fn default_root() -> Result<PathBuf> {
         Self::root_from(
             std::env::var_os("MECHA_COMPARISONS_DIR"),
