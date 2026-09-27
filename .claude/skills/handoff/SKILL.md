@@ -149,7 +149,7 @@ print(f'{n} cases, {len(t)} tags')"
 # slots. `mecha setup` compares all of this against the config for you.
 # :8080 is a router since 2026-09-27: a bare /props is a placeholder
 # (total_slots null, n_ctx 0, vision null), so ask for the resident model.
-( source scripts/served-props.sh; b=http://127.0.0.1:8080; served_props "$b" "$(served_model "$b")" ) \
+( source scripts/served-props.sh; served_props http://127.0.0.1:8080 ) \
   | jq '{total_slots, n_ctx: .default_generation_settings.n_ctx, vision: .modalities.vision}'
 systemctl --user list-unit-files | grep mecha
 ```
