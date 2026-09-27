@@ -26,14 +26,23 @@ from pathlib import Path
 HERE = Path(__file__).parent
 
 # Every stub records its argv, one line per call; `work path X` answers with
-# a directory, the way the real one does, so each script gets past its cd.
+# a directory, the way the real one does, so each script gets past its cd, and
+# `config show` answers with the config the case describes (scripts/pin.sh
+# reads the default provider's `follow_loaded` off it).
 STUB = """#!/bin/sh
 printf '%s\\n' "$*" >> "{log}"
 if [ "$1" = work ] && [ "$2" = path ]; then
     mkdir -p "{root}/work/$3" && echo "{root}/work/$3"
 fi
+if [ "$1" = config ] && [ "$2" = show ]; then
+    cat "{root}/config.toml"
+fi
 exit 0
 """
+
+ROUTER = 'default_provider = "local"\n[providers.local]\nfollow_loaded = true\n'
+NO_ROUTER = 'default_provider = "anthropic"\n[providers.anthropic]\n[providers.local]\n'
+
 
 
 class Health(http.server.BaseHTTPRequestHandler):
@@ -61,9 +70,10 @@ class Scripts(unittest.TestCase):
     def tearDownClass(cls):
         cls.health.shutdown()
 
-    def run_script(self, name, **env):
+    def run_script(self, name, config=ROUTER, **env):
         """Run `name` with every binary stubbed; return the mecha calls."""
         with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "config.toml").write_text(config)
             log = Path(root) / "calls"
             stub = Path(root) / "mecha"
             stub.write_text(STUB.format(log=log, root=root))
@@ -93,7 +103,9 @@ class Scripts(unittest.TestCase):
             calls = log.read_text().splitlines() if log.exists() else []
         # Only the calls that reach a model — or, for `rules`, resolve one:
         # `work path`, `work clean` and the listings take no provider.
-        return [c.split() for c in calls if not c.startswith(("work ", "proposals", "harness list"))]
+        return [
+            c.split() for c in calls if not c.startswith(("work ", "proposals", "harness list", "config show"))
+        ]
 
     def assert_follows(self, calls, expected):
         self.assertEqual([c[:2] if c[0] in ("frontdoor", "harness") else c[:1] for c in calls], expected)
@@ -123,6 +135,16 @@ class Scripts(unittest.TestCase):
             calls, "-p", "x", ["reflect", "distill", "validate", "learn", "propose-retirements", "ruminate"]
         )
         self.assert_pinned(calls, "--judge-provider", "j", ["validate"])
+        # No router: `local`, as before it — never the default, which may be
+        # a paid API (found on review of #346).
+        calls = self.run_script("ruminate.sh", config=NO_ROUTER)
+        self.assert_pinned(
+            calls, "-p", "local", ["reflect", "distill", "validate", "learn", "propose-retirements", "ruminate"]
+        )
+        self.assert_pinned(calls, "--judge-provider", "local", ["validate"])
+        # An unreadable config is not a router.
+        calls = self.run_script("ruminate.sh", config="not toml [")
+        self.assert_pinned(calls, "-p", "local", ["reflect", "learn"])
 
     def test_frontdoor_follows_unless_pinned(self):
         self.assert_follows(
@@ -131,11 +153,15 @@ class Scripts(unittest.TestCase):
         )
         calls = self.run_script("frontdoor.sh", MECHA_FRONTDOOR_PROVIDER="x")
         self.assert_pinned(calls, "-p", "x", ["extract", "triage"])
+        calls = self.run_script("frontdoor.sh", config=NO_ROUTER)
+        self.assert_pinned(calls, "-p", "local", ["extract", "triage"])
 
     def test_learn_live_follows_unless_pinned(self):
         self.assert_follows(self.run_script("learn-live.sh"), [["reflect"], ["learn"]])
         calls = self.run_script("learn-live.sh", MECHA_LEARN_PROVIDER="x")
         self.assert_pinned(calls, "-p", "x", ["reflect", "learn"])
+        calls = self.run_script("learn-live.sh", config=NO_ROUTER)
+        self.assert_pinned(calls, "-p", "local", ["reflect", "learn"])
 
 
 if __name__ == "__main__":
