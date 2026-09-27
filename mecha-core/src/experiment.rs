@@ -90,9 +90,10 @@ pub struct Manifest {
     #[serde(default = "three")]
     pub holdout_in: u64,
     /// A `lifetime`'s loop stages between tasks (Part II §14): after every
-    /// task `reflect`, after every fifth `validate` then `learn --auto`
-    /// then `rules propose-retirements --apply` (validate measures before
-    /// learn consumes; the brake after), after every tenth
+    /// task `reflect`, after every fifth `validate` then `rules
+    /// propose-retirements --apply` then `learn --auto` (validate measures
+    /// before learn consumes; the brake reads validate's rows at once, ahead
+    /// of learn — the nightly's order), after every tenth
     /// `harness ruminate`, by default. Sequence and
     /// schedule live here, on the design, so the stage order a lifetime ran
     /// under is on the record and never in a script. A `single` manifest
@@ -864,8 +865,12 @@ pub struct Schedule {
     #[serde(default = "five")]
     pub validate: u32,
     /// `rules propose-retirements --apply`: the nightly's one brake on
-    /// rules that go live as they are derived. Runs after `learn`, as the
-    /// nightly does; a loop that installed rules and never retired a
+    /// rules that go live as they are derived. Runs right after `validate`,
+    /// ahead of `learn`, as the nightly's first scan does (owner,
+    /// 2026-09-27); the nightly scans a second time after `learn` so a
+    /// narrowing learn re-widens is re-narrowed the same night, which a
+    /// lifetime does at its next due scan instead — it has no wall clock at
+    /// stake, and one stage runs once per position. A loop that installed rules and never retired a
     /// harmful one would be more permissive than the one that ships, in
     /// the direction that flatters the `learn` arm (found on review).
     #[serde(default = "five")]
@@ -904,11 +909,14 @@ impl Schedule {
         if every(self.validate) {
             out.push(StageLever::Validate);
         }
-        if every(self.learn) {
-            out.push(StageLever::Learn);
-        }
+        // The brake right after the measurement it reads, ahead of learn —
+        // the nightly's order since 2026-09-27 (owner): a rule validate
+        // just convicted leaves before learn measures a candidate with it.
         if every(self.retire) {
             out.push(StageLever::Retire);
+        }
+        if every(self.learn) {
+            out.push(StageLever::Learn);
         }
         if every(self.ruminate) {
             out.push(StageLever::Ruminate);
@@ -4407,8 +4415,8 @@ rationale = "no rumination should fail more over the sequence"
             vec![
                 StageLever::Reflect,
                 StageLever::Validate,
-                StageLever::Learn,
                 StageLever::Retire,
+                StageLever::Learn,
                 StageLever::Ruminate
             ],
             "the design's default: every, fifth, fifth, fifth, tenth — the nightly's order"

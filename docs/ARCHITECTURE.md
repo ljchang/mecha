@@ -727,7 +727,7 @@ recorded prefix to name the rule that flips it — user rules ride in every
 test arm (they are not on trial), a regression they cause alone attributes
 to nothing, and an inconclusive arm aborts the attribution rather than
 guessing. `mecha rules` folds the ledger into per-rule tallies;
-`rules propose-retirements --apply` (nightly, after learn) **retires
+`rules propose-retirements --apply` (nightly, right after validate and again after learn) **retires
 directly** — no queue, no human — once a rule accumulates the attributed
 regressions its leash allows: 3 ordinarily, 2 on probation
 (`PROBATION_RETIRE_AT`) — a deterministic ledger scan that calls no model,
@@ -6846,9 +6846,12 @@ comparison over a chosen set**, with the design written before the run.
   the first cut walked the file's order under a manifest claiming another
   (found on review) — the driver runs each in `lifetime_home`, and after each
   task runs the stages the manifest's `[schedule]` makes due — `reflect`,
-  `validate --unprocessed-only`, `learn --holdout 0.25 --auto`,
-  `rules propose-retirements --apply` (the one brake on rules that go
-  live as they are derived; a loop without it flatters the learn arm),
+  `validate --unprocessed-only`, `rules propose-retirements --apply` (the
+  one brake on rules that go live as they are derived; a loop without it
+  flatters the learn arm — right after the measurement it reads, ahead of
+  learn, since 2026-09-27; the nightly scans once more after learn, so a
+  narrowing learn re-widened is re-narrowed that night, and a lifetime
+  catches it at its next due scan), `learn --holdout 0.25 --auto`,
   `harness ruminate`, **the nightly's own order and argv**
   (`scripts/ruminate.sh`, less its two shadow measurement passes —
   `sessions compare`, before learn, and `learn --compare-sources`, last —
