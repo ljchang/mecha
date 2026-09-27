@@ -1916,6 +1916,54 @@ mod boundary_tests {
         assert_eq!(images(&user), vec![Some("inbox/inside.png".to_string())]);
     }
 
+    /// An upload survives the chat leaving the map before the send — a
+    /// `serve` restart, a handover — and still rides as pixels, read from the
+    /// directory the send re-creates the session in. Fails on the first-look
+    /// lookup alone, which found no session and dropped them silently.
+    #[tokio::test]
+    async fn an_upload_still_rides_after_its_chat_left_the_map() {
+        let _home = crate::testenv::HomeGuard::new("web-attach-restart");
+        let (chat, seen) = chat::test_chat_seeing(true);
+        let app = app(Arc::clone(&chat));
+        let up = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/chat/pix/upload?name=shot.png")
+                    .header(TAILSCALE_LOGIN, "owner@example.com")
+                    .header("x-mecha-request", "1")
+                    .body(Body::from(png(8, 8)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(up.status(), StatusCode::OK);
+        chat::test_forget_session(&chat, "pix").await;
+        let sent = app
+            .clone()
+            .oneshot(json_post(
+                "/api/chat/pix/send",
+                serde_json::json!({
+                    "text": "Attached file at inbox/shot.png",
+                    "attachments": ["inbox/shot.png"],
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        assert!(sent.status().is_success(), "{}", sent.status());
+        for _ in 0..200 {
+            if let Some(req) = seen.lock().unwrap().first() {
+                let user = req.messages.last().unwrap();
+                assert_eq!(images(user), vec![Some("inbox/shot.png".to_string())]);
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("the model was never asked");
+    }
+
     #[tokio::test]
     async fn an_incognito_chat_leaves_no_trace_and_an_ordinary_one_does() {
         let home = crate::testenv::HomeGuard::new("incognito-trace");
