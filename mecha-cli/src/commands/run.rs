@@ -293,6 +293,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             &prepared.provider_name,
             &mut cx,
             &convo,
+            session.as_ref().map(|s| s.meta.id.as_str()),
             if interactive {
                 setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE
             } else {

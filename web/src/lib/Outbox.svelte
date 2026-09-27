@@ -313,6 +313,15 @@
       if (selectedId === id) open(id, { keepError: true, fresh: true });
     }
   }
+  /** `mecha outbox reject`'s note when the reason is not recorded as yours. */
+  const demotionLine = (text) => {
+    try {
+      const out = JSON.parse(text)?.output ?? '';
+      return out.split('\n').find((l) => l.startsWith('note: the reason is recorded as')) ?? null;
+    } catch {
+      return null;
+    }
+  };
   /** The tool's own one-line answer out of the verb's stdout, if it gave one. */
   const sentLine = (out) =>
     out.split('\n').slice(1).map((l) => l.trim()).find((l) => /^(sent|replied|created|added)\b/i.test(l)) ?? null;
@@ -323,9 +332,12 @@
   }
   async function reject(reason = rejectReason) {
     if (!reason.trim() || busy) return;
-    if ((await act('reject', { reason: reason.trim() })) !== null) {
+    const text = await act('reject', { reason: reason.trim() });
+    if (text !== null) {
       rejectReason = '';
-      say('Rejected.');
+      // A reason the harness could not attribute to you is said, never
+      // swallowed: it will not be read as your correction.
+      say(demotionLine(text) ?? 'Rejected.');
       next();
     }
   }

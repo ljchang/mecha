@@ -2724,6 +2724,7 @@ mod tests {
             created_at: created_at.to_string(),
             resolved_at: None,
             reason: None,
+            resolved_by: None,
             error: error.map(String::from),
         };
         let dir = home.join("outbox");

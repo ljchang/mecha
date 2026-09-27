@@ -602,14 +602,8 @@ fn provenance(
     if let Some(workspace) = &item.workspace {
         out.push(format!("jailed to {}", workspace.display()));
     }
-    if let Some(resolved) = &item.resolved_at {
-        out.push(format!(
-            "resolved {resolved}{}",
-            item.reason
-                .as_deref()
-                .map(|r| format!(" — {r}"))
-                .unwrap_or_default()
-        ));
+    if let Some(line) = item.resolution_line() {
+        out.push(line);
     }
     out
 }
@@ -697,6 +691,7 @@ mod tests {
             created_at: "2026-08-08T07:00:00Z".into(),
             resolved_at: None,
             reason: None,
+            resolved_by: None,
             error: None,
         }
     }

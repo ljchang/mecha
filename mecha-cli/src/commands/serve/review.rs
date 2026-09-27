@@ -1335,6 +1335,7 @@ mod tests {
             created_at: created.into(),
             resolved_at: None,
             reason: None,
+            resolved_by: None,
             error: None,
         }
     }

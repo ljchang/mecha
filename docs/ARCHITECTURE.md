@@ -3416,6 +3416,59 @@ Batch outbox rejection retains delivery-uncertainty refusals, continues with
 eligible items, and reports counts with a failing exit status when any item
 could not be rejected.
 
+**Every resolve records who made it, and a reason is the owner's words only
+when the owner's own door stamped it** (`APPRAISAL-WIRING-DESIGN.md`,
+R16a's ruling D3, 2026-09-27 — not row 2e-3's D3 correction contract). `mecha outbox reject --reason …` is a command a model's
+`shell` can run — nothing refuses it — and R16a hands a rejection's reason
+to the reflector as an owner correction, whose rule rides every future
+prompt's cached prefix; the appraiser's input quoted it as "the owner's
+reason", and the poll sweep put it on a page every participant reads. So
+`OutboxStore::resolve` takes an `Actor` with no default and writes it as
+`resolved_by`, and `mecha outbox` decides it once per process with the
+closure store's rules (`closure::attribute`, which is `closure::decide`
+with its refusals mapped to `unknown`, so the two cannot drift): `owner`
+with no registered shell, no live delegated or scheduled run above, and no
+posture variable — the owner's terminal, or a surface's own child (the web
+review's reject and approve, the TUI's `/outbox`, a Slack tap, voice's
+release); `owner-approved` under an interactive run's registered shell;
+`unknown` for everything the closure path refuses. **Stamped, not
+refused:** a rejection sends nothing, and the stamp is what keeps its words
+from passing as the owner's. **And said:** a reject whose reason is stamped
+anything but `owner` prints why (`closure::attribute_explained`, the cause
+without `decide`'s task-closure remedy) on **stdout**, because the web
+review and the TUI's `/outbox` relay stdout and drop stderr; the TUI puts
+the note in its status line and the web page shows it in place of
+"Rejected." — so a demotion at the owner's own door, an unreadable marker
+directory say, is never silent (review of #343). Readers take the reason through
+`OutboxItem::rejection` — `OwnersWords(text)` or `NotOwners(actor)`, whose
+`word()` is fixed harness text with none of the reason's bytes — or
+`rejection_reason` / `owners_reason`, which are `None` unless the actor is
+`owner`. The reflector skips a non-owner reason (and leaves it unmarked in
+the mined ledger), the appraiser's input shows the typed word and says the
+draft "was rejected" rather than that the owner rejected it (with or without
+a reason) unless the owner's door stamped it, the poll sweep
+writes "No time found", `sessions appraise` counts owner-reasoned and
+other-reasoned rejections apart (`reasoned_rejections`,
+`unattributed_rejections`), and `outbox show` and the TUI print the text
+with `by <actor>` beside it, because the owner is reading their own store.
+The front door's `reconcile` copies a rejection's reason into its record's
+`note` whatever the actor; that is fine, because `note` is printed only to
+the owner's terminal and reaches no prompt. `outbox reconcile --outcome
+delivered` resolves without `resolve_with_output` and stamps the same actor
+(review of #343).
+**Items resolved before the field existed carry no actor and read as
+`unknown`** — fail closed, on the append-only rule; every such reasoned
+reject on the live store had already been mined when this landed. The
+release is stamped the same way, and nothing reads that stamp yet.
+**The residue is the closure path's** (see "Closing a task is a recorded
+event"): a command that detaches from its shell and clears the variable, a
+shell that edits `~/.mecha/outbox/` directly, and — named here because the
+outbox makes it concrete — a local process that calls `mecha serve`'s
+loopback port with the `Tailscale-User-Login` header set, which the web
+review's child then stamps `owner`. The answer to all three is the sandbox,
+as there. `outbox edit` is not a resolve and is not stamped; the writing
+miner still reads `diff(args_before, args)` as the owner's edit.
+
 ## Assistant workflows
 
 `workflow.rs` owns orchestration references, never a second task board. The graph
@@ -5373,9 +5426,56 @@ when touching it:
   harness text, which its own loop folds again; a block this build cannot
   read costs that block; an extension naming any other message is skipped
   with a warning. The calendar reference's fold rides the same path (see
-  §Timezones). *Deferred:* a re-delegated task's previous attempts
-  (M5, to 3a-2 — no existing record lists them), and a brief on the TUI,
-  `chat`, Slack and unhosted voice turns.
+  §Timezones). *Deferred:* a brief on the TUI, `chat`, Slack and unhosted
+  voice turns.
+- **A task run's brief names its previous attempts, and quotes only the
+  owner (M5, built as 3a-2 under R42).** `brief::attempts` is the brief's
+  tenth field, recorded always and delivered behind the same lever; a run
+  anchored to anything but a task records `Attempts::NotATask`, which is
+  known and renders as nothing, so no other run's words moved and the
+  lever-off requests are the same bytes with or without attempts on the
+  record (`a_task_briefs_previous_attempts_ride_only_behind_the_lever_and_arm_private`).
+  Five things to keep. **The walk is bounded and has no index**
+  (`attempts::walk`): session headers newest first, kind `task` only, never
+  the run's own session (each door passes its id to
+  `attempts::for_run_within`, which runs the walk and the store reads off
+  the async threads, joined with the board read under the same deadline, so
+  a slow disk costs the field — `Unread` — and never the turn),
+  a session's **head** scanned line by line for the task's quoted pointer
+  and stopped at the first message (`attempts::HEAD_BYTES_MAX` at most; both
+  doors that open a task session seed its anchor before the first message),
+  and only a head that names the task read whole, kept when a `GoalAnchor`
+  record names it — so the walk reads the heads plus at most three
+  transcripts, never every task transcript in the window (review of #344);
+  it stops at `ATTEMPTS_MAX` (3) or `WINDOW_DAYS` (90). A session opened on
+  another task and re-anchored to this one later is not found, a named
+  residue. **A failure is `Unread`; the bound is only a floor** (R42's
+  reading, 2026-09-27): a header or body that will not read, a header whose
+  kind this build cannot name (a header with no kind predates kinds and
+  anchors both, and is skipped), or an owner's-acts store read short make
+  the field `Unread` in the completeness readout (`Attempts::unread`); a
+  walk that stopped at its designed bound does not, as a capped commitments
+  store does not, so `Unread` keeps meaning something failed. Either way
+  the words say "at least" and what was not searched (`Attempts::floor`). **The owner's acts are the appraisal's cites,
+  never its numbers**: `appraisal::for_transcript` over `Stores::load`
+  (read only when an attempt was found), each `Cite` mapped to a closed
+  `OwnerAct` by reading the record it names, so a sign, valence or affect
+  label cannot reach the words (R21); a run that recorded no outcome gets an
+  empty one so its drafts still join. **How the run ended is the harness's
+  record**, on its own line and labelled "not a verdict" (`RunEnd`, from the
+  last outcome's `StopCause`). **Only the owner's own words ride**: a
+  reopen's reason is quoted only under `closure::Actor::Owner`, cut to one
+  line (`attempts::one_line`) and capped, and the render checks the actor
+  again rather than trusting the record's `owners_words`; under
+  `OwnerApproved` or an unknown actor the reopen is a fixed phrase and the
+  closure id. An outbox rejection's reason never rides (R42(d), ruled while
+  a resolve recorded no actor); the act is "draft rejected" and the item id.
+  Resolves now carry an actor (`OutboxItem::rejection`, #343), so quoting
+  an owner-stamped reason on the reopen's rule is a follow-up change. Every id in the words is one token (`GoalRef::from_str`'s rule),
+  since a workflow id is a graph-minted task id. The words are inside the
+  brief's block, so delivery arms `private` exactly as before (R35).
+  Residue: a reopen of a `dropped` closure cites nothing in `of_session`,
+  so the brief says nothing about it.
 - **The doctor reads against the owner's number, and names the line.**
   `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
   requests) or the setpoint of the charter line whose sensor watches that
