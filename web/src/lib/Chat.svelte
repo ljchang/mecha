@@ -1092,15 +1092,23 @@
       if (data.started || data.steered) {
         receiveInput({ type: data.started ? 'user' : 'queued', text, request_id, spoken: false });
       }
+      // A steer carries text only, so a picture sent into a working run is
+      // named and not shown — said here, since the chip is already gone.
+      if (data.steered && attached.some((p) => /\.(png|jpe?g|gif|webp)$/i.test(p))) {
+        pushEntry({
+          kind: 'notice',
+          text: 'A run was in progress, so the picture went in by name only — the model was not shown it.',
+        });
+      }
     } catch (e) {
       if (sessionKey !== key) return;
       pushEntry({ kind: 'notice', text: `send failed: ${e?.message ?? e}` });
     }
   }
 
-  // Phase 4's upload half: the file lands in the session jail's inbox/ and
-  // the *path* is announced in the message — never the content, so the taint
-  // arms through fs_read when the run opens it (the remote-control rule).
+  // Phase 4's upload half: the file lands in the session jail's inbox/, its
+  // path is named in the message, and send() lists it so the server puts a
+  // picture on the turn as pixels (ARCHITECTURE.md §Images).
   let fileInput = $state(null);
   // A count, not a flag: a drop can land while a picked upload is still
   // going, and the first to finish must not clear the other's spinner.
