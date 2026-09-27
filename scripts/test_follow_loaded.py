@@ -103,6 +103,9 @@ class Scripts(unittest.TestCase):
 
     def assert_pinned(self, calls, flag, value, where):
         self.assertTrue(calls, "no call reached the stub")
+        # Every named stage must be there, or dropping one passes vacuously.
+        for w in where:
+            self.assertTrue(any(w in c for c in calls), f"no call for {w!r} in {calls}")
         for c in calls:
             if any(w in c for w in where):
                 self.assertIn(flag, c, c)

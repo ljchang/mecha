@@ -547,11 +547,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         return Ok(());
     }
 
-    // The ledger, folded per rule, so the consolidation can drop what has
-    // been measured harmful instead of guessing from the rule text. Read once
-    // for every domain: it is a scan of one append-only file.
-    let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
-
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
     let cfg = Config::load(&cwd)?;
     let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
@@ -559,6 +554,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let model = global.model.clone().or_else(|| provider_cfg.model.clone());
     let learner = Learner::new(provider, model);
     eprintln!("learning with {} ({provider_name})", learner.model());
+
+    // The ledger, folded per rule, so the consolidation can drop what has
+    // been measured harmful instead of guessing from the rule text. Read once
+    // for every domain: it is a scan of one append-only file. Only this
+    // model's rows — the one `validate` measured on, resolved the same way —
+    // because probation release sets the retirement threshold, and a leash
+    // lengthened on another model's grades is the mix the owner's ruling of
+    // 2026-09-27 (count one model) rules out.
+    let (rows, _) = mecha_core::learning::measured_on(store.validations()?, learner.model());
+    let tallies = mecha_core::learning::rule_tallies(&rows);
 
     // The gate replays against the recorded tool surface, which needs the
     // live registry for specs — same borrow `mecha validate` makes.

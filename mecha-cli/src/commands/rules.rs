@@ -141,42 +141,32 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
             if let Some(why) = &owner.store_unreadable {
                 println!("owner tenure: {why}; no rule is released on it this pass");
             }
-            let model = measured_model(global).await?;
+            let model = measured_model(global)?;
             propose(&store, &model, min_attributed, apply, Some(&owner))
         }
     }
 }
 
-/// The model whose ledger rows a retirement argues from: the one tonight's
-/// `validate` measured on, resolved as it resolves it — `--model`, else the
-/// provider entry's `model`, the entry being the router's resident model
-/// unless `-p` pins one (owner's ruling, 2026-09-27: count one model). An
-/// entry naming no model refuses: which rows are its own cannot be told, and
-/// counting them all is the mix the ruling exists to prevent.
-async fn measured_model(global: &crate::GlobalOpts) -> Result<String> {
+/// The model whose ledger rows a retirement argues from, resolved exactly as
+/// `validate` resolves the model it records — `--model`, else the provider
+/// entry's `model`, else that provider's default — the entry being the
+/// router's resident model (`main` observed it: `Rules` is a
+/// `runs_a_model` command) unless `-p` pins one. Owner's ruling,
+/// 2026-09-27: count one model.
+fn measured_model(global: &crate::GlobalOpts) -> Result<String> {
     let cfg = if global.global_config_only {
         mecha_core::config::Config::load_global()?
     } else {
         let cwd = std::env::current_dir().context("cannot determine the working directory")?;
         mecha_core::config::Config::load(&cwd)?
     };
-    // `rules` is not a model-running command, so `main` did not look at the
-    // router; this one subcommand has to, to know what is resident.
-    let follows = global.model.is_none() && global.provider.is_none();
-    for warning in mecha_core::provider::router::observe(&cfg, follows).await {
-        tracing::warn!("{warning}");
-    }
-    let (name, entry) = cfg.provider(global.provider.as_deref())?;
-    global
-        .model
-        .clone()
-        .or_else(|| entry.model.clone())
-        .with_context(|| {
-            format!(
-                "[providers.{name}] names no model, so which validation rows were measured on it \
-             cannot be told; pass --model"
-            )
-        })
+    let (_, entry) = cfg.provider(global.provider.as_deref())?;
+    Ok(match global.model.clone().or_else(|| entry.model.clone()) {
+        Some(model) => model,
+        None => mecha_core::provider::build(entry)?
+            .default_model()
+            .to_string(),
+    })
 }
 
 /// The workspace/surface/goal keys some run's rules block was matched
