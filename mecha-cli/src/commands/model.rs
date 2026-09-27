@@ -155,6 +155,7 @@ fn router_of(cfg: &Config, base: &str, list: &[router::RouterModel]) -> Router {
     // (found on review, twice). `resident` below is the claim about
     // statuses, and is gated on `readable`.
     let readable = router::readable(list);
+    let resident = readable.then(|| router::resident(list)).flatten();
     let unserved = if list.is_empty() {
         Vec::new()
     } else {
@@ -166,9 +167,7 @@ fn router_of(cfg: &Config, base: &str, list: &[router::RouterModel]) -> Router {
             .collect()
     };
     Router {
-        resident: readable
-            .then(|| router::resident(list).map(str::to_string))
-            .flatten(),
+        resident: resident.map(str::to_string),
         readable,
         models: list
             .iter()
@@ -179,7 +178,13 @@ fn router_of(cfg: &Config, base: &str, list: &[router::RouterModel]) -> Router {
                     .map(str::to_string)
                     .collect(),
                 sampling_mismatches: router::sampling_mismatches(cfg, base, m),
-                would_not_follow: router::would_not_follow(cfg, base, &m.id),
+                // The rule in the tense that is true of the row: the loaded
+                // model *is* loaded (found on review, pass 3).
+                would_not_follow: if resident == Some(m.id.as_str()) {
+                    router::unfollowable(cfg, base, &m.id)
+                } else {
+                    router::would_not_follow(cfg, base, &m.id)
+                },
             })
             .collect(),
         unserved,
@@ -666,6 +671,36 @@ mod tests {
         assert!(r.readable);
         assert_eq!(r.resident.as_deref(), Some("qwen3.6-35b-a3b"));
         assert_eq!(r.unserved, vec!["stale".to_string()]);
+    }
+
+    /// Each row's reason is in the tense true of it: the loaded model's says
+    /// it is loaded, an unloaded one's says "once loaded" (review, pass 3).
+    #[test]
+    fn the_reason_is_in_the_tense_true_of_the_row() {
+        let mut c = cfg();
+        c.providers.remove("local");
+        c.default_provider = "stale".into();
+        let r = router_of(
+            &c,
+            BASE,
+            &list(
+                r#"{"data":[{"id":"qwen3.6-35b-a3b","status":{"value":"loaded"}},
+                            {"id":"orphan","status":{"value":"unloaded"}}]}"#,
+            ),
+        );
+        let why = |id: &str| {
+            r.models
+                .iter()
+                .find(|m| m.id == id)
+                .and_then(|m| m.would_not_follow.clone())
+                .unwrap()
+        };
+        assert!(
+            why("qwen3.6-35b-a3b").contains("loaded, but"),
+            "{}",
+            why("qwen3.6-35b-a3b")
+        );
+        assert!(why("orphan").contains("once loaded"), "{}", why("orphan"));
     }
 
     /// An unknown status makes "what is loaded" unknown — never "nothing" —

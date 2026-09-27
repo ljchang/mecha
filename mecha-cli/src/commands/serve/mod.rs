@@ -1116,6 +1116,29 @@ mod tests {
                 "{method} {uri} owner={owner}"
             );
         }
+        // …and the guard is guarding *these* routes: a 403 alone would pass
+        // on a misspelled URI too (review, pass 3). The owner, verified,
+        // reaches the handler — which refuses an empty name before it spawns
+        // anything, so no switch is made against the developer's machine.
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/model/use")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
+                    .header("sec-fetch-site", "same-origin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"  "}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "the owner did not reach the use handler"
+        );
     }
 
     #[tokio::test]
