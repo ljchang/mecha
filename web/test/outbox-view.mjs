@@ -6,7 +6,7 @@
 // a key the form does not show dropped on save, an empty attendee field sent
 // as `[""]`. Each of those looks fine in the form and is wrong on the
 // calendar.
-import { kindOf, stampIn, wallIn, eventFields, eventArgs, inclusiveEnd, whenLabel, attendeesOf, editsAsEvent, unreadableAccounts, unreadableNote, threadOf, threadMessages, answeredMessage, rowSummary, docEdit, tooSoon, replySubject, liveThread, sinceDrafted, readOf, shouldReread } from '../src/lib/outbox-view.js';
+import { kindOf, stampIn, wallIn, eventFields, eventArgs, inclusiveEnd, whenLabel, attendeesOf, editsAsEvent, unreadableAccounts, unreadableNote, threadOf, threadMessages, answeredMessage, rowSummary, docEdit, tooSoon, replySubject, liveThread, sinceDrafted, readOf, shouldReread, demotionLine, withNotes, editedLabel } from '../src/lib/outbox-view.js';
 
 let pass = 0;
 let fail = 0;
@@ -256,6 +256,28 @@ t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })
   t('a good read is reused for two minutes', shouldReread({ status: 'ok', at: 0 }, 119_000) === false && shouldReread({ status: 'ok', at: 0 }, 120_000) === true);
   t('a failed read waits a minute, not a poll', shouldReread({ status: 'error', at: 0 }, 30_000) === false && shouldReread({ status: 'error', at: 0 }, 60_000) === true);
   t('a read in flight is never doubled', shouldReread({ status: 'loading', at: 0 }, 150_000) === false && shouldReread({ status: 'loading', at: 0 }, 180_000) === true);
+}
+
+// ---- whose words: the demotion note reaches the screen (ruling D3) ----
+{
+  const reject = JSON.stringify({ ok: true, output: 'rejected ob-1; nothing was sent\nnote: the reason is recorded as unknown rather than yours (why), so it will not be read as your correction' });
+  const edit = JSON.stringify({ ok: true, output: 'edited\nnote: the edit is recorded as owner-approved rather than yours (why), so it will not be read as your correction' });
+  const send = JSON.stringify({ ok: true, output: 'sent ob-1 via `mail_send`\n  sent: msg-1\nnote: the edit is recorded as owner-approved and the send as owner, so the edit will not be read as your correction' });
+  t('a reject note is found', demotionLine(reject)?.startsWith('note: the reason is recorded as unknown'));
+  t('an edit note is found', demotionLine(edit)?.startsWith('note: the edit is recorded as owner-approved'));
+  t('a send carries the edit note too', demotionLine(send)?.startsWith('note: the edit is recorded as owner-approved and the send'));
+  t('your own words carry none', demotionLine(JSON.stringify({ ok: true, output: 'edited' })) === null);
+  t('a non-JSON answer carries none', demotionLine('boom') === null);
+  // Save & send: the save's note is kept through the send's sentence, and
+  // the same note said twice is said once.
+  const saved = demotionLine(edit);
+  t('the save\'s note survives the send', withNotes('Sent.', saved, demotionLine(send)) === `Sent. ${saved} ${demotionLine(send)}`);
+  t('a note is said once', withNotes('Sent.', saved, saved) === `Sent. ${saved}`);
+  t('no note, just the sentence', withNotes('Rejected.', null) === 'Rejected.');
+  t('an edit you made is yours', editedLabel(true, 'owner') === 'edited by you');
+  t('a run\'s edit is not', editedLabel(true, 'owner-approved') === 'edited by the assistant');
+  t('an unstamped edit is not', editedLabel(true, 'unknown') === 'edited — not recorded as yours' && editedLabel(true, undefined) === 'edited — not recorded as yours');
+  t('an unedited draft says nothing', editedLabel(false, null) === null);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

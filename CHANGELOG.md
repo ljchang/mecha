@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every outbox edit records who made it, and an edit is your writing only
+  when you made every edit and the send** (`APPRAISAL-WIRING-DESIGN.md`,
+  R16a's ruling D3 carried to edits). `mecha outbox edit` (and `polls pick`)
+  stamp `edited_by` — `owner`, `owner-approved` or `unknown`, as rejects are
+  stamped — folded across edits so an owner's later edit never launders a
+  run's. `mecha reflect` mines a diff as a writing lesson, the appraiser is
+  shown it as "the owner edited it", and a point-wise comparison takes the
+  released text as its gold only when every edit and the release were
+  stamped `owner`; otherwise the edit is described, not shown. Edits from
+  before this read `unknown`. An edit not stamped `owner` says so when it is
+  saved, in the terminal and the web review. `outbox show` and the TUI name
+  the editor.
+
 - **Every outbox resolve records who made it** (`APPRAISAL-WIRING-DESIGN.md`,
   R16a's ruling D3). `mecha outbox reject`, `review` and `approve` stamp
   `resolved_by` on the item — `owner` at the owner's terminal or a
@@ -25,6 +38,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `owner` says why — in the terminal, the TUI status line and the web
   review.
 
+- **Contrast evidence for the reflector** (`APPRAISAL-WIRING-DESIGN.md` L2,
+  2e-4b-2, R43), behind `[agent] contrast_evidence` /
+  `StageLever::ContrastEvidence`, a stage lever that **ships off**. On,
+  `mecha reflect` reflects a steer, denial or followup with a verified
+  success from its region beside it — the newest trace of a clean, scoped
+  session the owner verified, from another session, whose run records the
+  correction's scope matches (the loader's match, R43). The reflector sees
+  the owner's act in fixed words and the session's tool sequence; its
+  behaviour frame gains one sentence and the correction one block. Off, the
+  reflector's prompt is byte-identical to before. `mecha reflect --dry-run`
+  names the success each correction would be shown. An experiment arm
+  measures it on through its environment's `config.toml`; `stages_off =
+  ["contrast_evidence"]` forces it off.
 - **Planning examples from what the owner verified** (`APPRAISAL-WIRING-DESIGN.md`
   L2, 2e-4b-1, R40), behind `[agent] success_examples` /
   `Lever::SuccessExamples`, which **ships off** until an experiment measures
@@ -132,6 +158,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slot list it cannot read, or has been stuck loading for three hours.
 
 ### Changed
+
+- **The counterfactual comparison summary counts one model** (the owner's
+  ruling of 2026-09-27). Since the chat server became a router, background
+  passes follow whichever model is resident, and `mecha sessions appraise`
+  summed the production model's comparisons with a comparison arm's into one
+  separated share. It now counts the model of the newest comparison on
+  record (`mecha sessions compare`: the model it drove) and says the rows
+  under other models beside the summary without counting them. Unposed
+  points, which no model was run on, are counted on their own (`unposed`)
+  rather than inside one model's `inconclusive`. `--json` adds `model`,
+  `other_models` and `no_model` (rows with no model recorded that are not
+  unposed points: unknown, never counted) to `comparisons`; `records`,
+  `inconclusive` and the rest now count that one model's rows. Nothing
+  stored changes.
 
 - A mail thread whose classification fails for a reason of its own (a
   verdict that will not parse, a refusal, a rejected request) is retried on

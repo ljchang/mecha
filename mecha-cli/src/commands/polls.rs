@@ -547,7 +547,7 @@ pub fn pick(poll_id: &str, n: usize) -> Result<String> {
     };
     let item = pick_card(&store, &record)?;
     let args = repick(&record, &item.args, n - 1)?;
-    store.update_args(&item.id, args)?;
+    store.update_args(&item.id, args, crate::commands::outbox::acting_actor())?;
     let tz = record.lifecycle()["timezone"].as_str().unwrap_or("UTC");
     Ok(local_range(&record.ranked()[n - 1], tz))
 }
@@ -569,7 +569,7 @@ pub fn pick_next(poll_id: &str) -> Result<String> {
         .map(|i| (i + 1) % count)
         .unwrap_or(0);
     let args = repick(&record, &item.args, next)?;
-    store.update_args(&item.id, args)?;
+    store.update_args(&item.id, args, crate::commands::outbox::acting_actor())?;
     let tz = record.lifecycle()["timezone"].as_str().unwrap_or("UTC");
     Ok(local_range(&record.ranked()[next], tz))
 }
@@ -950,6 +950,7 @@ mod tests {
             created_at: String::new(),
             resolved_at: None,
             reason: None,
+            edited_by: None,
             resolved_by: None,
             error: None,
             call_id: None,

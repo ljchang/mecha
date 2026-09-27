@@ -505,6 +505,7 @@ mod tests {
             created_at: "now".into(),
             resolved_at: None,
             reason: None,
+            edited_by: None,
             resolved_by: None,
             error: None,
             call_id: None,
