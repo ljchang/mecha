@@ -23,33 +23,39 @@ maps which document holds what.
 ## Where the work is
 
 **2026-09-27 — model switching, server side: `:8080` is a llama-server
-router, installed; the chip is not built.** `REMOTE-SURFACE-DESIGN.md` §14
-(D12) is the authority, with the owner's rulings. #337, #339 and #340 are
-merged; what each built is in HISTORY under 2026-09-26/27, and the install
-(01:27–01:45Z) is in *Machine state, dated* below. A switch is `mecha model
-use <entry>`, which a `[[rule]]` forbids `shell` from running. What is open:
+router, installed, and every long-lived surface follows it; the chip is not
+built.** `REMOTE-SURFACE-DESIGN.md` §14 (D12, D13) is the authority, with the
+owner's rulings. This lane's #337, #339, #340 and #346 and mecha-graph#22 are
+merged and installed; what each built is in HISTORY under 2026-09-26/27, and
+the installs are in *Machine state, dated* below. A peer lane's #347 (serve,
+voice and Slack resolve the resident model per turn) and #350 (D13: a switch
+waits for the runs holding the model) merged the same morning and are
+installed; they are that lane's to record. A switch is `mecha model use
+<entry>`, which a `[[rule]]` forbids `shell` from running. What is open:
 
-- **Long-lived surfaces bind one model at start.** `mecha serve`, voice and
-  Slack build their agent once, so their next turn names production again and
-  undoes a switch. A peer lane's `feat/model-follows-router` resolves per turn;
-  the chip (§14 step 5) waits on it.
-- **#346, open: scheduled scripts pinned production.** `ruminate.sh`,
-  `frontdoor.sh` and `learn-live.sh` (the `session_end` hook) defaulted to
-  `-p local`, and on the router a named provider is a load. #346 unpins them
-  and, by the owner's ruling of 2026-09-27, makes retirement count only the
-  ledger rows of the model in use (`learning::measured_on`). All three run
-  from the shared checkout, so they change only when it is fast-forwarded,
-  and never while `mecha-ruminate` is running.
-- **mecha-graph#22, open: the graph nightly lost 100 extractions and 30
-  summaries** to the router's placeholder alias (below). It must be installed
-  (`cargo install` of both `mecha-graph` and `mecha-graph-mcp`, and a
-  `cargo build --release`, since `nightly.sh` runs `target/release`) before
-  the next 01:30Z nightly. The 100 episode ids are in
-  `~/.mecha/backups/router-install-20260927T0127Z/graph-extract-failed-episodes.txt`,
-  to re-extract with `mecha-graph extract --episode <id>` once it is.
-- **Minors banked:** the new build warns that Qwen-VL wants
-  `--image-min-tokens 1024` (not acted on); `retirement-drill.sh` still pins
-  `-p local` (manual, on throwaway state); and the rollback scripts'
+- **The chip (§14 step 5), and `mecha chat` / `mecha tui`,** which neither
+  follow the router nor hold it yet (§14 D13, *Not yet*).
+- **Owed follow-ups from #346,** listed in its closing comment: `pin.sh`'s
+  `-p local` fallback is silent; `ruminate.sh`'s "errs toward retiring
+  nothing" overstates it for an unpinned scan; `rules list` and
+  `learning-report` fold every model's rows while retirement counts one.
+- **Owed follow-up from mecha-graph#22,** in its closing comment:
+  `extract --charged`'s count of unexplained marks also counts clean
+  extractions that proposed nothing, so it grows nightly and buries the
+  pre-V026 marks it exists to surface.
+- **Review the graph candidates the re-extraction staged.** The 100
+  extractions the nightly lost were re-run one at a time with
+  `mecha-graph extract --episode` on 2026-09-27 (11:42–11:47Z and
+  11:57–12:39Z, the gap a memory-pressure reap): 100 reports, 0 errors, 304
+  mentions, 158 fact candidates and 2 commitments staged, and `extract
+  --charged` lists none. The 30 lost summaries were not re-run by hand; they
+  stayed stale, so the next nightly's `summarize` picks them up.
+- **Memory is the box's tight resource with a model resident.** Two
+  concurrent workspace builds beside the 31.6 GB router child ran it low
+  twice that morning (~04:35Z, ~11:47Z), and Claude Code reaped background
+  jobs both times. Stagger heavy builds across lanes.
+- **Minors banked:** the new llama.cpp build warns that Qwen-VL wants
+  `--image-min-tokens 1024` (not acted on), and the rollback scripts'
   `S=$(ls -d …/snapshots/*/)` breaks the day a repo gains a second snapshot
   (none has one today).
 
@@ -2931,7 +2937,7 @@ model; background work names none. What broke it:
   mecha-graph read the router's bare `/props` as the served model and named
   `llama-server` in every request; the router refused each, and `extract`
   marked all 100 attempted, so they are not retried. The fix is
-  mecha-graph#22 (open; see *Where the work is*).
+  mecha-graph#22, installed below.
 - **01:35Z — the `distill` `session_end` hook's `-p local`** loaded production
   over the comparison arm minutes after the install; removed, and the arm
   re-selected at 01:40:59Z.
@@ -2939,7 +2945,32 @@ model; background work names none. What broke it:
   (llama-local journal: `load_model: loading model
   …Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`). The comparison arm served 01:41–03:30Z
   only; rumination (03:30:12–03:45:11Z, `Result=success`) and the 05:30
-  classifier ran on production. The fix is #346 (open).
+  classifier ran on production. The fix is #346, installed below.
+
+**Installed 2026-09-27 11:40–11:42Z, by the model-switching lane:
+mecha-graph#22 (`139d6e48`) and #346 (`cb76adf3`), on top of the peer
+lane's 09:51Z install of `2554e7e1` (#347, #350), which is that lane's to
+record.** Verified by asking the artifacts:
+
+- `~/Github/mecha-graph` fast-forwarded to `139d6e4`; `target/release/
+  mecha-graph` rebuilt (the nightly runs it) and both crates installed.
+  `strings … | grep -cF 'no episode is charged as its own failure'` prints
+  1 for the release build and `~/.cargo/bin/mecha-graph`, 0 before;
+  `~/.cargo/bin/mecha-graph-mcp`, which does not link extraction, carries
+  V026 (`ADD COLUMN failure TEXT`: 1) and answers `tools/list` with 13
+  tools. Hosts that spawned the server earlier keep their old child until
+  they restart; V026 only adds a column, so an old child is unaffected.
+- `~/.cargo/bin/mecha` reinstalled from `cb76adf3`: `strings … | grep -cF
+  'retirement counts'` prints 1, 0 before. No unit was restarted: #346's
+  Rust runs only in `mecha rules`, `learn` and `validate`, which are
+  one-shot.
+- The shared checkout `~/Github/mecha` fast-forwarded `ca518a71` →
+  `cb76adf3`, after `git diff --quiet ca518a71 origin/main --
+  scripts/start-router.sh scripts/mmproj.sh scripts/start-moe-mtp.sh
+  scripts/voice/parakeet_server.py` came back silent and `scripts/voice/`
+  showed no diff. Its three scheduled scripts now follow the router:
+  sourcing `scripts/pin.sh` and calling `scheduled_pin ""` against the live
+  config gives an empty `PIN`.
 
 ## What the measurements say
 
