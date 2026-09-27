@@ -100,6 +100,39 @@ pub fn block_from_path(path: &Path) -> Result<Option<Block>> {
     Ok(Some(Block::image("image/jpeg", &out, name)))
 }
 
+/// A picture a tool drew, as an image block for the model to check.
+///
+/// **Always re-encoded**, which [`block_from_path`] deliberately is not. That
+/// function passes a small file through untouched because the thing carried
+/// is usually a screenshot of text; a generated picture is a photograph's
+/// kind of content, where JPEG costs nothing anyone checking it would see,
+/// and its PNG is not small — the first twenty Qwen-Image results here had a
+/// median of 1.8 MB, resent every turn for the rest of the conversation. The
+/// PNG on disk stays the original; this copy exists only in the message.
+pub fn rendered_block(bytes: &[u8], name: Option<String>) -> Result<Block> {
+    let img = image::load_from_memory(bytes).context("the rendered image did not decode")?;
+    let img = if img.width().max(img.height()) > MAX_EDGE {
+        img.thumbnail(MAX_EDGE, MAX_EDGE)
+    } else {
+        img
+    };
+    let mut out = Vec::new();
+    img.to_rgb8()
+        .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+            &mut out,
+            JPEG_QUALITY,
+        ))
+        .context("re-encoding a rendered image")?;
+    if out.len() > MAX_BYTES {
+        bail!(
+            "the rendered image is {} as JPEG and stays above the {} limit",
+            human(out.len()),
+            human(MAX_BYTES),
+        );
+    }
+    Ok(Block::image("image/jpeg", &out, name))
+}
+
 fn human(bytes: usize) -> String {
     if bytes >= 1024 * 1024 {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
@@ -197,6 +230,37 @@ mod tests {
         );
         assert_eq!(w * 2000, h * 4000, "aspect ratio preserved, not stretched");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A picture a tool drew is re-encoded even when it already fits — the
+    /// opposite of [`block_from_path`]'s pass-through, and the whole point:
+    /// fails on "reuse `block_from_path`", which would carry the PNG as is.
+    #[test]
+    fn a_rendered_picture_is_always_re_encoded_and_keeps_its_name() {
+        let block = rendered_block(&png(1024, 1024), Some("images/a-7.png".into())).unwrap();
+        let Block::Image {
+            media_type, source, ..
+        } = &block
+        else {
+            panic!("expected an image block")
+        };
+        assert_eq!(media_type, "image/jpeg");
+        assert_eq!(source.as_deref(), Some("images/a-7.png"));
+
+        let Block::Image { data, .. } = rendered_block(&png(3000, 1500), None).unwrap() else {
+            panic!("expected an image block")
+        };
+        use base64::Engine as _;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&data)
+            .unwrap();
+        let i = image::load_from_memory(&decoded).unwrap();
+        let (w, h) = (
+            image::GenericImageView::width(&i),
+            image::GenericImageView::height(&i),
+        );
+        assert!(w.max(h) <= MAX_EDGE, "long edge {w}x{h} bounded");
+        assert!(rendered_block(b"not a png", None).is_err());
     }
 
     /// A caller must be able to tell "not an image" from "an image that

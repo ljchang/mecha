@@ -704,6 +704,7 @@ impl Tool for Shell {
             external: false,
             refusal: false,
             not_dispatched: false,
+            image: None,
         })
     }
 }
@@ -890,6 +891,7 @@ pub(crate) async fn fetch_vetted(url: &str, ctx: &ToolCtx) -> Result<Fetched> {
         external: true,
         refusal: false,
         not_dispatched: false,
+        image: None,
     }))
 }
 
