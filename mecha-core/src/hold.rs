@@ -39,7 +39,7 @@ pub struct Hold {
     /// The router, normalised with [`crate::provider::router::base`].
     pub base_url: String,
     /// What the run is, for a person reading what a switch waits on ("web
-    /// chat", "trigger morning-brief", "mecha tasks work"). Never matched on.
+    /// chat", "trigger morning-brief", "mecha tasks"). Never matched on.
     #[serde(default)]
     pub what: String,
     pub taken_at: DateTime<Utc>,
@@ -193,12 +193,17 @@ impl Holds {
             // link below makes a torn read impossible, so this is a file
             // someone damaged). Pending, rather than swept — erring toward
             // waiting is recoverable, erring toward running is not.
+            // Its time is the file's, so repeated reads are one switch to a
+            // waiter that says so once, not a new one every poll.
             None if path.exists() => Some(Switch {
                 pid: 0,
                 base_url: crate::provider::router::base(base_url),
                 from: None,
                 to: "(unreadable switch file)".into(),
-                started_at: Utc::now(),
+                started_at: std::fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .map(DateTime::<Utc>::from)
+                    .unwrap_or_default(),
             }),
             None => None,
         }
