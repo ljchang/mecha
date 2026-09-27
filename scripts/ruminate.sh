@@ -9,7 +9,9 @@
 # remain here as a *sweep*, for sessions whose hook did not fire (a crashed
 # front-end, a machine that was asleep) — not as the primary path.
 #
-# Ordering is the one deliberate choice here. `validate --unprocessed-only`
+# Ordering is the one deliberate choice here. The retirement brake runs
+# right after `validate`, ahead of every paid pass, because it reads only
+# validate's rows (owner, 2026-09-27). `validate --unprocessed-only`
 # and `sessions compare` run BEFORE `learn`, because learn marks reflections
 # processed and derives rules from the same steers — measuring afterwards
 # would grade the rules on their own training data. Tonight's fresh
@@ -127,6 +129,20 @@ echo "  so a widened rule is measured in each sub-region it widened over — and
 echo "  first night on a newly loaded model re-buys them, since retirement counts one model)"
 "$MECHA" validate ${PIN[@]+"${PIN[@]}"} ${JUDGE_PIN[@]+"${JUDGE_PIN[@]}"} --unprocessed-only --cover 1
 
+echo "· retirements (deterministic ledger scan; applied, not staged — a rule measured"
+echo "  harmful must leave the prompt without waiting for anyone, and it is the only"
+echo "  brake on rules that now go live when they are derived)"
+# Right after validate, ahead of every paid pass (owner, 2026-09-27): it is
+# a deterministic scan of the rows validate just wrote and takes nothing
+# from compare or learn, so a rule measured harmful leaves the prompt before
+# compare or `learn --auto` spends any wall clock — neither has a bound that
+# would otherwise keep the brake on time. Given the same pin as validate: retirement counts only the rows measured on
+# the model in use (owner's ruling, 2026-09-27). Pinned, that is the model
+# validate measured on. Unpinned, it is whatever is resident *now*, from its
+# own snapshot — a switch since validate ran means tonight's rows are not the
+# ones counted, which errs toward retiring nothing.
+"$MECHA" rules propose-retirements ${PIN[@]+"${PIN[@]}"} --apply
+
 # `sessions compare` runs BEFORE `learn`, for validate's reason (owner,
 # 2026-09-26): its `Rules` arm is the rules deployed now, and its points are
 # the same steers and denials `learn` is about to consume — after learn it
@@ -141,16 +157,13 @@ echo "  first night on a newly loaded model re-buys them, since retirement count
 # they may have been learned from", never as a held-out measurement (found
 # on review). It writes no rule.
 #
-# **It is bounded by the clock and by the corpus, because it sits ahead of
-# the brake** (owner, 2026-09-27). Turn-bounded is not wall-clock-bounded:
-# eight points of up to three arms each, with a seat wait per point, run
-# ahead of `rules propose-retirements --apply` — the one brake on rules that
-# go live as they are derived — and this script is not `set -e`, so a slow
-# pass is not skipped, it makes the brake late. So `timeout` caps this
-# pass's share (MECHA_COMPARE_TIMEOUT, default 30m) — its share only: the
-# `learn --auto` between it and the brake pays probe pairs and has no
-# wall-clock bound of its own, so this does not bound when the brake fires
-# (found on review). A pass cut short writes what it
+# **It is bounded by the clock and by the corpus** (owner, 2026-09-27).
+# Turn-bounded is not wall-clock-bounded: eight points of up to three arms
+# each, with a seat wait per point, and this script is not `set -e`, so a
+# slow pass is not skipped, it delays everything after it — `learn`, the
+# harness, the morning's readouts. (The retirement brake no longer waits on
+# it: it runs right after validate.) So `timeout` caps this pass's share
+# (MECHA_COMPARE_TIMEOUT, default 30m). A pass cut short writes what it
 # compared, and a seat it held is reclaimed by the next caller's liveness
 # check (`permit.rs`). And `--days` bounds the read (MECHA_COMPARE_DAYS,
 # default 30): without it every transcript was read each night, and an
@@ -173,16 +186,6 @@ rc=$?
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
 echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
 "$MECHA" learn ${PIN[@]+"${PIN[@]}"} --holdout 0.25 --auto
-
-echo "· retirements (deterministic ledger scan; applied, not staged — a rule measured"
-echo "  harmful must leave the prompt without waiting for anyone, and it is the only"
-echo "  brake on rules that now go live when they are derived)"
-# Given the same pin as validate: retirement counts only the rows measured on
-# the model in use (owner's ruling, 2026-09-27). Pinned, that is the model
-# validate measured on. Unpinned, it is whatever is resident *now*, from its
-# own snapshot — a switch since validate ran means tonight's rows are not the
-# ones counted, which errs toward retiring nothing.
-"$MECHA" rules propose-retirements ${PIN[@]+"${PIN[@]}"} --apply
 
 echo "· work clean (retention on generated output; a published bundle's source is never removed)"
 "$MECHA" work clean

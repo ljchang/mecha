@@ -6817,9 +6817,10 @@ comparison over a chosen set**, with the design written before the run.
   the first cut walked the file's order under a manifest claiming another
   (found on review) — the driver runs each in `lifetime_home`, and after each
   task runs the stages the manifest's `[schedule]` makes due — `reflect`,
-  `validate --unprocessed-only`, `learn --holdout 0.25 --auto`,
-  `rules propose-retirements --apply` (the one brake on rules that go
-  live as they are derived; a loop without it flatters the learn arm),
+  `validate --unprocessed-only`, `rules propose-retirements --apply` (the
+  one brake on rules that go live as they are derived; a loop without it
+  flatters the learn arm — right after the measurement it reads, ahead of
+  learn, since 2026-09-27), `learn --holdout 0.25 --auto`,
   `harness ruminate`, **the nightly's own order and argv**
   (`scripts/ruminate.sh`, less its two shadow measurement passes —
   `sessions compare`, before learn, and `learn --compare-sources`, last —
