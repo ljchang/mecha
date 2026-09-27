@@ -4422,6 +4422,26 @@ pub(super) fn test_chat_answering(reply: &'static str, local: bool) -> Arc<ChatS
     )
 }
 
+/// [`test_chat_answering`], with a plan store behind it.
+#[cfg(test)]
+pub(super) fn test_chat_planned(
+    reply: &'static str,
+    todo: Arc<mecha_core::tool::todo::TodoTool>,
+) -> Arc<ChatState> {
+    test_chat_with(
+        Box::new(Answers(reply)),
+        mecha_core::tool::Registry::new(),
+        answering_config(true),
+        Some(todo),
+    )
+}
+
+/// The jail `key`'s session runs in — what its plan is keyed by (D14).
+#[cfg(test)]
+pub(super) async fn test_workspace(chat: &ChatState, key: &str) -> PathBuf {
+    chat.sessions.lock().await[key].workspace.clone()
+}
+
 /// What a switch looks like to a chat's next turn: its follower now holds a
 /// new binding — `model`, behind a loopback URL or (`local` false) a cloud
 /// one — under the next generation, as `Follower::follow` would install it.
@@ -4614,6 +4634,16 @@ fn test_chat_from(
     registry: mecha_core::tool::Registry,
     config: Config,
 ) -> Arc<ChatState> {
+    test_chat_with(provider, registry, config, None)
+}
+
+#[cfg(test)]
+fn test_chat_with(
+    provider: Box<dyn mecha_core::provider::Provider>,
+    registry: mecha_core::tool::Registry,
+    config: Config,
+    todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
+) -> Arc<ChatState> {
     let agent = Agent::new(
         provider,
         registry,
@@ -4625,10 +4655,13 @@ fn test_chat_from(
         None,
     )
     .unwrap();
+    let follower = crate::follow::Follower::fixed(agent, "local", "test", config);
+    let follower = match todo {
+        Some(todo) => follower.with_todo(todo),
+        None => follower,
+    };
     Arc::new(ChatState {
-        follower: Arc::new(crate::follow::Follower::fixed(
-            agent, "local", "test", config,
-        )),
+        follower: Arc::new(follower),
         routes: Arc::default(),
         outbox_root: OutboxStore::default_root().unwrap(),
         sessions: Mutex::new(HashMap::new()),

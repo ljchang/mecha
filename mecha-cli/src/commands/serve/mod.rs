@@ -2165,8 +2165,22 @@ mod boundary_tests {
     #[tokio::test]
     async fn the_plan_read_carries_the_plan_and_not_the_history() {
         let _home = crate::testenv::HomeGuard::new("plan-read");
-        let app = app(chat::test_chat_answering("noted", true));
+        let todo = Arc::new(mecha_core::tool::todo::TodoTool::new());
+        let chat = chat::test_chat_planned("noted", todo.clone());
+        let app = app(chat.clone());
         converse(&app, "planned", "first question").await;
+        // One step, in this session's jail and nowhere else: a read that
+        // looked the plan up by any other key would come back empty.
+        todo.set_plan_in(
+            &chat::test_workspace(&chat, "planned").await,
+            mecha_core::tool::todo::Plan {
+                goal: None,
+                items: vec![mecha_core::tool::todo::TodoItem::new(
+                    "draft the reply",
+                    mecha_core::tool::todo::Status::InProgress,
+                )],
+            },
+        );
 
         let plan = body(
             app.clone()
@@ -2180,7 +2194,10 @@ mod boundary_tests {
             plan["todo"], whole["todo"],
             "the two reads disagree on the plan"
         );
-        assert!(plan["todo"].is_array(), "{plan}");
+        assert_eq!(
+            plan["todo"][0]["content"], "draft the reply",
+            "the plan read did not find the session's plan: {plan}"
+        );
         assert_eq!(
             plan.as_object().unwrap().keys().collect::<Vec<_>>(),
             ["todo"],
