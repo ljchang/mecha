@@ -45,6 +45,11 @@ pub enum Cmd {
         #[arg(long)]
         now: bool,
     },
+    /// Withdraw a pending switch — the way out of one whose `mecha model
+    /// use` is gone or whose file cannot be read, which every run on the
+    /// router would otherwise wait for. A live switch is better stopped with
+    /// Ctrl-C where it runs; withdrawn here, it stops at its next check.
+    CancelSwitch,
 }
 
 #[derive(Serialize)]
@@ -150,6 +155,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             wait_secs,
             now,
         } => use_(&cfg, &name, wait_secs, now, args.json).await,
+        Cmd::CancelSwitch => cancel_switch(&cfg),
     }
 }
 
@@ -296,7 +302,7 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
         Ok(s) => s,
         Err(other) => bail!(
             "a switch to {} is already waiting on {base} (pid {}, since {}) — let it finish, \
-             or stop it with Ctrl-C where it runs",
+             stop it with Ctrl-C where it runs, or withdraw it with `mecha model cancel-switch`",
             other.to,
             other.pid,
             other.started_at.format("%H:%M:%SZ")
@@ -307,9 +313,18 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
         if asked > 0 {
             eprintln!("asking {asked} run(s) to stop now");
         }
-        wait_for_runs(&holds, &base, Some(Duration::from_secs(15))).await?;
+        wait_for_runs(&holds, &_switching, &base, Some(Duration::from_secs(15))).await?;
     } else {
-        wait_for_runs(&holds, &base, None).await?;
+        wait_for_runs(&holds, &_switching, &base, None).await?;
+    }
+    // Re-read after the wait, which can last hours: R1's rollback target and
+    // "already resident" are about what is loaded now, not when this began.
+    let list = router::models(&base)
+        .await
+        .with_context(|| format!("{base} stopped answering while the switch waited"))?;
+    let previous = router::resident(&list).map(str::to_string);
+    if previous.as_deref() == Some(model.as_str()) {
+        return report(cfg, &base, &model, 0.0, json);
     }
 
     // R2: the resident model mid-reply is waited for, or — `--now` — cut off.
@@ -370,12 +385,16 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
 /// switch — the pending file goes with `use_`'s guard, and the model stays.
 async fn wait_for_runs(
     holds: &mecha_core::hold::Holds,
+    switching: &mecha_core::hold::Switching,
     base: &str,
     limit: Option<Duration>,
 ) -> Result<()> {
     let started = Instant::now();
     let mut said = String::new();
     loop {
+        if !switching.still_pending() {
+            bail!("the switch was withdrawn (`mecha model cancel-switch`); the loaded model stays");
+        }
         let live = holds.live(base);
         if live.is_empty() {
             return Ok(());
@@ -405,6 +424,27 @@ async fn wait_for_runs(
             }
         }
     }
+}
+
+/// Withdraw every pending switch on the routers this config follows.
+fn cancel_switch(cfg: &Config) -> Result<()> {
+    let holds = mecha_core::hold::Holds::open_default()?;
+    let mut any = false;
+    for base in router_bases(cfg) {
+        if let Some(s) = holds.withdraw_switch(&base) {
+            any = true;
+            eprintln!(
+                "withdrew the switch to {} on {base} (pid {}, since {}); runs waiting for it start now",
+                s.to,
+                s.pid,
+                s.started_at.format("%H:%M:%SZ")
+            );
+        }
+    }
+    if !any {
+        eprintln!("no switch is pending");
+    }
+    Ok(())
 }
 
 /// What `use` did, for a person or for the chip.

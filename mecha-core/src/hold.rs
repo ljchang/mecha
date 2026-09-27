@@ -83,6 +83,15 @@ impl Drop for Held {
     }
 }
 
+impl Switching {
+    /// Is this switch's file still there? `false` once `mecha model
+    /// cancel-switch` withdrew it — the switch then stops rather than load a
+    /// model nobody is waiting for any more.
+    pub fn still_pending(&self) -> bool {
+        self.path.exists()
+    }
+}
+
 impl Drop for Switching {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
@@ -285,6 +294,26 @@ impl Holds {
         }
     }
 
+    /// Withdraw the switch pending on `base_url`, readable or not, and say what
+    /// it was. The way out of a switch file nothing will remove: a switcher
+    /// whose pid was reused, or a file nobody can parse — both of which read
+    /// as pending, so every run on the router would wait for ever.
+    pub fn withdraw_switch(&self, base_url: &str) -> Option<Switch> {
+        let path = self.switch_path(base_url);
+        if !path.exists() {
+            return None;
+        }
+        let was = read::<Switch>(&path).unwrap_or(Switch {
+            pid: 0,
+            base_url: crate::provider::router::base(base_url),
+            from: None,
+            to: "(unreadable switch file)".into(),
+            started_at: Utc::now(),
+        });
+        let _ = std::fs::remove_file(&path);
+        Some(was)
+    }
+
     /// "Switch now": ask every run holding `base_url` to stop at its next safe
     /// point. Returns how many were asked.
     pub fn cancel_holders(&self, base_url: &str) -> usize {
@@ -429,6 +458,28 @@ mod tests {
         assert!(h.live(ROUTER).is_empty());
         assert!(h.pending(ROUTER).is_none());
         assert!(h.try_hold(ROUTER, "next").unwrap().is_ok());
+    }
+
+    /// The way out of a switch nothing will remove: withdrawn, readable or
+    /// not, runs take holds again — and a live switcher can tell.
+    #[test]
+    fn a_stuck_switch_can_be_withdrawn() {
+        let h = holds("withdraw");
+        let switching = h.begin_switch(ROUTER, Some("a"), "b").unwrap().unwrap();
+        assert!(switching.still_pending());
+        assert_eq!(h.withdraw_switch(ROUTER).map(|s| s.to), Some("b".into()));
+        assert!(
+            !switching.still_pending(),
+            "the switcher must see it was withdrawn"
+        );
+        assert!(h.try_hold(ROUTER, "next").unwrap().is_ok());
+        drop(switching);
+
+        std::fs::write(h.switch_path(ROUTER), b"not json").unwrap();
+        assert!(h.pending(ROUTER).is_some(), "unreadable reads as pending");
+        assert!(h.withdraw_switch(ROUTER).is_some());
+        assert!(h.pending(ROUTER).is_none());
+        assert_eq!(h.withdraw_switch(ROUTER).map(|s| s.to), None);
     }
 
     /// "Switch now" reaches the holder, and only holders of that router.

@@ -33,6 +33,7 @@ use super::pump::{pump, PumpConfig};
 use super::review::{self, ReviewMode};
 use super::threads::{Event, RunMarker, ThreadRecord, ThreadStore};
 use crate::GlobalOpts;
+use futures::FutureExt;
 
 /// How many event ids are remembered for deduplication. Slack's redelivery
 /// semantics across a dropped socket are undocumented, so handlers are
@@ -875,7 +876,16 @@ impl State {
         let follower = Arc::clone(&self.follower);
         let tx = self.followed_tx.clone();
         tokio::spawn(async move {
-            let bound = follower.follow().await.map_err(|e| format!("{e:#}"));
+            // A panic becomes a failed turn: uncaught, the task would die
+            // without sending, and the thread's `starting` entry would never
+            // clear — every later message swallowed, and a seat taken for good.
+            let bound = match std::panic::AssertUnwindSafe(follower.follow())
+                .catch_unwind()
+                .await
+            {
+                Ok(followed) => followed.map_err(|e| format!("{e:#}")),
+                Err(_) => Err("following the loaded model panicked".to_string()),
+            };
             let _ = tx
                 .send(Followed {
                     record,

@@ -1625,6 +1625,35 @@ pub async fn transcript(
 }
 
 /// POST /api/chat/{key}/send — start a run, or steer the one in flight.
+/// Fold `text` into the run in flight — steering, which the loop puts in the
+/// tool-results turn (never a bare user message: two in a row are invalid).
+fn steer(ws: &WebSession, text: String, request_id: String) -> axum::response::Response {
+    let Some(live) = &ws.live else {
+        return (StatusCode::CONFLICT, "no run to steer\n").into_response();
+    };
+    if let Ok(mut queue) = live.queue.lock() {
+        let Ok(mut ids) = live.queued_ids.lock() else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "steering receipts unavailable\n",
+            )
+                .into_response();
+        };
+        ids.push_back(request_id.clone());
+        queue.push_back(text.clone());
+        let _ = ws.events.send(WireEvent::Queued {
+            text,
+            request_id: Some(request_id),
+        });
+        return Json(serde_json::json!({ "steered": true })).into_response();
+    }
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "steering queue poisoned\n",
+    )
+        .into_response()
+}
+
 pub async fn send(
     State(state): Chat,
     axum::extract::Path(key): axum::extract::Path<String>,
@@ -1646,29 +1675,40 @@ pub async fn send(
         return (StatusCode::BAD_REQUEST, "empty message\n").into_response();
     }
 
+    // First look: a run in flight is steered — no hold, and no waiting on a
+    // switch. Holding first swallowed a steer during a pending switch: it
+    // waited out the run it meant to steer, then started as a new turn
+    // (review of D13).
+    let notices = {
+        let mut sessions = chat.sessions.lock().await;
+        if chat.stopping.is_cancelled() {
+            return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
+        }
+        let ws = match ensure_session(&chat, &mut sessions, &key) {
+            Ok(ws) => ws,
+            Err(e) => return (super::incognito::status_of(&e), format!("{e:#}\n")).into_response(),
+        };
+        if ws.live.is_some() {
+            return steer(ws, text, request_id);
+        }
+        ws.events.clone()
+    };
+
     // The model this turn will run on, followed before the lock: a rebuild
     // after a switch can take as long as an MCP server's start, and every
     // conversation waits on that lock. Said rather than answered on the old
     // model when it fails — that model's request would load it back.
     // D13: the turn holds the router first — waiting out a switch in
     // progress, which the open page is told about — then follows it.
-    let notices = chat
-        .sessions
-        .lock()
-        .await
-        .get(&key)
-        .map(|ws| ws.events.clone());
     let (held, bound) = match chat
         .follower
         .enter("web chat", |switch| {
-            if let Some(tx) = &notices {
-                let _ = tx.send(WireEvent::Notice {
-                    text: format!(
-                        "Switching the model to {} — this turn starts once it is loaded.",
-                        switch.to
-                    ),
-                });
-            }
+            let _ = notices.send(WireEvent::Notice {
+                text: format!(
+                    "Switching the model to {} — this turn starts once it is loaded.",
+                    switch.to
+                ),
+            });
         })
         .await
     {
@@ -1683,31 +1723,9 @@ pub async fn send(
         Ok(ws) => ws,
         Err(e) => return (super::incognito::status_of(&e), format!("{e:#}\n")).into_response(),
     };
-
-    // A run in flight: this is steering, folded into the tool-results turn by
-    // the loop (never a bare user message — two in a row are invalid).
-    if let Some(live) = &ws.live {
-        if let Ok(mut queue) = live.queue.lock() {
-            let Ok(mut ids) = live.queued_ids.lock() else {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "steering receipts unavailable\n",
-                )
-                    .into_response();
-            };
-            ids.push_back(request_id.clone());
-            queue.push_back(text.clone());
-            let _ = ws.events.send(WireEvent::Queued {
-                text,
-                request_id: Some(request_id),
-            });
-            return Json(serde_json::json!({ "steered": true })).into_response();
-        }
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "steering queue poisoned\n",
-        )
-            .into_response();
+    // A run that started while this one waited: steer it after all.
+    if ws.live.is_some() {
+        return steer(ws, text, request_id);
     }
 
     match begin_turn(
@@ -2118,9 +2136,16 @@ fn begin_turn(
     let cancel = mecha_core::agent::CancelHandle::new();
     // "Switch now" stops this run at its next safe point, the way the page's
     // stop button does — rather than leaving it to load its model back.
+    // The cards go first, as the page's own stop does: a run parked on an
+    // approval or `ask_user` card never sees the token, and would go on — on
+    // its old binding, whose next request loads the old model back.
     if let Some(h) = &held {
         let c = cancel.clone();
-        h.on_cancel(move || c.cancel(mecha_core::agent::CancelReason::Stopped));
+        let cards = ws.questions.clone();
+        h.on_cancel(move || {
+            cards.drain();
+            c.cancel(mecha_core::agent::CancelReason::Stopped);
+        });
     }
     let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
     let queued_ids: Arc<StdMutex<VecDeque<String>>> = Arc::default();
