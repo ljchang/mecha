@@ -2210,6 +2210,17 @@ mod boundary_tests {
             .await
             .unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        // An incognito key not open has closed: gone, like the transcript
+        // read, and never a 404 that reads as a chat that never existed.
+        let closed = app
+            .clone()
+            .oneshot(get(&format!(
+                "/api/chat/{}0123456789abcdef012345/todo",
+                super::incognito::KEY_PREFIX
+            )))
+            .await
+            .unwrap();
+        assert_eq!(closed.status(), StatusCode::GONE);
     }
 
     #[tokio::test]
@@ -2824,7 +2835,7 @@ mod boundary_tests {
         let home = crate::testenv::HomeGuard::new("web-explicit-open");
         let app = app(chat::test_chat());
         for method in ["GET", "HEAD"] {
-            for suffix in ["", "/events"] {
+            for suffix in ["", "/events", "/todo"] {
                 let req = Request::builder()
                     .method(method)
                     .uri(format!("/api/chat/new{suffix}"))
@@ -2862,7 +2873,7 @@ mod boundary_tests {
                 .count(),
             1
         );
-        for suffix in ["", "/events"] {
+        for suffix in ["", "/events", "/todo"] {
             let req = Request::builder()
                 .uri(format!("/api/chat/new{suffix}"))
                 .header(TAILSCALE_LOGIN, "owner@example.com")
