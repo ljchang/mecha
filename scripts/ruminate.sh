@@ -28,7 +28,16 @@
 set -uo pipefail
 
 MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
-PROVIDER="${MECHA_RUMINATE_PROVIDER:-local}"
+# **Unset means no `-p`: the night runs on whatever the router has loaded.**
+# The owner's ruling for the router (REMOTE-SURFACE-DESIGN §14): background
+# work never defers and never swaps, it runs on the resident model and the
+# run's record names it. An explicit `-p local` is a pin, and on a router a pin
+# is a load — on 2026-09-27 this line's old default pulled production over the
+# comparison arm at 03:30:14, the moment the first stage started. Set the
+# variable to pin a night deliberately, knowing it swaps the router.
+PROVIDER="${MECHA_RUMINATE_PROVIDER:-}"
+PIN=()
+[ -n "$PROVIDER" ] && PIN=(-p "$PROVIDER")
 # **The judge is the model under test, deliberately and provisionally.**
 # A different family is the better methodology — a model grading trajectories
 # it produced shares the blind spot that caused them, which is why
@@ -38,10 +47,15 @@ PROVIDER="${MECHA_RUMINATE_PROVIDER:-local}"
 # correlated judge beats an unavailable independent one, and this is Luke's
 # call (2026-08-29) rather than a discovery.
 #
-# Set MECHA_RUMINATE_JUDGE=gemma26 after starting scripts/start-gemma26.sh to
-# put the independence back. Judge-graded rows in the ledger are only as good
-# as this line.
-JUDGE="${MECHA_RUMINATE_JUDGE:-local}"
+# Set MECHA_RUMINATE_JUDGE=gemma26 to put the independence back — at a cost
+# the router made concrete: gemma26 is a preset on :8080 now, one model is
+# resident at a time, so a judge on another model swaps the router on every
+# judge call (tens of seconds each way). Judge-graded rows in the ledger are
+# only as good as this line. Unset, the judge follows the loaded model, as
+# the stages do.
+JUDGE="${MECHA_RUMINATE_JUDGE:-}"
+JUDGE_PIN=()
+[ -n "$JUDGE" ] && JUDGE_PIN=(--judge-provider "$JUDGE")
 HEALTH="${MECHA_RUMINATE_HEALTH:-http://127.0.0.1:8080/health}"
 
 LOG_DIR="${MECHA_LEARNING_DIR:-$HOME/.mecha/learning}/logs"
@@ -91,19 +105,19 @@ if ! curl -sf -m 5 "$HEALTH" >/dev/null; then
 fi
 
 echo "· reflect (catches whatever the session_end hook missed; live mining is learn-live.sh)"
-"$MECHA" reflect -p "$PROVIDER"
+"$MECHA" reflect "${PIN[@]}"
 
 echo "· distill (episodes → the knowledge graph; catches whatever a hook missed)"
-"$MECHA" distill -p "$PROVIDER"
+"$MECHA" distill "${PIN[@]}"
 
 echo "· validate (the measurement: held-out + fresh, before learn consumes them;"
 echo "  --cover 1 buys one probe per (rule, region) pair the ledger has never graded,"
 echo "  so a widened rule is measured in each sub-region it widened over)"
-"$MECHA" validate -p "$PROVIDER" --judge-provider "$JUDGE" --unprocessed-only --cover 1
+"$MECHA" validate "${PIN[@]}" "${JUDGE_PIN[@]}" --unprocessed-only --cover 1
 
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
 echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
-"$MECHA" learn -p "$PROVIDER" --holdout 0.25 --auto
+"$MECHA" learn "${PIN[@]}" --holdout 0.25 --auto
 
 echo "· retirements (deterministic ledger scan; applied, not staged — a rule measured"
 echo "  harmful must leave the prompt without waiting for anyone, and it is the only"
@@ -117,7 +131,7 @@ echo "· harness (diagnose one change from the run corpus, measure it by counter
 echo "  replay of recent sessions, and dispose through the candidate gate — a measured,"
 echo "  holdout-confirmed config win auto-applies to the override layer, reversibly;"
 echo "  prose, architecture and anything unmeasurable stages for review)"
-"$MECHA" harness ruminate -p "$PROVIDER" --sessions 16
+"$MECHA" harness ruminate "${PIN[@]}" --sessions 16
 
 echo "· proposals awaiting review"
 "$MECHA" proposals

@@ -163,8 +163,13 @@ so the hook's timeout never kills a model call in flight:
 ```toml
 [[hook]]
 event = "session_end"
-command = "nohup mecha reflect -p local >/dev/null 2>&1 &"
+command = "nohup mecha reflect >/dev/null 2>&1 &"
 ```
+
+It names no provider on purpose. Unpinned, it runs on the default — and on a
+llama-server router with `follow_loaded`, on whatever model is loaded. A
+`-p` there is a pin, and on a router a pin loads that model, so every
+session's close would undo a model switch.
 
 ## Where to go next
 

@@ -1280,9 +1280,9 @@ counterfactual replay first and stages what survives for `mecha proposals`.
 ```bash
 mecha learn --dry-run
 mecha learn --holdout 0.25        # leave a measurement set for validate
-mecha learn --auto --holdout 0.25 -p local  # the supplied automation
-mecha learn --propose -p local              # require owner review
-mecha learn --compare-sources               # measure lessons by source; learns nothing
+mecha learn --auto --holdout 0.25    # the supplied automation
+mecha learn --propose                # require owner review
+mecha learn --compare-sources        # measure lessons by source; learns nothing
 ```
 
 `--compare-sources` is a measurement and writes no rule, proposal or
