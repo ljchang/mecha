@@ -170,6 +170,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: python3 scripts/test_start_router.py
+      # And the scheduled scripts that ride on it: unset, they name no
+      # provider, because on a router a pin is a load (2026-09-27, 03:30:14).
+      - run: python3 scripts/test_follow_loaded.py
 
   # The integration tests skip themselves when a sandbox backend is missing, and
   # a silently skipped test reads exactly like a passing one. This job installs

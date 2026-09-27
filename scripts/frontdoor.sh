@@ -24,7 +24,18 @@ set -uo pipefail
 MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
 FACTORY="${FACTORY_PUBLISH_BIN:-$HOME/.cargo/bin/factory-publish}"
 MAIL="${MECHA_MAIL_BIN:-$HOME/.cargo/bin/mecha-mail}"
-PROVIDER="${MECHA_FRONTDOOR_PROVIDER:-local}"
+# Unset, on a router, means no `-p`: each tick runs on whatever the router has
+# loaded, and the run's record names it; a `local` default was a pin, and on
+# the router a pin is a load — hourly, over whatever the owner switched to.
+# Without a router, unset is `-p local` as before. The rule: scripts/pin.sh.
+# A pin.sh that is missing or does not define scheduled_pin must stop the
+# run, not leave PIN unset: unset expands to no `-p`, the unpinned run on the
+# default this file exists to decide (found on review).
+{ source "$(dirname "$0")/pin.sh" && declare -F scheduled_pin >/dev/null; } || {
+    echo "frontdoor: no scheduled_pin from $(dirname "$0")/pin.sh; refusing to run unpinned" >&2
+    exit 1
+}
+scheduled_pin "${MECHA_FRONTDOOR_PROVIDER:-}"
 HEALTH="${MECHA_FRONTDOOR_HEALTH:-http://127.0.0.1:8080/health}"
 
 LOG_DIR="$HOME/.mecha/requests/logs"
@@ -69,9 +80,9 @@ if ! curl -sf -m 5 "$HEALTH" >/dev/null; then
 fi
 
 echo "· extract (the quarantined pass: no tools, no history)"
-"$MECHA" frontdoor extract -p "$PROVIDER"
+"$MECHA" frontdoor extract ${PIN[@]+"${PIN[@]}"}
 
 echo "· triage (drafts into the outbox; refuses to run unrouted)"
-"$MECHA" frontdoor triage -p "$PROVIDER" --read-only
+"$MECHA" frontdoor triage ${PIN[@]+"${PIN[@]}"} --read-only
 
 echo "── frontdoor tick done $(date -Is) ──"

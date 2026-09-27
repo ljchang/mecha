@@ -547,11 +547,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         return Ok(());
     }
 
-    // The ledger, folded per rule, so the consolidation can drop what has
-    // been measured harmful instead of guessing from the rule text. Read once
-    // for every domain: it is a scan of one append-only file.
-    let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
-
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
     let cfg = Config::load(&cwd)?;
     let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
@@ -559,6 +554,21 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let model = global.model.clone().or_else(|| provider_cfg.model.clone());
     let learner = Learner::new(provider, model);
     eprintln!("learning with {} ({provider_name})", learner.model());
+
+    // The ledger, folded per rule, so the consolidation can drop what has
+    // been measured harmful instead of guessing from the rule text. Read once
+    // for every domain: it is a scan of one append-only file.
+    //
+    // **The whole ledger, every model's rows — deliberately not
+    // `learning::measured_on`.** Both readers here ask whether a rule was
+    // measured, which is a fact about the ledger: probation is written to
+    // disk and read on every model, and the consolidation is a full
+    // replacement whose drops are global. Folded per model, the first learn
+    // after a switch would read every rule graded on the previous model as
+    // `[unmeasured]` and stamp it back onto the short leash (found on review
+    // of #346). The owner's ruling (2026-09-27, count one model) governs the
+    // retirement count, which `rules propose-retirements` makes per model.
+    let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
 
     // The gate replays against the recorded tool surface, which needs the
     // live registry for specs — same borrow `mecha validate` makes.
