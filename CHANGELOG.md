@@ -19,8 +19,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reason a model's `shell` typed, the appraiser's input shows a typed word
   in its place, and the meeting-poll sweep puts "No time found" rather than
   that text on the participants' page. Items resolved before this load as
-  `unknown`. `outbox show` and the TUI print `by <actor>` beside the reason.
+  `unknown`. `outbox show` and the TUI print `by <actor>` beside the reason,
+  `sessions appraise` counts the other reasons apart
+  (`unattributed_rejections`), and a reject whose reason is not stamped
+  `owner` says why on stderr.
 
+- **Planning examples from what the owner verified** (`APPRAISAL-WIRING-DESIGN.md`
+  L2, 2e-4b-1, R40), behind `[agent] success_examples` /
+  `Lever::SuccessExamples`, which **ships off** until an experiment measures
+  it (`levers_on = ["success_examples"]`; `mecha eval` forces it off, and the
+  diagnostician's run is narrowed off it). On, `goal_context` answers a
+  request toward a goal with the tool sequence of a session the owner
+  verified toward it — a task closed `done` that no reopen undoes, a workflow
+  closed, a question answered whose session completed — ahead of the
+  declared-check examples, in its own shape (`tools_in_order`, `verified_by`,
+  the act in words, and a limit saying it is a call trace, not a plan). Only
+  a session whose recorded taint is clean to its end, whose every run
+  recorded a matched workspace and surface, and whose situation the asking
+  run is in lends one. Derived from the success set at run start, never
+  stored, so a reopen withdraws the example. `mecha sessions successes
+  --examples` lists what would be served and why each success lends none
+  (`planning_examples` in `--json`). Nothing reaches the prefix; the answer
+  with the lever off is unchanged.
 - **A rule's owner tenure, beside retirement** (`APPRAISAL-WIRING-DESIGN.md`
   2e-5b/2e-5c, R41). `mecha rules list`/`show` print `owner: <tenure> ·
   region: <quiet>` per learned rule, and `--json` gains `owner` and `quiet`.

@@ -546,9 +546,15 @@ pub fn verification_key(goal: Option<&GoalRef>, step: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct Example {
     pub goal: GoalRef,
+    /// A passed plan step's text, or — for an owner-verified success — the
+    /// session's tool sequence ([`tool_sequence`], R40).
     pub step: String,
     pub expected: Option<String>,
     pub source: String,
+    /// The owner's act that verified the session, for a success example
+    /// ([`success_examples`]); `None` for a passed declared check, whose
+    /// rendering is the bytes it was before success examples existed.
+    pub owner_act: Option<crate::success::Act>,
 }
 
 /// A bounded startup snapshot, reused on demand. Unread, large, unscoped, and
@@ -616,6 +622,7 @@ pub fn examples(
                     step: step.step.clone(),
                     expected: step.expected.clone(),
                     source: meta.id.clone(),
+                    owner_act: None,
                 });
                 if out.len() >= 64 {
                     return Ok(out);
@@ -624,6 +631,411 @@ pub fn examples(
         }
     }
     Ok(out)
+}
+
+// ─── Success examples (row 2e-4b-1, R40) ────────────────────────────────
+
+/// At most this many transcripts are read for success examples, newest
+/// success first — [`examples`]' own window.
+const SUCCESS_SESSIONS_READ: usize = 32;
+/// At most this many success examples are kept — [`examples`]' own cap.
+const SUCCESS_EXAMPLES_KEPT: usize = 64;
+/// A transcript larger than this lends no example, as in [`examples`].
+const SUCCESS_TRANSCRIPT_BYTES: u64 = 2_000_000;
+/// How many steps of a tool sequence are spelled out.
+const SEQUENCE_STEPS: usize = 24;
+
+/// The tools a session called, in order: registry names only — never an
+/// argument, never prose — with a consecutive repeat folded into `name ×n`
+/// and the harness's own calls left out. `None` when the session called no
+/// tool, which leaves nothing to plan from. The step of a planning success
+/// example (R40): 4 of 79 long runs wrote a plan, so a plan step would
+/// supply almost nothing, and the call trace is what every run has.
+pub fn tool_sequence(messages: &[crate::message::Message]) -> Option<String> {
+    let mut runs: Vec<(String, usize)> = Vec::new();
+    for m in messages
+        .iter()
+        .filter(|m| m.role == crate::message::Role::Assistant && !m.harness)
+    {
+        for (_, name, _) in m.tool_uses() {
+            match runs.last_mut() {
+                Some((last, n)) if last == name => *n += 1,
+                _ => runs.push((name.to_string(), 1)),
+            }
+        }
+    }
+    if runs.is_empty() {
+        return None;
+    }
+    let more = runs.len().saturating_sub(SEQUENCE_STEPS);
+    let mut parts: Vec<String> = runs
+        .into_iter()
+        .take(SEQUENCE_STEPS)
+        .map(|(name, n)| if n > 1 { format!("{name} ×{n}") } else { name })
+        .collect();
+    if more > 0 {
+        parts.push(format!("… {more} more"));
+    }
+    Some(parts.join(" → "))
+}
+
+/// Why a standing success, or one session it names, lends no planning
+/// example — said by the owner's readout, never a quiet empty list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Withheld {
+    /// The success names no goal (a draft sent unchanged, a workflow bound
+    /// to no task, a question asked toward none), and an example is served
+    /// only toward its goal.
+    NoGoal,
+    /// The success names no session.
+    NoSession,
+    /// The session is not one the corpus admits (a smoke test named beside
+    /// a real one), or is not in the store.
+    NotAdmitted,
+    /// Larger than [`examples`]' bound.
+    TooLarge,
+    /// The transcript did not read.
+    Unread,
+    /// Its recorded taint is not provably clean — third-party content, or
+    /// no checkpoint covering its end. Unknown is never clean.
+    NotClean,
+    /// A run in it recorded no workspace or surface its rules were matched
+    /// on (or it has no run record), so no run can be said to be in its
+    /// situation — [`examples`]' "unscoped".
+    Unscoped,
+    /// It called no tool.
+    NoToolCalls,
+    /// Past the read window or the cap: not read this time.
+    BeyondWindow,
+}
+
+impl Withheld {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Withheld::NoGoal => "no goal",
+            Withheld::NoSession => "no session",
+            Withheld::NotAdmitted => "session not admitted",
+            Withheld::TooLarge => "transcript too large",
+            Withheld::Unread => "transcript unread",
+            Withheld::NotClean => "not clean",
+            Withheld::Unscoped => "unscoped",
+            Withheld::NoToolCalls => "no tool calls",
+            Withheld::BeyondWindow => "beyond the read window",
+        }
+    }
+}
+
+/// One session's example, with the situations its runs were matched in.
+#[derive(Debug, Clone)]
+pub struct SuccessExample {
+    pub example: Example,
+    /// Every run record's scope: the registry, workspace, surface and goal
+    /// its rules block was matched against. A run is in the example's
+    /// situation only when every one of them matches it.
+    pub scopes: Vec<crate::situation::Situation>,
+    pub at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// The planning examples a success set lends, before any run's situation
+/// is asked — what the owner's readout lists, and what
+/// [`SuccessExamples::for_run`] narrows.
+#[derive(Debug, Clone, Default)]
+pub struct SuccessExamples {
+    pub examples: Vec<SuccessExample>,
+    /// `(the act's pointer, the session if one, why)` for each standing
+    /// success, or session of one, that lent nothing.
+    pub withheld: Vec<(String, Option<String>, Withheld)>,
+}
+
+impl SuccessExamples {
+    /// The examples a run in `run`'s situation may be served: those whose
+    /// every run scope matches it (`Situation::matches`, the rules block's
+    /// own match), newest success first.
+    pub fn for_run(&self, run: &crate::situation::Situation) -> Vec<Example> {
+        self.examples
+            .iter()
+            .filter(|e| !e.scopes.is_empty() && e.scopes.iter().all(|s| s.matches(run)))
+            .map(|e| e.example.clone())
+            .collect()
+    }
+}
+
+/// The success examples one run holds: the whole pool, the run's situation
+/// as rendered, and the examples served in it. Kept whole rather than
+/// resolved at build, because the registry the run record names is the one
+/// the run *starts* with — `tasks work` and `questions answer` withhold
+/// `kg_task_update` and insert `ask_user` after `setup::build` — and
+/// `Situation::matches` is a subset test on tools, so keying on the build's
+/// registry both withholds an example the run is in the situation of and
+/// serves one it is not (found on review of #342). The loop re-keys it
+/// with [`Self::for_registry`], beside `PastAppraisals::for_registry`.
+#[derive(Debug, Clone, Default)]
+pub struct ServedSuccesses {
+    pool: SuccessExamples,
+    run: crate::situation::Situation,
+    served: Vec<Example>,
+    /// Re-read the owning stores at each run start ([`Self::select`]).
+    live: bool,
+}
+
+impl ServedSuccesses {
+    /// A pool read from the default stores: every run start re-reads the
+    /// closure and workflow stores and drops what has been taken back
+    /// ([`Self::at_run_start`]).
+    pub fn select(pool: SuccessExamples, run: &crate::situation::Situation) -> ServedSuccesses {
+        ServedSuccesses {
+            live: true,
+            ..Self::fixed(pool, run)
+        }
+    }
+
+    /// A pool that is not re-read at run start — a test's, which must not
+    /// read the operator's stores. Still re-keyed on the registry.
+    pub fn fixed(pool: SuccessExamples, run: &crate::situation::Situation) -> ServedSuccesses {
+        let served = pool.for_run(run);
+        ServedSuccesses {
+            pool,
+            run: run.clone(),
+            served,
+            live: false,
+        }
+    }
+
+    /// Re-key on the registry the run starts with: the same workspace,
+    /// surface and goal, these tools.
+    pub fn for_registry(&mut self, tools: &[String]) {
+        self.run.tools = tools.to_vec();
+        self.served = self.pool.for_run(&self.run);
+    }
+
+    /// What the loop calls at every run start: drop what the owner has
+    /// taken back since the pool was read, from the closure and workflow
+    /// stores as they stand now, then re-key on the registry. The pool is
+    /// read once per `setup::build`, and `chat`, the TUI, `serve` and Slack
+    /// drive many runs off one build — a reopen on Tuesday must withdraw an
+    /// example a process read on Monday, or the answer's "has not reopened
+    /// it" is false (found on review of #342). A success verified since the
+    /// read is missed until the next build — a miss, never a retraction
+    /// ignored.
+    pub fn at_run_start(&mut self, tools: &[String]) {
+        if self.live {
+            let (closures, closures_unreadable) = crate::appraisal::load_closures();
+            let (workflows, workflows_unreadable) = crate::appraisal::load_workflows();
+            self.restand(&crate::success::Sources {
+                closures: &closures,
+                closures_unreadable,
+                workflows: &workflows,
+                workflows_unreadable,
+                ..Default::default()
+            });
+        }
+        self.for_registry(tools);
+    }
+
+    /// Keep only the examples whose act still stands in `now` — derived by
+    /// `success::derive` itself, so withdrawal means here what it means
+    /// everywhere. Only a closure or a workflow close can be taken back; a
+    /// draft sent and a question answered cannot, and stay. A store that
+    /// cannot be read now withdraws every example of its kind: whether the
+    /// act still stands is unknown, and unknown is never served.
+    pub fn restand(&mut self, now: &crate::success::Sources<'_>) {
+        use crate::success::{Act, Seen, SessionFacts};
+        // Placement was settled when the pool was read; this read asks only
+        // whether the act stands.
+        struct Placed;
+        impl SessionFacts for Placed {
+            fn seen(&self, _: &str) -> Seen {
+                Seen::Admitted
+            }
+            fn completed(&self, _: &str) -> Option<bool> {
+                None
+            }
+        }
+        let set = crate::success::derive(now, &Placed);
+        let standing: std::collections::HashSet<String> =
+            set.standing.iter().map(|s| s.act.pointer()).collect();
+        self.pool.examples.retain(|e| match &e.example.owner_act {
+            Some(act @ Act::TaskDone { .. }) => {
+                !now.closures_unreadable && standing.contains(&act.pointer())
+            }
+            Some(act @ Act::WorkflowClosed { .. }) => {
+                !now.workflows_unreadable && standing.contains(&act.pointer())
+            }
+            Some(Act::SentUnchanged { .. } | Act::QuestionAnswered { .. }) => true,
+            None => false,
+        });
+        self.served = self.pool.for_run(&self.run);
+    }
+
+    pub fn served(&self) -> &[Example] {
+        &self.served
+    }
+}
+
+/// A success example toward `goal` whose one run was matched on `tools`
+/// and nothing else — for tests of what serves and re-keys it.
+#[cfg(test)]
+pub(crate) fn test_success(
+    goal: &str,
+    step: &str,
+    session: &str,
+    tools: &[&str],
+) -> SuccessExample {
+    SuccessExample {
+        example: Example {
+            goal: goal.parse().unwrap(),
+            step: step.into(),
+            expected: None,
+            source: session.into(),
+            owner_act: Some(crate::success::Act::TaskDone {
+                task: goal.trim_start_matches("task:").into(),
+                closure: "c1".into(),
+            }),
+        },
+        scopes: vec![crate::situation::Situation::of_run(
+            &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+            None,
+        )],
+        at: None,
+    }
+}
+
+/// The planning examples a success set lends (row 2e-4b-1, R40). For each
+/// **standing** success toward a goal — a withdrawn one is not in
+/// `standing`, so a reopened task lends nothing, by construction — each
+/// session it names that the corpus admits, whose recorded taint is clean
+/// to its end, whose every run was matched on a workspace and a surface,
+/// and that called a tool, lends one example: its tool sequence as the
+/// step, toward the success's goal, with the owner's act beside it. Newest
+/// success first; a session lends once per goal.
+///
+/// Read from the transcripts on every call and never stored: the success
+/// set is derived at read time (R40), and so is what it lends. A caller that
+/// holds the result across runs re-checks it ([`ServedSuccesses::at_run_start`]).
+pub fn success_examples(
+    set: &crate::success::Successes,
+    sessions: &crate::success::SessionIndex,
+) -> SuccessExamples {
+    let mut out = SuccessExamples::default();
+    let mut standing: Vec<&crate::success::Success> = set.standing.iter().collect();
+    // Undated last, as every listing of the set orders them.
+    standing.sort_by_key(|s| (s.at.is_none(), std::cmp::Reverse(s.at)));
+    let mut read = 0usize;
+    let mut lent = std::collections::HashSet::new();
+    for success in standing {
+        let pointer = success.act.pointer();
+        let Some(goal) = &success.goal else {
+            out.withheld.push((pointer, None, Withheld::NoGoal));
+            continue;
+        };
+        if success.sessions.is_empty() {
+            out.withheld.push((pointer, None, Withheld::NoSession));
+            continue;
+        }
+        for id in &success.sessions {
+            let mut withhold = |why| out.withheld.push((pointer.clone(), Some(id.clone()), why));
+            // The window before the dedup, so a pair past the window is
+            // said for every success naming it, never consumed quietly.
+            if read >= SUCCESS_SESSIONS_READ || out.examples.len() >= SUCCESS_EXAMPLES_KEPT {
+                withhold(Withheld::BeyondWindow);
+                continue;
+            }
+            if !lent.insert((id.clone(), goal.to_string())) {
+                continue;
+            }
+            let Some(path) = sessions.admitted_path(id) else {
+                withhold(Withheld::NotAdmitted);
+                continue;
+            };
+            match std::fs::metadata(path) {
+                Ok(m) if m.len() <= SUCCESS_TRANSCRIPT_BYTES => {}
+                Ok(_) => {
+                    withhold(Withheld::TooLarge);
+                    continue;
+                }
+                // Gone since the index walked it: unread, not large (found
+                // on review of #342).
+                Err(_) => {
+                    withhold(Withheld::Unread);
+                    continue;
+                }
+            }
+            read += 1;
+            // One read of the file for both views: the loaded list for the
+            // taint and the run records, and every message the session ever
+            // held for its sequence — the loaded list is what survived a
+            // compaction, and a long verified session's trace would be its
+            // tail served as the whole (found on review of #342).
+            let parsed = std::fs::read_to_string(path)
+                .map_err(anyhow::Error::from)
+                .and_then(|text| crate::session::Session::parse(path, &text).map(|t| (text, t)));
+            let Ok((text, t)) = parsed else {
+                withhold(Withheld::Unread);
+                continue;
+            };
+            // The taint covering the last message is the session's: the
+            // timeline is cumulative, so clean there is clean throughout,
+            // and no checkpoint after it is unknown — never clean.
+            let covering = t
+                .convo
+                .messages
+                .len()
+                .checked_sub(1)
+                .and_then(|last| t.taint_timeline.covering(last));
+            if crate::learning::classify_origin(covering) != crate::learning::Origin::Clean {
+                withhold(Withheld::NotClean);
+                continue;
+            }
+            // Every run's scope, as `examples` reads one: a run with no
+            // matched workspace or surface is unscoped, and so is a
+            // transcript with no run record.
+            let scopes: Option<Vec<crate::situation::Situation>> = t
+                .configs
+                .iter()
+                .map(|c| {
+                    let workspace = c.rules_workspace.as_deref()?;
+                    let surface = c.rules_surface?;
+                    Some(
+                        crate::situation::Situation::of_run(&c.tools, Some(workspace))
+                            .on(Some(surface))
+                            .toward(c.rules_goal.clone()),
+                    )
+                })
+                .collect();
+            let Some(scopes) = scopes.filter(|s| !s.is_empty()) else {
+                withhold(Withheld::Unscoped);
+                continue;
+            };
+            let Some(step) = tool_sequence(&crate::session::Session::messages_ever(&text)) else {
+                withhold(Withheld::NoToolCalls);
+                continue;
+            };
+            out.examples.push(SuccessExample {
+                example: Example {
+                    goal: goal.clone(),
+                    step,
+                    expected: None,
+                    source: id.clone(),
+                    owner_act: Some(success.act.clone()),
+                },
+                scopes,
+                at: success.at,
+            });
+        }
+    }
+    out
+}
+
+/// What the success set lends from the default stores: the owning stores
+/// read once (`success::Owned`), the session headers at `dir` under the
+/// corpus's admission, and the set derived from them. A session store that
+/// cannot be listed lends nothing.
+pub fn success_examples_at(dir: &std::path::Path) -> SuccessExamples {
+    let owned = crate::success::Owned::load();
+    match crate::success::SessionIndex::load(dir, false) {
+        Ok(index) => success_examples(&crate::success::derive(&owned.sources(), &index), &index),
+        Err(_) => SuccessExamples::default(),
+    }
 }
 
 #[cfg(test)]
@@ -706,5 +1118,371 @@ mod example_admission_tests {
             found[0].source, "example-0",
             "admission precedes the recent-session limit"
         );
+    }
+}
+
+#[cfg(test)]
+mod success_example_tests {
+    use super::*;
+    use crate::{
+        agent::Taint,
+        closure::Transition,
+        message::{Block, Message},
+        session::{Record, RunConfig, SessionKind, SessionMeta},
+        situation::{GoalKey, Situation},
+        success::{derive, SessionIndex, Sources},
+    };
+    use serde_json::json;
+
+    const TASK: &str = "task-northwind-report";
+
+    /// How a fixture session differs from a clean, scoped one that called
+    /// tools.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Shape {
+        Clean,
+        Tainted,
+        NoTaintRecord,
+        Unscoped,
+        NoTools,
+        Test,
+        Compacted,
+    }
+
+    fn call(id: &str, name: &str) -> Message {
+        Message::assistant(vec![Block::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input: json!({"path": "Northwind Labs/report.md"}),
+        }])
+    }
+
+    fn result(id: &str) -> Message {
+        Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: id.into(),
+            content: "ok".into(),
+            is_error: false,
+        }])
+    }
+
+    /// A session a delegated run for Dana Whitfield recorded: read the
+    /// draft, run the build twice, write the report.
+    fn session(dir: &std::path::Path, id: &str, shape: Shape) {
+        let tools: Vec<String> = ["fs_read", "fs_write", "goal_context", "shell"]
+            .map(String::from)
+            .to_vec();
+        let mut messages = vec![Message::user(
+            "Finish the Northwind Labs report for Dana Whitfield",
+        )];
+        if shape != Shape::NoTools {
+            for (i, name) in ["fs_read", "shell", "shell", "fs_write"].iter().enumerate() {
+                let id = format!("c{i}");
+                messages.push(call(&id, name));
+                messages.push(result(&id));
+            }
+        }
+        messages.push(Message::assistant(vec![Block::text("Done.")]));
+        let mut records = vec![
+            Record::Meta(SessionMeta {
+                id: id.into(),
+                created_at: chrono::Utc::now(),
+                provider: "scripted".into(),
+                model: "scripted".into(),
+                workspace: dir.into(),
+                title: None,
+                kind: Some(if shape == Shape::Test {
+                    SessionKind::Test
+                } else {
+                    SessionKind::Task
+                }),
+            }),
+            Record::Config(RunConfig {
+                tools,
+                rules_workspace: (shape != Shape::Unscoped).then(|| dir.into()),
+                rules_surface: Some(SessionKind::Task),
+                rules_goal: Some(GoalKey::Named(GoalRef::Task(TASK.into()))),
+                ..Default::default()
+            }),
+        ];
+        records.extend(messages.into_iter().map(Record::Message));
+        if shape == Shape::Compacted {
+            // A compaction that kept a summary and the last answer: the
+            // loaded list holds no tool call at all.
+            records.push(Record::Rewrite {
+                messages: vec![
+                    Message::user("Summary: the report was drafted and built."),
+                    Message::assistant(vec![Block::text("Done.")]),
+                ],
+            });
+        }
+        if shape != Shape::NoTaintRecord {
+            records.push(Record::Taint(Taint {
+                private: true,
+                untrusted: shape == Shape::Tainted,
+            }));
+        }
+        let text = records
+            .iter()
+            .map(|r| serde_json::to_string(r).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(dir.join(format!("{id}.jsonl")), text).unwrap();
+    }
+
+    fn close(id: &str, session: &str) -> Transition {
+        serde_json::from_value(json!({
+            "id": id, "task": TASK, "from": "review", "to": "done", "move": "close",
+            "actor": "owner", "surface": "cli", "sessions": [session],
+            "at": "2026-09-21T12:00:00Z",
+        }))
+        .unwrap()
+    }
+
+    fn reopen(id: &str, undoes: &str) -> Transition {
+        serde_json::from_value(json!({
+            "id": id, "task": TASK, "from": "done", "to": "next", "move": "reopen",
+            "actor": "owner", "surface": "cli", "sessions": [],
+            "at": "2026-09-22T12:00:00Z", "undoes": undoes,
+        }))
+        .unwrap()
+    }
+
+    fn lent(dir: &std::path::Path, closures: &[Transition]) -> SuccessExamples {
+        let index = SessionIndex::load(dir, false).unwrap();
+        let set = derive(
+            &Sources {
+                closures,
+                ..Default::default()
+            },
+            &index,
+        );
+        success_examples(&set, &index)
+    }
+
+    /// The run a later delegation of the same task is in: its registry, the
+    /// workspace and surface its rules were matched on, and the task.
+    fn run_in(dir: &std::path::Path) -> Situation {
+        let tools: Vec<String> = ["fs_read", "fs_write", "goal_context", "shell", "todo"]
+            .map(String::from)
+            .to_vec();
+        Situation::of_run(&tools, Some(dir))
+            .on(Some(SessionKind::Task))
+            .toward(Some(GoalKey::Named(GoalRef::Task(TASK.into()))))
+    }
+
+    /// Row 2e-4b's first acceptance: a task closed `done` lends its
+    /// session's tool sequence as a planning example toward the task — and
+    /// once the owner reopens it, the same session lends nothing, with no
+    /// store to forget: the success is withdrawn where it is derived. Fails
+    /// on the tree before 2e-4b-1, where a success lent no example at all.
+    #[test]
+    fn a_reopened_tasks_session_supplies_no_example() {
+        let root = crate::mismatch::Workspace::new().unwrap();
+        let dir = root.path();
+        session(dir, "s-dana", Shape::Clean);
+
+        let standing = lent(dir, &[close("c1", "s-dana")]);
+        let served = standing.for_run(&run_in(dir));
+        assert_eq!(served.len(), 1, "{standing:?}");
+        let e = &served[0];
+        assert_eq!(e.step, "fs_read → shell ×2 → fs_write");
+        assert_eq!(e.goal, GoalRef::Task(TASK.into()));
+        assert_eq!(e.source, "s-dana");
+        assert_eq!(
+            e.owner_act.as_ref().map(|a| a.pointer()),
+            Some("closure:c1".to_string())
+        );
+
+        let withdrawn = lent(dir, &[close("c1", "s-dana"), reopen("r1", "c1")]);
+        assert!(withdrawn.examples.is_empty(), "{withdrawn:?}");
+        assert!(withdrawn.for_run(&run_in(dir)).is_empty());
+    }
+
+    /// One build drives many runs in `chat`, the TUI, `serve` and Slack, so
+    /// a reopen after the pool was read must withdraw its example at the
+    /// next run start — and a closure store that cannot be read then
+    /// withdraws every closure's example, since whether it stands is
+    /// unknown; an answered question cannot be taken back and stays (found
+    /// on review of #342: the pool was read once per process).
+    #[test]
+    fn a_reopen_after_the_pool_was_read_withdraws_its_example_at_the_next_run() {
+        let root = crate::mismatch::Workspace::new().unwrap();
+        let dir = root.path();
+        session(dir, "s-dana", Shape::Clean);
+        let mut pool = lent(dir, &[close("c1", "s-dana")]);
+        let mut answered = pool.examples[0].clone();
+        answered.example.source = "s-asked".into();
+        answered.example.owner_act = Some(crate::success::Act::QuestionAnswered {
+            question: "q1".into(),
+        });
+        pool.examples.push(answered);
+        let run = run_in(dir);
+        let sources = |closures: &[Transition], unreadable| {
+            let mut s = ServedSuccesses::fixed(pool.clone(), &run);
+            s.restand(&Sources {
+                closures,
+                closures_unreadable: unreadable,
+                ..Default::default()
+            });
+            s.served()
+                .iter()
+                .map(|e| e.source.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sources(&[close("c1", "s-dana")], false),
+            vec!["s-dana", "s-asked"],
+            "not vacuous: still standing, both served"
+        );
+        assert_eq!(
+            sources(&[close("c1", "s-dana"), reopen("r1", "c1")], false),
+            vec!["s-asked"]
+        );
+        assert_eq!(sources(&[close("c1", "s-dana")], true), vec!["s-asked"]);
+    }
+
+    /// A compacted session lends its whole trace, not the tail the
+    /// compaction left in the loaded list — here a tail with no call at
+    /// all, which read as "no tool calls" (found on review of #342).
+    #[test]
+    fn a_compacted_session_lends_every_call_it_made() {
+        let root = crate::mismatch::Workspace::new().unwrap();
+        let dir = root.path();
+        session(dir, "s-long", Shape::Compacted);
+        let out = lent(dir, &[close("c1", "s-long")]);
+        let served = out.for_run(&run_in(dir));
+        assert_eq!(served.len(), 1, "{:?}", out.withheld);
+        assert_eq!(served[0].step, "fs_read → shell ×2 → fs_write");
+    }
+
+    /// Only a clean, admitted, scoped session that called a tool lends one;
+    /// each refusal is named, never a quiet empty list. Unknown taint is
+    /// not clean.
+    #[test]
+    fn only_a_clean_admitted_scoped_session_with_calls_lends_an_example() {
+        let root = crate::mismatch::Workspace::new().unwrap();
+        let dir = root.path();
+        let cases = [
+            ("s-tainted", Shape::Tainted, Withheld::NotClean),
+            ("s-taint-unknown", Shape::NoTaintRecord, Withheld::NotClean),
+            ("s-unscoped", Shape::Unscoped, Withheld::Unscoped),
+            ("s-idle", Shape::NoTools, Withheld::NoToolCalls),
+        ];
+        for (id, shape, _) in cases {
+            session(dir, id, shape);
+        }
+        // A smoke test named beside a real session lends nothing, though
+        // the success stands on the real one.
+        session(dir, "s-real", Shape::Clean);
+        session(dir, "s-smoke", Shape::Test);
+        let mut both = close("c-both", "s-real");
+        both.sessions.push("s-smoke".into());
+
+        let mut closures: Vec<Transition> = cases
+            .iter()
+            .enumerate()
+            .map(|(i, (id, _, _))| close(&format!("c{i}"), id))
+            .collect();
+        closures.push(both);
+        let out = lent(dir, &closures);
+        for (id, _, why) in cases {
+            assert!(
+                out.withheld
+                    .iter()
+                    .any(|(_, s, w)| s.as_deref() == Some(id) && *w == why),
+                "{id}: {:?}",
+                out.withheld
+            );
+        }
+        assert!(out
+            .withheld
+            .iter()
+            .any(|(_, s, w)| s.as_deref() == Some("s-smoke") && *w == Withheld::NotAdmitted));
+        let served: Vec<String> = out
+            .for_run(&run_in(dir))
+            .into_iter()
+            .map(|e| e.source)
+            .collect();
+        assert_eq!(served, vec!["s-real".to_string()]);
+
+        // A success toward no goal — a draft sent unchanged — lends none:
+        // an example is served only toward its goal.
+        let set = crate::success::Successes {
+            standing: vec![crate::success::Success {
+                act: crate::success::Act::SentUnchanged { item: "o1".into() },
+                sessions: vec!["s-real".into()],
+                goal: None,
+                at: None,
+            }],
+            ..Default::default()
+        };
+        let index = SessionIndex::load(dir, false).unwrap();
+        let out = success_examples(&set, &index);
+        assert!(out.examples.is_empty());
+        assert_eq!(out.withheld[0].2, Withheld::NoGoal);
+    }
+
+    /// A run is in an example's situation only when every run of the
+    /// session was matched where this one is: another workspace, another
+    /// surface or another goal is served nothing, and so is a run whose
+    /// registry lacks a tool the session carried.
+    #[test]
+    fn an_example_is_served_only_in_its_sessions_situation() {
+        let root = crate::mismatch::Workspace::new().unwrap();
+        let dir = root.path();
+        session(dir, "s-dana", Shape::Clean);
+        let out = lent(dir, &[close("c1", "s-dana")]);
+        assert_eq!(out.for_run(&run_in(dir)).len(), 1);
+
+        let elsewhere = crate::mismatch::Workspace::new().unwrap();
+        let other_ws = Situation {
+            workspace: Some(elsewhere.path().into()),
+            ..run_in(dir)
+        };
+        assert!(out.for_run(&other_ws).is_empty(), "another workspace");
+        assert!(
+            out.for_run(&run_in(dir).on(Some(SessionKind::Chat)))
+                .is_empty(),
+            "another surface"
+        );
+        assert!(
+            out.for_run(&run_in(dir).toward(Some(GoalKey::Named(GoalRef::Task(
+                "task-lakeside-visit".into()
+            )))))
+            .is_empty(),
+            "another goal"
+        );
+        assert!(out.for_run(&run_in(dir).toward(None)).is_empty(), "no goal");
+        let narrower = Situation {
+            tools: vec!["fs_read".into()],
+            ..run_in(dir)
+        };
+        assert!(out.for_run(&narrower).is_empty(), "a narrower registry");
+    }
+
+    /// Names only, in order, the harness's own calls left out, a repeat
+    /// folded, and a long trace cut with a count rather than silently.
+    #[test]
+    fn the_tool_sequence_is_names_in_order_without_the_harness() {
+        let mut harness = call("h1", "todo");
+        harness.harness = true;
+        let messages = vec![
+            Message::user("go"),
+            call("a", "fs_read"),
+            harness,
+            call("b", "fs_read"),
+            call("c", "mail_search"),
+        ];
+        assert_eq!(
+            tool_sequence(&messages).as_deref(),
+            Some("fs_read ×2 → mail_search")
+        );
+        assert_eq!(tool_sequence(&[Message::user("hi")]), None);
+        let long: Vec<Message> = (0..30)
+            .map(|i| call(&i.to_string(), if i % 2 == 0 { "fs_read" } else { "shell" }))
+            .collect();
+        let seq = tool_sequence(&long).unwrap();
+        assert!(seq.ends_with("→ … 6 more"), "{seq}");
+        assert!(!seq.contains("path"), "never an argument: {seq}");
     }
 }

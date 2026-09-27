@@ -497,6 +497,43 @@ place exemplars appear. **No run is shown them yet.** Showing them to a run
 that is drafting is a later, separate switch. When it comes, it will count
 as private data, because an exemplar is mail you sent.
 
+#### Planning examples from what went right
+
+A success toward a goal (a task you closed `done`, a workflow bound to a
+task, a question asked toward one) can also serve as a **planning example**
+for a later run toward the same goal. The example is the order of tools that
+session called, such as `fs_read → shell ×2 → fs_write`. Tool names only: no
+arguments, and nothing the model wrote. Plans are rarely written down, so the
+call trace is what a success leaves behind. A session lends an example only
+when:
+
+- it read no third-party content (a session whose taint cannot be read
+  lends none);
+- every run in it recorded the workspace and surface its rules were matched
+  on;
+- a later run is in the same situation: the same workspace, surface and
+  goal, with every tool it had.
+
+When you **reopen** the task, the example is gone with the success.
+
+```bash
+mecha sessions successes --examples   # what would be served, and why each success lends none
+```
+
+`goal_context` returns these examples only when the model asks for its goal's
+context and the setting is on. Each one names the act that verified it and
+says it is a call trace, not a plan. Nothing is added to the prompt, and the
+setting ships off while it is measured:
+
+```toml
+[agent]
+success_examples = true   # off by default
+```
+
+Calling `goal_context` already counts as reading private data, and that
+covers these examples too. `mecha eval` and the nightly diagnostician never
+see them.
+
 ### Text appraisals
 
 A **text appraisal** is mecha's own interpretation of a session, in prose:

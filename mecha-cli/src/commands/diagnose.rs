@@ -402,7 +402,7 @@ pub enum DiagnosisOutcome {
 }
 
 /// The diagnostician's narrowed options: read-only, no outbox, no learned
-/// rules, no past appraisals, global config only.
+/// rules, no past appraisals, no success examples, global config only.
 ///
 /// A function so the narrowing is testable without a provider.
 /// `no_past_appraisals` is the holdout half of row 2f (R38): the brief carries
@@ -410,6 +410,9 @@ pub enum DiagnosisOutcome {
 /// same store with no holdout filter, so it is off here as `no_learned_rules`
 /// is — "the confirming slice is one its author never read about" holds for
 /// the run, not only for the brief (found on review of #329).
+/// `no_success_examples` is the same argument one store over (2e-4b-1): a
+/// success example names a session and its tool sequence, read through
+/// `goal_context` with no holdout filter, and a held-out episode can be one.
 fn diagnostician_opts(
     global: &GlobalOpts,
     system: String,
@@ -422,6 +425,7 @@ fn diagnostician_opts(
         no_outbox: true,
         no_learned_rules: true,
         no_past_appraisals: true,
+        no_success_examples: true,
         global_config_only: true,
         workspace,
         ..global.clone()
@@ -707,7 +711,9 @@ mod tests {
     /// appraisals as well as learned rules, so `goal_context` — a second
     /// reader of the appraisal store with no holdout filter — cannot hand it
     /// a held-out episode's appraisal on a night whose owner turned
-    /// `[agent] past_appraisals` on. And the other narrowings stay.
+    /// `[agent] past_appraisals` on — nor, since 2e-4b-1, a held-out
+    /// session's tool sequence as a success example. And the other
+    /// narrowings stay.
     #[test]
     fn the_diagnostician_reads_no_past_appraisals_through_goal_context() {
         let global = GlobalOpts::default();
@@ -717,6 +723,8 @@ mod tests {
         );
         let opts = diagnostician_opts(&global, "sys".into(), None);
         assert!(opts.no_past_appraisals);
+        assert!(!global.no_success_examples, "not vacuous either");
+        assert!(opts.no_success_examples);
         assert!(opts.no_learned_rules && opts.no_outbox && opts.read_only);
         assert!(opts.global_config_only && !opts.yes);
         assert_eq!(opts.system.as_deref(), Some("sys"));

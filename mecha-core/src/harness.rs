@@ -201,6 +201,13 @@ pub enum Lever {
     /// does — retrieved memory can cost more than it returns, so the arms
     /// are measured before it is on. Nothing reaches the prefix either way.
     PastAppraisals,
+    /// `[agent] success_examples` unset or `false`, or
+    /// `--no-success-examples`: `goal_context` serves no planning success
+    /// example — the tool sequence of a clean session the owner verified
+    /// (`APPRAISAL-WIRING-DESIGN.md` L2, built as 2e-4b-1, R40). Ships off
+    /// for the reason [`Lever::PastAppraisals`] does; nothing reaches the
+    /// prefix either way.
+    SuccessExamples,
 }
 
 impl Lever {
@@ -214,7 +221,7 @@ impl Lever {
     /// on review). The test `all_names_every_variant_serde_knows` closes
     /// it from the derive: serde's unknown-variant error lists every
     /// variant, and the test asserts this array covers that list.
-    pub const ALL: [Lever; 19] = [
+    pub const ALL: [Lever; 20] = [
         Lever::Mcp,
         Lever::LearnedRules,
         Lever::Hooks,
@@ -234,6 +241,7 @@ impl Lever {
         Lever::CarriedState,
         Lever::SituationBrief,
         Lever::PastAppraisals,
+        Lever::SuccessExamples,
     ];
 
     pub fn parse(name: &str) -> Option<Lever> {
@@ -261,6 +269,7 @@ impl Lever {
             Lever::CarriedState => "carried_state",
             Lever::SituationBrief => "situation_brief",
             Lever::PastAppraisals => "past_appraisals",
+            Lever::SuccessExamples => "success_examples",
         }
     }
 
@@ -1203,7 +1212,8 @@ mod tests {
                 | Lever::PredictiveCompaction
                 | Lever::CarriedState
                 | Lever::SituationBrief
-                | Lever::PastAppraisals => {}
+                | Lever::PastAppraisals
+                | Lever::SuccessExamples => {}
             }
         }
         let mut seen = std::collections::BTreeSet::new();
