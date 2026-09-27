@@ -1111,16 +1111,16 @@ fn attached_images(workspace: &std::path::Path, paths: &[String]) -> Vec<Block> 
     };
     let mut blocks = Vec::new();
     for path in paths {
+        let Some(media_type) = mecha_core::message::image_media_type(std::path::Path::new(path))
+        else {
+            continue;
+        };
         if blocks.len() == MAX_ATTACHED_IMAGES {
             tracing::info!(
                 "more than {MAX_ATTACHED_IMAGES} pictures on one turn; the rest by path"
             );
             break;
         }
-        let Some(media_type) = mecha_core::message::image_media_type(std::path::Path::new(path))
-        else {
-            continue;
-        };
         let read = files.read(path).and_then(|(file, _)| {
             use std::io::Read;
             let mut bytes = Vec::new();
@@ -1903,8 +1903,14 @@ pub async fn send(
     // Read before the sessions lock, which every conversation waits on, and
     // only for a model that can see: to a blind one the pixels would render
     // as a placeholder every turn, and the path is already in the text.
+    let named = body
+        .attachments
+        .iter()
+        .filter(|p| mecha_core::message::image_media_type(std::path::Path::new(p)).is_some())
+        .count();
+    let sees = bound.agent.vision();
     let images = match workspace {
-        Some(workspace) if bound.agent.vision() && !body.attachments.is_empty() => {
+        Some(workspace) if sees && named > 0 => {
             let paths = body.attachments;
             tokio::task::spawn_blocking(move || attached_images(&workspace, &paths))
                 .await
@@ -1915,6 +1921,7 @@ pub async fn send(
         }
         _ => Vec::new(),
     };
+    let shown = images.len();
     let mut sessions = chat.sessions.lock().await;
     if chat.stopping.is_cancelled() {
         return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
@@ -1942,7 +1949,16 @@ pub async fn send(
             images,
         },
     ) {
-        Ok(_started) => Json(serde_json::json!({ "started": true })).into_response(),
+        // How many pictures the text names and the model was not shown —
+        // blind model, the cap, a file that would not read — for the page to
+        // say, since it cleared the chips on send and `tracing` is not a
+        // surface anyone holding a phone reads (found on review of #366).
+        Ok(_started) => Json(serde_json::json!({
+            "started": true,
+            "pictures_not_shown": named.saturating_sub(shown),
+            "model_sees": sees,
+        }))
+        .into_response(),
         Err(TurnError::Held) => (
             StatusCode::CONFLICT,
             "conversation is held by a finished run still landing\n",

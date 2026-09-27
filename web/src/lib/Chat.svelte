@@ -1095,6 +1095,14 @@
       }
       // A steer carries text only, so a picture sent into a working run is
       // named and not shown — said here, since the chip is already gone.
+      if (data.started && data.pictures_not_shown > 0) {
+        pushEntry({
+          kind: 'notice',
+          text: data.model_sees
+            ? `${data.pictures_not_shown} picture(s) went in by name only — the model was not shown them (at most 8 per message, and a file that will not open is skipped).`
+            : 'This model cannot see images, so the picture(s) went in by name only.',
+        });
+      }
       if (data.steered && attached.some((p) => /\.(png|jpe?g|gif|webp)$/i.test(p))) {
         pushEntry({
           kind: 'notice',
