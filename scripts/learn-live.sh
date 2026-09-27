@@ -30,15 +30,19 @@ MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
 # loaded. This runs at every session end, so a `local` default — a pin, and on
 # the router a load — undid the owner's model switch each time a chat closed.
 # Without a router, unset is `-p local` as before. The rule: scripts/pin.sh.
-# A missing pin.sh must stop the run, not leave PIN unset: unset expands to
-# no `-p`, which is the unpinned run on the default this file exists to
-# decide (found on review).
-source "$(dirname "$0")/pin.sh" || { echo "learn-live: cannot read $(dirname "$0")/pin.sh; refusing to run unpinned" >&2; exit 1; }
-scheduled_pin "${MECHA_LEARN_PROVIDER:-}"
 LEARNING_DIR="${MECHA_LEARNING_DIR:-$HOME/.mecha/learning}"
 LOG_DIR="$LEARNING_DIR/logs"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/live-$(date -u +%Y-%m-%d).log"
+# A pin.sh that is missing or does not define scheduled_pin must stop the
+# run, not leave PIN unset: unset expands to no `-p`, the unpinned run on the
+# default this file exists to decide. Said into the log, because a
+# session_end hook's own output goes nowhere (found on review).
+{ source "$(dirname "$0")/pin.sh" && declare -F scheduled_pin >/dev/null; } || {
+    echo "learn-live: no scheduled_pin from $(dirname "$0")/pin.sh; refusing to run unpinned" >>"$LOG"
+    exit 1
+}
+scheduled_pin "${MECHA_LEARN_PROVIDER:-}"
 
 # One live pass at a time. Held for the whole run, released on exit.
 exec 9>"$LEARNING_DIR/.live.lock"

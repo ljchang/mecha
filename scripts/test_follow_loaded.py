@@ -141,6 +141,10 @@ class Scripts(unittest.TestCase):
             calls, "-p", "x", ["reflect", "distill", "validate", "learn", "propose-retirements", "ruminate"]
         )
         self.assert_pinned(calls, "--judge-provider", "j", ["validate"])
+        # A pinned night with the judge unset judges on the pinned model, not
+        # on the default entry (which would swap the router per judge call).
+        calls = self.run_script("ruminate.sh", MECHA_RUMINATE_PROVIDER="x")
+        self.assert_pinned(calls, "--judge-provider", "x", ["validate"])
         # No router: `local`, as before it — never the default, which may be
         # a paid API (found on review of #346).
         calls = self.run_script("ruminate.sh", config=NO_ROUTER)
@@ -157,11 +161,15 @@ class Scripts(unittest.TestCase):
     def test_a_missing_pin_rule_stops_every_script(self):
         # Without pin.sh, PIN would be unset and every stage would run on the
         # default, unpinned — so each script refuses before any model stage.
-        with tempfile.TemporaryDirectory() as bare:
-            for name in ("ruminate.sh", "frontdoor.sh", "learn-live.sh"):
-                (Path(bare) / name).write_text((HERE / name).read_text())
-                calls = self.run_script(name, script_dir=Path(bare), rc=1)
-                self.assertEqual(calls, [], f"{name} ran stages without its pin rule")
+        # A pin.sh that is there but defines nothing is the same failure.
+        for pin in (None, "# emptied\n"):
+            with tempfile.TemporaryDirectory() as bare:
+                if pin is not None:
+                    (Path(bare) / "pin.sh").write_text(pin)
+                for name in ("ruminate.sh", "frontdoor.sh", "learn-live.sh"):
+                    (Path(bare) / name).write_text((HERE / name).read_text())
+                    calls = self.run_script(name, script_dir=Path(bare), rc=1)
+                    self.assertEqual(calls, [], f"{name} ran stages without its pin rule ({pin!r})")
 
     def test_frontdoor_follows_unless_pinned(self):
         self.assert_follows(
