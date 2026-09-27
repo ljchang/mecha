@@ -290,37 +290,49 @@
     e.kind === 'notice' ||
     (e.kind === 'user' && !!e.queued && e.delivery !== 'delivered');
 
-  async function catchUp(sessionKey) {
-    const own = entries.slice(liveFrom).filter(pageOnly);
-    // A read that failed replaced nothing, and one that found the chat gone
-    // has emptied the tab on purpose (`forget`): carrying the cards over
-    // either would duplicate them, or keep an ended incognito chat's drafts
-    // in memory.
-    if (!(await load(sessionKey)) || gone || sessionKey !== key) return;
-    entries.push(...own);
-    scrollDown();
+  // The chat on screen's signal, aborted by the stream effect's cleanup when
+  // the page switches away or unmounts, so a catch-up still on the wire
+  // writes nothing into a view that has moved on.
+  let viewSignal = null;
+  // Which read is the latest. Two can be on the wire at once — the stream's
+  // own and a catch-up, or two catch-ups — and an older answer landing last
+  // would put back the run the newer one saw end.
+  let loadGen = 0;
+
+  // A re-read that keeps what only this page holds. The cards are taken in
+  // `load`, in the same step that replaces the list, never before its
+  // `await`: a card pushed while the read is on the wire is in the list by
+  // then, and a read that fails, is superseded, or finds the chat gone
+  // replaces nothing and so carries nothing — no duplicate, and nothing put
+  // back into an incognito chat that `forget` has just emptied.
+  function catchUp(sessionKey) {
+    return load(sessionKey, viewSignal, { carry: true });
   }
 
-  /// True when it replaced the transcript with the server's.
-  async function load(sessionKey = key, signal) {
+  // True when it replaced the transcript with the server's.
+  async function load(sessionKey = key, signal, { carry = false } = {}) {
     const seq = doneSeq;
+    const gen = ++loadGen;
     try {
       const res = await fetch(`/api/chat/${sessionKey}`, { signal });
       // Reaped between the open and this read: the gone screen, not an
       // error strip (review of #326).
       if (res.status === 410) {
         if (!signal?.aborted && sessionKey === key) closeIncognito('closed');
-        return;
+        return false;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).trim()}`);
       const data = await res.json();
-      if (signal?.aborted || sessionKey !== key) return;
+      if (signal?.aborted || sessionKey !== key || gen !== loadGen) return false;
+      const carried = carry ? entries.slice(liveFrom).filter(pageOnly) : [];
       entries = data.entries.map((e) =>
         e.kind === 'tool' ? { ...e, pending: false } : e
       );
       running = data.running;
       partialRun = !!data.held_by_run;
+      // Before the carried cards, so they stay page-only for the next re-read.
       liveFrom = entries.length;
+      entries.push(...carried);
       // A `done` landed while this read was on the wire, and the read still
       // saw the run: that run is over and nothing will say so again.
       if (partialRun && doneSeq !== seq) {
@@ -624,6 +636,12 @@
     streaming = '';
     usage = null;
     taint = null;
+    // What the catch-up knew of the last chat. The new key's first read sets
+    // both again; reset here so nothing in between (the rail's belt) acts on
+    // the old chat's run. `doneSeq` is a counter compared by a read against
+    // its own start, and a read for the old key is dropped by its key check.
+    partialRun = false;
+    liveFrom = 0;
     // Same rule as everywhere else this readout guards against staleness
     // (the TUI's `/clear`, voice's `Hosted::Unknown` fall-through): the
     // tint describes the *previous* conversation's last run, and nothing
@@ -842,6 +860,7 @@
     // cleanup below runs — and is not reopened for a chat that is over.
     if (gone) return;
     const controller = new AbortController();
+    viewSignal = controller.signal;
     let source;
     let retry;
     let retryDelay = 1500;
