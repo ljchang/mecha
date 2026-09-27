@@ -865,8 +865,12 @@ pub struct Schedule {
     #[serde(default = "five")]
     pub validate: u32,
     /// `rules propose-retirements --apply`: the nightly's one brake on
-    /// rules that go live as they are derived. Runs after `learn`, as the
-    /// nightly does; a loop that installed rules and never retired a
+    /// rules that go live as they are derived. Runs right after `validate`,
+    /// ahead of `learn`, as the nightly's first scan does (owner,
+    /// 2026-09-27); the nightly scans a second time after `learn` so a
+    /// narrowing learn re-widens is re-narrowed the same night, which a
+    /// lifetime does at its next due scan instead — it has no wall clock at
+    /// stake, and one stage runs once per position. A loop that installed rules and never retired a
     /// harmful one would be more permissive than the one that ships, in
     /// the direction that flatters the `learn` arm (found on review).
     #[serde(default = "five")]

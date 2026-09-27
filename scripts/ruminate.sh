@@ -11,7 +11,8 @@
 #
 # Ordering is the one deliberate choice here. The retirement brake runs
 # right after `validate`, ahead of every paid pass, because it reads only
-# validate's rows (owner, 2026-09-27). `validate --unprocessed-only`
+# validate's rows, and again after `learn`, which can re-widen a rule the
+# first scan narrowed (owner, 2026-09-27). `validate --unprocessed-only`
 # and `sessions compare` run BEFORE `learn`, because learn marks reflections
 # processed and derives rules from the same steers — measuring afterwards
 # would grade the rules on their own training data. Tonight's fresh
@@ -186,6 +187,18 @@ rc=$?
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
 echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
 "$MECHA" learn ${PIN[@]+"${PIN[@]}"} --holdout 0.25 --auto
+
+echo "· retirements again (after learn: a rule narrowed above that learn re-widened"
+echo "  is re-narrowed tonight, not tomorrow)"
+# The brake's second scan (owner, 2026-09-27). The first ran right after
+# validate so it waits on no paid pass; but narrowing leaves a rule active,
+# and learn's cross-region widening can re-widen it and clear the mark —
+# which makes `tally_for` refold the whole ledger, so the old convictions
+# re-convict at the next scan. Before the reorder that scan was this same
+# night; this one keeps it so (found on review of #355). Idempotent otherwise:
+# a narrowed rule's tally counts only rows since `narrowed_at`, so a scan
+# with no new rows leaves it standing.
+"$MECHA" rules propose-retirements ${PIN[@]+"${PIN[@]}"} --apply
 
 echo "· work clean (retention on generated output; a published bundle's source is never removed)"
 "$MECHA" work clean
