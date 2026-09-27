@@ -296,8 +296,9 @@ Before it, a model could not look at all: `fs_read` returns PNG bytes as
 noise, and the result said "You cannot see it", so each edit was composed
 from the user's description of the last. `image_view` reads any workspace
 image through the path jail — a result under `images/`, an attachment under
-`inbox/` — and is registered beside `image_generate` when `[image]` is
-configured.
+`inbox/` — and is registered for any model that can see, `[image]` or not: it
+reaches no server (found on review of #365). `--tool image_view` on a blind
+provider is refused out loud.
 
 Three rules on the fold, each a bug if undone:
 
@@ -313,12 +314,32 @@ Three rules on the fold, each a bug if undone:
   rides in a user message, so unregistered it would be mined as a steer and
   shown as something the owner said and attached.
 
-The door is `image::rendered_block`, not `block_from_path`: a look is
-**always** re-encoded to JPEG, because a generated picture is a photograph's
-kind of content and its PNG is not small — the first twenty here had a median
-of 1.8 MB, which every later turn would resend. The file on disk is untouched.
-An MCP server's `image` content is not taken: those would be a third party's
-pixels.
+The door is `image::rendered_block`: a picture at or under
+`PASS_THROUGH_BYTES` (1 MiB) that fits `MAX_EDGE` passes through byte for
+byte, because a small file is most often a screenshot of text, where JPEG's
+artefacts close up glyphs; anything larger is re-encoded to JPEG, including a
+picture that fits both caps — a generated picture is a photograph's kind of
+content and its PNG is not small (the first twenty here ran 1.05–2.35 MB,
+every one above the threshold), and every later turn would resend it. The file
+on disk is untouched. An MCP server's `image` content is not taken: those
+would be a third party's pixels.
+
+Three things the fold does not do, stated so nobody reads them as covered:
+
+- **The compaction forecast does not see a look.** `pressure::message_bytes`
+  excludes image payloads (`image_payloads_are_not_counted_as_growth`),
+  decided when an image was the owner's rare act; a run can now add ~1000
+  tokens per look on its own initiative. Reported `prompt_tokens` catches up
+  a turn later, so nothing overflows that did not before, but twenty looks
+  are most of a local slot the forecast cannot see coming.
+- **A look arms `private_data` only.** A workspace picture can hold text a
+  third party wrote — an injection rendered into pixels — and `image_view`
+  does not arm `untrusted` for it, exactly as `fs_read` does not for a text
+  file of the same provenance. The stance is the workspace's, not this
+  tool's; an MCP server's pixels are refused above for that reason.
+- **Replay drops the pixels.** The picture rides in the results turn, which
+  the driver does not replay, and a recorded answer is text; `mecha replay`
+  counts them (`tool_pictures_without_pixels`) and says so.
 
 Four decisions, each a bug if undone:
 

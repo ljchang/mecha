@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `fs_read` returns a PNG as noise, so positional edits ("the second
   person from the left") were composed blind. Not returned by default,
   because a look costs ~1000 tokens for the rest of the conversation; a
-  look arms `private_data`, like `fs_read`. Registered beside
-  `image_generate` when `[image]` is configured.
+  look arms `private_data`, like `fs_read`. Registered for any model that
+  can see; a small picture (≤ 1 MiB, a screenshot most often) reaches it
+  byte for byte, a larger one as JPEG.
 
 ### Changed
 

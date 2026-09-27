@@ -38,6 +38,11 @@ pub const MAX_BYTES: usize = 5 * 1024 * 1024;
 /// pixels beyond it are re-sent every turn and never looked at.
 pub const MAX_EDGE: u32 = 1568;
 
+/// At or under this, a picture a tool shows the model is passed through as
+/// it is ([`rendered_block`]). 1 MiB: above a typical screenshot of text, and
+/// below every generated picture measured here.
+pub const PASS_THROUGH_BYTES: usize = 1024 * 1024;
+
 /// What a re-encode costs in fidelity. 85 is the usual "cannot tell without
 /// looking for it" point, and the thing being carried is almost always a
 /// screenshot of text, where the artefacts that matter are the ones that
@@ -100,17 +105,32 @@ pub fn block_from_path(path: &Path) -> Result<Option<Block>> {
     Ok(Some(Block::image("image/jpeg", &out, name)))
 }
 
-/// A picture a tool drew, as an image block for the model to check.
+/// A picture a tool put in front of the model, as an image block.
 ///
-/// **Always re-encoded**, which [`block_from_path`] deliberately is not. That
-/// function passes a small file through untouched because the thing carried
-/// is usually a screenshot of text; a generated picture is a photograph's
-/// kind of content, where JPEG costs nothing anyone checking it would see,
-/// and its PNG is not small — the first twenty Qwen-Image results here had a
-/// median of 1.8 MB, resent every turn for the rest of the conversation. The
-/// PNG on disk stays the original; this copy exists only in the message.
+/// **Passed through byte for byte when it is small**, as [`block_from_path`]
+/// does, because a small file is most often a screenshot of text, where JPEG's
+/// artefacts close up glyphs and reading them is what the look is for (found
+/// on review of #365). **Re-encoded otherwise**, including a picture that fits
+/// both caps: a generated picture is a photograph's kind of content, where
+/// JPEG costs nothing anyone checking it would see, and its PNG is not small —
+/// the first twenty Qwen-Image results here ran 1.05–2.35 MB (median 1.8 MB),
+/// every one above [`PASS_THROUGH_BYTES`], resent every turn for the rest of
+/// the conversation. The file on disk stays the original.
 pub fn rendered_block(bytes: &[u8], name: Option<String>) -> Result<Block> {
-    let img = image::load_from_memory(bytes).context("the rendered image did not decode")?;
+    let img = image::load_from_memory(bytes).context("the image did not decode")?;
+    if bytes.len() <= PASS_THROUGH_BYTES && img.width().max(img.height()) <= MAX_EDGE {
+        let media_type = match image::guess_format(bytes) {
+            Ok(image::ImageFormat::Png) => "image/png",
+            Ok(image::ImageFormat::Jpeg) => "image/jpeg",
+            Ok(image::ImageFormat::Gif) => "image/gif",
+            Ok(image::ImageFormat::WebP) => "image/webp",
+            // Decoded, but not a type both backends read: re-encode below.
+            _ => "",
+        };
+        if !media_type.is_empty() {
+            return Ok(Block::image(media_type, bytes, name));
+        }
+    }
     let img = if img.width().max(img.height()) > MAX_EDGE {
         img.thumbnail(MAX_EDGE, MAX_EDGE)
     } else {
@@ -232,25 +252,60 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A picture a tool drew is re-encoded even when it already fits — the
-    /// opposite of [`block_from_path`]'s pass-through, and the whole point:
-    /// fails on "reuse `block_from_path`", which would carry the PNG as is.
+    /// Photo-like noise: incompressible, so a 1024² PNG of it is several
+    /// megabytes — the shape of a generated picture, which fits both caps.
+    fn noisy_png(w: u32, h: u32) -> Vec<u8> {
+        let mut x: u32 = 0x9E37_79B9;
+        let img = image::RgbImage::from_fn(w, h, |_, _| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            image::Rgb([x as u8, (x >> 8) as u8, (x >> 16) as u8])
+        });
+        let mut out = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    /// A small picture — a screenshot of text, most often — is passed through
+    /// byte for byte; a large one that fits both caps, as a generated picture
+    /// does, is re-encoded; one past the edge is bounded. Fails on either
+    /// flat rule: "always JPEG" blurs the screenshot, and `block_from_path`'s
+    /// caps alone would carry a generation's multi-megabyte PNG every turn.
     #[test]
-    fn a_rendered_picture_is_always_re_encoded_and_keeps_its_name() {
-        let block = rendered_block(&png(1024, 1024), Some("images/a-7.png".into())).unwrap();
+    fn a_small_picture_passes_through_and_a_large_one_is_re_encoded() {
+        use base64::Engine as _;
+        let small = png(400, 200);
+        assert!(small.len() <= PASS_THROUGH_BYTES);
         let Block::Image {
-            media_type, source, ..
-        } = &block
+            media_type,
+            data,
+            source,
+        } = rendered_block(&small, Some("inbox/shot.png".into())).unwrap()
         else {
             panic!("expected an image block")
         };
+        assert_eq!(media_type, "image/png");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&data)
+                .unwrap(),
+            small,
+            "byte for byte"
+        );
+        assert_eq!(source.as_deref(), Some("inbox/shot.png"));
+
+        let generated = noisy_png(1024, 1024);
+        assert!(generated.len() > PASS_THROUGH_BYTES, "{}", generated.len());
+        let Block::Image { media_type, .. } = rendered_block(&generated, None).unwrap() else {
+            panic!("expected an image block")
+        };
         assert_eq!(media_type, "image/jpeg");
-        assert_eq!(source.as_deref(), Some("images/a-7.png"));
 
         let Block::Image { data, .. } = rendered_block(&png(3000, 1500), None).unwrap() else {
             panic!("expected an image block")
         };
-        use base64::Engine as _;
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(&data)
             .unwrap();

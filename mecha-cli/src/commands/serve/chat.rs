@@ -3995,6 +3995,43 @@ mod wire_tests {
         );
     }
 
+    /// A picture a tool showed the model rides in the results turn behind its
+    /// caption; the history draws the tool's row and no owner bubble — not
+    /// the caption, not an `[image]`. Fails on the old renderer, which
+    /// appended `[image]` to an owner entry for any image in a user message.
+    #[test]
+    fn a_tools_picture_is_not_drawn_as_something_the_owner_attached() {
+        let messages = vec![
+            Message::user("is the hat on the right person?"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "v1".into(),
+                name: "image_view".into(),
+                input: serde_json::json!({"path": "images/a.png"}),
+            }]),
+            Message::tool_results(vec![
+                Block::ToolResult {
+                    tool_use_id: "v1".into(),
+                    content: "image: images/a.png".into(),
+                    is_error: false,
+                },
+                Block::text("[picture returned by image_view: images/a.png]"),
+                Block::image("image/png", b"png", Some("images/a.png".into())),
+            ]),
+        ];
+        let entries = transcript_entries(&messages);
+        let owner: Vec<_> = entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::User { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(owner, vec!["is the hat on the right person?"]);
+        assert!(entries
+            .iter()
+            .any(|e| matches!(e, Entry::Tool { name, .. } if name == "image_view")));
+    }
+
     #[test]
     fn what_a_spoken_turn_opens_with_is_exactly_what_display_strips() {
         // Two modules, one convention: `voice::open_spoken_turn` writes the
