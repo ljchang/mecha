@@ -925,6 +925,18 @@ async fn run_agent(
     // The global config only — a scheduled run must not inherit the tool
     // surface of whatever repository the daemon was started in.
     let cfg = mecha_core::config::Config::load_global()?;
+    // D13: this fire holds the router until it returns, taken before the
+    // observation below; "switch now" stops it through the fire's own token.
+    let _held = crate::follow::hold_router(
+        &cfg,
+        global.provider.as_deref(),
+        &format!("trigger {}", t.name),
+    )
+    .await?;
+    if let (Some(h), Some(stop)) = (&_held, stop) {
+        let stop = stop.clone();
+        h.on_cancel(move || stop.cancel());
+    }
     // The daemon outlives every run it starts, so the snapshot `main` took is
     // the model loaded when the *daemon* started. A scheduled run follows the
     // owner's pick as it stands now (`provider::router`, D12) — and before

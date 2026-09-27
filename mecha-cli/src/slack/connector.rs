@@ -55,6 +55,29 @@ struct Live {
     unanswered: Arc<AtomicBool>,
 }
 
+/// A turn that arrived while a model switch was waiting (D13), handed back to
+/// the loop once the switch clears — deferred rather than waited for in
+/// place, because this connector has one event loop and a switch waits as
+/// long as the runs it waits on: waiting here would freeze every thread.
+struct Deferred {
+    record: ThreadRecord,
+    prompt: String,
+    files: Vec<FileRef>,
+}
+
+/// A turn whose model has been followed off the event loop, handed back to it
+/// to start. `follow()` re-reads the config, observes the router — loopback
+/// round trips with a 2 s timeout each — and on a switch rebuilds the agent,
+/// MCP servers included; done on the loop, that stalled every thread's
+/// approvals and completions for its length, per message (review of #347).
+struct Followed {
+    record: ThreadRecord,
+    prompt: String,
+    files: Vec<FileRef>,
+    held: Option<mecha_core::hold::Held>,
+    bound: std::result::Result<Arc<crate::follow::Bound>, String>,
+}
+
 /// A finished run, handed back to the loop that owns the conversations.
 struct Completion {
     key: String,
@@ -178,12 +201,15 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         let _ = threads.apply(&orphan.key, Event::OrphanAnnounced);
     }
 
-    let follower =
-        crate::follow::Follower::start(agent_opts(global, &cfg)?, Box::new(|_| {})).await?;
+    let follower = Arc::new(
+        crate::follow::Follower::start(agent_opts(global, &cfg)?, Box::new(|_| {})).await?,
+    );
 
     let (inbound_tx, mut inbound_rx) = mpsc::channel(64);
     let (approval_tx, mut approval_rx) = mpsc::channel::<approve::Request>(32);
     let (completion_tx, mut completion_rx) = mpsc::channel::<Completion>(32);
+    let (deferred_tx, mut deferred_rx) = mpsc::channel::<Deferred>(32);
+    let (followed_tx, mut followed_rx) = mpsc::channel::<Followed>(32);
 
     let socket = SocketMode::new(
         slack.clone(),
@@ -214,6 +240,9 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         review: HashMap::new(),
         approval_tx,
         completion_tx,
+        deferred_tx,
+        followed_tx,
+        starting: HashMap::new(),
     };
 
     // **Printed, not logged.** A daemon that says nothing at startup is
@@ -242,6 +271,12 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
             },
             done = completion_rx.recv() => if let Some(c) = done {
                 state.on_completion(c).await;
+            },
+            deferred = deferred_rx.recv() => if let Some(d) = deferred {
+                state.resume_deferred(d).await;
+            },
+            followed = followed_rx.recv() => if let Some(f) = followed {
+                state.continue_run(f).await;
             },
             // **Both signals.** The shipped unit stops this with SIGTERM and
             // its comment claims in-flight runs stop at a safe point keeping
@@ -365,7 +400,11 @@ struct State {
     cfg: mecha_core::config::SlackConfig,
     /// The agent and everything read off its build, following the router's
     /// loaded model run by run (`crate::follow`).
-    follower: crate::follow::Follower,
+    follower: Arc<crate::follow::Follower>,
+    /// Threads whose run is being started off the loop (`Followed`), with
+    /// any message that arrived meanwhile — added to the run's first turn,
+    /// so a thread never has two runs and nothing said is lost.
+    starting: HashMap<String, Vec<String>>,
     my_user_id: String,
     live: HashMap<String, Live>,
     conversations: HashMap<String, Conversation>,
@@ -388,6 +427,8 @@ struct State {
     review: HashMap<String, review::Setting>,
     approval_tx: mpsc::Sender<approve::Request>,
     completion_tx: mpsc::Sender<Completion>,
+    deferred_tx: mpsc::Sender<Deferred>,
+    followed_tx: mpsc::Sender<Followed>,
 }
 
 impl State {
@@ -713,8 +754,13 @@ impl State {
             live.unanswered.store(false, Ordering::Relaxed);
             return;
         }
+        // Being started off the loop: joins the run's first turn.
+        if let Some(pending) = self.starting.get_mut(&record.key) {
+            pending.push(text);
+            return;
+        }
 
-        if self.live.len() >= self.cfg.max_concurrent {
+        if self.live.len() + self.starting.len() >= self.cfg.max_concurrent {
             // An honest refusal beats a run that starts twenty minutes later
             // against a workspace that has moved.
             let _ = chat::post_message(
@@ -749,10 +795,117 @@ impl State {
         true
     }
 
+    /// A deferred turn, back once its switch cleared. Through the same
+    /// steering check a fresh message meets: a second message deferred in the
+    /// same thread must fold into the run the first one started, not start a
+    /// second run beside it.
+    async fn resume_deferred(&mut self, d: Deferred) {
+        if let Some(live) = self.live.get(&d.record.key) {
+            if let Ok(mut queue) = live.queue.lock() {
+                queue.push_back(d.prompt);
+            }
+            return;
+        }
+        if let Some(pending) = self.starting.get_mut(&d.record.key) {
+            pending.push(d.prompt);
+            return;
+        }
+        self.start_run(d.record, d.prompt, d.files).await;
+    }
+
     async fn start_run(&mut self, record: ThreadRecord, prompt: String, files: Vec<FileRef>) {
         let key = record.key.clone();
         let channel = record.channel_id.clone();
         let thread_ts = record.thread_ts.clone();
+
+        // D13: hold the router before following it. A switch waiting on it
+        // defers this turn instead — said in the thread, and resumed through
+        // the loop once the switch clears (`Deferred`).
+        let held = match self.follower.try_hold("slack thread") {
+            Ok(Ok(held)) => held,
+            Ok(Err(switch)) => {
+                let _ = chat::post_message(
+                    &self.slack,
+                    &channel,
+                    Some(&thread_ts),
+                    &format!(
+                        "Switching the model to {} — this will run once it is loaded.",
+                        switch.to
+                    ),
+                    None,
+                )
+                .await;
+                let tx = self.deferred_tx.clone();
+                tokio::spawn(async move {
+                    if let Ok(holds) = mecha_core::hold::Holds::open_default() {
+                        while holds.pending(&switch.base_url).is_some() {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                    }
+                    let _ = tx
+                        .send(Deferred {
+                            record,
+                            prompt,
+                            files,
+                        })
+                        .await;
+                });
+                return;
+            }
+            // A hold that cannot be written is one a switch cannot see: the
+            // run would be replaced under it. Said, and not run.
+            Err(e) => {
+                tracing::warn!("{key}: {e:#}");
+                let _ = chat::post_message(
+                    &self.slack,
+                    &channel,
+                    Some(&thread_ts),
+                    &format!(
+                        "I could not record this run against the model, so it did not run: {e:#}"
+                    ),
+                    None,
+                )
+                .await;
+                return;
+            }
+        };
+
+        // Followed off the loop, and started when it comes back (`Followed`).
+        self.starting.insert(key, Vec::new());
+        let follower = Arc::clone(&self.follower);
+        let tx = self.followed_tx.clone();
+        tokio::spawn(async move {
+            let bound = follower.follow().await.map_err(|e| format!("{e:#}"));
+            let _ = tx
+                .send(Followed {
+                    record,
+                    prompt,
+                    files,
+                    held,
+                    bound,
+                })
+                .await;
+        });
+    }
+
+    /// The rest of a run's start, once its model is followed (`Followed`).
+    async fn continue_run(&mut self, f: Followed) {
+        let Followed {
+            record,
+            prompt,
+            files,
+            held,
+            bound,
+        } = f;
+        let key = record.key.clone();
+        let channel = record.channel_id.clone();
+        let thread_ts = record.thread_ts.clone();
+        // What the owner added while the model was followed joins this turn.
+        let early = self.starting.remove(&key).unwrap_or_default();
+        let prompt = std::iter::once(prompt)
+            .chain(early)
+            .collect::<Vec<_>>()
+            .join("\n\n");
 
         let workspace = match thread_workspace(&key) {
             Ok(w) => w,
@@ -762,19 +915,19 @@ impl State {
             }
         };
 
-        // The model this run will use, followed from the router once and kept
-        // for the whole run. A failed rebuild is said in the thread rather
-        // than answered on the old model, whose request would load it back.
-        let bound = match self.follower.follow().await {
+        // The model this run will use, followed once and kept for the whole
+        // run. A failed rebuild is said in the thread rather than answered on
+        // the old model, whose request would load it back.
+        let bound = match bound {
             Ok(b) => b,
             Err(e) => {
-                tracing::warn!("{key}: {e:#}");
+                tracing::warn!("{key}: {e}");
                 let _ = chat::post_message(
                     &self.slack,
                     &channel,
                     Some(&thread_ts),
                     &format!(
-                        "I could not switch to the model now loaded, so this did not run: {e:#}"
+                        "I could not switch to the model now loaded, so this did not run: {e}"
                     ),
                     None,
                 )
@@ -785,6 +938,10 @@ impl State {
 
         let mode = Arc::new(Mutex::new(Mode::parse(&record.mode).unwrap_or(Mode::Ask)));
         let cancel = mecha_core::agent::CancelHandle::new();
+        if let Some(h) = &held {
+            let c = cancel.clone();
+            h.on_cancel(move || c.cancel(mecha_core::agent::CancelReason::Stopped));
+        }
         let queue = Arc::new(Mutex::new(VecDeque::new()));
 
         // The per-thread half of the run. The approver rides here rather than
@@ -918,7 +1075,10 @@ impl State {
         self.staged_before.insert(key.clone(), staged_before);
         self.files_before.insert(key.clone(), files_before);
 
+        let held_for_task = held;
         tokio::spawn(async move {
+            // Held until the run is recorded and handed back (D13).
+            let _held = held_for_task;
             let renderer = {
                 let slack = slack.clone();
                 let channel = channel.clone();

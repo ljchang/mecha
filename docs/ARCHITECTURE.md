@@ -201,9 +201,12 @@ The parts that bite hardest:
   was undone by the next web, voice or Slack turn. `Follower::follow` runs
   before each turn, outside every lock the turn holds, and rebuilds through
   `setup::prepare` only when the loaded model moved; the invariants:
-  - **A run keeps the binding it started with — which does not keep the
-    model.** The router protects a request, not a run: a switch made between
-    a run's requests is undone by its next one (§14, open for the owner).
+  - **A run keeps the binding it started with, and the model with it**
+    (D13, `hold.rs`). The router protects a request, not a run, so a run
+    *holds* the router — a file in `~/.mecha/holds/` — and `mecha model use`
+    waits until no hold remains. A hold is taken *before* the run resolves
+    its model; a run that meets a pending switch yields and waits for it.
+
   - **The config is read from disk per turn**, because the rebuild reads it;
     resolving against the startup file missed providers added since. A file
     that does not load keeps the binding and says so once.
@@ -220,6 +223,26 @@ The parts that bite hardest:
     (`incognito_gates`): local-only, hooks, and the withheld list computed
     against the rebuilt registry — a deny-list computed at open let a server
     that came up after a switch register tools the chat could call.
+- **Holds (`hold.rs`, §14 D13): a switch waits for runs, never for requests.**
+  - **Write, then check, on both sides.** A run writes its hold then looks
+    for a pending switch; a switch writes its file then looks for holds. At
+    least one sees the other, and the run is the side that yields — there is
+    no window where a run starts on the old model after the switch looked.
+  - **Where holds are taken:** per turn in `Follower::enter` (serve, voice),
+    per turn off the loop in Slack (a turn meeting a switch is *deferred* and
+    re-fed through the loop, never waited for on it), per fire in the trigger
+    daemon, and for its whole life by a command that is one run
+    (`main::is_one_run`, exhaustive). A held command's children inherit it
+    (`MECHA_ROUTER_HELD`) — one that took its own would deadlock against a
+    pending switch.
+  - **Dead holders and switchers are swept, never waited for**; an
+    unreadable switch file reads as pending (waiting is recoverable).
+  - **"Switch now" cancels, it does not only unload**: a hold's cancel file
+    is polled and turned into the run's own cancel (a one-run command gets
+    the SIGINT that Ctrl-C would send), because an unloaded model is loaded
+    back by a multi-request run's next request.
+  - **A hold's label is never user content** — `mecha run "<prompt>"` must
+    not leave the prompt under `~/.mecha/holds`; only the subcommand name.
 - **Throughput is wall clock.** The server times a request only while it is
   running, so summing its per-request rates hides queue wait and reads ~4× at
   `-np 1`, on the one configuration that cannot run anything concurrently.
