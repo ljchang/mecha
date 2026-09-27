@@ -6,7 +6,7 @@
   // what is loaded, loading, or waiting is the router's own report, read
   // through `model list --json`, never a guess from a timer.
   import { apiFetch as fetch } from './api.js';
-  import { reader, routerOf, unavailable, rows, phase, busy, pollEvery, chipLabel, waitingLine, outcomeNote } from './model-chip.js';
+  import { reader, routerOf, unavailable, rows, phase, busy, pollEvery, canHurry, chipLabel, waitingLine, outcomeNote } from './model-chip.js';
 
   /// `model` is what this chat's agent is bound to — the label until the
   /// router has been read. An incognito chat runs only on the model on this
@@ -92,7 +92,7 @@
   }
 
   function switchNow() {
-    if (ph.kind !== 'switching' || ph.stuck) return;
+    if (!canHurry(ph)) return;
     const row = list.find((r) => r.id === ph.to);
     post('/api/model/use', { name: row?.name ?? ph.to, now: true });
   }
@@ -174,7 +174,7 @@
                 <div class="acts">
                   <button class="act quiet" onclick={cancelSwitch} disabled={acting} title="withdraw the unreadable switch; the loaded model stays">cancel</button>
                 </div>
-              {:else if !ph.loading}
+              {:else if canHurry(ph)}
                 <div class="acts">
                   <!-- R2's way out of D13's wait: the runs it names stop at
                        their next safe point, and a reply in progress ends
