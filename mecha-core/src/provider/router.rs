@@ -334,6 +334,21 @@ pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
     warnings
 }
 
+/// What this process's last [`observe`] saw of the router at `base_url`, or
+/// `None` when it saw no router there — nothing listening, not a router, or a
+/// list it could not read.
+///
+/// For a process that outlives a switch (`mecha serve`, the Slack connector):
+/// before it moves off the model it is on, it asks whether the router was
+/// actually seen. An unseen router is no evidence that the pick changed, and
+/// moving to the default on that non-evidence would have its next request
+/// load production over the owner's choice during a router restart.
+pub fn observed(base_url: &str) -> Option<Seen> {
+    let b = base(base_url);
+    let s = SNAPSHOT.read().ok()?;
+    s.seen.iter().find(|seen| seen.base_url == b).cloned()
+}
+
 /// How many background runs may hold the model at once, under this process's
 /// snapshot (`permit.rs`; owner's ruling 2026-09-26, §14 trap 5).
 pub fn background_seats(fallback: usize) -> usize {
