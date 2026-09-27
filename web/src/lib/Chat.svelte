@@ -225,15 +225,22 @@
     });
   }
 
+  // Which read of the plan is the latest. Two writers set it — this read and
+  // the transcript read, which carries the plan too — and the transcript
+  // read is the slow one mid-run (it carries the history), so its answer can
+  // land after a fresher plan read and put back a plan the run has revised.
+  let todoGen = 0;
+
   async function refreshTodo() {
     // The chat it was asked for: an answer landing after a switch is that
     // chat's plan, not this one's.
     const sessionKey = key;
+    const gen = ++todoGen;
     try {
       const res = await fetch(`/api/chat/${sessionKey}/todo`);
       if (!res.ok) return;
       const plan = (await res.json()).todo ?? [];
-      if (sessionKey === key) todo = plan;
+      if (sessionKey === key && gen === todoGen) todo = plan;
     } catch {
       // A plan that failed to refresh is stale, not wrong, and saying so
       // in the transcript would be noise about the UI rather than the run.
@@ -317,6 +324,7 @@
   async function load(sessionKey = key, signal, { carry = false } = {}) {
     const seq = doneSeq;
     const gen = ++loadGen;
+    const planGen = ++todoGen;
     try {
       const res = await fetch(`/api/chat/${sessionKey}`, { signal });
       // Reaped between the open and this read: the gone screen, not an
@@ -347,7 +355,7 @@
       // Absent for an ordinary chat, which renders exactly as before.
       task = data.task ?? null;
       incognito = data.incognito ?? false;
-      todo = data.todo ?? [];
+      if (planGen === todoGen) todo = data.todo ?? [];
       taint = data.taint;
       model = data.model;
       mode = data.mode ?? 'read_only';
