@@ -279,14 +279,19 @@ impl ContrastPool {
     /// registry, and workspace, surface and goal agree wherever the
     /// correction names them. The loader's own match (2e-5c's precedent):
     /// the region is where a rule learned from the correction would load.
-    /// Never the correction's own session: its success is the correction's
-    /// outcome, not a contrast to it. `None` for a correction whose
-    /// situation is unknown.
+    /// Never a success that names the correction's own session — not only
+    /// the trace from that session: a success verified work across
+    /// sessions, and whichever of them the correction was in, the success is
+    /// its outcome, not a contrast to it (found on review of #345). `None`
+    /// for a correction whose situation is unknown.
     pub fn beside(&self, correction: Option<&Situation>, session: &str) -> Option<Contrast> {
         let scope = correction?.scope();
         self.traces
             .iter()
-            .find(|t| t.session != session && t.scopes.iter().any(|run| scope.matches(run)))
+            .find(|t| {
+                !t.named.iter().any(|s| s == session)
+                    && t.scopes.iter().any(|run| scope.matches(run))
+            })
             .map(|t| Contrast {
                 act: t.act.clone(),
                 session: t.session.clone(),

@@ -948,6 +948,10 @@ pub struct SuccessTrace {
     /// The success's goal, where its record names one.
     pub goal: Option<GoalRef>,
     pub session: String,
+    /// Every session the success names, this one among them: a success
+    /// verified work across sessions, and a correction in any of them is
+    /// part of what it verified (found on review of #345).
+    pub named: Vec<String>,
     /// [`tool_sequence`] over every message the session ever held.
     pub sequence: String,
     /// Every run record's situation, as [`SuccessExample::scopes`].
@@ -1071,6 +1075,7 @@ pub fn success_traces(
                 act: success.act.clone(),
                 goal: goal.cloned(),
                 session: id.clone(),
+                named: success.sessions.clone(),
                 sequence: step,
                 scopes,
                 at: success.at,
@@ -1520,6 +1525,32 @@ mod success_example_tests {
         assert!(pool.beside(Some(&here), "s-dana").is_none());
         // Unknown situation: nothing beside it.
         assert!(pool.beside(None, "s-steered").is_none());
+
+        // One closure over work done in two sessions: a correction in
+        // either is part of what it verified, so neither session's trace is
+        // set beside it — only a correction from elsewhere gets one (found
+        // on review of #345: the exclusion was per trace).
+        session(dir, "s-pair", Shape::Clean);
+        let index = SessionIndex::load(dir, false).unwrap();
+        let mut both = close("c3", "s-dana");
+        both.sessions.push("s-pair".into());
+        let paired = crate::success::ContrastPool::of(success_traces(
+            &derive(
+                &Sources {
+                    closures: &[both],
+                    ..Default::default()
+                },
+                &index,
+            ),
+            &index,
+            false,
+        ));
+        assert!(
+            paired.beside(Some(&here), "s-steered").is_some(),
+            "not vacuous"
+        );
+        assert!(paired.beside(Some(&here), "s-pair").is_none());
+        assert!(paired.beside(Some(&here), "s-dana").is_none());
     }
 
     /// A compacted session lends its whole trace, not the tail the
