@@ -15,7 +15,7 @@
 //! |---|---|---|---|
 //! | steer | owner text riding beside tool results (`learning::extract_interventions`) | the steer's intent: the recording after it | `StructuralSteer` |
 //! | denial | a `"Denied by the user:"` result | the refusal | `StructuralDenial` |
-//! | edited draft | an outbox item sent with `args != args_before` | the released text | `ReleasedDraft` |
+//! | edited draft | an outbox item sent with `args != args_before`, edited and released by the owner (`OutboxItem::owners_edit`) | the released text | `ReleasedDraft` |
 //! | rejected draft | an outbox item rejected by the owner (`resolved_by == owner`) | nothing sent | `RejectedDraft` |
 //! | failed check | harness planning feedback: a check failed or was tampered with | an owner-bound criterion's pinned gold, when one was bound | `ArtifactGold`, else `Unposed` |
 //! | surprise | harness planning feedback: a forecast the run's own count missed | none | `Unposed` |
@@ -335,7 +335,11 @@ pub fn draft_kind(item: &OutboxItem) -> Option<PointKind> {
         "rejected" if item.resolved_by() == crate::closure::Actor::Owner => {
             Some(PointKind::RejectedDraft)
         }
-        "sent" if item.edited() => {
+        // The released text is the owner's verdict only when the owner made
+        // every edit and the release (ruling D3 carried to edits): a run's
+        // shell that edits and releases its own draft does not get to set
+        // the gold a candidate is judged against.
+        "sent" if item.owners_edit() => {
             let form = |v: &Value| crate::counterfactual::draft_form(&Value::Null, v);
             (form(&item.args) != form(&item.args_before)).then_some(PointKind::EditedDraft)
         }
@@ -576,6 +580,10 @@ mod tests {
         if edited {
             item.args =
                 json!({"to": "dirk@example.invalid", "body": "Totals attached; Q3 follows."});
+            // The owner's edit and release; `a_run_s_own_edit_is_not_a_point`
+            // covers the rest.
+            item.edited_by = Some(crate::closure::Actor::Owner);
+            item.resolved_by = Some(crate::closure::Actor::Owner);
         }
         item
     }
@@ -595,6 +603,32 @@ mod tests {
             let mut item = draft("rejected", false);
             item.resolved_by = by;
             assert_eq!(draft_kind(&item), None, "{by:?}");
+        }
+    }
+
+    /// Ruling D3 carried to edits: the released text is the owner's verdict
+    /// — the gold a candidate is judged against — only when the owner made
+    /// every edit and the release. A run's shell that edits or releases its
+    /// own draft sets no gold; an edit from before the stamp sets none
+    /// either. Fails on the tree before, which made each an edited-draft
+    /// point.
+    #[test]
+    fn a_run_s_own_edit_is_not_a_point() {
+        use crate::closure::Actor;
+        assert_eq!(
+            draft_kind(&draft("sent", true)),
+            Some(PointKind::EditedDraft)
+        );
+        for (edit, release) in [
+            (Some(Actor::OwnerApproved), Some(Actor::Owner)),
+            (Some(Actor::Owner), Some(Actor::OwnerApproved)),
+            (Some(Actor::Unknown), Some(Actor::Owner)),
+            (None, None),
+        ] {
+            let mut item = draft("sent", true);
+            item.edited_by = edit;
+            item.resolved_by = release;
+            assert_eq!(draft_kind(&item), None, "{edit:?} {release:?}");
         }
     }
 

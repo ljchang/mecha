@@ -1579,7 +1579,13 @@ pub fn observe(
         };
         let model = d.author() == crate::outbox::Author::Model;
         match (model, d.status.as_str()) {
-            (true, "sent") if d.edited() => seen.push((at, ExpectedAct::Edited)),
+            // An edit is the owner's act only when the owner made every edit
+            // and the release (`OutboxItem::owners_edit`; review of #352: a
+            // run's shell can `edit --args-file` and `approve -y` its own
+            // draft, and scoring that as the owner's `edited` is the same
+            // free hit as the two arms below).
+            (true, "sent") if d.edited() && d.owners_edit() => seen.push((at, ExpectedAct::Edited)),
+            (true, "sent") if d.edited() => unread.push(at),
             // Released unchanged is the owner's act only when the owner
             // released it (R16a's ruling D3 carried to releases); a run's
             // own release, or one from before the stamp, is an act whose
@@ -3403,9 +3409,13 @@ mod tests {
             Some(crate::closure::Actor::Unknown),
             None,
         ] {
-            for status in ["sent", "rejected"] {
+            for (status, edited) in [("sent", false), ("rejected", false), ("sent", true)] {
                 let mut d = draft_of(&root, "s-1", status, Some(at));
                 d.resolved_by = by;
+                if edited {
+                    d.args = json!({"to": "idris.vale@example.org", "body": "Friday instead."});
+                    d.edited_by = Some(crate::closure::Actor::Owner);
+                }
                 let seen = observe("s-1", None, end, &acts(&[d]), later);
                 assert!(
                     !matches!(seen, ObservedAct::Act { .. } | ObservedAct::NoAct { .. }),
@@ -3413,6 +3423,29 @@ mod tests {
                 );
             }
         }
+        // An owner's release of a run's edit is not the owner's `edited`,
+        // and the owner's edit released by the owner is.
+        let mut run_edit = draft_of(&root, "s-1", "sent", Some(at));
+        run_edit.args = json!({"to": "idris.vale@example.org", "body": "Friday instead."});
+        run_edit.edited_by = Some(crate::closure::Actor::OwnerApproved);
+        assert!(!matches!(
+            observe(
+                "s-1",
+                None,
+                end,
+                &acts(std::slice::from_ref(&run_edit)),
+                later
+            ),
+            ObservedAct::Act { .. } | ObservedAct::NoAct { .. }
+        ));
+        run_edit.edited_by = Some(crate::closure::Actor::Owner);
+        assert_eq!(
+            observe("s-1", None, end, &acts(&[run_edit]), later),
+            ObservedAct::Act {
+                act: ExpectedAct::Edited,
+                at
+            }
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

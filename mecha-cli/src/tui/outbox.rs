@@ -527,7 +527,15 @@ fn detail_lines(
             }
             if item.edited() {
                 body.push(Line::raw(""));
-                body.push(Line::styled("edited since drafting", header));
+                body.push(Line::styled(
+                    format!(
+                        "edited since drafting (by {})",
+                        item.edited_by()
+                            .unwrap_or(mecha_core::closure::Actor::Unknown)
+                            .as_str()
+                    ),
+                    header,
+                ));
                 for line in mecha_core::outbox::diff_args(&item.args_before, &item.args).lines() {
                     let style = match line.trim_start().chars().next() {
                         Some('+') => Style::new().fg(Color::Green),
@@ -691,6 +699,7 @@ mod tests {
             created_at: "2026-08-08T07:00:00Z".into(),
             resolved_at: None,
             reason: None,
+            edited_by: None,
             resolved_by: None,
             error: None,
         }

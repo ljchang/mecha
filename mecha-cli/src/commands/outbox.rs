@@ -178,10 +178,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             json,
             body_file,
             args_file,
-        } => match args_file {
-            Some(path) => edit_args(&store, &id, &path),
-            None => edit(&store, &id, json, body_file.as_deref()),
-        },
+        } => {
+            let (by, why) = acting_actor_explained();
+            let result = match args_file {
+                Some(path) => edit_args(&store, &id, &path, by),
+                None => edit(&store, &id, json, body_file.as_deref(), by),
+            };
+            // As for a reject's reason: an edit the harness cannot attribute
+            // to the owner says so, on stdout, and only once it is written
+            // (ruling D3 carried to edits).
+            if let (Ok(true), Some(why)) = (&result, why) {
+                println!("{}", demotion_note(Demoted::Edit, by, &why));
+            }
+            result.map(|_| ())
+        }
         Cmd::Review { selection } => review(global, &store, &selection, acting_actor()).await,
         Cmd::Approve { selection, yes } => {
             send(global, &store, &selection, yes, acting_actor()).await
@@ -254,9 +264,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             let result = reject(&store, &selection, reason.clone(), by);
             // On stdout, after the verdict: the web review and the TUI relay
             // stdout, not stderr, and a demotion at the owner's own door
-            // must reach them (review of #343).
-            if let (Some(why), true) = (why, reason.is_some()) {
-                println!("{}", demotion_note(by, &why));
+            // must reach them (review of #343). Only when something was
+            // recorded: a reject that failed recorded no reason to demote.
+            if let (Some(why), true, true) = (why, reason.is_some(), result.is_ok()) {
+                println!("{}", demotion_note(Demoted::Reason, by, &why));
             }
             result
         }
@@ -292,8 +303,8 @@ fn acting_actor_explained() -> (Actor, Option<String>) {
             return (
                 Actor::Unknown,
                 Some(format!(
-                    "the run markers could not be read ({e:#}), so whether a run made this \
-                     reject cannot be told"
+                    "the run markers could not be read ({e:#}), so whether a run did this \
+                     cannot be told"
                 )),
             )
         }
@@ -305,19 +316,35 @@ fn acting_actor_explained() -> (Actor, Option<String>) {
     )
 }
 
-/// The line a reject prints when its reason will not be read as the owner's:
-/// [`DEMOTION_PREFIX`], so a relay can find it in stdout, then the actor and
-/// the cause.
-pub(crate) fn demotion_note(by: Actor, why: &str) -> String {
+/// What a demotion note is about.
+#[derive(Clone, Copy)]
+pub(crate) enum Demoted {
+    /// A reject's reason.
+    Reason,
+    /// An edit's diff.
+    Edit,
+}
+
+/// The line a reject or an edit prints when its words will not be read as
+/// the owner's: [`DEMOTION_PREFIX`] or [`EDIT_DEMOTION_PREFIX`], so a relay
+/// can find it in stdout, then the actor and the cause.
+pub(crate) fn demotion_note(what: Demoted, by: Actor, why: &str) -> String {
+    let prefix = match what {
+        Demoted::Reason => DEMOTION_PREFIX,
+        Demoted::Edit => EDIT_DEMOTION_PREFIX,
+    };
     format!(
-        "{DEMOTION_PREFIX} {} rather than yours ({why}), so it will not be read as your \
-         correction",
+        "{prefix} {} rather than yours ({why}), so it will not be read as your correction",
         by.as_str()
     )
 }
 
-/// How [`demotion_note`] begins — what the TUI and the web review look for.
+/// How a reject's [`demotion_note`] begins — what the TUI and the web review
+/// look for. The web page holds each prefix as a literal; a test here reads
+/// the page and fails if they part.
 pub(crate) const DEMOTION_PREFIX: &str = "note: the reason is recorded as";
+/// How an edit's [`demotion_note`] begins.
+pub(crate) const EDIT_DEMOTION_PREFIX: &str = "note: the edit is recorded as";
 
 /// Owner CLI file, never a model-supplied tool path. Bound the read before parsing.
 pub(crate) fn read_evidence_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
@@ -614,7 +641,10 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
                 }
             }
             if item.edited() {
-                println!("\nedited since drafting:");
+                println!(
+                    "\nedited since drafting (by {}):",
+                    item.edited_by().unwrap_or(Actor::Unknown).as_str()
+                );
                 println!(
                     "{}",
                     mecha_core::outbox::diff_args(&item.args_before, &item.args)
@@ -878,7 +908,16 @@ pub(crate) fn entry_point(path: &std::path::Path) -> Option<std::path::PathBuf> 
 ///
 /// A draft with no prose — a calendar RSVP, a reaction — falls back to the
 /// arguments rather than opening an empty file, and says so.
-fn edit(store: &OutboxStore, id: &str, json: bool, body_file: Option<&Path>) -> Result<()> {
+///
+/// `by` is who is editing ([`acting_actor`]), folded into the item's
+/// `edited_by`. Returns whether the draft now differs from what was staged.
+fn edit(
+    store: &OutboxStore,
+    id: &str,
+    json: bool,
+    body_file: Option<&Path>,
+    by: Actor,
+) -> Result<bool> {
     // Resolve before the editor so a bad id fails in milliseconds, but take
     // the lock only *after* the editor exits — holding it across a human's
     // editing session would wedge every concurrent pass that wants it.
@@ -912,7 +951,7 @@ fn edit(store: &OutboxStore, id: &str, json: bool, body_file: Option<&Path>) -> 
         let args = mecha_core::outbox::with_body(&item.args, text)
             .context("this draft has no prose field to replace; use --json")?;
         let _lock = store.lock()?;
-        let updated = store.update_args(&item.id, args)?;
+        let updated = store.update_args(&item.id, args, by)?;
         println!(
             "{}",
             if updated.edited() {
@@ -921,7 +960,7 @@ fn edit(store: &OutboxStore, id: &str, json: bool, body_file: Option<&Path>) -> 
                 "no change"
             }
         );
-        return Ok(());
+        return Ok(updated.edited());
     }
 
     let body = if json {
@@ -974,25 +1013,29 @@ fn edit(store: &OutboxStore, id: &str, json: bool, body_file: Option<&Path>) -> 
     };
 
     let _lock = store.lock()?;
-    let updated = store.update_args(&item.id, args)?;
-    if updated.edited() && updated.author() == mecha_core::outbox::Author::Model {
+    let updated = store.update_args(&item.id, args, by)?;
+    let model = updated.author() == mecha_core::outbox::Author::Model;
+    if updated.edited() && model && updated.edited_by() == Some(Actor::Owner) {
         println!(
             "edited; `send` will use the new text, and `mecha reflect` \
-                  will mine the diff as a writing lesson once sent"
+                  will mine the diff as a writing lesson once you send it"
         );
+    } else if updated.edited() && model {
+        // Not the owner's edit end to end, so never the owner's writing.
+        println!("edited; `send` will use the new text");
     } else if updated.edited() {
         // A harness-authored card: the miner structurally never sees it.
         println!("edited; `send` will use the new text");
     } else {
         println!("no change");
     }
-    Ok(())
+    Ok(updated.edited())
 }
 
 /// Replace a pending message draft's arguments with a file's JSON object —
 /// the no-terminal `--json`. The same guards as `edit`: pending only, never
 /// a publish, and a parse failure changes nothing.
-fn edit_args(store: &OutboxStore, id: &str, path: &Path) -> Result<()> {
+fn edit_args(store: &OutboxStore, id: &str, path: &Path, by: Actor) -> Result<bool> {
     let item = store.item(id)?;
     if item.status != "pending" {
         bail!("outbox item {} is {}, not pending", item.id, item.status);
@@ -1012,7 +1055,7 @@ fn edit_args(store: &OutboxStore, id: &str, path: &Path) -> Result<()> {
         bail!("the arguments must be a JSON object; the item is unchanged");
     }
     let _lock = store.lock()?;
-    let updated = store.update_args(&item.id, args)?;
+    let updated = store.update_args(&item.id, args, by)?;
     println!(
         "{}",
         if updated.edited() {
@@ -1021,7 +1064,7 @@ fn edit_args(store: &OutboxStore, id: &str, path: &Path) -> Result<()> {
             "no change"
         }
     );
-    Ok(())
+    Ok(updated.edited())
 }
 
 /// Re-read what the caller reviewed, and refuse anything not still pending.
@@ -1308,10 +1351,27 @@ async fn send(
                 if !output.is_empty() {
                     println!("{}", indent(&output));
                 }
-                if item.edited() && item.author() == mecha_core::outbox::Author::Model {
+                // Re-read: the store's copy carries the stamps the release
+                // just wrote, and only the owner's edit released by the owner
+                // is mined (ruling D3 carried to edits).
+                let resolved = store.item(&item.id).ok();
+                if resolved.as_ref().is_some_and(|i| i.mineable_as_writing()) {
                     println!(
                         "  the draft was edited before sending — `mecha reflect` will \
                          mine the diff as a writing lesson"
+                    );
+                } else if let Some(i) = resolved
+                    .as_ref()
+                    .filter(|i| i.edited() && i.author() == mecha_core::outbox::Author::Model)
+                {
+                    // The edit prefix, so the web review finds it in the
+                    // approve response as it does in the edit's (review of
+                    // #348).
+                    println!(
+                        "{EDIT_DEMOTION_PREFIX} {} and the send as {}, so the edit will not \
+                         be read as your correction",
+                        i.edited_by().unwrap_or(Actor::Unknown).as_str(),
+                        i.resolved_by().as_str()
                     );
                 }
             }
@@ -1428,7 +1488,7 @@ async fn review(
                     break;
                 }
                 "e" | "edit" => {
-                    if let Err(e) = edit(store, &current.id, false, None) {
+                    if let Err(e) = edit(store, &current.id, false, None, by) {
                         eprintln!("{e:#}");
                     }
                     // Round again with what the edit produced, so the thing
@@ -1509,6 +1569,27 @@ fn indent(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The web review finds a demotion note by its prefix, held as a
+    /// literal in the page; this pins the page to the constants, so a
+    /// reword here cannot silently turn the note back into a bare
+    /// "Rejected." / "Saved." there (review of #343).
+    #[test]
+    fn the_web_review_matches_the_demotion_prefixes_the_cli_prints() {
+        let page = include_str!("../../../web/src/lib/outbox-view.js");
+        for prefix in [super::DEMOTION_PREFIX, super::EDIT_DEMOTION_PREFIX] {
+            assert!(page.contains(&format!("'{prefix}'")), "{prefix}");
+            let note = super::demotion_note(
+                if prefix == super::DEMOTION_PREFIX {
+                    super::Demoted::Reason
+                } else {
+                    super::Demoted::Edit
+                },
+                mecha_core::closure::Actor::Unknown,
+                "why",
+            );
+            assert!(note.starts_with(prefix), "{note}");
+        }
+    }
     /// The note's ` — ` is the owner's charter text and nothing else: an id
     /// that would forge it, or add a provenance line, never becomes a
     /// `GoalRef` (found on review — the first cut printed a model-written
@@ -1566,6 +1647,7 @@ mod tests {
             created_at: "2026-08-06T07:00:00Z".into(),
             resolved_at: None,
             reason: None,
+            edited_by: None,
             resolved_by: None,
             error: None,
         }
@@ -1632,9 +1714,9 @@ mod tests {
 
         let bad = dir.join("bad.json");
         std::fs::write(&bad, "[1, 2]").unwrap();
-        assert!(edit_args(&store, &staged.id, &bad).is_err());
+        assert!(edit_args(&store, &staged.id, &bad, Actor::Owner).is_err());
         std::fs::write(&bad, "{not json").unwrap();
-        assert!(edit_args(&store, &staged.id, &bad).is_err());
+        assert!(edit_args(&store, &staged.id, &bad, Actor::Owner).is_err());
         assert!(
             !store.item(&staged.id).unwrap().edited(),
             "a refused edit changes nothing"
@@ -1644,7 +1726,7 @@ mod tests {
         let fixed = json!({"title": "PBS Faculty Meeting", "start_time": "2026-09-30T15:30:00-04:00",
                            "end_time": "2026-09-30T17:00:00-04:00", "calendar_id": "work"});
         std::fs::write(&good, fixed.to_string()).unwrap();
-        edit_args(&store, &staged.id, &good).unwrap();
+        edit_args(&store, &staged.id, &good, Actor::Owner).unwrap();
         let item = store.item(&staged.id).unwrap();
         assert_eq!(item.args, fixed);
         assert!(item.edited());
@@ -1662,7 +1744,7 @@ mod tests {
                 mecha_core::closure::Actor::Owner,
             )
             .unwrap();
-        assert!(edit_args(&store, &staged.id, &good).is_err());
+        assert!(edit_args(&store, &staged.id, &good, Actor::Owner).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1728,7 +1810,11 @@ mod tests {
             )
             .unwrap();
         store
-            .update_args(&staged.id, json!({"to": "corrected@example.com"}))
+            .update_args(
+                &staged.id,
+                json!({"to": "corrected@example.com"}),
+                mecha_core::closure::Actor::Owner,
+            )
             .unwrap();
 
         let claimed = claim_for_release(&store, &staged).unwrap();
