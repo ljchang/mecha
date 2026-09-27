@@ -511,7 +511,10 @@ router is `/props`' rule applied to choosing.
   between requests the model is idle and the switch completes. Two shapes,
   neither built: a switch that waits until no *run* holds the model (R2's
   "wait until idle", widened from requests to runs), or runs that re-follow
-  between requests and change model mid-run.
+  between requests and change model mid-run. **Ruled 2026-09-27: a switch
+  waits until no run holds the model** ("wait to switch until ready"), so a
+  run is answered by one model start to finish. Not built; nothing records
+  runs across processes yet (permits cover background runs only).
 - **Nightly passes run on whatever is loaded, and the record says which**
   (owner's ruling, 2026-09-26). Learn, validate, ruminate and appraisal are
   not deferred or skipped on a non-production model. The per-run `model`
