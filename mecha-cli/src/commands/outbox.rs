@@ -249,7 +249,17 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             );
             Ok(())
         }
-        Cmd::Reject { selection, reason } => reject(&store, &selection, reason, acting_actor()),
+        Cmd::Reject { selection, reason } => {
+            let (by, why) = acting_actor_explained();
+            if let (Some(why), true) = (why, reason.is_some()) {
+                eprintln!(
+                    "note: the reason is recorded as {} rather than yours — {why}; it will not \
+                     be read as your correction",
+                    by.as_str()
+                );
+            }
+            reject(&store, &selection, reason, by)
+        }
     }
 }
 
@@ -269,11 +279,26 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 /// owner's. A marker directory that cannot be read is `unknown` rather than
 /// an error for the same reason.
 pub(crate) fn acting_actor() -> Actor {
+    acting_actor_explained().0
+}
+
+/// [`acting_actor`], with why it is not `owner` when it is not — so a
+/// reject whose reason will not be read as the owner's says so rather than
+/// demoting it silently (review of #343).
+fn acting_actor_explained() -> (Actor, Option<String>) {
     let ancestor = match crate::commands::tasks::live_run_pids() {
         Ok(pids) => closure::run_ancestor(&pids),
-        Err(_) => return Actor::Unknown,
+        Err(e) => {
+            return (
+                Actor::Unknown,
+                Some(format!(
+                    "the run markers could not be read ({e:#}), so whether a run made this \
+                     reject cannot be told"
+                )),
+            )
+        }
     };
-    closure::attribute(
+    closure::attribute_explained(
         &closure::posture_from_env(),
         &closure::ShellReading::from_registry(),
         ancestor,

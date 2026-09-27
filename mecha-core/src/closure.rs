@@ -175,9 +175,25 @@ impl Actor {
 /// Unknown is never the owner: a reader that treats the act's words as the
 /// owner's does so only under [`Actor::Owner`].
 pub fn attribute(env: &PostureReading, shell: &ShellReading, ancestor_run: Option<u32>) -> Actor {
+    attribute_explained(env, shell, ancestor_run).0
+}
+
+/// [`attribute`], with why the act is not the owner's when it is not — the
+/// refusal `decide` would have given, or that a run's shell ran it behind
+/// the approver — for a surface that tells the person whose words were
+/// just recorded as not theirs (review of #343).
+pub fn attribute_explained(
+    env: &PostureReading,
+    shell: &ShellReading,
+    ancestor_run: Option<u32>,
+) -> (Actor, Option<String>) {
     match decide(env, shell, ancestor_run, None) {
-        Ok((actor, _)) => actor,
-        Err(_) => Actor::Unknown,
+        Ok((Actor::Owner, _)) => (Actor::Owner, None),
+        Ok((actor, _)) => (
+            actor,
+            Some("this command was run by a mecha run's shell, behind the approver".into()),
+        ),
+        Err(why) => (Actor::Unknown, Some(why)),
     }
 }
 

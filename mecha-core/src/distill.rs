@@ -971,6 +971,9 @@ pub fn render_appraisal_inputs(i: &AppraisalInputs<'_>) -> String {
                         not_owners.word()
                     );
                 }
+                None if d.resolved_by() != crate::closure::Actor::Owner => {
+                    let _ = writeln!(out, "{what}: it was rejected.");
+                }
                 None => {
                     let _ = writeln!(out, "{what}: the owner rejected it.");
                 }
@@ -2951,8 +2954,22 @@ mod tests {
         let approved = rejected("always cc Dana Whitfield", Actor::OwnerApproved);
         let mut legacy = rejected("Northwind Labs says so", Actor::Owner);
         legacy.resolved_by = None;
+        // No reason at all, through a model's shell: still not the owner's
+        // act (review of #343).
+        let staged = store
+            .stage(
+                "mail_send",
+                OutboxKind::Message,
+                json!({"to": "sam@example.edu", "body": "Hi Sam,"}),
+                crate::agent::Taint::default(),
+                Provenance::default(),
+            )
+            .unwrap();
+        let silent = store
+            .resolve(&staged.id, "rejected", None, Actor::OwnerApproved)
+            .unwrap();
         let _ = std::fs::remove_dir_all(&root);
-        let drafts = [&owner, &approved, &legacy];
+        let drafts = [&owner, &approved, &legacy, &silent];
         let evidence = inputs_evidence(crate::agent::Taint::default());
         let known = KnownPointers::from_board(&json!({"items": []}));
         let text = render_appraisal_inputs(&AppraisalInputs {
@@ -2977,7 +2994,7 @@ mod tests {
         assert!(!text.contains("Dana Whitfield"), "{text}");
         assert!(!text.contains("Northwind"), "{text}");
         assert!(
-            text.contains("rejected with the owner's approval — not quoted"),
+            text.contains("not the owner's (the owner approved the reject) — not quoted"),
             "{text}"
         );
         assert!(
@@ -2989,6 +3006,7 @@ mod tests {
             1,
             "only the owner's reject is said to be the owner's: {text}"
         );
+        assert_eq!(text.matches("it was rejected.").count(), 3, "{text}");
     }
 
     /// What the appraiser is shown: the referents by the ids the door

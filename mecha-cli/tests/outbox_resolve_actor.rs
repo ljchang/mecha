@@ -101,7 +101,12 @@ fn ok(out: &Output) {
 fn a_reject_at_the_owners_own_door_is_the_owners() {
     let f = Fixture::new();
     let item = f.staged();
-    ok(&f.reject(&item.id, &[]));
+    let out = f.reject(&item.id, &[]);
+    ok(&out);
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("not be read as your correction"),
+        "the owner is not told their words are not theirs"
+    );
     let done = f.resolved(&item.id);
     assert_eq!(done.status, "rejected");
     assert_eq!(done.resolved_by, Some(Actor::Owner));
@@ -146,7 +151,18 @@ fn a_reject_through_a_models_shell_is_never_the_owners() {
     for (posture, env, expected) in cases {
         let item = f.staged();
         let shell = f.under_shell(posture);
-        ok(&f.reject(&item.id, env));
+        let out = f.reject(&item.id, env);
+        ok(&out);
+        // Stamped, not refused — and said, so a demotion at the owner's
+        // own terminal is never silent (review of #343).
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(&format!(
+                "recorded as {} rather than yours",
+                expected.as_str()
+            )),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         drop(shell);
         let done = f.resolved(&item.id);
         assert_eq!(done.status, "rejected", "{posture:?} {env:?}");

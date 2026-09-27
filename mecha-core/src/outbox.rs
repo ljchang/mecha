@@ -658,10 +658,10 @@ impl Rejection<'_> {
         match self {
             Rejection::OwnersWords(_) => "the owner's words",
             Rejection::NotOwners(Actor::OwnerApproved) => {
-                "a reason the assistant wrote, rejected with the owner's approval — not quoted"
+                "the assistant's words, not the owner's (the owner approved the reject) — not quoted"
             }
             Rejection::NotOwners(_) => {
-                "a reason not recorded as the owner's own words — not quoted"
+                "not recorded as the owner's own words — not quoted"
             }
         }
     }
