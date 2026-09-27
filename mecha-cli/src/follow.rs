@@ -341,8 +341,10 @@ pub async fn hold_router(
     let held = mecha_core::hold::Holds::open_default()?
         .hold_when_clear(&mecha_core::provider::router::base(url), what, |switch| {
             eprintln!(
-                "mecha: the model is switching to {} — waiting for it to load",
-                switch.to
+                "mecha: the model is switching to {} (since {}) — waiting for it to load; \
+                 `mecha model cancel-switch` withdraws a switch that is stuck",
+                switch.to,
+                switch.started_at.format("%H:%M:%SZ")
             )
         })
         .await?;

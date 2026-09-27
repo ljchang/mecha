@@ -521,6 +521,7 @@ impl Command {
     /// **Exhaustive, no wildcard**, like [`runs_a_model`](Self::runs_a_model):
     /// a new subcommand decides. Consulted only where that one is `true`.
     fn is_one_run(&self) -> bool {
+        use commands::{exp, frontdoor, harness, mail, questions, tasks};
         match self {
             Command::Run(_)
             | Command::Batch(_)
@@ -529,20 +530,40 @@ impl Command {
             | Command::Learn(_)
             | Command::Distill(_)
             | Command::Validate(_)
-            | Command::Setup(_)
             | Command::Diagnose(_)
-            | Command::Harness(_)
-            | Command::Exp(_)
-            | Command::Frontdoor(_)
-            | Command::Mail(_)
-            | Command::Tasks(_)
-            | Command::Workflow(_)
-            | Command::Questions(_)
             | Command::Gossip(_)
             | Command::Corroborate(_)
             | Command::Vet(_)
-            | Command::Replay(_)
-            | Command::Rules(_) => true,
+            | Command::Replay(_) => true,
+            // **Per subcommand where only some run a model** (review of D13):
+            // held per command, `tasks stop` — the documented way to stop a
+            // detached `tasks work` — waited behind a switch that was waiting
+            // for that same `tasks work`, and serve's board and mail pages
+            // (`tasks list --json`, `mail recent --json`) timed out for as
+            // long as a switch was pending.
+            Command::Tasks(a) => matches!(a.cmd, Some(tasks::Cmd::Work { .. })),
+            Command::Mail(a) => matches!(
+                a.cmd,
+                Some(
+                    mail::Cmd::Classify { .. }
+                        | mail::Cmd::Eval { .. }
+                        | mail::Cmd::Reflect { .. }
+                        | mail::Cmd::Reply { .. }
+                        | mail::Cmd::Forward { .. }
+                        | mail::Cmd::Schedule { .. }
+                )
+            ),
+            Command::Frontdoor(a) => matches!(
+                a.cmd,
+                Some(frontdoor::Cmd::Extract { .. } | frontdoor::Cmd::Triage { .. })
+            ),
+            Command::Questions(a) => matches!(a.cmd, Some(questions::Cmd::Answer { .. })),
+            Command::Harness(a) => matches!(a.cmd, harness::Cmd::Ruminate { .. }),
+            Command::Exp(a) => matches!(a.cmd, exp::Cmd::Run { .. } | exp::Cmd::Judge { .. }),
+            // `workflow resume` starts `mecha tasks work` as a child, which
+            // holds for itself; held here too, `--now` signalled the parent
+            // and left the child running unheld (review of D13).
+            Command::Workflow(_) => false,
             // Long-lived: hold per turn (`follow::Follower::enter`) or per
             // fire (`trigger::run_agent`), or do not follow yet (`chat`,
             // `tui` — REMOTE-SURFACE-DESIGN §14 step 4).
@@ -552,7 +573,9 @@ impl Command {
             | Command::Serve(_)
             | Command::Slack(_)
             | Command::Trigger(_)
-            // Build a registry; run no model.
+            // Run no model: configuration, rules, or a registry built to list.
+            | Command::Setup(_)
+            | Command::Rules(_)
             | Command::Outbox(_)
             | Command::Kg(_)
             | Command::Tools(_)
@@ -645,12 +668,10 @@ async fn hold_for_this_run(global: &GlobalOpts) -> Result<Option<mecha_core::hol
         return Ok(None);
     };
     // The subcommand's name and nothing after it: `mecha run "<prompt>"`
-    // must not leave the prompt in a file under ~/.mecha/holds.
-    let sub = std::env::args()
-        .skip(1)
-        .find(|a| !a.starts_with('-'))
-        .filter(|a| a.len() <= 24 && a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
-        .unwrap_or_default();
+    // must not leave the prompt in a file under ~/.mecha/holds. Only a word
+    // clap itself knows as a subcommand is taken, so neither a flag's value
+    // (`--provider local`) nor a word of the prompt can be the label.
+    let sub = subcommand_label(std::env::args().skip(1));
     let held =
         crate::follow::hold_router(&cfg, global.provider.as_deref(), &format!("mecha {sub}"))
             .await?;
@@ -666,6 +687,17 @@ async fn hold_for_this_run(global: &GlobalOpts) -> Result<Option<mecha_core::hol
         });
     }
     Ok(held)
+}
+
+/// The first argument clap itself knows as a subcommand — never a flag's value
+/// or a word of the prompt, so it is safe to leave in `~/.mecha/holds`.
+fn subcommand_label(args: impl Iterator<Item = String>) -> String {
+    use clap::CommandFactory;
+    let cmd = Cli::command();
+    let names: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
+    args.into_iter()
+        .find(|a| names.contains(&a.as_str()))
+        .unwrap_or_default()
 }
 
 /// Set by a one-run command holding the router, for its children (D13).
@@ -784,6 +816,57 @@ async fn dispatch() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// D13: a command holds the router for its life only where it runs a
+    /// model. Held per command, `tasks stop` — the way to stop a detached
+    /// `tasks work` — waited behind a switch waiting for that same run, and
+    /// serve's board page (`tasks list`) timed out while a switch was pending.
+    #[test]
+    fn only_a_subcommand_that_runs_a_model_holds_the_router_for_its_life() {
+        use clap::Parser;
+        let one_run = |argv: &[&str]| {
+            let cli = super::Cli::try_parse_from(argv).expect("parses");
+            cli.command.runs_a_model() && cli.command.is_one_run()
+        };
+        for held in [
+            &["mecha", "run", "hello"][..],
+            &["mecha", "tasks", "work", "task-1a2b3c4d"],
+            &["mecha", "mail", "classify"],
+            &["mecha", "frontdoor", "triage"],
+            &["mecha", "harness", "ruminate"],
+        ] {
+            assert!(one_run(held), "{held:?} runs a model and must hold");
+        }
+        for free in [
+            &["mecha", "tasks", "list"][..],
+            &["mecha", "tasks", "stop", "task-1a2b3c4d"],
+            &["mecha", "mail", "recent"],
+            &["mecha", "frontdoor", "list"],
+            &["mecha", "workflow", "list"],
+            &["mecha", "harness", "list"],
+            &["mecha", "serve"],
+            &["mecha", "model", "list"],
+        ] {
+            assert!(
+                !one_run(free),
+                "{free:?} runs no model here and must not hold"
+            );
+        }
+    }
+
+    /// The hold's label is a subcommand name and nothing else: not a flag's
+    /// value, not a word of the prompt.
+    #[test]
+    fn a_holds_label_is_never_user_content() {
+        let label = |args: &[&str]| super::subcommand_label(args.iter().map(|a| a.to_string()));
+        assert_eq!(
+            label(&["--provider", "local", "run", "my secret plan"]),
+            "run"
+        );
+        assert_eq!(label(&["tasks", "work", "task-1"]), "tasks");
+        assert_eq!(label(&["--system", "classified", "run", "x"]), "run");
+        assert_eq!(label(&["nothing-known"]), "");
+    }
+
     use super::*;
 
     /// The router snapshot is taken where a default provider can be resolved,

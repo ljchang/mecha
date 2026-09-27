@@ -925,17 +925,24 @@ async fn run_agent(
     // The global config only — a scheduled run must not inherit the tool
     // surface of whatever repository the daemon was started in.
     let cfg = mecha_core::config::Config::load_global()?;
-    // D13: this fire holds the router until it returns, taken before the
-    // observation below; "switch now" stops it through the fire's own token.
-    let _held = crate::follow::hold_router(
-        &cfg,
-        global.provider.as_deref(),
-        &format!("trigger {}", t.name),
-    )
-    .await?;
-    if let (Some(h), Some(stop)) = (&_held, stop) {
-        let stop = stop.clone();
-        h.on_cancel(move || stop.cancel());
+    // This fire's own token: a child of the daemon's, so a SIGTERM reaches
+    // the run (see where it is handed to the run below) — and made here, so
+    // "switch now" can cancel *this fire* and nothing above it. Cancelling
+    // `stop` itself would end the daemon, and the unit does not restart a
+    // clean exit (review of D13).
+    let token = stop.map(CancellationToken::child_token).unwrap_or_default();
+    // D13: this fire holds the router its run will use until it returns,
+    // taken before the observation below. A shutdown while it waits out a
+    // switch stops the wait.
+    let provider = t.provider.as_deref().or(global.provider.as_deref());
+    let what = format!("trigger {}", t.name);
+    let _held = tokio::select! {
+        held = crate::follow::hold_router(&cfg, provider, &what) => held?,
+        _ = token.cancelled() => anyhow::bail!("stopped while waiting for a model switch"),
+    };
+    if let Some(h) = &_held {
+        let fire = token.clone();
+        h.on_cancel(move || fire.cancel());
     }
     // The daemon outlives every run it starts, so the snapshot `main` took is
     // the model loaded when the *daemon* started. A scheduled run follows the
@@ -1058,7 +1065,6 @@ async fn run_agent(
     // however long the run had left — up to the trigger's whole timeout — and
     // systemd would SIGKILL it, losing the partial answer and the ledger row
     // that says what happened.
-    let token = stop.map(CancellationToken::child_token).unwrap_or_default();
     let mut cx = RunContext::clone(prepared.agent.context()).with_cancel(token.clone());
     // The situation brief (B1, 1h), after the anchor is seeded: recorded on
     // the run, and delivered into its first user turn only behind
@@ -1311,6 +1317,25 @@ fn indent(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// "Switch now" cancels the fire, never the daemon: cancelling the stop
+    /// token `run_agent` is handed ended the whole scheduler, and the unit
+    /// does not restart a clean exit (review of D13). Read from the source,
+    /// because the token's provenance is one line of plumbing.
+    #[test]
+    fn switch_now_cancels_the_fire_and_not_the_daemon() {
+        let src = include_str!("trigger.rs");
+        let code = src.split("#[cfg(test)]\nmod tests {").next().unwrap_or(src);
+        let run_agent = code
+            .split("async fn run_agent(")
+            .nth(1)
+            .expect("run_agent exists");
+        let body = run_agent.split("\nasync fn ").next().unwrap_or(run_agent);
+        assert!(body.contains("h.on_cancel(move || fire.cancel())"));
+        assert!(
+            !body.contains("stop.cancel()"),
+            "run_agent cancels the daemon's token"
+        );
+    }
 
     /// The unit has to name the binary that printed it, by absolute path.
     ///
