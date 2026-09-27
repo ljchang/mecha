@@ -825,6 +825,7 @@ mod tests {
             created_at: "2026-08-25T10:00:00Z".into(),
             resolved_at: None,
             reason: None,
+            resolved_by: None,
             error: None,
         }
     }
@@ -1220,6 +1221,7 @@ mod echo_at_the_confirmation_door {
             resolved_at: None,
             error: None,
             reason: None,
+            resolved_by: None,
         }
     }
 

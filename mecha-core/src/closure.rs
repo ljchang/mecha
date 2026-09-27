@@ -153,6 +153,50 @@ pub enum Actor {
     Unknown,
 }
 
+impl Actor {
+    /// The word the store writes — also the typed word a reader shows in
+    /// place of text the owner did not write.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Actor::Owner => "owner",
+            Actor::OwnerApproved => "owner-approved",
+            Actor::Unknown => "unknown",
+        }
+    }
+}
+
+/// Who performed an owner's act that is **stamped rather than refused** —
+/// an outbox rejection or release (`APPRAISAL-WIRING-DESIGN.md` R16a's ruling D3, ruled
+/// 2026-09-27). The same signals and the same rules as [`decide`], so the
+/// two cannot drift apart: where `decide` answers, this is its actor; where
+/// `decide` refuses — a delegated or unattended run's shell, a live run
+/// marker above, a registry that cannot be read, a posture variable no
+/// registration confirms, a redirected home — this is [`Actor::Unknown`].
+/// Unknown is never the owner: a reader that treats the act's words as the
+/// owner's does so only under [`Actor::Owner`].
+pub fn attribute(env: &PostureReading, shell: &ShellReading, ancestor_run: Option<u32>) -> Actor {
+    attribute_explained(env, shell, ancestor_run).0
+}
+
+/// [`attribute`], with why the act is not the owner's when it is not — the
+/// refusal `decide` would have given, or that a run's shell ran it behind
+/// the approver — for a surface that tells the person whose words were
+/// just recorded as not theirs (review of #343).
+pub fn attribute_explained(
+    env: &PostureReading,
+    shell: &ShellReading,
+    ancestor_run: Option<u32>,
+) -> (Actor, Option<String>) {
+    match cause(env, shell, ancestor_run, None) {
+        Ok((Actor::Owner, _)) => (Actor::Owner, None),
+        Ok((actor, _)) => (
+            actor,
+            Some("this command was run by an interactive mecha run's shell".into()),
+        ),
+        Err(why) => (Actor::Unknown, Some(why)),
+    }
+}
+
 /// The posture of a run, as the harness stamps it on the commands the run's
 /// `shell` tool executes. Only an interactive run — one with a person in the
 /// conversation — may close a task.
@@ -348,10 +392,22 @@ pub fn decide(
     ancestor_run: Option<u32>,
     flagged: Option<Surface>,
 ) -> std::result::Result<(Actor, Surface), String> {
+    cause(env, shell, ancestor_run, flagged)
+        .map_err(|why| format!("{why}; refusing to close or reopen a task — {OWNERS_ACT}"))
+}
+
+/// [`decide`]'s rules with the refusal's *cause* alone — no remedy — so a
+/// caller that stamps rather than refuses ([`attribute_explained`]) says
+/// why in its own verb's words, not a task closure's (review of #343).
+fn cause(
+    env: &PostureReading,
+    shell: &ShellReading,
+    ancestor_run: Option<u32>,
+    flagged: Option<Surface>,
+) -> std::result::Result<(Actor, Surface), String> {
     if let Some(pid) = ancestor_run {
         return Err(format!(
-            "this command is running inside a delegated or scheduled run (process {pid}); \
-             {OWNERS_ACT}"
+            "this command is running inside a delegated or scheduled run (process {pid})"
         ));
     }
     match (shell, env) {
@@ -370,7 +426,7 @@ pub fn decide(
             _,
         ) => Err(format!(
             "this command was run by a {} run's shell (process {pid}), with nobody in the \
-             conversation; {OWNERS_ACT}",
+             conversation",
             p.as_str()
         )),
         (
@@ -381,18 +437,17 @@ pub fn decide(
             _,
         ) => Err(format!(
             "this command was run by a shell (process {pid}) whose run posture is {word:?}, \
-             which is not one this build can read; refusing to close or reopen a task on its \
-             behalf — {OWNERS_ACT}"
+             which is not one this build can read"
         )),
         (ShellReading::Redirected { pid, root }, _) => Err(format!(
             "this command was run by a shell (process {pid}) registered in {}, but it reads \
-             a different MECHA_HOME — a command inside a run cannot redirect where its \
-             closure is recorded; {OWNERS_ACT}",
+             a different MECHA_HOME — a command inside a run cannot redirect where its act \
+             is recorded",
             root.display()
         )),
         (ShellReading::Unreadable(why), _) => Err(format!(
             "the harness's shell registry could not be read ({why}), so this command's run \
-             posture is unknown; refusing to close or reopen a task — {OWNERS_ACT}"
+             posture is unknown"
         )),
         (ShellReading::NotRegistered, PostureReading::NotInRun) => {
             Ok((Actor::Owner, flagged.unwrap_or(Surface::Cli)))
@@ -400,7 +455,7 @@ pub fn decide(
         (ShellReading::NotRegistered, _) => Err(format!(
             "this command carries {POSTURE_ENV} but no registered mecha shell is among its \
              ancestors — a run's posture is read from the harness's registry, never from the \
-             variable alone; {OWNERS_ACT}"
+             variable alone"
         )),
     }
 }
@@ -1067,6 +1122,69 @@ mod tests {
         )
         .is_err());
         assert!(decide(&P::NotInRun, &S::NotRegistered, Some(4243), None).is_err());
+    }
+
+    /// Ruling D3: an outbox resolve is stamped with the actor `decide` would give,
+    /// and everything `decide` refuses stamps `unknown` — never the owner.
+    /// The forge cases are the ones #293 and #294 found for closures: a
+    /// run's shell of any posture, the posture variable set by the command
+    /// text, a redirected home, an unreadable registry, a live run marker.
+    #[test]
+    fn a_resolve_is_the_owners_only_where_a_closure_would_be() {
+        use PostureReading as P;
+        use ShellReading as S;
+        let shell = |p: std::result::Result<RunPosture, String>| S::Registered {
+            pid: 4242,
+            posture: p,
+        };
+        assert_eq!(
+            attribute(&P::NotInRun, &S::NotRegistered, None),
+            Actor::Owner
+        );
+        assert_eq!(
+            attribute(
+                &P::InRun(RunPosture::Interactive),
+                &shell(Ok(RunPosture::Interactive)),
+                None
+            ),
+            Actor::OwnerApproved
+        );
+        let forged = [
+            (
+                P::InRun(RunPosture::Interactive),
+                shell(Ok(RunPosture::Delegated)),
+                None,
+            ),
+            (P::NotInRun, shell(Ok(RunPosture::Unattended)), None),
+            (P::NotInRun, shell(Err("unknown".into())), None),
+            (P::InRun(RunPosture::Interactive), S::NotRegistered, None),
+            (P::Unreadable("unknown".into()), S::NotRegistered, None),
+            (P::NotInRun, S::Unreadable("EACCES".into()), None),
+            (
+                P::NotInRun,
+                S::Redirected {
+                    pid: 4242,
+                    root: PathBuf::from("/nonexistent"),
+                },
+                None,
+            ),
+            (P::NotInRun, S::NotRegistered, Some(4243)),
+            (P::NotInRun, shell(Ok(RunPosture::Interactive)), Some(4243)),
+        ];
+        for (env, shell, ancestor) in forged {
+            assert_eq!(
+                attribute(&env, &shell, ancestor),
+                Actor::Unknown,
+                "{env:?} {shell:?} {ancestor:?}"
+            );
+        }
+        for a in [Actor::Owner, Actor::OwnerApproved, Actor::Unknown] {
+            assert_eq!(
+                serde_json::to_value(a).unwrap(),
+                serde_json::json!(a.as_str()),
+                "the typed word is the wire word"
+            );
+        }
     }
 
     /// `MECHA_HOME=/tmp/fresh mecha tasks set …` under a registered

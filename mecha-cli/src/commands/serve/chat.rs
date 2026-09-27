@@ -2216,7 +2216,7 @@ fn begin_turn(
         // call that says a run happened (`INCOGNITO-DESIGN.md` §3.1). The
         // homeostat is not sampled either, for the same reason.
         if session.room().is_none() {
-            let (homeostat, board, slots) = tokio::join!(
+            let (homeostat, board, slots, attempts) = tokio::join!(
                 async {
                     if sampled {
                         tokio::time::timeout(
@@ -2236,6 +2236,14 @@ fn begin_turn(
                     crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE,
                 ),
                 mecha_core::brief::slots_for(local_server.as_ref()),
+                // A task chat's previous attempts (3a-2): a session and
+                // store walk, bounded like the homeostat's.
+                mecha_core::brief::attempts::for_run_within(
+                    conversation.goal_anchor.clone(),
+                    session.kept().map(|s| s.meta.id.clone()),
+                    agent.now(),
+                    crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE,
+                ),
             );
             if sampled {
                 cx.homeostat = homeostat;
@@ -2244,6 +2252,7 @@ fn begin_turn(
                 &agent,
                 &cx,
                 &conversation,
+                attempts,
                 board,
                 slots,
             )));
