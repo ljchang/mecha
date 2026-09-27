@@ -724,7 +724,7 @@ closures, workflows and questions), so a single trial's arm is the control
 until a lifetime's tasks close. `plan_reinjection`,
 `declared_checks` and `appraiser` are not levers until their switch
 exists. The stage levers as built are `reflect`, `learn`, `validate`,
-`retire`, `ruminate`, `sensors_in_brief` and `appraisals_in_brief` (`experiment::StageLever`; the last since `APPRAISAL-WIRING-DESIGN.md` 2f).
+`retire`, `ruminate`, `sensors_in_brief`, `appraisals_in_brief` and `contrast_evidence` (`experiment::StageLever`; `appraisals_in_brief` since `APPRAISAL-WIRING-DESIGN.md` 2f, `contrast_evidence` since 2e-4b-2 — the one that ships off, so an arm measures it on through its environment's `config.toml` and names it in `stages_off` only to force it off).
 
 Loop-stage levers, `lifetime` only:
 
@@ -738,6 +738,7 @@ Loop-stage levers, `lifetime` only:
 | `prioritised_replay` | unbuilt | the \|valence\| ordering; the arm without it draws uniformly, which is `sample.rs` as it stands |
 | `sensors_in_brief` | **none** | the homeostat's and guilt's entry into `diagnose::Evidence` |
 | `appraisals_in_brief` | **none** | the clean appraisals' entry into `diagnose::Evidence` — the appraisal-off preset's reach into `harness ruminate` (2f) |
+| `contrast_evidence` | **none** | a verified success set beside a correction in its region when `reflect` runs (2e-4b-2, R43); off by default |
 
 **"The whole system off" is the bare arm, and it already exists** — it is
 what `mecha eval` runs. The appraisal *readout* is a pure function of the

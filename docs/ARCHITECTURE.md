@@ -4726,10 +4726,9 @@ Decisions, each a bug if undone:
   outbox has written carries it (the field is as old as the store), and
   `reflect`'s edit pass reads the same field on the same terms.
 
-Left for later rows: contrast evidence for the reflector (2e-4b-2, waiting on
-what "the same region" means between a correction and a success); staged
-skill drafts (2e-4c, deferred by R40 until this set has been read on real
-data). Skills stay owner-authored: nothing here writes under
+Contrast evidence for the reflector is 2e-4b-2 (below). Left for a later
+row: staged skill drafts (2e-4c, deferred by R40 until this set has been
+read on real data). Skills stay owner-authored: nothing here writes under
 `~/.mecha/skills/`.
 
 ### Planning examples from what went right
@@ -4814,6 +4813,63 @@ check, which almost never happens; a verified success is the other source.
 - **In an experiment**, `levers_on = ["success_examples"]`; nothing is
   seeded, because the successes are the trial home's own stores, so a
   single trial's arm equals its control until a lifetime's tasks close.
+
+### Contrast evidence beside a correction
+
+`APPRAISAL-WIRING-DESIGN.md` L2, row 2e-4b-2, ruled R43: `mecha reflect`
+may reflect a correction with a verified success from its region beside it
+(`success::ContrastPool`, `learning::Reflector::reflect_beside`), behind
+`[agent] contrast_evidence` — a **stage** lever
+(`experiment::StageLever::ContrastEvidence`), read by `reflect` and never by
+a run — which **ships off**.
+
+- **The region is the loader's match** (R43, the owner's ruling). A
+  correction's recorded situation (`reflect`'s `recorded_situation`: its
+  tool window, trigger and the covering run record's workspace, surface
+  and goal — the value its reflection is stamped with) is in a success's
+  region when its `scope()` `matches` **one of** the success session's run
+  records: every tool in the window is in that run's registry, and
+  workspace, surface and goal agree wherever the correction names them —
+  where a rule learned from the correction would load (2e-5c's
+  `Recurrence::matching`). Session-to-session `region_key` equality would
+  compare a tool window with a whole registry and never hold. A correction
+  whose situation names no key is standing, and so is in every success's
+  region, as a standing rule loads everywhere.
+- **Which corrections.** A transcript steer, denial or followup — the
+  owner's corrections, reflected in the behaviour frame. A mismatch is the
+  harness's observation in its own frame, and the outbox pass (an edit
+  teaches voice; a rejection's situation names only the drafting tool) is
+  not contrasted in this row.
+- **Which success.** The newest trace `planning::success_traces` lends
+  (`need_goal: false`, so a draft sent unchanged or a goal-less workflow
+  lends too) whose session is not the correction's own: a correction's own
+  session succeeding afterwards is the correction's outcome, not a contrast
+  to it. The traces are 2e-4b-1's: standing successes only, sessions the
+  corpus admits, **recorded taint clean to the end**, every run scoped, and
+  a tool called; read once per pass, newest first, at most 32 transcripts.
+  One `reflect` pass is one read of the stores, so a reopen withdraws a
+  success from the next pass.
+- **Only clean material reaches the reflector.** The block names the
+  owner's act in fixed words (`success::Act::in_words`, the same phrase
+  `goal_context` serves) and the session's tool sequence — registry names.
+  No record id (a lesson must not memorise one), no argument, no prose.
+  The correction's own evidence and `Origin` are decided as before
+  (`evidence_for`); the contrast changes neither.
+- **The prompt.** Off, the system prompt and the user message are the bytes
+  they were — pinned against the old format copied from the tree before the
+  row (`contrast_prompt`). On, the behaviour frame (`REFLECTOR_SYSTEM`)
+  gains `CONTRAST_SENTENCE` on every call, so the prefix stays stable across
+  a pass, and a contrasted correction's message gains one
+  `<a-verified-success-in-this-region>` block between the aftermath and the
+  closing question. The writing and mismatch frames never move.
+- **Shadow.** `mecha reflect --dry-run` reads the pool whatever the lever
+  and names, beside each listed steer, denial or followup, the success it
+  would be shown. A real pass reads nothing with the lever off.
+- **Measuring it.** An arm turns it on through its own environment's
+  `config.toml` (`[agent] contrast_evidence = true`); `stages_off =
+  ["contrast_evidence"]` forces it off whatever the environment says. On
+  only after a measured run (R43). A reflection does not record that it
+  was contrasted; the arm does.
 
 ## The goal system
 

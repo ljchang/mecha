@@ -86,6 +86,22 @@ impl Act {
         }
     }
 
+    /// The act in words, as a later run (`goal_context`, 2e-4b-1) and the
+    /// reflector (contrast evidence, 2e-4b-2) are told it. Fixed text, one
+    /// spelling for both readers.
+    pub fn in_words(&self) -> &'static str {
+        match self {
+            Act::TaskDone { .. } => "the owner closed this task done and has not reopened it",
+            Act::WorkflowClosed { .. } => {
+                "the owner closed this workflow after its verification passed and has not reopened it"
+            }
+            Act::QuestionAnswered { .. } => {
+                "the owner answered this session's question and the session then completed"
+            }
+            Act::SentUnchanged { .. } => "the owner sent this session's draft as it was written",
+        }
+    }
+
     /// Where the act is recorded: `<store>:<id>`.
     pub fn pointer(&self) -> String {
         match self {
@@ -213,6 +229,73 @@ impl<'a> Sources<'a> {
             questions: &stores.questions,
             questions_unreadable: stores.questions_unreadable,
         }
+    }
+}
+
+/// A verified success shown to the reflector beside a correction in its
+/// region (row 2e-4b-2, R43): the owner's act and the success session's
+/// tool sequence. Registry names and a fixed phrase — nothing a model wrote,
+/// and only from a session whose recorded taint is clean to its end
+/// (`planning::success_traces`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Contrast {
+    pub act: Act,
+    pub session: String,
+    pub sequence: String,
+}
+
+/// The successes a reflect pass may set beside its corrections: every clean,
+/// scoped trace the standing set lends, newest first, read once per pass.
+#[derive(Debug, Clone, Default)]
+pub struct ContrastPool {
+    traces: Vec<crate::planning::SuccessTrace>,
+}
+
+impl ContrastPool {
+    pub fn of(traces: crate::planning::SuccessTraces) -> ContrastPool {
+        ContrastPool {
+            traces: traces.traces,
+        }
+    }
+
+    /// The pool from the default owning stores and the session store at
+    /// `dir`. A session store that cannot be listed lends nothing — a
+    /// correction is then reflected alone, as it was before the lever.
+    pub fn at(dir: &Path) -> ContrastPool {
+        let owned = Owned::load();
+        match SessionIndex::load(dir, false) {
+            Ok(index) => ContrastPool::of(crate::planning::success_traces(
+                &derive(&owned.sources(), &index),
+                &index,
+                false,
+            )),
+            Err(_) => ContrastPool::default(),
+        }
+    }
+
+    /// The newest verified success in the correction's region (R43, the
+    /// owner's ruling): one of whose run records the correction's scope
+    /// `matches` — every tool in the correction's window is in that run's
+    /// registry, and workspace, surface and goal agree wherever the
+    /// correction names them. The loader's own match (2e-5c's precedent):
+    /// the region is where a rule learned from the correction would load.
+    /// Never the correction's own session: its success is the correction's
+    /// outcome, not a contrast to it. `None` for a correction whose
+    /// situation is unknown.
+    pub fn beside(&self, correction: Option<&Situation>, session: &str) -> Option<Contrast> {
+        let scope = correction?.scope();
+        self.traces
+            .iter()
+            .find(|t| t.session != session && t.scopes.iter().any(|run| scope.matches(run)))
+            .map(|t| Contrast {
+                act: t.act.clone(),
+                session: t.session.clone(),
+                sequence: t.sequence.clone(),
+            })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.traces.is_empty()
     }
 }
 
