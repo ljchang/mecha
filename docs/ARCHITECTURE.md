@@ -169,7 +169,9 @@ after it — body decoding, deltas, tool dispatch — is inside any retry.
 
 **`docs/LLAMA-SERVER.md` is the reference** — slot geometry, the KV arithmetic,
 the measured `-np` table, the request contract, and what each flag cost to
-learn. `scripts/start-moe-mtp.sh` is the authority on the flags themselves.
+learn. `scripts/start-router.sh` is the authority on the flags themselves
+since 2026-09-27, with `scripts/start-moe-mtp.sh` and its siblings as the
+rollback.
 Read the doc before changing anything there; most of its content exists because
 something had already gone wrong.
 

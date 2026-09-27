@@ -1061,9 +1061,11 @@ earlier binary, service and factory-version claims.
 
 > **This checkout is a live service's `ExecStart`. Do not `git stash`, `git
 > checkout --`, `git restore` — or `git checkout <branch>`.**
-> `~/.config/systemd/user/llama-local.service` names
-> `/home/ljchang/Github/mecha/scripts/start-moe-mtp.sh` **literally**, so the
-> file in this working copy *is* the server's launch command. Anything that
+> `llama-local` runs `/home/ljchang/Github/mecha/scripts/start-router.sh`
+> **literally** (since 2026-09-27, through the drop-in
+> `llama-local.service.d/router.conf`; it sources `scripts/mmproj.sh`, and
+> the unit's own `start-moe-mtp.sh` is the rollback), so those files in this
+> working copy *are* the server's launch command. Anything that
 > rewrites it — a branch switch, a revert, a stash — changes how the model is
 > served on the next restart, and it comes back healthy and merely behaves
 > differently, which is the worst way for it to be wrong.
@@ -1087,14 +1089,12 @@ earlier binary, service and factory-version claims.
 > ban, because a check is a thing a session can actually satisfy:
 >
 > ```
-> git rev-parse <branch>:scripts/start-moe-mtp.sh
-> git rev-parse main:scripts/start-moe-mtp.sh      # equal => the switch cannot move the server
+> # silent => the switch cannot move the server
+> git diff --quiet <branch> main -- scripts/start-router.sh scripts/mmproj.sh scripts/start-moe-mtp.sh
 > ```
 >
-> Since 2026-09-27 run it for `scripts/start-router.sh` and
-> `scripts/mmproj.sh` too (the paragraph below): `start-moe-mtp.sh` is the
-> rollback now, and nothing edits it, so it alone comes back equal on every
-> branch.
+> (Until 2026-09-27 this compared `start-moe-mtp.sh` alone. Nothing edits it
+> now that it is the rollback, so alone it comes back equal on every branch.)
 >
 > Equal hashes mean a branch switch here is invisible to systemd. Unequal —
 > or a *dirty* working copy of that path, which no branch comparison can see —
@@ -1104,10 +1104,9 @@ earlier binary, service and factory-version claims.
 > `scripts/mmproj.sh`.** The drop-in `llama-local.service.d/router.conf`
 > clears the unit's `ExecStart=` and names the router script, so
 > `start-moe-mtp.sh` is no longer what runs (`systemctl --user cat
-> llama-local` shows both lines; the later one wins). Check both files:
-> `git diff --quiet <a> <b> -- scripts/start-router.sh scripts/mmproj.sh`. Check before the switch: afterwards the file
-> has already changed, and it fails by coming back healthy and behaving
-> differently.
+> llama-local` shows both lines; the later one wins). The check above covers
+> all three files. Run it before the switch: afterwards the file has already
+> changed, and it fails by coming back healthy and behaving differently.
 >
 > The general lesson is in HISTORY under Environment: **"move it to a worktree"
 > assumes nothing outside the repository points at a path inside it**, and here
@@ -1493,7 +1492,7 @@ survey of tracked content.
 | 8080 | Qwen3.6-35B-A3B | up, **`total_slots=4`**, `-c 1048576` → **262,144 per slot**, and **`--mmproj` loaded since 2026-08-21 so `modalities.vision` is true** — the per-slot figure is the model's whole trained window (`qwen35moe.context_length`), raised from 32768 on 2026-08-10 after re-measuring. **`-c` costs nothing in speed**: 32k/64k/128k/256k are within noise of each other (~92 tok/s at a 1k prompt, ~80 at 30k), and the 50x slowdown recorded on 2026-08-07 was that day's OOM, not the flag. It costs memory as a startup *reservation* — 21.4 GB at 32k to 28.5 GB at 256k, i.e. weights ~20.7 GB plus ~32 KiB/token. **The full tables, the needle test at 188k, the `-np` trade-off and the two traps live in `scripts/start-moe-mtp.sh`** — read it before touching any of this. **`--reasoning-budget 4096`** (2026-08-07) was believed to be the mitigation for this model's "non-terminating reasoning" — **that diagnosis was wrong and is retired as of 2026-08-10 evening**: the empty turns were tool calls emitted before `</think>` closed, one of them 120 characters long, so no token budget was ever involved. The flag is harmless and stays; the real cause and fix are in `CHANGELOG.md` under 0.1.2. The nudge-retry allowance still resets on productive turns, which remains correct for its own reasons. `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` and `max_tokens` (**above** the budget; 8192) — four numbers that move together. **`context_window` is `-c / -np`, not `-c`** — llama-server divides the context across slots, so the rule this line used to state was right only by accident of `-np 1`. Read it off `/props` (`default_generation_settings.n_ctx`) or the startup line's `n_ctx_slot`, never by arithmetic on the flag. **A vision model is two files.** The weights carry the language model and the vision tower is a separate `mmproj-*.gguf` that `--mmproj` must name; without it the server starts, answers well, reports `modalities.vision: false`, and the model tells anyone who sends it a screenshot that it cannot see images — which reads as a limitation of the weights. `scripts/mmproj.sh` now refuses to start without one. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **A transient unit** — now `llama-local.service` (`systemctl --user status llama-local`; it was `llama-qwen` when this was written, and that name no longer resolves), not a tmux pane — see below |
 | 8081 | harrier-oss-v1-0.6b | **up, serving embeddings** (`--embeddings --pooling last --embd-normalize 2`). This is where the graph's embeddings come from — they moved off Ollama onto llama-server, so any doc still naming `MECHA_GRAPH_OLLAMA_URL` is stale. One model per process, so this cannot be the chat port as well: pointing both at 8080 sends embedding requests to the chat model. |
 | 8083 | Qwen3.8-27B | **down as of 2026-08-20** (was up on 2026-08-16). Nothing in config depends on it, so nothing is broken by it — noted because the previous pass recorded it up and a reader would otherwise assume it still is |
-| 8082 | gemma-4-26B-A4B | **down — restart it before any judged run.** The eval judge and nightly validate's judge both point here, so `mecha eval` with a `judge` rubric and the nightly validate will fail without it. `scripts/start-gemma26.sh` |
+| 8082 | (retired 2026-09-27) | **Do not start it.** gemma-4-26B-A4B is a preset on the `:8080` router now, and the `gemma26` entry points there (`mecha model use gemma26`). `scripts/start-gemma26.sh` beside the router loads a second 26B next to the resident model — the memory failure that reaped jobs twice on 2026-09-27. The nightly validate's judge is the stages' model (`scripts/pin.sh`); a rubric that names `gemma26` resolves to `:8080`. |
 | 8888 | SearXNG | up (docker, JSON format enabled) — **but every *general* engine was refusing this IP on 2026-08-21**: brave and google cse `Suspended: too many requests`, duckduckgo and startpage `CAPTCHA`, mojeek `access denied`. The specialist engines (lib.rs, crossref, arxiv, openalex, stackoverflow) answer fine. Partially recovered the same afternoon. This is why Exa and Tavily were added — a scraping metasearch loses the anti-bot race, and the answer is a backend contractually entitled to the data, not a better scraper |
 
 **Start model servers as transient units, not from a tmux pane.** Both
