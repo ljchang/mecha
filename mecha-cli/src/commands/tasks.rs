@@ -942,7 +942,7 @@ fn hook_dir() -> std::path::PathBuf {
 /// directory (review of #293). Read-only: nothing here creates a directory.
 /// Homes that cannot be named are an error, not an empty set — an empty set
 /// would switch rule 1 off without a word (review of #294).
-fn live_run_pids() -> Result<std::collections::HashSet<u32>> {
+pub(crate) fn live_run_pids() -> Result<std::collections::HashSet<u32>> {
     let mut dirs = Vec::new();
     for home in mecha_core::work::guard_homes()? {
         dirs.push(markers_dir_under(&home));

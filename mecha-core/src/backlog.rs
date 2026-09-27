@@ -1072,7 +1072,9 @@ mod tests {
         let b = outbox
             .stage_by_harness("mail_send", serde_json::json!({}))
             .unwrap();
-        outbox.resolve(&b.id, "sent", None).unwrap();
+        outbox
+            .resolve(&b.id, "sent", None, crate::closure::Actor::Owner)
+            .unwrap();
         let survey = Backlog::survey();
         assert_eq!(survey.backlog.outbox.as_ref().unwrap().waiting, 1);
         let items = survey.items.outbox.unwrap();
