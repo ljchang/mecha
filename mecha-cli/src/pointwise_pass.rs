@@ -575,6 +575,10 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
     let mut prepared: Option<Prepared> = None;
     let mut rules: Option<Option<crate::commands::validate::RuleSurface>> = None;
     let seats = crate::commands::tasks::permits()?;
+    // The levers this pass runs with, read once from the same flags and
+    // config `setup::prepare` reads — so an owner-bound check point is
+    // counted as such before the budget or a seat can file it elsewhere.
+    let levers_off = crate::setup::levers_off(global, &cfg);
     let mut seats_gone = false;
     for Drawable { path, point } in &drawn {
         // A steer, a denial and a draft are always posed, so once nothing
@@ -629,25 +633,33 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
             tally.refused(r);
             continue;
         }
-        if budget == 0 {
-            tally.over_budget += 1;
-            continue;
+        // An owner-bound check point this pass will never drive, asked ahead
+        // of the budget and the seats: past the eighth drive it was filed as
+        // `over_budget`, which reads "raise the budget" — a fix that changes
+        // nothing for a point the levers refuse (found on review).
+        let refused = planned.unrunnable_with(&levers_off);
+        if let Some(why) = &refused {
+            eprintln!("· {} {}: {why}", point.session_id, point.kind.as_str());
         }
-        if seats_gone {
-            tally.no_seat += 1;
+        if held_before_driving(
+            &mut tally,
+            point.kind,
+            refused.is_some(),
+            budget,
+            seats_gone,
+        ) {
             continue;
         }
         if prepared.is_none() {
             prepared = Some(crate::setup::prepare(global, false).await?);
         }
         let live = prepared.as_ref().expect("prepared above");
-        // Both asked before the budget or a seat is spent: neither answer
-        // can change by driving.
-        let refused = planned.unrunnable_under(live);
-        if let Some(why) = &refused {
+        // The prepared run's own levers, asked again: the same function read
+        // the same flags, so this never differs from the check above — kept
+        // so a drift between the two fails closed rather than driving.
+        if let Some(why) = planned.unrunnable_under(live) {
             eprintln!("· {} {}: {why}", point.session_id, point.kind.as_str());
-        }
-        if count_unrunnable(&mut tally, point.kind, refused.is_some()) {
+            count_unrunnable(&mut tally, point.kind, true);
             continue;
         }
         let lost = planned.lost_recorded_tools(live.agent.registry());
@@ -1101,6 +1113,33 @@ fn count_unrunnable(tally: &mut Tally, kind: PointKind, refused: bool) -> bool {
         }
     }
     refused
+}
+
+/// The gates a posed point meets before a seat or an arm, in their order,
+/// and whether it is held back: the levers' refusal first, then the
+/// budget, then the seats. The order is the finding — the refusal asked
+/// last filed every owner-bound point past the eighth drive as
+/// `over_budget`, whose fix (a bigger budget) does nothing for them (found
+/// on review of #333).
+fn held_before_driving(
+    tally: &mut Tally,
+    kind: PointKind,
+    refused: bool,
+    budget: usize,
+    seats_gone: bool,
+) -> bool {
+    if count_unrunnable(tally, kind, refused) {
+        return true;
+    }
+    if budget == 0 {
+        tally.over_budget += 1;
+        return true;
+    }
+    if seats_gone {
+        tally.no_seat += 1;
+        return true;
+    }
+    false
 }
 
 /// What was drawn and not compared, and why — owner-bound points named
@@ -2053,5 +2092,34 @@ mod tests {
         // A refusal of any other kind is not the owner's ruling.
         assert!(count_unrunnable(&mut t, PointKind::Steer, true));
         assert_eq!((t.owner_bound, t.unavailable), (1, 1));
+    }
+
+    /// An owner-bound check point the levers refuse is counted as such
+    /// whatever the budget and the seats say: past the budget it used to
+    /// read `over_budget`, and without seats `no_seat` (review of #333).
+    #[test]
+    fn a_refused_owner_bound_point_is_not_filed_as_over_budget_or_no_seat() {
+        let check = PointKind::FailedCheck;
+        for (budget, seats_gone) in [(0, false), (5, true), (0, true)] {
+            let mut t = Tally::default();
+            assert!(super::held_before_driving(
+                &mut t, check, true, budget, seats_gone
+            ));
+            assert_eq!(
+                (t.owner_bound, t.over_budget, t.no_seat),
+                (1, 0, 0),
+                "budget {budget}, seats gone {seats_gone}"
+            );
+        }
+        // Not refused: the budget and the seats hold it, in that order.
+        let mut t = Tally::default();
+        assert!(super::held_before_driving(&mut t, check, false, 0, true));
+        assert_eq!((t.owner_bound, t.over_budget, t.no_seat), (0, 1, 0));
+        let mut t = Tally::default();
+        assert!(super::held_before_driving(&mut t, check, false, 5, true));
+        assert_eq!((t.owner_bound, t.over_budget, t.no_seat), (0, 0, 1));
+        let mut t = Tally::default();
+        assert!(!super::held_before_driving(&mut t, check, false, 5, false));
+        assert_eq!(t, Tally::default());
     }
 }
