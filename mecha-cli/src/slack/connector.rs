@@ -211,6 +211,7 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
     let (completion_tx, mut completion_rx) = mpsc::channel::<Completion>(32);
     let (deferred_tx, mut deferred_rx) = mpsc::channel::<Deferred>(32);
     let (followed_tx, mut followed_rx) = mpsc::channel::<Followed>(32);
+    let (switch_now_tx, mut switch_now_rx) = mpsc::unbounded_channel::<String>();
 
     let socket = SocketMode::new(
         slack.clone(),
@@ -243,6 +244,7 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         completion_tx,
         deferred_tx,
         followed_tx,
+        switch_now_tx,
         starting: HashMap::new(),
     };
 
@@ -278,6 +280,9 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
             },
             followed = followed_rx.recv() => if let Some(f) = followed {
                 state.continue_run(f).await;
+            },
+            key = switch_now_rx.recv() => if let Some(key) = key {
+                state.stop_for_switch(&key).await;
             },
             // **Both signals.** The shipped unit stops this with SIGTERM and
             // its comment claims in-flight runs stop at a safe point keeping
@@ -430,6 +435,9 @@ struct State {
     completion_tx: mpsc::Sender<Completion>,
     deferred_tx: mpsc::Sender<Deferred>,
     followed_tx: mpsc::Sender<Followed>,
+    /// "Switch now" for a thread's run, routed through the loop so it can do
+    /// what the stop button does — cancel *and* refuse pending asks.
+    switch_now_tx: mpsc::UnboundedSender<String>,
 }
 
 impl State {
@@ -949,8 +957,11 @@ impl State {
         let mode = Arc::new(Mutex::new(Mode::parse(&record.mode).unwrap_or(Mode::Ask)));
         let cancel = mecha_core::agent::CancelHandle::new();
         if let Some(h) = &held {
-            let c = cancel.clone();
-            h.on_cancel(move || c.cancel(mecha_core::agent::CancelReason::Stopped));
+            let tx = self.switch_now_tx.clone();
+            let key = key.clone();
+            h.on_cancel(move || {
+                let _ = tx.send(key);
+            });
         }
         let queue = Arc::new(Mutex::new(VecDeque::new()));
 
@@ -1825,6 +1836,17 @@ impl State {
     /// timeout with its card still clickable, while the thread reported
     /// `cancelled`. Dropping the reply channels makes the approver return
     /// `Blocked` at once, which is what makes the state truthful.
+    /// "Switch now" (D13) for `key`'s run: the stop button's two steps, in its
+    /// order. Cancelling alone leaves a run parked on an approval card, and
+    /// when someone taps it later the run resumes on its old binding — whose
+    /// next request loads the old model back over the switch (review of #350).
+    async fn stop_for_switch(&mut self, key: &str) {
+        if let Some(live) = self.live.get(key) {
+            live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
+        }
+        self.refuse_pending_for(key).await;
+    }
+
     async fn refuse_pending_for(&mut self, thread_key: &str) {
         let theirs: Vec<String> = self
             .pending

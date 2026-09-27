@@ -520,8 +520,18 @@ impl Command {
     ///
     /// **Exhaustive, no wildcard**, like [`runs_a_model`](Self::runs_a_model):
     /// a new subcommand decides. Consulted only where that one is `true`.
+    ///
+    /// **A command listed here must not wait on a `mecha` child that is also
+    /// listed here** (against the same `MECHA_HOME`): with a switch pending,
+    /// the child yields to the switch, the switch waits for the parent, and
+    /// the parent waits for the child — deadlocked until "switch now". That is
+    /// why `workflow` is `false` (its `resume` waits on `tasks work`), and why
+    /// `exp`'s trials are safe (their own `MECHA_HOME`). A child holding on
+    /// its own is otherwise right: an inherited "covered by the parent" mark
+    /// reached detached `session_end` hooks too, which outlive the parent
+    /// and would have run unheld (review of #350).
     fn is_one_run(&self) -> bool {
-        use commands::{exp, frontdoor, harness, mail, questions, tasks};
+        use commands::{exp, frontdoor, harness, mail, questions, sessions, tasks};
         match self {
             Command::Run(_)
             | Command::Batch(_)
@@ -560,6 +570,11 @@ impl Command {
             Command::Questions(a) => matches!(a.cmd, Some(questions::Cmd::Answer { .. })),
             Command::Harness(a) => matches!(a.cmd, harness::Cmd::Ruminate { .. }),
             Command::Exp(a) => matches!(a.cmd, exp::Cmd::Run { .. } | exp::Cmd::Judge { .. }),
+            // `appraise --probe` and `compare` replay sessions against a model.
+            Command::Sessions(a) => matches!(
+                a,
+                sessions::Args::Appraise { probe: true, .. } | sessions::Args::Compare { .. }
+            ),
             // `workflow resume` starts `mecha tasks work` as a child, which
             // holds for itself; held here too, `--now` signalled the parent
             // and left the child running unheld (review of D13).
@@ -579,7 +594,6 @@ impl Command {
             | Command::Outbox(_)
             | Command::Kg(_)
             | Command::Tools(_)
-            | Command::Sessions(_)
             | Command::Reflections(_)
             | Command::LearningReport(_)
             | Command::Msg(_)
@@ -656,13 +670,6 @@ impl Command {
 /// keeping the partial answer. A command that does not catch it ends — which
 /// is what the owner asked for by not waiting.
 async fn hold_for_this_run(global: &GlobalOpts) -> Result<Option<mecha_core::hold::Held>> {
-    // **A child of a held run is covered by its parent's hold.** `workflow`
-    // and `exp` start `mecha` children; one that took its own hold would, with
-    // a switch pending, yield to the switch — which waits for the parent,
-    // which waits for the child. Deadlocked until "switch now".
-    if std::env::var_os(HELD_BY_PARENT).is_some() {
-        return Ok(None);
-    }
     let Ok(cfg) = load_config(global) else {
         // The command reports its own config error.
         return Ok(None);
@@ -675,9 +682,6 @@ async fn hold_for_this_run(global: &GlobalOpts) -> Result<Option<mecha_core::hol
     let held =
         crate::follow::hold_router(&cfg, global.provider.as_deref(), &format!("mecha {sub}"))
             .await?;
-    if held.is_some() {
-        std::env::set_var(HELD_BY_PARENT, "1");
-    }
     if let Some(h) = &held {
         h.on_cancel(|| {
             // First, no further model request leaves this process: the
@@ -705,9 +709,6 @@ fn subcommand_label(args: impl Iterator<Item = String>) -> String {
         .find(|a| names.contains(&a.as_str()))
         .unwrap_or_default()
 }
-
-/// Set by a one-run command holding the router, for its children (D13).
-const HELD_BY_PARENT: &str = "MECHA_ROUTER_HELD";
 
 fn load_config(global: &GlobalOpts) -> Result<mecha_core::config::Config> {
     if global.global_config_only {
@@ -839,6 +840,7 @@ mod tests {
             &["mecha", "mail", "classify"],
             &["mecha", "frontdoor", "triage"],
             &["mecha", "harness", "ruminate"],
+            &["mecha", "sessions", "appraise", "--probe"],
         ] {
             assert!(one_run(held), "{held:?} runs a model and must hold");
         }
@@ -850,6 +852,7 @@ mod tests {
             &["mecha", "workflow", "list"],
             &["mecha", "harness", "list"],
             &["mecha", "serve"],
+            &["mecha", "sessions", "list"],
             &["mecha", "model", "list"],
         ] {
             assert!(

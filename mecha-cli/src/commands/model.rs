@@ -322,6 +322,15 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
     let list = router::models(&base)
         .await
         .with_context(|| format!("{base} stopped answering while the switch waited"))?;
+    // The first read's guard, again: the wait can last hours, and a router
+    // restarted in it can answer with a list this build cannot read — then
+    // `previous` is `None`, and `--now`'s unload and R1's rollback both
+    // silently do not happen (review of #350).
+    anyhow::ensure!(
+        router::readable(&list),
+        "the router at {base} answered /models with a list this build cannot read after the \
+         switch waited, so what is loaded now is unknown — refusing to switch without it"
+    );
     let previous = router::resident(&list).map(str::to_string);
     if previous.as_deref() == Some(model.as_str()) {
         return report(cfg, &base, &model, 0.0, json);
