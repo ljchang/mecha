@@ -119,14 +119,78 @@ pub trait Provider: Send + Sync {
 
 /// Build a provider from a config entry.
 pub fn build(cfg: &crate::config::ProviderConfig) -> Result<Box<dyn Provider>> {
-    match cfg.kind.as_str() {
-        "anthropic" => Ok(Box::new(anthropic::Anthropic::from_config(cfg)?)),
+    let inner: Box<dyn Provider> = match cfg.kind.as_str() {
+        "anthropic" => Box::new(anthropic::Anthropic::from_config(cfg)?),
         "openai" | "openai-compatible" | "local" => {
-            Ok(Box::new(openai::OpenAiCompatible::from_config(cfg)?))
+            Box::new(openai::OpenAiCompatible::from_config(cfg)?)
         }
         other => {
             anyhow::bail!("unknown provider kind {other:?} (expected: anthropic, openai, local)")
         }
+    };
+    Ok(Box::new(Halting {
+        inner,
+        halted: &HALTED,
+    }))
+}
+
+/// Why this process stopped sending model requests, once it has.
+static HALTED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Stop every model request this process would make from now on — each one
+/// fails at once, naming `reason`, rather than reaching the server.
+///
+/// For a process that is one run when the owner switched the model with
+/// `--now` (REMOTE-SURFACE-DESIGN §14 D13). Its interrupt stops the run in
+/// flight, but a loop that runs one agent per item (`frontdoor triage`, mail
+/// drafting) starts the next item on the binding it built at startup, and
+/// that item's first request loads the old model back over the switch. One
+/// flag at the one place every provider is built reaches all of them.
+pub fn halt(reason: impl Into<String>) {
+    let _ = HALTED.set(reason.into());
+}
+
+/// What every provider [`build`] returns: the provider itself, and the
+/// [`halt`] check ahead of each request. Not a retryable error — a halted
+/// request is not transient, and failing over would send it elsewhere.
+///
+/// **Delegate every `Provider` method, including the ones with a default
+/// body.** A method left to its default here silently replaces the real
+/// provider's answer for every request in every process — the shape of the
+/// `Failover::vision` incident. A new trait method must be forwarded here too.
+struct Halting {
+    inner: Box<dyn Provider>,
+    /// Which flag it checks: [`HALTED`] in every build, a test's own in tests
+    /// (setting the process's would halt every later test).
+    halted: &'static std::sync::OnceLock<String>,
+}
+
+#[async_trait]
+impl Provider for Halting {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+    fn default_model(&self) -> &str {
+        self.inner.default_model()
+    }
+    fn vision(&self) -> bool {
+        self.inner.vision()
+    }
+    fn structured_output(&self) -> bool {
+        self.inner.structured_output()
+    }
+    fn supports_effort(&self) -> bool {
+        self.inner.supports_effort()
+    }
+    async fn complete(
+        &self,
+        req: &CompletionRequest,
+        sink: Option<&StreamSink>,
+    ) -> Result<CompletionResponse> {
+        if let Some(reason) = self.halted.get() {
+            anyhow::bail!("this process no longer sends model requests: {reason}");
+        }
+        self.inner.complete(req, sink).await
     }
 }
 
@@ -790,5 +854,65 @@ mod schema_failover_tests {
             p.complete(&request, None).await.unwrap().model,
             "fallback-model"
         );
+    }
+}
+
+#[cfg(test)]
+mod halt_tests {
+    use super::*;
+
+    struct Answers;
+    #[async_trait]
+    impl Provider for Answers {
+        fn id(&self) -> &str {
+            "answers"
+        }
+        fn default_model(&self) -> &str {
+            "m"
+        }
+        async fn complete(
+            &self,
+            _: &CompletionRequest,
+            _: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            Ok(CompletionResponse {
+                message: crate::message::Message::assistant(vec![crate::message::Block::text(
+                    "ok",
+                )]),
+                stop_reason: crate::message::StopReason::EndTurn,
+                usage: Usage::default(),
+                refusal: None,
+                model: "m".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+
+    /// Once halted, no request reaches the provider — and the refusal is not
+    /// a transient `ProviderError`, so nothing retries it or fails it over.
+    #[tokio::test]
+    async fn a_halted_process_sends_no_model_request() {
+        static FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let p = Halting {
+            inner: Box::new(Answers),
+            halted: &FLAG,
+        };
+        let req = CompletionRequest {
+            response_schema: None,
+            model: "m".into(),
+            system: None,
+            messages: vec![crate::message::Message::user("hi")],
+            tools: vec![],
+            max_tokens: 16,
+            effort: None,
+            thinking: false,
+            cache_prompt: false,
+        };
+        assert!(p.complete(&req, None).await.is_ok());
+        FLAG.set("switched with --now".into()).unwrap();
+        let err = p.complete(&req, None).await.unwrap_err();
+        assert!(err.to_string().contains("switched with --now"), "{err}");
+        assert!(err.downcast_ref::<retry::ProviderError>().is_none());
+        assert_eq!(p.id(), "answers", "the wrapper is transparent otherwise");
     }
 }

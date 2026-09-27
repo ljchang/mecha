@@ -6,6 +6,7 @@ mod closure_guard;
 mod commands;
 mod editor;
 mod exe;
+mod follow;
 mod harness_probe;
 mod interrupt;
 mod lesson_pass;
@@ -500,6 +501,113 @@ impl Command {
         !matches!(self, Command::Eval(_))
     }
 
+    /// Whether this command is **one run** for its whole life, and so holds
+    /// the router until it returns (D13): a switch waits for it, and it waits
+    /// for a switch before it starts. The long-lived ones — which serve many
+    /// runs, and hold per turn or per fire themselves — are `false`, or a
+    /// switch would wait for a daemon forever; so are the readers that build
+    /// a registry without running a model.
+    ///
+    /// **Exhaustive, no wildcard**, like [`runs_a_model`](Self::runs_a_model):
+    /// a new subcommand decides. Consulted only where that one is `true`.
+    ///
+    /// **A command listed here must not wait on a `mecha` child that is also
+    /// listed here** (against the same `MECHA_HOME`): with a switch pending,
+    /// the child yields to the switch, the switch waits for the parent, and
+    /// the parent waits for the child — deadlocked until "switch now". That is
+    /// why `workflow` is `false` (its `resume` waits on `tasks work`), and why
+    /// `exp`'s trials are safe (their own `MECHA_HOME`). A child holding on
+    /// its own is otherwise right: an inherited "covered by the parent" mark
+    /// reached detached `session_end` hooks too, which outlive the parent
+    /// and would have run unheld (review of #350).
+    ///
+    /// **The rule is every holder's, not only these commands'.** A trigger
+    /// fire and a web, voice or Slack turn hold for their whole run, and their
+    /// agent can call `shell: mecha run …` (or `tasks work`, `distill`, …): with
+    /// a switch pending, the child waits for the switch, the switch for the
+    /// turn, the turn for its shell call. Nothing breaks the cycle but `mecha
+    /// model use --now` or `mecha model cancel-switch`, and `model use` names
+    /// the holder it waits on (`trigger <name>`, `web chat`) — the place to
+    /// look (review of #350).
+    fn is_one_run(&self) -> bool {
+        use commands::{exp, frontdoor, harness, mail, questions, sessions, tasks};
+        match self {
+            Command::Run(_)
+            | Command::Batch(_)
+            | Command::Eval(_)
+            | Command::Reflect(_)
+            | Command::Learn(_)
+            | Command::Distill(_)
+            | Command::Validate(_)
+            | Command::Diagnose(_)
+            | Command::Gossip(_)
+            | Command::Corroborate(_)
+            | Command::Vet(_)
+            | Command::Replay(_) => true,
+            // **Per subcommand where only some run a model** (review of D13):
+            // held per command, `tasks stop` — the documented way to stop a
+            // detached `tasks work` — waited behind a switch that was waiting
+            // for that same `tasks work`, and serve's board and mail pages
+            // (`tasks list --json`, `mail recent --json`) timed out for as
+            // long as a switch was pending.
+            Command::Tasks(a) => matches!(a.cmd, Some(tasks::Cmd::Work { .. })),
+            Command::Mail(a) => matches!(
+                a.cmd,
+                Some(
+                    mail::Cmd::Classify { .. }
+                        | mail::Cmd::Eval { .. }
+                        | mail::Cmd::Reflect { .. }
+                        | mail::Cmd::Reply { .. }
+                        | mail::Cmd::Forward { .. }
+                        | mail::Cmd::Schedule { .. }
+                )
+            ),
+            Command::Frontdoor(a) => matches!(
+                a.cmd,
+                Some(frontdoor::Cmd::Extract { .. } | frontdoor::Cmd::Triage { .. })
+            ),
+            Command::Questions(a) => matches!(a.cmd, Some(questions::Cmd::Answer { .. })),
+            Command::Harness(a) => matches!(a.cmd, harness::Cmd::Ruminate { .. }),
+            Command::Exp(a) => matches!(a.cmd, exp::Cmd::Run { .. } | exp::Cmd::Judge { .. }),
+            // `appraise --probe` and `compare` replay sessions against a model.
+            Command::Sessions(a) => matches!(
+                a,
+                sessions::Args::Appraise { probe: true, .. } | sessions::Args::Compare { .. }
+            ),
+            // `workflow resume` starts `mecha tasks work` as a child, which
+            // holds for itself; held here too, `--now` signalled the parent
+            // and left the child running unheld (review of D13).
+            Command::Workflow(_) => false,
+            // Long-lived: hold per turn (`follow::Follower::enter`) or per
+            // fire (`trigger::run_agent`), or do not follow yet (`chat`,
+            // `tui` — REMOTE-SURFACE-DESIGN §14 step 4).
+            Command::Chat(_)
+            | Command::Tui(_)
+            | Command::VoiceServe(_)
+            | Command::Serve(_)
+            | Command::Slack(_)
+            | Command::Trigger(_)
+            // Run no model: configuration, rules, or a registry built to list.
+            | Command::Setup(_)
+            | Command::Rules(_)
+            | Command::Outbox(_)
+            | Command::Kg(_)
+            | Command::Tools(_)
+            | Command::Reflections(_)
+            | Command::LearningReport(_)
+            | Command::Msg(_)
+            | Command::Work(_)
+            | Command::Doctor(_)
+            | Command::Polls(_)
+            | Command::Proposals(_)
+            | Command::Review(_)
+            | Command::Skills(_)
+            | Command::Charter(_)
+            | Command::Config(_)
+            | Command::Model(_) => false,
+        }
+    }
+
     /// Whether this command may resolve a default provider — run a model, or
     /// build an agent — and so needs [`follow_the_loaded_model`]'s snapshot.
     ///
@@ -566,6 +674,67 @@ impl Command {
     }
 }
 
+/// This process's hold on the router (D13), for a command that is one run.
+///
+/// "Switch now" stops it, and the children it covers (`follow::cover_child`),
+/// as Ctrl-C would stop a foreground job: the signal a run started through
+/// `interrupt::run_interruptible` turns into a cancel at its next safe point,
+/// keeping the partial answer. A command that does not catch it ends — which
+/// is what the owner asked for by not waiting.
+async fn hold_for_this_run(global: &GlobalOpts) -> Result<Option<mecha_core::hold::Held>> {
+    let Ok(cfg) = load_config(global) else {
+        // The command reports its own config error.
+        return Ok(None);
+    };
+    // The subcommand's name and nothing after it: `mecha run "<prompt>"`
+    // must not leave the prompt in a file under ~/.mecha/holds. Only a word
+    // clap itself knows as a subcommand is taken, so neither a flag's value
+    // (`--provider local`) nor a word of the prompt can be the label.
+    let sub = subcommand_label(std::env::args().skip(1));
+    let held =
+        crate::follow::hold_router(&cfg, global.provider.as_deref(), &format!("mecha {sub}"))
+            .await?;
+    if let Some(h) = &held {
+        h.on_cancel(|| {
+            // First, no further model request leaves this process: the
+            // interrupt stops the run in flight, but a loop that runs one
+            // agent per item (`frontdoor triage`, mail drafting) would start
+            // the next on its startup binding and load the old model back
+            // (review of D13).
+            mecha_core::provider::halt("the model was switched with `mecha model use --now`");
+            // Then the children this hold covers (`exp run`'s trials), which
+            // the signal below would not reach.
+            crate::follow::interrupt_covered_children();
+            // SAFETY: signalling this process; no memory is touched.
+            unsafe {
+                libc::kill(libc::getpid(), libc::SIGINT);
+            }
+        });
+    }
+    Ok(held)
+}
+
+/// The first argument clap itself knows as a subcommand — never a flag's value
+/// or a word of the prompt, so it is safe to leave in `~/.mecha/holds`.
+fn subcommand_label(args: impl Iterator<Item = String>) -> String {
+    use clap::CommandFactory;
+    let cmd = Cli::command();
+    let names: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
+    args.into_iter()
+        .find(|a| names.contains(&a.as_str()))
+        .unwrap_or_default()
+}
+
+fn load_config(global: &GlobalOpts) -> Result<mecha_core::config::Config> {
+    if global.global_config_only {
+        mecha_core::config::Config::load_global()
+    } else {
+        std::env::current_dir()
+            .map_err(anyhow::Error::from)
+            .and_then(|cwd| mecha_core::config::Config::load(&cwd))
+    }
+}
+
 /// Which model the llama-server router has loaded, snapshotted once for this
 /// process so every default provider in it follows the owner's pick
 /// (`provider::router`, REMOTE-SURFACE-DESIGN §14). Best-effort by design: a
@@ -573,14 +742,7 @@ impl Command {
 /// router that is down leaves the default standing — one loopback round trip
 /// when it is up, nothing when nothing listens.
 async fn follow_the_loaded_model(global: &GlobalOpts, may_follow: bool) {
-    let cfg = if global.global_config_only {
-        mecha_core::config::Config::load_global()
-    } else {
-        std::env::current_dir()
-            .map_err(anyhow::Error::from)
-            .and_then(|cwd| mecha_core::config::Config::load(&cwd))
-    };
-    let Ok(cfg) = cfg else { return };
+    let Ok(cfg) = load_config(global) else { return };
     // A process given `--model` or `--provider` has named what it runs, so it
     // does not follow — the passes that resolve `cfg.provider(global.provider)`
     // themselves (lesson, pointwise, gossip, …) never reach `setup`'s pin. It
@@ -616,6 +778,14 @@ async fn main() {
 
 async fn dispatch() -> Result<()> {
     let cli = Cli::parse();
+    // D13: a command that is one run holds the router for its whole life,
+    // taken before the snapshot below so it can never resolve the model a
+    // pending switch is replacing. Dropped when the command returns.
+    let _held = if cli.command.runs_a_model() && cli.command.is_one_run() {
+        hold_for_this_run(&cli.global).await?
+    } else {
+        None
+    };
     if cli.command.runs_a_model() {
         follow_the_loaded_model(&cli.global, cli.command.may_follow()).await;
     }
@@ -668,6 +838,59 @@ async fn dispatch() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// D13: a command holds the router for its life only where it runs a
+    /// model. Held per command, `tasks stop` — the way to stop a detached
+    /// `tasks work` — waited behind a switch waiting for that same run, and
+    /// serve's board page (`tasks list`) timed out while a switch was pending.
+    #[test]
+    fn only_a_subcommand_that_runs_a_model_holds_the_router_for_its_life() {
+        use clap::Parser;
+        let one_run = |argv: &[&str]| {
+            let cli = super::Cli::try_parse_from(argv).expect("parses");
+            cli.command.runs_a_model() && cli.command.is_one_run()
+        };
+        for held in [
+            &["mecha", "run", "hello"][..],
+            &["mecha", "tasks", "work", "task-1a2b3c4d"],
+            &["mecha", "mail", "classify"],
+            &["mecha", "frontdoor", "triage"],
+            &["mecha", "harness", "ruminate"],
+            &["mecha", "sessions", "appraise", "--probe"],
+        ] {
+            assert!(one_run(held), "{held:?} runs a model and must hold");
+        }
+        for free in [
+            &["mecha", "tasks", "list"][..],
+            &["mecha", "tasks", "stop", "task-1a2b3c4d"],
+            &["mecha", "mail", "recent"],
+            &["mecha", "frontdoor", "list"],
+            &["mecha", "workflow", "list"],
+            &["mecha", "harness", "list"],
+            &["mecha", "serve"],
+            &["mecha", "sessions", "list"],
+            &["mecha", "model", "list"],
+        ] {
+            assert!(
+                !one_run(free),
+                "{free:?} runs no model here and must not hold"
+            );
+        }
+    }
+
+    /// The hold's label is a subcommand name and nothing else: not a flag's
+    /// value, not a word of the prompt.
+    #[test]
+    fn a_holds_label_is_never_user_content() {
+        let label = |args: &[&str]| super::subcommand_label(args.iter().map(|a| a.to_string()));
+        assert_eq!(
+            label(&["--provider", "local", "run", "my secret plan"]),
+            "run"
+        );
+        assert_eq!(label(&["tasks", "work", "task-1"]), "tasks");
+        assert_eq!(label(&["--system", "classified", "run", "x"]), "run");
+        assert_eq!(label(&["nothing-known"]), "");
+    }
+
     use super::*;
 
     /// The router snapshot is taken where a default provider can be resolved,

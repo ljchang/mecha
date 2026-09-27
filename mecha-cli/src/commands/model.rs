@@ -36,15 +36,23 @@ pub enum Cmd {
     /// entry is refused.
     Use {
         name: String,
-        /// Give up after this many seconds. A cold load from disk measured
-        /// 33–39 s on 2026-09-26; the unit allows 600.
+        /// Give up on the *load* after this many seconds. A cold load from disk
+        /// measured 33–39 s on 2026-09-26; the unit allows 600. The wait for
+        /// runs in progress before it has no limit, by the owner's ruling
+        /// (D13) — `--now` is the way past it.
         #[arg(long, default_value_t = 600)]
         wait_secs: u64,
-        /// Switch now: stop the resident model even mid-reply, instead of
-        /// waiting for it to go idle. The reply in progress fails.
+        /// Switch now: ask every run holding the model to stop at its next safe
+        /// point (as Ctrl-C would), give them 15 s, then switch — instead of
+        /// waiting for them to finish. A reply in progress ends early.
         #[arg(long)]
         now: bool,
     },
+    /// Withdraw a pending switch — the way out of one whose `mecha model
+    /// use` is gone or whose file cannot be read, which every run on the
+    /// router would otherwise wait for. A live switch is better stopped with
+    /// Ctrl-C where it runs; withdrawn here, it stops at its next check.
+    CancelSwitch,
 }
 
 #[derive(Serialize)]
@@ -150,6 +158,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             wait_secs,
             now,
         } => use_(&cfg, &name, wait_secs, now, args.json).await,
+        Cmd::CancelSwitch => cancel_switch(),
     }
 }
 
@@ -285,6 +294,73 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
         return report(cfg, &base, &model, 0.0, json);
     }
 
+    // D13 (owner's rulings, 2026-09-27): the switch waits until no *run*
+    // holds the router — not only no request — so a run is answered by one
+    // model start to finish; runs that start meanwhile wait for the switch;
+    // no time limit, `--now` is the way out and Ctrl-C withdraws the switch.
+    // Held to the end of this function, past the load and R1's rollback, so
+    // the runs waiting on it resume on whatever is actually loaded.
+    let holds = mecha_core::hold::Holds::open_default()?;
+    let _switching = match holds.begin_switch(&base, previous.as_deref(), &model)? {
+        Ok(s) => s,
+        Err(other) => bail!(
+            "a switch to {} is already waiting on {base} (pid {}, since {}) — let it finish, \
+             stop it with Ctrl-C where it runs, or withdraw it with `mecha model cancel-switch`",
+            other.to,
+            other.pid,
+            other.started_at.format("%H:%M:%SZ")
+        ),
+    };
+    // One interrupt receiver for the whole switch — wait, unload, load and
+    // R1's rollback. A `ctrl_c()` future made and dropped per poll left
+    // SIGINT captured with nobody draining it once the wait ended, so up to
+    // three 600 s router calls could not be stopped at all (review of #350;
+    // `interrupt.rs`: an uninterruptible process is worse than a lost one).
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        .context("installing the interrupt handler for the switch")?;
+    if now {
+        let asked = holds.cancel_holders(&base);
+        if asked > 0 {
+            eprintln!("asking {asked} run(s) to stop now");
+        }
+        wait_for_runs(
+            &holds,
+            &_switching,
+            &base,
+            Some(Duration::from_secs(15)),
+            &mut interrupt,
+        )
+        .await?;
+    } else {
+        wait_for_runs(&holds, &_switching, &base, None, &mut interrupt).await?;
+    }
+    // Re-read after the wait, which can last hours: R1's rollback target and
+    // "already resident" are about what is loaded now, not when this began.
+    let list = router::models(&base)
+        .await
+        .with_context(|| format!("{base} stopped answering while the switch waited"))?;
+    // The first read's guard, again: the wait can last hours, and a router
+    // restarted in it can answer with a list this build cannot read — then
+    // `previous` is `None`, and `--now`'s unload and R1's rollback both
+    // silently do not happen (review of #350).
+    anyhow::ensure!(
+        router::readable(&list),
+        "the router at {base} answered /models with a list this build cannot read after the \
+         switch waited, so what is loaded now is unknown — refusing to switch without it"
+    );
+    let previous = router::resident(&list).map(str::to_string);
+    if previous.as_deref() == Some(model.as_str()) {
+        return report(cfg, &base, &model, 0.0, json);
+    }
+    // The last check before anything changes. With nothing holding, the wait
+    // returns on its first look, so a `cancel-switch` during the re-read was
+    // otherwise never seen: waiting runs were released to resolve a model
+    // while this process swapped it under them (review of #350).
+    anyhow::ensure!(
+        _switching.still_pending(),
+        "the switch was withdrawn (`mecha model cancel-switch`); the loaded model stays"
+    );
+
     // R2: the resident model mid-reply is waited for, or — `--now` — cut off.
     if let Some(prev) = &previous {
         let busy = match mecha_core::brief::read_slots(&base, Some(prev)).await {
@@ -303,7 +379,14 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
             }
             // Not fatal: the load below evicts an idle model regardless, so
             // a refused unload costs only the "now".
-            if let Err(e) = router::unload(&base, prev, Duration::from_secs(wait_secs)).await {
+            let unloaded = tokio::select! {
+                r = router::unload(&base, prev, Duration::from_secs(wait_secs)) => r,
+                _ = interrupt.recv() => bail!(
+                    "interrupted while {prev} was being stopped; the switch is withdrawn — \
+                     `mecha model list` shows what is loaded"
+                ),
+            };
+            if let Err(e) = unloaded {
                 eprintln!("warning: {e:#}");
             }
         } else if let Some(b) = busy.filter(|b| *b > 0) {
@@ -315,7 +398,14 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
     }
 
     let started = Instant::now();
-    match router::load(&base, &model, Duration::from_secs(wait_secs)).await {
+    let loaded = tokio::select! {
+        r = router::load(&base, &model, Duration::from_secs(wait_secs)) => r,
+        _ = interrupt.recv() => bail!(
+            "interrupted while {model} was loading; the switch is withdrawn, and the router may \
+             still finish the load — `mecha model list` shows what is loaded"
+        ),
+    };
+    match loaded {
         Ok(()) => report(cfg, &base, &model, started.elapsed().as_secs_f64(), json),
         // R1: a model that does not come up is replaced by the one it was
         // meant to replace, rather than leaving the next request to load the
@@ -325,7 +415,14 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
                 return Err(failed);
             };
             eprintln!("{failed:#}\nloading {prev} back…");
-            match router::load(&base, &prev, Duration::from_secs(wait_secs)).await {
+            let back = tokio::select! {
+                r = router::load(&base, &prev, Duration::from_secs(wait_secs)) => r,
+                _ = interrupt.recv() => bail!(
+                    "{failed:#}\ninterrupted while loading {prev} back; `mecha model list` shows \
+                     what is loaded"
+                ),
+            };
+            match back {
                 Ok(()) => Err(failed.context(format!(
                     "{model} did not load; {prev} is loaded again, as it was before"
                 ))),
@@ -335,6 +432,75 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
             }
         }
     }
+}
+
+/// Wait until no run holds the router at `base` (D13), saying what it waits
+/// on whenever that changes. `limit` is `--now`'s grace for the runs it asked
+/// to stop; without one there is none, by ruling, and Ctrl-C withdraws the
+/// switch — the pending file goes with `use_`'s guard, and the model stays.
+async fn wait_for_runs(
+    holds: &mecha_core::hold::Holds,
+    switching: &mecha_core::hold::Switching,
+    base: &str,
+    limit: Option<Duration>,
+    interrupt: &mut tokio::signal::unix::Signal,
+) -> Result<()> {
+    let started = Instant::now();
+    let mut said = String::new();
+    loop {
+        if !switching.still_pending() {
+            bail!("the switch was withdrawn (`mecha model cancel-switch`); the loaded model stays");
+        }
+        let live = holds.live(base);
+        if live.is_empty() {
+            return Ok(());
+        }
+        if let Some(l) = limit.filter(|l| started.elapsed() >= *l) {
+            eprintln!(
+                "{} run(s) did not stop within {}s; switching anyway",
+                live.len(),
+                l.as_secs()
+            );
+            return Ok(());
+        }
+        let what: Vec<&str> = live.iter().map(|h| h.what.as_str()).collect();
+        let now_saying = format!(
+            "waiting for {} run(s) to finish: {} (--now stops them, Ctrl-C cancels the switch)",
+            live.len(),
+            what.join(", ")
+        );
+        if now_saying != said {
+            eprintln!("{now_saying}");
+            said = now_saying;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = interrupt.recv() => {
+                bail!("switch cancelled; the loaded model stays");
+            }
+        }
+    }
+}
+
+/// Withdraw every pending switch — every switch file in `~/.mecha/holds`, not
+/// only those on routers this config still follows, so a switch left on one it
+/// no longer points at is reachable too (review of #350).
+fn cancel_switch() -> Result<()> {
+    let holds = mecha_core::hold::Holds::open_default()?;
+    let withdrawn = holds.withdraw_all_switches();
+    for s in &withdrawn {
+        eprintln!(
+            "withdrew the switch to {} on {} (pid {}, since {}); runs waiting for it start now",
+            s.to,
+            s.base_url,
+            s.pid,
+            s.started_at.format("%H:%M:%SZ")
+        );
+    }
+    if withdrawn.is_empty() {
+        eprintln!("no switch is pending");
+    }
+    Ok(())
 }
 
 /// What `use` did, for a person or for the chip.
@@ -428,5 +594,68 @@ mod tests {
         assert!(!r.readable);
         assert_eq!(r.resident, None);
         assert!(r.unserved.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+    use mecha_core::hold::Holds;
+
+    const ROUTER: &str = "http://127.0.0.1:8080";
+
+    fn interrupt() -> tokio::signal::unix::Signal {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap()
+    }
+
+    /// A withdrawn switch stops waiting, rather than go on to load a model
+    /// nobody is waiting for any more.
+    #[tokio::test]
+    async fn a_withdrawn_switch_stops_waiting() {
+        let home = crate::testenv::HomeGuard::new("model-wait-withdrawn");
+        let holds = Holds::new(home.dir.join("holds"));
+        let switching = holds.begin_switch(ROUTER, Some("a"), "b").unwrap().unwrap();
+        // A run it waits for, then the withdrawal the command makes.
+        let held = holds.try_hold(ROUTER, "web chat");
+        assert!(held.unwrap().is_err(), "a run held under a pending switch");
+        let held = {
+            assert!(holds.withdraw_switch(ROUTER).is_some());
+            holds.try_hold(ROUTER, "web chat").unwrap().unwrap()
+        };
+        let err = tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_for_runs(&holds, &switching, ROUTER, None, &mut interrupt()),
+        )
+        .await
+        .expect("the wait never noticed the withdrawal")
+        .unwrap_err();
+        assert!(err.to_string().contains("withdrawn"), "{err}");
+        drop(held);
+    }
+
+    /// The wait ends when the last hold drops — and not before.
+    #[tokio::test]
+    async fn the_wait_ends_when_the_last_hold_drops() {
+        let home = crate::testenv::HomeGuard::new("model-wait-drops");
+        let holds = std::sync::Arc::new(Holds::new(home.dir.join("holds")));
+        let held = holds.try_hold(ROUTER, "mecha run").unwrap().unwrap();
+        let switching = holds.begin_switch(ROUTER, Some("a"), "b").unwrap().unwrap();
+        let waiting = {
+            let holds = std::sync::Arc::clone(&holds);
+            tokio::spawn(async move {
+                wait_for_runs(&holds, &switching, ROUTER, None, &mut interrupt()).await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            !waiting.is_finished(),
+            "the switch went ahead under a held run"
+        );
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("the wait never ended after the last hold dropped")
+            .unwrap()
+            .unwrap();
     }
 }
