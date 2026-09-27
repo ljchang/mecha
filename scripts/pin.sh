@@ -37,9 +37,16 @@ scheduled_pin() {
     # will not parse, no python3 — says why on stderr, because on a router
     # box that fallback is the pin that loads a model over the owner's pick,
     # and a silent one reads like a decision (found on review of #346).
-    local shown verdict
-    if ! shown="$(cd / && "$MECHA" config show 2>&1)"; then
-        echo "pin.sh: \`mecha config show\` failed${shown:+ (${shown%%$'\n'*})}; cannot tell whether the default follows a router, so pinning -p local" >&2
+    #
+    # Stdout alone is parsed: `config show` warns on stderr (an unreadable
+    # harness override, `MECHA_LOG=debug`) while printing a good config, and
+    # mixing that in reads a router box as unreadable — the load this exists
+    # to report (found on review of #360). Stderr is read only on failure, to
+    # say why.
+    local shown verdict why
+    if ! shown="$(cd / && "$MECHA" config show 2>/dev/null)"; then
+        why="$(cd / && "$MECHA" config show 2>&1 >/dev/null | tail -n 1)"
+        echo "pin.sh: \`mecha config show\` failed${why:+ ($why)}; cannot tell whether the default follows a router, so pinning -p local" >&2
         PIN=(-p local)
         return 0
     fi
@@ -65,8 +72,9 @@ follows = (
     and loopback(entry.get("base_url") or "")
 )
 print("follows" if follows else "no")
-' 2>&1)"; then
-        echo "pin.sh: cannot read the config (${verdict##*$'\n'}); pinning -p local" >&2
+' 2>/dev/null)"; then
+        why="$(printf '%s' "$shown" | python3 -c 'import sys, tomllib; tomllib.loads(sys.stdin.read())' 2>&1 | tail -n 1)"
+        echo "pin.sh: cannot read the config (${why:-python3 missing or failing}); pinning -p local" >&2
         PIN=(-p local)
         return 0
     fi
