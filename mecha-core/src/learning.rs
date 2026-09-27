@@ -2655,6 +2655,22 @@ pub fn retire_threshold_for(rule: &Rule, ordinary: u32) -> u32 {
     }
 }
 
+/// The ledger rows measured on `model`, and how many were not.
+///
+/// A retirement argues from one model's rows (owner's ruling, 2026-09-27):
+/// the nightly measures on whatever the router has loaded, so the ledger can
+/// hold several models' verdicts, and [`ValidationRecord::model`]'s rule —
+/// tallies are only comparable within one — has to be applied by the reader.
+/// Summed across models, a night on a comparison arm could retire a rule, or
+/// dilute a real regression below the threshold, on probes of a model that
+/// never ships.
+pub fn measured_on(records: Vec<ValidationRecord>, model: &str) -> (Vec<ValidationRecord>, usize) {
+    let total = records.len();
+    let kept: Vec<_> = records.into_iter().filter(|r| r.model == model).collect();
+    let other = total - kept.len();
+    (kept, other)
+}
+
 /// Fold ledger rows into per-rule tallies.
 pub fn rule_tallies(records: &[ValidationRecord]) -> std::collections::BTreeMap<String, RuleTally> {
     let mut out: std::collections::BTreeMap<String, RuleTally> = Default::default();
@@ -3179,6 +3195,42 @@ pub struct Reflector {
     provider: Box<dyn crate::provider::Provider>,
     model: String,
     max_tokens: u32,
+    /// Contrast evidence (row 2e-4b-2, R43): `[agent] contrast_evidence`,
+    /// the stage lever `StageLever::ContrastEvidence`. Off — the default —
+    /// the prompt is the bytes it was before the lever existed.
+    contrast: bool,
+}
+
+/// The one sentence contrast evidence adds to [`REFLECTOR_SYSTEM`] (R43),
+/// with the lever on only.
+pub const CONTRAST_SENTENCE: &str = "A <a-verified-success-in-this-region> block, when present, is work the owner accepted in the same situation, shown as the tools that session called: use it to see what the correction asks to be done differently, and never draw a lesson from the success alone.";
+
+/// The corrections contrast evidence applies to (R43): the owner's steer,
+/// denial or followup, found in a transcript and reflected in the
+/// behaviour frame. A mismatch is the harness's observation, in its own
+/// frame; an edit teaches voice; a rejection shares the behaviour frame
+/// but comes from the outbox pass, which sets no success beside it. One
+/// spelling, read by the prompt and by `reflect`'s matching, so the two
+/// agree by construction.
+pub fn contrasted(trigger: Trigger) -> bool {
+    matches!(
+        trigger,
+        Trigger::Steer | Trigger::Denial | Trigger::Followup
+    )
+}
+
+/// The block contrast evidence adds to the reflector's user message (R43):
+/// the owner's act in words and the success session's tool sequence —
+/// fixed text and registry names, nothing a model wrote.
+pub fn contrast_block(c: &crate::success::Contrast) -> String {
+    format!(
+        "<a-verified-success-in-this-region>\n\
+         Work the owner verified in the same situation: {}.\n\
+         The tools that session called, in order: {}\n\
+         </a-verified-success-in-this-region>",
+        c.act.in_words(),
+        crate::step::ellipsize(&c.sequence, 600),
+    )
 }
 
 impl Reflector {
@@ -3190,7 +3242,16 @@ impl Reflector {
             provider,
             model,
             max_tokens: crate::provider::LOCAL_MAX_TOKENS,
+            contrast: false,
         }
+    }
+
+    /// Turn contrast evidence on (R43): the behaviour frame gains
+    /// [`CONTRAST_SENTENCE`], and [`Self::reflect_beside`] renders a success
+    /// it is handed. Off, both are ignored.
+    pub fn with_contrast(mut self, on: bool) -> Self {
+        self.contrast = on;
+        self
     }
 
     pub fn model(&self) -> &str {
@@ -3209,20 +3270,38 @@ impl Reflector {
         &self,
         i: &Intervention,
     ) -> Result<Option<(Reflexion, crate::attribution::Answer)>> {
-        if i.trigger == Trigger::Mismatch {
-            let Ok(step) = serde_json::from_str::<crate::planning::StepFeedback>(&i.context) else {
-                return Ok(None);
-            };
-            if !step.learnable_failure() {
-                return Ok(None);
-            }
-        }
-        let (system, domain) = reflector_frames(i.trigger);
-        let user = format!(
+        self.reflect_beside(i, None).await
+    }
+
+    /// [`Self::reflect`], with a verified success in the correction's
+    /// region beside it (row 2e-4b-2, R43). Rendered only with the lever on
+    /// and only in the behaviour frame ([`REFLECTOR_SYSTEM`]); the writing
+    /// and mismatch frames never see one.
+    pub async fn reflect_beside(
+        &self,
+        i: &Intervention,
+        contrast: Option<&crate::success::Contrast>,
+    ) -> Result<Option<(Reflexion, crate::attribution::Answer)>> {
+        let (system, user) = self.prompt(i, contrast);
+        self.reflect_with(i, system, user).await
+    }
+
+    /// The system prompt and user message the reflector is sent for `i`.
+    /// Pure, so the lever-off bytes are pinned by a test.
+    fn prompt(
+        &self,
+        i: &Intervention,
+        contrast: Option<&crate::success::Contrast>,
+    ) -> (String, String) {
+        let (system, _) = reflector_frames(i.trigger);
+        // By trigger, never by frame: a rejection shares the behaviour frame
+        // and is never handed a success, so it must not be told of one
+        // (found on review of #345).
+        let behaviour = self.contrast && contrasted(i.trigger);
+        let body = format!(
             "<what-the-assistant-was-doing>\n{}\n</what-the-assistant-was-doing>\n\n\
              <intervention kind=\"{}\">\n{}\n</intervention>\n\n\
-             <what-the-assistant-did-next>\n{}\n</what-the-assistant-did-next>\n\n\
-             What is the reusable lesson? Reply with the JSON object only.",
+             <what-the-assistant-did-next>\n{}\n</what-the-assistant-did-next>",
             if i.context.is_empty() {
                 "(start of task)"
             } else {
@@ -3236,7 +3315,34 @@ impl Reflector {
                 &i.aftermath
             },
         );
+        let question = "What is the reusable lesson? Reply with the JSON object only.";
+        let user = match contrast.filter(|_| behaviour) {
+            Some(c) => format!("{body}\n\n{}\n\n{question}", contrast_block(c)),
+            None => format!("{body}\n\n{question}"),
+        };
+        let system = if behaviour {
+            format!("{system}\n\n{CONTRAST_SENTENCE}")
+        } else {
+            system.to_string()
+        };
+        (system, user)
+    }
 
+    async fn reflect_with(
+        &self,
+        i: &Intervention,
+        system: String,
+        user: String,
+    ) -> Result<Option<(Reflexion, crate::attribution::Answer)>> {
+        if i.trigger == Trigger::Mismatch {
+            let Ok(step) = serde_json::from_str::<crate::planning::StepFeedback>(&i.context) else {
+                return Ok(None);
+            };
+            if !step.learnable_failure() {
+                return Ok(None);
+            }
+        }
+        let (_, domain) = reflector_frames(i.trigger);
         let request = crate::quarantine::QuarantinedPass::new(&self.model, self.max_tokens)
             .system(system)
             .cache_prompt(true)
@@ -7787,6 +7893,123 @@ mod attribution_regressions {
     }
 }
 
+/// Contrast evidence's prompt (row 2e-4b-2, R43): with the lever off the
+/// reflector is sent the bytes it was before the lever existed, whatever it
+/// is handed; on, the behaviour frame gains one sentence and a correction
+/// with a success beside it gains one block, and no other frame moves.
+#[cfg(test)]
+mod contrast_prompt {
+    use super::*;
+
+    struct Silent;
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for Silent {
+        fn id(&self) -> &str {
+            "silent"
+        }
+        fn default_model(&self) -> &str {
+            "silent-1"
+        }
+        async fn complete(
+            &self,
+            _req: &crate::message::CompletionRequest,
+            _sink: Option<&crate::provider::StreamSink>,
+        ) -> Result<crate::message::CompletionResponse> {
+            unreachable!("the prompt is built, never sent, here")
+        }
+    }
+
+    fn steer() -> Intervention {
+        Intervention {
+            trigger: Trigger::Steer,
+            context: "shell cargo build".into(),
+            text: "Run the tests before the build for Dana.".into(),
+            aftermath: "Running the tests first.".into(),
+            at: 3,
+            tools_before: vec!["shell".into()],
+            tools_after: Vec::new(),
+        }
+    }
+
+    fn success() -> crate::success::Contrast {
+        crate::success::Contrast {
+            act: crate::success::Act::TaskDone {
+                task: "task-northwind-report".into(),
+                closure: "c1".into(),
+            },
+            session: "s-dana".into(),
+            sequence: "fs_read → shell ×2 → fs_write".into(),
+        }
+    }
+
+    /// The user message exactly as `Reflector::reflect` built it before
+    /// row 2e-4b-2 — copied from the tree at `a03362e9`, so the pin is
+    /// against the old bytes and not against today's code.
+    fn user_before_the_lever(i: &Intervention) -> String {
+        format!(
+            "<what-the-assistant-was-doing>\n{}\n</what-the-assistant-was-doing>\n\n\
+             <intervention kind=\"{}\">\n{}\n</intervention>\n\n\
+             <what-the-assistant-did-next>\n{}\n</what-the-assistant-did-next>\n\n\
+             What is the reusable lesson? Reply with the JSON object only.",
+            if i.context.is_empty() {
+                "(start of task)"
+            } else {
+                &i.context
+            },
+            i.trigger.as_str(),
+            i.text,
+            if i.aftermath.is_empty() {
+                "(the run ended there)"
+            } else {
+                &i.aftermath
+            },
+        )
+    }
+
+    #[test]
+    fn with_the_lever_off_the_prompt_is_the_bytes_it_was() {
+        let off = Reflector::new(Box::new(Silent), None);
+        let mut empty = steer();
+        empty.context.clear();
+        empty.aftermath.clear();
+        for i in [steer(), empty] {
+            for handed in [None, Some(success())] {
+                let (system, user) = off.prompt(&i, handed.as_ref());
+                assert_eq!(system, REFLECTOR_SYSTEM);
+                assert_eq!(user, user_before_the_lever(&i));
+            }
+        }
+    }
+
+    #[test]
+    fn with_the_lever_on_only_the_behaviour_frame_gains_the_sentence_and_the_block() {
+        let on = Reflector::new(Box::new(Silent), None).with_contrast(true);
+        let (system, user) = on.prompt(&steer(), Some(&success()));
+        assert_eq!(system, format!("{REFLECTOR_SYSTEM}\n\n{CONTRAST_SENTENCE}"));
+        let block = contrast_block(&success());
+        let before = user_before_the_lever(&steer());
+        let (head, question) = before.rsplit_once("\n\n").unwrap();
+        assert_eq!(user, format!("{head}\n\n{block}\n\n{question}"));
+        assert!(block.contains("fs_read → shell ×2 → fs_write"));
+        assert!(block.contains("has not reopened it"));
+        assert!(!block.contains("closure:c1"), "no record id to memorise");
+
+        // On, with nothing beside it: the sentence, no block.
+        let (_, user) = on.prompt(&steer(), None);
+        assert_eq!(user, before);
+
+        // The writing and mismatch frames never move, and nor does a
+        // rejection, which shares the behaviour frame but is never handed a
+        // success (found on review of #345).
+        for trigger in [Trigger::Edit, Trigger::Mismatch, Trigger::Reject] {
+            let i = Intervention { trigger, ..steer() };
+            let (system, user) = on.prompt(&i, Some(&success()));
+            assert_eq!(system, reflector_frames(trigger).0);
+            assert_eq!(user, user_before_the_lever(&i));
+        }
+    }
+}
+
 /// D3's attribution as `learn`'s gate sees it (row 2e-3): what the reflector
 /// hands back, what an old record loads as, and which triggers it covers.
 #[cfg(test)]
@@ -7938,5 +8161,30 @@ mod correction_attribution {
         assert!(with("behavior", "mismatch").attribution_admits());
         assert!(with("writing", "edit").attribution_admits());
         assert!(with(TRIAGE_DOMAIN, "bucket").attribution_admits());
+    }
+
+    #[test]
+    fn measured_on_keeps_one_models_rows_and_counts_the_rest() {
+        let row = |model: &str| ValidationRecord {
+            reflexion_id: "r".into(),
+            trigger: "steer".into(),
+            domain: "behavior".into(),
+            rules_hash: String::new(),
+            rule_ids: vec![],
+            outcome: "improved".into(),
+            attributed_rule_id: None,
+            model: model.into(),
+            created_at: String::new(),
+            region: None,
+        };
+        let (kept, other) = measured_on(vec![row("a"), row("b"), row("a")], "a");
+        assert_eq!((kept.len(), other), (2, 1));
+        assert!(kept.iter().all(|r| r.model == "a"));
+        let (kept, other) = measured_on(vec![row("b")], "a");
+        assert_eq!(
+            (kept.len(), other),
+            (0, 1),
+            "no rows of its own is an empty tally, not all rows"
+        );
     }
 }

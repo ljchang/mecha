@@ -174,6 +174,8 @@ trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
 runmarker.rs "is a run in flight, and please stop it", as two files in a directory
 permit.rs    how many background runs may hold the model at once — seats on
              llama-server, as files in a directory; a latency control, not memory
+hold.rs      which runs hold a router's model, and a switch waiting on them —
+             files, a write-then-check handshake, and the run always yields
 frontdoor.rs inbound requests from strangers, and the quarantine over them
 goal.rs      what a run is for: charter, board task, or setpoint, by reference
 charter.rs   the owner's standing priorities, ranked by file order — the owner

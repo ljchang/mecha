@@ -196,10 +196,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let (name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
         let provider = mecha_core::provider::build(provider_cfg)?;
         let model = global.model.clone().or_else(|| provider_cfg.model.clone());
-        let reflector = Reflector::new(provider, model);
+        let reflector = Reflector::new(provider, model).with_contrast(cfg.agent.contrast_evidence);
         eprintln!("reflecting with {} ({name})", reflector.model());
-        Some(reflector)
+        Some((reflector, cfg.agent.contrast_evidence))
     };
+    // Contrast evidence (row 2e-4b-2, R43): the verified successes a
+    // correction in their region is reflected beside, read once per pass —
+    // with the lever on, or on a dry run, which is its shadow readout (each
+    // listed correction names the success it would be shown). Off, nothing
+    // is read and the reflector's prompt is the bytes it was.
+    let contrast_on = reflector.as_ref().is_some_and(|(_, on)| *on);
+    let contrasts = (args.dry_run || contrast_on)
+        .then(|| mecha_core::success::ContrastPool::at(&sessions_dir))
+        .filter(|pool| !pool.is_empty());
+    let reflector = reflector.map(|(r, _)| r);
 
     let mut sessions_mined = 0usize;
     let mut interventions_found = 0usize;
@@ -257,7 +267,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             for i in &interventions {
                 let (_, origin, evidence) = evidence_for(timeline.covering(i.at), i);
                 println!(
-                    "{} [{}] ({}) {}",
+                    "{} [{}] ({}) {}{}",
                     meta.id,
                     i.trigger.as_str(),
                     match (origin, evidence) {
@@ -266,7 +276,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         (Origin::Untrusted, _) => "untrusted",
                         (Origin::Derived, _) => "derived",
                     },
-                    i.text.lines().next().unwrap_or("")
+                    i.text.lines().next().unwrap_or(""),
+                    // The shadow of contrast evidence (R43): what the lever
+                    // would set beside this correction.
+                    contrast_for(contrasts.as_ref(), &t, i, &meta.id)
+                        .map(|c| format!(
+                            "  [beside a verified success: {} in session {}]",
+                            c.act.kind(),
+                            c.session
+                        ))
+                        .unwrap_or_default(),
                 );
             }
             sessions_mined += 1;
@@ -302,7 +321,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             if intervention.trigger == Trigger::Mismatch && origin != Origin::Clean {
                 continue;
             }
-            match reflector.reflect(&input).await {
+            // A verified success in the correction's region, beside it —
+            // only with the lever on (R43; `contrasts` is `None` off).
+            let beside = contrast_for(contrasts.as_ref(), &t, intervention, &meta.id);
+            match reflector.reflect_beside(&input, beside.as_ref()).await {
                 Ok(Some((mut r, answer))) => {
                     r.session_id = meta.id.clone();
                     // D3 (row 2e-3): data error, behaviour error or gap, by
@@ -335,17 +357,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     // hold runs matched on different keys (a resumed
                     // question, a `/model` switch), and `config_covering`
                     // is the exact answer per message (found on review).
-                    let (matched_workspace, matched_surface, matched_goal) =
-                        keys_covering(&t, intervention.at);
-                    r.situation = Some(
-                        mecha_core::situation::Situation::recorded(
-                            &intervention.tools_before,
-                            intervention.trigger.as_str(),
-                            matched_surface,
-                            matched_workspace.as_deref(),
-                        )
-                        .toward(matched_goal),
-                    );
+                    r.situation = Some(recorded_situation(&t, intervention));
                     pending.push(r);
                 }
                 Ok(None) => {
@@ -621,6 +633,43 @@ fn keys_covering(
             )
         })
         .unwrap_or((None, None, None))
+}
+
+/// The situation a transcript intervention is recorded in: its tool window
+/// (registry names), its trigger, and the keys of the run record covering
+/// it (`keys_covering`). What the reflection is stamped with, and — the
+/// same value — what contrast evidence matches a success's region on.
+fn recorded_situation(
+    t: &mecha_core::session::Transcript,
+    intervention: &Intervention,
+) -> mecha_core::situation::Situation {
+    let (matched_workspace, matched_surface, matched_goal) = keys_covering(t, intervention.at);
+    mecha_core::situation::Situation::recorded(
+        &intervention.tools_before,
+        intervention.trigger.as_str(),
+        matched_surface,
+        matched_workspace.as_deref(),
+    )
+    .toward(matched_goal)
+}
+
+/// The verified success set beside a transcript correction (row 2e-4b-2,
+/// R43): the newest one in its region, from `pool` — `None` when the lever
+/// is off (no pool) or nothing lies in the region. A steer, a denial or a
+/// followup only: those are the owner's corrections reflected in the
+/// behaviour frame; a mismatch is the harness's observation, in a frame
+/// that never shows one. The outbox's edits and rejections are another
+/// pass, and not contrasted yet.
+fn contrast_for(
+    pool: Option<&mecha_core::success::ContrastPool>,
+    t: &mecha_core::session::Transcript,
+    intervention: &Intervention,
+    session: &str,
+) -> Option<mecha_core::success::Contrast> {
+    if !mecha_core::learning::contrasted(intervention.trigger) {
+        return None;
+    }
+    pool?.beside(Some(&recorded_situation(t, intervention)), session)
 }
 
 /// The first run record's keys off a transcript already read.
@@ -2147,6 +2196,59 @@ mod tests {
             &given_in(ever_before(&text, &t.convo.messages, at).as_deref()),
         );
         assert_eq!((a.class, a.basis), (Class::Unknown, Basis::NoRecord));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Row 2e-4b-2 (R43): a transcript steer, denial or followup is matched
+    /// on the situation its reflection is stamped with, against the pool; a
+    /// mismatch — the harness's observation, in its own frame — never is,
+    /// and with the lever off there is no pool and nothing is matched.
+    #[test]
+    fn only_the_owners_transcript_corrections_are_contrasted() {
+        let root = scratch("mecha-contrast");
+        std::fs::create_dir_all(&root).unwrap();
+        let s = session_on(
+            &root,
+            "/work/jail",
+            Some("/work"),
+            Some(SessionKind::Web),
+            Some(SessionKind::Web),
+        );
+        let t = Session::read(&s.path).unwrap();
+        let pool = mecha_core::success::ContrastPool::of(mecha_core::planning::SuccessTraces {
+            traces: vec![mecha_core::planning::SuccessTrace {
+                act: mecha_core::success::Act::TaskDone {
+                    task: "task-northwind-report".into(),
+                    closure: "c1".into(),
+                },
+                goal: None,
+                session: "s-dana".into(),
+                named: vec!["s-dana".into()],
+                sequence: "fs_read → shell".into(),
+                scopes: vec![mecha_core::situation::Situation::of_run(
+                    &["fs_read".into(), "shell".into()],
+                    Some(Path::new("/work")),
+                )
+                .on(Some(SessionKind::Web))],
+                at: None,
+            }],
+            withheld: Vec::new(),
+        });
+        let i = |trigger| Intervention {
+            trigger,
+            context: String::new(),
+            text: "Run the tests first.".into(),
+            aftermath: String::new(),
+            at: 0,
+            tools_before: vec!["shell".into()],
+            tools_after: Vec::new(),
+        };
+        for trigger in [Trigger::Steer, Trigger::Denial, Trigger::Followup] {
+            let c = contrast_for(Some(&pool), &t, &i(trigger), &t.meta.id);
+            assert_eq!(c.map(|c| c.session), Some("s-dana".into()), "{trigger:?}");
+        }
+        assert!(contrast_for(Some(&pool), &t, &i(Trigger::Mismatch), &t.meta.id).is_none());
+        assert!(contrast_for(None, &t, &i(Trigger::Steer), &t.meta.id).is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

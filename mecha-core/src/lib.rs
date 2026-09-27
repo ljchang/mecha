@@ -80,6 +80,7 @@ pub mod gossip;
 pub mod grounding;
 pub mod guilt;
 pub mod harness;
+pub mod hold;
 pub mod homeostat;
 pub mod hooks;
 pub mod image;
