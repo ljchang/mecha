@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every outbox edit records who made it, and an edit is your writing only
+  when you made every edit and the send** (`APPRAISAL-WIRING-DESIGN.md`,
+  R16a's ruling D3 carried to edits). `mecha outbox edit` (and `polls pick`)
+  stamp `edited_by` — `owner`, `owner-approved` or `unknown`, as rejects are
+  stamped — folded across edits so an owner's later edit never launders a
+  run's. `mecha reflect` mines a diff as a writing lesson, the appraiser is
+  shown it as "the owner edited it", and a point-wise comparison takes the
+  released text as its gold only when every edit and the release were
+  stamped `owner`; otherwise the edit is described, not shown. Edits from
+  before this read `unknown`. An edit not stamped `owner` says so when it is
+  saved, in the terminal and the web review. `outbox show` and the TUI name
+  the editor.
+
 - **Every outbox resolve records who made it** (`APPRAISAL-WIRING-DESIGN.md`,
   R16a's ruling D3). `mecha outbox reject`, `review` and `approve` stamp
   `resolved_by` on the item — `owner` at the owner's terminal or a
