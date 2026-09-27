@@ -207,6 +207,10 @@ struct Live {
     /// that nothing; the run's own events still reach it over SSE, and the
     /// page re-reads at `done` for the stretch it missed.
     history: Arc<[Entry]>,
+    /// And the taint it started from, beside it: a transcript shown without
+    /// its chip reads as clean, which is the dash rendered as a zero. Taint
+    /// only grows, so this is a floor — what the run adds arrives at `done`.
+    taint: mecha_core::agent::Taint,
 }
 
 impl ChatState {
@@ -1617,7 +1621,7 @@ pub async fn transcript(
         // A run holds the conversation: the history it started from, and the
         // page takes the run itself over SSE — then re-reads at `done`,
         // because what streamed before it subscribed is not in either.
-        (None, Some(live)) => (live.history.to_vec(), None),
+        (None, Some(live)) => (live.history.to_vec(), Some(live.taint)),
         (None, None) => (Vec::new(), None),
     };
     let usage = ws.last_usage.lock().ok().and_then(|u| u.clone());
@@ -2199,6 +2203,7 @@ fn begin_turn(
         queue: Arc::clone(&queue),
         queued_ids: Arc::clone(&queued_ids),
         history: transcript_entries(&before).into(),
+        taint: conversation.taint,
     });
 
     // What was already waiting, before this run staged anything. Taken here
