@@ -31,7 +31,26 @@ scheduled_pin() {
     # `local` kind, and a loopback base URL — the flag on anything else is
     # ignored (and warned about) by mecha, so reading it alone here would
     # drop the pin for a run that then follows nothing (found on review).
-    if (cd / && "$MECHA" config show 2>/dev/null) | python3 -c '
+    #
+    # "Does not follow" is quiet: on an install without a router, `-p local`
+    # is the ordinary answer. "Cannot tell" — `config show` failed, the TOML
+    # will not parse, no python3 — says why on stderr, because on a router
+    # box that fallback is the pin that loads a model over the owner's pick,
+    # and a silent one reads like a decision (found on review of #346).
+    #
+    # Stdout alone is parsed: `config show` warns on stderr (an unreadable
+    # harness override, `MECHA_LOG=debug`) while printing a good config, and
+    # mixing that in reads a router box as unreadable — the load this exists
+    # to report (found on review of #360). Stderr is read only on failure, to
+    # say why.
+    local shown verdict why
+    if ! shown="$(cd / && "$MECHA" config show 2>/dev/null)"; then
+        why="$(cd / && "$MECHA" config show 2>&1 >/dev/null | tail -n 1)"
+        echo "pin.sh: \`mecha config show\` failed${why:+ ($why)}; cannot tell whether the default follows a router, so pinning -p local" >&2
+        PIN=(-p local)
+        return 0
+    fi
+    if ! verdict="$(printf '%s' "$shown" | python3 -c '
 import ipaddress, sys, tomllib
 from urllib.parse import urlsplit
 c = tomllib.loads(sys.stdin.read())
@@ -52,9 +71,13 @@ follows = (
     and entry.get("kind") == "local"
     and loopback(entry.get("base_url") or "")
 )
-sys.exit(0 if follows else 1)
-' 2>/dev/null; then
+print("follows" if follows else "no")
+' 2>/dev/null)"; then
+        why="$(printf '%s' "$shown" | python3 -c 'import sys, tomllib; tomllib.loads(sys.stdin.read())' 2>&1 | tail -n 1)"
+        echo "pin.sh: cannot read the config (${why:-python3 missing or failing}); pinning -p local" >&2
+        PIN=(-p local)
         return 0
     fi
+    [ "$verdict" = follows ] && return 0
     PIN=(-p local)
 }

@@ -720,14 +720,13 @@ rollback. The embedder on :8081 moves to it at its next restart — checked
 first: the same four texts embedded by both builds agree to cosine ≥
 0.99999, norms 1.0, so the stored graph vectors stay valid.
 
-**The idle gate goes in with the router, not before or after it.**
-`~/.local/bin/mecha-model-idle` is still the pre-#337 `scripts/model-idle.sh`
-(confirmed 2026-09-26, byte-identical to `450a5cc6`'s). It is right for a
-single-model server, and against the router its bare `/slots` is a 400 that
-fails every tick — so `install -D -m 755 scripts/model-idle.sh
-~/.local/bin/mecha-model-idle` is part of the same step as the unit's
-`ExecStart` swap. The installed `mecha` already carries #337 (reinstalled
-from `b3135e1b` at 22:40Z), and needs one more reinstall for #339's fixes.
+**The idle gate goes in with the router, not before or after it.** A
+pre-#337 `scripts/model-idle.sh` is right for a single-model server, and
+against the router its bare `/slots` is a 400 that fails every tick — so
+`install -D -m 755 scripts/model-idle.sh ~/.local/bin/mecha-model-idle` is
+part of the same step as the unit's `ExecStart` swap. Done that way on
+2026-09-27 (01:27–01:45Z, with `mecha` reinstalled from `ca518a71` carrying
+#337, #339 and #340); HANDOFF's *Machine state, dated* has the evidence.
 
 **One behaviour the new build changes, pinned rather than inherited** (owner's
 ruling, 2026-09-26): llama.cpp #28174 turned `preserve_reasoning` on by
