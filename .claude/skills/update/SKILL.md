@@ -347,15 +347,21 @@ git -C ~/Github/mecha status --porcelain          # expect: empty
   start the restart list, not when the worker is the last unit left.
 - **The switch has a runnable recipe in `docs/HANDOFF.md`** (§Machine
   state, dated, 2026-09-03), reviewed pass after pass until it graded as code: prove the fast-forward
-  for *both* `HEAD` and `refs/heads/main`, prove `scripts/start-moe-mtp.sh` and `scripts/voice/parakeet_server.py`
-  unchanged across the move (the first is `llama-local`'s literal
-  `ExecStart`, the second is what `mecha-parakeet` runs from this tree), read any dirty file before discarding it, land on
+  for *both* `HEAD` and `refs/heads/main`, prove `scripts/start-router.sh`,
+  `scripts/mmproj.sh`, `scripts/start-moe-mtp.sh` and
+  `scripts/voice/parakeet_server.py` unchanged across the move (the first is
+  `llama-local`'s `ExecStart` since 2026-09-27, through the drop-in
+  `llama-local.service.d/router.conf`, and sources the second; the third is
+  the rollback the unit's own `ExecStart` names; the fourth is what
+  `mecha-parakeet` runs from this tree), read any dirty file before
+  discarding it, land on
   `origin/main` in one hop, and only then restart the worker. Copy that
   block; do not improvise a `switch main && pull`, which is the version
   that failed silently on a dirty file and would have passed through a
   stale local `main`.
-- **Name the digest.** The launch-script check compares git blob ids
-  (`git rev-parse <ref>:path`, `d76da36c…` that day). A peer re-checking
+- **Name the digest.** The launch-script check used to compare git blob ids
+  (`git rev-parse <ref>:path`, `d76da36c…` that day); it is `git diff
+  --quiet` over the launch files now. A peer re-checking
   with `sha256sum` got a different number for the same bytes and nearly
   read it as "the file changed", which would have restarted `llama-local`
   for nothing. `git diff --quiet A B -- path` is the algorithm-free form.

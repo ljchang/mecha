@@ -169,7 +169,9 @@ after it — body decoding, deltas, tool dispatch — is inside any retry.
 
 **`docs/LLAMA-SERVER.md` is the reference** — slot geometry, the KV arithmetic,
 the measured `-np` table, the request contract, and what each flag cost to
-learn. `scripts/start-moe-mtp.sh` is the authority on the flags themselves.
+learn. `scripts/start-router.sh` is the authority on the flags themselves
+since 2026-09-27, with `scripts/start-moe-mtp.sh` and its siblings as the
+rollback.
 Read the doc before changing anything there; most of its content exists because
 something had already gone wrong.
 
@@ -177,9 +179,11 @@ The parts that bite hardest:
 
 - **`-c` is divided across slots**, so `context_window` must equal `-c / -np`,
   not `-c`. Confirm from the startup line (`n_ctx_slot = …`), not by arithmetic.
-- **Two servers, one model each** — :8080 chat, :8081 embeddings. llama-server
-  holds one model per process, so pointing both at one port sends embedding
-  requests to the chat model.
+- **Two servers, one model each at a time** — :8080 chat (a router since
+  2026-09-27: several presets, one resident), :8081 embeddings. A process
+  holds one model at a time, so pointing both at one port sends embedding
+  requests to the chat model — and on the router, a swap would evict the
+  embedder.
 - **`max_tokens` must sit comfortably above `--reasoning-budget`**, or the
   thinking block eats the allowance and the reply is HTTP 200 with an empty
   `content`. Any client here refuses that by name rather than treating it as an
