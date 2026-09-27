@@ -999,7 +999,10 @@
   // the *path* is announced in the message — never the content, so the taint
   // arms through fs_read when the run opens it (the remote-control rule).
   let fileInput = $state(null);
-  let uploading = $state(false);
+  // A count, not a flag: a drop can land while a picked upload is still
+  // going, and the first to finish must not clear the other's spinner.
+  let uploads = $state(0);
+  const uploading = $derived(uploads > 0);
   let attachments = $state([]); // workspace-relative paths, announced on send
 
   // The file `image_generate` saved, read off the first line of its own
@@ -1027,12 +1030,72 @@
     });
   }
 
-  async function uploadPicked(e) {
+  function uploadPicked(e) {
     const files = [...(e.target.files ?? [])];
     e.target.value = '';
+    uploadFiles(files);
+  }
+
+  // Dropping is the button by another door: the same `uploadFiles`, so a
+  // dropped file lands in inbox/ and is announced by path exactly as a
+  // picked one is. The handlers sit on the window because Chat is only
+  // mounted while the chat view is up, and because a file dropped anywhere
+  // the page does not claim is *navigated to* by the browser — which throws
+  // this page away, an incognito chat with it.
+  let dragDepth = $state(0); // dragenter/leave fire at every child boundary
+  const canDrop = $derived(!gone && !voiceOpen);
+
+  const carriesFiles = (dt) => [...(dt?.types ?? [])].includes('Files');
+
+  // A dropped folder arrives as a File too — zero bytes, or a read error
+  // once fetch sends it — so it is told apart by its entry, never by size.
+  function droppedFiles(dt) {
+    const items = [...(dt?.items ?? [])].filter((it) => it.kind === 'file');
+    if (!items.length) return { files: [...(dt?.files ?? [])], folders: [] };
+    const files = [];
+    const folders = [];
+    for (const it of items) {
+      const f = it.getAsFile();
+      if (!f) continue;
+      if (it.webkitGetAsEntry?.()?.isDirectory) folders.push(f.name);
+      else files.push(f);
+    }
+    return { files, folders };
+  }
+
+  function onDragEnter(e) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth += 1;
+  }
+
+  function onDragOver(e) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = canDrop ? 'copy' : 'none';
+  }
+
+  function onDragLeave(e) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+  }
+
+  function onDrop(e) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    if (!canDrop) return;
+    const { files, folders } = droppedFiles(e.dataTransfer);
+    for (const name of folders) {
+      pushEntry({ kind: 'notice', text: `not attached: ${name} is a folder — drop the files inside it` });
+    }
+    uploadFiles(files);
+  }
+
+  async function uploadFiles(files) {
     const sessionKey = key;
     for (const f of files) {
-      uploading = true;
+      uploads += 1;
       try {
         const q = new URLSearchParams({ name: f.name });
         const res = await fetch(`/api/chat/${sessionKey}/upload?${q}`, { method: 'POST', body: f });
@@ -1054,7 +1117,7 @@
         if (sessionKey !== key) return;
         pushEntry({ kind: 'notice', text: `upload failed: ${err?.message ?? err}` });
       } finally {
-        uploading = false;
+        uploads -= 1;
       }
     }
   }
@@ -1137,7 +1200,22 @@
   const fmt = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 </script>
 
+<svelte:window
+  ondragenter={onDragEnter}
+  ondragover={onDragOver}
+  ondragleave={onDragLeave}
+  ondrop={onDrop}
+/>
+
 <div class="chat">
+  {#if dragDepth > 0 && canDrop}
+    <div class="drop-overlay" aria-hidden="true">
+      <div class="drop-card">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="var(--accent-400)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.5l-8.2 8.2a5.5 5.5 0 01-7.8-7.8L13.6 4.3a3.7 3.7 0 015.2 5.2l-8.4 8.4a1.85 1.85 0 01-2.6-2.6l7.8-7.8" /></svg>
+        <span>drop to attach — files land in this session's inbox/</span>
+      </div>
+    </div>
+  {/if}
   <header>
     <button class="menubtn" onclick={openDrawer} aria-label="sessions">
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
@@ -2624,6 +2702,37 @@
     font-family: var(--mono);
     font-size: 10px;
     color: var(--text-muted);
+  }
+  /* Over the whole window, not just the chat column: the drop handlers are
+     on the window, so the target the page shows is the target it has.
+     No pointer events, so the drag keeps landing on the page beneath and
+     the enter/leave count stays the page's own. */
+  .drop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--gutter);
+    background: color-mix(in srgb, var(--void) 72%, transparent);
+    outline: 2px dashed var(--accent-500);
+    outline-offset: -12px;
+  }
+  .drop-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 20px 24px;
+    border-radius: var(--radius);
+    background: var(--accent-900);
+    border: 1px solid var(--accent-700);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    text-align: center;
   }
   .attach-row { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 0 8px; }
   .attach-chip { font-family: var(--mono); font-size: 11px; color: var(--text); background: var(--accent-900); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 6px 10px; cursor: pointer; }
