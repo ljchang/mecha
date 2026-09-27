@@ -813,6 +813,10 @@ impl State {
             if let Ok(mut queue) = live.queue.lock() {
                 queue.push_back(d.prompt);
             }
+            // As both other steering paths do: the owner spoke, so a run
+            // whose approval card timed out stops refusing without asking
+            // (review of #350).
+            live.unanswered.store(false, Ordering::Relaxed);
             return;
         }
         if let Some(pending) = self.starting.get_mut(&d.record.key) {
@@ -920,6 +924,12 @@ impl State {
         let thread_ts = record.thread_ts.clone();
         // What the owner added while the model was followed joins this turn.
         let early = self.starting.remove(&key).unwrap_or_default();
+        // Said if this turn does not run, so the lines that joined it are
+        // not dropped without a word.
+        let also = match early.len() {
+            0 => String::new(),
+            n => format!(" (nor did the {n} message(s) you added while it was starting)"),
+        };
         let prompt = std::iter::once(prompt)
             .chain(early)
             .collect::<Vec<_>>()
@@ -945,7 +955,7 @@ impl State {
                     &channel,
                     Some(&thread_ts),
                     &format!(
-                        "I could not switch to the model now loaded, so this did not run: {e}"
+                        "I could not switch to the model now loaded, so this did not run{also}: {e}"
                     ),
                     None,
                 )
