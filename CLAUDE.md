@@ -277,18 +277,25 @@ silently answering with a different model.
 
 **`docs/LLAMA-SERVER.md` is the reference** — slot geometry, KV arithmetic,
 the measured `-np` table, and what each flag cost to learn.
-`scripts/start-moe-mtp.sh` is the authority on the flags. The parts that bite
+Since 2026-09-27 `:8080` is a llama-server router, and `scripts/start-router.sh`
+is the authority on its flags (§Router mode there). The parts that bite
 from anywhere:
 
 - **`-c` is divided across slots**: `context_window` must equal `-c / -np`,
   confirmed from the startup line (`n_ctx_slot = …`), and if you change the
   server's `-c` you must change `context_window` to match — the compaction
   threshold and the tool-output budget derive from it and trust it.
-- **Two servers, one model each** — :8080 chat, :8081 embeddings.
+- **Two servers, one model each at a time** — :8080 chat (a router: several
+  presets, one resident), :8081 embeddings, kept apart so a chat swap never
+  evicts the embedder.
 - **`max_tokens` must sit comfortably above `--reasoning-budget`**, or the
   reply is HTTP 200 with empty `content`; clients here refuse that by name.
-- **Ask what is served (`GET /props` → `model_alias`), don't assert it** —
-  llama-server ignores the request's `model` field.
+- **Ask what is served, don't assert it.** On the router the request's
+  `model` field *selects*, and a bare `GET /props` is a placeholder
+  (`model_alias: "llama-server"`) — reading it as the served model lost a
+  night of graph extraction on 2026-09-27. Source `scripts/served-props.sh`
+  and ask `served_model` / `served_props` (or `GET /models`); a
+  probe that names a model without `autoload=false` loads it.
 - **Throughput is wall clock**; the server's per-request rates hide queue wait.
 
 ## Security model

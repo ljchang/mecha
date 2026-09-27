@@ -114,7 +114,9 @@ class Scripts(unittest.TestCase):
         ]
 
     def assert_follows(self, calls, expected):
-        self.assertEqual([c[:2] if c[0] in ("frontdoor", "harness") else c[:1] for c in calls], expected)
+        self.assertEqual(
+            [c[:2] if c[0] in ("frontdoor", "harness", "sessions") else c[:1] for c in calls], expected
+        )
         for c in calls:
             self.assertNotIn("-p", c, f"unpinned by default, but: {c}")
             self.assertNotIn("--judge-provider", c, f"the judge follows too, but: {c}")
@@ -132,13 +134,30 @@ class Scripts(unittest.TestCase):
     def test_ruminate_follows_unless_pinned(self):
         self.assert_follows(
             self.run_script("ruminate.sh"),
-            [["reflect"], ["distill"], ["validate"], ["learn"], ["rules"], ["harness", "ruminate"]],
+            # `sessions compare` sits between validate and learn (its Rules arm
+            # measures yesterday's rules), and the lesson-source pass runs
+            # last; both follow like every other stage (#333 on top of #346 —
+            # found when #333's lines still named the removed $PROVIDER, which
+            # `set -u` turned into the whole night stopping at compare).
+            [
+                ["reflect"],
+                ["distill"],
+                ["validate"],
+                ["sessions", "compare"],
+                ["learn"],
+                ["rules"],
+                ["harness", "ruminate"],
+                ["learn"],
+            ],
         )
         calls = self.run_script("ruminate.sh", MECHA_RUMINATE_PROVIDER="x", MECHA_RUMINATE_JUDGE="j")
         # `rules propose-retirements` too: it counts only the rows of the
         # model validate measured on, so it must resolve the same one.
         self.assert_pinned(
-            calls, "-p", "x", ["reflect", "distill", "validate", "learn", "propose-retirements", "ruminate"]
+            calls,
+            "-p",
+            "x",
+            ["reflect", "distill", "validate", "compare", "learn", "propose-retirements", "ruminate", "--compare-sources"],
         )
         self.assert_pinned(calls, "--judge-provider", "j", ["validate"])
         # A pinned night with the judge unset judges on the pinned model, not
@@ -149,7 +168,10 @@ class Scripts(unittest.TestCase):
         # a paid API (found on review of #346).
         calls = self.run_script("ruminate.sh", config=NO_ROUTER)
         self.assert_pinned(
-            calls, "-p", "local", ["reflect", "distill", "validate", "learn", "propose-retirements", "ruminate"]
+            calls,
+            "-p",
+            "local",
+            ["reflect", "distill", "validate", "compare", "learn", "propose-retirements", "ruminate", "--compare-sources"],
         )
         self.assert_pinned(calls, "--judge-provider", "local", ["validate"])
         # An unreadable config is not a router, nor is a flag mecha ignores.

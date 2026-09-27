@@ -663,8 +663,9 @@ router. The INI is generated rather than tracked because a preset cannot
 glob — snapshot directories are content hashes that change on re-download,
 and the paths are this machine's.
 
-1. *Built:* `start-router.sh`. Not yet installed: `llama-local.service`
-   still starts a single model.
+1. *Built:* `start-router.sh`. *Installed 2026-09-27* 01:27–01:45Z, through
+   the drop-in `llama-local.service.d/router.conf` (HANDOFF, *Machine
+   state, dated*).
 2. *Built:* every probe asks `?model=…&autoload=false` —
    `preflight::fetch`, the brief's `/slots`, `model-idle.sh`.
 3. *Built:* `follow_loaded`, the snapshot per process and per trigger fire.
@@ -679,9 +680,9 @@ and the paths are this machine's.
 4. *Built:* `mecha model list|use`. Owed: the TUI's `/model` calling it.
 5. The chip's picker and load state.
 6. Retire the drop-in swap and the single-model scripts, moving their
-   comments' reasoning into `LLAMA-SERVER.md`, and change `CLAUDE.md`'s
-   "`scripts/start-moe-mtp.sh` is the authority on the flags" to
-   `start-router.sh`. They stay until the router
+   comments' reasoning into `LLAMA-SERVER.md` (the `CLAUDE.md` line naming
+   the flags' authority moved to `start-router.sh` on 2026-09-27, #354).
+   They stay until the router
    has run production for a while, because they are the rollback.
 
 ### Deploying step 1
