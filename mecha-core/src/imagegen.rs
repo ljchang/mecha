@@ -21,9 +21,13 @@
 //! once in one directory (`fixed_workspace`), while `mecha serve` jails each
 //! chat session separately and serves downloads from that jail only.
 //!
-//! **The model cannot see what it made** — images enter a conversation on user
-//! turns only (`ARCHITECTURE.md` §Images) — so the result says so, and gives
-//! the seed back. Revising a new image means editing the prompt and reusing
+//! **The model sees what it made**, when it can see at all: the result carries
+//! the picture as `ToolOutput::image`, and the loop folds it into the user turn
+//! beside the results, because a `role: "tool"` message cannot hold one
+//! (`ARCHITECTURE.md` §Images). A model that has asked for a picture cannot
+//! otherwise tell whether it got one — `fs_read` returns PNG bytes as noise —
+//! and was left composing each edit from the user's description of the last.
+//! The result also gives the seed back. Revising a new image means editing the prompt and reusing
 //! its seed; editing one means passing it in `reference_images`, and an edit
 //! always samples at a fresh seed (see `call`).
 //!
@@ -1362,8 +1366,9 @@ impl Tool for ImageGenerate {
          PNG in the workspace. Takes about a minute. It renders text inside images well — put \
          the exact words in quotes. To edit, pass the picture's path in reference_images (one \
          the user attached, or an earlier result) and say in the prompt what to change and \
-         what to keep, e.g. \"Keep <image1> unchanged except: the jacket is now yellow\". You \
-         will not see the result; the user will."
+         what to keep, e.g. \"Keep <image1> unchanged except: the jacket is now yellow\". The \
+         result is shown to you when you can see images: check it against what was asked \
+         before telling the user it is done."
     }
 
     fn input_schema(&self) -> Value {
@@ -1521,6 +1526,22 @@ impl Tool for ImageGenerate {
                 )))
             }
         };
+        // Re-encoded for the model, never for the file: the PNG just saved is
+        // the user's picture. One that will not decode is still saved and
+        // still theirs; only the model's look at it is lost, and it is told.
+        let (picture, unseen) = match crate::image::rendered_block(&bytes, Some(path.clone())) {
+            Ok(block) => (Some(block), String::new()),
+            Err(e) => {
+                tracing::warn!("{path} saved but not shown to the model: {e:#}");
+                (
+                    None,
+                    format!(
+                        " It was not shown to you ({e:#}); the user can see it, so do not \
+                         describe what it shows."
+                    ),
+                )
+            }
+        };
         let secs = started.elapsed().as_secs();
         let size = match req.size {
             Some((w, h)) => format!("{w}×{h}"),
@@ -1530,8 +1551,7 @@ impl Tool for ImageGenerate {
         if req.references.is_empty() {
             text.push_str(&format!(
                 "Generated a {size} image in {secs} s (seed {}, {} steps) and saved it to {path} \
-                 in the workspace. You cannot see it; the user can, so do not describe what it \
-                 shows. To revise it, call image_generate again with an edited prompt and seed {} \
+                 in the workspace. To revise it, call image_generate again with an edited prompt and seed {} \
                  to keep the composition, or edit it by passing {path} in reference_images.",
                 req.seed, req.steps, req.seed
             ));
@@ -1539,8 +1559,8 @@ impl Tool for ImageGenerate {
             let sources: Vec<&str> = req.references.iter().map(|r| r.path.as_str()).collect();
             text.push_str(&format!(
                 "Edited {} into a {size} image in {secs} s (seed {}, {} steps) and saved it to \
-                 {path} in the workspace; the original is unchanged. You cannot see it; the user \
-                 can, so do not describe what it shows. To change it further, edit {path} next.",
+                 {path} in the workspace; the original is unchanged. To change it further, edit \
+                 {path} next.",
                 sources.join(", "),
                 req.seed,
                 req.steps
@@ -1554,8 +1574,13 @@ impl Tool for ImageGenerate {
                 req.seed
             ));
         }
+        text.push_str(&unseen);
         text.push_str(&left);
-        Ok(ToolOutput::ok(text))
+        let out = ToolOutput::ok(text);
+        Ok(match picture {
+            Some(picture) => out.with_image(picture),
+            None => out,
+        })
     }
 }
 

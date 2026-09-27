@@ -991,6 +991,11 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
         match message.role {
             Role::User => {
                 let mut text = String::new();
+                // A picture beside tool results is one a tool made
+                // (`ToolOutput::image`), shown to the model to check — the
+                // result's own chip already carries it, and an `[image]`
+                // here would read as something the owner attached.
+                let results = !mecha_core::agent::is_plain_user_text(message);
                 for block in &message.content {
                     match block {
                         // The owner's bubble carries the owner's words. A
@@ -1032,6 +1037,7 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                                 preview: Some(result_preview(content)),
                             });
                         }
+                        Block::Image { .. } if results => {}
                         Block::Image { .. } => {
                             if !text.is_empty() {
                                 text.push('\n');

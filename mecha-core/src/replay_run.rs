@@ -340,6 +340,7 @@ impl Tool for ReplayTool {
                 external: external.unwrap_or(true),
                 refusal: false,
                 not_dispatched: false,
+                image: None,
             }),
             Action::Refuse(msg) => Ok(ToolOutput::err(msg)),
             Action::Live => self.inner.call(input, ctx).await,

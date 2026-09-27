@@ -57,6 +57,17 @@ pub struct ToolOutput {
     /// delivery the owner reconciles by hand. Its one reader is the outbox's
     /// release path, which resolves the attempt as not delivered instead.
     pub not_dispatched: bool,
+    /// A picture the tool made, for the model to look at.
+    ///
+    /// Never rendered *inside* the result: the OpenAI dialect's
+    /// `role: "tool"` message carries a string and nothing else. The loop
+    /// folds it into the user turn carrying the results instead — the slot
+    /// steering uses — as a [`Block::Image`](crate::message::Block::Image)
+    /// behind a caption naming the call, and only when the model can see.
+    /// Pixels in front of the model arm `private_data`, exactly as
+    /// `Taint::arm_for_content` would read them at the next run's start
+    /// (`docs/ARCHITECTURE.md` §Images).
+    pub image: Option<crate::message::Block>,
 }
 
 impl ToolOutput {
@@ -67,6 +78,7 @@ impl ToolOutput {
             external: false,
             refusal: false,
             not_dispatched: false,
+            image: None,
         }
     }
 
@@ -77,6 +89,7 @@ impl ToolOutput {
             external: false,
             refusal: false,
             not_dispatched: false,
+            image: None,
         }
     }
 
@@ -89,7 +102,14 @@ impl ToolOutput {
             external: false,
             refusal: true,
             not_dispatched: false,
+            image: None,
         }
+    }
+
+    /// Hand the model a picture beside this result — see the `image` field.
+    pub fn with_image(mut self, image: crate::message::Block) -> Self {
+        self.image = Some(image);
+        self
     }
 
     /// Mark this content as having come from outside the machine.
