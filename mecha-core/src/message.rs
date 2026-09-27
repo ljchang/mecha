@@ -54,8 +54,9 @@ pub enum Block {
     /// one place where the missing thing is what the whole turn was about.
     /// So an image enters the conversation the way a person hands one over,
     /// and `encode_message` renders it only on a user message — which is
-    /// also where a tool's picture goes (`ToolOutput::image`): into the user
-    /// turn carrying the results, after them, never inside one.
+    /// also where a tool's picture goes (`ToolOutput::image`, from
+    /// `image_view`): into the user turn carrying the results, after them,
+    /// never inside one.
     ///
     /// Not every model has eyes. `Provider::vision` says whether the one on
     /// the other end does, and a backend that cannot see renders this block

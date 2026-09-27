@@ -4756,11 +4756,7 @@ impl Agent {
                         } => s.clone(),
                         _ => "an image".to_string(),
                     };
-                    pictures.push(Block::text(format!(
-                        "{TOOL_IMAGE_STEM}{name}: {source}] Look at it before you tell the user \
-                         it is done — check it against what was asked, and say plainly what \
-                         does not match."
-                    )));
+                    pictures.push(Block::text(format!("{TOOL_IMAGE_STEM}{name}: {source}]")));
                     pictures.push(image);
                 } else {
                     out.content.push_str(
