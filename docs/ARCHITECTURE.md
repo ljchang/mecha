@@ -3520,15 +3520,49 @@ delivered` resolves without `resolve_with_output` and stamps the same actor
 **Items resolved before the field existed carry no actor and read as
 `unknown`** — fail closed, on the append-only rule; every such reasoned
 reject on the live store had already been mined when this landed. The
-release is stamped the same way, and nothing reads that stamp yet.
+release is stamped the same way.
+
+**An edit is the owner's writing only when the owner made every edit and
+the release** (the same ruling carried to edits, 2026-09-27). `mecha outbox
+edit` — `$EDITOR`, `--body-file`, `--args-file`, and `polls pick` — stamps
+`edited_by` through `update_args`, which takes an `Actor` with no default,
+decided by the same `acting_actor`. Several edits **fold** with
+`Actor::least`, so an owner's later edit never launders a run's earlier one,
+and an item already edited with no stamp folds from `unknown`.
+`OutboxItem::owners_edit` is `edited_by == owner && resolved_by == owner`:
+release-only would misfire when the owner edits and a run's shell approves,
+edit-only when a run's shell edits and the owner releases. What reads an
+edit as the owner's words is gated on it: `mineable_as_writing` (the
+writing miner — the diff becomes a `writing` rule in the cached prefix),
+the appraiser's input (the diff is shown as "the owner edited it" only
+then, and otherwise described by its two stamps with none of its bytes; a
+release not stamped `owner` is "it was released", never "the owner
+released it"), and `pointwise::draft_kind` (the released text is the gold a
+harness candidate is judged against only then). An edit not stamped `owner`
+prints `note: the edit is recorded as …` on stdout (so does an `approve` whose
+edit is not mined), which the web review
+shows beside "Saved." and carries through Save & send into "Sent."; its
+cards say "edited by you" only for an `owner` edit (`edited_by` rides the
+review payload). A run's `edit` that changes nothing stamps nothing. The
+page holds both note prefixes as literals (`outbox-view.js`), and a
+test in `commands/outbox.rs` reads that file. `writing_outcome` itself still
+says what happened to the draft — `SentEdited` is structural — so the
+appraisal's `edit`-channel sign and 2b-2's `ExpectedAct::Edited` stay
+actor-blind, like the reject's −1.0: **the words are gated, the act is
+not.** Every edited send on the live store had been mined when this landed.
+
 **The residue is the closure path's** (see "Closing a task is a recorded
 event"): a command that detaches from its shell and clears the variable, a
 shell that edits `~/.mecha/outbox/` directly, and — named here because the
 outbox makes it concrete — a local process that calls `mecha serve`'s
 loopback port with the `Tailscale-User-Login` header set, which the web
 review's child then stamps `owner`. The answer to all three is the sandbox,
-as there. `outbox edit` is not a resolve and is not stamped; the writing
-miner still reads `diff(args_before, args)` as the owner's edit.
+as there. **Two more, left as they are by the owner's ruling (2026-09-27):**
+`mecha outbox approve` from a non-interactive run's shell is stamped
+`unknown` but not refused, so such a run can still release a draft; and
+Slack's reject button (`slack::actions::Action::OutboxReject`) sends the
+fixed reason "rejected from Slack", which the tap's child stamps `owner`, so
+that harness sentence is mined as the owner's words.
 
 ## Assistant workflows
 
@@ -4491,6 +4525,26 @@ unreadable file as an error; `sessions appraise` prints the store's
 `comparison::Summary` on every call, with the separated share `null` over
 nothing decided.
 
+**The summary counts one model** (the owner's ruling of 2026-09-27, "count
+one model"; the same rule validation tallies follow). Since `:8080` became
+a router (`REMOTE-SURFACE-DESIGN.md` §14), background passes follow
+whichever model is resident, so the store holds the production model's rows
+beside a comparison arm's, and a share summed over both describes neither.
+`Summary::of(rows, model)` counts the rows under the model the caller names
+— `sessions compare` names the one it drove — else under the model of the
+newest driven row (the free `sessions appraise` readout loads no config, so
+it names none — the rule `lesson_source::report` set). Rows under any other
+model are `other_models`, said beside the summary and never summed in. **An
+unposed point is no model's**: its arms are not driven, and this build
+stores it with an empty model, once whatever model is resident
+(`pointwise::already_compared` keys it on the empty model). So `unposed`
+counts those points store-wide, apart from `records` and `inconclusive`
+rather than inside them — it could never move a rate, and counting it would
+charge one model with points it never saw, yet "never askable" stays
+visible. Any other row with no model is `no_model`: unknown, never counted,
+and never labelled an unposed point (found on review). The stored format is
+unchanged; `--json` gains `model`, `other_models` and `no_model`.
+
 ### Point-wise comparison at decision points
 
 `APPRAISAL-WIRING-DESIGN.md` O1, row 2d-1: `mecha sessions compare`
@@ -4570,7 +4624,10 @@ through the store above (a `point-*` `Kind` per point kind).
   driven points; unposed points cost nothing and are not charged. A point
   already on record under the same policies and model
   (`pointwise::already_compared`) is not compared again, so the nightly
-  cost falls on new points and new rule sets.
+  cost falls on new points and new rule sets. The store summary a pass
+  prints after it is for the model it drove (see "Every comparison is
+  stored"): rows under other models are said beside it and never counted
+  in, and unposed points, which are no model's, are counted on their own.
 - **One background seat per point** (`permit.rs`, `tasks::permits`), taken
   before its arms and dropped after, waited on for up to five minutes and
   then the rest of the pass deferred and counted — never the owner's
@@ -4848,10 +4905,9 @@ Decisions, each a bug if undone:
   outbox has written carries it (the field is as old as the store), and
   `reflect`'s edit pass reads the same field on the same terms.
 
-Left for later rows: contrast evidence for the reflector (2e-4b-2, waiting on
-what "the same region" means between a correction and a success); staged
-skill drafts (2e-4c, deferred by R40 until this set has been read on real
-data). Skills stay owner-authored: nothing here writes under
+Contrast evidence for the reflector is 2e-4b-2 (below). Left for a later
+row: staged skill drafts (2e-4c, deferred by R40 until this set has been
+read on real data). Skills stay owner-authored: nothing here writes under
 `~/.mecha/skills/`.
 
 ### Planning examples from what went right
@@ -4936,6 +4992,70 @@ check, which almost never happens; a verified success is the other source.
 - **In an experiment**, `levers_on = ["success_examples"]`; nothing is
   seeded, because the successes are the trial home's own stores, so a
   single trial's arm equals its control until a lifetime's tasks close.
+
+### Contrast evidence beside a correction
+
+`APPRAISAL-WIRING-DESIGN.md` L2, row 2e-4b-2, ruled R43: `mecha reflect`
+may reflect a correction with a verified success from its region beside it
+(`success::ContrastPool`, `learning::Reflector::reflect_beside`), behind
+`[agent] contrast_evidence` — a **stage** lever
+(`experiment::StageLever::ContrastEvidence`), read by `reflect` and never by
+a run — which **ships off**.
+
+- **The region is the loader's match** (R43, the owner's ruling). A
+  correction's recorded situation (`reflect`'s `recorded_situation`: its
+  tool window, trigger and the covering run record's workspace, surface
+  and goal — the value its reflection is stamped with) is in a success's
+  region when its `scope()` `matches` **one of** the success session's run
+  records: every tool in the window is in that run's registry, and
+  workspace, surface and goal agree wherever the correction names them —
+  where a rule learned from the correction would load (2e-5c's
+  `Recurrence::matching`). Session-to-session `region_key` equality would
+  compare a tool window with a whole registry and never hold. A correction
+  whose situation names no key is standing, and so is in every success's
+  region, as a standing rule loads everywhere.
+- **Which corrections.** A transcript steer, denial or followup — the
+  owner's corrections, reflected in the behaviour frame. A mismatch is the
+  harness's observation in its own frame, and the outbox pass (an edit
+  teaches voice; a rejection's situation names only the drafting tool) is
+  not contrasted in this row. One predicate decides both sides
+  (`learning::contrasted`, by trigger): a rejection shares the behaviour
+  frame but is never handed a success, so its prompt does not gain the
+  sentence either (found on review of #345: matching on the frame string
+  told it of a block it could never see).
+- **Which success.** The newest trace `planning::success_traces` lends
+  (`need_goal: false`, so a draft sent unchanged or a goal-less workflow
+  lends too) from a success that does not name the correction's session: a
+  success verified work that may span sessions, and whichever of them the
+  correction was in, the success is its outcome, not a contrast to it — so
+  the exclusion is by success, not by trace (`SuccessTrace::named`; found
+  on review of #345). The traces are 2e-4b-1's: standing successes only, sessions the
+  corpus admits, **recorded taint clean to the end**, every run scoped, and
+  a tool called; read once per pass, newest first, at most 32 transcripts.
+  One `reflect` pass is one read of the stores, so a reopen withdraws a
+  success from the next pass.
+- **Only clean material reaches the reflector.** The block names the
+  owner's act in fixed words (`success::Act::in_words`, the same phrase
+  `goal_context` serves) and the session's tool sequence — registry names.
+  No record id (a lesson must not memorise one), no argument, no prose.
+  The correction's own evidence and `Origin` are decided as before
+  (`evidence_for`); the contrast changes neither.
+- **The prompt.** Off, the system prompt and the user message are the bytes
+  they were — pinned against the old format copied from the tree before the
+  row (`contrast_prompt`). On, a steer's, denial's or followup's system
+  prompt (`REFLECTOR_SYSTEM`) gains `CONTRAST_SENTENCE` on every call, so
+  the prefix stays stable across the pass's corrections, and a contrasted
+  correction's message gains one `<a-verified-success-in-this-region>`
+  block between the aftermath and the closing question. The writing and
+  mismatch frames never move, and nor does a rejection's.
+- **Shadow.** `mecha reflect --dry-run` reads the pool whatever the lever
+  and names, beside each listed steer, denial or followup, the success it
+  would be shown. A real pass reads nothing with the lever off.
+- **Measuring it.** An arm turns it on through its own environment's
+  `config.toml` (`[agent] contrast_evidence = true`); `stages_off =
+  ["contrast_evidence"]` forces it off whatever the environment says. On
+  only after a measured run (R43). A reflection does not record that it
+  was contrasted; the arm does.
 
 ## The goal system
 
