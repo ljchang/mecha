@@ -1275,6 +1275,7 @@ mod tests {
                 &draft.id,
                 crate::outbox::DeliveryOutcome::Delivered,
                 "destination message m-123",
+                crate::closure::Actor::Owner,
             )
             .unwrap();
         }

@@ -961,10 +961,13 @@ pub fn render_appraisal_inputs(i: &AppraisalInputs<'_>) -> String {
                         "{what}: the owner rejected it. The owner's reason: \"{r}\""
                     );
                 }
+                // Not the owner's reason, so not said to be the owner's
+                // act either: the words and the act came through the same
+                // door (review of #343). The reject's sign is unchanged.
                 Some(not_owners) => {
                     let _ = writeln!(
                         out,
-                        "{what}: the owner rejected it. The reason on file: {}.",
+                        "{what}: it was rejected. The reason on file: {}.",
                         not_owners.word()
                     );
                 }
@@ -2980,6 +2983,11 @@ mod tests {
         assert!(
             text.contains("not recorded as the owner's own words — not quoted"),
             "{text}"
+        );
+        assert_eq!(
+            text.matches("the owner rejected it").count(),
+            1,
+            "only the owner's reject is said to be the owner's: {text}"
         );
     }
 

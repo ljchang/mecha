@@ -197,7 +197,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             } else {
                 DeliveryOutcome::NotDelivered
             };
-            let item = store.reconcile_delivery(&id, outcome, &evidence)?;
+            let item = store.reconcile_delivery(&id, outcome, &evidence, acting_actor())?;
             println!(
                 "{}: {} — reconciliation recorded; nothing sent",
                 item.id, item.status
