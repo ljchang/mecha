@@ -555,21 +555,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let learner = Learner::new(provider, model);
     eprintln!("learning with {} ({provider_name})", learner.model());
 
-    // The ledger, folded per rule, read once for every domain (a scan of one
-    // append-only file) and folded twice, because it answers two questions
-    // (owner's ruling, 2026-09-27: count one model):
-    // - **Harm is per model.** The consolidation drops what has been measured
-    //   harmful, so it reads only the rows measured on this model — the one
-    //   `validate` measured on, resolved the same way.
-    // - **Whether a rule was ever measured is a fact about the ledger.**
-    //   Probation is written to disk and read on every model; stamped from
-    //   one model's rows, a rule graded only on the previous resident model
-    //   would read as never graded and be put back on the short leash for
-    //   good (found on review of #346).
-    let ledger = store.validations()?;
-    let ledger_tallies = mecha_core::learning::rule_tallies(&ledger);
-    let (rows, _) = mecha_core::learning::measured_on(ledger, learner.model());
-    let tallies = mecha_core::learning::rule_tallies(&rows);
+    // The ledger, folded per rule, so the consolidation can drop what has
+    // been measured harmful instead of guessing from the rule text. Read once
+    // for every domain: it is a scan of one append-only file.
+    //
+    // **The whole ledger, every model's rows — deliberately not
+    // `learning::measured_on`.** Both readers here ask whether a rule was
+    // measured, which is a fact about the ledger: probation is written to
+    // disk and read on every model, and the consolidation is a full
+    // replacement whose drops are global. Folded per model, the first learn
+    // after a switch would read every rule graded on the previous model as
+    // `[unmeasured]` and stamp it back onto the short leash (found on review
+    // of #346). The owner's ruling (2026-09-27, count one model) governs the
+    // retirement count, which `rules propose-retirements` makes per model.
+    let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
 
     // The gate replays against the recorded tool surface, which needs the
     // live registry for specs — same borrow `mecha validate` makes.
@@ -829,7 +828,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // thing probation exists to remember.
             let Disposition { status, probation } = dispose(args.auto, regressed, measured);
             if probation {
-                stamp_probation(&mut rules, &ledger_tallies, region);
+                stamp_probation(&mut rules, &tallies, region);
             }
             let applied = status == "auto_applied" || status == "auto_applied_probation";
             // The proposal is written whichever way this went. Under `--auto`

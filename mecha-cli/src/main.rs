@@ -681,6 +681,9 @@ mod tests {
         assert!(cmd(&["mecha", "mail", "classify"]).runs_a_model());
         // A scorecard names its model: eval observes, and never follows.
         assert!(cmd(&["mecha", "eval", "cases.toml"]).runs_a_model());
+        // Retirement counts the rows of the model in use, so it must see the
+        // router's resident model (#346).
+        assert!(cmd(&["mecha", "rules", "propose-retirements"]).runs_a_model());
         assert!(!cmd(&["mecha", "eval", "cases.toml"]).may_follow());
         assert!(cmd(&["mecha", "run", "hello"]).may_follow());
     }
