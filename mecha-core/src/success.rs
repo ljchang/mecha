@@ -54,7 +54,7 @@
 use crate::closure::{Actor, Move, Transition};
 use crate::goal::GoalRef;
 use crate::learning::Origin;
-use crate::outbox::{OutboxItem, WritingOutcome};
+use crate::outbox::OutboxItem;
 use crate::questions::Question;
 use crate::situation::Situation;
 use crate::workflow::{Disposition, Workflow};
@@ -410,9 +410,13 @@ fn placed(out: &mut Successes, success: &Success, facts: &dyn SessionFacts) -> b
     }
 }
 
-/// A model's message draft the owner sent as written.
+/// A model's message draft the owner sent as written — the release stamped
+/// `owner` (`OutboxItem::owners_unchanged_release`, R16a's ruling D3
+/// carried to releases). A run's shell that approves its own draft, and
+/// every release from before the stamp, is no success: the set starts from
+/// stamped releases, empty of pre-stamp history by design.
 fn sent_unchanged(item: &OutboxItem) -> bool {
-    item.writing_outcome() == Some(WritingOutcome::SentUnchanged)
+    item.owners_unchanged_release()
 }
 
 /// Derive the success set from the stores that own each act.
@@ -616,7 +620,7 @@ mod tests {
             "id": id, "status": status, "tool": "mail_send", "kind": "message",
             "args_before": before, "args": before, "summary": "a reply",
             "session_id": DANA, "created_at": "2026-09-20T09:00:00Z",
-            "resolved_at": "2026-09-20T10:00:00Z",
+            "resolved_at": "2026-09-20T10:00:00Z", "resolved_by": "owner",
         }))
         .unwrap();
         if edited {
@@ -700,6 +704,40 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["outbox:ob-kept"]
         );
+    }
+
+    /// R16a's ruling D3 carried to releases (2026-09-27): the success set
+    /// starts from stamped releases. A draft a run's shell approved
+    /// unchanged, one an unreadable door approved, and one released before
+    /// the stamp are no success and no exemplar — the set is empty of
+    /// pre-stamp history by design. Fails on the tree before, which made
+    /// all three standing successes with their exemplars.
+    #[test]
+    fn an_unchanged_release_is_a_success_only_when_the_owner_released_it() {
+        let mut approved = draft("ob-approved", "sent", false);
+        approved.resolved_by = Some(crate::closure::Actor::OwnerApproved);
+        let mut unknown = draft("ob-unknown", "sent", false);
+        unknown.resolved_by = Some(crate::closure::Actor::Unknown);
+        let mut legacy = draft("ob-legacy", "sent", false);
+        legacy.resolved_by = None;
+        let owners = draft("ob-owner", "sent", false);
+        let drafts = vec![approved, unknown, legacy, owners];
+        let set = derive(
+            &Sources {
+                drafts: &drafts,
+                ..Default::default()
+            },
+            &admitted(),
+        );
+        assert_eq!(
+            set.standing
+                .iter()
+                .map(|s| s.act.pointer())
+                .collect::<Vec<_>>(),
+            vec!["outbox:ob-owner"]
+        );
+        assert_eq!(set.exemplars.len(), 1);
+        assert_eq!(set.exemplars[0].item, "ob-owner");
     }
 
     /// Provenance is the staging taint's, fail-closed: a draft written with
