@@ -219,6 +219,12 @@ it: the messages come back and so does the
 last Tuesday still remembers on Thursday, because resuming must not launder
 what a session touched.
 
+An **incognito chat** is the exception: the second new-chat button opens one
+that writes no transcript, keeps its files in RAM, and is gone for good when
+you tap End or leave it for 30 minutes. It can reach less than an ordinary
+chat, and refuses to open at all rather than break that promise. See
+[Incognito chat](/docs/features/interfaces/incognito).
+
 ### Permission modes, and answering from the phone
 
 A web session starts **read-only**: reads run, and anything that would send
@@ -271,6 +277,10 @@ rather than a parallel route. Downloads prove containment the same way every
 model-supplied path does — canonicalize, then require the result to sit
 inside the jail — and anything outside it and anything missing are the same
 `404`.
+
+A picture the model draws with
+[`image_generate`](/docs/features/tools/image-generation) lands under
+`images/` in the same jail and shows inline under the call.
 
 Only images are served with a renderable content type. Everything else
 downloads as inert bytes, because a file in the jail may be model-written

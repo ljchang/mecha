@@ -153,6 +153,8 @@ because everything downstream trusts it. See
 
 - [Providers](/docs/features/models/providers) — the trait, the backends, retries and
   fallbacks.
+- [Switching models](/docs/features/models/switching) — llama-server's router
+  mode, and how every surface follows the model it has loaded.
 - [Compaction](/docs/features/models/compaction) — what happens as a transcript
   approaches the window.
 - [Interfaces](/docs/features/interfaces) — which front-ends exist and which
