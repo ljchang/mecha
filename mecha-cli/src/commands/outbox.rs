@@ -17,6 +17,7 @@
 //! editing neither the draft nor anything a reader sees.
 
 use anyhow::{bail, Context, Result};
+use mecha_core::closure::{self, Actor};
 use mecha_core::outbox::{
     DeliveryOutcome, DraftView, OutboxItem, OutboxKind, OutboxLock, OutboxStore,
 };
@@ -181,8 +182,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             Some(path) => edit_args(&store, &id, &path),
             None => edit(&store, &id, json, body_file.as_deref()),
         },
-        Cmd::Review { selection } => review(global, &store, &selection).await,
-        Cmd::Approve { selection, yes } => send(global, &store, &selection, yes).await,
+        Cmd::Review { selection } => review(global, &store, &selection, acting_actor()).await,
+        Cmd::Approve { selection, yes } => {
+            send(global, &store, &selection, yes, acting_actor()).await
+        }
         Cmd::Reconcile {
             id,
             outcome,
@@ -194,7 +197,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             } else {
                 DeliveryOutcome::NotDelivered
             };
-            let item = store.reconcile_delivery(&id, outcome, &evidence)?;
+            let item = store.reconcile_delivery(&id, outcome, &evidence, acting_actor())?;
             println!(
                 "{}: {} — reconciliation recorded; nothing sent",
                 item.id, item.status
@@ -246,9 +249,75 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             );
             Ok(())
         }
-        Cmd::Reject { selection, reason } => reject(&store, &selection, reason),
+        Cmd::Reject { selection, reason } => {
+            let (by, why) = acting_actor_explained();
+            let result = reject(&store, &selection, reason.clone(), by);
+            // On stdout, after the verdict: the web review and the TUI relay
+            // stdout, not stderr, and a demotion at the owner's own door
+            // must reach them (review of #343).
+            if let (Some(why), true) = (why, reason.is_some()) {
+                println!("{}", demotion_note(by, &why));
+            }
+            result
+        }
     }
 }
+
+/// Who is resolving items in this process — decided once, before anything
+/// is resolved, the way `mecha tasks set` decides who closes a task
+/// (`APPRAISAL-WIRING-DESIGN.md` R16a's ruling D3; `closure::attribute`).
+///
+/// `owner` only where no registered `shell` and no live delegated or
+/// scheduled run is above this process and the posture variable is absent
+/// — the owner's terminal, or a surface's own child (the web review, the
+/// TUI's `/outbox`, a Slack tap, voice's release). `owner-approved` under an
+/// interactive run's registered shell: a model ran this behind the
+/// approver. Everything else — another posture, a claimed variable, a
+/// redirected home, a registry or marker directory that cannot be read — is
+/// `unknown`, and a resolve is **stamped, not refused**: rejecting a draft
+/// sends nothing, and the stamp is what keeps the words from reading as the
+/// owner's. A marker directory that cannot be read is `unknown` rather than
+/// an error for the same reason.
+pub(crate) fn acting_actor() -> Actor {
+    acting_actor_explained().0
+}
+
+/// [`acting_actor`], with why it is not `owner` when it is not — so a
+/// reject whose reason will not be read as the owner's says so rather than
+/// demoting it silently (review of #343).
+fn acting_actor_explained() -> (Actor, Option<String>) {
+    let ancestor = match crate::commands::tasks::live_run_pids() {
+        Ok(pids) => closure::run_ancestor(&pids),
+        Err(e) => {
+            return (
+                Actor::Unknown,
+                Some(format!(
+                    "the run markers could not be read ({e:#}), so whether a run made this \
+                     reject cannot be told"
+                )),
+            )
+        }
+    };
+    closure::attribute_explained(
+        &closure::posture_from_env(),
+        &closure::ShellReading::from_registry(),
+        ancestor,
+    )
+}
+
+/// The line a reject prints when its reason will not be read as the owner's:
+/// [`DEMOTION_PREFIX`], so a relay can find it in stdout, then the actor and
+/// the cause.
+pub(crate) fn demotion_note(by: Actor, why: &str) -> String {
+    format!(
+        "{DEMOTION_PREFIX} {} rather than yours ({why}), so it will not be read as your \
+         correction",
+        by.as_str()
+    )
+}
+
+/// How [`demotion_note`] begins — what the TUI and the web review look for.
+pub(crate) const DEMOTION_PREFIX: &str = "note: the reason is recorded as";
 
 /// Owner CLI file, never a model-supplied tool path. Bound the read before parsing.
 pub(crate) fn read_evidence_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
@@ -599,14 +668,8 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
     if let Some(note) = &serves {
         println!("{}", note.line());
     }
-    if let Some(resolved) = &item.resolved_at {
-        println!(
-            "resolved {resolved}{}",
-            item.reason
-                .as_deref()
-                .map(|r| format!(" — {r}"))
-                .unwrap_or_default()
-        );
+    if let Some(line) = item.resolution_line() {
+        println!("{line}");
     }
     if item.kind == OutboxKind::Message && !json {
         println!(
@@ -1040,8 +1103,9 @@ impl Surface {
     /// tool error alone cannot prove that no remote effect occurred.
     ///
     /// **The caller must hold the store lock**, because the pending check is
-    /// [`claim_for_release`] and it has to happen inside that lock.
-    async fn release(&self, store: &OutboxStore, item: &OutboxItem) -> Result<String> {
+    /// [`claim_for_release`] and it has to happen inside that lock. `by` is
+    /// who is releasing ([`acting_actor`]), stamped on the resolved item.
+    async fn release(&self, store: &OutboxStore, item: &OutboxItem, by: Actor) -> Result<String> {
         let item = &claim_for_release(store, item)?;
         let Some(tool) = self.tools.registry.get(&item.tool) else {
             // Recorded like every other release failure: this one dies before
@@ -1090,7 +1154,7 @@ impl Surface {
         // the event id), and bounded: the store is parsed whole on every
         // lookup, so a page-sized answer must not ride every sent item.
         let kept: String = output.content.chars().take(16_384).collect();
-        store.resolve_with_output(&item.id, "sent", None, Some(kept))?;
+        store.resolve_with_output(&item.id, "sent", None, Some(kept), by)?;
         Ok(output.content.trim().to_string())
     }
 }
@@ -1174,6 +1238,7 @@ async fn send(
     store: &OutboxStore,
     selection: &Selection,
     yes: bool,
+    by: Actor,
 ) -> Result<()> {
     // Held across the whole batch, execution included: two concurrent `send`s
     // of the same item must not both pass the pending check and double-send.
@@ -1230,7 +1295,7 @@ async fn send(
     let (mut sent, mut failed) = (0usize, 0usize);
     for item in &items {
         let release = match surfaces.for_item(global, item).await {
-            Ok(surface) => surface.release(store, item).await,
+            Ok(surface) => surface.release(store, item, by).await,
             // A surface that cannot be built is a failure of this item's
             // release, so it is recorded like one — and only this item's:
             // the next draft may name a workspace that builds fine.
@@ -1275,7 +1340,12 @@ async fn send(
 }
 
 /// Walk the pending items, one decision at a time.
-async fn review(global: &GlobalOpts, store: &OutboxStore, selection: &Selection) -> Result<()> {
+async fn review(
+    global: &GlobalOpts,
+    store: &OutboxStore,
+    selection: &Selection,
+    by: Actor,
+) -> Result<()> {
     // Deliberately *not* holding the store lock across the loop: this waits on
     // a human, and `edit` shells out to `$EDITOR`. Each action takes the lock
     // for itself, the same rule `edit` already followed.
@@ -1333,7 +1403,7 @@ async fn review(global: &GlobalOpts, store: &OutboxStore, selection: &Selection)
                     let release = match surfaces.for_item(global, &current).await {
                         Ok(surface) => {
                             let _lock = store.lock()?;
-                            surface.release(store, &current).await
+                            surface.release(store, &current, by).await
                         }
                         Err(e) => match store.lock() {
                             Ok(lock) => Err(record_release_failure(store, &lock, &current.id, e)),
@@ -1367,7 +1437,7 @@ async fn review(global: &GlobalOpts, store: &OutboxStore, selection: &Selection)
                 }
                 "r" | "reject" => {
                     let _lock = store.lock()?;
-                    store.resolve(&current.id, "rejected", None)?;
+                    store.resolve(&current.id, "rejected", None, by)?;
                     rejected += 1;
                     println!("rejected; nothing was sent");
                     break;
@@ -1388,14 +1458,22 @@ async fn review(global: &GlobalOpts, store: &OutboxStore, selection: &Selection)
     Ok(())
 }
 
-fn reject(store: &OutboxStore, selection: &Selection, reason: Option<String>) -> Result<()> {
+/// Reject the selected items, stamping each with `by` ([`acting_actor`]):
+/// the reason is the owner's words to every later reader only when `by` is
+/// [`Actor::Owner`] (ruling D3).
+fn reject(
+    store: &OutboxStore,
+    selection: &Selection,
+    reason: Option<String>,
+    by: Actor,
+) -> Result<()> {
     let _lock = store.lock()?;
     let items = select(store.items()?, selection)?;
     let (mut rejected, mut failed) = (0usize, 0usize);
     for item in &items {
         // Rejecting sends nothing and needs no batch confirmation. An uncertain
         // delivery still refuses; continue with other items without erasing it.
-        match store.resolve(&item.id, "rejected", reason.clone()) {
+        match store.resolve(&item.id, "rejected", reason.clone(), by) {
             Ok(resolved) => {
                 rejected += 1;
                 println!("rejected {}; nothing was sent", resolved.id);
@@ -1488,6 +1566,7 @@ mod tests {
             created_at: "2026-08-06T07:00:00Z".into(),
             resolved_at: None,
             reason: None,
+            resolved_by: None,
             error: None,
         }
     }
@@ -1575,7 +1654,14 @@ mod tests {
         );
 
         // Resolved items are not edited, whatever the file says.
-        store.resolve(&staged.id, "rejected", None).unwrap();
+        store
+            .resolve(
+                &staged.id,
+                "rejected",
+                None,
+                mecha_core::closure::Actor::Owner,
+            )
+            .unwrap();
         assert!(edit_args(&store, &staged.id, &good).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1610,7 +1696,9 @@ mod tests {
         claim_for_release(&store, &reviewed).expect("pending is releasable");
 
         // The other terminal wins the race.
-        store.resolve(&staged.id, "sent", None).unwrap();
+        store
+            .resolve(&staged.id, "sent", None, mecha_core::closure::Actor::Owner)
+            .unwrap();
 
         let err = claim_for_release(&store, &reviewed)
             .unwrap_err()
@@ -1940,7 +2028,7 @@ mod tests {
             let _lock = store.lock().unwrap();
 
             let err = surface
-                .release(&store, &staged)
+                .release(&store, &staged, Actor::Owner)
                 .await
                 .unwrap_err()
                 .to_string();
@@ -1989,7 +2077,7 @@ mod tests {
             .unwrap();
 
         let err = empty_surface()
-            .release(&store, &staged)
+            .release(&store, &staged, Actor::Owner)
             .await
             .unwrap_err()
             .to_string();

@@ -188,10 +188,17 @@ fn owner_acts(home: &Path, session_id: &str) {
             json!({"to": "dirk@example.invalid", "body": "Totals attached; the Q3 sheet follows.", "urgent": false}),
         )
         .unwrap();
-    outbox.resolve(&edited.id, "sent", None).unwrap();
+    outbox
+        .resolve(&edited.id, "sent", None, mecha_core::closure::Actor::Owner)
+        .unwrap();
     let rejected = stage("t4", rejected_draft());
     outbox
-        .resolve(&rejected.id, "rejected", Some("not yet".into()))
+        .resolve(
+            &rejected.id,
+            "rejected",
+            Some("not yet".into()),
+            mecha_core::closure::Actor::Owner,
+        )
         .unwrap();
 }
 
