@@ -1058,6 +1058,7 @@ async fn run_agent(
         &prepared.provider_name,
         &mut cx,
         &convo,
+        Some(&session.meta.id),
         setup::BRIEF_BOARD_TIMEOUT,
     )
     .await;
