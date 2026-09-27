@@ -517,8 +517,9 @@ router is `/props`' rule applied to choosing.
   would act, not just mislead: `rules propose-retirements` and `validate
   --cover` count only the rows measured on the model in use
   (`learning::measured_on`; owner's ruling, 2026-09-27: count one model).
-  So another model's rows never dilute a regression this one measured, nor
-  add to its convictions. It is not a production guard: on a night the
+  So another model's rows never dilute this one's convictions or add to
+  them — though a clean grade from another model can still release a rule
+  from probation, which moves its threshold from 2 to 3. It is not a production guard: on a night the
   comparison arm is resident, the arm is the model in use, and its own
   convictions retire rules that every model loads. Whether a rule was
   measured at all — probation, and the record the learner consolidates
