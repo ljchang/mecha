@@ -113,7 +113,9 @@ impl Drop for Switching {
 }
 
 impl Held {
-    /// Has a "switch now" asked this run to stop?
+    /// Has a "switch now" asked this run to stop? For tests: runs are reached
+    /// through [`on_cancel`](Self::on_cancel).
+    #[cfg(test)]
     pub fn cancel_requested(&self) -> bool {
         self.cancel.exists()
     }

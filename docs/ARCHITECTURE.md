@@ -206,7 +206,6 @@ The parts that bite hardest:
     *holds* the router — a file in `~/.mecha/holds/` — and `mecha model use`
     waits until no hold remains. A hold is taken *before* the run resolves
     its model; a run that meets a pending switch yields and waits for it.
-
   - **The config is read from disk per turn**, because the rebuild reads it;
     resolving against the startup file missed providers added since. A file
     that does not load keeps the binding and says so once.
