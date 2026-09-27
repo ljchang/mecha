@@ -128,6 +128,10 @@ pub struct Follower {
     pinned: bool,
     /// Asks the router at all. Off only for a test's fixed binding.
     observes: bool,
+    /// A test's stand-in for "the router moved and the next `follow` rebuilt":
+    /// installed by the next `follow`, never by `current()`.
+    #[cfg(test)]
+    on_next_follow: Mutex<Option<Arc<Bound>>>,
     finish: Finish,
     current: RwLock<Arc<Bound>>,
     /// One rebuild at a time: concurrent turns that all see the switch wait
@@ -147,13 +151,22 @@ impl Follower {
         let cfg = load_config(&opts)?;
         let pinned = opts.provider.is_some() || opts.model.is_some();
         let warned = Mutex::new(HashSet::new());
-        observe(&cfg, pinned, &warned).await;
+        let seen = observe(&cfg, pinned, &warned).await;
         let generations = AtomicU64::new(0);
-        let first = build(&opts, &finish, &generations, resolve(&cfg, pinned), None).await?;
+        let first = build(
+            &opts,
+            &finish,
+            &generations,
+            resolve(&cfg, pinned, &seen),
+            None,
+        )
+        .await?;
         Ok(Follower {
             opts,
             pinned,
             observes: true,
+            #[cfg(test)]
+            on_next_follow: Mutex::new(None),
             finish,
             current: RwLock::new(first),
             rebuilding: tokio::sync::Mutex::new(()),
@@ -235,6 +248,15 @@ impl Follower {
     /// any lock the turn holds, and use the result for the whole turn.
     pub async fn follow(&self) -> Result<Arc<Bound>> {
         if !self.observes {
+            #[cfg(test)]
+            if let Some(next) = self
+                .on_next_follow
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+            {
+                *self.current.write().unwrap_or_else(|e| e.into_inner()) = next;
+            }
             return Ok(self.current());
         }
         let cfg = match load_config(&self.opts) {
@@ -248,8 +270,8 @@ impl Follower {
                 return Ok(self.current());
             }
         };
-        observe(&cfg, self.pinned, &self.warned).await;
-        let Some(want) = resolve(&cfg, self.pinned) else {
+        let seen = observe(&cfg, self.pinned, &self.warned).await;
+        let Some(want) = resolve(&cfg, self.pinned, &seen) else {
             return Ok(self.current());
         };
         if self.current().provider_name == want {
@@ -310,6 +332,7 @@ impl Follower {
             opts: GlobalOpts::default(),
             pinned: true,
             observes: false,
+            on_next_follow: Mutex::new(None),
             finish: Box::new(|_| {}),
             current: RwLock::new(Arc::new(bound)),
             rebuilding: tokio::sync::Mutex::new(()),
@@ -356,6 +379,36 @@ pub async fn hold_router(
 impl Follower {
     /// Install a new binding under the next generation — what a turn sees
     /// after `follow` rebuilt for a switch, without a router or a rebuild.
+    /// Like [`switch_to`](Self::switch_to), but seen only by the next
+    /// `follow` — what an outside switch looks like to a surface that has not
+    /// asked yet: `current()` still names the old model until something follows.
+    pub fn switch_on_next_follow(
+        &self,
+        agent: Agent,
+        provider_name: &str,
+        model: &str,
+        config: Config,
+    ) {
+        let generation = self.generations.fetch_add(1, Ordering::Relaxed) + 1;
+        let bound = Bound {
+            agent: Arc::new(agent),
+            provider_name: provider_name.into(),
+            model: model.into(),
+            context_window: None,
+            levers_off: Vec::new(),
+            rules: Default::default(),
+            config,
+            workspace: PathBuf::new(),
+            todo: None,
+            generation,
+            _mcp: Vec::new(),
+        };
+        *self
+            .on_next_follow
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(bound));
+    }
+
     pub fn switch_to(&self, agent: Agent, provider_name: &str, model: &str, config: Config) {
         let generation = self.generations.fetch_add(1, Ordering::Relaxed) + 1;
         let bound = Bound {
@@ -380,8 +433,12 @@ impl Follower {
 /// Once per *occurrence*, not per process: a warning whose condition has
 /// cleared is forgotten, so the same condition coming back weeks later into
 /// a `serve` is logged again rather than never.
-async fn observe(cfg: &Config, pinned: bool, warned: &Mutex<HashSet<String>>) {
-    let warnings = mecha_core::provider::router::observe(cfg, !pinned).await;
+async fn observe(
+    cfg: &Config,
+    pinned: bool,
+    warned: &Mutex<HashSet<String>>,
+) -> Vec<mecha_core::provider::router::Seen> {
+    let (warnings, seen) = mecha_core::provider::router::observe_seen(cfg, !pinned).await;
     let mut warned = warned.lock().unwrap_or_else(|e| e.into_inner());
     warned.retain(|w| warnings.contains(w));
     for w in warnings {
@@ -389,22 +446,32 @@ async fn observe(cfg: &Config, pinned: bool, warned: &Mutex<HashSet<String>>) {
             tracing::warn!("{w}");
         }
     }
+    seen
 }
 
 /// The provider the default resolves to now, or `None` to stay where the
 /// surface is: pinned, or the router the default follows was not seen.
-fn resolve(cfg: &Config, pinned: bool) -> Option<String> {
+fn resolve(
+    cfg: &Config,
+    pinned: bool,
+    seen: &[mecha_core::provider::router::Seen],
+) -> Option<String> {
     let base = cfg
         .providers
         .get(&cfg.default_provider)
-        .and_then(|p| p.base_url.as_deref());
-    let seen = base.and_then(mecha_core::provider::router::observed);
-    resolve_seen(cfg, pinned, seen)
+        .and_then(|p| p.base_url.as_deref())
+        .map(mecha_core::provider::router::base);
+    let mine = base.and_then(|b| seen.iter().find(|s| s.base_url == b).cloned());
+    resolve_seen(cfg, pinned, mine)
 }
 
 /// The pure half of [`resolve`], against what the router showed (`seen`, or
 /// `None` when it was not seen). Separate so each way of *not* moving can be
 /// tested without a router.
+///
+/// `pinned` is `--provider`/`--model`. `MECHA_PROVIDER`/`MECHA_MODEL` pin too,
+/// by another route: `Config::merge_env_from` clears the entry's
+/// `follow_loaded`, so the `follows_here` check below returns the default.
 ///
 /// Moves only on evidence of where to: nothing resident resolves to the
 /// default (every process does that after a router restart), a resident
