@@ -285,8 +285,9 @@ from anywhere:
   confirmed from the startup line (`n_ctx_slot = …`), and if you change the
   server's `-c` you must change `context_window` to match — the compaction
   threshold and the tool-output budget derive from it and trust it.
-- **Two servers** — :8080 chat (a router: several presets, one resident at
-  a time), :8081 embeddings.
+- **Two servers, one model each at a time** — :8080 chat (a router: several
+  presets, one resident), :8081 embeddings, kept apart so a chat swap never
+  evicts the embedder.
 - **`max_tokens` must sit comfortably above `--reasoning-budget`**, or the
   reply is HTTP 200 with empty `content`; clients here refuse that by name.
 - **Ask what is served, don't assert it.** On the router the request's
