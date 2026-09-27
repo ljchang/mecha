@@ -166,6 +166,9 @@ delegated task, fictional):
 ```text
 Situation brief from the harness, as things stood when this run started; a later situation brief in this conversation replaces it. It describes; it asks nothing of you.
 - Goal: task task-1, under project project-aurora (2 open tasks there). No store links it to a charter line.
+- Previous attempts at this task: 1 earlier session, newest first.
+  - Session 20260925T090000-a1b2c3d4 (started over a day ago). The owner: draft rejected (d-7f3e); reopened the task (close-9c1d), and wrote, in the owner's own words: "the totals are for Lakeside, not Northwind".
+    How it ended, as the harness recorded it (not a verdict): it hit the turn limit.
 - Board: 4 open tasks (1 inbox, 1 next, 2 waiting); 1 overdue (task-2); 2 due in the coming week (task-3, task-1); 2 tasks waiting on you; none waiting on someone else. Your own task is `waiting`, due 2026-09-30.
 - Waiting on the owner: one draft in the outbox, waiting over a day, past the owner's patience (charter line `replies`); no parked questions; no front-door requests.
 - Time: Friday afternoon for the owner; outside their quiet hours.
@@ -189,6 +192,14 @@ What the words may and may not say:
   progress or not.
 - **Anything unknown is said to be unknown**: "could not be read", never
   "none". A count that may be short says "at least".
+- **Only your own words are quoted.** A task's previous attempts are said as
+  what you did (rejected a draft, reopened the task, let a question go) and
+  the ids of what you did it to. The reason you gave when you reopened a task
+  is quoted only when you reopened it yourself; if a chat reopened it with your
+  approval, the brief says a reason exists and does not repeat it. A reason you
+  gave for rejecting a draft is never quoted, because the outbox does not yet
+  record who rejected it. How an earlier run ended is labelled as mecha's
+  record, not a verdict on the work.
 
 In a long web chat, a new brief is sent only when its words change. The time,
 a voice call, how full the context is and how busy the model server is are
@@ -199,6 +210,7 @@ compaction the brief is put back rather than summarised.
 | Field | What it says |
 |---|---|
 | `goal` | The chain above the run's goal: the task, its project (read off the board row, with how many tasks are open under it), and the charter lines it serves (a trigger's `serves`, ranked by your charter). A run with no goal records `no_anchor`, not an empty chain. |
+| `attempts` | For a run on a board task: up to three earlier sessions on the same task from the last 90 days, newest first, each with what you did with its work and how its run ended. A run on anything else records `not_a_task` and says nothing. If a session file could not be read, or older sessions were not searched, it says "at least". |
 | `board` | Your board as counts and pointers: open tasks by status, how many are overdue or due this week, how many the agent holds, the ids of the overdue and soon-due ones, and the run's own task row. mecha reads it itself before the run. No task's name or who it waits on is kept, and the model never fetches it (a fetch by the model would mark the conversation as holding untrusted content). |
 | `commitments` | Each pending commitment (a staged draft, a parked question, a request waiting on you) with its age and whether it is past its patience. Stores withdrawn from the run as saturated are named. |
 | `time` | The local time in your `[agent] timezone` and whether it is inside the quiet hours you set (`workflows/attention.toml`). No file means no quiet hours are recorded, not the digest's 22–08 UTC default. |

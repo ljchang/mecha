@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A task run's situation brief names the task's previous attempts**
+  (`APPRAISAL-WIRING-DESIGN.md` M5, 3a-2, R42). The brief gains an
+  `attempts` field: for a run anchored to a board task, up to three earlier
+  `task` sessions on the same task from the last 90 days, newest first, each
+  said in two lines — what the owner did with its work (a draft rejected,
+  sent as written or after edits, a question answered or let go, the task
+  closed or reopened, an artifact check failing, what still waits), by
+  record id; and how the run ended, as the harness recorded it, never as a
+  verdict. A reopen reason is quoted only when the owner wrote it with their
+  own hand; one written in a conversation with the owner's approval is
+  said to exist and not repeated, and an outbox rejection reason is never
+  quoted. A walk cut by its bound, or a session file that cannot be read,
+  says "at least". Recorded on every run; delivered only behind `[agent]
+  situation_brief`, which still ships off. `sessions health` reports the
+  field's completeness beside the other nine.
+
 - **A rule's owner tenure, beside retirement** (`APPRAISAL-WIRING-DESIGN.md`
   2e-5b/2e-5c, R41). `mecha rules list`/`show` print `owner: <tenure> ·
   region: <quiet>` per learned rule, and `--json` gains `owner` and `quiet`.

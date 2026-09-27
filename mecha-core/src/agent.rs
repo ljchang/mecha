@@ -5372,6 +5372,7 @@ mod tests {
         SituationBrief {
             assembled_at: "2026-09-14T13:21:33Z".parse().unwrap(),
             goal: Some(GoalChain::NoAnchor),
+            attempts: Some(Attempts::NotATask),
             board: Some(Board::Unread {
                 why: "no graph server in this fixture".into(),
             }),
@@ -5463,6 +5464,105 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// 3a-2: a task run's brief carries its previous attempts — the
+    /// owner's acts as words and pointers, the owner's own reopen words —
+    /// into the first user turn behind the lever, and arms `private` there
+    /// as the rest of the brief does (R35). With the lever off, every
+    /// request is the same bytes whether the recorded brief holds attempts
+    /// or not: nothing of them reaches a provider.
+    #[tokio::test]
+    async fn a_task_briefs_previous_attempts_ride_only_behind_the_lever_and_arm_private() {
+        use crate::brief::attempts::*;
+        let with_attempts = || {
+            let mut b = a_brief(1);
+            b.goal = Some(crate::brief::GoalChain::Anchored {
+                anchor: "task:task-northwind-report".into(),
+                project: crate::brief::Tier::Absent,
+                charter: crate::brief::Lines::Unlinked,
+            });
+            b.attempts = Some(crate::brief::Attempts::Read {
+                attempts: vec![Attempt {
+                    session: "20260925T090000-dana0001".into(),
+                    started_at: "2026-09-12T09:00:00Z".parse().unwrap(),
+                    acts: vec![
+                        OwnerAct::DraftRejected {
+                            draft: "draft-lakeside".into(),
+                        },
+                        OwnerAct::TaskReopened(Reopen {
+                            closure: "close-northwind".into(),
+                            by: ReopenedBy::Owner,
+                            owners_words: Some("the totals are for Lakeside".into()),
+                            reason_withheld: false,
+                        }),
+                    ],
+                    ended: RunEnd::TurnLimit,
+                }],
+                unsearched: false,
+                unreadable: 0,
+                stores_unread: vec![],
+            });
+            b
+        };
+        let without_attempts = || {
+            let mut b = with_attempts();
+            b.attempts = Some(crate::brief::Attempts::NotATask);
+            b
+        };
+        let run = |lever: bool, brief: crate::brief::SituationBrief| async move {
+            let (mut agent, provider) = agent_with_tools(
+                sleep_then_answer(),
+                vec![Arc::new(SleepTool(
+                    Arc::new(crate::clock::TestClock::at("2026-09-14T13:21:33Z")),
+                    chrono::Duration::zero(),
+                ))],
+                PermissionMode::Allow,
+            );
+            agent.cfg.situation_brief = lever;
+            let cx = with_brief(&agent, brief);
+            let mut convo = Conversation::user("pick the Northwind report back up");
+            agent.run_in(&cx, &mut convo, None).await.unwrap();
+            let seen = provider.seen.lock().unwrap().clone();
+            (seen, convo.taint)
+        };
+
+        let (on, taint) = run(true, with_attempts()).await;
+        let block = brief_blocks(&on[0]).pop().expect("delivered");
+        assert!(
+            block.contains("- Previous attempts at this task: 1 earlier session"),
+            "{block}"
+        );
+        assert!(block.contains("draft rejected (draft-lakeside)"), "{block}");
+        assert!(
+            block.contains("in the owner's own words: \"the totals are for Lakeside\""),
+            "{block}"
+        );
+        assert!(
+            block.contains("(not a verdict): it hit the turn limit"),
+            "{block}"
+        );
+        assert!(taint.private, "delivering the brief arms private (R35)");
+        assert!(!on[0]
+            .system
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Previous attempts"));
+
+        let (off, off_taint) = run(false, with_attempts()).await;
+        assert!(!off_taint.private, "and only the delivery arms it");
+        let (off_bare, _) = run(false, without_attempts()).await;
+        let bytes = |reqs: &[CompletionRequest]| {
+            reqs.iter()
+                .map(|r| format!("{:?}|{:?}|{:?}", r.system, r.messages, r.tools))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bytes(&off), bytes(&off_bare), "lever off: the same bytes");
+        for req in &off {
+            let text = format!("{:?}", req.messages);
+            assert!(!text.contains("Previous attempts"), "{text}");
+            assert!(!text.contains("the totals are for Lakeside"), "{text}");
         }
     }
 
