@@ -315,6 +315,7 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
             axum::routing::post(chat::incognito_alive),
         )
         .route("/api/chat/{key}", get(chat::transcript).post(chat::open))
+        .route("/api/chat/{key}/todo", get(chat::todo))
         .route("/api/chat/{key}/send", axum::routing::post(chat::send))
         .route("/api/chat/{key}/cancel", axum::routing::post(chat::cancel))
         .route("/api/chat/{key}/events", get(chat::events))
@@ -2158,6 +2159,70 @@ mod boundary_tests {
         release.abort();
     }
 
+    /// The page re-reads the plan on every `todo` result a run streams; this
+    /// read is the plan and nothing else, so a mid-run revision does not pay
+    /// for the history the transcript read now carries.
+    #[tokio::test]
+    async fn the_plan_read_carries_the_plan_and_not_the_history() {
+        let _home = crate::testenv::HomeGuard::new("plan-read");
+        let todo = Arc::new(mecha_core::tool::todo::TodoTool::new());
+        let chat = chat::test_chat_planned("noted", todo.clone());
+        let app = app(chat.clone());
+        converse(&app, "planned", "first question").await;
+        // One step, in this session's jail and nowhere else: a read that
+        // looked the plan up by any other key would come back empty.
+        todo.set_plan_in(
+            &chat::test_workspace(&chat, "planned").await,
+            mecha_core::tool::todo::Plan {
+                goal: None,
+                items: vec![mecha_core::tool::todo::TodoItem::new(
+                    "draft the reply",
+                    mecha_core::tool::todo::Status::InProgress,
+                )],
+            },
+        );
+
+        let plan = body(
+            app.clone()
+                .oneshot(get("/api/chat/planned/todo"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let whole = body(app.clone().oneshot(get("/api/chat/planned")).await.unwrap()).await;
+        assert_eq!(
+            plan["todo"], whole["todo"],
+            "the two reads disagree on the plan"
+        );
+        assert_eq!(
+            plan["todo"][0]["content"], "draft the reply",
+            "the plan read did not find the session's plan: {plan}"
+        );
+        assert_eq!(
+            plan.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["todo"],
+            "the plan read carries more than the plan: {plan}"
+        );
+
+        let missing = app
+            .clone()
+            .oneshot(get("/api/chat/nobody-here/todo"))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        // An incognito key not open has closed: gone, like the transcript
+        // read, and never a 404 that reads as a chat that never existed.
+        let closed = app
+            .clone()
+            .oneshot(get(&format!(
+                "/api/chat/{}0123456789abcdef012345/todo",
+                super::incognito::KEY_PREFIX
+            )))
+            .await
+            .unwrap();
+        assert_eq!(closed.status(), StatusCode::GONE);
+    }
+
     #[tokio::test]
     async fn incognito_refuses_a_model_that_is_not_on_this_machine() {
         let _home = crate::testenv::HomeGuard::new("incognito-cloud");
@@ -2770,7 +2835,7 @@ mod boundary_tests {
         let home = crate::testenv::HomeGuard::new("web-explicit-open");
         let app = app(chat::test_chat());
         for method in ["GET", "HEAD"] {
-            for suffix in ["", "/events"] {
+            for suffix in ["", "/events", "/todo"] {
                 let req = Request::builder()
                     .method(method)
                     .uri(format!("/api/chat/new{suffix}"))
@@ -2808,7 +2873,7 @@ mod boundary_tests {
                 .count(),
             1
         );
-        for suffix in ["", "/events"] {
+        for suffix in ["", "/events", "/todo"] {
             let req = Request::builder()
                 .uri(format!("/api/chat/new{suffix}"))
                 .header(TAILSCALE_LOGIN, "owner@example.com")

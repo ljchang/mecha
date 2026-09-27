@@ -345,6 +345,16 @@ impl Follower {
             warned: Mutex::new(HashSet::new()),
         }
     }
+
+    /// [`fixed`](Self::fixed), carrying a plan store the way
+    /// `setup::prepare` registers one — so a test can put a plan in a
+    /// session's jail and ask each read that serves it.
+    pub fn with_todo(mut self, todo: Arc<mecha_core::tool::todo::TodoTool>) -> Self {
+        Arc::get_mut(self.current.get_mut().unwrap_or_else(|e| e.into_inner()))
+            .expect("a fresh binding has one owner")
+            .todo = Some(todo);
+        self
+    }
 }
 
 /// Children a held one-run process covers with its hold: processes it waits on

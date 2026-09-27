@@ -26,7 +26,8 @@ function readOut(marker, end = '\n  }\n') {
 
 const lifted = `${readOut('  const pageOnly = ', ';\n')}
   ${readOut('  function catchUp(sessionKey) {')}
-  ${readOut('  async function load(')}`;
+  ${readOut('  async function load(')}
+  ${readOut('  async function refreshTodo() {')}`;
 
 // One page: the component's state as plain variables, and the reads it
 // makes held until the test answers them.
@@ -38,13 +39,14 @@ function page() {
     'fetch',
     `let entries = [], running = false, partialRun = false, liveFrom = 0, doneSeq = 0;
      let task, incognito, todo, taint, model, mode, usage, error = null;
-     let gone = false, key = 'k', viewSignal = null, loadGen = 0;
+     let gone = false, key = 'k', viewSignal = null, loadGen = 0, todoGen = 0;
      function closeIncognito(why) { gone = why; entries = []; }
      function scrollDown() {}
      ${lifted}
      return {
-       load, catchUp,
+       load, catchUp, refreshTodo,
        get entries() { return entries; },
+       get todo() { return todo; },
        push(e) { entries.push(e); },
        get partialRun() { return partialRun; },
        get gone() { return gone; },
@@ -179,6 +181,20 @@ function is(actual, expected, what) {
   p.wire.shift().resolve(reply(200, transcript(['earlier', 'reply'])));
   await settle();
   is([texts(p), p.partialRun], [['earlier', 'reply'], false], 'and lands on the finished run');
+}
+
+// ---- the plan: a slow transcript read never puts back an older plan ----
+{
+  const p = page();
+  const slow = p.load('k'); // mid-run: the read that carries the history
+  const fresh = p.refreshTodo(); // the run revised its plan meanwhile
+  const [t, plan] = p.wire.splice(0);
+  plan.resolve(reply(200, { todo: [{ content: 'revised step' }] }));
+  await fresh;
+  t.resolve(reply(200, { ...transcript(['earlier'], true), todo: [{ content: 'old step' }] }));
+  await slow;
+  is(p.todo.map((s) => s.content), ['revised step'], 'the plan read that started last is the plan shown');
+  is(texts(p), ['earlier'], 'and the slow read still delivers its history');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
