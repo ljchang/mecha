@@ -273,22 +273,35 @@
   // and that stretch is where a picture's `image_generate` result lives.
   // So `done` re-reads when the last read found a run in flight.
   let partialRun = false;
-  // Where this page's own additions start — the drafts and notices the
-  // transcript does not hold, which a re-read must carry over rather than
-  // drop.
+  // How many `done`s this page has taken. The stream is opened before the
+  // read, so a `done` can overtake a read that then reports the run in
+  // flight; the read compares against this to know it is already stale.
+  let doneSeq = 0;
+  // Where this page's own additions start — what the transcript does not
+  // hold, which a re-read must carry over rather than drop.
   let liveFrom = 0;
 
   async function catchUp(sessionKey) {
-    const own = entries
-      .slice(liveFrom)
-      .filter((e) => e.kind === 'draft' || e.kind === 'notice');
-    await load(sessionKey);
-    if (sessionKey !== key) return;
+    const own = entries.slice(liveFrom).filter(
+      (e) =>
+        e.kind === 'draft' ||
+        e.kind === 'notice' ||
+        // Words the run never took: never folded into the conversation, so
+        // only this page holds them, beside the notice saying send again.
+        (e.kind === 'user' && e.queued && e.delivery !== 'delivered')
+    );
+    // A read that failed replaced nothing, and one that found the chat gone
+    // has emptied the tab on purpose (`forget`): carrying the cards over
+    // either would duplicate them, or keep an ended incognito chat's drafts
+    // in memory.
+    if (!(await load(sessionKey)) || gone || sessionKey !== key) return;
     entries.push(...own);
     scrollDown();
   }
 
+  /// True when it replaced the transcript with the server's.
   async function load(sessionKey = key, signal) {
+    const seq = doneSeq;
     try {
       const res = await fetch(`/api/chat/${sessionKey}`, { signal });
       // Reaped between the open and this read: the gone screen, not an
@@ -306,6 +319,12 @@
       running = data.running;
       partialRun = !!data.held_by_run;
       liveFrom = entries.length;
+      // A `done` landed while this read was on the wire, and the read still
+      // saw the run: that run is over and nothing will say so again.
+      if (partialRun && doneSeq !== seq) {
+        partialRun = false;
+        queueMicrotask(() => catchUp(sessionKey));
+      }
       // What this conversation is about, when it is about a board task.
       // Absent for an ordinary chat, which renders exactly as before.
       task = data.task ?? null;
@@ -337,9 +356,11 @@
       }
       error = null;
       scrollDown();
+      return true;
     } catch (e) {
       if (!signal?.aborted && sessionKey === key) error = String(e?.message ?? e);
     }
+    return false;
   }
 
   // A POST can resolve before or after its broadcast. Correlate by request,
@@ -483,6 +504,7 @@
           for (const id of ev.ids) offerDraft(id);
           break;
         case 'done':
+          doneSeq += 1;
           flushStreaming();
           running = false;
           taint = { private: ev.taint_private, untrusted: ev.taint_untrusted };

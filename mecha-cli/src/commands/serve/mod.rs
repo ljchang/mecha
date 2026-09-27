@@ -2058,6 +2058,11 @@ mod boundary_tests {
             ["first question", "late", "second question"],
             "a mid-run read must carry the history up to this run's own input"
         );
+        // With its taint: history without the chip reads as clean.
+        assert!(
+            v["taint"].is_object(),
+            "a mid-run read dropped the taint: {v}"
+        );
 
         // Released until drained: the first turn's title generation waits on
         // the same provider, and either may take a single permit.
