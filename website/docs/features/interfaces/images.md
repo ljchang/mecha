@@ -153,7 +153,7 @@ Measured on a 2222x1548 photo of a laptop screen:
 | | raw | after the caps |
 |---|---|---|
 | file | 5.7 MB PNG | 179 KB JPEG, 1568px long edge |
-| `prompt_tokens` | **294** | **294** |
+| `prompt_tokens` | **294** | **294** (superseded: see below) |
 
 That reading turned out to be specific to that day's server. On the Qwen
 vision models an image costs roughly one token per 32×32 pixels, so a

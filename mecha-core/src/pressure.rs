@@ -492,8 +492,9 @@ impl ContextTracker {
 /// Size of a message list, for the purpose of tracking how it *changes*.
 ///
 /// Image payloads are deliberately excluded. Base64 is enormous per token —
-/// a Qwen-VL image costs one token per 32×32 px after the cap at the door
-/// (1521 measured for a 1568×980 screenshot whose payload is hundreds of KB),
+/// a Qwen-VL image costs one token per 32×32 px after the cap at the door,
+/// never fewer than the preset's floor (1521 measured for a 1568×980
+/// screenshot whose payload is hundreds of KB),
 /// so counting those bytes would say a turn grew by megabytes when it grew by
 /// a few thousand tokens. The cost is real and it is already in the anchor, which
 /// is a measurement of the whole request; what this walk has to track is the
