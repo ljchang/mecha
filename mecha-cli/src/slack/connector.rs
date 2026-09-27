@@ -842,7 +842,8 @@ impl State {
                     &channel,
                     Some(&thread_ts),
                     &format!(
-                        "Switching the model to {} — this will run once it is loaded.",
+                        "Switching the model to {} — this will run once it is loaded. \
+                         (A switch that never finishes: `mecha model cancel-switch`.)",
                         switch.to
                     ),
                     None,
