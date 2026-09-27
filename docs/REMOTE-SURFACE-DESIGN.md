@@ -547,6 +547,48 @@ policy like any other command. A `[[policy]]` rule that forbids the
 (found on review). The chip reads the router's `GET /models/sse` stream, so
 "loading…" is a status the server reports, not a guess made by a timer.
 
+### D13 — a switch waits for runs, not requests (2026-09-27)
+
+**Owner's rulings, 2026-09-27:** a switch waits until no *run* holds the
+model, so a run is answered by one model from start to finish; a run that
+*starts* while a switch waits waits for the switch ("switching to X…"); and
+there is no time limit — the page shows what the switch is waiting on, with
+R2's "switch now" as the way out, and Ctrl-C cancels a switch at the CLI.
+
+Nothing recorded runs across processes, and they share only the
+filesystem (permits' reason), so the mechanism is `permit.rs`'s shape:
+
+- **Holds.** A run on a router-served model holds a file,
+  `~/.mecha/holds/<pid>-<uuid>.hold` — the router it holds, what it is (a
+  web chat, a trigger, `tasks work`), when it began. Dropped when the run
+  ends; a file whose process is gone is swept, never waited for.
+- **A pending switch** is one file beside them, created exclusively by
+  `mecha model use` (a second switch while one waits is refused, naming the
+  first). It is removed when the switch completes, fails, or is cancelled;
+  one whose switcher died is swept.
+- **The handshake.** Each side writes its own file *before* reading the
+  other's: a run creates its hold, then looks for a pending switch — and if
+  there is one, drops the hold and waits for the switch to clear; a switch
+  creates its file, then waits until no live hold names its router. At
+  least one side always sees the other, and a run always yields, so there
+  is no window in which a run starts on the old model after the switch
+  looked.
+- **Where holds are taken.** A run's hold is taken *before* it resolves its
+  model, so it can never resolve the old model and then wait out the
+  switch. The long-lived surfaces take it in `Follower` ahead of observing
+  the router, and keep it until the run *and* the title named after it
+  end; the trigger daemon per fire; a command that is one run
+  (`mecha run`, `tasks work`, the nightly passes, `eval`, `batch`) for the
+  process's life — an eval sweep is one model by D12 already.
+- **Switch now** does not wait, and cancels: each hold carries a cancel
+  file (`runmarker`'s shape), which its run polls and turns into a cancel
+  at the next safe point. Unloading alone is not enough — a multi-request
+  run would load its model back on the next request.
+- **What the owner sees.** `mecha model use` prints what it waits on and
+  updates as holds drop; the chip (step 5) shows "switching to X — waiting
+  for: …" with "switch now"; a surface whose turn waits says so in the
+  turn.
+
 ### Traps found in the source
 
 1. **`GET /props` with no `?model=` answers 200 with a placeholder.** It
