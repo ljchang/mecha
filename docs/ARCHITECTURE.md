@@ -4503,7 +4503,9 @@ regressions. Both comparison arms must use the same replay policy.
 
 `APPRAISAL-WIRING-DESIGN.md` X1/O4, row 1g. Every counterfactual comparison
 the probes above make is written to `~/.mecha/comparisons/comparisons.jsonl`
-(`comparison::ComparisonStore`, under `work::mecha_home`, append-only, flock +
+(`comparison::ComparisonStore`, under `work::mecha_home` or
+`$MECHA_COMPARISONS_DIR` — the retirement drill sets it, and a moved-home
+test clears it — append-only, flock +
 `sync_data` like the closure store): the steer probe behind `sessions
 appraise --probe` (`appraisal_probe::steer_comparison`), each graded pair in
 `mecha validate`, and each pair the `learn --propose/--auto` gate drives

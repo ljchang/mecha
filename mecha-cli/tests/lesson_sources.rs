@@ -238,6 +238,7 @@ async fn mecha(home: &Path, work: &Path, args: &[&str]) -> Value {
             .env("MECHA_SESSION_KIND", "test")
             .env_remove("MECHA_SESSION_DIR")
             .env_remove("MECHA_LEARNING_DIR")
+            .env_remove("MECHA_COMPARISONS_DIR")
             .env_remove("MECHA_OUTBOX_DIR")
             .env_remove("ANTHROPIC_API_KEY")
             .env_remove("OPENAI_API_KEY")
@@ -449,6 +450,7 @@ async fn lessons_from_both_sources_are_measured_per_region_and_nothing_is_learne
         .env("MECHA_SESSION_KIND", "test")
         .env_remove("MECHA_SESSION_DIR")
         .env_remove("MECHA_LEARNING_DIR")
+        .env_remove("MECHA_COMPARISONS_DIR")
         .current_dir(&work)
         .output()
         .await
@@ -494,6 +496,7 @@ async fn a_provider_off_this_machine_refuses_the_pass() {
         .env("MECHA_SESSION_KIND", "test")
         .env_remove("MECHA_SESSION_DIR")
         .env_remove("MECHA_LEARNING_DIR")
+        .env_remove("MECHA_COMPARISONS_DIR")
         .env_remove("OPENAI_API_KEY")
         .current_dir(&work)
         .output()

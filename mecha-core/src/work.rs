@@ -579,7 +579,7 @@ pub(crate) mod tests {
 
     /// The per-store overrides that would point a reader outside the moved
     /// home, cleared for the guard's lifetime and put back after.
-    const STORE_OVERRIDES: [&str; 4] = [
+    const STORE_OVERRIDES: [&str; 5] = [
         "MECHA_OUTBOX_DIR",
         "MECHA_QUESTIONS_DIR",
         // Also relocates the harness store, which sits under it. Without
@@ -589,6 +589,10 @@ pub(crate) mod tests {
         // A run's saturation streak reads the session store it records
         // into (`Homeostat::at_start`); exported, it would read the real one.
         "MECHA_SESSION_DIR",
+        // The comparison store's (#357), for the same reason as the
+        // learning store's: exported, a moved-home test would write its
+        // comparisons outside the home it moved (found on review).
+        "MECHA_COMPARISONS_DIR",
     ];
 
     pub(crate) struct HomeGuard {
