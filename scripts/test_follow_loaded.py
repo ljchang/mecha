@@ -109,6 +109,7 @@ class Scripts(unittest.TestCase):
                 timeout=60,
             )
             self.assertEqual(done.returncode, rc, done.stderr)
+            self.stderr = done.stderr
             calls = log.read_text().splitlines() if log.exists() else []
         # Only the calls that reach a model — or, for `rules`, resolve one:
         # `work path`, `work clean` and the listings take no provider.
@@ -189,6 +190,12 @@ class Scripts(unittest.TestCase):
         # An unreadable config is not a router, nor is a flag mecha ignores.
         calls = self.run_script("ruminate.sh", config="not toml [")
         self.assert_pinned(calls, "-p", "local", ["reflect", "learn"])
+        # ...and "cannot tell" says so, where "no router" stays quiet: on a
+        # router box that fallback is a load over the owner's pick (found on
+        # review of #346).
+        self.assertIn("cannot read the config", self.stderr)
+        self.run_script("frontdoor.sh", config=NO_ROUTER)
+        self.assertNotIn("pin.sh:", self.stderr)
         calls = self.run_script("ruminate.sh", config=OFF_BOX)
         self.assert_pinned(calls, "-p", "local", ["reflect", "learn"])
 

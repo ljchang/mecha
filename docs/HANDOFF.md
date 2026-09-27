@@ -1502,15 +1502,17 @@ share (`OOMPolicy=stop`). 8080 was brought back with
 `systemd-run --user --unit=llama-qwen scripts/start-moe-mtp.sh`, which puts it
 outside any pane's cgroup. 8082 has not been restarted.
 
-**`-np 1` is load-bearing**, and the check before believing any measurement is
-`curl :8080/props | jq .total_slots` — it must be 1. (On the router since
-2026-09-27, a bare `/props` is a placeholder: source
-`scripts/served-props.sh` and ask `served_props <base> <id>`. Production's
-preset runs `-np 4`; `bench-slots.sh` follows the router, and
-`MECHA_LLAMA_NP` sets a preset's slots — never a second server beside it,
-which is the memory failure the `:8082` row records.) The build in use defaults
-to 4 parallel slots and silently splits `-c` across them; the story of what
-that cost is in [`HISTORY.md`](HISTORY.md) under Traps → Environment.
+**Know the slot count before believing a measurement.** Source
+`scripts/served-props.sh` and read `served_props <base> <id> | jq
+.total_slots` — a bare `/props` on the router is a placeholder with none.
+Production's preset runs `-np 4`, so a figure that assumes one slot reads
+several-fold wrong, and the per-slot context is `-c / -np`. `bench-slots.sh`
+follows the router; `MECHA_LLAMA_NP` sets the slots of the two Qwen3.6
+presets (the others fix theirs in `start-router.sh`) — never a second server
+beside the router, which is the memory failure the `:8082` row records. The
+build defaults to 4 parallel slots and silently splits `-c` across them; the
+story of what that cost is in [`HISTORY.md`](HISTORY.md) under Traps →
+Environment.
 
 Start scripts are in `scripts/` — `start-router.sh` (what `llama-local`
 runs since 2026-09-27, generating every preset), and the single-model

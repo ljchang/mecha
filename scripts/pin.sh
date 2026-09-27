@@ -31,7 +31,19 @@ scheduled_pin() {
     # `local` kind, and a loopback base URL — the flag on anything else is
     # ignored (and warned about) by mecha, so reading it alone here would
     # drop the pin for a run that then follows nothing (found on review).
-    if (cd / && "$MECHA" config show 2>/dev/null) | python3 -c '
+    #
+    # "Does not follow" is quiet: on an install without a router, `-p local`
+    # is the ordinary answer. "Cannot tell" — `config show` failed, the TOML
+    # will not parse, no python3 — says why on stderr, because on a router
+    # box that fallback is the pin that loads a model over the owner's pick,
+    # and a silent one reads like a decision (found on review of #346).
+    local shown verdict
+    if ! shown="$(cd / && "$MECHA" config show 2>&1)"; then
+        echo "pin.sh: \`mecha config show\` failed${shown:+ (${shown%%$'\n'*})}; cannot tell whether the default follows a router, so pinning -p local" >&2
+        PIN=(-p local)
+        return 0
+    fi
+    if ! verdict="$(printf '%s' "$shown" | python3 -c '
 import ipaddress, sys, tomllib
 from urllib.parse import urlsplit
 c = tomllib.loads(sys.stdin.read())
@@ -52,9 +64,12 @@ follows = (
     and entry.get("kind") == "local"
     and loopback(entry.get("base_url") or "")
 )
-sys.exit(0 if follows else 1)
-' 2>/dev/null; then
+print("follows" if follows else "no")
+' 2>&1)"; then
+        echo "pin.sh: cannot read the config (${verdict##*$'\n'}); pinning -p local" >&2
+        PIN=(-p local)
         return 0
     fi
+    [ "$verdict" = follows ] && return 0
     PIN=(-p local)
 }

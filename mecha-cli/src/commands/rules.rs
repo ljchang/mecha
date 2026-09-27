@@ -537,13 +537,31 @@ fn standing_line(r: &Rule, standing: &Standing) -> String {
     )
 }
 
+/// Said above the listing when the ledger holds more than one model's rows:
+/// the tallies shown fold them all, while `propose-retirements` counts only
+/// the model in use (owner's ruling, 2026-09-27), so a rule can read over its
+/// threshold here and never retire (found on review of #346). Silent on a
+/// one-model ledger, which is where the two numbers agree.
+fn mixed_models_note(ledger: &[ValidationRecord]) -> Option<String> {
+    let models: std::collections::BTreeSet<&str> =
+        ledger.iter().map(|r| r.model.as_str()).collect();
+    (models.len() > 1).then(|| {
+        format!(
+            "tallies fold every model's rows ({}); retirement counts only the model in use \
+             — `mecha rules propose-retirements` prints that count",
+            models.into_iter().collect::<Vec<_>>().join(", ")
+        )
+    })
+}
+
 fn list(
     store: &LearningStore,
     as_json: bool,
     goals: &Goals,
     standing: Option<&Standing>,
 ) -> Result<()> {
-    let tallies = rule_tallies(&store.validations()?);
+    let ledger = store.validations()?;
+    let tallies = rule_tallies(&ledger);
     let everything = all_rules(store);
     let keys = presented_keys(&everything.iter().collect::<Vec<_>>());
     if as_json {
@@ -649,6 +667,9 @@ fn list(
         }
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
+    }
+    if let Some(note) = mixed_models_note(&ledger) {
+        println!("{note}\n");
     }
     // R34: a rule toward a closed goal is marked where it is listed; the
     // count leads, so a roster of many rules cannot hide one.
@@ -2554,5 +2575,15 @@ mod tests {
             "no such rule"
         );
         std::fs::remove_dir_all(store.root()).ok();
+    }
+
+    #[test]
+    fn the_listing_says_its_tallies_mix_models_only_when_they_do() {
+        let one = regression("r", "2026-09-27T00:00:00Z");
+        assert_eq!(mixed_models_note(&[one.clone(), one.clone()]), None);
+        let mut other = one.clone();
+        other.model = "comparison-arm".into();
+        let note = mixed_models_note(&[one, other]).unwrap();
+        assert!(note.contains("comparison-arm, qwen"), "{note}");
     }
 }
