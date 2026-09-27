@@ -835,23 +835,33 @@ fn owners_line(at: &Attempt) -> String {
             .collect::<Vec<_>>()
             .join("; ")
     };
+    // The cut is one count over both halves, and the acts it cut were never
+    // sorted by hand, so it is said in a sentence of its own that claims no
+    // hand for them — and a cut list never lets the owner's half read as the
+    // whole (review of #356: "no act of theirs" over a cut list could hide a
+    // draft still waiting on the owner).
     let more = at.acts_total.saturating_sub(at.acts.len());
-    let more = (more > 0).then(|| format!("; and {more} more not listed"));
-    let mut owner_words = if owners.is_empty() {
-        "no act of theirs is recorded on it".to_string()
-    } else {
-        join(&owners)
+    let owner_words = match (owners.is_empty(), more > 0) {
+        (true, false) => "no act of theirs is recorded on it".to_string(),
+        (true, true) => "no act of theirs among those listed".to_string(),
+        (false, _) => join(&owners),
     };
-    if others.is_empty() {
-        owner_words.push_str(more.as_deref().unwrap_or(""));
-        return format!("The owner: {owner_words}.");
+    let mut words = format!("The owner: {owner_words}.");
+    if !others.is_empty() {
+        words.push_str(&format!(
+            " Not recorded as the owner's own act (a run's shell, or before who acted was \
+             recorded): {}.",
+            join(&others)
+        ));
     }
-    let mut other_words = join(&others);
-    other_words.push_str(more.as_deref().unwrap_or(""));
-    format!(
-        "The owner: {owner_words}. Not recorded as the owner's own act (a run's shell, or \
-         before who acted was recorded): {other_words}."
-    )
+    if more > 0 {
+        words.push_str(&format!(
+            " {more} more {} not listed, and whose {} is not said here.",
+            if more == 1 { "act is" } else { "acts are" },
+            if more == 1 { "it was" } else { "they were" },
+        ));
+    }
+    words
 }
 
 fn act_words(act: &OwnerAct) -> String {
@@ -1790,7 +1800,10 @@ mod tests {
         assert_eq!(attempts[0].acts.len(), super::super::POINTERS_MAX);
         assert_eq!(attempts[0].acts_total, n);
         let words = line(&field, now()).unwrap();
-        assert!(words.contains("; and 4 more not listed"), "{words}");
+        assert!(
+            words.contains("4 more acts are not listed, and whose they were is not said here."),
+            "{words}"
+        );
         assert!(!words.contains(&format!("draft-{:02}", n - 1)), "{words}");
     }
 
@@ -1942,6 +1955,21 @@ mod tests {
                 .starts_with("The owner: no act of theirs is recorded on it. Not recorded"),
             "{}",
             owners_line(&only)
+        );
+        // A cut list (review of #356): the owner's half never reads as the
+        // whole, and the cut acts are claimed for nobody's hand.
+        let cut = Attempt {
+            acts: vec![OwnerAct::DraftRejectedNotOwners {
+                draft: "d-run".into(),
+            }],
+            acts_total: 3,
+            ..only.clone()
+        };
+        assert_eq!(
+            owners_line(&cut),
+            "The owner: no act of theirs among those listed. Not recorded as the owner's own \
+             act (a run's shell, or before who acted was recorded): draft rejected (d-run). 2 \
+             more acts are not listed, and whose they were is not said here."
         );
         // The wire word round-trips, and an older build's reader degrades it.
         let v =
