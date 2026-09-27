@@ -1536,6 +1536,31 @@ mod tests {
         assert_eq!(out[2]["content"], "actually, focus on X");
     }
 
+    /// A picture a tool made rides beside its result, never inside it: the
+    /// `role: "tool"` message keeps its string, and the caption and pixels
+    /// follow as the user parts array — the only legal slot after a result.
+    #[test]
+    fn a_tool_picture_follows_the_tool_message_as_user_parts() {
+        let m = Message::tool_results(vec![
+            Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "saved images/p.png".into(),
+                is_error: false,
+            },
+            Block::text("[picture returned by image_generate: images/p.png]"),
+            Block::image("image/jpeg", b"px", Some("images/p.png".into())),
+        ]);
+        let mut out = Vec::new();
+        encode_message(&m, &mut out, true);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out[0]["role"], "tool");
+        assert_eq!(out[0]["content"], "saved images/p.png");
+        assert_eq!(out[1]["role"], "user");
+        let parts = out[1]["content"].as_array().unwrap();
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[1]["type"], "image_url");
+    }
+
     #[test]
     fn an_image_rides_as_a_parts_array_only_when_the_model_can_see() {
         let msg = Message {
