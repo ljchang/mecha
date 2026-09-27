@@ -255,6 +255,15 @@ The parts that bite hardest:
     is polled and turned into the run's own cancel (a one-run command gets
     the SIGINT that Ctrl-C would send), because an unloaded model is loaded
     back by a multi-request run's next request.
+  - **A waiting switch is hurried by a marker keyed to its identity, never
+    its path** (`Holds::request_now`, the chip's "switch now"). The marker's
+    name is a function of the router alone, so it carries the switch's pid
+    and start time and names the target it was asked for: one left by a
+    withdrawn or killed switcher must not hurry the next switch, and a switch
+    replaced by one to another model is never hurried in the first's name.
+    `Switching`'s own drop and `withdraw_switch` remove it; `cancel-switch`
+    sweeps any left over. The same lesson as `Switching::still_pending`
+    (review of #350).
   - **A hold's label is never user content** — `mecha run "<prompt>"` must
     not leave the prompt under `~/.mecha/holds`; only the subcommand name.
 - **Throughput is wall clock.** The server times a request only while it is

@@ -5,7 +5,7 @@
 // would then stand, and evict the owner's pick), a model offered that runs
 // would not follow, a switch's wait shown as a load, and an outcome from some
 // earlier switch reported as this tap's.
-import { routerOf, unavailable, rows, phase, busy, pollEvery, chipLabel, waitingLine, outcomeNote } from '../src/lib/model-chip.js';
+import { reader, routerOf, unavailable, rows, phase, busy, pollEvery, chipLabel, waitingLine, outcomeNote } from '../src/lib/model-chip.js';
 
 let pass = 0;
 let fail = 0;
@@ -66,6 +66,14 @@ const pw = phase(waiting);
 t('a pending switch is switching', pw.kind === 'switching' && pw.to === 'gemma-b');
 t('it names what it waits for', waitingLine(pw) === 'waiting for: web chat, trigger morning');
 t('while it waits it is not loading', !pw.loading);
+const stuck = phase(router([m('qwen-a', 'loaded')], {
+  pending_switch: { to: '(unreadable switch file)', from: null, started_at: '2026-09-27T20:00:00Z', waiting_on: ['web chat'], readable: false },
+}));
+t('an unreadable switch file is a stuck switch', stuck.kind === 'switching' && stuck.stuck);
+t('a stuck switch is not named as a target', chipLabel(stuck, 'x') === 'switch stuck' && stuck.to === null);
+t('a stuck switch points at cancel', waitingLine(stuck).includes('cancel withdraws it'));
+t('a readable switch is not stuck', pw.stuck === false);
+t('an older list without the flag is not stuck', phase(router([m('a', 'loaded')], { pending_switch: { to: 'b', waiting_on: [] } })).stuck === false);
 const loadingNow = router([m('qwen-a', 'unloaded'), m('gemma-b', 'loading')], {
   pending_switch: { to: 'gemma-b', from: 'qwen-a', started_at: '2026-09-27T20:00:00Z', waiting_on: [] },
 });
@@ -96,6 +104,34 @@ t('the record from before the tap is someone else\'s', outcomeNote(failed, { bef
 t('nothing tapped reports nothing', outcomeNote(failed, null) === null);
 t('a clean success needs no line', outcomeNote({ last_switch: { to: 'x', ok: true, message: '', at: '2026-09-27T20:01:00Z' } }, { before: null }) === null);
 t('a success with a warning says it', outcomeNote({ last_switch: { to: 'x', ok: true, message: 'runs will not follow', at: '2026-09-27T20:01:00Z' } }, { before: null })?.tone === 'warn');
+
+// ---- the tap's baseline is a read that starts after the tap ----
+{
+  // A fake server whose record changes between reads: each read resolves
+  // when told to, and reports the record as it stood when the read *began*.
+  let record = 'before';
+  const started = [];
+  const pending = [];
+  const r = reader(() => {
+    const seen = record;
+    started.push(seen);
+    return new Promise((resolve) => pending.push(() => resolve(seen)));
+  });
+  const poll = r.refresh(); // a poll on the wire…
+  const shared = r.refresh();
+  t('a second poll shares the read on the wire', started.length === 1 && poll === shared);
+  record = 'after'; // …when an earlier switch ends
+  let baseline = null;
+  const tap = r.fresh().then((v) => (baseline = v));
+  pending.shift()(); // the old read lands
+  await poll;
+  await Promise.resolve();
+  await Promise.resolve();
+  t('fresh does not settle on the read that began before it', baseline === null && started.length === 2);
+  pending.shift()();
+  await tap;
+  t('fresh answers with a read that began after it', baseline === 'after');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
