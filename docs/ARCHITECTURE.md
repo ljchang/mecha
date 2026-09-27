@@ -4430,6 +4430,24 @@ unreadable file as an error; `sessions appraise` prints the store's
 `comparison::Summary` on every call, with the separated share `null` over
 nothing decided.
 
+**The summary counts one model** (the owner's ruling of 2026-09-27, "count
+one model"; the same rule validation tallies follow). Since `:8080` became
+a router (`REMOTE-SURFACE-DESIGN.md` §14), background passes follow
+whichever model is resident, so the store holds the production model's rows
+beside a comparison arm's, and a share summed over both describes neither.
+`Summary::of(rows, model)` counts the rows under the model the caller names
+— `sessions compare` names the one it drove — else under the model of the
+newest row that has one (the free `sessions appraise` readout loads no
+config, so it names none — the rule `lesson_source::report` set). Rows
+under any other model are `other_models` and rows with no model are
+`no_model`, both said beside the summary and never summed in. The only row
+this build stores with no model is an unposed point (nothing was driven,
+and `pointwise::already_compared` keeps one per point whatever model is
+resident), so it belongs to no model: it could not move a rate, and
+counting it would charge one model's `inconclusive` with a point it never
+saw. The stored format is unchanged; `--json` gains `model`,
+`other_models` and `no_model`.
+
 ### Point-wise comparison at decision points
 
 `APPRAISAL-WIRING-DESIGN.md` O1, row 2d-1: `mecha sessions compare`
@@ -4501,7 +4519,10 @@ through the store above (a `point-*` `Kind` per point kind).
   driven points; unposed points cost nothing and are not charged. A point
   already on record under the same policies and model
   (`pointwise::already_compared`) is not compared again, so the nightly
-  cost falls on new points and new rule sets.
+  cost falls on new points and new rule sets. The store summary a pass
+  prints after it is for the model it drove (see "Every comparison is
+  stored"): rows under other models, and unposed points, which have none,
+  are said beside it and never counted in.
 - **One background seat per point** (`permit.rs`, `tasks::permits`), taken
   before its arms and dropped after, waited on for up to five minutes and
   then the rest of the pass deferred and counted — never the owner's

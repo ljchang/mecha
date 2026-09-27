@@ -505,7 +505,9 @@ surprised the appraisal, or whose situation keeps recurring are compared
 first, and the seed decides among equals, so a pass can be redrawn. The
 points that measure a proposed harness change are never ordered this way.
 They stay a uniform draw, because they are what confirms the change. A point
-already compared under the same rules and model is not compared again.
+already compared under the same rules and model is not compared again. The
+store summary printed after the pass counts only the model it ran; comparisons
+under other models are listed beside it, not added in.
 Only clean sessions are drawn, as for learning; each point holds one of the
 background model seats while its arms run, and the pass refuses a provider
 that is not on this machine.
