@@ -150,7 +150,7 @@ echo "· compare (point-wise comparison at recorded decision points, decided by 
 echo "  owner's recorded verdict, before the sweep's learn; not a hold-out — live"
 echo "  learning has already consumed most points; what it separates, tomorrow's"
 echo "  distill writes into the session's appraisal as the losing arm)"
-"$MECHA" sessions compare -p "$PROVIDER"
+"$MECHA" sessions compare ${PIN[@]+"${PIN[@]}"}
 
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
 echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
@@ -190,6 +190,6 @@ echo "· harness candidates awaiting review"
 echo "· lesson sources (the reflector's lessons against the text appraisal's, on the"
 echo "  same interventions — shadow, measurement only; the real-session evidence R25"
 echo "  gates folding the reflector in on, and 2e-2 gates feeding learn on)"
-"$MECHA" learn -p "$PROVIDER" --compare-sources
+"$MECHA" learn ${PIN[@]+"${PIN[@]}"} --compare-sources
 
 echo "── rumination done $(date -Is) ──"
