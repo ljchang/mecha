@@ -170,7 +170,22 @@ pub fn front_end_interactive(
 /// Build an agent. `interactive` decides whether an un-approved tool call can
 /// prompt a human or must fall back to the configured [`PermissionMode`].
 pub async fn prepare(opts: &GlobalOpts, interactive: bool) -> Result<Prepared> {
-    let tools = prepare_tools(opts, interactive).await?;
+    prepare_carrying(opts, interactive, None).await
+}
+
+/// [`prepare`], registering `todo` — a handle from a previous build — where a
+/// fresh one would go. A long-lived surface rebuilding for a model switch
+/// (`crate::follow`) passes its old one, so the plan every open conversation
+/// holds survives the switch — and it has to be passed *in*, not swapped in
+/// afterwards: subagents are built from the registry as it stands at that
+/// point, and a handle swapped in later leaves every child writing to a list
+/// the parent and the page never read (review of #347).
+pub async fn prepare_carrying(
+    opts: &GlobalOpts,
+    interactive: bool,
+    todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
+) -> Result<Prepared> {
+    let tools = prepare_tools_carrying(opts, interactive, todo).await?;
     preflight_provider(&tools.config, opts).await;
     build(tools, opts)
 }
@@ -1027,6 +1042,15 @@ fn pin_named_model(cfg: &mut Config, opts: &GlobalOpts) {
 
 /// Resolve config, workspace, tools, and the approval policy.
 pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<PreparedTools> {
+    prepare_tools_carrying(opts, interactive, None).await
+}
+
+/// [`prepare_tools`], with the todo handle a rebuild carries ([`prepare_carrying`]).
+async fn prepare_tools_carrying(
+    opts: &GlobalOpts,
+    interactive: bool,
+    carried_todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
+) -> Result<PreparedTools> {
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
     let mut cfg = if opts.global_config_only {
         Config::load_global()?
@@ -1332,7 +1356,8 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     }
 
     let todo = registry.get("todo").is_some().then(|| {
-        let handle = Arc::new(mecha_core::tool::todo::TodoTool::new());
+        let handle =
+            carried_todo.unwrap_or_else(|| Arc::new(mecha_core::tool::todo::TodoTool::new()));
         registry.insert(Arc::clone(&handle) as Arc<dyn mecha_core::tool::Tool>);
         handle
     });
@@ -2495,6 +2520,46 @@ mod tests {
     ///
     /// The two halves are inherited by different mechanisms — the channel on
     /// the context, the threshold on the agent — and only one made the trip.
+    /// A rebuild's todo handle is the one the new registry holds — registered
+    /// where a fresh one would be, before the subagents are built from that
+    /// registry — not swapped in afterwards, which left every child writing
+    /// to a list the parent and the page never read (review of #347).
+    #[tokio::test]
+    async fn a_carried_todo_handle_is_the_one_the_new_registry_holds() {
+        use super::prepare_tools_carrying;
+        use std::sync::Arc;
+        let home = crate::testenv::HomeGuard::new("carried-todo");
+        let workspace = home
+            .dir
+            .parent()
+            .unwrap()
+            .join(format!("carried-todo-ws-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let opts = GlobalOpts {
+            global_config_only: true,
+            workspace: Some(workspace.clone()),
+            ..GlobalOpts::default()
+        };
+        let carried = Arc::new(mecha_core::tool::todo::TodoTool::new());
+        let tools = prepare_tools_carrying(&opts, false, Some(Arc::clone(&carried)))
+            .await
+            .unwrap();
+        let held = tools.todo.as_ref().expect("the todo tool is on by default");
+        assert!(
+            Arc::ptr_eq(held, &carried),
+            "PreparedTools holds a fresh handle"
+        );
+        let in_registry = tools.registry.get("todo").expect("todo registered");
+        assert!(
+            std::ptr::eq(
+                Arc::as_ptr(in_registry) as *const u8,
+                Arc::as_ptr(&carried) as *const u8
+            ),
+            "the registry subagents are built from holds a different todo list"
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
     /// Fails on the old `build_subagent`, which never called
     /// `with_context_window`.
     #[test]

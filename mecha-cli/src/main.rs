@@ -6,6 +6,7 @@ mod closure_guard;
 mod commands;
 mod editor;
 mod exe;
+mod follow;
 mod harness_probe;
 mod interrupt;
 mod lesson_pass;

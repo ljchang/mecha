@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use mecha_core::agent::{Agent, AgentEvent, Budget, Conversation, RunOutcome};
+use mecha_core::agent::{AgentEvent, Budget, Conversation, RunOutcome};
 use mecha_core::message::{Block, Message};
 use mecha_core::outbox::OutboxRoute;
 use mecha_core::session::{Record, Session, SessionMeta};
@@ -32,7 +32,7 @@ use super::approve::{self, Answer, Mode, SlackApprover};
 use super::pump::{pump, PumpConfig};
 use super::review::{self, ReviewMode};
 use super::threads::{Event, RunMarker, ThreadRecord, ThreadStore};
-use crate::{setup, GlobalOpts};
+use crate::GlobalOpts;
 
 /// How many event ids are remembered for deduplication. Slack's redelivery
 /// semantics across a dropped socket are undocumented, so handlers are
@@ -178,13 +178,8 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         let _ = threads.apply(&orphan.key, Event::OrphanAnnounced);
     }
 
-    let prepared = build_agent(global, &cfg).await?;
-    let provider = prepared.provider_name.clone();
-    let model = prepared.model.clone();
-    let prepared_config = prepared.config.clone();
-    let levers_off = prepared.levers_off.clone();
-    let rules = prepared.rules.clone();
-    let agent = Arc::new(prepared.agent);
+    let follower =
+        crate::follow::Follower::start(agent_opts(global, &cfg)?, Box::new(|_| {})).await?;
 
     let (inbound_tx, mut inbound_rx) = mpsc::channel(64);
     let (approval_tx, mut approval_rx) = mpsc::channel::<approve::Request>(32);
@@ -205,7 +200,7 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         threads,
         remote: crate::slack::remote::RemoteStore::open_default()?,
         cfg,
-        agent,
+        follower,
         my_user_id,
         live: HashMap::new(),
         conversations: HashMap::new(),
@@ -217,11 +212,6 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         outbox_root,
         ledger: Arc::new(ActionLedger::open_default()),
         review: HashMap::new(),
-        provider,
-        model,
-        config: prepared_config,
-        levers_off,
-        rules,
         approval_tx,
         completion_tx,
     };
@@ -317,13 +307,12 @@ async fn shutdown_signal() {
     }
 }
 
-/// The agent every thread shares. One provider connection and one cached
-/// prefix; the per-thread parts ride on `RunContext`.
-async fn build_agent(
-    global: &GlobalOpts,
-    cfg: &mecha_core::config::SlackConfig,
-) -> Result<setup::Prepared> {
-    let opts = GlobalOpts {
+/// How the agent every thread shares is built. One provider connection and one
+/// cached prefix; the per-thread parts ride on `RunContext`. Built by a
+/// [`crate::follow::Follower`], so it follows the router's loaded model and a
+/// switch made anywhere reaches the next Slack run.
+fn agent_opts(global: &GlobalOpts, cfg: &mecha_core::config::SlackConfig) -> Result<GlobalOpts> {
+    Ok(GlobalOpts {
         // Global config only, like a trigger run: a project's `mecha.toml`
         // arrives with a cloned repository and must not shape a run someone
         // drives from their phone.
@@ -357,12 +346,11 @@ async fn build_agent(
         // thread, which is the same trade as per-thread MCP isolation above.
         no_skills: true,
         surface: Some(mecha_core::session::SessionKind::Slack),
+        // Not interactive: no terminal approver, and no `ask_user` — the registry
+        // belongs to the agent and one agent serves every thread, so a shared
+        // `ask_user` could not know which thread asked. See SLACK-DESIGN.md §4.
         ..GlobalOpts::default()
-    };
-    // Not interactive: no terminal approver, and no `ask_user` — the registry
-    // belongs to the agent and one agent serves every thread, so a shared
-    // `ask_user` could not know which thread asked. See SLACK-DESIGN.md §4.
-    setup::prepare(&opts, false).await
+    })
 }
 
 struct State {
@@ -375,7 +363,9 @@ struct State {
     /// process starts has to be recognised without restarting it.
     remote: crate::slack::remote::RemoteStore,
     cfg: mecha_core::config::SlackConfig,
-    agent: Arc<Agent>,
+    /// The agent and everything read off its build, following the router's
+    /// loaded model run by run (`crate::follow`).
+    follower: crate::follow::Follower,
     my_user_id: String,
     live: HashMap<String, Live>,
     conversations: HashMap<String, Conversation>,
@@ -396,13 +386,6 @@ struct State {
     /// mid-flight run clears every mode with it, and a restart resets every
     /// thread to carding everything. See `review.rs`.
     review: HashMap<String, review::Setting>,
-    provider: String,
-    model: String,
-    config: mecha_core::config::Config,
-    /// For `RunConfig::levers_off`, carried from `Prepared`.
-    levers_off: Vec<mecha_core::harness::Lever>,
-    /// For `RunConfig::rules_hash`, carried the same way.
-    rules: mecha_core::learning::RulesCarried,
     approval_tx: mpsc::Sender<approve::Request>,
     completion_tx: mpsc::Sender<Completion>,
 }
@@ -779,6 +762,27 @@ impl State {
             }
         };
 
+        // The model this run will use, followed from the router once and kept
+        // for the whole run. A failed rebuild is said in the thread rather
+        // than answered on the old model, whose request would load it back.
+        let bound = match self.follower.follow().await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("{key}: {e:#}");
+                let _ = chat::post_message(
+                    &self.slack,
+                    &channel,
+                    Some(&thread_ts),
+                    &format!(
+                        "I could not switch to the model now loaded, so this did not run: {e:#}"
+                    ),
+                    None,
+                )
+                .await;
+                return;
+            }
+        };
+
         let mode = Arc::new(Mutex::new(Mode::parse(&record.mode).unwrap_or(Mode::Ask)));
         let cancel = mecha_core::agent::CancelHandle::new();
         let queue = Arc::new(Mutex::new(VecDeque::new()));
@@ -791,15 +795,15 @@ impl State {
         // `mecha sessions`, unmineable by `reflect`, never distilled, and —
         // the load-bearing one — staging drafts that carry no session id, so
         // nothing downstream can say which run produced them.
-        let session = match self.session_for(&record).await {
+        let session = match self.session_for(&record, &bound).await {
             Some(s) => s,
             None => return,
         };
 
-        let mut cx = (**self.agent.context()).clone();
+        let mut cx = (**bound.agent.context()).clone();
         // The thread's workspace and its own spill directory: the agent's is
         // shared by every thread this connector serves (`for_session`).
-        cx.tools = Arc::new(self.agent.ctx().for_session(workspace));
+        cx.tools = Arc::new(bound.agent.ctx().for_session(workspace));
         let approver = SlackApprover::new(
             key.clone(),
             Arc::clone(&mode),
@@ -824,7 +828,7 @@ impl State {
         // route is one `Arc` shared by every thread, so stamping a session id
         // on it would race between concurrent runs — and it is the stamp that
         // lets a draft be attributed to the run that wrote it.
-        if let Some(shared) = &self.agent.context().outbox {
+        if let Some(shared) = &bound.agent.context().outbox {
             let Ok(store) = mecha_core::outbox::OutboxStore::open(&self.outbox_root) else {
                 return;
             };
@@ -848,7 +852,7 @@ impl State {
         let mut attached_images = Vec::new();
         if !files.is_empty() {
             let (landed, images) = self
-                .fetch_attachments(&files, &cx.tools.workspace, self.agent.vision())
+                .fetch_attachments(&files, &cx.tools.workspace, bound.agent.vision())
                 .await;
             attached_images = images;
             if !landed.is_empty() {
@@ -902,7 +906,7 @@ impl State {
         let controls_thread_ts = thread_ts.clone();
 
         let (events_tx, events_rx) = mpsc::unbounded_channel::<AgentEvent>();
-        let agent = Arc::clone(&self.agent);
+        let agent = Arc::clone(&bound.agent);
         let slack = self.slack.clone();
         let completion_tx = self.completion_tx.clone();
         let pump_cfg = PumpConfig {
@@ -1192,15 +1196,19 @@ impl State {
     /// thread's runs share a transcript would be a change to `session.rs` in
     /// service of a nicety. The thread record keeps the most recent id, so
     /// "what did that thread last do" is still answerable.
-    async fn session_for(&mut self, record: &ThreadRecord) -> Option<Session> {
+    async fn session_for(
+        &mut self,
+        record: &ThreadRecord,
+        bound: &crate::follow::Bound,
+    ) -> Option<Session> {
         let dir = Session::default_dir().ok()?;
         let session = Session::create(
             &dir,
             SessionMeta {
                 id: Session::new_id(),
                 created_at: chrono::Utc::now(),
-                provider: self.provider.clone(),
-                model: self.model.clone(),
+                provider: bound.provider_name.clone(),
+                model: bound.model.clone(),
                 workspace: record.workspace.clone().unwrap_or_default(),
                 title: Some(format!("slack: {}", record.key)),
                 kind: Some(mecha_core::session::SessionKind::Slack),
@@ -1208,11 +1216,11 @@ impl State {
         )
         .ok()?;
         let _ = session.append(&Record::Config(mecha_core::session::RunConfig::of(
-            &self.agent,
-            &self.config,
-            &self.provider,
-            &self.levers_off,
-            Some(&self.rules),
+            &bound.agent,
+            &bound.config,
+            &bound.provider_name,
+            &bound.levers_off,
+            Some(&bound.rules),
         )));
         if let Ok(Some(mut r)) = self.threads.get(&record.key) {
             r.session_id = Some(session.meta.id.clone());

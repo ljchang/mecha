@@ -187,13 +187,41 @@ The parts that bite hardest:
 - **Ask what is served (`GET /props` → `model_alias`), don't assert it.**
   llama-server ignores the request's `model` field, so naming one is not
   selecting it — only deciding what gets recorded.
-- **Router mode inverts that** (`scripts/start-router.sh`, built but not yet
-  installed — `REMOTE-SURFACE-DESIGN.md` §14, `LLAMA-SERVER.md` §Router
+- **Router mode inverts that** (`scripts/start-router.sh`, installed
+  2026-09-27 — `REMOTE-SURFACE-DESIGN.md` §14, `LLAMA-SERVER.md` §Router
   mode). One process serves several models and the request's `model`
   *selects*: a `follow_loaded` provider takes whichever is loaded
   (`provider::router`), every probe must name its model with
   `autoload=false` or it loads it, and a bare `/props` is a placeholder
   (`model_alias: "llama-server"`, `n_ctx: 0`).
+- **A process that outlives a switch follows it per turn**
+  (`mecha-cli/src/follow.rs`: `mecha serve`, its voice facade, `voice-serve`,
+  the Slack connector). An agent resolved at startup names the model loaded
+  then, and in router mode naming it loads it back — a switch from anywhere
+  was undone by the next web, voice or Slack turn. `Follower::follow` runs
+  before each turn, outside every lock the turn holds, and rebuilds through
+  `setup::prepare` only when the loaded model moved; the invariants:
+  - **A run keeps the binding it started with — which does not keep the
+    model.** The router protects a request, not a run: a switch made between
+    a run's requests is undone by its next one (§14, open for the owner).
+  - **The config is read from disk per turn**, because the rebuild reads it;
+    resolving against the startup file missed providers added since. A file
+    that does not load keeps the binding and says so once.
+  - **Only evidence of where to go moves a surface.** A router unseen by
+    the follower's own probe (`router::observe_seen`, never the shared
+    snapshot another request may have overwritten), mid-swap (two
+    resident), or resident on a model no entry names or several do: the
+    binding stays. Moving to the default on any of those would load
+    production over the pick.
+  - **A failed rebuild fails the turn**, never falls back to the old binding,
+    whose request would silently undo the switch.
+  - **A conversation that crosses a switch records a fresh `RunConfig`**
+    ahead of the turn (`Bound::generation`), so each run names the model
+    that answered it.
+  - **Incognito's gates are re-derived per turn from the binding**
+    (`incognito_gates`): local-only, hooks, and the withheld list computed
+    against the rebuilt registry — a deny-list computed at open let a server
+    that came up after a switch register tools the chat could call.
 - **Throughput is wall clock.** The server times a request only while it is
   running, so summing its per-request rates hides queue wait and reads ~4× at
   `-np 1`, on the one configuration that cannot run anything concurrently.
