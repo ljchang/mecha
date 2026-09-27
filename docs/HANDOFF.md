@@ -22,6 +22,37 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-27 — model switching, server side: `:8080` is a llama-server
+router, installed; the chip is not built.** `REMOTE-SURFACE-DESIGN.md` §14
+(D12) is the authority, with the owner's rulings. #337, #339 and #340 are
+merged; what each built is in HISTORY under 2026-09-26/27, and the install
+(01:27–01:45Z) is in *Machine state, dated* below. A switch is `mecha model
+use <entry>`, which a `[[rule]]` forbids `shell` from running. What is open:
+
+- **Long-lived surfaces bind one model at start.** `mecha serve`, voice and
+  Slack build their agent once, so their next turn names production again and
+  undoes a switch. A peer lane's `feat/model-follows-router` resolves per turn;
+  the chip (§14 step 5) waits on it.
+- **#346, open: scheduled scripts pinned production.** `ruminate.sh`,
+  `frontdoor.sh` and `learn-live.sh` (the `session_end` hook) defaulted to
+  `-p local`, and on the router a named provider is a load. #346 unpins them
+  and, by the owner's ruling of 2026-09-27, makes retirement count only the
+  ledger rows of the model in use (`learning::measured_on`). All three run
+  from the shared checkout, so they change only when it is fast-forwarded,
+  and never while `mecha-ruminate` is running.
+- **mecha-graph#22, open: the graph nightly lost 100 extractions and 30
+  summaries** to the router's placeholder alias (below). It must be installed
+  (`cargo install` of both `mecha-graph` and `mecha-graph-mcp`, and a
+  `cargo build --release`, since `nightly.sh` runs `target/release`) before
+  the next 01:30Z nightly. The 100 episode ids are in
+  `~/.mecha/backups/router-install-20260927T0127Z/graph-extract-failed-episodes.txt`,
+  to re-extract with `mecha-graph extract --episode <id>` once it is.
+- **Minors banked:** the new build warns that Qwen-VL wants
+  `--image-min-tokens 1024` (not acted on); `retirement-drill.sh` still pins
+  `-p local` (manual, on throwaway state); and the rollback scripts'
+  `S=$(ls -d …/snapshots/*/)` breaks the day a repo gains a second snapshot
+  (none has one today).
+
 **2026-09-26 — image generation shipped; incognito chat is live.** The
 arcs are in HISTORY under 2026-09-25 and 2026-09-25/26. `image_generate`
 (#303, #306) is merged and installed, and needs `comfyui.service`
@@ -1055,7 +1086,14 @@ earlier binary, service and factory-version claims.
 >
 > Equal hashes mean a branch switch here is invisible to systemd. Unequal —
 > or a *dirty* working copy of that path, which no branch comparison can see —
-> means stop and use a worktree. Check before the switch: afterwards the file
+> means stop and use a worktree.
+>
+> **Since 2026-09-27 the path is `scripts/start-router.sh`, and it sources
+> `scripts/mmproj.sh`.** The drop-in `llama-local.service.d/router.conf`
+> clears the unit's `ExecStart=` and names the router script, so
+> `start-moe-mtp.sh` is no longer what runs (`systemctl --user cat
+> llama-local` shows both lines; the later one wins). Check both files:
+> `git diff --quiet <a> <b> -- scripts/start-router.sh scripts/mmproj.sh`. Check before the switch: afterwards the file
 > has already changed, and it fails by coming back healthy and behaving
 > differently.
 >
@@ -1577,7 +1615,10 @@ is exactly the set holding a long-lived process.
   asks the server to unload after `[image] unload_after_secs` (default 600),
   so the weights are not held for the life of the unit.
 - **The local model server is `llama-local.service`** (systemd user, enabled,
-  `scripts/start-moe-mtp.sh`, qwen3.6-35b-a3b on 127.0.0.1:8080). **It became a
+  qwen3.6-35b-a3b on 127.0.0.1:8080). Since 2026-09-27 it is a llama-server
+  router (`scripts/start-router.sh` via the drop-in
+  `llama-local.service.d/router.conf`): six presets, one resident at a time,
+  production loaded at start; `mecha model list` shows them. **It became a
   unit on 2026-08-19 and the reason generalises.** Before that it was only ever
   started as a transient unit, so a reboot restored every *consumer* —
   `mecha-triggers`, `mecha-slack`, `mecha-drain`, `mecha-mail-classify` are all
@@ -1591,9 +1632,11 @@ is exactly the set holding a long-lived process.
   `start-moe-mtp.sh` records that a server which loads while memory is
   contended stays slow for its whole life and never recovers. 100.5 tok/s on a
   short prompt is a healthy load; ~82 is the degraded one.
-- **Reflect-on-close**: `~/.mecha/config.toml` carries a `session_end` hook
-  running `nohup mecha reflect -p local ... &` — every recorded session is mined
-  minutes after it closes.
+- **Reflect-on-close**: `~/.mecha/config.toml` carries two `session_end`
+  hooks, `scripts/learn-live.sh` and `nohup mecha distill … &` — every recorded
+  session is mined minutes after it closes. Neither may name a provider: on
+  the router a pin is a load (the distill hook's `-p local` was removed at the
+  router install; `learn-live.sh`'s default is #346's).
 - **Nightly rumination**: `mecha-ruminate.timer` (systemd user, 03:30,
   `Persistent=true`, linger on) runs `scripts/ruminate.sh`: reflect → distill →
   validate `--unprocessed-only` (judge: gemma26) → learn
@@ -2850,6 +2893,54 @@ and `-serve` show `ActiveEnterTimestamp` 22:40:47Z. mecha-mail, the web
 dist (still `index-jR5V3Voi.js`), the voice worker and the config were not
 touched.
 
+**Installed 2026-09-27 01:27–01:45Z, by the model-switching lane: the
+llama-server router on `:8080`, `mecha` from `ca518a71` (#337, #339,
+#340), llama.cpp `95887577`.** Re-verified ~04:00Z by asking the
+artifacts:
+
+- `~/.local/bin/llama-server --version` prints `commit 95887577`. The
+  previous build is kept as `~/.local/bin/llama-server.c841aee`.
+- `systemctl --user cat llama-local` shows the drop-in
+  `llama-local.service.d/router.conf` (`ExecStart=` then
+  `…/scripts/start-router.sh`); `ActiveEnterTimestamp` is 01:29:58Z.
+  Rollback: delete the drop-in, `daemon-reload`, restart — the unit's own
+  `start-moe-mtp.sh` comes back.
+- `strings ~/.cargo/bin/mecha | grep -cF 'a status this build does not know'`
+  prints 2 (0 before the install, measured then by this lane).
+- `diff scripts/model-idle.sh ~/.local/bin/mecha-model-idle` is silent
+  against `a03362e9`.
+- `curl -s localhost:8080/models` lists `gemma-4-26b-a4b`,
+  `qwen3.6-35b-a3b` (loaded), `qwen3.6-35b-a3b-uncensored`, `qwen3.8-27b`,
+  `qwen3.8-27b-abliterated` and `qwen3.8-27b-uncensored`.
+- The config (read with `tomllib`): `[providers.local]` is
+  `qwen3.6-35b-a3b` with `follow_loaded = true`; `local-uncensored`,
+  `gemma26`, `qwen38`, `qwen38-uncensored` and `qwen38-abliterated` are on
+  `:8080`; `gemma26` carries no `temperature` (R4); a `[[rule]]` forbids
+  `shell` running `mecha model use`; neither `session_end` hook nor the
+  `morning` trigger names a provider. `~/.mecha-graph/nightly.env` defaults
+  `EXTRACT_MODEL` to `qwen3.6-35b-a3b`.
+- The pre-install config, unit and drop-ins, idle gate, `morning.toml`,
+  `nightly.env` and the generated `models.ini` are in
+  `~/.mecha/backups/router-install-20260927T0127Z/`.
+
+**2026-09-27, the same night: three pins, each a load.** The rule the router
+makes concrete: a named provider is a pin, and on a router a pin loads that
+model; background work names none. What broke it:
+
+- **01:30Z — the graph nightly lost 100 extractions and 30 summaries.**
+  mecha-graph read the router's bare `/props` as the served model and named
+  `llama-server` in every request; the router refused each, and `extract`
+  marked all 100 attempted, so they are not retried. The fix is
+  mecha-graph#22 (open; see *Where the work is*).
+- **01:35Z — the `distill` `session_end` hook's `-p local`** loaded production
+  over the comparison arm minutes after the install; removed, and the arm
+  re-selected at 01:40:59Z.
+- **03:30:14Z — `ruminate.sh`'s `-p local` default** loaded production again
+  (llama-local journal: `load_model: loading model
+  …Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`). The comparison arm served 01:41–03:30Z
+  only; rumination (03:30:12–03:45:11Z, `Result=success`) and the 05:30
+  classifier ran on production. The fix is #346 (open).
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -2918,7 +3009,8 @@ is recoverable without the checkout's cwd. Record:
   `WorkingDirectory=/home/ljchang/Github/mecha` and runs
   `scripts/voice/worker.py` from it on every restart, and `mecha-parakeet`
   runs `scripts/voice/parakeet_server.py` the same way. `llama-local`'s
-  `ExecStart` is `scripts/start-moe-mtp.sh` from that tree too. **Check the
+  `ExecStart` is `scripts/start-router.sh` from that tree too (since
+  2026-09-27, via a drop-in; it sources `scripts/mmproj.sh`). **Check the
   branch before restarting any of them, and prove `scripts/` unchanged across
   a move** (`git diff --quiet <a> <b> -- scripts`, not a hash — a peer
   re-checking with `sha256sum` reads a different number for the same bytes).
