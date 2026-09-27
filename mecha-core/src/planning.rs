@@ -916,7 +916,63 @@ pub fn success_examples(
     set: &crate::success::Successes,
     sessions: &crate::success::SessionIndex,
 ) -> SuccessExamples {
-    let mut out = SuccessExamples::default();
+    let lent = success_traces(set, sessions, true);
+    SuccessExamples {
+        examples: lent
+            .traces
+            .into_iter()
+            .filter_map(|t| {
+                Some(SuccessExample {
+                    example: Example {
+                        goal: t.goal?,
+                        step: t.sequence,
+                        expected: None,
+                        source: t.session,
+                        owner_act: Some(t.act),
+                    },
+                    scopes: t.scopes,
+                    at: t.at,
+                })
+            })
+            .collect(),
+        withheld: lent.withheld,
+    }
+}
+
+/// One clean, scoped, verified session's trace: what a success lends,
+/// before it is shaped as a planning example (2e-4b-1) or as contrast
+/// evidence beside a correction (2e-4b-2).
+#[derive(Debug, Clone)]
+pub struct SuccessTrace {
+    pub act: crate::success::Act,
+    /// The success's goal, where its record names one.
+    pub goal: Option<GoalRef>,
+    pub session: String,
+    /// [`tool_sequence`] over every message the session ever held.
+    pub sequence: String,
+    /// Every run record's situation, as [`SuccessExample::scopes`].
+    pub scopes: Vec<crate::situation::Situation>,
+    pub at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// What a success set lends as traces, and what lent nothing and why.
+#[derive(Debug, Clone, Default)]
+pub struct SuccessTraces {
+    pub traces: Vec<SuccessTrace>,
+    pub withheld: Vec<(String, Option<String>, Withheld)>,
+}
+
+/// The lending [`success_examples`] describes, with the goal optional:
+/// `need_goal` withholds a success toward no goal before any transcript is
+/// read (a planning example is served only toward its goal); without it, a
+/// draft sent unchanged or a goal-less workflow lends too (contrast
+/// evidence, which is matched by region, not goal).
+pub fn success_traces(
+    set: &crate::success::Successes,
+    sessions: &crate::success::SessionIndex,
+    need_goal: bool,
+) -> SuccessTraces {
+    let mut out = SuccessTraces::default();
     let mut standing: Vec<&crate::success::Success> = set.standing.iter().collect();
     // Undated last, as every listing of the set orders them.
     standing.sort_by_key(|s| (s.at.is_none(), std::cmp::Reverse(s.at)));
@@ -924,10 +980,11 @@ pub fn success_examples(
     let mut lent = std::collections::HashSet::new();
     for success in standing {
         let pointer = success.act.pointer();
-        let Some(goal) = &success.goal else {
+        let goal = success.goal.as_ref();
+        if need_goal && goal.is_none() {
             out.withheld.push((pointer, None, Withheld::NoGoal));
             continue;
-        };
+        }
         if success.sessions.is_empty() {
             out.withheld.push((pointer, None, Withheld::NoSession));
             continue;
@@ -936,11 +993,11 @@ pub fn success_examples(
             let mut withhold = |why| out.withheld.push((pointer.clone(), Some(id.clone()), why));
             // The window before the dedup, so a pair past the window is
             // said for every success naming it, never consumed quietly.
-            if read >= SUCCESS_SESSIONS_READ || out.examples.len() >= SUCCESS_EXAMPLES_KEPT {
+            if read >= SUCCESS_SESSIONS_READ || out.traces.len() >= SUCCESS_EXAMPLES_KEPT {
                 withhold(Withheld::BeyondWindow);
                 continue;
             }
-            if !lent.insert((id.clone(), goal.to_string())) {
+            if !lent.insert((id.clone(), goal.map(ToString::to_string))) {
                 continue;
             }
             let Some(path) = sessions.admitted_path(id) else {
@@ -1010,14 +1067,11 @@ pub fn success_examples(
                 withhold(Withheld::NoToolCalls);
                 continue;
             };
-            out.examples.push(SuccessExample {
-                example: Example {
-                    goal: goal.clone(),
-                    step,
-                    expected: None,
-                    source: id.clone(),
-                    owner_act: Some(success.act.clone()),
-                },
+            out.traces.push(SuccessTrace {
+                act: success.act.clone(),
+                goal: goal.cloned(),
+                session: id.clone(),
+                sequence: step,
                 scopes,
                 at: success.at,
             });
@@ -1344,6 +1398,133 @@ mod success_example_tests {
     /// A compacted session lends its whole trace, not the tail the
     /// compaction left in the loaded list — here a tail with no call at
     /// all, which read as "no tool calls" (found on review of #342).
+    /// A model that records the one request it is sent and has no lesson.
+    #[derive(Clone, Default)]
+    struct Heard(std::sync::Arc<std::sync::Mutex<Option<crate::message::CompletionRequest>>>);
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for Heard {
+        fn id(&self) -> &str {
+            "heard"
+        }
+        fn default_model(&self) -> &str {
+            "heard-1"
+        }
+        async fn complete(
+            &self,
+            req: &crate::message::CompletionRequest,
+            _sink: Option<&crate::provider::StreamSink>,
+        ) -> anyhow::Result<crate::message::CompletionResponse> {
+            *self.0.lock().unwrap() = Some(req.clone());
+            Ok(crate::message::CompletionResponse {
+                message: Message::assistant(vec![Block::text(r#"{"skip": true}"#)]),
+                stop_reason: crate::message::StopReason::EndTurn,
+                usage: crate::message::Usage::default(),
+                refusal: None,
+                model: "heard-1".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+
+    /// What the reflector is sent for a steer recorded in `situation`
+    /// within `session`, with contrast evidence on over `pool`.
+    async fn sent(
+        pool: &crate::success::ContrastPool,
+        situation: &Situation,
+        session: &str,
+    ) -> String {
+        let heard = Heard::default();
+        let steer = crate::learning::Intervention {
+            trigger: crate::learning::Trigger::Steer,
+            context: "shell cargo build".into(),
+            text: "Run the tests before the build.".into(),
+            aftermath: "Running the tests first.".into(),
+            at: 3,
+            tools_before: vec!["shell".into()],
+            tools_after: Vec::new(),
+        };
+        let beside = pool.beside(Some(situation), session);
+        crate::learning::Reflector::new(Box::new(heard.clone()), None)
+            .with_contrast(true)
+            .reflect_beside(&steer, beside.as_ref())
+            .await
+            .unwrap();
+        let req = heard.0.lock().unwrap().clone().unwrap();
+        serde_json::to_string(&req.messages).unwrap()
+    }
+
+    /// Row 2e-4b-2's acceptance (R43): a correction beside a verified
+    /// success in its region reaches the reflector with it, one outside the
+    /// region without. The region is the loader's match — the correction's
+    /// scope against the success session's run records. Never the
+    /// correction's own session, and never a tainted session's success.
+    /// Fails on the tree before 2e-4b-2, where no success reached the
+    /// reflector.
+    #[tokio::test]
+    async fn a_correction_in_a_verified_successs_region_is_reflected_beside_it() {
+        let root = crate::mismatch::Workspace::new().unwrap();
+        let dir = root.path();
+        session(dir, "s-dana", Shape::Clean);
+        session(dir, "s-tainted", Shape::Tainted);
+        let index = SessionIndex::load(dir, false).unwrap();
+        let pool = crate::success::ContrastPool::of(success_traces(
+            &derive(
+                &Sources {
+                    closures: &[close("c1", "s-dana"), close("c2", "s-tainted")],
+                    ..Default::default()
+                },
+                &index,
+            ),
+            &index,
+            false,
+        ));
+        let goal = || Some(GoalKey::Named(GoalRef::Task(TASK.into())));
+        let here = Situation::recorded(
+            &["shell".into()],
+            "steer",
+            Some(SessionKind::Task),
+            Some(dir),
+        )
+        .toward(goal());
+
+        let with = sent(&pool, &here, "s-steered").await;
+        assert!(with.contains("a-verified-success-in-this-region"), "{with}");
+        assert!(with.contains("fs_read → shell ×2 → fs_write"));
+
+        // Outside the region: another workspace, another goal, a tool the
+        // success's runs never registered.
+        let elsewhere = crate::mismatch::Workspace::new().unwrap();
+        for outside in [
+            Situation::recorded(
+                &["shell".into()],
+                "steer",
+                Some(SessionKind::Task),
+                Some(elsewhere.path()),
+            )
+            .toward(goal()),
+            here.clone().toward(Some(GoalKey::Named(GoalRef::Task(
+                "task-lakeside-visit".into(),
+            )))),
+            Situation::recorded(
+                &["mail_send".into()],
+                "steer",
+                Some(SessionKind::Task),
+                Some(dir),
+            )
+            .toward(goal()),
+        ] {
+            let without = sent(&pool, &outside, "s-steered").await;
+            assert!(!without.contains("a-verified-success"), "{outside:?}");
+        }
+        // A correction in the success's own session is not contrasted
+        // with its own outcome; the tainted session lent nothing at all.
+        let own = sent(&pool, &here, "s-dana").await;
+        assert!(!own.contains("a-verified-success"));
+        assert!(pool.beside(Some(&here), "s-dana").is_none());
+        // Unknown situation: nothing beside it.
+        assert!(pool.beside(None, "s-steered").is_none());
+    }
+
     #[test]
     fn a_compacted_session_lends_every_call_it_made() {
         let root = crate::mismatch::Workspace::new().unwrap();
