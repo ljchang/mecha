@@ -327,7 +327,7 @@ from.
 
 | Outcome | Signed contribution |
 |---|---|
-| A message draft sent unchanged | `+1.0`; the model's text reached its recipient. |
+| A message draft you sent unchanged | `+1.0`; the model's text reached its recipient. Only when the send was yours: one a mecha run's `shell` approved, or one from before who sent it was recorded, counts as nothing. |
 | A message draft edited before sending or rejected | `−1.0`, owner agency; this is a verdict, not proof the model was wrong. |
 | A parked question answered and the resumed session completed | `+0.5`. |
 | A question abandoned | `−0.5`, owner agency. |
@@ -479,7 +479,9 @@ Most of what mecha learns from is a correction: you stepped in, and it asks
 what to do differently. The other half is what you accepted as it was, and
 you already say that with acts you perform anyway:
 
-- you **sent a draft as mecha wrote it**;
+- you **sent a draft as mecha wrote it** — yourself: a draft a mecha run's
+  `shell` approved is no success, and neither is one sent before who sent it
+  was recorded, so the set starts from the first stamped send;
 - you **closed a task `done`**;
 - you **closed a workflow** after its check passed;
 - you **answered a question** mecha parked, and the work then finished.
