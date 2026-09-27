@@ -272,6 +272,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The model chip's "switch now" is offered only while it can act.** Once a
+  switch stops waiting for runs, it records that beside its switch file.
+  The chip then drops "switch now" and cancel, where it used to show buttons
+  that did nothing for the seconds before the router reports the new model
+  loading. `mecha model use X --now` then says the switch is no longer
+  waiting. Two "switch now" taps at once both land; one could report failure
+  for a hurry that had worked, and leave a temp file nothing swept.
+
 - **The web chat's plan has its own read** (`GET /api/chat/{key}/todo`).
   The page re-reads the plan on every `todo` result a run streams, and took
   it from the transcript read — which, since the entry below, carries the
