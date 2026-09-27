@@ -544,7 +544,10 @@ impl Command {
             | Command::Outbox(_)
             | Command::Kg(_)
             | Command::Tools(_)
-            | Command::Sessions(_) => true,
+            | Command::Sessions(_)
+            // `rules propose-retirements` counts the ledger rows of the model
+            // in use, so it resolves the default provider as `validate` does.
+            | Command::Rules(_) => true,
             // Readers of stores, and `mecha model`, which asks the router
             // directly rather than through a snapshot.
             Command::Reflections(_)
@@ -555,7 +558,6 @@ impl Command {
             | Command::Polls(_)
             | Command::Proposals(_)
             | Command::Review(_)
-            | Command::Rules(_)
             | Command::Skills(_)
             | Command::Charter(_)
             | Command::Config(_)

@@ -38,6 +38,8 @@ MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
 PROVIDER="${MECHA_RUMINATE_PROVIDER:-}"
 PIN=()
 [ -n "$PROVIDER" ] && PIN=(-p "$PROVIDER")
+# Expanded as ${PIN[@]+"${PIN[@]}"} throughout: an empty array under `set -u`
+# is an unbound variable on bash older than 4.4 (drain-follow.sh does the same).
 # **The judge is the model under test, deliberately and provisionally.**
 # A different family is the better methodology — a model grading trajectories
 # it produced shares the blind spot that caused them, which is why
@@ -105,27 +107,29 @@ if ! curl -sf -m 5 "$HEALTH" >/dev/null; then
 fi
 
 echo "· reflect (catches whatever the session_end hook missed; live mining is learn-live.sh)"
-"$MECHA" reflect "${PIN[@]}"
+"$MECHA" reflect ${PIN[@]+"${PIN[@]}"}
 
 echo "· distill (episodes → the knowledge graph; catches whatever a hook missed)"
-"$MECHA" distill "${PIN[@]}"
+"$MECHA" distill ${PIN[@]+"${PIN[@]}"}
 
 echo "· validate (the measurement: held-out + fresh, before learn consumes them;"
 echo "  --cover 1 buys one probe per (rule, region) pair the ledger has never graded,"
 echo "  so a widened rule is measured in each sub-region it widened over)"
-"$MECHA" validate "${PIN[@]}" "${JUDGE_PIN[@]}" --unprocessed-only --cover 1
+"$MECHA" validate ${PIN[@]+"${PIN[@]}"} ${JUDGE_PIN[@]+"${JUDGE_PIN[@]}"} --unprocessed-only --cover 1
 
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
 echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
-"$MECHA" learn "${PIN[@]}" --holdout 0.25 --auto
+"$MECHA" learn ${PIN[@]+"${PIN[@]}"} --holdout 0.25 --auto
 
 echo "· retirements (deterministic ledger scan; applied, not staged — a rule measured"
 echo "  harmful must leave the prompt without waiting for anyone, and it is the only"
 echo "  brake on rules that now go live when they are derived)"
 # Given the same pin as validate: retirement counts only the rows measured on
-# the model in use (owner's ruling, 2026-09-27), so it must resolve the model
-# validate just measured on — resident, or the one this night pinned.
-"$MECHA" rules propose-retirements "${PIN[@]}" --apply
+# the model in use (owner's ruling, 2026-09-27). Pinned, that is the model
+# validate measured on. Unpinned, it is whatever is resident *now*, from its
+# own snapshot — a switch since validate ran means tonight's rows are not the
+# ones counted, which errs toward retiring nothing.
+"$MECHA" rules propose-retirements ${PIN[@]+"${PIN[@]}"} --apply
 
 echo "· work clean (retention on generated output; a published bundle's source is never removed)"
 "$MECHA" work clean
@@ -134,7 +138,7 @@ echo "· harness (diagnose one change from the run corpus, measure it by counter
 echo "  replay of recent sessions, and dispose through the candidate gate — a measured,"
 echo "  holdout-confirmed config win auto-applies to the override layer, reversibly;"
 echo "  prose, architecture and anything unmeasurable stages for review)"
-"$MECHA" harness ruminate "${PIN[@]}" --sessions 16
+"$MECHA" harness ruminate ${PIN[@]+"${PIN[@]}"} --sessions 16
 
 echo "· proposals awaiting review"
 "$MECHA" proposals

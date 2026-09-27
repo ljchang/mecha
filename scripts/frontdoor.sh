@@ -75,9 +75,9 @@ if ! curl -sf -m 5 "$HEALTH" >/dev/null; then
 fi
 
 echo "· extract (the quarantined pass: no tools, no history)"
-"$MECHA" frontdoor extract "${PIN[@]}"
+"$MECHA" frontdoor extract ${PIN[@]+"${PIN[@]}"}
 
 echo "· triage (drafts into the outbox; refuses to run unrouted)"
-"$MECHA" frontdoor triage "${PIN[@]}" --read-only
+"$MECHA" frontdoor triage ${PIN[@]+"${PIN[@]}"} --read-only
 
 echo "── frontdoor tick done $(date -Is) ──"

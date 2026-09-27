@@ -69,7 +69,7 @@ flock -n 9 || exit 0
   # A small limit: this fires per session, so there is normally one to mine.
   # The cap is what stops a hook that has not run for a week from turning one
   # session's exit into an hour of inference.
-  "$MECHA" reflect "${PIN[@]}" --limit 3 2>&1
+  "$MECHA" reflect ${PIN[@]+"${PIN[@]}"} --limit 3 2>&1
   # Self-gating: `learn` refuses below --min and says so, so this is a no-op
   # on most sessions and a consolidation on the ones that tip it over.
   #
@@ -88,7 +88,7 @@ flock -n 9 || exit 0
   # rule `[unmeasured]` forever and retire nothing. The holdout slice is
   # deterministic, so the slices accumulate across sessions into a real
   # measurement set.
-  "$MECHA" learn "${PIN[@]}" --holdout 0.25 --auto 2>&1
+  "$MECHA" learn ${PIN[@]+"${PIN[@]}"} --holdout 0.25 --auto 2>&1
 } >>"$LOG" 2>&1
 
 exit 0
