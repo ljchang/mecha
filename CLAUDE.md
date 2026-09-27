@@ -292,9 +292,9 @@ from anywhere:
 - **Ask what is served, don't assert it.** On the router the request's
   `model` field *selects*, and a bare `GET /props` is a placeholder
   (`model_alias: "llama-server"`) — reading it as the served model lost a
-  night of graph extraction on 2026-09-27. Ask `GET /models` for the
-  resident one, or `/props?model=<id>&autoload=false`; a probe that names a
-  model without `autoload=false` loads it.
+  night of graph extraction on 2026-09-27. Ask through
+  `scripts/served-props.sh` (or `GET /models` for the resident one); a
+  probe that names a model without `autoload=false` loads it.
 - **Throughput is wall clock**; the server's per-request rates hide queue wait.
 
 ## Security model
