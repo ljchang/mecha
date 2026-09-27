@@ -5,10 +5,14 @@
 //! Read-only and free: it reads the outbox, the closure, workflow and
 //! question stores and the session headers, derives the set
 //! (`mecha_core::success::derive`), and writes nothing. It is the only
-//! reader exemplars have — nothing serves one to a run.
+//! reader exemplars have — nothing serves one to a run. With `--examples`
+//! it also lists the planning success examples the set lends (row 2e-4b-1),
+//! which `goal_context` serves only with `[agent] success_examples` on: the
+//! shadow half of that lever, readable before it is measured.
 
 use crate::logs::strip_ansi_and_controls as clean;
 use anyhow::Result;
+use mecha_core::planning::SuccessExamples;
 use mecha_core::success::{self, SessionIndex, Sources, Successes};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -166,16 +170,97 @@ fn full_json(set: &Successes, exemplars: bool) -> serde_json::Value {
     out
 }
 
+/// What `mecha sessions successes` shows.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Show {
+    pub json: bool,
+    pub exemplars: bool,
+    /// The planning success examples the set lends (row 2e-4b-1).
+    pub examples: bool,
+    pub limit: Option<usize>,
+    pub include_tests: bool,
+}
+
+/// The planning examples a set lends, as JSON: each one's goal, session,
+/// tool sequence, owner's act and the region keys of the runs it is served
+/// in, then what lent nothing and why. `served` says the lever's default:
+/// nothing here reaches a run unless `[agent] success_examples` is on.
+pub fn examples_json(lent: &SuccessExamples) -> serde_json::Value {
+    serde_json::json!({
+        "served_by_default": false,
+        "count": lent.examples.len(),
+        "withheld_count": lent.withheld.len(),
+        "items": lent.examples.iter().map(|e| serde_json::json!({
+            "goal": e.example.goal.to_string(),
+            "session": e.example.source,
+            "tools_in_order": e.example.step,
+            "verified_by": e.example.owner_act.as_ref().map(|a| a.pointer()),
+            "at": at(e.at),
+            "situations": e.scopes.iter().map(|s| s.key()).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "withheld": lent.withheld.iter().map(|(pointer, session, why)| serde_json::json!({
+            "pointer": pointer,
+            "session": session,
+            "why": why.as_str(),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn print_examples(lent: &SuccessExamples) {
+    println!(
+        "\nplanning success examples — what `goal_context` would serve toward each goal, \
+         only with [agent] success_examples on and only to a run in the session's situation:"
+    );
+    if lent.examples.is_empty() {
+        println!("  (none)");
+    }
+    for e in &lent.examples {
+        println!(
+            "\n── toward {} · session {} · {}",
+            clean(&e.example.goal.to_string()),
+            clean(&e.example.source),
+            clean(
+                &e.example
+                    .owner_act
+                    .as_ref()
+                    .map(|a| a.pointer())
+                    .unwrap_or_default()
+            ),
+        );
+        println!("   {}", clean(&e.example.step));
+        for s in &e.scopes {
+            println!("   in: {}", clean(&s.key()));
+        }
+    }
+    for (pointer, session, why) in &lent.withheld {
+        println!(
+            "  lends none: {}{} — {}",
+            clean(pointer),
+            session
+                .as_deref()
+                .map(|s| format!(" (session {})", clean(s)))
+                .unwrap_or_default(),
+            why.as_str(),
+        );
+    }
+}
+
 /// `mecha sessions successes`.
-pub fn run(
-    dir: &Path,
-    json: bool,
-    exemplars: bool,
-    limit: Option<usize>,
-    include_tests: bool,
-) -> Result<()> {
+pub fn run(dir: &Path, show: Show) -> Result<()> {
+    let Show {
+        json,
+        exemplars,
+        examples,
+        limit,
+        include_tests,
+    } = show;
     let stores = mecha_core::appraisal::Stores::load();
     let mut set = derive(dir, include_tests, &Sources::of(&stores));
+    // Before `-n` caps the listings: what the set lends is the whole set's.
+    let lent = examples.then(|| match SessionIndex::load(dir, include_tests) {
+        Ok(index) => mecha_core::planning::success_examples(&set, &index),
+        Err(_) => SuccessExamples::default(),
+    });
     // Newest first, like every other listing here.
     // Undated rows last: `None < Some`, so a bare `Reverse` put them first,
     // where `-n` let them crowd out the newest (found on review).
@@ -201,6 +286,24 @@ pub fn run(
             listed["exemplars"]["items"] = capped["exemplars"]["items"].clone();
         }
     }
+    // The counts are the whole set's here too; `-n` caps only the listings
+    // (found on review of #342: the count was the capped length).
+    let lent = lent.map(|whole| {
+        let mut capped = whole.clone();
+        if let Some(n) = limit {
+            capped.examples.truncate(n);
+            capped.withheld.truncate(n);
+        }
+        let mut json = examples_json(&whole);
+        let listed = examples_json(&capped);
+        json["items"] = listed["items"].clone();
+        json["withheld"] = listed["withheld"].clone();
+        (capped, json)
+    });
+    if let Some((_, json)) = &lent {
+        listed["planning_examples"] = json.clone();
+    }
+    let lent = lent.map(|(capped, _)| capped);
     if json {
         println!("{}", serde_json::to_string_pretty(&listed)?);
         return Ok(());
@@ -268,6 +371,9 @@ pub fn run(
     } else if !set.exemplars.is_empty() {
         println!("\n  (`--exemplars` prints each exemplar verbatim)");
     }
+    if let Some(lent) = &lent {
+        print_examples(lent);
+    }
     Ok(())
 }
 
@@ -291,6 +397,25 @@ mod tests {
         assert!(l.contains("served to no run"), "{l}");
         assert_eq!(summary_json(&set)["exemplars"]["served"], false);
         assert_eq!(summary_json(&set)["partial"], true);
+    }
+
+    /// The examples readout says what the lever's default serves (nothing)
+    /// and why a success lends none, by name.
+    #[test]
+    fn the_examples_readout_says_they_are_not_served_by_default_and_why_none() {
+        let lent = SuccessExamples {
+            examples: Vec::new(),
+            withheld: vec![(
+                "closure:c1".into(),
+                Some("s-dana".into()),
+                mecha_core::planning::Withheld::NotClean,
+            )],
+        };
+        let v = examples_json(&lent);
+        assert_eq!(v["served_by_default"], false);
+        assert_eq!(v["count"], 0);
+        assert_eq!(v["withheld"][0]["why"], "not clean");
+        assert_eq!(v["withheld"][0]["session"], "s-dana");
     }
 
     /// A transcript whose header does not read is a short session store —

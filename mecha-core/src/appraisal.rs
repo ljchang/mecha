@@ -1168,6 +1168,28 @@ pub fn load_closures() -> (Vec<crate::closure::Transition>, bool) {
     }
 }
 
+/// The outbox's items, on the same terms.
+pub fn load_drafts() -> (Vec<crate::outbox::OutboxItem>, bool) {
+    match crate::outbox::OutboxStore::open_existing_default() {
+        None => (Vec::new(), false),
+        Some(store) => match store.items_counting() {
+            Ok((items, skipped)) => (items, skipped > 0),
+            Err(_) => (Vec::new(), true),
+        },
+    }
+}
+
+/// The question store's items, on the same terms.
+pub fn load_questions() -> (Vec<crate::questions::Question>, bool) {
+    match crate::questions::QuestionStore::open_existing_default() {
+        None => (Vec::new(), false),
+        Some(store) => match store.items_counting() {
+            Ok((items, skipped)) => (items, skipped > 0),
+            Err(_) => (Vec::new(), true),
+        },
+    }
+}
+
 /// Every workflow, on the same terms. `WorkflowStore::list` refuses the
 /// whole store on one unreadable record ("corruption is an error, never an
 /// empty queue"), so any failure is the whole channel missing.
@@ -1208,22 +1230,8 @@ impl Stores {
 
     /// The four stores, with the charter left absent for the caller to set.
     fn load_without_charter() -> Stores {
-        let (drafts, outbox_unreadable) = match crate::outbox::OutboxStore::open_existing_default()
-        {
-            None => (Vec::new(), false),
-            Some(store) => match store.items_counting() {
-                Ok((items, skipped)) => (items, skipped > 0),
-                Err(_) => (Vec::new(), true),
-            },
-        };
-        let (questions, questions_unreadable) =
-            match crate::questions::QuestionStore::open_existing_default() {
-                None => (Vec::new(), false),
-                Some(store) => match store.items_counting() {
-                    Ok((items, skipped)) => (items, skipped > 0),
-                    Err(_) => (Vec::new(), true),
-                },
-            };
+        let (drafts, outbox_unreadable) = load_drafts();
+        let (questions, questions_unreadable) = load_questions();
         let (requests, frontdoor_unreadable) =
             match crate::frontdoor::Frontdoor::open_existing_default() {
                 None => (Vec::new(), false),
