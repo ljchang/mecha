@@ -733,7 +733,7 @@ pub(crate) fn comparisons_line(on_record: &OnRecord) -> String {
             let kinds: Vec<String> = s.by_kind.iter().map(|(k, n)| format!("{k} {n}")).collect();
             format!(
                 "counterfactual comparisons on record{}: {}{} · separated {} of {} decided ({}) · \
-                 {} inconclusive{} · {} judge-decided{}{}{}{}",
+                 {} inconclusive · {} judge-decided{}{}{}{}{}",
                 s.model
                     .as_deref()
                     .map(|m| format!(" under {m}"))
@@ -750,11 +750,6 @@ pub(crate) fn comparisons_line(on_record: &OnRecord) -> String {
                     .map(|r| format!("{:.0}%", r * 100.0))
                     .unwrap_or_else(|| "—".into()),
                 s.inconclusive,
-                if s.unposed > 0 {
-                    format!(" ({} unposed: no structural validator)", s.unposed)
-                } else {
-                    String::new()
-                },
                 s.judge_decided,
                 if s.unreadable_verdict > 0 {
                     format!(
@@ -770,9 +765,20 @@ pub(crate) fn comparisons_line(on_record: &OnRecord) -> String {
                 } else {
                     String::new()
                 },
+                // No model's: nothing was driven, so never in the counts
+                // above, and still said — "never askable" is a finding.
+                if s.unposed > 0 {
+                    format!(
+                        " · {} unposed point(s): no structural validator, nothing driven",
+                        s.unposed
+                    )
+                } else {
+                    String::new()
+                },
+                // Unknown, never labelled as anything else.
                 if s.no_model > 0 {
                     format!(
-                        " · {} with no model (an unposed point drives none), not counted",
+                        " · {} with no model recorded (unknown), not counted",
                         s.no_model
                     )
                 } else {
@@ -2685,6 +2691,7 @@ mod probe_readout_tests {
             model: Some("local-model".into()),
             other_models: 3,
             no_model: 2,
+            unposed: 4,
             records: 2,
             separated: 1,
             tied: 1,
@@ -2695,12 +2702,23 @@ mod probe_readout_tests {
         assert!(line.contains("on record under local-model: 2"), "{line}");
         assert!(line.contains("separated 1 of 2 decided (50%)"), "{line}");
         assert!(line.contains("3 under other models, not counted"), "{line}");
-        assert!(line.contains("2 with no model"), "{line}");
+        assert!(
+            line.contains("4 unposed point(s): no structural validator"),
+            "{line}"
+        );
+        assert!(
+            line.contains("2 with no model recorded (unknown)"),
+            "an unknown model is never labelled an unposed point: {line}"
+        );
         let json = comparisons_json(&on_record);
         assert_eq!(json["model"], "local-model");
         assert_eq!(
-            (json["other_models"].clone(), json["no_model"].clone()),
-            (3.into(), 2.into())
+            (
+                json["other_models"].clone(),
+                json["no_model"].clone(),
+                json["unposed"].clone()
+            ),
+            (3.into(), 2.into(), 4.into())
         );
         assert_eq!(json["separated_share"], 0.5);
     }

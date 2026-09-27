@@ -596,24 +596,30 @@ impl ComparisonStore {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Summary {
     /// The model whose comparisons are counted: the one the caller named,
-    /// else the model of the newest comparison on record that has one.
+    /// else the model of the newest driven comparison on record.
     /// `None` when no comparison under any model is on record.
     pub model: Option<String>,
     /// Comparisons on record under another model — not counted in anything
     /// below.
     pub other_models: usize,
-    /// Comparisons on record with no model — not counted in anything below.
-    ///
-    /// Nothing was driven for them: in this build the only row stored
-    /// without a model is an unposed point (`Validator::Unposed`, no arms, a
-    /// derived `Inconclusive`), stored once whatever model is resident
-    /// (`pointwise::already_compared` keys it on the empty model). So it
-    /// belongs to no model's counts: it could never move a decided rate, and
-    /// counting it into one model's `records` and `inconclusive` would
-    /// charge that model with points it never saw. Any other row with no
-    /// model — a driven one whose model went unrecorded — is unknown, and an
-    /// unknown model is never the one counted.
+    /// Comparisons on record with no model that are not unposed points —
+    /// driven rows whose model went unrecorded. Unknown, and an unknown
+    /// model is never the one counted, so not counted in anything below. No
+    /// writer in this build means to store one (a pass whose model could
+    /// not be named is the path), so nonzero is an anomaly to read.
     pub no_model: usize,
+    /// The points no structural validator could pose
+    /// ([`Validator::Unposed`]), store-wide, and **no model's**: the arms
+    /// are not driven, so the point is a fact about the store, not about any
+    /// model — this build stores it with an empty model, once whatever model
+    /// is resident (`pointwise::already_compared` keys it on the empty
+    /// model). Counted apart from `records` and `inconclusive`, never in
+    /// them: it could never move a decided rate, and counting it into one
+    /// model's counts would charge that model with points it never saw.
+    /// Kept visible because "driven and undecided" and "never askable" call
+    /// for opposite fixes — a better arm, or a validator that does not exist
+    /// yet.
+    pub unposed: usize,
     /// Comparisons under [`Summary::model`]; every count below is of these.
     pub records: usize,
     /// Rows by [`Kind`], by wire name.
@@ -627,21 +633,15 @@ pub struct Summary {
     pub unreadable_verdict: usize,
     /// Rows a model judge decided — the ones a reader may want to leave out.
     pub judge_decided: usize,
-    /// Of the `inconclusive`, the points no structural validator could pose
-    /// ([`Validator::Unposed`]): nothing was driven for them. Kept apart
-    /// because "driven and undecided" and "never askable" call for opposite
-    /// fixes — a better arm, or a validator that does not exist yet. An
-    /// unposed point stored with no model (every one this build writes) is
-    /// counted in `no_model` instead.
-    pub unposed: usize,
 }
 
 impl Summary {
     /// The rows under one model, counted, and every other row counted
     /// apart. `model` is the one the caller names — the model it drove,
     /// where it knows one; `None` (or an empty name, which names no model)
-    /// reads the model of the newest comparison on record that has one: the
-    /// store is append-only, so the last such row.
+    /// reads the model of the newest driven comparison on record — one with
+    /// a model, never an unposed point. The store is append-only, so that
+    /// is the last such row.
     pub fn of(rows: &[Comparison], model: Option<&str>) -> Summary {
         let model: Option<String> =
             model
@@ -650,7 +650,7 @@ impl Summary {
                 .or_else(|| {
                     rows.iter()
                         .rev()
-                        .find(|c| !c.model.is_empty())
+                        .find(|c| !c.model.is_empty() && c.validator != Validator::Unposed)
                         .map(|c| c.model.clone())
                 });
         let mut s = Summary {
@@ -658,6 +658,12 @@ impl Summary {
             ..Summary::default()
         };
         for c in rows {
+            // Nothing was driven for an unposed point, so it is no model's —
+            // whatever model it carries, which in this build is none.
+            if c.validator == Validator::Unposed && c.verdict == Verdict::Inconclusive {
+                s.unposed += 1;
+                continue;
+            }
             if c.model.is_empty() {
                 s.no_model += 1;
                 continue;
@@ -678,9 +684,6 @@ impl Summary {
             }
             if c.validator == Validator::Judge {
                 s.judge_decided += 1;
-            }
-            if c.validator == Validator::Unposed && c.verdict == Verdict::Inconclusive {
-                s.unposed += 1;
             }
         }
         s
@@ -1014,9 +1017,10 @@ mod tests {
     /// Count one model (the owner's ruling of 2026-09-27): a store holding
     /// rows from two models — the production model and a comparison arm the
     /// router made resident — never sums them. The model read is the one
-    /// named, else the newest row's that has one; every other row is
-    /// counted apart, and an unposed point, stored with no model, belongs
-    /// to none.
+    /// named, else the newest driven row's; every other row is counted
+    /// apart. An unposed point is no model's and stays visible as
+    /// `unposed`; a driven row with no model is unknown (`no_model`) and
+    /// never labelled an unposed point (found on review).
     #[test]
     fn a_store_under_two_models_is_counted_for_one() {
         let under = |model: &str, unsteered: Outcome| {
@@ -1036,10 +1040,12 @@ mod tests {
         );
         assert_eq!(unposed.verdict, Verdict::Inconclusive);
         // The comparison arm separated everything; production half of it.
-        // The newest row is the unposed point, which names no model.
+        // A driven row whose model went unrecorded separated too. The
+        // newest row is the unposed point, which names no model.
         let rows = [
             under("other-model", Outcome::Fail),
             under("other-model", Outcome::Fail),
+            under("", Outcome::Fail),
             under("local-model", Outcome::Fail),
             under("local-model", Outcome::Pass),
             unposed.clone(),
@@ -1049,19 +1055,19 @@ mod tests {
         assert_eq!(
             newest.model.as_deref(),
             Some("local-model"),
-            "the newest row with a model, never the empty one"
+            "the newest driven row's model, never the empty one"
         );
         assert_eq!(
             (newest.records, newest.separated, newest.tied),
             (2, 1, 1),
             "{newest:?}"
         );
-        assert_eq!(newest.separated_share(), Some(0.5), "never 3 of 4");
+        assert_eq!(newest.separated_share(), Some(0.5), "never 4 of 5");
         assert_eq!((newest.other_models, newest.no_model), (2, 1));
         assert_eq!(
             (newest.inconclusive, newest.unposed),
-            (0, 0),
-            "the unposed point is no model's inconclusive"
+            (0, 1),
+            "the unposed point is counted, and is no model's inconclusive"
         );
         assert_eq!(newest.by_kind.get("point-surprise"), None);
         assert_eq!(
@@ -1074,20 +1080,32 @@ mod tests {
         assert_eq!(named.model.as_deref(), Some("other-model"));
         assert_eq!((named.records, named.separated), (2, 2));
         assert_eq!(named.separated_share(), Some(1.0));
-        assert_eq!((named.other_models, named.no_model), (2, 1));
+        assert_eq!(
+            (named.other_models, named.no_model, named.unposed),
+            (2, 1, 1)
+        );
 
         // A named model with nothing on record: a dash, never zero, and
         // every row said beside it.
         let absent = Summary::of(&rows, Some("absent-model"));
         assert_eq!(absent.model.as_deref(), Some("absent-model"));
         assert_eq!((absent.records, absent.separated_share()), (0, None));
-        assert_eq!((absent.other_models, absent.no_model), (4, 1));
+        assert_eq!(
+            (absent.other_models, absent.no_model, absent.unposed),
+            (4, 1, 1)
+        );
 
-        // Only unposed points: no model to name, nothing counted.
+        // Only unposed points: no model to name, nothing counted, and the
+        // points still said.
         let none = Summary::of(std::slice::from_ref(&unposed), None);
         assert_eq!(
-            (none.model.as_deref(), none.records, none.no_model),
-            (None, 0, 1)
+            (
+                none.model.as_deref(),
+                none.records,
+                none.no_model,
+                none.unposed
+            ),
+            (None, 0, 0, 1)
         );
         assert_eq!(none.separated_share(), None);
     }
