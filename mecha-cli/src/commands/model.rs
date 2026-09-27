@@ -335,6 +335,14 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, now: bool, json: bool) -
     if previous.as_deref() == Some(model.as_str()) {
         return report(cfg, &base, &model, 0.0, json);
     }
+    // The last check before anything changes. With nothing holding, the wait
+    // returns on its first look, so a `cancel-switch` during the re-read was
+    // otherwise never seen: waiting runs were released to resolve a model
+    // while this process swapped it under them (review of #350).
+    anyhow::ensure!(
+        _switching.still_pending(),
+        "the switch was withdrawn (`mecha model cancel-switch`); the loaded model stays"
+    );
 
     // R2: the resident model mid-reply is waited for, or — `--now` — cut off.
     if let Some(prev) = &previous {
@@ -547,5 +555,62 @@ mod tests {
         assert!(!r.readable);
         assert_eq!(r.resident, None);
         assert!(r.unserved.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+    use mecha_core::hold::Holds;
+
+    const ROUTER: &str = "http://127.0.0.1:8080";
+
+    /// A withdrawn switch stops waiting, rather than go on to load a model
+    /// nobody is waiting for any more.
+    #[tokio::test]
+    async fn a_withdrawn_switch_stops_waiting() {
+        let home = crate::testenv::HomeGuard::new("model-wait-withdrawn");
+        let holds = Holds::new(home.dir.join("holds"));
+        let switching = holds.begin_switch(ROUTER, Some("a"), "b").unwrap().unwrap();
+        // A run it waits for, then the withdrawal the command makes.
+        let held = holds.try_hold(ROUTER, "web chat");
+        assert!(held.unwrap().is_err(), "a run held under a pending switch");
+        let held = {
+            assert!(holds.withdraw_switch(ROUTER).is_some());
+            holds.try_hold(ROUTER, "web chat").unwrap().unwrap()
+        };
+        let err = tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_for_runs(&holds, &switching, ROUTER, None),
+        )
+        .await
+        .expect("the wait never noticed the withdrawal")
+        .unwrap_err();
+        assert!(err.to_string().contains("withdrawn"), "{err}");
+        drop(held);
+    }
+
+    /// The wait ends when the last hold drops — and not before.
+    #[tokio::test]
+    async fn the_wait_ends_when_the_last_hold_drops() {
+        let home = crate::testenv::HomeGuard::new("model-wait-drops");
+        let holds = std::sync::Arc::new(Holds::new(home.dir.join("holds")));
+        let held = holds.try_hold(ROUTER, "mecha run").unwrap().unwrap();
+        let switching = holds.begin_switch(ROUTER, Some("a"), "b").unwrap().unwrap();
+        let waiting = {
+            let holds = std::sync::Arc::clone(&holds);
+            tokio::spawn(async move { wait_for_runs(&holds, &switching, ROUTER, None).await })
+        };
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            !waiting.is_finished(),
+            "the switch went ahead under a held run"
+        );
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("the wait never ended after the last hold dropped")
+            .unwrap()
+            .unwrap();
     }
 }

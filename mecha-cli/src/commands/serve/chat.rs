@@ -1731,7 +1731,8 @@ pub async fn send(
             if let Some(tx) = &notices {
                 let _ = tx.send(WireEvent::Notice {
                     text: format!(
-                        "Switching the model to {} — this turn starts once it is loaded.",
+                        "Switching the model to {} — this turn starts once it is loaded. \
+                         (A switch that never finishes: `mecha model cancel-switch`.)",
                         switch.to
                     ),
                 });
