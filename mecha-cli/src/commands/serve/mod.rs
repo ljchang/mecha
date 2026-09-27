@@ -1901,12 +1901,19 @@ mod boundary_tests {
         let user = send_with_attachments(false, &[("shot.png", png(8, 8))], &[]).await;
         assert!(images(&user).is_empty(), "{:?}", user.content);
 
+        // One real upload beside the escaping paths, so the session and its
+        // workspace exist: without it `send` has no workspace to read and
+        // the escapes are never resolved at all — passing for the wrong
+        // reason (found on review of #366).
         let outside = home.dir.join("outside.png");
         std::fs::write(&outside, png(8, 8)).unwrap();
-        let user =
-            send_with_attachments(true, &[], &["../../outside.png", outside.to_str().unwrap()])
-                .await;
-        assert!(images(&user).is_empty(), "{:?}", user.content);
+        let user = send_with_attachments(
+            true,
+            &[("inside.png", png(8, 8))],
+            &["../../outside.png", outside.to_str().unwrap()],
+        )
+        .await;
+        assert_eq!(images(&user), vec![Some("inbox/inside.png".to_string())]);
     }
 
     #[tokio::test]
