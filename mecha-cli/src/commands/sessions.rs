@@ -687,13 +687,18 @@ fn first_line(s: &str) -> String {
 pub(crate) type OnRecord =
     std::result::Result<Option<(mecha_core::comparison::Summary, usize)>, String>;
 
-pub(crate) fn comparisons_on_record() -> OnRecord {
+/// The store's summary for one model (`comparison::Summary::of`): `model`
+/// is the one the caller drove — `sessions compare` names its own — and
+/// `None` reads the model of the newest comparison on record, which is what
+/// `sessions appraise` does, as its lesson-source report does. Rows under
+/// any other model, or none, are counted apart and said beside it.
+pub(crate) fn comparisons_on_record(model: Option<&str>) -> OnRecord {
     let Some(store) = mecha_core::comparison::ComparisonStore::open_existing_default() else {
         return Ok(None);
     };
     store
         .comparisons_counting()
-        .map(|(rows, skipped)| Some((mecha_core::comparison::Summary::of(&rows), skipped)))
+        .map(|(rows, skipped)| Some((mecha_core::comparison::Summary::of(&rows, model), skipped)))
         .map_err(|e| format!("{e:#}"))
 }
 
@@ -727,8 +732,12 @@ pub(crate) fn comparisons_line(on_record: &OnRecord) -> String {
         Ok(Some((s, skipped))) => {
             let kinds: Vec<String> = s.by_kind.iter().map(|(k, n)| format!("{k} {n}")).collect();
             format!(
-                "counterfactual comparisons on record: {}{} · separated {} of {} decided ({}) · \
-                 {} inconclusive{} · {} judge-decided{}{}",
+                "counterfactual comparisons on record{}: {}{} · separated {} of {} decided ({}) · \
+                 {} inconclusive · {} judge-decided{}{}{}{}{}",
+                s.model
+                    .as_deref()
+                    .map(|m| format!(" under {m}"))
+                    .unwrap_or_default(),
                 s.records,
                 if kinds.is_empty() {
                     String::new()
@@ -741,16 +750,36 @@ pub(crate) fn comparisons_line(on_record: &OnRecord) -> String {
                     .map(|r| format!("{:.0}%", r * 100.0))
                     .unwrap_or_else(|| "—".into()),
                 s.inconclusive,
-                if s.unposed > 0 {
-                    format!(" ({} unposed: no structural validator)", s.unposed)
-                } else {
-                    String::new()
-                },
                 s.judge_decided,
                 if s.unreadable_verdict > 0 {
                     format!(
                         " · {} with a verdict this build cannot read",
                         s.unreadable_verdict
+                    )
+                } else {
+                    String::new()
+                },
+                // Count one model: every other row is said, never summed.
+                if s.other_models > 0 {
+                    format!(" · {} under other models, not counted", s.other_models)
+                } else {
+                    String::new()
+                },
+                // No model's: nothing was driven, so never in the counts
+                // above, and still said — "never askable" is a finding.
+                if s.unposed > 0 {
+                    format!(
+                        " · {} unposed point(s): no structural validator, nothing driven",
+                        s.unposed
+                    )
+                } else {
+                    String::new()
+                },
+                // Unknown, never labelled as anything else.
+                if s.no_model > 0 {
+                    format!(
+                        " · {} with no model recorded (unknown), not counted",
+                        s.no_model
                     )
                 } else {
                     String::new()
@@ -1708,7 +1737,9 @@ async fn appraise(
 
     // The comparison store, read back after the paid passes so a `--probe`
     // pass's own rows are in it (row 1g). Free, so it is read every time.
-    let stored = comparisons_on_record();
+    // For one model — the newest comparison's, as the lesson-source report
+    // below reads: the free readout loads no config, so it names none.
+    let stored = comparisons_on_record(None);
     // The text-appraisal store (row 2a-1), counted the same way.
     let text_appraisals = text_appraisals_on_record();
     // Lessons by source (row 2e-1): read from the learning, appraisal and
@@ -2645,6 +2676,51 @@ mod probe_readout_tests {
         assert!(comparisons_json(&empty)["separated_share"].is_null());
         assert_eq!(comparisons_json(&empty)["read"], false, "two lines skipped");
         assert!(comparisons_line(&empty).contains("(—)"));
+        assert!(comparisons_json(&none)["model"].is_null());
+        assert_eq!(comparisons_json(&none)["other_models"], 0);
+        assert_eq!(comparisons_json(&none)["no_model"], 0);
+    }
+
+    /// Count one model: the readout names the model it counted and says the
+    /// rows under other models, and those with none, beside it — never in
+    /// the rate.
+    #[test]
+    fn the_comparison_readout_names_its_model_and_says_the_rest() {
+        use super::{comparisons_json, comparisons_line};
+        let summary = mecha_core::comparison::Summary {
+            model: Some("local-model".into()),
+            other_models: 3,
+            no_model: 2,
+            unposed: 4,
+            records: 2,
+            separated: 1,
+            tied: 1,
+            ..Default::default()
+        };
+        let on_record = Ok(Some((summary, 0)));
+        let line = comparisons_line(&on_record);
+        assert!(line.contains("on record under local-model: 2"), "{line}");
+        assert!(line.contains("separated 1 of 2 decided (50%)"), "{line}");
+        assert!(line.contains("3 under other models, not counted"), "{line}");
+        assert!(
+            line.contains("4 unposed point(s): no structural validator"),
+            "{line}"
+        );
+        assert!(
+            line.contains("2 with no model recorded (unknown)"),
+            "an unknown model is never labelled an unposed point: {line}"
+        );
+        let json = comparisons_json(&on_record);
+        assert_eq!(json["model"], "local-model");
+        assert_eq!(
+            (
+                json["other_models"].clone(),
+                json["no_model"].clone(),
+                json["unposed"].clone()
+            ),
+            (3.into(), 2.into(), 4.into())
+        );
+        assert_eq!(json["separated_share"], 0.5);
     }
 
     /// The owner's prose readout of a tainted appraisal whose model-written
