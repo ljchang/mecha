@@ -147,7 +147,10 @@ print(f'{n} cases, {len(t)} tags')"
 # What the server is actually serving. `n_ctx` is the PER-SLOT figure, which
 # is what `context_window` must equal — never `-c`, which is divided across
 # slots. `mecha setup` compares all of this against the config for you.
-curl -s localhost:8080/props | jq '{total_slots, n_ctx: .default_generation_settings.n_ctx, vision: .modalities.vision}'
+# :8080 is a router since 2026-09-27: a bare /props is a placeholder
+# (total_slots null, n_ctx 0, vision null), so ask for the resident model.
+( source scripts/served-props.sh; b=http://127.0.0.1:8080; served_props "$b" "$(served_model "$b")" ) \
+  | jq '{total_slots, n_ctx: .default_generation_settings.n_ctx, vision: .modalities.vision}'
 systemctl --user list-unit-files | grep mecha
 ```
 

@@ -377,11 +377,16 @@ machine from starting is one people turn off.
   a chatml override it is accepted and ignored. Note the corollary: a client
   that sends *no* template kwargs has no dependency on the model's template and
   survives a model swap.
-- **Ask what is served, do not assert it.** `GET /props` returns `model_alias`.
-  llama-server serves whatever is loaded and ignores the `model` field of a
-  request, so naming a model is not selecting one — it only decides what gets
-  written down. mecha-graph records the served alias in `extract_state.model`
-  for exactly this reason.
+- **Ask what is served, do not assert it.** A single-model llama-server
+  serves whatever is loaded and ignores the `model` field of a request, so
+  naming a model there is not selecting one — it only decides what gets
+  written down, and `GET /props` returns the real `model_alias`. **On the
+  router (`:8080` since 2026-09-27) both halves invert:** the `model` field
+  *selects*, and a bare `/props` is a placeholder (§Router mode) — reading it
+  as the served model is what cost the graph nightly on 2026-09-27. Source
+  `scripts/served-props.sh` and ask `served_model` / `served_props`.
+  mecha-graph records the model that answered in `extract_state.model` for
+  exactly this reason.
 
 ## Embeddings
 
