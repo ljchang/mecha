@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A previous attempt says whose act it was** (`APPRAISAL-WIRING-DESIGN.md`
+  R42, the owner's ruling of 2026-09-27). The situation brief's previous
+  attempts put a draft reject or edit under "The owner:" only when it is
+  stamped as the owner's; a run's own reject or edit, and one from before
+  the stamp, is said apart as not recorded as the owner's, with the item id
+  and never the reason. `mecha outbox list`'s drafting line reads "sent
+  unedited" (it counts whoever released), not "sent as drafted".
+
 - **The retirement drill no longer writes into the live comparison store.**
   `ComparisonStore` honours `MECHA_COMPARISONS_DIR` (as the learning store
   honours `MECHA_LEARNING_DIR`), `scripts/retirement-drill.sh` sets it, and

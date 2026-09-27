@@ -5628,7 +5628,16 @@ when touching it:
   closure id. An outbox rejection's reason never rides (R42(d), ruled while
   a resolve recorded no actor); the act is "draft rejected" and the item id.
   Resolves now carry an actor (`OutboxItem::rejection`, #343), so quoting
-  an owner-stamped reason on the reopen's rule is a follow-up change. Every id in the words is one token (`GoalRef::from_str`'s rule),
+  an owner-stamped reason on the reopen's rule is a follow-up change.
+  **Whose act, too** (the owner's ruling, 2026-09-27): a reject rides under
+  "The owner:" only when `resolved_by == owner`, an edit only when
+  `OutboxItem::owners_edit`; otherwise the act is said in a sentence of its
+  own, "not recorded as the owner's own act", as "draft rejected" or
+  "draft edited, then sent" and the item id (`OwnerAct::DraftRejectedNotOwners`,
+  `DraftEditedNotOwners`, which an older build reads as `Unknown`), so a later
+  run is never told the owner rejected what its predecessor rejected itself.
+  An unchanged release the owner did not make is no act (#352). Every id in
+  the words is one token (`GoalRef::from_str`'s rule),
   since a workflow id is a graph-minted task id. The words are inside the
   brief's block, so delivery arms `private` exactly as before (R35).
   Residue: a reopen of a `dropped` closure cites nothing in `of_session`,
