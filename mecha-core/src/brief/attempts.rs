@@ -1908,6 +1908,11 @@ mod tests {
         owner_edit.edited_by = Some(Actor::Owner);
         let mut run_release = draft("d-sent", "s-prior", "sent", None);
         run_release.resolved_by = Some(Actor::Unknown);
+        // The same release, differing only in the stamp: the owner's own
+        // (review of #356 — the owner arm had no test, so it could drop every
+        // unchanged release from the brief with the suite green).
+        let mut owner_release = draft("d-clean", "s-prior", "sent", None);
+        owner_release.resolved_by = Some(Actor::Owner);
         let drafts = [
             &run_reject,
             &legacy_reject,
@@ -1915,6 +1920,7 @@ mod tests {
             &run_edit,
             &owner_edit,
             &run_release,
+            &owner_release,
         ];
         let acts: Vec<Option<OwnerAct>> = drafts
             .iter()
@@ -1939,19 +1945,23 @@ mod tests {
                     draft: "d-owned".into()
                 }),
                 None,
+                Some(OwnerAct::DraftSentAsWritten {
+                    draft: "d-clean".into()
+                }),
             ]
         );
         let attempt = Attempt {
             session: "s-prior".into(),
             started_at: now() - chrono::Duration::days(2),
             acts: acts.into_iter().flatten().collect(),
-            acts_total: 5,
+            acts_total: 6,
             ended: RunEnd::Completed,
         };
         let words = owners_line(&attempt);
         assert_eq!(
             words,
-            "The owner: draft rejected (d-own); edited a draft before sending it (d-owned). \
+            "The owner: draft rejected (d-own); edited a draft before sending it (d-owned); \
+             sent a draft as written (d-clean). \
              Not recorded as the owner's own act (a run's shell, a hand not on record, or an \
              act this build cannot name): draft rejected (d-run); draft rejected (d-old); draft edited, then sent \
              (d-edit)."

@@ -669,8 +669,10 @@ impl OutboxItem {
     /// [`Self::owners_unchanged_release`] (the release stamped `owner`) and,
     /// for an edit, [`Self::owners_edit`]; every reader that counts a release
     /// as the owner's +1.0, an owner-verified success or the owner's writing
-    /// reads those. Only `WritingTally` reads this alone, and it is labelled
-    /// as the structural count it is ("sent unedited").
+    /// reads those. Two readers take this alone: `WritingTally`, labelled as
+    /// the structural count it is ("sent unedited"), and
+    /// `success::sent_unchanged`, which yields only the *candidates* that
+    /// `success::derive` then gates on `owners_unchanged_release`.
     ///
     /// `None` for anything that says nothing about drafting — a pending item
     /// (undecided), a rejected one (never went out, and its reason is the
