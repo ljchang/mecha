@@ -665,7 +665,8 @@ impl Command {
 
 /// This process's hold on the router (D13), for a command that is one run.
 ///
-/// "Switch now" stops it as Ctrl-C would: the signal a run started through
+/// "Switch now" stops it, and the children it covers (`follow::cover_child`),
+/// as Ctrl-C would stop a foreground job: the signal a run started through
 /// `interrupt::run_interruptible` turns into a cancel at its next safe point,
 /// keeping the partial answer. A command that does not catch it ends — which
 /// is what the owner asked for by not waiting.
@@ -690,6 +691,9 @@ async fn hold_for_this_run(global: &GlobalOpts) -> Result<Option<mecha_core::hol
             // the next on its startup binding and load the old model back
             // (review of D13).
             mecha_core::provider::halt("the model was switched with `mecha model use --now`");
+            // Then the children this hold covers (`exp run`'s trials), which
+            // the signal below would not reach.
+            crate::follow::interrupt_covered_children();
             // SAFETY: signalling this process; no memory is touched.
             unsafe {
                 libc::kill(libc::getpid(), libc::SIGINT);

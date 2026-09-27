@@ -36,12 +36,15 @@ pub enum Cmd {
     /// entry is refused.
     Use {
         name: String,
-        /// Give up after this many seconds. A cold load from disk measured
-        /// 33–39 s on 2026-09-26; the unit allows 600.
+        /// Give up on the *load* after this many seconds. A cold load from disk
+        /// measured 33–39 s on 2026-09-26; the unit allows 600. The wait for
+        /// runs in progress before it has no limit, by the owner's ruling
+        /// (D13) — `--now` is the way past it.
         #[arg(long, default_value_t = 600)]
         wait_secs: u64,
-        /// Switch now: stop the resident model even mid-reply, instead of
-        /// waiting for it to go idle. The reply in progress fails.
+        /// Switch now: ask every run holding the model to stop at its next safe
+        /// point (as Ctrl-C would), give them 15 s, then switch — instead of
+        /// waiting for them to finish. A reply in progress ends early.
         #[arg(long)]
         now: bool,
     },
