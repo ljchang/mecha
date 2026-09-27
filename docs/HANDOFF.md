@@ -22,6 +22,29 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-27 — the web chat keeps its history mid-run (#358, installed);
+the phone check is owed.** What shipped is in HISTORY under 2026-09-27; the
+install is in *Machine state, dated* below. What is open:
+
+- **The phone check.** No test proves that an `EventSource` which dies on
+  screen-lock delivers `done` on the reconnected stream. If it does not, the
+  rail's `running` flag, polled every 20 s, is the belt. To check: start an
+  image edit in the web chat, lock the phone, come back. The history and the
+  picture should both be there.
+- **#362, the plan's own read (`GET /api/chat/{key}/todo`)**, needs the
+  binary installed and `mecha-serve` restarted *before* the dist goes out. The
+  new page calls the new route, so a page ahead of its binary 404s the plan
+  read and the plan panel stops updating mid-run.
+- **Known limit, not a bug:** taint a run acquires mid-turn reaches the page
+  only at `done`, so a mid-run chip shows the floor the run started from
+  (`Live::taint`). The arm #358 replaced sent `null`, which drew no chip.
+- **`image_generate` tells the model "the user can" see the picture on every
+  surface** (`imagegen.rs`, the result text), but only the web chat draws it
+  (`Chat.svelte`'s `generatedImage`). `setup.rs` registers the tool wherever
+  `[image]` is configured, which includes Slack and the TUI. Not acted on.
+  This was found while checking the phone report, whose own cause was #358:
+  the model had been told correctly, and the page was not drawing the picture.
+
 **2026-09-27 — model switching, server side: `:8080` is a llama-server
 router, installed, and every long-lived surface follows it; the chip is not
 built.** `REMOTE-SURFACE-DESIGN.md` §14 (D12, D13) is the authority, with the
@@ -2986,6 +3009,36 @@ record.** Verified by asking the artifacts:
   showed no diff. Its three scheduled scripts now follow the router:
   sourcing `scripts/pin.sh` and calling `scheduled_pin ""` against the live
   config gives an empty `PIN`.
+
+**Installed 2026-09-27 18:15Z, by the web-chat lane: #358 (`854c4f35`), on
+top of the peer lane's install of `970be371` (#360, #361,
+mecha-graph#23), which is that lane's to record.** #358 changed only serve
+code and the page, so there was no release literal to probe: every string it
+adds is `#[cfg(test)]`. Verified by asking the artifacts:
+
+- The shared checkout `~/Github/mecha` was fast-forwarded `970be371` →
+  `854c4f35`. The diff was only `serve/chat.rs`, `serve/mod.rs`, `web/` and
+  `CHANGELOG.md`, with no launch scripts and no `worker.py`, so the voice
+  worker, `llama-local` and parakeet were left alone.
+- The deployed dist was checked before it was replaced. There was no
+  `deployed-local` tag, and a build of `970be371` produced
+  `index-sFyWkiKZ.js`, the served hash, so the dist was main's and no lane's
+  live test. The new build is `index-C2zptKX7.js`. `grep -c held_by_run`
+  prints 1 in it and 0 in the old bundle. Through the `:8443` door the page
+  serves that bundle, and `voice-uplink-transform.js` answers `200
+  text/javascript`.
+- `~/.cargo/bin/mecha` was reinstalled at 18:15:28Z (`mecha-cli` only;
+  `mecha-mail` and the graph were unchanged). `mecha-serve` alone was
+  restarted, at 18:15:57Z, with no run in flight (`/api/sessions`), and both
+  doors logged their startup lines. `/proc/<pid>/exe` is
+  `~/.cargo/bin/mecha`, not `(deleted)`. `mecha-slack`, `mecha-triggers`
+  and `mecha-drain` still exec the previous inode, on purpose: #358 touches
+  none of their code.
+- Behaviour, probed through an incognito chat on the live server (it leaves
+  no transcript). One message was sent, and a transcript read taken while the
+  run held the conversation answered `held_by_run: true` with the message in
+  `entries`; the old binary answers `[]`. The chat was then ended (`204`),
+  and a read after that answers `410`.
 
 ## What the measurements say
 
