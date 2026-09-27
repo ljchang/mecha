@@ -3438,9 +3438,17 @@ from passing as the owner's. Readers take the reason through
 `word()` is fixed harness text with none of the reason's bytes — or
 `rejection_reason` / `owners_reason`, which are `None` unless the actor is
 `owner`. The reflector skips a non-owner reason (and leaves it unmarked in
-the mined ledger), the appraiser's input shows the typed word, the poll
-sweep writes "No time found", and `outbox show` and the TUI print the text
+the mined ledger), the appraiser's input shows the typed word and says the
+draft "was rejected" rather than that the owner rejected it, the poll sweep
+writes "No time found", `sessions appraise` counts owner-reasoned and
+other-reasoned rejections apart (`reasoned_rejections`,
+`unattributed_rejections`), and `outbox show` and the TUI print the text
 with `by <actor>` beside it, because the owner is reading their own store.
+The front door's `reconcile` copies a rejection's reason into its record's
+`note` whatever the actor; that is fine, because `note` is printed only to
+the owner's terminal and reaches no prompt. `outbox reconcile --outcome
+delivered` resolves without `resolve_with_output` and stamps the same actor
+(review of #343).
 **Items resolved before the field existed carry no actor and read as
 `unknown`** — fail closed, on the append-only rule; every such reasoned
 reject on the live store had already been mined when this landed. The

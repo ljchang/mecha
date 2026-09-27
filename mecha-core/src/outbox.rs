@@ -524,7 +524,7 @@ impl OutboxItem {
         let at = self.resolved_at.as_deref()?;
         let by = match self.resolved_by {
             Some(a) => a.as_str(),
-            None => "unknown (resolved before who was recorded)",
+            None => "unknown (not recorded)",
         };
         Some(format!(
             "resolved {at} by {by}{}",
@@ -645,7 +645,9 @@ pub enum Rejection<'a> {
     /// it: a model's `shell` ran the reject behind the approver
     /// (`owner-approved`), or who ran it is unknown — including every item
     /// resolved before the stamp. A reader shows the typed word
-    /// ([`Rejection::word`]) in its place, never the text.
+    /// ([`Rejection::word`]) in its place, never the text. Never carries
+    /// [`Actor::Owner`]: [`OutboxItem::rejection`] is the one constructor,
+    /// and an owner's reason is [`Rejection::OwnersWords`].
     NotOwners(Actor),
 }
 
@@ -1161,11 +1163,16 @@ impl OutboxStore {
     /// Owner-only reconciliation after checking the destination. This does not
     /// send anything; a confirmed non-delivery merely makes review possible again.
     /// The caller holds the store lock. Evidence is required for either verdict.
+    ///
+    /// `by` is who reconciled, stamped as `resolved_by` when a confirmed
+    /// delivery resolves the item — the one resolve that does not go
+    /// through [`Self::resolve_with_output`] (review of #343).
     pub fn reconcile_delivery(
         &self,
         id: &str,
         outcome: DeliveryOutcome,
         evidence: &str,
+        by: Actor,
     ) -> Result<OutboxItem> {
         anyhow::ensure!(
             outcome != DeliveryOutcome::Unknown,
@@ -1193,6 +1200,7 @@ impl OutboxStore {
         if outcome == DeliveryOutcome::Delivered {
             item.status = "sent".into();
             item.resolved_at = Some(now);
+            item.resolved_by = Some(by);
             item.output = Some(evidence.trim().to_string());
         }
         self.write_item(&item)?;
@@ -2194,7 +2202,7 @@ mod tests {
         assert!(legacy
             .resolution_line()
             .unwrap()
-            .contains("before who was recorded"));
+            .contains("by unknown (not recorded)"));
         let mut newer = serde_json::to_value(&owner).unwrap();
         newer["resolved_by"] = json!("owner-by-voice-print");
         let newer: OutboxItem = serde_json::from_value(newer).unwrap();
@@ -2640,7 +2648,12 @@ mod tests {
         assert_eq!(before.by_response["verify"].scored, 1);
 
         store
-            .reconcile_delivery(&e.id, DeliveryOutcome::Delivered, "seen in the sent folder")
+            .reconcile_delivery(
+                &e.id,
+                DeliveryOutcome::Delivered,
+                "seen in the sent folder",
+                crate::closure::Actor::Owner,
+            )
             .unwrap();
         outcome(&e.id, &pe.id, Verdict::NoIssue);
         let cal = read(&store);
@@ -3126,13 +3139,19 @@ mod tests {
             .unwrap();
         assert!(reopened.item(&item.id).unwrap().delivery_uncertain());
         assert!(reopened
-            .reconcile_delivery(&item.id, DeliveryOutcome::NotDelivered, "")
+            .reconcile_delivery(
+                &item.id,
+                DeliveryOutcome::NotDelivered,
+                "",
+                crate::closure::Actor::Owner
+            )
             .is_err());
         reopened
             .reconcile_delivery(
                 &item.id,
                 DeliveryOutcome::NotDelivered,
                 "Provider confirmed no delivery for this request",
+                crate::closure::Actor::Owner,
             )
             .unwrap();
         reopened.begin_delivery(&item.id).unwrap();
@@ -3169,13 +3188,23 @@ mod tests {
                 &item.id,
                 DeliveryOutcome::Delivered,
                 "Found message receipt-42 in Sent",
+                crate::closure::Actor::OwnerApproved,
             )
             .unwrap();
         assert_eq!(sent.status, "sent");
+        // The one resolve outside `resolve_with_output` stamps too (review
+        // of #343: it left `resolved_by` unset, which `show` then explained
+        // as an item older than the stamp).
+        assert_eq!(sent.resolved_by, Some(crate::closure::Actor::OwnerApproved));
         assert!(!sent.delivery_uncertain());
         assert!(store.begin_delivery(&item.id).is_err());
         assert!(store
-            .reconcile_delivery(&item.id, DeliveryOutcome::NotDelivered, "a second verdict")
+            .reconcile_delivery(
+                &item.id,
+                DeliveryOutcome::NotDelivered,
+                "a second verdict",
+                crate::closure::Actor::Owner
+            )
             .is_err());
         let legacy: OutboxItem = serde_json::from_value(json!({
             "id":"old", "status":"pending", "tool":"send", "args":{},
