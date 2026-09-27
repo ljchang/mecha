@@ -1651,15 +1651,23 @@ async fn appraise(
     // R16a: rejections of this population's drafts that carry the owner's
     // reason — the words `reflect` hands the reflector. Counted off the
     // drafts, since the reject's own sign is already on the edit channel.
-    let reasoned_rejections = drafts
-        .iter()
-        .filter(|d| {
-            d.rejection_reason().is_some()
-                && d.session_id
-                    .as_deref()
-                    .is_some_and(|s| appraised_ids.contains(s))
-        })
-        .count();
+    // And, apart, the reasoned rejections whose words are *not* the
+    // owner's (R16a's ruling D3: a model's shell, or a reject resolved
+    // before the stamp) — so a zero above reads as "no reason is
+    // attributable to the owner", never as "the owner gave none" (review
+    // of #343).
+    let (mut reasoned_rejections, mut unattributed_rejections) = (0usize, 0usize);
+    for d in drafts.iter().filter(|d| {
+        d.session_id
+            .as_deref()
+            .is_some_and(|s| appraised_ids.contains(s))
+    }) {
+        match d.rejection() {
+            Some(mecha_core::outbox::Rejection::OwnersWords(_)) => reasoned_rejections += 1,
+            Some(mecha_core::outbox::Rejection::NotOwners(_)) => unattributed_rejections += 1,
+            None => {}
+        }
+    }
     for a in &appraisals {
         *labels.entry(enum_key(a.label)).or_default() += 1;
         if !a.goals.is_empty() {
@@ -1774,6 +1782,10 @@ async fn appraise(
                 // the words `reflect` hands the reflector (R16a). The
                 // reject's own sign is on the `edit` channel.
                 "reasoned_rejections": reasoned_rejections,
+                // Rejections with a reason that is not the owner's words
+                // (owner-approved, unknown, or resolved before the stamp):
+                // never mined, shown to the appraiser as a typed word.
+                "unattributed_rejections": unattributed_rejections,
                 // R16f–h: verdicts on the rule, the reflection and the
                 // candidate — never a run's score. A group is `null` when
                 // its store could not be fully read.
@@ -1990,7 +2002,12 @@ async fn appraise(
     }
     println!(
         "    {:<24} {:>5}  — the reason reaches the reflector; the reject signs once, on `edit`",
-        "rejected with a reason", reasoned_rejections
+        "rejected, owner's reason", reasoned_rejections
+    );
+    println!(
+        "    {:<24} {:>5}  — a reason not the owner's own words (a run's shell, or before who was \
+         recorded): never mined",
+        "rejected, other reason", unattributed_rejections
     );
     // Then the ones that are never a run's score (R16f–h).
     println!("\n  owner verdicts on the learner (never a run's score)");

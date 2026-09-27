@@ -774,6 +774,26 @@ The rest, ruled 2026-09-24 as proposed:
 | R16g | drop / edit a reflection | a verdict on the reflector: a dropped reflection never becomes a rule, an edited one carries the owner's text; never a run's score |
 | R16h | harness change `accept` / `reject` / `revert` | credit for that change and the diagnosis behind it (L6); never a run's score |
 
+**R16a's ruling D3 (the owner, 2026-09-27): a reject's reason is the
+owner's words only when the owner's own door made the reject.** (Not
+mecha-graph's D3 correction contract, row 2e-3.) `mecha outbox reject
+--reason` is a command a model's `shell` can run, and the item recorded no
+actor, so a reason typed behind the approver reached the reflector as the
+owner's correction. Every outbox resolve now records who made it
+(`OutboxItem::resolved_by`), decided with the closure store's rules
+(`closure::attribute` over `closure::decide`): `owner` at the owner's
+terminal or a surface's own child — the web review, the TUI's `/outbox`,
+a Slack tap, voice's release — `owner-approved` under an interactive run's
+registered shell, `unknown` otherwise. Unknown is not the owner. Readers
+use the text only under `owner` (`OutboxItem::rejection` →
+`OwnersWords` / `NotOwners`, with a typed word in place of the text): the
+reflector skips the rest, the appraiser's input (2a-2) shows the typed
+word, and the poll sweep writes "No time found" on the participants' page.
+Items resolved before the stamp read as `unknown`; every reasoned reject
+on the live store had already been mined when it landed. Built by
+`feat/outbox-resolve-actor`; ARCHITECTURE's outbox section holds the
+detail and the residue.
+
 **S3b — declined 2026-09-24 (here §1, decision 2).** A one-tap verdict
 asks the owner for work the system is meant to infer. Kept below for the
 record, with why it was proposed.
@@ -1863,7 +1883,10 @@ so the common re-delegation — a run that ended without a closure — needs a
 session walk keyed on the task anchor, which no index serves yet; a reopen's
 `reason` is the owner's words only when its actor is `Owner`, and model text
 under `OwnerApproved`, so it needs an authorship rule before it rides into a
-prompt; and "valence" as an outcome is a number R21 keeps out of the brief, so
+prompt — and so does an outbox rejection's reason, which carried no actor at
+all until R16a's ruling D3 (2026-09-27, see S3): 3a-2 is to render a rejection
+through `OutboxItem::rejection`, quoting only `OwnersWords` and giving the
+typed word for `NotOwners`; and "valence" as an outcome is a number R21 keeps out of the brief, so
 the outcome has to be said as words (rejected, reopened, a check failed).
 
 #### P1. Planning as joint optimization across goals and state
