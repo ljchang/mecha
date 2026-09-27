@@ -44,6 +44,7 @@ mod files;
 mod frontdoor;
 mod incognito;
 mod mail;
+mod model;
 mod present;
 mod proposals;
 mod questions;
@@ -329,6 +330,11 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
                 .layer(axum::extract::DefaultBodyLimit::max(26_214_400)),
         )
         .route("/api/chat/{key}/file", get(files::download))
+        // The chip (§14 step 5). The owner's only: every route here is behind
+        // `owner_guard`, and no tool reaches these.
+        .route("/api/model", get(model::state))
+        .route("/api/model/use", axum::routing::post(model::switch))
+        .route("/api/model/cancel", axum::routing::post(model::cancel))
         .route("/api/outbox", get(review::list))
         .route("/api/outbox/{id}", get(review::detail))
         .route(
