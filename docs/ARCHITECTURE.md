@@ -258,9 +258,10 @@ The parts that bite hardest:
   - **A waiting switch is hurried by a marker keyed to its identity, never
     its path** (`Holds::request_now`, the chip's "switch now"). The marker's
     name is a function of the router alone, so it carries the switch's pid
-    and start time and names the target it was asked for: one left by a
-    withdrawn or killed switcher must not hurry the next switch, and a switch
-    replaced by one to another model is never hurried in the first's name.
+    and start time, and `request_now` checks the pending switch's target
+    against the one asked for as it writes: one left by a withdrawn or killed
+    switcher must not hurry the next switch, and a switch replaced by one to
+    another model is never hurried in the first's name.
     `Switching`'s own drop and `withdraw_switch` remove it; `cancel-switch`
     sweeps any left over. The same lesson as `Switching::still_pending`
     (review of #350).
