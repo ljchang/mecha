@@ -211,6 +211,29 @@ fn sessions_appraise_reads_every_verdict_the_owner_already_gives() {
         "totals are wrong",
     ]);
 
+    // The same act through a model's shell behind the approver: a reason
+    // on file that is not the owner's words, counted apart (ruling D3).
+    let approved = outbox
+        .stage(
+            "mail_send",
+            mecha_core::outbox::OutboxKind::Message,
+            serde_json::json!({"to": "sam@example.edu", "body": "Totals again."}),
+            Default::default(),
+            mecha_core::outbox::Provenance {
+                session_id: Some(ADA.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    outbox
+        .resolve(
+            &approved.id,
+            "rejected",
+            Some("always cc Dana Whitfield".into()),
+            mecha_core::closure::Actor::OwnerApproved,
+        )
+        .unwrap();
+
     // The owner's curation of the learners, through their verbs.
     seed_rule(&f.home());
     f.ok(&["rules", "retire", "rule-fixture", "--reason", "too broad"]);
@@ -242,6 +265,7 @@ fn sessions_appraise_reads_every_verdict_the_owner_already_gives() {
         "nothing was closed: {acts:#}"
     );
     assert_eq!(v["reasoned_rejections"], 1);
+    assert_eq!(v["unattributed_rejections"], 1);
     assert_eq!(v["curation"]["rules"]["retired"], 1);
     assert_eq!(v["curation"]["rules"]["restored"], 1);
     assert_eq!(v["curation"]["harness"]["accepted"], 1);
@@ -253,9 +277,11 @@ fn sessions_appraise_reads_every_verdict_the_owner_already_gives() {
         "unread, never zero: {v:#}"
     );
     // +0.5 for the kept closure; -1.0 reopen, -1.0 failed verify, -0.5
-    // cancel, -1.0 rejected draft. The reopened closure's +0.5 is gone.
+    // cancel, -1.0 for each rejected draft (the reject's sign is
+    // actor-blind; only its words are gated). The reopened closure's +0.5
+    // is gone.
     assert_eq!(v["valence"]["positive"], 0.5, "{v:#}");
-    assert_eq!(v["valence"]["negative"], 3.5, "{v:#}");
+    assert_eq!(v["valence"]["negative"], 4.5, "{v:#}");
 
     // The human readout names each channel.
     let text = f.ok(&["sessions", "appraise", "--include-tests"]);
@@ -263,7 +289,8 @@ fn sessions_appraise_reads_every_verdict_the_owner_already_gives() {
         "owner acts on runs",
         "task_reopened",
         "workflow_verify_failed",
-        "rejected with a reason",
+        "rejected, owner's reason",
+        "rejected, other reason",
         "owner verdicts on the learner (never a run's score)",
         "1 retired · 1 restored",
         "1 accepted · 1 rejected · 1 reverted",

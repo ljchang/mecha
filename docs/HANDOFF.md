@@ -50,31 +50,26 @@ note suggests a copy in `scripts/` beside `start-moe-mtp.sh`; and a race between
 shell and registering it (`shell_registry::ShellRegistry`), seen as a flaky test and not
 fixed in product code.
 
-**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1,
-3a and 3a-3 merged and installed, with R34's readout; 2c-2 and 2b-1
-merged.** `APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with
-its rulings in §6. Phase 1's rows 1a–1i landed as #292–#294, #297–#302, #304
-and #305 (plus mecha-graph#21 for the graph TUI's half of 1c; #303 is
-`image_generate`, another lane's, not recorded here). The phase was meant to
-change nothing a run does, with three exceptions: 1b refuses a close from a
-run with nobody present; 1d stops curating a reflection from moving a run's
-valence; and 1e and 1f change what `planning::Decision::assess` reads for
-`ReviewCommitment`, which reaches a run only under `goal_guidance` (off by
-default). Phase 2's 2a-1 (#308), 2a-2 (#314), 2c-1 (#311) and 2d-1 (#312)
-and phase 3's 3a (#309, behind a lever that ships off) followed the same
-day, then 2a-3 (#315), R34's closed-goal readout (#317), 3a-3 (#316,
-R35's arming and the fold as an append), 2c-2 (#320) and 2b-1 (#319). What
-each built is in HISTORY under 2026-09-24/25. `mecha` was reinstalled at
-21:01Z and carries all of it but 2c-2 and 2b-1: #316's and #317's literals
-are in the binary, and the build is reported as `04b89ea0` (*Machine
-state, dated* below). Six owner rulings of 2026-09-25 are rows R30–R35 of the design's
-§6. What is open, the follow-ups owed, the minors banked for the owner and
-the `CLAUDE.md` drift are at the top of *The goal system* below.
-The workspace on this branch merged with `8c0f5a9d` (no code differs from
-`main`): `cargo test --workspace -q`, summed over its 33 `test result`
-lines, gives 3,157 passed, 0 failed, 4 ignored (3,145 at `6e6f03ba`, 3,136
-at `0692dc79`, 3,142 at `8b0acbe8`, 3,149 at `3f494340`, 3,152 at
-`6f8e69ca`; #313, #315, #316, #317, #319 and #320 changed the set).
+**2026-09-26 — appraisal wiring: phase 1 and every phase-2 row but 2a-4,
+2e-2, 2e-4b, 2e-4c and 2e-5's appraisal-weighted half are merged and
+installed, with 3a and 3a-3.**
+`APPRAISAL-WIRING-DESIGN.md` (#291) is the authority, with its rulings in
+§6 (R30–R37 of 2026-09-25, R38 of 2026-09-25/26, R39–R41 of 2026-09-26).
+What each row built is in HISTORY: phase 1, 2a-1 to 2a-3, 2b-1, 2c-1,
+2c-2, 2d-1, 3a and 3a-3 under 2026-09-24/25, and 2b-2, 2d-2, 2d-3, 2e-1,
+2e-3, 2e-4a, 2e-5a–c, 2e-6 and 2f
+(#322, #324, #327–#329, #332, #334–#336, #338) under 2026-09-25/26. `mecha`
+was last installed at 22:40Z from `b3135e1b`, `main`'s tip, and carries
+all of it (*Machine state, dated* below). Nothing that measures phase 2 has
+run yet: #333, which puts `sessions compare` and `learn --compare-sources`
+in the nightly, is open and held, and `~/.mecha/comparisons/` is empty.
+What is open, the follow-ups owed, the minors banked for the owner and the
+`CLAUDE.md` drift are at the top of *The goal system* below. Two other
+lanes' work of the same day is theirs to record: model switching and the
+router (#337 merged, #339 and #340 open) and the qwen3.6 comparison arm now
+on `:8080`. `cargo test --workspace -q` at `b3135e1b`, in this worktree's
+own target directory, summed over its 36 `test result` lines: 3,358 passed,
+0 failed, 4 ignored (3,157 at `8c0f5a9d`, the last count here).
 
 **2026-09-24 — the outbox unclogged: a reply goes from its thread's account,
 and the web review reads as mail and sends in one press.** #272
@@ -2820,6 +2815,43 @@ through the door: `POST /api/incognito` opened a chat that read back
 `cache-control: no-store` and its room on tmpfs; `/alive` answered 204,
 `/end` 204, a reopen 410, and the room was gone.
 
+**Installed from main, 2026-09-26 ~03:50Z, by the model-switching lane:
+`39c9f359` (#331, incognito step 4), whose source also carries 2f
+(#329).** That lane's install is its own to record; noted here only as the
+baseline for the two below. `~/.cargo/bin/mecha` was not probed then, so
+this entry is no evidence that a `mecha` carrying 2f was running.
+`git merge-base --is-ancestor b180a2e6 39c9f359` exits 0. Files written
+then, read by mtime and not by content: `~/.cargo/bin/mecha-mail` and
+`mecha-docs` (03:50:03Z) and `~/.mecha/web/dist` as `index-jR5V3Voi.js`
+(03:50:14Z). The voice worker shows `ActiveEnterTimestamp` 03:50:39Z.
+
+**Installed from main, 2026-09-26 12:19Z, by the appraisal lane: `450a5cc6`
+(#334, with #332), `mecha` only (reported by that lane; the binary was
+replaced at 22:40Z, so it can no longer be re-measured).** It reported
+`strings ~/.cargo/bin/mecha | grep -cF` going from 0 to 1 for #332's
+`attributed correction(s) admitted as behaviour` and for #334's `ranked with
+an unknown factor`. It also reported `mecha-slack`, `-triggers`, `-drain`
+and `-serve` restarted with their startup lines seen. mecha-mail, the web
+dist, the voice worker and the config were not touched.
+
+**Installed from main, 2026-09-26 22:40Z, by the appraisal lane: `b3135e1b`
+(#338, with #335, #336 and #337), `mecha` only — verified 22:43–22:50Z by
+asking the artifact.** `~/.cargo/bin/mecha` has mtime 22:40:42Z. `strings
+~/.cargo/bin/mecha | grep -cF` prints 1 each for #336's `closed by an actor
+this build cannot read`, #338's `owner tenure unknown for every rule` and
+`quiet regions unknown: the session store could not be walked`, #332's
+`admitted as behaviour` and #334's `ranked with an unknown factor`, and
+still 1 for #328's `counterfactuals.jsonl`, #324's `scores.jsonl` and #322's
+`numeric_only`, and 6 for #327's `lesson_sources`. The installing lane
+reported the first of those at 0 before the install. No literal was
+probed for #335; `git merge-base --is-ancestor ab1f7375 b3135e1b` exits 0,
+and the installing lane reports the build as `main`'s tip, which has not
+moved since. `b3135e1b` also carries #337, the model-switching lane's
+merge, which is that lane's to record. `mecha-slack`, `-triggers`, `-drain`
+and `-serve` show `ActiveEnterTimestamp` 22:40:47Z. mecha-mail, the web
+dist (still `index-jR5V3Voi.js`), the voice worker and the config were not
+touched.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -3835,27 +3867,73 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
-**2026-09-25 — appraisal wiring: phase 1, 2a-1, 2a-2, 2a-3, 2c-1, 2d-1,
-3a and 3a-3 shipped and are installed, with R34's readout (#317); 2c-2
-(#320) and 2b-1 (#319) are merged, not installed.** The authority is `APPRAISAL-WIRING-DESIGN.md`:
-§3 holds the plan as pull requests with their order, and §6 the rulings,
-including R30–R35 of 2026-09-25. What each row built is in HISTORY under
-2026-09-24/25. Four of the catalogue entries phase 1 built (S5, S7, B1 and
-G4) end with a *Built as* paragraph naming what that PR deferred, and those
-deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
-1b, 1d and 1g deferred is in their PR bodies (#292, #293 and #294, #299,
-#298), save 1d's graph channel below. What is open:
+**2026-09-26 — appraisal wiring: phase 1, 3a, 3a-3 and every phase-2 row
+but 2a-4, 2e-2, 2e-4b, 2e-4c and 2e-5's appraisal-weighted half are merged
+and installed.** The authority is `APPRAISAL-WIRING-DESIGN.md`: §3 holds
+the plan as pull requests with their order, and §6 the rulings: R30–R37
+of 2026-09-25, R38 of 2026-09-25/26 and R39–R41 of 2026-09-26. What each
+row built is in HISTORY under 2026-09-24/25 and 2026-09-25/26. Every
+catalogue entry phase 2 built
+ends with a *built* paragraph naming what its PR left, and those are not
+repeated here. Of phase 1's, four (S5, S7, B1 and G4) do the same; S1, S8,
+S3 and O4 carry none, so what 1a, 1b, 1d and 1g deferred is in their PR
+bodies (#292, #293 and #294, #299, #298), save 1d's graph channel below.
+What is open:
 
-- **In flight: 2d-2 and 2b-2.** 2d-2 is R26's acceptance combination;
-  the owner ruled a refinement, R36, on 2026-09-25, and the 2d-2 lane is
-  adding its §6 row (point-wise for with no numeric regression accepts,
-  point-wise against rejects, and undecided falls back to today's numeric
-  gate, recorded as numeric-only). 2b-2 scores R33's `expected_act`; the
-  owner ruled R37 the same day, which the 2b-2 lane is adding: a "no act"
-  resolves once the output's store patience
-  (`doctor::Patience::for_store`) has elapsed since the appraised session
-  ended. Past those, the design's §3 order: 2d-3, 2e-1 and 2f after 2a-2;
-  2e-3, 2e-4 and 2e-6 on phase 1 alone.
+- **#333 is open and held, and it is what makes phase 2 measure
+  anything.** It adds `mecha sessions compare` (2d-1) and `mecha learn
+  --compare-sources` (2e-1) to `scripts/ruminate.sh`, and a
+  `Tally::owner_bound` count to the Rust. Until it lands, neither pass runs
+  unattended. `grep -c compare scripts/ruminate.sh` on `main` at
+  `b3135e1b` prints 0, and `~/.mecha/comparisons/` exists but is empty
+  (`ls -A ~/.mecha/comparisons | wc -l` prints 0, 2026-09-26 22:50Z). So
+  **2e-1's real-session measurement, R25's gate for 2a-4 and the gate for
+  2e-2, has never run**, and 2d-3 has no comparison to teach from.
+  - *The owner's rulings of 2026-09-26 on #333*, recorded in the design's
+    O1 and L2 paragraphs on its branch and landing with it. The nightly
+    never drives an owner-bound check point: such a point is posed as an
+    artifact probe, which executes its task, so the pass counts it as
+    `owner_bound`, apart from `unavailable`. `sessions compare` runs
+    before `learn`, for `validate`'s reason. Running before `learn` is
+    **not a hold-out**: live consolidation (`learn-live.sh`) has usually
+    learned from a point's steer within minutes, and the draw has no
+    unprocessed filter. The ruling corrects that claim and keeps the order.
+    #333's own description still says "keeps them held out"; the branch's
+    script and design doc say otherwise.
+  - *Held until `:8080` serves the production model again.* At 22:50Z
+    `curl -s localhost:8080/props` answered `model_alias`
+    `qwen3.6-35b-a3b-uncensored`, the qwen3.6 comparison arm, not the
+    `qwen3.6-35b-a3b` the incognito check read at 01:15Z. Points driven
+    now would write that model's verdicts into the real comparison store.
+    Production returns with the model-switching lane's router install,
+    after the 03:30Z and 05:31Z passes (the times `mecha-ruminate.timer` and
+    `mecha-mail-classify.timer` fire), and then the owner's go.
+  - *Then, in order:* merge (the owner's call), install `mecha` from the
+    merged `main` (`owner_bound` is Rust), fast-forward the shared
+    `~/Github/mecha` checkout (the timer runs the script from there), and
+    run the owed one-point smoke from `mecha work path ruminate`:
+    `MECHA_SESSION_KIND=test mecha sessions compare -p local --points 1`.
+    Then run `scripts/retirement-drill.sh`, which ARCHITECTURE's learning
+    section asks for after touching the retirement scan, as #338 did. It
+    drives real probe passes against the live model, so it waits for
+    `:8080` too.
+- **In flight, other agents: row 2e-4b** (planning success examples and
+  contrast evidence, branch `feat/planning-successes-2e-4b`) **and row
+  3a-2** (a re-delegated task's previous attempts, branch
+  `feat/brief-previous-attempts-3a-2`). Both branches are local with no PR
+  yet, and neither is on `main`: `planning.rs` reads no success, and
+  nothing names a previous attempt.
+- **Still gated or deferred.** 2a-4 (the reflector folded in) and 2e-2
+  (`learn` fed clean appraisals) wait on 2e-1's measurement above. 2e-4c
+  (a staged skill draft) is deferred by R40 until the success set has been
+  read on real data. 2e-5's appraisal-weighted half waits behind R20. Serving
+  2e-4a's exemplars to drafting runs is a lever not yet built, and when it
+  lands it arms `private_data` (the L2 entry).
+- **What phase 2 has on disk so far.** At 22:50Z `~/.mecha/appraisals/`
+  held `appraisals.jsonl` (4 lines, `grep -c .`) and neither
+  `scores.jsonl` (2b-2) nor `counterfactuals.jsonl` (2d-3). Read `sessions
+  appraise` and `mecha sessions successes` after a few nights before
+  judging any phase-2 row on real data.
 - **2c-2's measured run is owed** (#320). `Lever::PastAppraisals` ships
   off, and the design asks for a `mecha exp` arm against a control at
   matched budget before it goes on, since retrieved memory can cost more
@@ -3870,17 +3948,20 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
   - R35's arming and 3a-3's fold-as-append are built (#316, HISTORY), so
     turning the lever on is now the experiment arms' measurement (§1
     decision 7), not an unbuilt safeguard.
-  - **3a-2 (M5), a re-delegated task's previous attempts, is still owed.**
-    No record lists them, and a reopen's reason needs an authorship rule
-    first (the design's M5 entry).
-- **2d-1's pass is not in the nightly job.** `mecha sessions compare` runs
-  only by hand; adding `"$MECHA" sessions compare -p "$PROVIDER"` to
-  `scripts/ruminate.sh` after `validate` is the owner's deploy decision
-  (`grep -c compare scripts/ruminate.sh` prints 0). Owner-bound check points
-  run a whole artifact repeat per arm, and `ProbePrep::unrunnable_under`
-  refuses one unless hooks, the outbox and messages are off
-  (`--no-hooks`, `--no-outbox`, messages off), so under the default config
-  they never run — the same gap as `mecha validate`'s mismatch probes.
+  - **3a-2 (M5), a re-delegated task's previous attempts, is in flight**
+    (above). No record lists them, and a reopen's reason needs an
+    authorship rule first (the design's M5 entry).
+- **2d-1's pass is not in the nightly job, and #333 is where it lands
+  (still open; see its item above).** `mecha sessions compare` runs only by
+  hand on `main` (`grep -c compare scripts/ruminate.sh` prints 0 at
+  `b3135e1b`). Owner-bound check points run a whole artifact repeat per
+  arm, and `ProbePrep::unrunnable_under` refuses one unless hooks, the
+  outbox and messages are off (`--no-hooks`, `--no-outbox`, messages off),
+  so under the default config they never run. That is the same gap as
+  `mecha validate`'s mismatch probes. #333 does not close the gap. It
+  counts those points as `owner_bound` instead of `unavailable`, by the
+  owner's ruling. Remove this item once #333 is merged and the shared
+  checkout carries it.
 - **2a-2's seat time: watch the tail.** Measured on 8 copied real sessions
   (#314): follow-ups of 19.8 to 137.2 s, median about 64 s, against 272 s
   for all 8 episode calls, so distilling a session holds a seat about three
@@ -3890,8 +3971,8 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
   real runs anchored, verdicts per week by channel, readings that vary run
   to run, a closure from every surface in `sessions appraise`, and a recorded
   brief complete on a sample. Read `sessions health` and `sessions appraise`
-  after some days on a build carrying phase 1 (installed since 16:41Z); at
-  17:58Z one real run had been recorded on one.
+  after some days on a build carrying phase 1 (installed since 2026-09-25
+  16:41Z); at 17:58Z one real run had been recorded on one.
 - **1d's graph channel is unreadable from mecha.** Rejected graph facts
   from `agent:mecha` episodes (L7's input) need a read-only mecha-graph verb
   that returns rejected candidates with their origin episode, or the review
@@ -3953,6 +4034,67 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
       the goal pointer in `Evidence::into_record`, which is reached through
       `Agent::set_appraisal_evidence` after `setup::prepare` has started
       the MCP servers, not with the other evidence checks before it.
+  - *Phase 2 (#322–#338)*: review minors the authors left open. Each was
+    re-checked present at `b3135e1b` by symbol; items already fixed on
+    `main` are dropped. The module-map gaps and the retirement drill are
+    listed elsewhere in this section.
+    - 2d-2 (#322): `pointwise_line`'s doc comment sits on `lost_line` in
+      `commands/harness.rs`. `Judgement::guard` is not persisted on
+      `Measurement`. In `candidate::combine` the lost-candidate brake fires
+      only on (for, `Held`), so a candidate arm lost on every point reads
+      undecided and the numbers decide. `pointwise_pass`'s `reuse` spends
+      budget on a row whose outcomes cannot be read. `Security` and
+      `Architecture` candidates still pay for the pass, which the author
+      kept deliberately. `comparison::Summary::of` folds candidate rows into
+      the rule `point-*` kinds. `distill`'s comparisons brief renders only
+      the role, and the artifact-repeat receipt does not name the arm that
+      carried the change.
+    - 2b-2 (#324): `AppraisalStore::score_due` re-reads the score ledger per
+      row. There is no test of `expected_act` given a non-string. The
+      `expectations` JSON prints `read: true` for an absent store, and
+      `score_predictions` returns silently with no store. ARCHITECTURE's
+      "Unknown is never \"no act\"" bullet states the closure rule
+      unconditionally. `outbox_patience` has an unreachable `.ok_or_else`
+      arm, and the website's `expectations` row is not marked store-wide.
+    - 2e-1 (#327): the `Clean` doc says `AppraisalStore::clean` is the one
+      door, but `clean_with_sessions` is a second, and `clean()` repeats its
+      admit loop rather than delegating. `--compare-sources` does not
+      conflict with `--min`, which it then ignores.
+      `lesson_source::report` is O(eligible × comparisons) and runs on
+      every `sessions appraise`. No count covers rows detached from an
+      eligible reflection.
+    - 2d-3 (#328): `losing_arms_line` omits `Taught::other_kinds`, the
+      largest bucket. `role_phrase` interpolates `proposal_id` with no
+      length cap.
+    - 2f (#329): `AppraisalNote::of` drops a `Bearing::Unknown` before
+      counting, so such a cut is never flagged. The ceiling test's
+      `per_note` formula omits `APPRAISAL_SESSION_ID_CHARS`. Stage levers
+      have no `stages_on` counterpart to `levers_on`.
+    - 2e-3 (#332): `Session::messages_ever_before` parses the transcript
+      twice per correction. `attribution::in_scope` compares `"behavior"`
+      and `"mismatch"` as literals. `Given::before` pushes raw tool-input
+      JSON into what the run said. `MIN_SPAN_CHARS` is 3, and there is no
+      re-attribution backfill for the pre-field reflections.
+    - 2e-6 (#334): `Recurrence::scan` ignores `draw_pool`'s workspace scope.
+      `Priority::tier` checks `known_zero` before unknown, so a known-zero
+      gain with an unknown need ranks as known zero, against the module
+      doc's order. `learn` clones each batch's reflections, and
+      `appraisal::Stores` derives `Default` for tests only.
+    - 2e-5a (#335): no test puts the answered `ask_user` in the turn just
+      before the intervention, which is the edge of
+      `Transcript::anchor_covering`'s window.
+    - 2e-4a (#336): `success::derive` checks `Actor::Unknown` after the
+      reopen lookup. `Act::WorkflowClosed` names the workflow, not the
+      close. `success_readout::run` loads the charter and front door
+      through `Stores::load()` without using them, and `sessions appraise`
+      lists the session store a second time through it. The truncation of
+      `unknown` is in store order, though `--limit` says newest first. The
+      tests use `std::process::id()` temp dirs, and the website's
+      `successes` block omits `-n`.
+    - 2e-5b/c (#338): the QUIET count is taken over user and learned rules,
+      while the per-rule lines exclude user rules. `Standing::read` has no
+      test of its own. `rules show` pays a full `Tally::scan` and
+      `Recurrence::scan` for one rule.
 - **`CLAUDE.md` has drifted, and editing it is the owner's call.**
   - The goal-system headline says the homeostat and `anticipated_guilt` are
     sensors whose only reader is the diagnostician's brief. Since 1e and 1f,
@@ -3964,9 +4106,12 @@ deferrals are not repeated here; S1, S8, S3 and O4 carry none, so what 1a,
     the decision is guidance and `goal_guidance` gates it. The module map's
     `guilt.rs` line ("folded from *recorded* commitments") predates guilt
     per commitment.
-  - The module map lacks the arc's seven new modules: `appraisal_store.rs`,
-    `brief.rs`, `closure.rs`, `comparison.rs`, `curation.rs`,
-    `pointwise.rs` and `shell_registry.rs`. Checked with `for f in $(ls mecha-core/src/*.rs |
+  - The module map lacks the arc's twelve new modules: phase 1's
+    `appraisal_store.rs`, `brief.rs`, `closure.rs`, `comparison.rs`,
+    `curation.rs`, `pointwise.rs` and `shell_registry.rs`, and phase 2's
+    `attribution.rs` (2e-3), `lesson_source.rs` (2e-1),
+    `replay_priority.rs` (2e-6), `success.rs` (2e-4a) and `tenure.rs`
+    (2e-5b/c). Checked at `b3135e1b` with `for f in $(ls mecha-core/src/*.rs |
     xargs -n1 basename); do grep -qE "^$f\b" CLAUDE.md || printf '%s ' $f;
     done`, which also lists `anticipation.rs`, `date_context.rs`,
     `fixture_check.rs`, `lib.rs`, `surface.rs`, `text.rs`, `title.rs` and

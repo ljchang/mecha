@@ -157,6 +157,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: python3 scripts/test_model_idle.py
+      # The same kind of contract for the helper the bench scripts ask a
+      # router through: its answer, and that asking never loads a model.
+      - run: python3 scripts/test_served_props.py
+
+  # The router's model lookup (scripts/start-router.sh), against caches of the
+  # shapes that broke it. Its own job for the reason above: a failure here must
+  # not read as the idle gate failing.
+  start-router:
+    name: router lookup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 scripts/test_start_router.py
+      # And the scheduled scripts that ride on it: unset, they name no
+      # provider, because on a router a pin is a load (2026-09-27, 03:30:14).
+      - run: python3 scripts/test_follow_loaded.py
 
   # The integration tests skip themselves when a sandbox backend is missing, and
   # a silently skipped test reads exactly like a passing one. This job installs

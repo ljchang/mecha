@@ -166,6 +166,9 @@ delegated task, fictional):
 ```text
 Situation brief from the harness, as things stood when this run started; a later situation brief in this conversation replaces it. It describes; it asks nothing of you.
 - Goal: task task-1, under project project-aurora (2 open tasks there). No store links it to a charter line.
+- Previous attempts at this task: 1 earlier session, newest first.
+  - Session 20260925T090000-a1b2c3d4 (started over a day ago). The owner: draft rejected (d-7f3e); reopened the task (close-9c1d), and wrote, in the owner's own words: "the totals are for Lakeside, not Northwind".
+    How it ended, as the harness recorded it (not a verdict): it hit the turn limit.
 - Board: 4 open tasks (1 inbox, 1 next, 2 waiting); 1 overdue (task-2); 2 due in the coming week (task-3, task-1); 2 tasks waiting on you; none waiting on someone else. Your own task is `waiting`, due 2026-09-30.
 - Waiting on the owner: one draft in the outbox, waiting over a day, past the owner's patience (charter line `replies`); no parked questions; no front-door requests.
 - Time: Friday afternoon for the owner; outside their quiet hours.
@@ -189,6 +192,14 @@ What the words may and may not say:
   progress or not.
 - **Anything unknown is said to be unknown**: "could not be read", never
   "none". A count that may be short says "at least".
+- **Only your own words are quoted.** A task's previous attempts are said as
+  what you did (rejected a draft, reopened the task, let a question go) and
+  the ids of what you did it to. The reason you gave when you reopened a task
+  is quoted only when you reopened it yourself; if a chat reopened it with your
+  approval, the brief says a reason exists and does not repeat it. A reason you
+  gave for rejecting a draft is not quoted yet: the brief says the draft was
+  rejected and names it. How an earlier run ended is labelled as mecha's
+  record, not a verdict on the work.
 
 In a long web chat, a new brief is sent only when its words change. The time,
 a voice call, how full the context is and how busy the model server is are
@@ -199,6 +210,7 @@ compaction the brief is put back rather than summarised.
 | Field | What it says |
 |---|---|
 | `goal` | The chain above the run's goal: the task, its project (read off the board row, with how many tasks are open under it), and the charter lines it serves (a trigger's `serves`, ranked by your charter). A run with no goal records `no_anchor`, not an empty chain. |
+| `attempts` | For a run on a board task: up to three earlier sessions on the same task from the last 90 days, newest first, each with what you did with its work and how its run ended. A run on anything else records `not_a_task` and says nothing. If a session file could not be read, or older sessions were not searched, it says "at least". `sessions health` counts the field as unread only when something failed (a file or a store could not be read); stopping at three sessions or 90 days is not a failure. |
 | `board` | Your board as counts and pointers: open tasks by status, how many are overdue or due this week, how many the agent holds, the ids of the overdue and soon-due ones, and the run's own task row. mecha reads it itself before the run. No task's name or who it waits on is kept, and the model never fetches it (a fetch by the model would mark the conversation as holding untrusted content). |
 | `commitments` | Each pending commitment (a staged draft, a parked question, a request waiting on you) with its age and whether it is past its patience. Stores withdrawn from the run as saturated are named. |
 | `time` | The local time in your `[agent] timezone` and whether it is inside the quiet hours you set (`workflows/attention.toml`). No file means no quiet hours are recorded, not the digest's 22–08 UTC default. |
@@ -443,7 +455,8 @@ mecha sessions appraise --days 30 --kind web --json
 | `sessions_read`, `sessions_unreadable` | A damaged transcript is missing evidence, not a smaller successful population. |
 | `outbox_read`, `questions_read`, `frontdoor_read`, `learning_read`, `charter_read`, `closures_read`, `workflows_read` | Whether each source was readable. |
 | `owner_acts` | Your acts on runs, by act: `task_closed`, `task_dropped`, `task_reopened`, `workflow_closed`, `workflow_cancelled`, `workflow_reopened`, `workflow_verify_failed`. All are signed on the `commitment` channel. |
-| `reasoned_rejections` | Rejected drafts in this population whose reason reaches the reflector. |
+| `reasoned_rejections` | Rejected drafts in this population whose reason reaches the reflector: yours, made at your own door. |
+| `unattributed_rejections` | Rejected drafts with a reason that is not recorded as yours — a run's `shell` made the reject, or it predates the record of who did. Never mined. |
 | `curation` | Your verdicts on rules (`retired`, `restored`), reflections (`dropped`, `edited`) and harness candidates (`accepted`, `rejected`, `reverted`); a group is `null` when its store could not be read. None of these is a run's score. |
 | `graph_fact_rejections` | Always `null` for now: not readable from mecha. |
 | `tests_hidden`, `experiments_hidden` | Development data excluded from the population. |
@@ -451,12 +464,87 @@ mecha sessions appraise --days 30 --kind web --json
 | `appraiser` | Always `null`: the counts-only appraiser is retired. Kept so a reader of the old shape still finds the key. |
 | `predictions` | Anticipation's predictions scored (store-wide): per response and per concern kind, `predictions`, `scored`, `materialized`, `clean`, the reasons the rest are not yet a point (`unscored`), and `materialized_rate`, which is `null` when nothing was scored; plus `total`, `unreadable`, and whether the outbox was fully `read`. See [anticipation](/docs/features/appraisal/anticipation#how-well-the-predictions-held-up). |
 | `expectations` | The appraisals' own predictions (their expected act) checked against what you did: `with_expectation`, `scored`, `hits`, `surprises` (and `clean_surprises`), `pending` (the waiting period is still open), `unknown` (a store, the board or the patience could not be read), `board_not_read` (task outputs this readout cannot window, because it reads no board; `mecha distill` scores them), and `hit_rate`, which is `null` over no scores. `read: false` when the store could not be read. |
+| `successes` | [What went right](#what-went-right), store-wide: `standing` and `by_kind`, `withdrawn` (taken back by a reopen), `unknown` (never counted), `hidden` (in development sessions), `partial` with the `unreadable` stores named, and the writing exemplars by origin, with `served: false`. |
 | `text_appraisals` | Counts from the [text-appraisal store](#text-appraisals): records, sessions, how many are `clean` and `not_clean`, claims kept and dropped by grounding (`dropped_by`, by reason), records carrying an expected act (`with_expected_act`), judgment goals that did not resolve (`goals_unresolved`), [counterfactual reflections](#what-a-losing-arm-taught) from losing arms (`counterfactuals`, and `counterfactuals_not_clean`), and whether the store was fully read. |
 
 The signed errors, valence and label above are derived when read and never
 stored. This scan is per **session**, while `sessions health` reports per-run
 counters. A session can contain several resumed runs, but its drafts and
 interventions must not be counted once for every resume.
+
+### What went right
+
+Most of what mecha learns from is a correction: you stepped in, and it asks
+what to do differently. The other half is what you accepted as it was, and
+you already say that with acts you perform anyway:
+
+- you **sent a draft as mecha wrote it**;
+- you **closed a task `done`**;
+- you **closed a workflow** after its check passed;
+- you **answered a question** mecha parked, and the work then finished.
+
+```bash
+mecha sessions successes               # the set, newest first
+mecha sessions successes --exemplars   # each draft you sent unchanged, as sent
+mecha sessions successes --json
+mecha sessions successes --include-tests   # count development sessions too
+```
+
+Nothing is written down to make this list. It is read fresh each time from
+the outbox, the task-closure record, the workflows and the questions, so if
+you **reopen** a task or a workflow later, the success is listed as
+**withdrawn** from then on, beside the reopen that took it back. A success
+that cannot be confirmed — a closure by someone this version cannot
+identify, a question whose session is gone — is listed as unknown and never
+counted, and so is one whose session is no longer in the store, since it
+cannot be told apart from a development session. Successes in development
+sessions are hidden and counted as such.
+Only your own acts count: mecha's opinion of its own work, and an
+appraisal's reading of a run, never make something a success.
+
+Each draft you sent unchanged is a **writing exemplar**: the draft itself,
+word for word, with the tool that would send it and whether third-party text
+was in the conversation when it was written. For now this list is the only
+place exemplars appear. **No run is shown them yet.** Showing them to a run
+that is drafting is a later, separate switch. When it comes, it will count
+as private data, because an exemplar is mail you sent.
+
+#### Planning examples from what went right
+
+A success toward a goal (a task you closed `done`, a workflow bound to a
+task, a question asked toward one) can also serve as a **planning example**
+for a later run toward the same goal. The example is the order of tools that
+session called, such as `fs_read → shell ×2 → fs_write`. Tool names only: no
+arguments, and nothing the model wrote. Plans are rarely written down, so the
+call trace is what a success leaves behind. A session lends an example only
+when:
+
+- it read no third-party content (a session whose taint cannot be read
+  lends none);
+- every run in it recorded the workspace and surface its rules were matched
+  on;
+- a later run is in the same situation: the same workspace, surface and
+  goal, with every tool it had.
+
+When you **reopen** the task, the example is gone with the success.
+
+```bash
+mecha sessions successes --examples   # what would be served, and why each success lends none
+```
+
+`goal_context` returns these examples only when the model asks for its goal's
+context and the setting is on. Each one names the act that verified it and
+says it is a call trace, not a plan. Nothing is added to the prompt, and the
+setting ships off while it is measured:
+
+```toml
+[agent]
+success_examples = true   # off by default
+```
+
+Calling `goal_context` already counts as reading private data, and that
+covers these examples too. `mecha eval` and the nightly diagnostician never
+see them.
 
 ### Text appraisals
 

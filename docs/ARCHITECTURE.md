@@ -187,6 +187,72 @@ The parts that bite hardest:
 - **Ask what is served (`GET /props` → `model_alias`), don't assert it.**
   llama-server ignores the request's `model` field, so naming one is not
   selecting it — only deciding what gets recorded.
+- **Router mode inverts that** (`scripts/start-router.sh`, installed
+  2026-09-27 — `REMOTE-SURFACE-DESIGN.md` §14, `LLAMA-SERVER.md` §Router
+  mode). One process serves several models and the request's `model`
+  *selects*: a `follow_loaded` provider takes whichever is loaded
+  (`provider::router`), every probe must name its model with
+  `autoload=false` or it loads it, and a bare `/props` is a placeholder
+  (`model_alias: "llama-server"`, `n_ctx: 0`).
+- **A process that outlives a switch follows it per turn**
+  (`mecha-cli/src/follow.rs`: `mecha serve`, its voice facade, `voice-serve`,
+  the Slack connector). An agent resolved at startup names the model loaded
+  then, and in router mode naming it loads it back — a switch from anywhere
+  was undone by the next web, voice or Slack turn. `Follower::follow` runs
+  before each turn, outside every lock the turn holds, and rebuilds through
+  `setup::prepare` only when the loaded model moved; the invariants:
+  - **A run keeps the binding it started with, and the model with it**
+    (D13, `hold.rs`). The router protects a request, not a run, so a run
+    *holds* the router — a file in `~/.mecha/holds/` — and `mecha model use`
+    waits until no hold remains. A hold is taken *before* the run resolves
+    its model; a run that meets a pending switch yields and waits for it.
+  - **The config is read from disk per turn**, because the rebuild reads it;
+    resolving against the startup file missed providers added since. A file
+    that does not load keeps the binding and says so once.
+  - **Only evidence of where to go moves a surface.** A router unseen by
+    the follower's own probe (`router::observe_seen`, never the shared
+    snapshot another request may have overwritten), mid-swap (two
+    resident), or resident on a model no entry names or several do: the
+    binding stays. Moving to the default on any of those would load
+    production over the pick.
+  - **A failed rebuild fails the turn**, never falls back to the old binding,
+    whose request would silently undo the switch.
+  - **A conversation that crosses a switch records a fresh `RunConfig`**
+    ahead of the turn (`Bound::generation`), so each run names the model
+    that answered it.
+  - **Incognito's gates are re-derived per turn from the binding**
+    (`incognito_gates`): local-only, hooks, and the withheld list computed
+    against the rebuilt registry — a deny-list computed at open let a server
+    that came up after a switch register tools the chat could call.
+- **Holds (`hold.rs`, §14 D13): a switch waits for runs, never for requests.**
+  - **Write, then check, on both sides.** A run writes its hold then looks
+    for a pending switch; a switch writes its file then looks for holds. At
+    least one sees the other, and the run is the side that yields — there is
+    no window where a run starts on the old model after the switch looked.
+  - **Where holds are taken:** per turn in `Follower::enter` (serve, voice),
+    per turn off the loop in Slack (a turn meeting a switch is *deferred* and
+    re-fed through the loop, never waited for on it), per fire in the trigger
+    daemon, and for its whole life by a command that is one run
+    (`main::is_one_run`, exhaustive, per subcommand). **No holder may wait on
+    a `mecha` child that also holds** — the child yields to a pending switch
+    that waits on the parent. `workflow` is unheld for that reason; a trigger
+    fire or a chat turn whose agent runs `shell: mecha run …` meets the same
+    cycle, broken only by `--now` or `cancel-switch` (`model use` names the
+    holder it waits on). There is no inherited "covered by the parent" mark:
+    detached hooks outlive the parent and would run unheld under one. A
+    process's own children that it waits on and that cannot hold for
+    themselves (`exp run`'s trials, under their own home) are covered by pid
+    instead, so `--now` reaches them.
+  - **An unreadable hold is held while its pid lives**, on every router —
+    the fail-closed direction, matching an unreadable switch file.
+  - **Dead holders and switchers are swept, never waited for**; an
+    unreadable switch file reads as pending (waiting is recoverable).
+  - **"Switch now" cancels, it does not only unload**: a hold's cancel file
+    is polled and turned into the run's own cancel (a one-run command gets
+    the SIGINT that Ctrl-C would send), because an unloaded model is loaded
+    back by a multi-request run's next request.
+  - **A hold's label is never user content** — `mecha run "<prompt>"` must
+    not leave the prompt under `~/.mecha/holds`; only the subcommand name.
 - **Throughput is wall clock.** The server times a request only while it is
   running, so summing its per-request rates hides queue wait and reads ~4× at
   `-np 1`, on the one configuration that cannot run anything concurrently.
@@ -660,8 +726,10 @@ guessing. `mecha rules` folds the ledger into per-rule tallies;
 `rules propose-retirements --apply` (nightly, after learn) **retires
 directly** — no queue, no human — once a rule accumulates the attributed
 regressions its leash allows: 3 ordinarily, 2 on probation
-(`PROBATION_RETIRE_AT`) — a deterministic ledger scan, no model anywhere,
-and it resolves any pending retirement proposal it overtakes as superseded.
+(`PROBATION_RETIRE_AT`) — a deterministic ledger scan that calls no model,
+counting only the convictions measured on the model in use
+(`learning::measured_on`; owner's ruling 2026-09-27, REMOTE-SURFACE-DESIGN
+§14), and it resolves any pending retirement proposal it overtakes as superseded.
 Retirement is the brake ungated learning leans on and it is a flag, never a
 deletion: the rule stays in the file as evidence, the learner is shown it as
 "measured harmful — never re-derive" (surviving even a reworded
@@ -675,12 +743,83 @@ found the release bug above, which every unit under it had passed over. Run
 it after touching validate, the bisection, tallies or the retirement scan.
 Deliberately absent: decay, TTLs, usage-based eviction (the rarely-fired
 rule that must never expire), and any policy built on model-rated
-confidence — only measured harm argues for retirement. `mecha
+confidence — only measured harm argues for retirement. (A rule whose
+region has gone quiet is *reported*, row 2e-5c below, and that is all.) `mecha
 learning-report` is how anyone knows the loop is improving; `mecha eval
 --ab-rules` is the coarse complement: the case set runs rules-free then
 rules-on and the per-case flips are their own artifact, never a comparable
 scorecard. The evidence behind all of this is `docs/MEMORY-RESEARCH.md` and
 `docs/LEARNING-LOOP-RESEARCH.md`.
+
+**Tenure by the owner's verdicts sits beside retirement, and only
+promotes** (`APPRAISAL-WIRING-DESIGN.md` L3, rows 2e-5b and 2e-5c, ruling
+R41; `mecha_core::tenure`). mecha-graph's autonomy ladder (`ladder.rs`) is
+ported:
+
+- **The statistic.** A class climbs when the Wilson lower bound of its
+  *human* accept rate clears a floor. Here a rule's record is the owner's
+  verdicts (`GoalError::is_owner_verdict`, R16's channels, the predicate
+  2e-6's replay priority reads) on the runs whose `RunConfig::rule_ids`
+  carried it, each rule its own rate. Positive is an accept and negative a
+  reject. It counts no counter and no model's account, and no test or
+  experiment session (the corpus admission).
+- **Attribution.** A verdict cited at a turn counts toward the rules the run
+  record covering that turn carried. One cited by a draft, question, closure
+  or workflow counts toward the rules *every* run record of its session
+  carried, because the cite does not say which run it judged. A run record
+  from before `rules_hash` names no rule.
+- **The ladder's numbers.** z = 1.96. There is no bound below 20 verdicts:
+  `None`, "not enough verdicts", never a low rate or a perfect one. The
+  ladder answered 0.0 there and let the floor refuse. The tenure floor is
+  0.65, the ladder's `PROMOTE_LB_SAMPLED`.
+- **Two ladder floors do not map.**
+  - Its 0.85 `TRUSTED` floor removes a class's spot-check, and a rule has no
+    spot-check to remove.
+  - Its 0.15 generation gate stops a class being produced, which for a rule
+    would be leaving the prompt, and R41 rules that nothing leaves the prompt
+    on the bound.
+- **What tenure changes.** In each retirement scan a tenured rule's
+  probation is released (`release_probation_when_owner_tenures`, beside
+  `release_probation_when_measured_clean`, never instead), so it answers to
+  the ordinary threshold of 3 rather than 2. Like the ledger's release this
+  is in memory, per pass: the file keeps the mark, and the owner's record is
+  re-read next pass, so the roster says "the ordinary leash", never
+  "released" (found on review of #338). `mecha rules` shows it as
+  tenured. A low bound demotes nothing, and retirement stays on attributed
+  regressions alone.
+- **Unknown is never clean.** A session that carried the rule and could not
+  be read in full makes its tenure unknown, whatever the rest would say.
+  "Not read in full" means the transcript is unreadable, an appraisal store
+  is missing (the appraisal is partial), a session staged drafts and
+  recorded no outcome, or a summarising compaction cut turns out of it. The
+  last is the sharp one, found on review of #338: every turn-cited verdict
+  is a reject and the accepts come from stores keyed by session, so a
+  compacted session read as it stands loses only rejects and raises the
+  bound. A session store that cannot be listed makes every
+  rule unknown.
+- **Cost.** The walk reads run records to find the sessions that carried a
+  wanted rule, and builds appraisals only for those. It is unbounded on
+  purpose, unlike 2e-6's windowed and capped walk: a cap would bias the
+  bound toward recent runs, and a cap honoured as "unread" would make every
+  rule unknown. `propose-retirements`
+  walks for probationary rules only. `rules list` and `show` walk unless
+  `--no-board`, the TUI's and the web's budget flag, under which both
+  readings are "not read".
+- **Scope of the ruling.** Curation acts (R16f's retire and restore) are not
+  counted: R41 names the verdicts on runs that carried the rule.
+
+**Dormancy is a report** (row 2e-5c). `mecha rules` names an active rule
+whose scope no admitted run in 2e-6's recurrence window (30 days, the same
+admission and the same 500-session walk, `Recurrence::runs`) was matched by:
+**QUIET**. It is matched with the loader's own `Situation::matches`, and a
+rule with no scope matches every run. It is never quiet while younger than
+the window. It is unknown when part of the window was unread or the rule
+has no birth date. "Part of the window" counts only what is known to lie in
+it (`Recurrence::unreadable_in_window`): a transcript whose header never
+parsed has no date, so it gets a caveat line in the roster rather than
+switching the report off for good (found on review of #338). Nothing is evicted, no slot changes, and nothing stops
+loading: "the rarely-fired rule that must never expire" above stands as
+written.
 
 **Replay completeness and retry identity are separate from a verdict.**
 `counterfactual::followup_branch` retains the corrective user message;
@@ -3338,6 +3477,59 @@ Batch outbox rejection retains delivery-uncertainty refusals, continues with
 eligible items, and reports counts with a failing exit status when any item
 could not be rejected.
 
+**Every resolve records who made it, and a reason is the owner's words only
+when the owner's own door stamped it** (`APPRAISAL-WIRING-DESIGN.md`,
+R16a's ruling D3, 2026-09-27 — not row 2e-3's D3 correction contract). `mecha outbox reject --reason …` is a command a model's
+`shell` can run — nothing refuses it — and R16a hands a rejection's reason
+to the reflector as an owner correction, whose rule rides every future
+prompt's cached prefix; the appraiser's input quoted it as "the owner's
+reason", and the poll sweep put it on a page every participant reads. So
+`OutboxStore::resolve` takes an `Actor` with no default and writes it as
+`resolved_by`, and `mecha outbox` decides it once per process with the
+closure store's rules (`closure::attribute`, which is `closure::decide`
+with its refusals mapped to `unknown`, so the two cannot drift): `owner`
+with no registered shell, no live delegated or scheduled run above, and no
+posture variable — the owner's terminal, or a surface's own child (the web
+review's reject and approve, the TUI's `/outbox`, a Slack tap, voice's
+release); `owner-approved` under an interactive run's registered shell;
+`unknown` for everything the closure path refuses. **Stamped, not
+refused:** a rejection sends nothing, and the stamp is what keeps its words
+from passing as the owner's. **And said:** a reject whose reason is stamped
+anything but `owner` prints why (`closure::attribute_explained`, the cause
+without `decide`'s task-closure remedy) on **stdout**, because the web
+review and the TUI's `/outbox` relay stdout and drop stderr; the TUI puts
+the note in its status line and the web page shows it in place of
+"Rejected." — so a demotion at the owner's own door, an unreadable marker
+directory say, is never silent (review of #343). Readers take the reason through
+`OutboxItem::rejection` — `OwnersWords(text)` or `NotOwners(actor)`, whose
+`word()` is fixed harness text with none of the reason's bytes — or
+`rejection_reason` / `owners_reason`, which are `None` unless the actor is
+`owner`. The reflector skips a non-owner reason (and leaves it unmarked in
+the mined ledger), the appraiser's input shows the typed word and says the
+draft "was rejected" rather than that the owner rejected it (with or without
+a reason) unless the owner's door stamped it, the poll sweep
+writes "No time found", `sessions appraise` counts owner-reasoned and
+other-reasoned rejections apart (`reasoned_rejections`,
+`unattributed_rejections`), and `outbox show` and the TUI print the text
+with `by <actor>` beside it, because the owner is reading their own store.
+The front door's `reconcile` copies a rejection's reason into its record's
+`note` whatever the actor; that is fine, because `note` is printed only to
+the owner's terminal and reaches no prompt. `outbox reconcile --outcome
+delivered` resolves without `resolve_with_output` and stamps the same actor
+(review of #343).
+**Items resolved before the field existed carry no actor and read as
+`unknown`** — fail closed, on the append-only rule; every such reasoned
+reject on the live store had already been mined when this landed. The
+release is stamped the same way, and nothing reads that stamp yet.
+**The residue is the closure path's** (see "Closing a task is a recorded
+event"): a command that detaches from its shell and clears the variable, a
+shell that edits `~/.mecha/outbox/` directly, and — named here because the
+outbox makes it concrete — a local process that calls `mecha serve`'s
+loopback port with the `Tailscale-User-Login` header set, which the web
+review's child then stamps `owner`. The answer to all three is the sandbox,
+as there. `outbox edit` is not a resolve and is not stamped; the writing
+miner still reads `diff(args_before, args)` as the owner's edit.
+
 ## Assistant workflows
 
 `workflow.rs` owns orchestration references, never a second task board. The graph
@@ -3835,7 +4027,9 @@ Two rules are structural rather than instructed:
   - **The brief is the only door.** The diagnostician's run is narrowed off
     past appraisals (`no_past_appraisals`, beside `no_learned_rules`), so
     `goal_context` — a second reader of the store with no holdout filter —
-    cannot serve it a held-out episode's appraisal on demand.
+    cannot serve it a held-out episode's appraisal on demand — and, since
+    2e-4b-1, off success examples (`no_success_examples`), which name a
+    session and its tool sequence and could name a held-out one.
   - Nothing in a note reaches the gate. `judge_drawn` and `combine` read
     replay pairs and the point-wise tally, and the class comes from the
     proposal's own text.
@@ -4581,6 +4775,168 @@ door above (`Kind::LessonSource`). Letting either source's lessons *learn* is
   source as it would be learned from, which is what R25 asks about; it is not
   a per-lesson attribution.
 
+### What went right, derived where it is recorded
+
+`APPRAISAL-WIRING-DESIGN.md` L2, row 2e-4a, ruled R40: `success.rs`. The
+learning store holds corrections only; an **owner-verified success** is the
+other half, and every kind is an act the owner already performs, in the
+store that owns it:
+
+- a model's message draft **sent unchanged** (`writing_outcome` is
+  `SentUnchanged` — a publish, a harness-authored item and an edited or
+  rejected draft are not);
+- a task closed **`done`** (1b's closure record) that no reopen undoes;
+- a workflow the owner **closed** (after its verification passed) that no
+  `workflow reopen` took back (`Workflow::owner_dispositions`);
+- a question the owner **answered**, whose session's last run then completed
+  (`Session::episode_stats`, the stop cause the appraisal's question arm
+  reads).
+
+Decisions, each a bug if undone:
+
+- **Derived on every read, never stored.** There is no success store and no
+  ledger of successes, so **a reopen withdraws a success by construction**:
+  the closure and the reopen whose `undoes` names it are read together and
+  the pair is reported withdrawn, never standing. A copied success would
+  outlive the owner taking it back. This is 1d's rule for every owner verdict
+  (read from the store that owns it), applied to the positive half.
+- **Unknown is never a success.** A closure whose `actor` this build cannot
+  read, an answered question whose session is not in the store or whose
+  outcome cannot be read — including an outcome whose `stop_cause` is absent,
+  which `lenient_stop_cause` makes of a variant this build cannot name, and
+  which is unknown, never "did not finish" (found on review): each is listed
+  as unknown, with why, and counted in no standing total. An answered question whose session did not complete is
+  neither: asking was not shown to be right, as the appraisal reads it.
+- **Owner acts only, never self-judged success.** No appraisal's `good`, no
+  model's account and no counter enters the set; the one harness fact read is
+  the recorded stop cause above.
+- **Tests are hidden, not counted — and a session that cannot be placed is
+  unknown.** A success whose every named session is one `runlog::Scan::admits`
+  refuses (smoke-test, experiment) is counted as hidden; one naming an
+  admitted session stands; one that names no session is kept, since an
+  absent session id is not evidence of a test. **One whose named sessions
+  are not in the store** (pruned, or a header that did not read) and none
+  admitted is unknown: whether it was a test cannot be read, and keeping it
+  failed open for drafts, closures and workflows (found on review).
+  `--include-tests` lifts the test admission on `sessions successes`, and
+  `sessions appraise` passes its own flag through, so one readout counts one
+  population (found on review: the successes line hid the tests every other
+  number on the page counted). A session store that cannot be listed, **or
+  holds one transcript whose header does not read**, makes the set partial
+  by name (`session store`), like a short outbox, closure, workflow or
+  question store: a torn header is `Missing`, so a torn smoke-test session's
+  success would otherwise stand as real with nothing saying the read was
+  short (`SessionIndex::skipped`, found on review).
+- **The exemplar is the draft, verbatim, and served to no run.** Each
+  standing draft sent unchanged carries a writing exemplar: its tool, the
+  arguments that went out, a `Situation` keyed on the drafting tool alone (as
+  an edit's lesson is — the item records no surface, and its `workspace` is
+  the drafting jail, which `reflect` never stamps as a key; built through
+  `Situation::of_run`, never a literal, so `known_workspace` stays the only
+  place a workspace key is made), and an
+  `Origin` from `learning::classify_origin` over the staging taint, so a
+  draft written with third-party text in context is `Untrusted`. No model
+  call. **Shadow**: the owner's readout is the only reader —
+  `mecha sessions successes` (`--exemplars` prints each verbatim through the
+  control-character filter every model-prose readout uses; `--json`) and one
+  line in `sessions appraise` (`successes` in `--json`, with
+  `exemplars.served: false`). A lever that serves exemplars to drafting runs
+  is deferred, and must arm `private_data` when it lands, as the brief does
+  (R35): an exemplar is sent mail. Only a `Clean` one could be served.
+- **One known softness.** `OutboxItem::taint` is `#[serde(default)]`, so an
+  item file with the field deleted by hand loads as clean. Every item the
+  outbox has written carries it (the field is as old as the store), and
+  `reflect`'s edit pass reads the same field on the same terms.
+
+Left for later rows: contrast evidence for the reflector (2e-4b-2, waiting on
+what "the same region" means between a correction and a success); staged
+skill drafts (2e-4c, deferred by R40 until this set has been read on real
+data). Skills stay owner-authored: nothing here writes under
+`~/.mecha/skills/`.
+
+### Planning examples from what went right
+
+`APPRAISAL-WIRING-DESIGN.md` L2, row 2e-4b-1, ruled R40:
+`planning::success_examples`, served by `goal_context` behind
+`Lever::SuccessExamples` (`[agent] success_examples`, `--no-success-examples`),
+which **ships off**. `planning::examples` was gated on a passed declared
+check, which almost never happens; a verified success is the other source.
+
+- **Derived from the success set, never stored.** `setup::build` with the
+  lever on reads the four owning stores (`success::Owned`, not the whole
+  `appraisal::Stores`), the session headers and up to 32 transcripts, newest
+  success first, at most 64 examples. Only `standing` successes lend, so **a
+  reopen withdraws the example by construction**, as it withdraws the
+  success — and since `chat`, the TUI, `serve` and Slack drive many runs off
+  one build, **every run start** re-reads the closure and workflow stores
+  and drops each example whose act no longer stands, by `success::derive`'s
+  own reading (`ServedSuccesses::at_run_start` → `restand`); a store that
+  cannot be read then withdraws every example of its kind, since whether it
+  stands is unknown (found on review of #342). A success verified after the
+  build is missed until the next one — a miss, never a retraction ignored.
+- **The step is the session's tool sequence** (R40: 4 of 79 long runs wrote a
+  plan): registry names in call order, the harness's own calls left out, a
+  consecutive repeat folded to `name ×n`, the first 24 spelled out and the
+  rest counted (`planning::tool_sequence`), over **every message the session
+  ever held** (`Session::messages_ever`, off the same bytes the transcript
+  is parsed from) — the loaded list is what survived a compaction, and a
+  long session's tail served as its whole trace overstated it (found on
+  review of #342). Never an argument, never prose:
+  a key a model can author is a key an injection can set, and the same holds
+  for what rides into a later run.
+- **Who lends.** A standing success toward a goal (`Success::goal`: a
+  `done` closure's task, a task-bound workflow's, a question's) and, of the
+  sessions it names, each one the corpus admits (`SessionIndex::
+  admitted_path` — a smoke test named beside a real session lends nothing),
+  at most 2 MB, **whose recorded taint covering its last message is clean**
+  (`learning::classify_origin`; no checkpoint is unknown, never clean — the
+  timeline is cumulative, so clean there is clean throughout), whose every
+  run record names the workspace and surface its rules were matched on
+  (`planning::examples`' "unscoped" rule), and that called a tool. Every
+  refusal is named (`planning::Withheld`) for the owner's readout, never a
+  quiet empty list. A success toward no goal lends none, since an example is
+  served only toward its goal.
+- **Served only in the session's situation.** `SuccessExamples::for_run`
+  keeps an example when **every** run of its session scopes onto the asking
+  run (`Situation::matches`, the rules block's own match), keyed as past
+  appraisals are, on what the run record keeps: `RulesCarried`'s workspace,
+  surface and goal, and **the registry the run starts with**. The whole
+  pool rides in `ToolCtx::success_examples` (`planning::ServedSuccesses`)
+  and the loop re-keys it beside `PastAppraisals::for_registry`, because
+  `tasks work` and `questions answer` withhold `kg_task_update` and insert
+  `ask_user` after `setup::build`, and a subset match on the build's
+  registry both withheld the example a re-delegated question's run is in
+  the situation of and served one it is not (found on review of #342).
+  With learned rules off the record names no workspace, so no success
+  example matches — as with past appraisals. The isolated artifact probe
+  (`mismatch::drive`) clears it beside `goal_appraisals`.
+- **Goal-keyed, and so narrow.** A success is keyed to a board task, and an
+  example serves only a run toward that task: a re-delegation of a task
+  whose question the owner answered, or a run toward a task a workflow
+  closed. A task closed `done` is seldom run toward again, and a reopen
+  withdraws it. This is `planning::examples`' contract (an example serves
+  its goal) and the scope rule "an absent goal never widens"; serving
+  examples across goals by region would be a new shape, not taken here.
+- **Its own shape in the answer.** `goal_context` puts success examples
+  ahead of declared-check ones (an owner's act is the stronger evidence)
+  and renders them as `tools_in_order`, `verified_by` (the act's pointer),
+  the act in words and `SUCCESS_EXAMPLE_LIMIT` — never as a `step`, so a
+  call trace is not read as a plan. A declared-check example renders the
+  bytes it always did, so the lever off is today's answer.
+- **Private, on demand, never the prefix.** `goal_context` is `private`,
+  which is the arming R35 asks of anything serving the owner's work;
+  nothing is pushed, and the tool's description and schema do not move.
+  The diagnostician's run is narrowed off it (`--no-success-examples`), on
+  2f's holdout argument: a success example names a session, and a held-out
+  one could lend it. `mecha eval` forces it off with every lever.
+- **Shadow readout.** `mecha sessions successes --examples` lists each
+  example (goal, session, act, sequence, and the region key of each of its
+  runs) and each success or session that lends none, with why
+  (`planning_examples` in `--json`, `served_by_default: false`).
+- **In an experiment**, `levers_on = ["success_examples"]`; nothing is
+  seeded, because the successes are the trial home's own stores, so a
+  single trial's arm equals its control until a lifetime's tasks close.
+
 ## The goal system
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the design and is deliberately not rewritten as
@@ -5076,9 +5432,56 @@ when touching it:
   harness text, which its own loop folds again; a block this build cannot
   read costs that block; an extension naming any other message is skipped
   with a warning. The calendar reference's fold rides the same path (see
-  §Timezones). *Deferred:* a re-delegated task's previous attempts
-  (M5, to 3a-2 — no existing record lists them), and a brief on the TUI,
-  `chat`, Slack and unhosted voice turns.
+  §Timezones). *Deferred:* a brief on the TUI, `chat`, Slack and unhosted
+  voice turns.
+- **A task run's brief names its previous attempts, and quotes only the
+  owner (M5, built as 3a-2 under R42).** `brief::attempts` is the brief's
+  tenth field, recorded always and delivered behind the same lever; a run
+  anchored to anything but a task records `Attempts::NotATask`, which is
+  known and renders as nothing, so no other run's words moved and the
+  lever-off requests are the same bytes with or without attempts on the
+  record (`a_task_briefs_previous_attempts_ride_only_behind_the_lever_and_arm_private`).
+  Five things to keep. **The walk is bounded and has no index**
+  (`attempts::walk`): session headers newest first, kind `task` only, never
+  the run's own session (each door passes its id to
+  `attempts::for_run_within`, which runs the walk and the store reads off
+  the async threads, joined with the board read under the same deadline, so
+  a slow disk costs the field — `Unread` — and never the turn),
+  a session's **head** scanned line by line for the task's quoted pointer
+  and stopped at the first message (`attempts::HEAD_BYTES_MAX` at most; both
+  doors that open a task session seed its anchor before the first message),
+  and only a head that names the task read whole, kept when a `GoalAnchor`
+  record names it — so the walk reads the heads plus at most three
+  transcripts, never every task transcript in the window (review of #344);
+  it stops at `ATTEMPTS_MAX` (3) or `WINDOW_DAYS` (90). A session opened on
+  another task and re-anchored to this one later is not found, a named
+  residue. **A failure is `Unread`; the bound is only a floor** (R42's
+  reading, 2026-09-27): a header or body that will not read, a header whose
+  kind this build cannot name (a header with no kind predates kinds and
+  anchors both, and is skipped), or an owner's-acts store read short make
+  the field `Unread` in the completeness readout (`Attempts::unread`); a
+  walk that stopped at its designed bound does not, as a capped commitments
+  store does not, so `Unread` keeps meaning something failed. Either way
+  the words say "at least" and what was not searched (`Attempts::floor`). **The owner's acts are the appraisal's cites,
+  never its numbers**: `appraisal::for_transcript` over `Stores::load`
+  (read only when an attempt was found), each `Cite` mapped to a closed
+  `OwnerAct` by reading the record it names, so a sign, valence or affect
+  label cannot reach the words (R21); a run that recorded no outcome gets an
+  empty one so its drafts still join. **How the run ended is the harness's
+  record**, on its own line and labelled "not a verdict" (`RunEnd`, from the
+  last outcome's `StopCause`). **Only the owner's own words ride**: a
+  reopen's reason is quoted only under `closure::Actor::Owner`, cut to one
+  line (`attempts::one_line`) and capped, and the render checks the actor
+  again rather than trusting the record's `owners_words`; under
+  `OwnerApproved` or an unknown actor the reopen is a fixed phrase and the
+  closure id. An outbox rejection's reason never rides (R42(d), ruled while
+  a resolve recorded no actor); the act is "draft rejected" and the item id.
+  Resolves now carry an actor (`OutboxItem::rejection`, #343), so quoting
+  an owner-stamped reason on the reopen's rule is a follow-up change. Every id in the words is one token (`GoalRef::from_str`'s rule),
+  since a workflow id is a graph-minted task id. The words are inside the
+  brief's block, so delivery arms `private` exactly as before (R35).
+  Residue: a reopen of a `dropped` closure cites nothing in `of_session`,
+  so the brief says nothing about it.
 - **The doctor reads against the owner's number, and names the line.**
   `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
   requests) or the setpoint of the charter line whose sensor watches that
@@ -5638,6 +6041,48 @@ Rules join goals through clean source reflections; successful examples require
 recorded clean taint and matching tools/workspace/surface. A startup snapshot
 examines at most 32 recent transcripts of at most 2 MB each and keeps 64 examples.
 It does not add unsolicited lesson delivery. Missing context is never a success.
+
+**A reflection serves the plan's goal, else its run's anchor**
+(`APPRAISAL-WIRING-DESIGN.md` L3, built as 2e-5a; `reflect::goals_for`).
+`Reflexion::goals` is what a lesson bears on, and the join `goal_lessons`
+serves through; it had one source, the plan at the intervention, and was
+empty on every reflection once the model stopped planning. The second source
+is the anchor in force at the intervention (`Transcript::anchor_covering`),
+taken only where the plan and the question in force name none, since evidence
+local to the moment is the more specific. What the record holds is the anchor
+each run *ended on*: `record_run` writes a `GoalAnchor` after every run's
+messages, a failed run's included (the task and trigger front-ends record no
+outcome for a run that errored, so the outcome list cannot say which run a
+message belongs to — found on review of #335), and the parse places each
+record among the messages and repairs it by the outcomes' `Rewrite` rule. An
+answered `ask_user` carrying a goal pointer moves the anchor mid-run, and the
+record has no finer grain, so a run holding such a call after the message (or
+in the turn the message answers) stamps none: the anchor may postdate the
+intervention, and one before it is `goal_at`'s to name. It is **not the
+session's last anchor**: a conversation re-anchored by an answer or a
+hand-over carries each run's own, and a message no record covers stamps none
+rather than a later anchor read back onto it: a run in flight, and everything
+below `Transcript::anchor_floor`.
+
+**The anchor floor is where the record stops saying anything** (review of
+#335, twice). Two things raise it. A summarising compaction raises it to the
+length it left, because the rebuilt head and the carried tail lost their run's
+record, and clearing their positions alone let a search skip the placeless
+records and read the next run's back onto the tail. An outcome with no
+`GoalAnchor` since the previous outcome raises it to that outcome's place:
+every front-end calls `record_run` before `record_outcome`, so such a run
+predates the record, and without the floor the seed `run --resume --goal`
+writes *before* the resumed run (`run::seed_goal_anchor`) was the first record
+after its messages. A truncating rewrite clamps it like every position. The
+residue is a transcript from before outcomes were recorded, which carries
+neither record. It is **not the
+situation's goal key**, which stays `rules_goal` — what the rules block was
+matched toward — so where a hand-over resumes an older anchor the two differ
+on purpose, one saying what the lesson served and the other where it loads.
+And it is **not backfilled**: reflections mined before it keep their goals,
+so lessons appear as anchored runs are corrected. The anchor is the harness's
+seed or the owner's confirmation, never a model's claim, which is why it
+carries `trigger:` and `request:` pointers the plan-named source may not.
 
 **Past clean appraisals are served through `goal_context`, on demand, and
 only behind their lever** (`APPRAISAL-WIRING-DESIGN.md` I2, built as 2c-2).

@@ -757,13 +757,13 @@ fn step(
                 }
                 "rejected" => {
                     record.set("verdict", json!("no_time"));
+                    // The poll page shows this sentence to every participant,
+                    // so the reason goes out only when the owner typed it at
+                    // their own door (ruling D3): a reject a model's `shell` ran is
+                    // "No time found", never its words on a public page.
                     record.set(
                         "resolution",
-                        json!(item
-                            .reason
-                            .as_deref()
-                            .filter(|r| !r.trim().is_empty())
-                            .unwrap_or("No time found")),
+                        json!(item.owners_reason().unwrap_or("No time found")),
                     );
                     Ok(Some("pick rejected — closing as no time found".to_string()))
                 }
@@ -950,6 +950,7 @@ mod tests {
             created_at: String::new(),
             resolved_at: None,
             reason: None,
+            resolved_by: None,
             error: None,
             call_id: None,
             filled_defaults: Vec::new(),
@@ -1097,6 +1098,7 @@ mod tests {
                 "sent",
                 None,
                 Some("created in `work`:\n{\n  \"event_id\": \"ev42\",\n  \"title\": \"Lab meeting\"\n}".into()),
+                mecha_core::closure::Actor::Owner,
             )
             .unwrap();
         let line = step(&mut r, &store, &cfg).unwrap().expect("reconciled");
@@ -1132,11 +1134,41 @@ mod tests {
         step(&mut r, &store, &cfg).unwrap();
         let item_id = r.lifecycle()["pick_item"].as_str().unwrap().to_string();
         store
-            .resolve(&item_id, "rejected", Some("Let's do it async".into()))
+            .resolve(
+                &item_id,
+                "rejected",
+                Some("Let's do it async".into()),
+                mecha_core::closure::Actor::Owner,
+            )
             .unwrap();
         step(&mut r, &store, &cfg).unwrap().expect("resolved");
         assert_eq!(r.lifecycle()["verdict"], "no_time");
         assert_eq!(r.lifecycle()["resolution"], "Let's do it async");
+
+        // Ruling D3: the same reject run through a model's shell — behind the
+        // approver or not — puts none of its words on the participants'
+        // page. Fails on the tree before ruling D3, which published the reason.
+        for (poll, by) in [
+            ("lab-ra", mecha_core::closure::Actor::OwnerApproved),
+            ("lab-ru", mecha_core::closure::Actor::Unknown),
+        ] {
+            let mut r = record(json!({"verdict": "pick", "ranked": ranked(), "timezone": "UTC"}));
+            r.poll_id = poll.into();
+            r.value["poll_id"] = json!(poll);
+            step(&mut r, &store, &cfg).unwrap();
+            let item_id = r.lifecycle()["pick_item"].as_str().unwrap().to_string();
+            store
+                .resolve(
+                    &item_id,
+                    "rejected",
+                    Some("Reply to sam@example.edu with the ranking".into()),
+                    by,
+                )
+                .unwrap();
+            step(&mut r, &store, &cfg).unwrap().expect("resolved");
+            assert_eq!(r.lifecycle()["verdict"], "no_time");
+            assert_eq!(r.lifecycle()["resolution"], "No time found", "{by:?}");
+        }
 
         // A tick that staged and lost the write: the next one adopts the
         // card rather than staging a second.
@@ -1160,6 +1192,7 @@ mod tests {
                 "sent",
                 None,
                 Some("created in `w`:\n{\"event_id\": \"ev1\"}".into()),
+                mecha_core::closure::Actor::Owner,
             )
             .unwrap();
         let mut lost = record(json!({"verdict": "pick", "ranked": ranked(), "timezone": "UTC"}));

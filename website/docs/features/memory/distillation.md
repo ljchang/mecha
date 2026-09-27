@@ -282,5 +282,5 @@ background and let the hook return at once:
 ```toml
 [[hook]]
 event = "session_end"
-command = "nohup mecha distill -p local >/dev/null 2>&1 &"
+command = "nohup mecha distill >/dev/null 2>&1 &"
 ```

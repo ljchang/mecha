@@ -48,7 +48,10 @@ cargo build --release --quiet
 # Seeded replay is only repeatable sequentially against one slot — the same
 # -np 1 confound bench/run.sh guards against. Refuse rather than report
 # fake divergence.
-slots=$(curl -s "http://127.0.0.1:${MODEL_PORT}/props" \
+# Repo-root-relative: the `cd` above has already moved there, so a
+# `$(dirname "$0")` path would miss when run as ./replay-regression.sh.
+source scripts/served-props.sh
+slots=$(served_props "http://127.0.0.1:${MODEL_PORT}" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin).get("total_slots", 0))' 2>/dev/null)
 if [ "${slots:-0}" != "1" ]; then
   echo "refusing to run: llama-server on :${MODEL_PORT} has ${slots:-no} slots, not 1 (-np 1)." >&2

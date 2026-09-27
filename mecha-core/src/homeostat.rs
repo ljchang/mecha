@@ -506,7 +506,9 @@ mod tests {
         outbox
             .stage_by_harness("mail_send", serde_json::json!({}))
             .unwrap();
-        outbox.resolve(&fresh.id, "sent", None).unwrap();
+        outbox
+            .resolve(&fresh.id, "sent", None, crate::closure::Actor::Owner)
+            .unwrap();
         let done = h.finish(&ContextTracker::new(), None);
         let delta = done.backlog_delta.unwrap();
         assert_eq!(delta.outbox, Some(0), "the net count reads nothing");
@@ -616,7 +618,9 @@ mod tests {
 
         // The run clears the old draft: the delta moves, the guilt the run
         // started under does not.
-        outbox.resolve(&old.id, "sent", None).unwrap();
+        outbox
+            .resolve(&old.id, "sent", None, crate::closure::Actor::Owner)
+            .unwrap();
         let done = h.finish(&ContextTracker::new(), Some(60_000));
         assert_eq!(done.anticipated_guilt, Some(max));
         assert_eq!(done.guilt_after_relief, None, "retired, never written");

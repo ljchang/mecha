@@ -113,7 +113,7 @@ async fn fixture_model(
                     1 => {
                         let sent: Vec<String> = fresh.lock().unwrap().drain(..2).collect();
                         for id in sent {
-                            outbox.resolve(&id, "sent", None).unwrap();
+                            outbox.resolve(&id, "sent", None, mecha_core::closure::Actor::Owner).unwrap();
                         }
                     }
                     _ => {}

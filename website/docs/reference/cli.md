@@ -1280,9 +1280,9 @@ counterfactual replay first and stages what survives for `mecha proposals`.
 ```bash
 mecha learn --dry-run
 mecha learn --holdout 0.25        # leave a measurement set for validate
-mecha learn --auto --holdout 0.25 -p local  # the supplied automation
-mecha learn --propose -p local              # require owner review
-mecha learn --compare-sources               # measure lessons by source; learns nothing
+mecha learn --auto --holdout 0.25    # the supplied automation
+mecha learn --propose                # require owner review
+mecha learn --compare-sources        # measure lessons by source; learns nothing
 ```
 
 `--compare-sources` is a measurement and writes no rule, proposal or
@@ -1357,9 +1357,10 @@ mecha rules [list|show|retire|restore|propose-retirements] [ARGS]
 | `propose-retirements` | `--apply` | Apply measured retirements or scope narrowing directly instead of staging a proposal. |
 
 Retirement is a flag, never a deletion: the rule stays in the file as evidence and
-`rules restore` undoes it. `propose-retirements` is a deterministic ledger scan with
-no model anywhere; what it stages goes through the same proposal gate as any other
-rule change.
+`rules restore` undoes it. `propose-retirements` is a deterministic ledger scan that
+calls no model; it counts only the regressions measured on the model in use, so a
+night on another model neither adds to nor dilutes them. What it stages goes through
+the same proposal gate as any other rule change.
 
 ```bash
 mecha rules
@@ -1754,3 +1755,43 @@ mecha config show | grep -A4 '\[sandbox\]'
 ```
 
 See the [configuration reference](/docs/reference/configuration) for every key.
+
+## `model`
+
+The local model router: what it can serve, and which model it holds. Loading a
+model *is* the choice — every run that takes a provider marked
+`follow_loaded` by default uses whichever model is loaded, with no restart and
+no setting to edit. `list` is the default subcommand.
+
+```
+mecha model [list|use] [ARGS] [--json]
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `list` | | Each router's models, which one is loaded (●), the provider entry naming each, and any entry whose `temperature` disagrees with its model's preset. |
+| `use` | `<NAME>` | A provider entry or a router model name. Loads it and waits until it is resident. |
+| `use` | `--now` | Stop the loaded model even mid-reply instead of waiting for it to go idle; the reply in progress fails. |
+| `use` | `--wait-secs <N>` | Give up after this many seconds (default 600; a cold load measured 33–39 s). |
+| both | `--json` | Machine-readable output. An unreachable router is listed with `"reachable": false`. |
+
+Behind a router, `--model` on any command selects as well as names: `mecha run
+--model qwen3.8-27b "…"` loads that model, evicting the one that was loaded,
+and every later default run then follows it — a one-off flag changes the pick.
+`mecha model use` is the deliberate way to do the same. Prefer naming the
+sibling entry (`-p gemma26`) to a bare `--model <id>`: the entry brings that
+model's `context_window`, temperature and prices, where `--model` keeps the
+default entry's and the startup check will warn about the mismatch.
+
+`use` refuses a model whose preset temperature disagrees with its provider
+entry, because mecha sends `temperature` on every request and would silently
+re-tune it. If the new model fails to come up, the one it was replacing is
+loaded back.
+
+```bash
+mecha model
+mecha model use gemma26
+mecha model use qwen3.6-35b-a3b-uncensored --now
+```
+
+See `follow_loaded` in the [configuration reference](/docs/reference/configuration).

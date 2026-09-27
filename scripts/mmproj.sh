@@ -18,14 +18,22 @@
 # is deliberate and is the whole point: starting anyway is what produced a
 # month of a model quietly having no eyes. `--no-mmproj` is the escape hatch
 # for someone who genuinely wants the text-only arm, and it is explicit.
-mmproj_or_die() {
-  local snapshot="$1" repo="$2"
-  local found
+# The projector in one snapshot directory, or nothing and a non-zero return.
+# The one list of names: start-router.sh walks snapshots with this rather than
+# carrying its own copy (found on review).
+mmproj_in() {
+  local p
   # BF16 first, then F16 -- unsloth ships both and they are the same size;
   # F32 is twice the memory for a tower whose precision is not the bottleneck.
-  for p in "$snapshot/mmproj-BF16.gguf" "$snapshot/mmproj-F16.gguf"; do
+  for p in "${1%/}/mmproj-BF16.gguf" "${1%/}/mmproj-F16.gguf"; do
     [ -f "$p" ] && { echo "$p"; return 0; }
   done
+  return 1
+}
+
+mmproj_or_die() {
+  local snapshot="$1" repo="$2"
+  mmproj_in "$snapshot" && return 0
   cat >&2 <<EOF
 $(basename "$0"): this model is multimodal and its vision tower is not on disk.
 
@@ -35,11 +43,13 @@ cannot see images -- which looks like the model's limitation and is not.
 
 Fetch it:
 
-  S=\$(ls -d "$snapshot")
+  S=\$(ls -d "${snapshot%/}")
   curl -L --fail -o "\$S/mmproj-BF16.gguf" \\
     "https://huggingface.co/$repo/resolve/main/mmproj-BF16.gguf"
 
-Or start deliberately text-only by adding --no-mmproj to this script.
+Or start deliberately text-only by adding --no-mmproj to a single-model
+script's exec line; start-router.sh has no such escape hatch — it skips an
+optional model, and stops when production's projector is missing.
 EOF
   exit 1
 }

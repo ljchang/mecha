@@ -108,7 +108,13 @@ async fn the_readout_reports_prediction_coverage_and_no_rate_over_nothing() {
     let prediction = item.predictions.last().unwrap().known().unwrap().id.clone();
     store.begin_delivery(&sent).unwrap();
     store
-        .resolve_with_output(&sent, "sent", None, Some("sent: msg-2".into()))
+        .resolve_with_output(
+            &sent,
+            "sent",
+            None,
+            Some("sent: msg-2".into()),
+            mecha_core::closure::Actor::Owner,
+        )
         .unwrap();
     store
         .record_outcome(

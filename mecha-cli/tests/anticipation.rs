@@ -115,7 +115,13 @@ fn owner_commands_preserve_guidance_and_link_post_delivery_feedback() {
     // Simulated acknowledgement, never an actual send.
     store.begin_delivery(&draft.id).unwrap();
     store
-        .resolve_with_output(&draft.id, "sent", None, Some("fixture receipt".into()))
+        .resolve_with_output(
+            &draft.id,
+            "sent",
+            None,
+            Some("fixture receipt".into()),
+            mecha_core::closure::Actor::Owner,
+        )
         .unwrap();
     let input = json!({"prediction_id":pid,"verdict":"harm", "attributable_to_mecha":true,
         "evidence":"owner confirmed the incorrect time caused a missed meeting"});

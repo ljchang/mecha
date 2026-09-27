@@ -1006,6 +1006,7 @@ mod workspace_tests {
         let full = SituationBrief {
             assembled_at: Utc::now(),
             goal: Some(GoalChain::NoAnchor),
+            attempts: Some(Attempts::NotATask),
             board: Some(Board::Read(BoardCounts::default())),
             commitments: Some(Commitments::Read {
                 stores: vec![],

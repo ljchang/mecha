@@ -942,7 +942,7 @@ fn hook_dir() -> std::path::PathBuf {
 /// directory (review of #293). Read-only: nothing here creates a directory.
 /// Homes that cannot be named are an error, not an empty set — an empty set
 /// would switch rule 1 off without a word (review of #294).
-fn live_run_pids() -> Result<std::collections::HashSet<u32>> {
+pub(crate) fn live_run_pids() -> Result<std::collections::HashSet<u32>> {
     let mut dirs = Vec::new();
     for home in mecha_core::work::guard_homes()? {
         dirs.push(markers_dir_under(&home));
@@ -2265,7 +2265,10 @@ pub(crate) fn steer_pump(
 pub(crate) fn permits() -> Result<mecha_core::permit::Permits> {
     Ok(mecha_core::permit::Permits::new(
         mecha_core::permit::dir_under(&mecha_core::work::mecha_home()?),
-        mecha_core::permit::DEFAULT_BACKGROUND_PERMITS,
+        // Sized to the model the router has loaded, when it says (§14 trap 5).
+        mecha_core::provider::router::background_seats(
+            mecha_core::permit::DEFAULT_BACKGROUND_PERMITS,
+        ),
     ))
 }
 
@@ -2938,6 +2941,7 @@ async fn work(
         &prepared.provider_name,
         &mut cx,
         &convo,
+        Some(&session.meta.id),
         setup::BRIEF_BOARD_TIMEOUT,
     )
     .await;

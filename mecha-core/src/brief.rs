@@ -39,10 +39,14 @@
 //! armed had the model made it; nothing in them came from outside, so
 //! `untrusted` stays unarmed. `docs/TRIFECTA.md` has the row.
 //!
+//! **A re-delegated task's previous attempts** (M5, built as 3a-2 under R42)
+//! are the [`attempts`] submodule: a bounded walk over the task sessions, the
+//! owner's acts read by the pointers `appraisal::of_session` cites, and only
+//! the owner's own words quoted.
+//!
 //! Deferred, named: the owner's recent activity across surfaces (B1 names it,
-//! the 1h row does not), past appraisals of the same situation (I2, phase
-//! 2) and a re-delegated task's previous attempts (M5, deferred from 3a to
-//! its own follow-up, 3a-2: no existing record lists them).
+//! the 1h row does not), and past appraisals of the same situation pushed
+//! into the brief (I2; 2c-2 serves them on demand through `goal_context`).
 
 use crate::charter::Charter;
 use crate::goal::GoalRef;
@@ -54,6 +58,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+pub mod attempts;
+pub use attempts::Attempts;
 
 /// The most ids one pointer list carries. Every list sits beside the count
 /// it was cut from, so a capped list never reads as the whole.
@@ -83,6 +90,14 @@ pub struct SituationBrief {
         deserialize_with = "lenient"
     )]
     pub goal: Option<GoalChain>,
+    /// A re-delegated task's previous attempts (M5, 3a-2), or
+    /// [`Attempts::NotATask`] for a run anchored to anything else.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient"
+    )]
+    pub attempts: Option<Attempts>,
     /// The board, read harness-side and reduced to counts and pointers.
     #[serde(
         default,
@@ -765,11 +780,13 @@ pub enum Seats {
     },
 }
 
-pub fn seats_under(home: &Path) -> Seats {
-    let pool = crate::permit::Permits::new(
-        crate::permit::dir_under(home),
-        crate::permit::DEFAULT_BACKGROUND_PERMITS,
-    );
+/// The background pool under `home`, read against `capacity` — passed in
+/// rather than looked up, so this stays a function of its arguments: the
+/// live capacity comes from the router snapshot, which is process-global,
+/// and a test reading it would see whichever router test ran last (found on
+/// review).
+pub fn seats_under(home: &Path, capacity: usize) -> Seats {
+    let pool = crate::permit::Permits::new(crate::permit::dir_under(home), capacity);
     match pool.read_live() {
         Ok(read) => {
             let mut holders: Vec<String> =
@@ -912,12 +929,30 @@ pub fn slots_of(status: u16, body: &str) -> Slots {
     }
 }
 
+/// Where a run's model is served, for the `/slots` read.
+#[derive(Debug, Clone)]
+pub struct LocalServer {
+    pub base_url: String,
+    /// The run's model. A router (`provider::router`) answers `/slots` only
+    /// for a named model; a single-model server ignores the parameter.
+    pub model: Option<String>,
+}
+
 /// One `GET /slots` against a local server, bounded by [`SLOTS_TIMEOUT`].
-pub async fn read_slots(base_url: &str) -> Slots {
+///
+/// Naming a model always says `autoload=false`: against a router, a reading
+/// that loads the model it reads would swap out the one the owner picked. A
+/// model that is not resident answers 400, read as unread — the run is about
+/// to load it, so no slot of it is ours to count yet.
+pub async fn read_slots(base_url: &str, model: Option<&str>) -> Slots {
     let url = format!(
         "{}/slots",
         base_url.trim_end_matches('/').trim_end_matches("/v1")
     );
+    let query: Vec<(&str, &str)> = match model {
+        Some(m) => vec![("model", m), ("autoload", "false")],
+        None => Vec::new(),
+    };
     let http = match reqwest::Client::builder().timeout(SLOTS_TIMEOUT).build() {
         Ok(h) => h,
         Err(e) => {
@@ -926,7 +961,7 @@ pub async fn read_slots(base_url: &str) -> Slots {
             }
         }
     };
-    match http.get(&url).send().await {
+    match http.get(&url).query(&query).send().await {
         Err(e) => Slots::Unread {
             why: format!("/slots: {e}"),
         },
@@ -1110,6 +1145,11 @@ pub struct Inputs<'a> {
     /// `TriggerStore::default_root()`, or why it could not be resolved.
     pub triggers_root: Result<PathBuf, String>,
     pub anchor: Option<&'a GoalRef>,
+    /// The task's previous attempts, already read ([`attempts::for_run`],
+    /// or [`attempts::for_run_within`] off the async threads): a walk over
+    /// the session directory and the stores, which a door bounds by its
+    /// deadline as it bounds the board.
+    pub attempts: Attempts,
     /// The `kg_task_list` answer, or why there is none.
     pub board: Result<Value, String>,
     /// The loaded charter, or why it did not load.
@@ -1124,9 +1164,9 @@ pub struct Inputs<'a> {
 
 /// The slot reading for a provider: `/slots` when it is a local
 /// llama-server (its base URL), [`Slots::NotLocal`] otherwise.
-pub async fn slots_for(local_server: Option<&str>) -> Slots {
+pub async fn slots_for(local_server: Option<&LocalServer>) -> Slots {
     match local_server {
-        Some(url) => read_slots(url).await,
+        Some(l) => read_slots(&l.base_url, l.model.as_deref()).await,
         None => Slots::NotLocal,
     }
 }
@@ -1139,6 +1179,7 @@ pub fn assemble(inputs: Inputs<'_>) -> SituationBrief {
         home,
         triggers_root,
         anchor,
+        attempts,
         board,
         charter,
         homeostat,
@@ -1163,10 +1204,14 @@ pub fn assemble(inputs: Inputs<'_>) -> SituationBrief {
             charter.as_ref().map_err(String::as_str),
             triggers_ref,
         )),
+        attempts: Some(attempts),
         board: Some(board_of(board_ref, own_task)),
         commitments: Some(commitments_of(homeostat)),
         time: Some(local_time(now, zone, policy)),
-        seats: Some(seats_under(home)),
+        seats: Some(seats_under(
+            home,
+            crate::provider::router::background_seats(crate::permit::DEFAULT_BACKGROUND_PERMITS),
+        )),
         runs: Some(runs_under(home, triggers_ref, anchor)),
         slots: Some(slots),
         voice: Some(VoicePresence::under(home).read(now)),
@@ -1178,11 +1223,14 @@ pub fn assemble(inputs: Inputs<'_>) -> SituationBrief {
 /// the run's context and the conversation already hold, plus the two reads
 /// only the front-end can make (the board, the slots). The anchor is the
 /// conversation's (a seeded structural pointer, or one the owner
-/// confirmed), read after seeding.
+/// confirmed), read after seeding. `attempts` is the third read a door
+/// takes before the run ([`attempts::for_run_within`]), beside the board and
+/// the slots.
 pub fn assemble_for_run(
     agent: &crate::agent::Agent,
     cx: &crate::agent::RunContext,
     convo: &crate::agent::Conversation,
+    attempts: Attempts,
     board: Result<Value, String>,
     slots: Slots,
 ) -> SituationBrief {
@@ -1199,6 +1247,7 @@ pub fn assemble_for_run(
             triggers_root: crate::trigger::TriggerStore::default_root()
                 .map_err(|e| format!("{e:#}")),
             anchor: anchor.as_ref(),
+            attempts,
             board,
             charter,
             homeostat: cx.homeostat.as_ref(),
@@ -1218,6 +1267,7 @@ pub fn assemble_for_run(
                     charter.as_ref().map_err(String::as_str),
                     Err(&why),
                 )),
+                attempts: Some(attempts),
                 board: Some(board_of(
                     board.as_ref().map_err(String::as_str),
                     match &anchor {
@@ -1261,8 +1311,9 @@ pub enum FieldState {
 }
 
 /// The field names, in record order — the readout's rows.
-pub const FIELDS: [&str; 9] = [
+pub const FIELDS: [&str; 10] = [
     "goal",
+    "attempts",
     "board",
     "commitments",
     "time",
@@ -1275,7 +1326,7 @@ pub const FIELDS: [&str; 9] = [
 
 impl SituationBrief {
     /// Each field's state, in [`FIELDS`] order.
-    pub fn fields(&self) -> [(&'static str, FieldState); 9] {
+    pub fn fields(&self) -> [(&'static str, FieldState); 10] {
         use FieldState::*;
         fn of<T>(f: &Option<T>, unread: impl Fn(&T) -> bool) -> FieldState {
             match f {
@@ -1307,6 +1358,12 @@ impl SituationBrief {
                     }
                 }),
             ),
+            // A session file that could not be read, a kind this build
+            // cannot name, or an owner's-acts store that did not load. A walk
+            // that stopped at its designed bound says "at least" in the
+            // words and is not unread, as a capped commitments store is not
+            // (R42's reading, 2026-09-27).
+            ("attempts", of(&self.attempts, Attempts::unread)),
             // A board the server cut, or rows without a readable status,
             // hold counts that are floors: a part not read, on the rule
             // `Seats` and `Flight` apply to a file they could not parse.
@@ -1393,6 +1450,9 @@ pub const BRIEF_STEM: &str = "Situation brief from the harness";
 /// position. The quiet hours are inside or outside, not their bounds; the
 /// time of day is a band; a voice call is in progress or not, not how many
 /// seconds ago. Nothing here is prose off a board row: `board_of` kept none.
+/// A task's previous attempts ([`attempts::line`]) are closed words and
+/// record ids, a count of sessions and the walk's own bound; the only prose
+/// is a reopen reason the owner wrote with their own hand (R42).
 ///
 /// **Unknown is said, never rendered as nothing.** A field its reader could
 /// not read says "could not be read"; a field not on the record says so; a
@@ -1416,6 +1476,12 @@ pub fn render(brief: &SituationBrief) -> String {
         Some(g) => goal_line(g),
         None => missing("Goal"),
     });
+    // A run not anchored to a task has no previous attempts to speak of, so
+    // the line is left out by stated rule, as `Slots::NotLocal` is.
+    match &brief.attempts {
+        Some(a) => lines.extend(attempts::line(a, brief.assembled_at)),
+        None => lines.push(missing("Previous attempts at this task")),
+    }
     lines.push(match &brief.board {
         Some(b) => board_line(b),
         None => missing("Board"),
@@ -2107,6 +2173,7 @@ mod tests {
         let brief = SituationBrief {
             assembled_at: now(),
             goal: None,
+            attempts: None,
             board: Some(Board::Read(c)),
             commitments: None,
             time: None,
@@ -2116,7 +2183,7 @@ mod tests {
             voice: None,
             budget: None,
         };
-        assert_eq!(brief.fields()[1], ("board", FieldState::Unread));
+        assert_eq!(brief.fields()[2], ("board", FieldState::Unread));
     }
 
     #[test]
@@ -2391,7 +2458,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            seats_under(&home),
+            seats_under(&home, crate::permit::DEFAULT_BACKGROUND_PERMITS),
             Seats::Read {
                 capacity: 3,
                 held: 1,
@@ -2437,7 +2504,7 @@ mod tests {
             "not json",
         )
         .unwrap();
-        let seats = seats_under(&home);
+        let seats = seats_under(&home, crate::permit::DEFAULT_BACKGROUND_PERMITS);
         assert!(
             matches!(
                 seats,
@@ -2460,6 +2527,7 @@ mod tests {
         let states: BTreeMap<_, _> = SituationBrief {
             assembled_at: now(),
             goal: None,
+            attempts: None,
             board: None,
             commitments: None,
             time: None,
@@ -2480,7 +2548,10 @@ mod tests {
         // A pool that is a file, not a directory, cannot be read.
         let torn = scratch("seats-torn");
         std::fs::write(crate::permit::dir_under(&torn), "not a dir").unwrap();
-        assert!(matches!(seats_under(&torn), Seats::Unread { .. }));
+        assert!(matches!(
+            seats_under(&torn, crate::permit::DEFAULT_BACKGROUND_PERMITS),
+            Seats::Unread { .. }
+        ));
         std::fs::write(crate::runmarker::task_dir_under(&torn), "not a dir").unwrap();
         assert!(matches!(
             runs_under(&torn, Err("no store"), None),
@@ -2491,7 +2562,10 @@ mod tests {
         ));
         // And a fresh install: no directory is no holders, never unread.
         let fresh = scratch("seats-fresh");
-        assert!(matches!(seats_under(&fresh), Seats::Read { held: 0, .. }));
+        assert!(matches!(
+            seats_under(&fresh, crate::permit::DEFAULT_BACKGROUND_PERMITS),
+            Seats::Read { held: 0, .. }
+        ));
     }
 
     /// `/slots` read as `model-idle.sh` reads it: a renamed field, an empty
@@ -2542,7 +2616,7 @@ mod tests {
             .unwrap();
             head
         });
-        let slots = read_slots(&format!("http://{addr}/v1")).await;
+        let slots = read_slots(&format!("http://{addr}/v1"), None).await;
         assert_eq!(slots, Slots::Read { total: 3, busy: 1 });
         assert!(
             server.await.unwrap().starts_with("GET /slots "),
@@ -2553,9 +2627,45 @@ mod tests {
         let port = closed.local_addr().unwrap().port();
         drop(closed);
         assert!(matches!(
-            read_slots(&format!("http://127.0.0.1:{port}")).await,
+            read_slots(&format!("http://127.0.0.1:{port}"), None).await,
             Slots::Unread { .. }
         ));
+    }
+
+    /// A named model is read with `autoload=false`, or against a router the
+    /// reading would load the model it reads and swap out the owner's pick.
+    /// A single-model server ignores both parameters — measured on the live
+    /// llama-server (`c841aee`, 2026-09-26): `/slots?model=nonsense&autoload=false`
+    /// answers 200 with its slots — so the same 200 must still parse here.
+    #[tokio::test]
+    async fn a_named_model_is_read_without_being_loaded() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let n = s.read(&mut buf).await.unwrap();
+            let head = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = r#"[{"is_processing":true}]"#;
+            s.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+            head
+        });
+        let slots = read_slots(&format!("http://{addr}"), Some("gemma-4-26b-a4b")).await;
+        assert_eq!(slots, Slots::Read { total: 1, busy: 1 });
+        let head = server.await.unwrap();
+        assert!(
+            head.starts_with("GET /slots?model=gemma-4-26b-a4b&autoload=false "),
+            "{head}"
+        );
     }
 
     #[test]
@@ -2598,6 +2708,7 @@ mod tests {
             SituationBrief {
                 assembled_at: now(),
                 goal: Some(goal),
+                attempts: None,
                 board: None,
                 commitments: None,
                 time: None,
@@ -2651,6 +2762,7 @@ mod tests {
         let brief = SituationBrief {
             assembled_at: now(),
             goal: Some(GoalChain::NoAnchor),
+            attempts: Some(Attempts::NotATask),
             board: Some(Board::Unread { why: "x".into() }),
             commitments: Some(Commitments::Unread { why: "y".into() }),
             time: Some(local_time(now(), None, Ok(None))),
@@ -2692,14 +2804,19 @@ mod tests {
         assert_eq!(loaded.slots, None);
         assert_eq!(loaded.voice, brief.voice);
         let states = loaded.fields();
-        assert_eq!(states[6], ("slots", FieldState::Missing));
+        assert_eq!(states[7], ("slots", FieldState::Missing));
         assert_eq!(
             states[0],
             ("goal", FieldState::Known),
             "no anchor is a known fact"
         );
-        assert_eq!(states[1], ("board", FieldState::Unread));
-        assert_eq!(states[3], ("time", FieldState::Unread), "no zone set");
+        assert_eq!(
+            states[1],
+            ("attempts", FieldState::Known),
+            "a run with no task anchor has no attempts to find, and that is known"
+        );
+        assert_eq!(states[2], ("board", FieldState::Unread));
+        assert_eq!(states[4], ("time", FieldState::Unread), "no zone set");
         assert!(!loaded.complete());
         // A brief from before a field existed loads with that field missing.
         let old: SituationBrief =
@@ -2725,6 +2842,13 @@ mod tests {
             home: &home,
             triggers_root: Ok(home.join("triggers")),
             anchor: Some(&anchor),
+            attempts: attempts::previous_attempts(
+                Some(&anchor),
+                Ok(&home.join("sessions")),
+                None,
+                now(),
+                &|| panic!("no attempt was found, so no store is read"),
+            ),
             board: Ok(board()),
             charter: Ok(charter),
             homeostat: None,
@@ -2744,6 +2868,17 @@ mod tests {
             assert_ne!(states[f], FieldState::Missing, "`{f}` was not recorded");
         }
         assert_eq!(states["commitments"], FieldState::Unread, "no homeostat");
+        assert_eq!(
+            brief.attempts,
+            Some(Attempts::Read {
+                attempts: vec![],
+                unsearched: false,
+                unreadable: 0,
+                unnamed_kind: 0,
+                stores_unread: vec![],
+            }),
+            "a home with no sessions holds no attempt, and says so"
+        );
         assert_eq!(brief.slots, Some(Slots::NotLocal));
         assert!(matches!(
             brief.time,
@@ -2770,6 +2905,7 @@ mod tests {
                 },
                 charter: Lines::Unlinked,
             }),
+            attempts: Some(Attempts::NotATask),
             board: Some(board_of(Ok(&board()), Some("task-own"))),
             commitments: Some(Commitments::Read {
                 stores: vec![
@@ -3030,6 +3166,7 @@ mod tests {
                 project: Tier::Unread { why: "x".into() },
                 charter: Lines::Unread { why: "x".into() },
             }),
+            attempts: Some(Attempts::Unread { why: "z".into() }),
             board: Some(Board::Unread { why: "x".into() }),
             commitments: Some(Commitments::Unread { why: "x".into() }),
             time: Some(LocalTime {
@@ -3056,6 +3193,7 @@ mod tests {
         for (lead, says) in [
             ("- Goal:", "its project could not be read"),
             ("- Goal:", "Which charter line it serves could not be read."),
+            ("- Previous attempts at this task:", "could not be read"),
             ("- Board:", "could not be read"),
             ("- Waiting on the owner:", "could not be read"),
             ("- Time:", "the owner's local time is unknown"),
@@ -3075,6 +3213,7 @@ mod tests {
             );
         }
         for lead in [
+            "- Previous attempts at this task:",
             "- Board:",
             "- Waiting on the owner:",
             "- Background seats:",
@@ -3098,6 +3237,7 @@ mod tests {
         let bare = SituationBrief {
             assembled_at: now(),
             goal: None,
+            attempts: None,
             board: None,
             commitments: None,
             time: None,
@@ -3368,6 +3508,9 @@ mod tests {
         };
         let r = render(&brief);
         assert!(!r.contains("Model server"), "{r}");
-        assert_eq!(r.lines().count(), 1 + FIELDS.len() - 1);
+        // The stem, then every field but two left out by stated rule: the
+        // slots here, and the previous attempts of a fixture whose record
+        // says it is not a task run (`Attempts::NotATask`).
+        assert_eq!(r.lines().count(), 1 + FIELDS.len() - 2);
     }
 }
