@@ -137,9 +137,19 @@ echo "  first night on a newly loaded model re-buys them, since retirement count
 # minutes after it closes). So most drawn points already meet a `Rules` arm
 # learned from them; the `Rules` arm reads as "the deployed rules at points
 # they may have been learned from", never as a held-out measurement (found
-# on review). It is the bounded pass (eight points, a short horizon, one background seat per point,
-# deferring when every seat stays held), so its place ahead of learn costs
-# the night a bounded wait, never a stall; it writes no rule.
+# on review). It writes no rule.
+#
+# **It is bounded by the clock and by the corpus, because it sits ahead of
+# the brake** (owner, 2026-09-27). Turn-bounded is not wall-clock-bounded:
+# eight points of up to three arms each, with a seat wait per point, run
+# ahead of `rules propose-retirements --apply` — the one brake on rules that
+# go live as they are derived — and this script is not `set -e`, so a slow
+# pass is not skipped, it makes the brake late. So `timeout` caps it
+# (MECHA_COMPARE_TIMEOUT, default 30m); a pass cut short writes what it
+# compared, and a seat it held is reclaimed by the next caller's liveness
+# check (`permit.rs`). And `--days` bounds the read (MECHA_COMPARE_DAYS,
+# default 30): without it every transcript was read each night, and an
+# owner-bound point, never driven so never stored, was re-planned forever.
 #
 # It never drives an owner-bound check point here (owner, 2026-09-26): one is
 # posed as an artifact probe, which executes its task, and this line throws
@@ -150,7 +160,10 @@ echo "· compare (point-wise comparison at recorded decision points, decided by 
 echo "  owner's recorded verdict, before the sweep's learn; not a hold-out — live"
 echo "  learning has already consumed most points; what it separates, tomorrow's"
 echo "  distill writes into the session's appraisal as the losing arm)"
-"$MECHA" sessions compare ${PIN[@]+"${PIN[@]}"}
+timeout "${MECHA_COMPARE_TIMEOUT:-30m}" \
+    "$MECHA" sessions compare ${PIN[@]+"${PIN[@]}"} --days "${MECHA_COMPARE_DAYS:-30}"
+rc=$?
+[ "$rc" -eq 124 ] && echo "  compare stopped at ${MECHA_COMPARE_TIMEOUT:-30m}: the brake below runs on time"
 
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
 echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
