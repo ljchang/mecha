@@ -73,10 +73,11 @@ pub struct Bound {
     /// The resolved config this binding was built from, for `RunConfig::of`.
     pub config: Config,
     pub workspace: PathBuf,
-    /// The todo tool in this agent's registry. Carried across a rebuild (the
-    /// same handle is put into the new registry), because its lists are keyed
-    /// by each run's jail and live in memory: a switch must not wipe the plan
-    /// of every open conversation.
+    /// The todo tool in this agent's registry. Carried across a rebuild — the
+    /// old handle is handed to `setup::prepare_carrying`, which registers it
+    /// before the subagents are built — because its lists are keyed by each
+    /// run's jail and live in memory: a switch must not wipe the plan of
+    /// every open conversation, nor split the parent's list from its children's.
     pub todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
     /// Which build this is, counting from 1. A surface records a fresh
     /// `RunConfig` into a conversation when the generation it last recorded
@@ -358,14 +359,11 @@ async fn build(
     if provider.is_some() {
         opts.provider = provider;
     }
-    let mut prepared = setup::prepare(&opts, false).await?;
-    if let (Some(old), Some(_)) = (carry.and_then(|b| b.todo.clone()), &prepared.todo) {
-        prepared
-            .agent
-            .registry_mut()
-            .insert(Arc::clone(&old) as Arc<dyn mecha_core::tool::Tool>);
-        prepared.todo = Some(old);
-    }
+    // The old todo handle goes in where `prepare` registers one, before the
+    // subagents are built from the registry — so parent, children and page
+    // share one list across the switch.
+    let mut prepared =
+        setup::prepare_carrying(&opts, false, carry.and_then(|b| b.todo.clone())).await?;
     finish(&mut prepared);
     let generation = generations.fetch_add(1, Ordering::Relaxed) + 1;
     Ok(Arc::new(Bound::from_prepared(prepared, generation)))
