@@ -975,12 +975,6 @@ const EMPTY_TURN_RETRIES: u32 = 3;
 /// as `step.rs`'s own thresholds.
 const MAX_STEP_ESCALATIONS_PER_RUN: u32 = 5;
 
-/// What the model is told after a turn that produced nothing.
-///
-/// Wording is load-bearing, the way `ask_user`'s decline wording was: a vague
-/// nudge invites the model to start the task over from the top, which burns the
-/// budget that was already the problem. So it names the cause, forbids the
-/// restart, and offers exactly two concrete continuations.
 /// The caption ahead of a picture a tool handed back (`ToolOutput::image`),
 /// completed by the tool's name, the file, and `]`. A stem, so the voice
 /// readers (`is_harness_voice`) can tell it from the owner's words: it rides
@@ -988,6 +982,12 @@ const MAX_STEP_ESCALATIONS_PER_RUN: u32 = 5;
 /// the owner's bubble.
 pub(crate) const TOOL_IMAGE_STEM: &str = "[picture returned by ";
 
+/// What the model is told after a turn that produced nothing.
+///
+/// Wording is load-bearing, the way `ask_user`'s decline wording was: a vague
+/// nudge invites the model to start the task over from the top, which burns the
+/// budget that was already the problem. So it names the cause, forbids the
+/// restart, and offers exactly two concrete continuations.
 pub(crate) const EMPTY_TURN_NUDGE: &str =
     "Your previous turn ended without producing anything — the token \
 budget went entirely to reasoning before you began your answer. Do not start the task over and do \
@@ -996,7 +996,8 @@ already know, or make the single next tool call. Keep your reasoning short this 
 
 /// Every voice the harness speaks in the **user** role.
 ///
-/// Five of them now, and the miner has to know all five: `agent.rs` prefixes
+/// Eight of them now (the arms below number the later ones), and the miner
+/// has to know every one: `agent.rs` prefixes
 /// a refusal it did not author with `"Denied by the user: "`, and the mirror of
 /// that mistake is text mecha wrote being read as text a person typed.
 /// `learning::extract_interventions` mines a transcript for corrections and has
@@ -1030,11 +1031,6 @@ already know, or make the single next tool call. Keep your reasoning short this 
 /// and are matched whole.
 pub(crate) fn is_harness_voice(text: &str) -> bool {
     let text = text.trim();
-    // The eighth: the caption on a picture a tool made (`run_tools`), folded
-    // beside the results. The tool's voice, never the owner's.
-    if text.starts_with(TOOL_IMAGE_STEM) {
-        return true;
-    }
     text == FINAL_ANSWER_NUDGE
         || text == EMPTY_TURN_NUDGE
         || text == crate::planning::CRITERION_OBSERVATION
@@ -1054,6 +1050,9 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // the first user turn when its delivery lever is on. A description
         // the harness wrote, never something the owner said.
         || text.starts_with(crate::brief::BRIEF_STEM)
+        // The eighth: the caption on a picture a tool put in front of the
+        // model (`run_tools`), folded beside the results. The tool's voice.
+        || text.starts_with(TOOL_IMAGE_STEM)
         // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
         // recorded before it carry the same fully-templated nudge bodies
         // bare, and one such nudge was already mined as a steer and probed as
