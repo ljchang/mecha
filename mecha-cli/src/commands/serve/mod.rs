@@ -42,7 +42,7 @@ mod board;
 mod chat;
 mod files;
 mod frontdoor;
-mod incognito;
+pub(crate) mod incognito;
 mod mail;
 mod model;
 mod present;
