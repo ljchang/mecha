@@ -798,12 +798,23 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
 /// what kind of chat was called.
 async fn forward_offer(target: &str, body: axum::body::Bytes) -> Response {
     let client = reqwest::Client::new();
-    let incognito = offer_names_incognito(&body);
+    // An offer serve cannot read is not one it relays: the worker's parser
+    // accepts shapes `serde_json` refuses (`NaN`, deeper nesting), so an
+    // unreadable body could name an incognito chat to the worker while
+    // naming nothing here (review of #376). The page only ever sends an
+    // object.
+    let Some(offer) = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .filter(|v| v.is_object())
+    else {
+        return (StatusCode::BAD_REQUEST, "malformed offer\n").into_response();
+    };
+    let incognito = offer_names_incognito(&offer);
     // The prefix decides it, and a name carrying it must also be one the
     // worker will accept: it validates to `valid_key`'s rule and would drop a
     // malformed one — and with it the chat binding and the silence — while
     // this side had vouched for the call (review of #376).
-    if incognito && !offer_session(&body).is_some_and(|s| chat::valid_key(&s)) {
+    if incognito && !offer_session(&offer).is_some_and(|s| chat::valid_key(&s)) {
         return (StatusCode::BAD_REQUEST, "malformed chat session\n").into_response();
     }
     if incognito && !runner_keeps_no_text(&client, target).await {
@@ -861,17 +872,16 @@ const UNLOGGED_WORKER_WANTED: &str = "this voice worker keeps call logs — rest
      mecha-voice-worker to talk in an incognito chat";
 
 /// Whether an offer names an incognito chat (`request_data.session`, the
-/// passthrough the worker reads). Anything unreadable names nothing: the
-/// worker reads the same bytes and would name no chat either.
-fn offer_names_incognito(body: &[u8]) -> bool {
-    offer_session(body).is_some_and(|s| incognito::is_incognito_key(&s))
+/// passthrough the worker reads), on the prefix as the worker decides it.
+fn offer_names_incognito(offer: &serde_json::Value) -> bool {
+    offer_session(offer).is_some_and(|s| incognito::is_incognito_key(&s))
 }
 
 /// The session an offer names, trimmed as the worker trims it.
-fn offer_session(body: &[u8]) -> Option<String> {
-    let v = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+fn offer_session(offer: &serde_json::Value) -> Option<String> {
     Some(
-        v.get("request_data")?
+        offer
+            .get("request_data")?
             .get("session")?
             .as_str()?
             .trim()
@@ -2354,17 +2364,34 @@ mod boundary_tests {
 
     #[test]
     fn only_an_offer_naming_an_incognito_chat_is_one() {
-        assert!(offer_names_incognito(
-            br#"{"request_data":{"session":"incognito-0123456789abcdef012345"}}"#
+        let named = |body: &str| offer_names_incognito(&serde_json::from_str(body).unwrap());
+        assert!(named(
+            r#"{"request_data":{"session":"incognito-0123456789abcdef012345"}}"#
         ));
         for body in [
-            &br#"{"request_data":{"session":"main"}}"#[..],
-            br#"{"request_data":{"uplink":"channel"}}"#,
-            br#"{"sdp":"x"}"#,
-            b"not json",
+            r#"{"request_data":{"session":"main"}}"#,
+            r#"{"request_data":{"uplink":"channel"}}"#,
+            r#"{"sdp":"x"}"#,
         ] {
-            assert!(!offer_names_incognito(body));
+            assert!(!named(body));
         }
+    }
+
+    /// An offer serve cannot read never reaches the runner: the worker's
+    /// parser takes shapes this one refuses, and could find a chat in it.
+    #[tokio::test]
+    async fn an_offer_serve_cannot_read_is_not_relayed() {
+        use std::sync::atomic::Ordering;
+        let (target, offers) = stub_runner(false).await;
+        for body in [
+            "not json",
+            r#"{"request_data":{"session":"incognito-0123456789abcdef012345"},"x":NaN}"#,
+            "[1, 2]",
+        ] {
+            let (status, _) = answer_of(forward_offer(&target, body.into()).await).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        }
+        assert_eq!(offers.load(Ordering::SeqCst), 0);
     }
 
     #[test]

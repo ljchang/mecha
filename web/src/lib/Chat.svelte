@@ -1016,7 +1016,7 @@
     // connect() inside the tap handler — the audio unlock needs the gesture.
     if (!keep) vEntries = [];
     vKey = key;
-    vIncognito = incognito;
+    vIncognito = incognito || key.startsWith(INCOGNITO_PREFIX);
     vState = { name: 'connecting', label: 'connecting' };
     vSession = createVoiceSession({
       // Same-origin: serve proxies to the loopback runner, so the offer
@@ -1028,8 +1028,10 @@
       // silently redirect the words being spoken into a different one.
       sessionKey: key,
       // An incognito call goes on only if the answer says nothing of it is
-      // logged (`refusesAnswer`), read here at connect like the key.
-      requireUnlogged: incognito,
+      // logged (`refusesAnswer`). Read off the key being sent, not only the
+      // page's flag, which the transcript read sets a round trip after a
+      // switch (review of #376).
+      requireUnlogged: incognito || key.startsWith(INCOGNITO_PREFIX),
       onState: (name, label) => (vState = { name, label }),
       onTranscript,
       onLevel: (level) => (vLevel = level),

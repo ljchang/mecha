@@ -133,5 +133,18 @@ function is(actual, expected, what) {
   is(top.includes('{#if vIncognito}') && !/\{#if incognito\}/.test(top), true, "the call overlay reads the call's own kind");
 }
 
+// A call's incognito-ness is read off the key it sends, not only the page's
+// flag: after a switch the flag is false until the transcript read returns,
+// and a tap in that window must still require the vouch (review of #376).
+{
+  const start = readOut('  function startVoice({ keep = false } = {}) {');
+  is(
+    start.includes('requireUnlogged: incognito || key.startsWith(INCOGNITO_PREFIX)') &&
+      start.includes('vIncognito = incognito || key.startsWith(INCOGNITO_PREFIX)'),
+    true,
+    'a call into an incognito key requires the vouch before the page knows',
+  );
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
