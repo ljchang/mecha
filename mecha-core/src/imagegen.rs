@@ -1518,7 +1518,7 @@ impl Tool for ImageGenerate {
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let (mut req, paths, ask) = match self.request(&input) {
             Ok(parsed) => parsed,
-            Err(why) => return Ok(ToolOutput::err(why)),
+            Err(why) => return Ok(refused(why)),
         };
         let is_edit = !paths.is_empty();
         let scene_prompt = req.prompt.clone();
@@ -1539,8 +1539,8 @@ impl Tool for ImageGenerate {
                 // diner" reach the GPU and draw a stranger (review of #383).
                 let broken = crate::imagelib::broken_named_in(&lib, &req.prompt);
                 if !broken.is_empty() {
-                    return Ok(ToolOutput::err(format!(
-                        "Nothing was drawn. {} named in the prompt {} in the owner's image \
+                    return Ok(refused(format!(
+                        "{} named in the prompt {} in the owner's image \
                          library, but the entry could not be read, so they cannot be drawn as \
                          themselves. The owner can check with `mecha imagelib list`.",
                         broken
@@ -1612,8 +1612,8 @@ impl Tool for ImageGenerate {
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
-                    return Ok(ToolOutput::err(format!(
-                        "Nothing was drawn. {names} {} in the owner's image library, and a \
+                    return Ok(refused(format!(
+                        "{names} {} in the owner's image library, and a \
                          prompt that describes them in words draws strangers. Call \
                          image_generate again with them in `cast`, in left-to-right order, each \
                          with what they are wearing and doing, and leave their looks out of the \
@@ -1631,11 +1631,11 @@ impl Tool for ImageGenerate {
         // Before reading anything: up to a hundred megabytes of references is
         // itself a cost on the pool this check guards.
         if let Err(why) = memory_verdict(mem_available_mb(), self.cfg.min_available_mb) {
-            return Ok(ToolOutput::err(why));
+            return Ok(refused(why));
         }
         req.references = match read_references(ctx, &paths).await {
             Ok(references) => references,
-            Err(why) => return Ok(ToolOutput::err(why)),
+            Err(why) => return Ok(refused(why)),
         };
         // The library's half: the model named who and what style; this code
         // writes how they look — each portrait as a reference at 512², each
@@ -1644,7 +1644,7 @@ impl Tool for ImageGenerate {
         let mut source_seeds = Vec::new();
         if let Some(ask) = &ask {
             let Some(dir) = &self.library_dir else {
-                return Ok(ToolOutput::err(
+                return Ok(refused(
                     "The image library is not available: the mecha home could not be resolved.",
                 ));
             };
@@ -1656,11 +1656,8 @@ impl Tool for ImageGenerate {
                 ask.style.as_deref(),
             ) {
                 Ok(compiled) => compiled,
-                // Every compile refusal is before the GPU, and says so first: a
-                // refusal that opened with a character's name was read as a
-                // finished picture (2026-09-28), and this site covers every
-                // error `compile` has or will have (review of #384).
-                Err(why) => return Ok(ToolOutput::err(format!("Nothing was drawn. {why}"))),
+                // Before the GPU, so `refused` says nothing was drawn.
+                Err(why) => return Ok(refused(why)),
             };
             req.prompt = compiled.prompt;
             if !compiled.references.is_empty() {
@@ -1871,6 +1868,15 @@ impl Tool for ImageGenerate {
         text.push_str(&left);
         Ok(ToolOutput::ok(text))
     }
+}
+
+/// A refusal before any GPU time, saying so first. The first live run read a
+/// refusal that opened with the characters' names as a finished picture,
+/// never retried, and told the owner it existed (2026-09-28); one exit for
+/// every pre-GPU refusal in `call` means the next one added cannot ship
+/// without the lead (review of #384).
+fn refused(why: impl std::fmt::Display) -> ToolOutput {
+    ToolOutput::err(format!("Nothing was drawn. {why}"))
 }
 
 /// Write a generation's manifest beside its PNG — `images/<stem>.json`, new

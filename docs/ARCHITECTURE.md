@@ -656,6 +656,20 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   cast of one does not excuse a second character named beside it (review of
   #383); an explicit `"cast": []` says "someone else by that name". The lookup's result also says how entries are
   used, which alone was enough on the rerun (0.68 and 0.45).
+- **Every refusal before the GPU opens "Nothing was drawn."** — one exit,
+  `imagegen::refused`, not a phrase per site. The first live run read a
+  refusal that opened with the characters' names as a finished picture,
+  never retried, and told the owner it existed; the named-character refusal
+  also spells out the *whole* cast to copy (everyone named, in the prompt's
+  order, keeping what was already given), because a skeleton of only the
+  missing names swapped who was missing each round (review of #384).
+- **The lookup picks by name first.** A query word that is an approved
+  entry's name (of the kind asked) returns those entries only; otherwise
+  every word of three letters or more must match a name or description (any
+  word returned the whole library, "and" being in every description); and a
+  query with no such word matches as one substring, so `jo` finds `jo`.
+  Names resolve against what the listing can return, or a candidate's name
+  would blank a search and betray the candidate (review of #384).
 - **The owner approves; the model proposes — bounded in entries and in
   bytes, and a rejection leaves nothing.** At most `MAX_PENDING` candidates,
   each portrait at most `MAX_PROPOSED_PORTRAIT_BYTES` (4 MB; the owner's own
