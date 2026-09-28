@@ -378,8 +378,16 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         ));
     }
 
-    if let Some(meta) = &meta {
-        purge_workspace(roots, id, meta, &mut report);
+    match &meta {
+        Some(meta) => purge_workspace(roots, id, meta, &mut report),
+        // Unknown is never clean: without the header nothing says where the
+        // conversation worked, so its files cannot be found — and once the
+        // transcript goes, never will be. Said, rather than skipped.
+        None => report.residue.push(
+            "the transcript's header could not be read, so its workspace could not be \
+             found; anything it wrote under ~/.mecha/work/ was kept"
+                .into(),
+        ),
     }
     report.attempt(
         "archive mark",
@@ -778,6 +786,10 @@ fn still_naming(roots: &Roots, id: &str) -> Vec<PathBuf> {
         // marker (`runmarker`).
         roots.home.join("remote"),
         roots.home.join("taskruns"),
+        // Other conversations' transcripts: a message this one sent was
+        // delivered into its recipient's conversation, id and text both.
+        // Their words are theirs, so named, never edited.
+        roots.sessions.clone(),
     ])
     .collect();
     let mut seen = HashSet::new();
@@ -786,7 +798,9 @@ fn still_naming(roots: &Roots, id: &str) -> Vec<PathBuf> {
             continue; // the harness store lives inside the learning store
         }
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name == ".git" || name == ".lock" {
+        // The store's lock, the legacy history the report names on its own,
+        // and the transcript being forgotten, set aside and removed after.
+        if name == ".git" || name == ".lock" || name == format!("{id}.{FORGETTING}") {
             continue;
         }
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
