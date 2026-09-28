@@ -477,11 +477,12 @@ impl Distiller {
         &self,
         turn: &EpisodeTurn,
         inputs: &str,
+        offers_act: Option<bool>,
     ) -> crate::message::CompletionRequest {
         self.pass().follow_up(
             turn.asked.clone(),
             turn.reply.clone(),
-            appraisal_followup(inputs),
+            appraisal_followup(inputs, offers_act),
         )
     }
 
@@ -491,8 +492,19 @@ impl Distiller {
     /// budget, a refusal — is `Ok` with [`AppraisalTurn::draft`] carrying
     /// why, and stores nothing: a malformed reply is counted, never half
     /// stored.
-    pub async fn appraise(&self, turn: &EpisodeTurn, inputs: &str) -> Result<AppraisalTurn> {
-        let request = self.appraisal_request(turn, inputs);
+    ///
+    /// `offers_act` is [`crate::appraisal_store::output_offers_act`] for the
+    /// session. `Some(false)` — no draft, task or workflow for the owner to
+    /// act on — asks for no `expected_act` and drops one the reply carries
+    /// anyway: `no_act` is the only act that could be observed, so the
+    /// prediction could not miss (ruling 1B, 2026-09-28). Unknown still asks.
+    pub async fn appraise(
+        &self,
+        turn: &EpisodeTurn,
+        inputs: &str,
+        offers_act: Option<bool>,
+    ) -> Result<AppraisalTurn> {
+        let request = self.appraisal_request(turn, inputs, offers_act);
         let started = std::time::Instant::now();
         let response = self.provider.complete(&request, None).await?;
         let elapsed = started.elapsed();
@@ -511,6 +523,12 @@ impl Distiller {
                 }
             }),
         };
+        let draft = draft.map(|mut d| {
+            if offers_act == Some(false) {
+                d.expected_act = None;
+            }
+            d
+        });
         Ok(AppraisalTurn {
             draft,
             usage: response.usage,
@@ -556,10 +574,21 @@ released_unchanged, edited, rejected, closed, reopened, no_act.
 lessons: what to do differently, at most 3.
 Leave out any field you have nothing for. Never invent a pointer.";
 
+/// Said after the ask when the output offers the owner no act: in the ask,
+/// outside the data fence, because it is the harness speaking.
+const NO_ACT_TO_EXPECT: &str = "\
+This run's output left the user nothing the harness can see them act on — \
+no draft, task or workflow — so leave out expected_act.";
+
 /// The follow-up turn: the ask, then the inputs, fenced as data.
-fn appraisal_followup(inputs: &str) -> String {
+fn appraisal_followup(inputs: &str, offers_act: Option<bool>) -> String {
+    let no_act = if offers_act == Some(false) {
+        format!("\n\n{NO_ACT_TO_EXPECT}")
+    } else {
+        String::new()
+    };
     format!(
-        "{APPRAISAL_ASK}\n\n<appraisal-inputs>\n{inputs}\n</appraisal-inputs>\n\n\
+        "{APPRAISAL_ASK}{no_act}\n\n<appraisal-inputs>\n{inputs}\n</appraisal-inputs>\n\n\
          Reply with the JSON object only."
     )
 }
@@ -2734,7 +2763,7 @@ mod tests {
         let turn = d.distill_turn("[user] when is the review?").await.unwrap();
         assert!(turn.distilled.is_some());
         let answered = d
-            .appraise(&turn, "## What the run was for\n…")
+            .appraise(&turn, "## What the run was for\n…", None)
             .await
             .unwrap();
         assert!(answered.draft.is_ok(), "{:?}", answered.draft);
@@ -2887,8 +2916,54 @@ mod tests {
             ]);
             let d = Distiller::new(Box::new(model), None);
             let turn = d.distill_turn("t").await.unwrap();
-            let answered = d.appraise(&turn, "inputs").await.unwrap();
+            let answered = d.appraise(&turn, "inputs", None).await.unwrap();
             assert_eq!(answered.draft.unwrap_err(), why);
+        }
+    }
+
+    /// Ruling 1B: an output with nothing for the owner to act on is asked
+    /// for no expected act, and one the reply carries anyway is dropped —
+    /// `no_act` is the only act that could be observed there, so the
+    /// prediction could not miss. An actionable or unknown output is asked
+    /// and keeps it.
+    #[tokio::test]
+    async fn an_output_with_no_act_to_take_is_asked_for_no_expected_act() {
+        use crate::appraisal_store::ExpectedAct;
+        use crate::message::StopReason;
+        for (offers, asks, kept) in [
+            (Some(false), false, None),
+            (Some(true), true, Some(ExpectedAct::NoAct)),
+            (None, true, Some(ExpectedAct::NoAct)),
+        ] {
+            let (model, seen) = Recording::new(vec![
+                (said(EPISODE_REPLY), StopReason::EndTurn),
+                (
+                    said(
+                        r#"{"interpretation": "The run did what it was for.", "expected_act": "no_act"}"#,
+                    ),
+                    StopReason::EndTurn,
+                ),
+            ]);
+            let d = Distiller::new(Box::new(model), None);
+            let turn = d.distill_turn("t").await.unwrap();
+            let answered = d.appraise(&turn, "inputs", offers).await.unwrap();
+            assert_eq!(answered.draft.unwrap().expected_act, kept, "{offers:?}");
+            let seen = seen.lock().unwrap();
+            let ask = seen[1].messages.last().unwrap().text();
+            assert_eq!(
+                !ask.contains(NO_ACT_TO_EXPECT),
+                asks,
+                "{offers:?}: the ask {} say there is no act to expect",
+                if asks { "must not" } else { "must" }
+            );
+            // The fence as opened, not the ask's own mention of it.
+            let fence = ask.find("<appraisal-inputs>\n").unwrap();
+            if !asks {
+                assert!(
+                    ask.find(NO_ACT_TO_EXPECT).unwrap() < fence,
+                    "the harness's line rides in the ask, never inside the data fence"
+                );
+            }
         }
     }
 
