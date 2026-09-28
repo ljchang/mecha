@@ -83,7 +83,14 @@ pub fn block_from_bytes(
         .with_guessed_format()
         .ok()
         .and_then(|r| r.into_dimensions().ok());
-    let oversized = dims.is_some_and(|(w, h)| w.max(h) > MAX_EDGE);
+    // A header that cannot be read is not a picture, whatever its name says:
+    // passed through, it would ride into append-only history, and a picture
+    // the provider rejects fails every later request of that conversation
+    // (found on review of #368 — reachable from Slack and the web chat).
+    let Some((w, h)) = dims else {
+        bail!("{what} is named as an image but did not decode (its header could not be read)");
+    };
+    let oversized = w.max(h) > MAX_EDGE;
     if !oversized && bytes.len() <= MAX_BYTES {
         return Ok(Block::image(media_type, &bytes, name));
     }
@@ -170,19 +177,23 @@ pub fn rendered_block(bytes: &[u8], name: Option<String>) -> Result<Block> {
     Ok(Block::image("image/jpeg", &out, name))
 }
 
-/// The most pixels decoded, and the most a decode may allocate. The header
-/// is the file's claim about itself: a flat-colour PNG of a few hundred
-/// kilobytes can declare 40000×40000 and ask the decoder for ~4.8 GB, in
-/// `serve`, which holds every session and every live run (found on review of
-/// #366; the Slack door had the same exposure). Every decode here goes
-/// through [`decode`], so the bound covers all the doors at once.
+/// The most pixels decoded, read from the header, and the allocation bound
+/// a decode runs under. The header is the file's claim about itself, and a
+/// few-hundred-kilobyte PNG can claim 40000×40000.
+///
+/// **What this adds, stated exactly** (corrected on review of #368): the
+/// allocation bound is `image`'s own default (`Limits::default()` carries
+/// `max_alloc: Some(512 MiB)`, and `load_from_memory` used it), so such a
+/// file was already refused — as "did not decode", which is the wrong
+/// diagnosis and the wrong fix. The pixel check says "too large to show"
+/// instead, from the header, before any decoder runs; `max_alloc` is set
+/// explicitly so the bound does not rest on a default nobody reads.
 ///
 /// **By area, never by side** (found on review of #368): a per-side bound
-/// refused a 1440×20000 full-page screenshot — ~100 MB decoded, the stitched
-/// kind people actually attach — which the caps above exist to shrink and
-/// show. 128 megapixels is 512 MiB as RGBA8, the allocation bound beside it;
-/// the pixel check reads the header, so it holds even for a decoder that
-/// does not honour `max_alloc`.
+/// refused a 1440×20000 full-page screenshot — ~100 MB decoded — which the
+/// caps above exist to shrink and show. 128 megapixels is 512 MiB as 8-bit
+/// RGBA; a 16-bit decode of the same size is twice that and is stopped by
+/// `max_alloc`, not by this check.
 const MAX_DECODE_PIXELS: u64 = 128 * 1024 * 1024;
 const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
 
@@ -469,9 +480,15 @@ mod tests {
     fn a_file_named_png_that_is_not_one_fails_loudly() {
         let dir = std::env::temp_dir().join(format!("mecha-img-lie-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let p = write(&dir, "lie.png", &vec![7u8; 6 * 1024 * 1024]);
-        let err = block_from_path(&p).unwrap_err().to_string();
-        assert!(err.contains("did not decode"), "got: {err}");
+        // Both sides of `MAX_BYTES`: under it is the pass-through path, which
+        // never decodes, so only the header check stands between a lie and
+        // the transcript (found on review of #368; the 6 MB case alone
+        // passed through the decode path and hid it).
+        for (name, size) in [("lie.png", 6 * 1024 * 1024), ("small-lie.png", 1024 * 1024)] {
+            let p = write(&dir, name, &vec![7u8; size]);
+            let err = block_from_path(&p).unwrap_err().to_string();
+            assert!(err.contains("did not decode"), "{name}: {err}");
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }

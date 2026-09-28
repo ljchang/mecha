@@ -335,13 +335,16 @@ Three rules on the fold, each a bug if undone:
   rides in a user message, so unregistered it would be mined as a steer and
   shown as something the owner said and attached.
 
-**Every decode is bounded by area, at the header** (`image::decode`):
-over `MAX_DECODE_PIXELS` (128 megapixels) is refused as too large before a
-byte is allocated, and a decode runs under a 512 MiB `max_alloc`. The header
-is the file's claim about itself, and a few-hundred-kilobyte PNG can claim
-40000×40000 — ~4.8 GB inside `serve`, reachable from Slack and the web chat.
-By area rather than by side, because a 1440×20000 full-page screenshot is
-~100 MB and exactly the kind of picture the caps exist to shrink and show.
+**Every door reads the header before it trusts a name** (`image::decode`,
+`block_from_bytes`). A file named `.png` whose header cannot be read is
+refused rather than passed through — under `MAX_BYTES` it used to ride into
+the transcript unread, and a picture the provider rejects fails every later
+request of that conversation. Over `MAX_DECODE_PIXELS` (128 megapixels) is
+refused as *too large to show*, by area rather than by side, because a
+1440×20000 full-page screenshot is ~100 MB and exactly what the caps exist
+to shrink and show. The allocation itself was already bounded by the
+`image` crate's default 512 MiB `max_alloc`, set explicitly now; what the
+pixel check changed is the diagnosis, from "did not decode" to "too large".
 
 The door is `image::rendered_block`: a picture at or under
 `PASS_THROUGH_BYTES` (1 MiB) that fits `MAX_EDGE` passes through byte for
