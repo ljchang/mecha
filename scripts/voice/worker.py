@@ -1919,21 +1919,42 @@ def is_incognito(named: str | None) -> bool:
 CONNECT_DEADLINE_SECS = 90.0
 
 
-async def end_unless_connected(connected: asyncio.Event, deadline_secs: float, end) -> bool:
-    """Wait up to `deadline_secs` for `connected`; if it never comes, say so
-    and `await end()`. Returns whether the call was ended. A call that
-    connects in time is left alone for the rest of its life - after that the
-    disconnect handler and the idle timeout own it."""
+async def end_unless_connected(
+    connected: asyncio.Event, deadline_secs: float, end, fired: asyncio.Event
+) -> bool:
+    """Wait up to `deadline_secs` for `connected`; if it never comes, set
+    `fired`, say so and `await end()`. Returns whether the call was ended. A
+    call that connects in time is left alone for the rest of its life - after
+    that the disconnect handler and the idle timeout own it. `fired` is set
+    before `end` runs, so whoever tidies up knows this task is mid-teardown
+    and must be let finish (`settle_deadline`)."""
     try:
         await asyncio.wait_for(connected.wait(), deadline_secs)
         return False
     except asyncio.TimeoutError:
+        fired.set()
         print(
             f"voice client never connected after {deadline_secs:.0f}s - ending the call",
             flush=True,
         )
         await end()
         return True
+
+
+async def settle_deadline(deadline: asyncio.Task, fired: asyncio.Event) -> None:
+    """Tidy the deadline task once the call is over. One that fired is what
+    ended the call, and `runner.run()` can return while its `runner.cancel()`
+    is still tearing down - cancelling it there would interrupt the teardown
+    it asked for, so it is awaited to the end, and anything it raised is
+    raised here rather than left for a GC-time warning (review of #386). One
+    that has not fired is waiting on a call that ended some other way, and
+    is cancelled."""
+    if fired.is_set():
+        await deadline
+        return
+    deadline.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await deadline
 
 
 class Unlogged:
@@ -2395,13 +2416,14 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
 
     # An answered offer whose browser never connects ends here rather than at
     # the idle timeout (`CONNECT_DEADLINE_SECS`).
+    fired = asyncio.Event()
     deadline = asyncio.create_task(
-        end_unless_connected(connected, CONNECT_DEADLINE_SECS, runner.cancel)
+        end_unless_connected(connected, CONNECT_DEADLINE_SECS, runner.cancel, fired)
     )
     try:
         await runner.run()
     finally:
-        deadline.cancel()
+        await settle_deadline(deadline, fired)
 
 
 async def bot(runner_args: RunnerArguments):
