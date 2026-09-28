@@ -4,7 +4,7 @@
 //! this is tenure. `list` folds the validation ledger into per-rule tallies
 //! and surfaces the pressure — attributed regressions, never-validated
 //! rules, age. `retire` and `restore` are the human acting directly, the
-//! apply-with-git-undo path, same standing as a direct `mecha learn`.
+//! apply-with-retire-undo path, same standing as a direct `mecha learn`.
 //! `propose-retirements` is the unattended path: a deterministic scan of the
 //! ledger — no model called; it resolves which model is in use only to count
 //! that model's rows — that stages an `enabled = false` +
@@ -980,7 +980,7 @@ fn retire(store: &LearningStore, id: &str, reason: Option<String>) -> Result<()>
     // rule: `retired_at` alone cannot say who retired it — the retirement
     // scan writes the same field — and a restore clears it.
     record_owner_verdict(store, &rules[i], mecha_core::curation::Act::Retired, reason)?;
-    store.commit(&format!(
+    store.log_pass(&format!(
         "retire[{domain}]: {}",
         rules[i].id.as_deref().unwrap_or(id)
     ));
@@ -1002,7 +1002,7 @@ fn restore(store: &LearningStore, id: &str) -> Result<()> {
     rules[i].retired_reason = None;
     store.write_learned_rules(&domain, &rules)?;
     record_owner_verdict(store, &rules[i], mecha_core::curation::Act::Restored, None)?;
-    store.commit(&format!(
+    store.log_pass(&format!(
         "restore[{domain}]: {}",
         rules[i].id.as_deref().unwrap_or(id)
     ));
@@ -1268,9 +1268,8 @@ fn propose(
         // `retired_reason`, so this removes it from every future prompt
         // without removing it from the record — the learner is still told it
         // was tried and measured harmful, which is what stops it being
-        // re-derived. That is the mechanism `git revert` was standing in for,
-        // and unlike a revert it is per-rule and leaves the rest of the store
-        // alone.
+        // re-derived. It is per-rule and leaves the rest of the store alone,
+        // which a whole-store rewind (the old `git revert`) never did.
         if apply {
             store.write_learned_rules(&domain, &rules)?;
             store.append_run(&LeapRun {
@@ -1289,7 +1288,7 @@ fn propose(
                 rules_after: rules.len() as u32,
                 created_at: now.clone(),
             })?;
-            store.commit(&format!(
+            store.log_pass(&format!(
                 "retire[{domain}]: {retired_count} retired, {narrowed_count} narrowed at \
                  {min_attributed}+ attributed regression(s)"
             ));
@@ -1342,7 +1341,7 @@ fn propose(
             scope: None,
         };
         store.write_proposal(&proposal)?;
-        store.commit(&format!(
+        store.log_pass(&format!(
             "propose-retirement[{domain}]: {retired_count} to retire, {narrowed_count} to narrow \
              — {}",
             proposal.id
@@ -1610,8 +1609,8 @@ mod tests {
             "retirement must be per-rule, not a whole-store revert"
         );
 
-        // And it is recorded as a pass, so `git log` in the store reads as the
-        // system's learning history rather than an unexplained file change.
+        // And it is recorded as a pass, so `runs.jsonl` reads as the system's
+        // learning history rather than an unexplained file change.
         // Counted over the whole file, like every other `LeapRun` writer — a
         // retirement disables a rule without removing its row, so both are 2
         // and the pass reads as a flat step. Counting the *active* subset here

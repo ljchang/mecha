@@ -22,6 +22,8 @@ The three legs are env-configurable base URLs (D6):
 
 import asyncio
 import collections
+import contextlib
+import json
 import os
 import sys
 import threading
@@ -895,10 +897,10 @@ class ParakeetSTT(SegmentGatedSTT):
         logger.debug(
             f"parakeet: duration={duration:.2f}s rms={rms:.4f} "
             f"over_speaker={echoey} segment_start={segment_started_at} "
-            f"text={text[:100]!r}"
+            f"text={spoken_words(text, 100)}"
         )
         if self.echo_window.is_probable_echo(text, bot_was_audible=echoey):
-            logger.debug(f"parakeet echo filter: {text[:60]!r} over_speaker={echoey}")
+            logger.debug(f"parakeet echo filter: {spoken_words(text, 60)} over_speaker={echoey}")
             return Transcription(text="")
         return Transcription(text=text)
 
@@ -1058,12 +1060,23 @@ class LocalTTS(OpenAITTSService):
         ordinary, mostly-neutral day, which is exactly the silent-inertness
         failure this exists to catch. Debug level, once per answer: the same
         shape as the percent-encoding bug this module already shipped and
-        fixed, which was also silently inert until someone went looking."""
+        fixed, which was also silently inert until someone went looking.
+
+        **Except for a call into an incognito chat**, where the line is not
+        written at all: it would say one was spoken into, and this file's
+        records are outside the pipecat silence. The detector is off for
+        those calls; every other call still carries it."""
         await super().on_turn_context_created(context_id)
         self._affect_context_id = context_id
         self._affect_params = await self._poll_affect_params()
         from loguru import logger
 
+        # Not for a call into an incognito chat: this file's records are not
+        # `pipecat`'s, so the silence does not reach them, and the line would
+        # name the chat - or, redacted, still say one was spoken into, the
+        # fact the chat promised not to leave (review of #376).
+        if names_incognito(self._affect_key):
+            return
         logger.debug(
             f"voice affect latch: context={context_id} key={self._affect_key} "
             f"cfg_weight={self._affect_params[1]:.3f} (baseline "
@@ -1788,7 +1801,9 @@ class UplinkAudio:
             await asyncio.sleep(0.1)
         prefix = late_prefix(wall_from, wall_to, self._tz_offset_min, dropped_ms)
         self.late_turns += 1
-        logger.info(f"uplink: late turn ({(to_ms - from_ms) / 1000:.0f}s of audio): {prefix}{text[:80]!r}")
+        logger.info(
+            f"uplink: late turn ({(to_ms - from_ms) / 1000:.0f}s of audio): {prefix}{spoken_words(text, 80)}"
+        )
         # Appended to the context and run at once — not a `TranscriptionFrame`.
         # A transcript-only turn has no VAD edge for any stop strategy to
         # rule on, so it sat on the aggregator's 15 s wall-clock timeout
@@ -1819,7 +1834,265 @@ class UplinkAudio:
         return " ".join(parts)
 
 
-async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
+# ---- incognito: a call nothing keeps the words of ----
+#
+# `docs/INCOGNITO-DESIGN.md` §6.4. The journal this unit writes to is kept on
+# disk, and at pipecat's default level (the runner re-adds a DEBUG sink on
+# start) it holds both sides of every call: `Transcription: …` from the STT
+# service and every sentence the TTS service is handed. So while a call into
+# an incognito chat is live, the whole `pipecat` namespace is disabled - at the
+# logger's core, not on a sink, because `pipecat.runner.run` calls
+# `logger.remove()` and adds its own sink, and a filter on ours would be
+# thrown away with it, silently. This file's own lines that carry words keep
+# their measurements and lose the words (`spoken_words`).
+#
+# Process-wide on purpose: an ordinary call running beside an incognito one
+# loses all of pipecat's lines for the overlap, warnings and errors included.
+# The narrower cut - a filter keyed on the call's context - leaks on the
+# first task started outside that context, and the promise is the one that
+# must not bend.
+#
+# `mecha serve` hands this worker an offer naming an incognito chat only
+# after `GET /mecha/unlogged` answers yes (`install`), so a worker that
+# predates the silence is never handed one. Per turn, the facade admits a
+# spoken turn into an incognito chat only on `X-Voice-Unlogged: 1`, sent
+# only from inside `Unlogged.held`.
+INCOGNITO_PREFIX = "incognito-"
+
+
+def named_chat_session(body) -> str | None:
+    """The chat session the offer names (D3), or None.
+
+    Validated here as well as at the facade, and to the same rule
+    (mecha-cli's `valid_key`): this value becomes a directory name under the
+    producer root, it arrives from a browser, and a claim checked on only one
+    side of a seam is a claim nobody checks the day the other side is reached
+    directly. Refusing costs a call that is merely unshared; passing it on
+    costs whatever a bad name does."""
+    want = body.get("session") if isinstance(body, dict) else None
+    if not isinstance(want, str):
+        return None
+    want = want.strip()
+    if (
+        0 < len(want) <= 32
+        and want[0] not in "-_"
+        and all(c.islower() or c.isdigit() or c in "-_" for c in want)
+        and want.isascii()
+    ):
+        return want
+    if want.startswith(INCOGNITO_PREFIX):
+        # Refused without repeating it: a name carrying the prefix is one
+        # an incognito chat may have sent, and it is not written down.
+        print("voice: refusing a malformed chat session", flush=True)
+    elif want:
+        print(f"voice: refusing malformed chat session {want!r}", flush=True)
+    return None
+
+
+def offers_incognito(request_data) -> bool:
+    """Whether an offer's session names an incognito chat, read off the raw
+    string before `named_chat_session` validates it. The silence keys on
+    this, so a malformed name carrying the prefix still holds it: `mecha
+    serve` decides on the prefix, and the two sides must never disagree in
+    the direction that logs (review of #376)."""
+    want = request_data.get("session") if isinstance(request_data, dict) else None
+    return isinstance(want, str) and want.strip().startswith(INCOGNITO_PREFIX)
+
+
+def is_incognito(named: str | None) -> bool:
+    """Whether a named session is an incognito chat. The prefix is the
+    server's (`incognito::is_incognito_key`), which refuses it at the
+    ordinary door, so no recorded chat can carry it."""
+    return bool(named) and named.startswith(INCOGNITO_PREFIX)
+
+
+# How long an answered offer may wait for its browser to connect before the
+# call is ended. Pipecat gives the peer connection 60 s, but the bot built
+# for it runs on until the fifteen-minute idle timeout, holding VAD, turn
+# detection, STT and TTS on a one-GPU box - and, for a call into an
+# incognito chat, the process-wide log silence (`Unlogged`), so every other
+# call loses pipecat's lines for the quarter hour. Measured 2026-09-28: a
+# synthetic incognito offer that never connected held the silence from
+# 22:08:32 to its idle timeout at ~22:23:32, and an ordinary offer at 22:10:42
+# logged no pipecat lines at all. Ninety seconds is past pipecat's own
+# connection timeout and any ICE a cellular link completes.
+CONNECT_DEADLINE_SECS = 90.0
+
+
+async def end_unless_connected(
+    connected: asyncio.Event, deadline_secs: float, end, fired: asyncio.Event
+) -> bool:
+    """Wait up to `deadline_secs` for `connected`; if it never comes, set
+    `fired`, say so and `await end()`. Returns whether the call was ended. A
+    call that connects in time is left alone for the rest of its life - after
+    that the disconnect handler and the idle timeout own it. `fired` is set
+    before `end` runs, so whoever tidies up knows this task is mid-teardown
+    and must be let finish (`settle_deadline`)."""
+    try:
+        await asyncio.wait_for(connected.wait(), deadline_secs)
+        return False
+    except asyncio.TimeoutError:
+        fired.set()
+        print(
+            f"voice client never connected after {deadline_secs:.0f}s - ending the call",
+            flush=True,
+        )
+        await end()
+        return True
+
+
+async def settle_deadline(deadline: asyncio.Task, fired: asyncio.Event) -> None:
+    """Tidy the deadline task once the call is over. One that fired is what
+    ended the call, and `runner.run()` can return while its `runner.cancel()`
+    is still tearing down - cancelling it there would interrupt the teardown
+    it asked for, so it is awaited to the end, and anything it raised is
+    raised here rather than left for a GC-time warning (review of #386). One
+    that has not fired is waiting on a call that ended some other way, and
+    is cancelled."""
+    if fired.is_set():
+        await deadline
+        return
+    deadline.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await deadline
+
+
+class Unlogged:
+    """The live calls into incognito chats, and the log silence they hold.
+
+    Counted, not flagged: two incognito calls overlap, and the first to end
+    must not lift the silence under the second."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._live = 0
+
+    @property
+    def active(self) -> bool:
+        return self._live > 0
+
+    def enter(self):
+        from loguru import logger
+
+        with self._lock:
+            self._live += 1
+            if self._live == 1:
+                logger.disable("pipecat")
+
+    def exit(self):
+        from loguru import logger
+
+        with self._lock:
+            self._live -= 1
+            if self._live == 0:
+                logger.enable("pipecat")
+
+    @contextlib.contextmanager
+    def held(self, quiet: bool):
+        """Hold the silence for one call's life when `quiet`; otherwise a
+        no-op, so the caller's shape is the same for every call."""
+        if not quiet:
+            yield
+            return
+        self.enter()
+        try:
+            yield
+        finally:
+            self.exit()
+
+
+UNLOGGED = Unlogged()
+
+
+def names_incognito(key: str | None) -> bool:
+    """Whether a namespaced session key (`chat:<id>`) is an incognito chat's.
+    This file's records are `__main__`, which the pipecat silence does not
+    reach, so a line that would name one is not written at all: redacted, it
+    would still say an incognito chat was spoken into."""
+    return bool(key) and key.startswith(f"chat:{INCOGNITO_PREFIX}")
+
+
+class OfferSilence:
+    """Hold the silence while an offer naming an incognito chat is handled.
+
+    `bot` holds it for the call, but the runner handles the offer first,
+    and on its error path logs the whole request - `request_data.session`,
+    the chat's key, included - at DEBUG. Pure ASGI rather than Starlette's
+    `BaseHTTPMiddleware`: the body is read once here and replayed to the
+    runner exactly as it arrived."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("method") != "POST" or not scope.get(
+            "path", ""
+        ).endswith("/api/offer"):
+            await self.app(scope, receive, send)
+            return
+        chunks, more = [], True
+        while more:
+            message = await receive()
+            if message.get("type") != "http.request":
+                break
+            chunks.append(message.get("body", b""))
+            more = message.get("more_body", False)
+        body = b"".join(chunks)
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        try:
+            quiet = offers_incognito((json.loads(body) or {}).get("request_data"))
+        except (ValueError, AttributeError):
+            quiet = False
+        with UNLOGGED.held(quiet):
+            await self.app(scope, replay, send)
+
+
+def install(app) -> None:
+    """What this worker adds to the runner's app, before `main` starts it.
+
+    `GET /mecha/unlogged` is the vouch `mecha serve` asks for before it
+    forwards an offer naming an incognito chat: a worker that predates the
+    silence has no such route, so it is never handed the offer - never the
+    chat's key, never a word (`serve::forward_offer`, review of #376)."""
+
+    @app.get("/mecha/unlogged")
+    async def unlogged():
+        return {"unlogged": True}
+
+    app.add_middleware(OfferSilence)
+
+
+def session_line(session_key: str, named: str | None) -> str:
+    """The journal's line for a call starting. Nothing about an incognito
+    chat is written down - not its key, and not that one was spoken into,
+    which is the fact it promised not to leave (review of #376) - so such a
+    call reads as one that named no chat."""
+    if named and not is_incognito(named):
+        return f"voice session key: {session_key} (speaking into chat session {named!r})"
+    return f"voice session key: {session_key}"
+
+
+def spoken_words(text: str, limit: int) -> str:
+    """Words for a log line: the first `limit` characters, or a placeholder
+    while any incognito call is live. The rest of the line - durations, RMS,
+    over-speaker - is a measurement and stays."""
+    if UNLOGGED.active:
+        return "<withheld: an incognito call is live>"
+    return repr(text[:limit])
+
+
+# `named` is required, with no default: a second caller that forgot it would
+# silently lose the chat binding - and an incognito call its silence - rather
+# than fail.
+async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named: str | None):
     LoopSampler.start()
     stt = ParakeetSTT(api_key="unused", base_url=STT_URL)
     tts = LocalTTS(
@@ -1847,39 +2120,24 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     # own - talking and typing become one transcript, one taint slate, one
     # workspace. A second header rather than overloading the first, because
     # the two mean different things and only one of them is ours to mint.
-    #
-    # Validated here as well as at the facade, and to the same rule
-    # (mecha-cli's `valid_key`): this value becomes a directory name under
-    # the producer root, it arrives from a browser, and a claim checked on
-    # only one side of a seam is a claim nobody checks the day the other
-    # side is reached directly. Refusing costs a call that is merely
-    # unshared; passing it on costs whatever a bad name does.
-    named = None
-    body = runner_args.body if isinstance(runner_args.body, dict) else {}
-    want = body.get("session")
-    if isinstance(want, str):
-        want = want.strip()
-        if (
-            0 < len(want) <= 32
-            and want[0] not in "-_"
-            and all(c.islower() or c.isdigit() or c in "-_" for c in want)
-            and want.isascii()
-        ):
-            named = want
-        elif want:
-            print(f"voice: refusing malformed chat session {want!r}", flush=True)
+    # `named` is validated in `bot` (`named_chat_session`), before the
+    # transport exists, so an incognito call's silence covers all of it.
     if named:
         headers["X-Chat-Session"] = named
+    if is_incognito(named):
+        # True by construction: `bot` holds `UNLOGGED` for exactly this case,
+        # around the whole of this function. Checked rather than assumed -
+        # and not with `assert`, which `-O` strips - because the claim
+        # loosens a refusal on the other side: a call that cannot vouch ends.
+        if not UNLOGGED.active:
+            raise RuntimeError("an incognito call reached run_bot without its log silence")
+        headers["X-Voice-Unlogged"] = "1"
     # §6.2: the same namespaced key `mecha-cli`'s facade keys its cache by
     # (`hosted_completion`'s `confirm_key`) - a hosted chat session and this
     # connection's own voice slot must not collide, so the namespace has to
     # match exactly on both sides of the poll.
     tts.set_affect_key(f"chat:{named}" if named else f"voice:{session_key}")
-    print(
-        f"voice session key: {session_key}"
-        + (f" (speaking into chat session {named!r})" if named else ""),
-        flush=True,
-    )
+    print(session_line(session_key, named), flush=True)
     llm = OpenAILLMService(
         api_key="unused",
         base_url=FACADE_URL,
@@ -2128,8 +2386,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             "refused": refused or None,
         })
 
+    connected = asyncio.Event()
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
+        connected.set()
         print("voice client connected", flush=True)
         # See TRACK_IDLE_DISCARD_SECS. Two privates, and a guard on each:
         # this is a memory limit being relaxed, not a correctness rule, so a
@@ -2153,26 +2414,50 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         print("voice client disconnected", flush=True)
         await runner.cancel()
 
-    await runner.run()
+    # An answered offer whose browser never connects ends here rather than at
+    # the idle timeout (`CONNECT_DEADLINE_SECS`).
+    fired = asyncio.Event()
+    deadline = asyncio.create_task(
+        end_unless_connected(connected, CONNECT_DEADLINE_SECS, runner.cancel, fired)
+    )
+    try:
+        await runner.run()
+    finally:
+        await settle_deadline(deadline, fired)
 
 
 async def bot(runner_args: RunnerArguments):
     webrtc_connection: SmallWebRTCConnection = runner_args.webrtc_connection
     body = runner_args.body if isinstance(runner_args.body, dict) else {}
-    # Decided here, from the offer, before any RTP frame is read: a switch
-    # mid-call would deliver the first words twice.
-    transport_cls = UplinkTransport if body.get("uplink") == "channel" else SmallWebRTCTransport
-    transport = transport_cls(
-        webrtc_connection=webrtc_connection,
-        params=TransportParams(
-            audio_in_enabled=True,
-            audio_out_enabled=True,
-        ),
-    )
-    await run_bot(transport, runner_args)
+    quiet = offers_incognito(body)
+    # Held before the transport exists and released only when the call is
+    # over, however it ends: nothing of an incognito call is logged at any
+    # point in its life. Keyed on the raw name, so it covers the refusal
+    # just below as well.
+    with UNLOGGED.held(quiet):
+        named = named_chat_session(body)
+        if quiet and not is_incognito(named):
+            # A name that claimed to be incognito and failed validation.
+            # Going on would drop the chat binding and answer in the
+            # facade's own, recorded, slot while the page says nothing is
+            # kept; the call ends instead.
+            await webrtc_connection.disconnect()
+            return
+        # Decided here, from the offer, before any RTP frame is read: a switch
+        # mid-call would deliver the first words twice.
+        transport_cls = UplinkTransport if body.get("uplink") == "channel" else SmallWebRTCTransport
+        transport = transport_cls(
+            webrtc_connection=webrtc_connection,
+            params=TransportParams(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+            ),
+        )
+        await run_bot(transport, runner_args, named)
 
 
 if __name__ == "__main__":
-    from pipecat.runner.run import main
+    from pipecat.runner.run import app, main
 
+    install(app)
     main()

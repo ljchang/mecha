@@ -425,7 +425,10 @@ impl Workflow {
         let mut out: Vec<OwnerDisposition> = Vec::new();
         for e in &self.events {
             match e.kind.as_str() {
-                "started" => session = Some(e.detail.clone()),
+                // A `started` whose session was forgotten (`forget` blanks the
+                // detail rather than drop the event, which would re-credit the
+                // run before it) resolves to unknown, never to "".
+                "started" => session = (!e.detail.is_empty()).then(|| e.detail.clone()),
                 "owner_closed" | "cancelled" => out.push(OwnerDisposition {
                     kind: if e.kind == "owner_closed" {
                         Disposition::Closed
@@ -1788,5 +1791,25 @@ mod owner_verdict_tests {
             never_started.owner_dispositions()[0].session.as_deref(),
             Some("s-added")
         );
+    }
+
+    /// A deleted conversation's `started` is blanked by `forget`, not
+    /// dropped: its close stays its own, and resolves to unknown rather than
+    /// to the run before it or to a session named "".
+    #[test]
+    fn a_forgotten_start_resolves_to_unknown_and_credits_no_other_run() {
+        let now = at("2026-09-25T09:00:00Z");
+        let mut w = Workflow::new("flow".into(), "Flow".into(), PathBuf::from("/tmp"), now);
+        w.record("started", "s-kept", now);
+        w.record("owner_closed", "first", now);
+        w.record("reopened", "Owner reopened workflow", now);
+        w.record("started", "", now);
+        w.record("owner_closed", "second", now);
+        let sessions: Vec<Option<String>> = w
+            .owner_dispositions()
+            .into_iter()
+            .map(|d| d.session)
+            .collect();
+        assert_eq!(sessions, vec![Some("s-kept".into()), None]);
     }
 }

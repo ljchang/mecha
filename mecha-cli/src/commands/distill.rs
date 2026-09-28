@@ -644,7 +644,7 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     }
 
-    store.commit(&format!(
+    store.log_pass(&format!(
         "distill: {distilled} episode(s), {carriers} carrier(s), {skipped} skip(s)"
     ));
     let carried = if carriers > 0 {

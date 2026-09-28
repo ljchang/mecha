@@ -158,7 +158,11 @@ pub trait SessionHost: Send + Sync {
     /// approval card cannot be tapped mid-sentence. It is deliberately not
     /// the host's posture to decide, and deliberately not sticky — a typed
     /// turn in the same conversation still runs at whatever the page says.
-    async fn speak(&self, key: &str, utterance: &str, approve_all: bool) -> Hosted;
+    ///
+    /// `unlogged` is the worker's `X-Voice-Unlogged`: it keeps no text of
+    /// this call. The host alone decides what that admits — today, a spoken
+    /// turn into an incognito chat, which is refused without it.
+    async fn speak(&self, key: &str, utterance: &str, approve_all: bool, unlogged: bool) -> Hosted;
 }
 
 /// Open a spoken turn with the D10 block when the conversation has not just
@@ -747,6 +751,10 @@ struct Head {
     /// header carrying two meanings is a value nobody can validate, and a
     /// page is free to name a session `webrtc-anything`.
     chat: Option<String>,
+    /// `X-Voice-Unlogged: 1`: the worker holds its log silence for this call
+    /// (`INCOGNITO-DESIGN.md` §6.4). Anything but exactly `1` is absent — a
+    /// claim that loosens a refusal is read strictly or not at all.
+    unlogged: bool,
     body_start: usize,
 }
 
@@ -760,6 +768,7 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
             let mut authorization = None;
             let mut session = None;
             let mut chat = None;
+            let mut unlogged = false;
             for h in req.headers.iter() {
                 if h.name.eq_ignore_ascii_case("content-length") {
                     content_length = std::str::from_utf8(h.value)?.trim().parse()?;
@@ -769,6 +778,8 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
                     session = Some(String::from_utf8_lossy(h.value).trim().to_string());
                 } else if h.name.eq_ignore_ascii_case("x-chat-session") {
                     chat = Some(String::from_utf8_lossy(h.value).trim().to_string());
+                } else if h.name.eq_ignore_ascii_case("x-voice-unlogged") {
+                    unlogged = h.value == b"1";
                 }
             }
             Ok(Some(Head {
@@ -778,9 +789,42 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
                 authorization,
                 session,
                 chat,
+                unlogged,
                 body_start,
             }))
         }
+    }
+}
+
+/// Stamp a spoken turn for the situation brief — unless it is spoken into an
+/// incognito chat. The stamp is a file in the mecha home that outlives the
+/// chat, and every ordinary run started within the call window records it
+/// in its own brief: the fact that the call happened, written down twice
+/// (`INCOGNITO-DESIGN.md` §1; review of #376). Decided by the key alone, so
+/// a call the gate below will refuse leaves nothing either.
+fn stamp_presence(
+    presence: &mecha_core::brief::VoicePresence,
+    chat: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    if chat.is_some_and(crate::commands::serve::incognito::is_incognito_key) {
+        return;
+    }
+    if let Err(e) = presence.stamp(now) {
+        tracing::debug!("voice presence not stamped: {e:#}");
+    }
+}
+
+/// A chat session key as the journal may show it. An incognito chat's key is
+/// never written down: that a chat of that name was spoken into is itself a
+/// trace it promised not to leave (`INCOGNITO-DESIGN.md` §6.4) — and the
+/// refusal path, the steady state until the worker restarts, is where it
+/// would otherwise land.
+fn key_for_log(key: &str) -> &str {
+    if crate::commands::serve::incognito::is_incognito_key(key) {
+        "<incognito>"
+    } else {
+        key
     }
 }
 
@@ -1807,9 +1851,7 @@ async fn completion(
     // that could not be written reads as no call, which is what it was
     // before 1h, and must never cost the turn.
     if let Ok(presence) = mecha_core::brief::VoicePresence::default_location() {
-        if let Err(e) = presence.stamp(chrono::Utc::now()) {
-            tracing::debug!("voice presence not stamped: {e:#}");
-        }
+        stamp_presence(&presence, head.chat.as_deref(), chrono::Utc::now());
     }
     let want_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let id = format!("chatcmpl-{}", Session::new_id());
@@ -1873,7 +1915,10 @@ async fn completion(
     // where it matters: the page's transcript simply does not move.
     if let (Some(chat_key), Some(host)) = (&head.chat, &shared.mount.host) {
         if !chat_key.is_empty() {
-            match host.speak(chat_key, &text, shared.mount.approve_all).await {
+            match host
+                .speak(chat_key, &text, shared.mount.approve_all, head.unlogged)
+                .await
+            {
                 Hosted::Started(turn) => {
                     return hosted_completion(
                         stream,
@@ -1893,15 +1938,25 @@ async fn completion(
                 )
                 .await,
                 Hosted::Failed(e) => {
-                    tracing::error!("voice turn on chat session {chat_key:?} failed: {e}");
+                    // Not a word for an incognito chat: the refusal says what
+                    // kind of chat it is, and that one was spoken into is the
+                    // fact it promised not to leave. The caller gets the
+                    // error; the journal gets nothing.
+                    if !crate::commands::serve::incognito::is_incognito_key(chat_key) {
+                        tracing::error!(
+                            "voice turn on chat session {:?} failed: {e}",
+                            key_for_log(chat_key)
+                        );
+                    }
                     return write_json(stream, 500, &json!({"error": e})).await;
                 }
                 Hosted::Unknown => {
                     tracing::warn!(
-                        "voice call named chat session {chat_key:?}, which is not a \
+                        "voice call named chat session {:?}, which is not a \
                          valid session key — answering in a conversation of its own \
                          instead. A valid key is created on demand, so this is the \
-                         caller's header, not a dropped session."
+                         caller's header, not a dropped session.",
+                        key_for_log(chat_key)
                     );
                     // `confirm_key` is still `chat:{chat_key}` below — this
                     // turn runs in the facade's own untracked slot instead,
@@ -2577,6 +2632,99 @@ mod tests {
         let head = parse_head(raw).unwrap().expect("complete");
         assert_eq!(head.session.as_deref(), Some("webrtc-1a2b"));
         assert_eq!(head.chat, None);
+        assert!(!head.unlogged, "no header is no claim");
+    }
+
+    #[test]
+    fn an_incognito_key_never_reaches_the_journal() {
+        assert_eq!(
+            key_for_log("incognito-0123456789abcdef012345"),
+            "<incognito>"
+        );
+        assert_eq!(key_for_log("main"), "main");
+        // And every log line in the facade door goes through it. Bounded to
+        // `completion`'s body, where every `chat_key` lives: an earlier cut
+        // at the first `#[cfg(test)]` read lines above `echo_span_tests`
+        // only, reached none of them, and passed with the key logged raw
+        // (review of #376 — this file's fourth source test to match the
+        // wrong region). Comments go first: one names `chat:{chat_key}`.
+        let src = include_str!("mod.rs");
+        let start = src
+            .find("\nasync fn completion(")
+            .expect("the facade door still lives in `completion`")
+            + 1;
+        let len = src[start..]
+            .find("\n}\n")
+            .expect("`completion` still closes");
+        let body: String = src[start..start + len]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Each `tracing::` invocation, to its closing `);`: whatever it says
+        // about the key, it says through `key_for_log`.
+        let mut wrapped = 0;
+        for (at, _) in body.match_indices("tracing::") {
+            let call = &body[at..at + body[at..].find(");").expect("a closed call")];
+            wrapped += call.matches("key_for_log(chat_key)").count();
+            assert!(
+                !call
+                    .replace("key_for_log(chat_key)", "")
+                    .contains("chat_key"),
+                "a log line in `completion` names the chat key raw: {call}"
+            );
+        }
+        // Not vacuous: the two refusal paths are the lines this pins.
+        assert!(
+            wrapped >= 2,
+            "the refusal paths no longer log through `key_for_log` ({wrapped} found)"
+        );
+    }
+
+    #[test]
+    fn a_spoken_turn_into_an_incognito_chat_leaves_no_presence_stamp() {
+        let home = std::env::temp_dir().join(format!("mecha-presence-{}", uuid::Uuid::new_v4()));
+        let presence = mecha_core::brief::VoicePresence::under(&home);
+        let stamp = home.join("runs").join("voice.json");
+        let now = chrono::Utc::now();
+        stamp_presence(&presence, Some("incognito-0123456789abcdef012345"), now);
+        assert!(!stamp.exists(), "an incognito call wrote the voice stamp");
+        // Not vacuous: the same call anywhere else stamps.
+        stamp_presence(&presence, Some("main"), now);
+        assert!(stamp.exists(), "an ordinary hosted call no longer stamps");
+        std::fs::remove_file(&stamp).unwrap();
+        stamp_presence(&presence, None, now);
+        assert!(stamp.exists(), "the facade's own slot no longer stamps");
+        let _ = std::fs::remove_dir_all(&home);
+        // And `completion` stamps through it, not around it.
+        let src = include_str!("mod.rs");
+        let start = src.find("\nasync fn completion(").expect("completion") + 1;
+        let body = &src[start..start + src[start..].find("\n}\n").expect("closes")];
+        assert!(body.contains("stamp_presence(&presence, head.chat.as_deref()"));
+        assert!(
+            !body.contains(".stamp("),
+            "`completion` stamps presence directly"
+        );
+    }
+
+    #[test]
+    fn only_an_exact_one_vouches_that_a_call_is_unlogged() {
+        // The header loosens a refusal (a spoken turn into an incognito
+        // chat), so anything short of the worker's exact claim reads as no
+        // claim at all.
+        let with = |v: &str| {
+            let raw = format!(
+                "POST /v1/chat/completions HTTP/1.1\r\nX-Chat-Session: incognito-0123456789abcdef012345\r\nX-Voice-Unlogged: {v}\r\nContent-Length: 0\r\n\r\n"
+            );
+            parse_head(raw.as_bytes())
+                .unwrap()
+                .expect("complete")
+                .unlogged
+        };
+        assert!(with("1"));
+        for not in ["0", "true", "yes", "", "11", "1 please"] {
+            assert!(!with(not), "{not:?} was read as a claim");
+        }
     }
 
     #[test]

@@ -16,13 +16,20 @@
 //! reflections.jsonl        append-only evidence, one line per reflection
 //! mined.jsonl              session ids already mined, one per line
 //! distilled.jsonl          session ids already distilled to the graph
+//! runs.jsonl               one [`LeapRun`] per abstraction/consolidation pass
+//! passes.jsonl             one line per pass that wrote here: when, and counts
 //! rules/<domain>.user.toml     the user's own rules — never written by code
 //! rules/<domain>.learned.toml  rewritten at consolidation
 //! ```
 //!
-//! The directory is a git repository (created best-effort on first open), and
-//! passes commit their changes: `git log` is the audit trail, `git diff` the
-//! review UI, `git revert` the undo for a bad consolidation. If the workload
+//! The store is plain files and never a git repository: git history would keep
+//! every deleted reflection's text, and a chat deleted "with all traces" must
+//! not survive in it. The audit trail is `passes.jsonl` (when each pass ran,
+//! and what it counted — never content), `runs.jsonl` (each consolidation's
+//! before/after), and the rules' own lineage fields (`sources`, and
+//! `retired_at`/`retired_reason` — retirement, not a revert, is the undo for a
+//! bad rule). A `.git` left by an older build is ignored, never used or
+//! removed. If the workload
 //! ever outgrows files — the CIPHER retrieval tier is the likely reason — the
 //! swap to a database happens behind this module's API. Noted as a real
 //! possibility, not a failure of this design.
@@ -1326,9 +1333,9 @@ impl LearningStore {
         Ok(crate::work::mecha_home()?.join("learning"))
     }
 
-    /// Open the store, creating the layout (and, best-effort, the git repo) if
-    /// it is not there yet. Git being absent degrades to plain files — the
-    /// audit trail is lost, the data is not.
+    /// Open the store, creating the layout if it is not there yet. Plain files
+    /// only: no git repository is created (see the module doc), and one left
+    /// by an older build is neither used nor removed.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         crate::create_private_dir(&root.join("rules"))
@@ -1336,19 +1343,6 @@ impl LearningStore {
         // The root holds reflections and ledgers directly, so it gets the
         // owner-only rule itself, not only through its subdirectory.
         crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
-        if !root.join(".git").exists() {
-            let _ = std::process::Command::new("git")
-                .arg("init")
-                .arg("--quiet")
-                .current_dir(&root)
-                .status();
-        }
-        // The writer lock file is process state, not learning history;
-        // without this, commit()'s `git add -A` would sweep it in.
-        let gitignore = root.join(".gitignore");
-        if !gitignore.exists() {
-            let _ = std::fs::write(&gitignore, ".lock\n");
-        }
         Ok(LearningStore { root })
     }
 
@@ -1471,8 +1465,8 @@ impl LearningStore {
     /// Sessions already distilled to the knowledge graph — `mecha distill`'s
     /// ledger. Kept in this store, not beside the sessions, for the same
     /// reasons the mining ledgers are: the writer lock covers the
-    /// read-then-mark race between two detached `session_end` hooks, and the
-    /// git history says when each push happened.
+    /// read-then-mark race between two detached `session_end` hooks, and
+    /// `passes.jsonl` says when each push happened.
     pub fn distilled_sessions(&self) -> Result<HashSet<String>> {
         let path = self.root.join("distilled.jsonl");
         if !path.exists() {
@@ -1784,28 +1778,18 @@ impl LearningStore {
         Err(err).context("locking the learning store")
     }
 
-    /// Best-effort commit of the store's current state. Losing git loses the
-    /// audit trail, never the data, so failures are logged and swallowed.
-    pub fn commit(&self, message: &str) {
-        let run = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(&self.root)
-                .output()
-        };
-        if run(&["add", "-A"]).is_err() {
-            return;
-        }
-        match run(&["commit", "--quiet", "-m", message]) {
-            Ok(out) if !out.status.success() => {
-                let text = String::from_utf8_lossy(&out.stdout);
-                // "nothing to commit" is a fine outcome, not a warning.
-                if !text.contains("nothing to commit") && !text.trim().is_empty() {
-                    tracing::warn!("learning store commit: {}", text.trim());
-                }
-            }
-            Err(e) => tracing::warn!("learning store commit failed: {e}"),
-            _ => {}
+    /// Record that a pass wrote to the store: one `{"at", "message"}` line in
+    /// `passes.jsonl`. The message is counts and ids, never reflection, rule or
+    /// chat text — this file is kept for good, so a deleted chat must leave
+    /// nothing in it. Best-effort: losing the line loses the audit entry,
+    /// never the data, so a failure is logged and the pass goes on.
+    pub fn log_pass(&self, message: &str) {
+        let line = serde_json::json!({
+            "at": chrono::Utc::now().to_rfc3339(),
+            "message": message,
+        });
+        if let Err(e) = self.append_line("passes.jsonl", &line.to_string()) {
+            tracing::warn!("learning store pass log failed: {e}");
         }
     }
 }
@@ -1813,8 +1797,8 @@ impl LearningStore {
 // ─── LEAP runs ──────────────────────────────────────────────────────────────
 
 /// Audit record for one abstraction/consolidation pass. Appended to
-/// `runs.jsonl`; together with the store's git history this is the full
-/// lineage from any rule back to the reflections that argued for it.
+/// `runs.jsonl`; together with `passes.jsonl` and each rule's `sources` this
+/// is the full lineage from any rule back to the reflections that argued for it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeapRun {
     pub id: String,
@@ -4785,6 +4769,65 @@ mod tests {
             .join("mecha-learning-test")
             .join(uuid::Uuid::new_v4().to_string());
         LearningStore::open(dir).unwrap()
+    }
+
+    /// **The store is plain files, never a git repository.** Git history
+    /// would keep every deleted reflection's text, so a chat deleted "with
+    /// all traces" would survive in it. Fails on the old behaviour wherever
+    /// git is installed: `open` ran `git init` and wrote a `.gitignore`.
+    #[test]
+    fn opening_a_fresh_store_creates_no_git_repository() {
+        let store = temp_store();
+        assert!(store.root().join("rules").is_dir(), "the layout is created");
+        assert!(!store.root().join(".git").exists(), "no git repository");
+        assert!(!store.root().join(".gitignore").exists(), "no .gitignore");
+        std::fs::remove_dir_all(store.root()).ok();
+    }
+
+    /// A `.git` an older build left behind is the owner's to remove — `open`
+    /// neither uses it nor deletes it.
+    #[test]
+    fn opening_a_store_leaves_an_existing_git_directory_alone() {
+        let dir = std::env::temp_dir()
+            .join("mecha-learning-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let store = LearningStore::open(&dir).unwrap();
+        store.log_pass("reflect: 0 session(s)");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".git").join("HEAD")).unwrap(),
+            "ref: refs/heads/main\n"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A pass leaves one `{"at", "message"}` line in `passes.jsonl`, in order,
+    /// where the git commit used to be the only record of it.
+    #[test]
+    fn a_pass_appends_a_timestamped_line_to_the_pass_log() {
+        let store = temp_store();
+        store.log_pass("reflect: 2 session(s), 0 draft edit(s)");
+        store.log_pass("learn[general]: 3 reflection(s), 1 → 2 rule(s)");
+        let text = std::fs::read_to_string(store.root().join("passes.jsonl")).unwrap();
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert_eq!(
+            lines[0]["message"],
+            "reflect: 2 session(s), 0 draft edit(s)"
+        );
+        assert_eq!(
+            lines[1]["message"],
+            "learn[general]: 3 reflection(s), 1 → 2 rule(s)"
+        );
+        for l in &lines {
+            let at = l["at"].as_str().expect("`at` is a string");
+            chrono::DateTime::parse_from_rfc3339(at).expect("`at` is RFC 3339");
+        }
+        std::fs::remove_dir_all(store.root()).ok();
     }
 
     fn active_rule(text: &str) -> Rule {
