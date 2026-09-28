@@ -1197,8 +1197,10 @@ async fn save(ctx: &ToolCtx, seed: u64, bytes: &[u8]) -> Result<String> {
 
 /// Read each reference out of the run's workspace, through the path jail.
 ///
-/// The pixels go to the loopback server and nowhere else — never into the
-/// conversation, so nothing here arms taint; the result names paths only.
+/// The pixels never enter the conversation, so nothing here arms taint; the
+/// result names paths only. `image_generate` sends them to the loopback
+/// server; `image_library_propose` keeps one as a candidate's portrait in the
+/// owner's library, bounded by `imagelib::MAX_PROPOSED_PORTRAIT_BYTES`.
 pub(crate) async fn read_references(
     ctx: &ToolCtx,
     paths: &[String],
@@ -1520,18 +1522,31 @@ impl Tool for ImageGenerate {
         };
         let is_edit = !paths.is_empty();
         let scene_prompt = req.prompt.clone();
-        // A library character named in the prompt with no `cast` is drawn
+        // A library character named in the prompt but not in `cast` is drawn
         // from words alone, and comes out as someone else — the first real
         // run did exactly this (research E1; `imagelib::named_in`). Refused
-        // before a minute of GPU is spent. `"cast": []` says "someone else
-        // by that name"; an edit's people carry their own identity.
-        // `null` is read as "no cast" by `request`, so it is one here too — a
-        // model emitting null for an unused field would otherwise walk past
-        // (found on review of #383).
-        if !is_edit && matches!(input.get("cast"), None | Some(Value::Null)) {
+        // before a minute of GPU is spent, on every new image: a cast of one
+        // does not excuse a second character named beside it (review of
+        // #383). An explicit `"cast": []` says "someone else by that name";
+        // `null` is no cast, as `request` reads it; an edit's people carry
+        // their own identity.
+        let waived = matches!(input.get("cast"), Some(Value::Array(a)) if a.is_empty());
+        if !is_edit && !waived {
             if let Some(dir) = &self.library_dir {
                 let (lib, _) = crate::imagelib::Library::load(dir);
-                let named = crate::imagelib::named_in(&lib, &req.prompt);
+                let cast: std::collections::BTreeSet<String> = ask
+                    .as_ref()
+                    .map(|a| {
+                        a.cast
+                            .iter()
+                            .map(|m| m.name.trim().to_lowercase())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let named: Vec<String> = crate::imagelib::named_in(&lib, &req.prompt)
+                    .into_iter()
+                    .filter(|n| !cast.contains(n))
+                    .collect();
                 if !named.is_empty() {
                     let names = named
                         .iter()
@@ -1715,7 +1730,9 @@ impl Tool for ImageGenerate {
             "size": req.size,
             "reference_size": req.reference_size,
             "reference_images": if is_edit { json!(paths) } else { Value::Null },
-            "cast": ask.as_ref().filter(|a| !a.cast.is_empty()).map(|a| a.cast.iter().zip(used.iter()).map(|(m, u)| json!({
+            "cast": ask.as_ref().filter(|a| !a.cast.is_empty()).map(|a| a.cast.iter()
+                .zip(used.iter().filter(|u| u.kind == crate::imagelib::Kind::Character))
+                .map(|(m, u)| json!({
                 "name": u.name, "version": u.version, "portrait": u.portrait,
                 "wearing": m.wearing.trim(), "doing": m.doing.trim(),
             })).collect::<Vec<_>>()),
@@ -1757,10 +1774,15 @@ impl Tool for ImageGenerate {
             ));
         } else {
             let sources: Vec<&str> = req.references.iter().map(|r| r.path.as_str()).collect();
+            let styled = used
+                .iter()
+                .find(|u| u.kind == crate::imagelib::Kind::Style)
+                .map(|u| format!(" in style {} (v{})", u.name, u.version))
+                .unwrap_or_default();
             text.push_str(&format!(
-                "Edited {} into a {size} image in {secs} s (seed {}, {} steps) and saved it to \
-                 {path} in the workspace; the original is unchanged. To change it further, edit \
-                 {path} next. You have not seen it, so do not describe what it shows.",
+                "Edited {}{styled} into a {size} image in {secs} s (seed {}, {} steps) and saved \
+                 it to {path} in the workspace; the original is unchanged. To change it further, \
+                 edit {path} next. You have not seen it, so do not describe what it shows.",
                 sources.join(", "),
                 req.seed,
                 req.steps
@@ -3568,6 +3590,26 @@ mod tests {
             .await
             .unwrap();
         assert!(out.is_error, "{}", out.content);
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        // Casting one character does not excuse another named beside them.
+        let out = t
+            .call(
+                json!({"prompt": "Maya laughing, John at the next table",
+                       "cast": [{"name": "maya", "wearing": "a coat", "doing": "laughing"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("`john` is a character"),
+            "{}",
+            out.content
+        );
         assert!(!seen
             .lock()
             .unwrap()
