@@ -607,9 +607,10 @@ fn is_busy_refusal(status: reqwest::StatusCode, body: &str) -> bool {
 pub enum OnBusy {
     /// Ask again in a moment.
     Wait,
-    /// Unload this model — the busy one, cutting its reply off — and ask
-    /// again: "switch now", reached while the load is being refused.
-    CutOff(String),
+    /// Unload the busy model — whichever the router has loaded, asked of
+    /// it at that moment rather than assumed — cutting its reply off, and
+    /// ask again: "switch now", reached while the load is being refused.
+    CutOff,
     /// Give up with this error: the switch was withdrawn.
     Stop(anyhow::Error),
 }
@@ -693,15 +694,32 @@ pub async fn load_with(
         match hooks.busy() {
             OnBusy::Wait => {}
             OnBusy::Stop(why) => return Err(why),
-            OnBusy::CutOff(busy) if !std::mem::replace(&mut cut, true) => {
-                // Not fatal, as `--now`'s own unload is not: the next ask
-                // says whether the model is still in the way.
-                if let Err(e) = unload(&b, &busy, wait).await {
-                    tracing::warn!("cutting off {busy}: {e:#}");
+            OnBusy::CutOff if !std::mem::replace(&mut cut, true) => {
+                // The router's refusal does not name the busy model, and a
+                // name read before the busy spell can be stale — a routed
+                // request naming another evicts the resident one, and `--now`
+                // has already unloaded the one it knew (found on review). So
+                // ask what is loaded now, and cut that off, within what is
+                // left of the busy budget rather than a third `wait`.
+                let resident = models(&b)
+                    .await
+                    .and_then(|l| resident(&l).map(str::to_string));
+                let left = busy_deadline.saturating_duration_since(tokio::time::Instant::now());
+                match resident {
+                    Some(busy) if busy != model => {
+                        // Not fatal, as `--now`'s own unload is not: the next
+                        // ask says whether the model is still in the way.
+                        if let Err(e) = unload(&b, &busy, left).await {
+                            tracing::warn!("cutting off {busy}: {e:#}");
+                        }
+                    }
+                    _ => tracing::warn!(
+                        "asked to cut off the busy model, but {b} names no other one resident"
+                    ),
                 }
                 continue;
             }
-            OnBusy::CutOff(_) => {}
+            OnBusy::CutOff => {}
         }
         if tokio::time::Instant::now() + BUSY_RETRY >= busy_deadline {
             bail!(
@@ -1244,7 +1262,7 @@ mod tests {
         fn busy(&mut self) -> OnBusy {
             self.busy += 1;
             match self.answers.get(self.busy - 1).copied() {
-                Some("cut") => OnBusy::CutOff("old".into()),
+                Some("cut") => OnBusy::CutOff,
                 Some("stop") => OnBusy::Stop(anyhow::anyhow!("withdrawn")),
                 _ => OnBusy::Wait,
             }
@@ -1269,6 +1287,8 @@ mod tests {
             (200, ROUTER),
             (200, OLD_LOADED),
             (500, BUSY),
+            (200, ROUTER), // what is loaded, asked at the cut-off
+            (200, OLD_LOADED),
             (200, r#"{"success":true}"#), // POST /models/unload
             (200, NONE_LOADED),           // unload's poll
             (200, r#"{"success":true}"#), // POST /models/load again

@@ -283,8 +283,10 @@ async fn list(cfg: &Config, json: bool) -> Result<()> {
                 "  switching to {} (since {}) — waiting for: {}",
                 p.to,
                 p.started_at.format("%H:%M:%SZ"),
-                if p.past_the_wait || p.waiting_on.is_empty() {
+                if p.past_the_wait {
                     "nothing; the load is under way".to_string()
+                } else if p.waiting_on.is_empty() {
+                    "no runs; the loaded model may still be finishing a request".to_string()
                 } else {
                     p.waiting_on.join(", ")
                 }
@@ -494,7 +496,6 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
     let started = Instant::now();
     let mut hooks = SwitchHooks {
         switching: &_switching,
-        previous: previous.clone(),
         now,
         cut: false,
         said: false,
@@ -512,6 +513,13 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
         // meant to replace, rather than leaving the next request to load the
         // default.
         Err(failed) => {
+            // A switch withdrawn during a busy spell stops, and the model it
+            // meant to replace is still loaded: R1 has nothing to put back,
+            // and running it would load the busy model "back" — meeting the
+            // same refusal for the whole of `--wait-secs` (found on review).
+            if !_switching.still_pending() {
+                return Err(failed);
+            }
             let Some(prev) = previous else {
                 return Err(failed);
             };
@@ -543,7 +551,6 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
 /// minutes).
 struct SwitchHooks<'a> {
     switching: &'a mecha_core::hold::Switching,
-    previous: Option<String>,
     /// `--now`, or hurried while it waited for runs.
     now: bool,
     /// Whether the busy model has been cut off already: once is the ask.
@@ -558,18 +565,16 @@ impl router::LoadHooks for SwitchHooks<'_> {
                 "the switch was withdrawn (`mecha model cancel-switch`); the loaded model stays"
             ));
         }
-        if let Some(prev) = &self.previous {
-            if !self.cut && (self.now || self.switching.now_requested()) {
-                self.cut = true;
-                eprintln!("stopping {prev} now — the reply it is answering will fail");
-                return router::OnBusy::CutOff(prev.clone());
-            }
-            if !std::mem::replace(&mut self.said, true) {
-                eprintln!(
-                    "{prev} is answering a request; the switch waits for it to finish \
-                     (--now, or \"switch now\" on the chip, cuts it off)"
-                );
-            }
+        if !self.cut && (self.now || self.switching.now_requested()) {
+            self.cut = true;
+            eprintln!("stopping the loaded model now — the reply it is answering will fail");
+            return router::OnBusy::CutOff;
+        }
+        if !std::mem::replace(&mut self.said, true) {
+            eprintln!(
+                "the loaded model is answering a request; the switch waits for it to finish \
+                 (--now, or \"switch now\" on the chip, cuts it off)"
+            );
         }
         router::OnBusy::Wait
     }
@@ -884,14 +889,13 @@ mod wait_tests {
             .unwrap();
         let mut hooks = SwitchHooks {
             switching: &switching,
-            previous: Some("old".into()),
             now: false,
             cut: false,
             said: false,
         };
         assert!(matches!(hooks.busy(), OnBusy::Wait));
         holds.request_now(ROUTER, "b").unwrap().unwrap();
-        assert!(matches!(hooks.busy(), OnBusy::CutOff(m) if m == "old"));
+        assert!(matches!(hooks.busy(), OnBusy::CutOff));
         assert!(matches!(hooks.busy(), OnBusy::Wait), "cut off twice");
         let pending = holds.pending(ROUTER).unwrap();
         assert!(
