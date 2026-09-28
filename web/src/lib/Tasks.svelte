@@ -1058,12 +1058,16 @@
       {#if data}<div class="empty">Nothing here.</div>{/if}
     {/each}
     {/if}
-    <div class="footnote">Every change is one tap and reversible — nothing here confirms.</div>
+    <!-- Said of the board's own verbs; the workflows view's are not one tap
+         from where they were (Finish and Reopen are separate acts). -->
+    {#if filter !== WORKFLOWS}<div class="footnote">Every change is one tap and reversible — nothing here confirms.</div>{/if}
   </div>
 
+  {#if filter !== WORKFLOWS}
   <button class="fab" onclick={() => (adding = true)} title="capture a task">
     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--void)" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
   </button>
+  {/if}
 
   {#if adding}
     <div class="scrim" onclick={() => (adding = false)} aria-hidden="true"></div>
