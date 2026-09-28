@@ -1001,6 +1001,48 @@ fn collect_queues() -> Vec<Queue> {
         oldest,
     });
 
+    // The image library's candidates: characters and styles a model proposed,
+    // waiting on the owner's approval. Read directly, like the stores above,
+    // and kept off `backlog::Backlog`, which is recorded on every run — a new
+    // field there would move what every older row is compared against, the
+    // reason `requests_on_owner` sits beside it. A broken entry is a finding:
+    // it may be a candidate, so the depth is not claimed (`None`).
+    let (depth, detail, oldest) = match mecha_core::imagelib::Library::default_dir() {
+        Ok(dir) => {
+            let (lib, errors) = mecha_core::imagelib::Library::load(&dir);
+            let pending: Vec<_> = lib.candidates().collect();
+            let oldest = oldest_age(pending.iter().map(|e| e.created.as_str()));
+            if errors.is_empty() {
+                let characters = pending
+                    .iter()
+                    .filter(|e| e.kind == mecha_core::imagelib::Kind::Character)
+                    .count();
+                (
+                    Some(pending.len()),
+                    format!(
+                        "{characters} character(s), {} style(s) proposed by a model",
+                        pending.len() - characters
+                    ),
+                    oldest,
+                )
+            } else {
+                (
+                    None,
+                    format!("{} entr(ies) could not be read", errors.len()),
+                    oldest,
+                )
+            }
+        }
+        Err(e) => (None, format!("{e:#}"), None),
+    };
+    out.push(Queue {
+        name: "image candidates",
+        depth,
+        detail,
+        opens: "mecha imagelib list --all",
+        oldest,
+    });
+
     out
 }
 
