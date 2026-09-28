@@ -108,8 +108,10 @@ yet on `main` when this was written, so §3.4's ComfyUI row, §5.1's
 
 ### 3.2 Derived later from session files
 
-`reflect` (writes `learning/reflections.jsonl` — a **git repository**, so a
-deleted line survives in history), `distill` (sends the transcript to the model
+`reflect` (writes `learning/reflections.jsonl` — a **git repository** until
+2026-09-28, when the store stopped using git; a store created before then keeps
+its `.git`, and a deleted line survives in that history until it is removed),
+`distill` (sends the transcript to the model
 and **writes an episode into the knowledge graph**), `learn`, `validate`,
 `gossip`, `runlog::Corpus`, `harness_probe::draw_episodes`,
 `planning::examples` (copies plan text from recent sessions into later runs),

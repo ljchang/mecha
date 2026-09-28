@@ -506,7 +506,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             outbox_todo.len()
         );
     } else {
-        store.commit(&format!(
+        store.log_pass(&format!(
             "reflect: {sessions_mined} session(s), {edits_mined} draft edit(s), \
              {rejections_mined} draft rejection(s), {reflections_written} reflection(s)"
         ));
@@ -693,7 +693,7 @@ fn matched_keys_in(
 /// read and disagrees sets what it names, `None` included. Runs on every
 /// `reflect` pass — the nightly's `learn --auto` follows it — so
 /// correctness does not depend on a human running a flag first (found on
-/// review). Commits its own writes; a pass with nothing to apply does not
+/// review). Logs its own pass; a pass with nothing to apply does not
 /// touch the file. Returns how many rows were (or would be) rewritten.
 fn reconcile_recorded_keys(
     store: &LearningStore,
@@ -900,7 +900,7 @@ fn reconcile_recorded_keys(
     } else {
         let written = store.reconcile_keys(&reconcile, &chrono::Utc::now().to_rfc3339())?;
         if written > 0 {
-            store.commit(&format!(
+            store.log_pass(&format!(
                 "reflect: {written} situation(s)' keys reconciled with the run record"
             ));
         }
@@ -1126,12 +1126,12 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
         updates.len()
     } else {
         let written = store.set_situations(&updates, &chrono::Utc::now().to_rfc3339())?;
-        // Committed on its own, like every batch pass over this store: the
+        // Logged as its own pass, like every batch pass over this store: the
         // rewrite changes which region batches the next `learn --auto`
-        // argues, and left uncommitted it would ride into the next
-        // nightly's `reflect: 0 session(s)` commit (found on review).
+        // argues, and unlogged it would be an unexplained change beside the
+        // next nightly's `reflect: 0 session(s)` line (found on review).
         if written > 0 {
-            store.commit(&format!(
+            store.log_pass(&format!(
                 "reflect --backfill-situations: {written} situation(s) recomputed, {} left absent",
                 unmatched.len()
             ));

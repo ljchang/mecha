@@ -210,6 +210,6 @@ fn seed_learning_store(learning_dir: &str, session_id: &str, steer: &str) -> Res
             None,
         )),
     })?;
-    store.commit("retirement drill: seeded scenario");
+    store.log_pass("retirement drill: seeded scenario");
     Ok(())
 }
