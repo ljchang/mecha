@@ -17,10 +17,21 @@
 //! `web/test/no-storage.mjs` forbids — so a reload locks again. Generation
 //! ignores all of this: the lock hides, it never withholds.
 //!
-//! **Approval is of what was shown.** The list carries each entry's
-//! `shown_digest`; the approve button sends it back, and the CLI approves
-//! only if the entry still matches (`imagelib::approve_as_shown`) — the web
-//! form of the terminal's "read it before you approve it".
+//! **Approval is of what was shown, and only this server can vouch for it.**
+//! The list carries, per entry, an HMAC of its `shown_digest` under a key
+//! this process draws at start and never writes down; the approve button
+//! sends it back, and approval happens here, in process, only if the entry
+//! as re-read still signs the same. A plain digest would not do: it is a
+//! hash of text anyone who can read the store can see, so a `--shown` flag
+//! on the CLI let any shell compute it and approve a model's proposal with
+//! no one reading it (found on review of #385). This is the one write not
+//! made by a CLI child, because the CLI has no way to prove a person saw
+//! the text — the web page is that proof, and only this process can check it.
+//!
+//! **Writes honour the lock as reads do.** An action on a locked entry needs
+//! a live unlock token, and a hidden entry and a missing one answer the same
+//! 404 before any child runs — otherwise `unlock` was a way to reveal a
+//! hidden entry with no password, and the 200/409 split named which exist.
 
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{header, StatusCode};
@@ -46,15 +57,39 @@ pub struct LibraryState {
     pub dir: PathBuf,
     unlocks: Mutex<HashMap<String, Instant>>,
     failures: Mutex<Vec<Instant>>,
+    /// Signs what the page was shown; drawn at start, never stored.
+    key: [u8; 32],
 }
 
 impl LibraryState {
     pub fn new(dir: PathBuf) -> LibraryState {
+        let mut key = [0u8; 32];
+        key[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        key[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
         LibraryState {
             dir,
             unlocks: Mutex::new(HashMap::new()),
             failures: Mutex::new(Vec::new()),
+            key,
         }
+    }
+
+    /// HMAC-SHA256 of an entry's `shown_digest` under this process's key,
+    /// hex: what the page sends back to approve exactly what it displayed.
+    fn sign(&self, digest: &str) -> String {
+        imagelib::sign_shown(&self.key, digest)
+    }
+
+    /// Whether `presented` is this process's signature of `digest`, compared
+    /// without an early exit.
+    fn signed(&self, digest: &str, presented: &str) -> bool {
+        let want = self.sign(digest);
+        want.len() == presented.len()
+            && want
+                .bytes()
+                .zip(presented.bytes())
+                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                == 0
     }
 
     /// Whether `token` is a live unlock, refreshing its idle clock if so.
@@ -90,19 +125,26 @@ impl LibraryState {
             .remove(token);
     }
 
-    /// Record a failure; `false` once the window is full.
+    /// Reserve an attempt, counted as a failure until it proves otherwise;
+    /// `false` once the window is full. Reserving before the check is what
+    /// makes the ceiling hold for guesses sent in parallel (review of #385).
     fn may_try(&self) -> bool {
         let mut failures = self.failures.lock().unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
         failures.retain(|t| now.duration_since(*t) < FAILURE_WINDOW);
-        failures.len() < MAX_FAILURES
+        if failures.len() >= MAX_FAILURES {
+            return false;
+        }
+        failures.push(now);
+        true
     }
 
-    fn failed(&self) {
+    /// A reserved attempt succeeded: it was not a failure after all.
+    fn succeeded(&self) {
         self.failures
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .push(Instant::now());
+            .pop();
     }
 }
 
@@ -170,7 +212,7 @@ pub async fn list(State(state): St, Query(q): Query<UnlockQuery>) -> Response {
                 "text": e.text,
                 "created": e.created,
                 "portrait": portrait_url(e, token.as_deref()),
-                "shown": imagelib::shown_digest(e),
+                "shown": lib_state.sign(&imagelib::shown_digest(e)),
             })
         })
         .collect();
@@ -273,6 +315,9 @@ pub async fn unlock(State(state): St, Json(body): Json<UnlockBody>) -> Response 
     let verdict =
         tokio::task::spawn_blocking(move || imagelib::verify_lock_password(&dir, &body.password))
             .await;
+    if matches!(verdict, Ok(Ok(true))) {
+        state.library.succeeded();
+    }
     match verdict {
         Ok(Ok(true)) => no_store(
             Json(serde_json::json!({
@@ -281,10 +326,7 @@ pub async fn unlock(State(state): St, Json(body): Json<UnlockBody>) -> Response 
             }))
             .into_response(),
         ),
-        Ok(Ok(false)) => {
-            state.library.failed();
-            (StatusCode::FORBIDDEN, "wrong password\n").into_response()
-        }
+        Ok(Ok(false)) => (StatusCode::FORBIDDEN, "wrong password\n").into_response(),
         // A damaged lock file is a finding, never an open door.
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "checking the password\n").into_response(),
@@ -312,9 +354,12 @@ fn parse_kind(kind: &str) -> Option<&'static str> {
 
 #[derive(Deserialize, Default)]
 pub struct ActBody {
-    /// The `shown_digest` the page displayed, for `approve`.
+    /// This server's signature of what the page displayed, for `approve`.
     #[serde(default)]
     shown: Option<String>,
+    /// The unlock token, for an action on a locked entry.
+    #[serde(default)]
+    unlock: Option<String>,
 }
 
 /// POST /api/library/{kind}/{name}/{action} — approve (as shown), reject,
@@ -331,27 +376,45 @@ pub async fn act(
         return (StatusCode::BAD_REQUEST, "not an entry name\n").into_response();
     }
     let body = body.map(|Json(b)| b).unwrap_or_default();
-    let shown;
+    if !matches!(
+        action.as_str(),
+        "approve" | "reject" | "lock" | "unlock" | "remove"
+    ) {
+        return (StatusCode::NOT_FOUND, "no such action\n").into_response();
+    }
+    // The lock holds for writes as for reads: a locked entry is acted on
+    // only while unlocked, and hidden answers exactly as missing does.
+    let unlocked = state.library.unlocked(body.unlock.as_deref());
+    let entry = {
+        let dir = state.library.dir.clone();
+        let (k, n) = (kind, name.clone());
+        tokio::task::spawn_blocking(move || {
+            let kind = if k == "style" {
+                Kind::Style
+            } else {
+                Kind::Character
+            };
+            Library::load(&dir).0.get(kind, &n).cloned()
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+    let Some(entry) = entry.filter(|e| !e.locked || unlocked) else {
+        return (StatusCode::NOT_FOUND, "no such entry\n").into_response();
+    };
     let args: Vec<&str> = match action.as_str() {
         "approve" => {
-            // Only as shown: the page must have displayed the text.
-            let Some(digest) = body
-                .shown
-                .filter(|d| d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()))
-            else {
-                return (StatusCode::BAD_REQUEST, "approve needs the shown digest\n")
-                    .into_response();
+            let Some(shown) = body.shown else {
+                return (StatusCode::BAD_REQUEST, "approve needs what was shown\n").into_response();
             };
-            shown = digest;
-            vec![
-                "imagelib", "approve", &name, "--kind", kind, "--yes", "--shown", &shown,
-            ]
+            return approve_shown(&state, entry, shown).await;
         }
         "reject" => vec!["imagelib", "reject", &name, "--kind", kind],
         "lock" => vec!["imagelib", "lock", &name, "--kind", kind],
         "unlock" => vec!["imagelib", "unlock", &name, "--kind", kind],
         "remove" => vec!["imagelib", "remove", &name, "--kind", kind, "--yes"],
-        _ => return (StatusCode::NOT_FOUND, "no such action\n").into_response(),
+        _ => unreachable!("actions are matched above"),
     };
     super::review::verb(&state, &args).await
 }
@@ -360,6 +423,38 @@ pub async fn act(
 pub struct SourceQuery {
     key: String,
     path: String,
+}
+
+/// Approve `entry` as the page showed it, in this process: the signature
+/// must be ours, over the entry as re-read now. `approve_as_shown` re-reads
+/// once more at the write, so a text that moves between the check and the
+/// write is refused too.
+async fn approve_shown(state: &super::WebState, entry: Entry, shown: String) -> Response {
+    let lib = std::sync::Arc::clone(&state.library);
+    let done = tokio::task::spawn_blocking(move || {
+        let digest = imagelib::shown_digest(&entry);
+        if !lib.signed(&digest, &shown) {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "`{}` is not what was shown — reload and read it again\n",
+                    entry.name
+                ),
+            ));
+        }
+        imagelib::approve_as_shown(&lib.dir, entry.kind, &entry.name, &digest)
+            .map_err(|e| (StatusCode::CONFLICT, format!("{e:#}\n")))
+    })
+    .await;
+    match done {
+        Ok(Ok(e)) => Json(serde_json::json!({
+            "ok": true,
+            "output": format!("Approved `{}`.", e.name),
+        }))
+        .into_response(),
+        Ok(Err(refusal)) => refusal.into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "approving\n").into_response(),
+    }
 }
 
 /// The manifest beside a chat image, when it has one.
@@ -470,6 +565,8 @@ pub async fn save(State(state): St, Json(body): Json<SaveBody>) -> Response {
         Ready(tempdir::Dir, Option<u64>),
         TooLarge,
         Missing,
+        /// Our own scratch space failed — not the owner's picture.
+        Scratch,
     }
     let staged = tokio::task::spawn_blocking(move || {
         use std::io::Read;
@@ -493,7 +590,7 @@ pub async fn save(State(state): St, Json(body): Json<SaveBody>) -> Response {
                 .and_then(|d| std::fs::write(d.file(), &bytes).map(|_| d))
             {
                 Ok(dir) => Staged::Ready(dir, seed),
-                Err(_) => Staged::Missing,
+                Err(_) => Staged::Scratch,
             },
             Ok(None) => Staged::TooLarge,
             Err(_) => Staged::Missing,
@@ -509,7 +606,16 @@ pub async fn save(State(state): St, Json(body): Json<SaveBody>) -> Response {
             )
                 .into_response()
         }
-        _ => return (StatusCode::NOT_FOUND, "no such picture\n").into_response(),
+        Ok(Staged::Missing) => return (StatusCode::NOT_FOUND, "no such picture\n").into_response(),
+        // Our scratch space, or the blocking task, failed: something went
+        // wrong, which is not the same finding as "no such picture".
+        Ok(Staged::Scratch) | Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not stage the picture for saving\n",
+            )
+                .into_response()
+        }
     };
     let portrait = staged.file().to_string_lossy().into_owned();
     let seed = seed.map(|s| s.to_string());
@@ -615,9 +721,18 @@ mod tests {
     #[test]
     fn wrong_passwords_are_limited() {
         let s = LibraryState::new(PathBuf::new());
+        // Reservations count before any answer lands: parallel guesses run
+        // out as sequential ones do.
         for _ in 0..MAX_FAILURES {
             assert!(s.may_try());
-            s.failed();
+        }
+        assert!(!s.may_try());
+        // A success gives its reservation back.
+        let s = LibraryState::new(PathBuf::new());
+        assert!(s.may_try());
+        s.succeeded();
+        for _ in 0..MAX_FAILURES {
+            assert!(s.may_try());
         }
         assert!(!s.may_try());
     }
@@ -654,6 +769,10 @@ mod route_tests {
 
     /// maya open, theo locked, sam a candidate; a lock password set.
     fn fixture() -> Fixture {
+        fixture_with(None)
+    }
+
+    fn fixture_with(chat: Option<Arc<super::super::chat::ChatState>>) -> Fixture {
         let dir =
             std::env::temp_dir().join(format!("mecha-library-routes-{}", uuid::Uuid::new_v4()));
         for (name, shade, origin, locked) in [
@@ -679,7 +798,7 @@ mod route_tests {
         let app = router(
             WebState {
                 owner_login: Arc::new("owner@example.com".into()),
-                chat: None,
+                chat,
                 offer_target: None,
                 voices_dir: None,
                 library: Arc::new(LibraryState::new(dir.clone())),
@@ -863,6 +982,135 @@ mod route_tests {
                 .unwrap();
             assert_eq!(r.status(), want, "{uri}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_locked_entry_is_acted_on_only_while_unlocked_and_hides_as_missing_does() {
+        let f = fixture();
+        let theo = f
+            .app
+            .clone()
+            .oneshot(post(
+                "/api/library/character/theo/unlock",
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(theo.status(), StatusCode::NOT_FOUND);
+        let theo = to_bytes(theo.into_body(), 1000).await.unwrap();
+        let ghost = f
+            .app
+            .clone()
+            .oneshot(post(
+                "/api/library/character/ghost/unlock",
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(ghost.status(), StatusCode::NOT_FOUND);
+        let ghost = to_bytes(ghost.into_body(), 1000).await.unwrap();
+        // Hidden and missing answer alike: no oracle for which names exist.
+        assert_eq!(theo, ghost);
+        // Nothing changed on disk.
+        assert!(
+            Library::load(&f.dir)
+                .0
+                .get(Kind::Character, "theo")
+                .unwrap()
+                .locked
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_takes_this_servers_signature_not_a_computable_digest() {
+        let f = fixture();
+        let list = json(f.app.clone().oneshot(get("/api/library")).await.unwrap()).await;
+        let sam = list["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == "sam")
+            .unwrap()
+            .clone();
+        let signed = sam["shown"].as_str().unwrap().to_string();
+        // Anyone who can read the store can compute the digest; it is not
+        // what the page was given, and it approves nothing.
+        let digest = {
+            let (lib, _) = Library::load(&f.dir);
+            imagelib::shown_digest(lib.get(Kind::Character, "sam").unwrap())
+        };
+        assert_ne!(digest, signed);
+        let r = f
+            .app
+            .clone()
+            .oneshot(post(
+                "/api/library/character/sam/approve",
+                serde_json::json!({"shown": digest}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            Library::load(&f.dir)
+                .0
+                .get(Kind::Character, "sam")
+                .unwrap()
+                .status,
+            imagelib::Status::Candidate
+        );
+        // What the page was shown approves it, here, with no CLI child.
+        let r = f
+            .app
+            .clone()
+            .oneshot(post(
+                "/api/library/character/sam/approve",
+                serde_json::json!({"shown": signed}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(
+            Library::load(&f.dir)
+                .0
+                .get(Kind::Character, "sam")
+                .unwrap()
+                .status,
+            imagelib::Status::Approved
+        );
+    }
+
+    #[tokio::test]
+    async fn save_reads_only_inside_the_chats_jail() {
+        let f = fixture_with(Some(super::super::chat::test_chat()));
+        let up = f
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/chat/libtest/upload?name=face.png")
+                    .header(TAILSCALE_LOGIN, "owner@example.com")
+                    .header("x-mecha-request", "1")
+                    .body(Body::from(png(40)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(up.status(), StatusCode::OK);
+        for path in ["../../etc/passwd", "/etc/passwd", "inbox/nothing-here.png"] {
+            let r = f
+                .app
+                .clone()
+                .oneshot(post(
+                    "/api/library/save",
+                    serde_json::json!({"key": "libtest", "path": path, "name": "x",
+                                       "description": "y"}),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(r.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+        assert!(Library::load(&f.dir).0.get(Kind::Character, "x").is_none());
     }
 
     #[tokio::test]

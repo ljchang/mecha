@@ -87,12 +87,6 @@ pub enum Cmd {
         /// conversation that held third-party content.
         #[arg(long)]
         yes: bool,
-        /// Approve exactly the text another surface displayed: the digest
-        /// the web page computed from what it showed (`shown_digest`). With
-        /// it, `--yes` is allowed for an untrusted candidate, because the
-        /// text was read — and refused if it has changed since.
-        #[arg(long)]
-        shown: Option<String>,
     },
     /// Set the password that shows locked entries while browsing the web
     /// library. Read from the terminal without echo, or from stdin.
@@ -175,6 +169,12 @@ fn read_secret(prompt: &str) -> Result<String> {
                 t.c_lflag &= !libc::ECHO;
                 libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
             }
+        }
+        // A terminal whose echo cannot be turned off would show the password
+        // as it is typed; refuse rather than do that silently.
+        if saved.is_none() {
+            eprintln!();
+            bail!("cannot turn off echo on this terminal; pipe the password on stdin instead");
         }
     }
     let mut line = String::new();
@@ -351,22 +351,10 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             )?;
             println!("Added style `{}`.", e.name);
         }
-        Cmd::Approve {
-            name,
-            kind,
-            yes,
-            shown,
-        } => {
+        Cmd::Approve { name, kind, yes } => {
             let e = resolve(&lib, &name, kind)?;
             if e.status == Status::Approved {
                 bail!("`{}` is already approved", e.name);
-            }
-            if let Some(shown) = shown {
-                // The web door: the page displayed the text and sent back
-                // its digest; core re-reads and compares at the write.
-                imagelib::approve_as_shown(dir, e.kind, &e.name, &shown)?;
-                println!("Approved `{}`.", e.name);
-                return Ok(());
             }
             describe(&lib, e);
             if e.origin == Origin::ModelUntrusted && yes {
@@ -475,7 +463,6 @@ mod tests {
                 name: name.into(),
                 kind: None,
                 yes: true,
-                shown: None,
             },
         )
     }
@@ -495,35 +482,6 @@ mod tests {
         );
         assert_eq!(
             lib.get(Kind::Style, "clean").unwrap().status,
-            Status::Approved
-        );
-        std::fs::remove_dir_all(dir).ok();
-    }
-
-    #[test]
-    fn the_web_door_approves_an_untrusted_candidate_only_as_shown() {
-        let dir = scratch();
-        propose(&dir, "dirty", Origin::ModelUntrusted);
-        let shown = {
-            let (lib, _) = Library::load(&dir);
-            imagelib::shown_digest(lib.get(Kind::Style, "dirty").unwrap())
-        };
-        let approve_shown = |digest: &str| {
-            run(
-                &dir,
-                Cmd::Approve {
-                    name: "dirty".into(),
-                    kind: None,
-                    yes: true,
-                    shown: Some(digest.into()),
-                },
-            )
-        };
-        assert!(approve_shown("not-what-was-shown").is_err());
-        approve_shown(&shown).unwrap();
-        let (lib, _) = Library::load(&dir);
-        assert_eq!(
-            lib.get(Kind::Style, "dirty").unwrap().status,
             Status::Approved
         );
         std::fs::remove_dir_all(dir).ok();

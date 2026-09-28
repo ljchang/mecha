@@ -671,8 +671,8 @@ pub fn set_lock_password(dir: &Path, password: &str) -> Result<()> {
     if password.chars().count() < MIN_LOCK_PASSWORD {
         bail!("the lock password needs at least {MIN_LOCK_PASSWORD} characters");
     }
-    // Sixteen bytes from the OS generator, through a v4 UUID, which draws
-    // them from it: no second RNG crate for one salt.
+    // A v4 UUID's bytes from the OS generator — 122 random bits, six being
+    // the UUID's version and variant: no second RNG crate for one salt.
     let salt = SaltString::encode_b64(uuid::Uuid::new_v4().as_bytes())
         .map_err(|e| anyhow!("making a salt: {e}"))?;
     let hash = argon2::Argon2::default()
@@ -735,6 +735,26 @@ pub fn shown_digest(entry: &Entry) -> String {
         .as_bytes(),
     );
     digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// HMAC-SHA256 (RFC 2104) of a [`shown_digest`] under `key`, hex. The web
+/// door signs what it displays with a key only its process holds, so an
+/// approval can prove a page showed the text — a bare digest proves only
+/// that the text did not move, and anyone who can read the store can
+/// compute one (review of #385).
+pub fn sign_shown(key: &[u8; 32], digest: &str) -> String {
+    let mut block = [0u8; 64];
+    block[..32].copy_from_slice(key);
+    let pad = |b: u8| block.iter().map(|x| x ^ b).collect::<Vec<u8>>();
+    let inner = sha2::Sha256::new()
+        .chain_update(pad(0x36))
+        .chain_update(digest.as_bytes())
+        .finalize();
+    let outer = sha2::Sha256::new()
+        .chain_update(pad(0x5c))
+        .chain_update(inner)
+        .finalize();
+    outer.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ─── Compiling a scene ─────────────────────────────────────────────────────
@@ -1279,6 +1299,18 @@ mod tests {
         // A damaged lock is a finding, never an open door.
         std::fs::write(dir.path().join("lock.toml"), "hash = \"nonsense\"").unwrap();
         assert!(verify_lock_password(dir.path(), "correct horse").is_err());
+    }
+
+    #[test]
+    fn the_shown_signature_is_rfc_2104_hmac_sha256() {
+        // Known answer from Python's `hmac` (key 0..31, message "abc").
+        let key: [u8; 32] = std::array::from_fn(|i| i as u8);
+        assert_eq!(
+            sign_shown(&key, "abc"),
+            "f0133729c4163dede81e21cd47839256da58171238c8a0d874397c73b14e1e47"
+        );
+        let other: [u8; 32] = std::array::from_fn(|i| 31 - i as u8);
+        assert_ne!(sign_shown(&key, "abc"), sign_shown(&other, "abc"));
     }
 
     #[test]

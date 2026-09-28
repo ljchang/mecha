@@ -89,7 +89,10 @@
   async function act(entry, action) {
     busy = true;
     try {
-      const body = action === 'approve' ? { shown: entry.shown } : {};
+      // The token rides along: the server acts on a locked entry only while
+      // unlocked, as it shows one. `shown` is the server's own signature of
+      // the text on screen — approval is of exactly that.
+      const body = { unlock: token ?? undefined, ...(action === 'approve' ? { shown: entry.shown } : {}) };
       const res = await fetch(`/api/library/${entry.kind}/${entry.name}/${action}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -169,7 +172,9 @@
         </div>
       {:else}
         <div class="btnrow">
-          <button class="abtn" disabled={busy} onclick={() => act(open, open.locked ? 'unlock' : 'lock')}>
+          <!-- Locking with no password set would hide the entry with no way
+               to show it again from here, so the button asks for one first. -->
+          <button class="abtn" disabled={busy} onclick={() => (open.locked || data?.has_password ? act(open, open.locked ? 'unlock' : 'lock') : (sheet = 'unlock'))}>
             {open.locked ? 'Unlock' : 'Lock'}
           </button>
           <button class="abtn" disabled={busy} onclick={() => (sheet = 'remove')}>Remove</button>

@@ -170,8 +170,9 @@ image reproducible, and what phase 2's lineage and "save to library" read.
   and `add-style <name> --text <text> [--locked]` — owner-made, approved.
 - `approve <name>` — prints the entry's text and asks; `--yes` skips the
   question **only for `model_clean`**. An untrusted candidate's text is read
-  before it can ride into prompts. `--shown <digest>` is the web door's form
-  (§7): approval of exactly the text a page displayed.
+  before it can ride into prompts. The web approves in `mecha serve`'s own
+  process against a signature only it can make (§7); there is no CLI flag
+  that stands in for having read the text.
 - `set-lock-password` — the browse lock's password, read without echo.
 - `reject <name>` deletes a candidate outright, with its portrait unless another
   entry names the same blob — nothing was generated from a candidate, and a
@@ -187,9 +188,14 @@ The **Library** tab (`#library`, panes `characters`, `styles`, `candidates`),
 **Save to library** on the chat image card, and the lock — from §1's rulings.
 The decisions that are this design's rather than the owner's:
 
-- **Reads direct, writes by the CLI** (`serve/library.rs`). The list and the
-  portraits are read from the store; approve, reject, lock, remove and save
-  are `mecha imagelib` children, the house rule of every write on the server.
+- **Reads direct, writes by the CLI — except approval** (`serve/library.rs`).
+  The list and the portraits are read from the store; reject, lock, unlock,
+  remove and save are `mecha imagelib` children, the house rule of every
+  write on the server. Approval is made in the server's process (below).
+- **Writes honour the lock as reads do.** An action on a locked entry needs a
+  live unlock token, and a hidden entry and a missing one answer the same
+  404 before any child runs — without that, `unlock` revealed a hidden entry
+  with no password, and the 200/409 split named which exist (review of #385).
 - **The server does the hiding.** Locked entries are left out of
   `GET /api/library`, and `GET /api/library/portrait/{blob}` answers 404 for a
   blob no visible entry names — a page that blurred a thumbnail would still
@@ -202,11 +208,17 @@ The decisions that are this design's rather than the owner's:
   `web/test/no-storage.mjs` forbids — and sends as `?unlock=`. It lapses after
   30 idle minutes, a reload drops it, and five wrong passwords in five
   minutes answer 429. A damaged lock file errors; it never opens.
-- **Approval is of the text shown.** The list carries each entry's
-  `shown_digest` (kind, name, version, text); the approve button sends it
-  back, and `mecha imagelib approve --shown` approves only if it still
-  matches (`imagelib::approve_as_shown`, re-read at the write). That is the
-  web form of the terminal's refusal of `--yes` for an untrusted candidate.
+- **Approval is of the text shown, vouched for by the server.** The list
+  carries, per entry, an HMAC of its `shown_digest` (kind, name, version,
+  text) under a key the server draws at start and never stores; the approve
+  button sends it back, and the server approves in process only if the
+  entry as re-read still signs the same (`imagelib::approve_as_shown`
+  re-reads once more at the write). A bare digest was the first cut, passed
+  to `mecha imagelib approve --shown` — but anyone who can read the store can
+  compute one, so any shell could approve a model's proposal unread (review
+  of #385). The flag is gone: the CLI's only door for an untrusted candidate
+  is the interactive question, and the web's is a page only this process
+  could have signed.
 - **Save copies, never points.** A chat's files are served only while the
   chat is open, so `POST /api/library/save` reads the picture through the
   jail now, stages it in a 0700 scratch directory, reads the seed from its
