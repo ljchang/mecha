@@ -2037,7 +2037,7 @@ async fn appraise(
     );
     println!(
         "    {:<24} {:>5}  — a reason not the owner's own words (a run's shell, or before who was \
-         recorded): never mined",
+         recorded): never mined, and a stamped one signs nothing",
         "rejected, other reason", unattributed_rejections
     );
     // Then the ones that are never a run's score (R16f–h).

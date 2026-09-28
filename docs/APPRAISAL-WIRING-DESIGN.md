@@ -812,6 +812,14 @@ as neither; the point-wise rejected-draft point needs an owner reject, and
 make as unknown, never as the owner's act. Built by
 `feat/unchanged-release-owner`.
 
+**Carried to edits and rejects, going forward (the owner, 2026-09-28,
+ruling 2A→C):** the sign follows the stamp as the release's does, with the
+history kept. An edit or reject stamped as the owner's signs −1.0; one
+stamped as not the owner's signs nothing; one from before the stamps keeps
+its −1.0 (`OutboxItem::drafting_verdict_signs`). The whole-history
+alternative (A) would have dropped most of the live store's negative
+signal, which was very likely the owner's.
+
 **S3b — declined 2026-09-24 (here §1, decision 2).** A one-tap verdict
 asks the owner for work the system is meant to infer. Kept below for the
 record, with why it was proposed.
