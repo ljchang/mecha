@@ -2459,7 +2459,10 @@ impl Marks {
         Ok(Marks { latest })
     }
 
-    /// Append one mark, synced before it returns.
+    /// Append one mark, synced before it returns. No store lock, unlike the
+    /// appraisal and learning stores: only the owner writes here, at a
+    /// terminal (`mecha sessions mark` refuses every run's shell), and one
+    /// short line under `O_APPEND` does not interleave.
     pub fn append(sessions_dir: &Path, mark: &Mark) -> Result<()> {
         use std::io::Write;
         let path = Marks::ledger(sessions_dir);
