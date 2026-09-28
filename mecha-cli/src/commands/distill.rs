@@ -1064,7 +1064,9 @@ impl Appraiser {
             id,
             evidence.anchor(),
             &owner_acts(&self.stores),
-            mecha_core::appraisal_store::touched_tasks(&transcript.convo.messages),
+            // Every message the run ever had, from the evidence's one read:
+            // a task call compaction evicted still linked the session.
+            evidence.touched_tasks(),
         );
         let answered = match distiller.appraise(turn, &inputs, withhold).await {
             Ok(a) => a,

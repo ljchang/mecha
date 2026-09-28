@@ -44,6 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prints no rate until a prediction risks a miss. Scoring, and the surprises
   replay priority reads, are unchanged.
 
+- **The appraiser is not asked to predict an act where none can happen.**
+  When a run's output offers no draft, task or workflow, and the run never
+  touched a task, `mecha distill` leaves the expected act out of the
+  appraisal's question and drops one the reply carries anyway. The row
+  records that the harness withheld it, and `sessions appraise` counts
+  such rows as "not asked".
+
 - **A model switch waits for a reply in flight instead of failing.** The
   router refuses an explicit load with `model limit reached, try again
   later` while the loaded model is answering a request. `mecha model use`,
