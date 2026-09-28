@@ -1525,7 +1525,10 @@ impl Tool for ImageGenerate {
         // run did exactly this (research E1; `imagelib::named_in`). Refused
         // before a minute of GPU is spent. `"cast": []` says "someone else
         // by that name"; an edit's people carry their own identity.
-        if !is_edit && input.get("cast").is_none() {
+        // `null` is read as "no cast" by `request`, so it is one here too — a
+        // model emitting null for an unused field would otherwise walk past
+        // (found on review of #383).
+        if !is_edit && matches!(input.get("cast"), None | Some(Value::Null)) {
             if let Some(dir) = &self.library_dir {
                 let (lib, _) = crate::imagelib::Library::load(dir);
                 let named = crate::imagelib::named_in(&lib, &req.prompt);
@@ -1712,7 +1715,7 @@ impl Tool for ImageGenerate {
             "size": req.size,
             "reference_size": req.reference_size,
             "reference_images": if is_edit { json!(paths) } else { Value::Null },
-            "cast": ask.as_ref().map(|a| a.cast.iter().zip(used.iter()).map(|(m, u)| json!({
+            "cast": ask.as_ref().filter(|a| !a.cast.is_empty()).map(|a| a.cast.iter().zip(used.iter()).map(|(m, u)| json!({
                 "name": u.name, "version": u.version, "portrait": u.portrait,
                 "wearing": m.wearing.trim(), "doing": m.doing.trim(),
             })).collect::<Vec<_>>()),
@@ -3551,6 +3554,20 @@ mod tests {
             "{}",
             out.content
         );
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        // `null` is no cast too, and is sent back the same way.
+        let out = t
+            .call(
+                json!({"prompt": "Maya and John on a park bench", "cast": null}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
         assert!(!seen
             .lock()
             .unwrap()

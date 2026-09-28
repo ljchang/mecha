@@ -449,7 +449,13 @@ pub fn create(dir: &Path, new: NewEntry) -> Result<Entry> {
         updated: stamp,
         kind: new.kind,
     };
-    write_entry(dir, &entry)?;
+    if let Err(e) = write_entry(dir, &entry) {
+        // The same reason as the rollback above: a claimed name with no entry
+        // is invisible to `load` and refuses every later `create` (found on
+        // review of #383).
+        let _ = std::fs::remove_dir_all(&entry_dir);
+        return Err(e);
+    }
     Ok(entry)
 }
 
@@ -547,8 +553,55 @@ pub fn update(
     Ok(entry)
 }
 
+/// Reject a candidate: deleted outright, and its portrait with it unless
+/// something else still names that blob.
+///
+/// Not moved aside like [`remove`]: nothing was ever generated from a
+/// candidate, so no manifest names it — and moving it aside freed the name
+/// and the pending slot while its portrait stayed, so propose, reject,
+/// propose deposited up to 25 MB a cycle of model-supplied bytes in the mecha
+/// home from a tool that needs no approval (found on review of #383).
+pub fn reject(dir: &Path, kind: Kind, name: &str) -> Result<()> {
+    let entry = current(dir, kind, name)?;
+    if entry.status != Status::Candidate {
+        bail!("`{name}` is approved, not a candidate");
+    }
+    std::fs::remove_dir_all(entry_dir(dir, kind, name))?;
+    if let Some(blob) = &entry.portrait {
+        if !blob_referenced(dir, blob) {
+            let _ = std::fs::remove_file(dir.join("blobs").join(blob));
+        }
+    }
+    Ok(())
+}
+
+/// Whether any entry — current, historical, or removed — names `blob`.
+/// Unreadable means referenced: a blob is never deleted on a guess.
+fn blob_referenced(dir: &Path, blob: &str) -> bool {
+    fn walk(path: &Path, blob: &str) -> std::io::Result<bool> {
+        for item in std::fs::read_dir(path)? {
+            let path = item?.path();
+            if path.is_dir() {
+                if walk(&path, blob)? {
+                    return Ok(true);
+                }
+            } else if path.extension().is_some_and(|e| e == "toml")
+                && std::fs::read_to_string(&path)?.contains(blob)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    ["characters", "styles", "removed"]
+        .iter()
+        .map(|d| dir.join(d))
+        .filter(|d| d.exists())
+        .any(|d| walk(&d, blob).unwrap_or(true))
+}
+
 /// Remove an entry — moved aside under `removed/`, not deleted, because a
-/// manifest may still name it. Portraits stay in `blobs/`.
+/// manifest may still name it, and so its portrait stays in `blobs/`.
 pub fn remove(dir: &Path, kind: Kind, name: &str) -> Result<()> {
     current(dir, kind, name)?;
     let removed = dir.join("removed");
@@ -1003,6 +1056,40 @@ mod tests {
         assert_eq!(errors.len(), 1);
         let why = compile(&lib, "x", &[member("maya")], None).unwrap_err();
         assert!(why.contains("could not be read"), "{why}");
+    }
+
+    #[test]
+    fn rejecting_a_candidate_takes_its_portrait_unless_shared() {
+        let dir = scratch();
+        let kept = create(dir.path(), character("maya", Origin::Owner)).unwrap();
+        // Same bytes as maya's portrait: one blob, named twice.
+        create(dir.path(), character("twin", Origin::ModelUntrusted)).unwrap();
+        let mut other = character("theo", Origin::ModelUntrusted);
+        let img = image::RgbImage::from_pixel(3, 3, image::Rgb([7, 7, 7]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        other.portrait = Some(png.into_inner());
+        let theo = create(dir.path(), other).unwrap();
+        let blobs = || std::fs::read_dir(dir.path().join("blobs")).unwrap().count();
+        assert_eq!(blobs(), 2);
+
+        reject(dir.path(), Kind::Character, "theo").unwrap();
+        assert_eq!(blobs(), 1, "theo's own portrait goes with him");
+        assert!(!dir
+            .path()
+            .join("blobs")
+            .join(theo.portrait.unwrap())
+            .exists());
+        reject(dir.path(), Kind::Character, "twin").unwrap();
+        assert_eq!(blobs(), 1, "a portrait maya still names stays");
+        assert!(dir
+            .path()
+            .join("blobs")
+            .join(kept.portrait.unwrap())
+            .exists());
+        // The name is free, and nothing lingers under removed/.
+        assert!(!dir.path().join("removed").exists());
+        assert!(reject(dir.path(), Kind::Character, "maya").is_err());
     }
 
     #[test]

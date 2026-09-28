@@ -655,7 +655,11 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   whole word in a non-edit prompt with no `cast` key; `"cast": []` says
   "someone else by that name". The lookup's result also says how entries are
   used, which alone was enough on the rerun (0.68 and 0.45).
-- **The owner approves; the model proposes.** `image_library_propose` makes
+- **The owner approves; the model proposes — and a rejection leaves
+  nothing.** `mecha imagelib reject` deletes the candidate and its portrait
+  unless another entry names that blob; moving it aside had freed the name
+  and the pending slot while the bytes stayed, so the cap bounded the queue
+  but not the disk (review of #383). `image_library_propose` makes
   only a `candidate`; `mecha imagelib` (and the web surface next) makes
   approved entries and approves candidates. A candidate never compiles and
   is never listed to the model.

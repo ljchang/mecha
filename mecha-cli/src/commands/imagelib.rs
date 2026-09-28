@@ -334,7 +334,7 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
                     e.name
                 );
             }
-            imagelib::remove(dir, e.kind, &e.name)?;
+            imagelib::reject(dir, e.kind, &e.name)?;
             println!("Rejected `{}`.", e.name);
         }
         Cmd::Remove { name, kind, yes } => {
