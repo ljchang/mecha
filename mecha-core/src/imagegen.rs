@@ -1596,6 +1596,22 @@ impl Tool for ImageGenerate {
                             order.push(n);
                         }
                     }
+                    // More people than one picture holds: a skeleton of all
+                    // of them is a cast `compile` refuses, and dropping one
+                    // just trips this check again. The only retry that
+                    // converges is a different prompt (review of #384).
+                    if order.len() > crate::imagelib::MAX_CAST {
+                        return Ok(refused(format!(
+                            "{} characters from the owner's image library are named \
+                             ({}), and one picture holds at most {}. Split the scene into \
+                             separate pictures, naming at most {} in each prompt and \
+                             putting those in `cast`.",
+                            order.len(),
+                            order.join(", "),
+                            crate::imagelib::MAX_CAST,
+                            crate::imagelib::MAX_CAST
+                        )));
+                    }
                     let quote =
                         |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"…\"".into());
                     let skeleton = order
@@ -3756,6 +3772,37 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    #[tokio::test]
+    async fn more_characters_than_a_picture_holds_are_told_to_split() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john", "priya", "theo", "sam"]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let out = t
+            .call(
+                json!({"prompt": "Maya, John, Priya, Theo and Sam at a picnic"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.starts_with("Nothing was drawn."),
+            "{}",
+            out.content
+        );
+        assert!(out.content.contains("Split the scene"), "{}", out.content);
+        // No five-person cast to copy: that retry could never succeed.
+        assert!(!out.content.contains(r#""cast": [{"#), "{}", out.content);
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
