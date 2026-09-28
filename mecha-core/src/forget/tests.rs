@@ -527,3 +527,65 @@ fn a_learning_failure_leaves_the_keys_so_the_retry_still_finds_their_rows() {
     assert_eq!(holding(&home.0, "refl-gone"), Vec::<PathBuf>::new());
     assert_eq!(holding(&home.0, "item-gone"), Vec::<PathBuf>::new());
 }
+
+#[test]
+fn a_peer_conversation_that_received_a_message_is_named_not_edited() {
+    // A message this conversation sent was delivered into the recipient's
+    // transcript, id and text both. That transcript is the peer's, so the
+    // delete names it rather than rewriting someone else's conversation.
+    let home = scratch("peer");
+    let roots = Roots::under(&home.0);
+    session(&roots, GONE, &home.0.join("work/web/a"), CANARY);
+    session(
+        &roots,
+        KEPT,
+        &home.0.join("work/web/b"),
+        &format!("message from hermes (session {GONE}): {CANARY}"),
+    );
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+    assert!(report.complete);
+    let peer = roots.sessions.join(format!("{KEPT}.jsonl"));
+    assert!(
+        std::fs::read_to_string(&peer).unwrap().contains(CANARY),
+        "a peer's words were edited"
+    );
+    assert!(
+        report
+            .residue
+            .iter()
+            .any(|r| r.contains(&format!("{KEPT}.jsonl"))),
+        "{:?}",
+        report.residue
+    );
+}
+
+#[test]
+fn an_unreadable_header_says_its_workspace_was_not_found() {
+    let home = scratch("headless");
+    let roots = Roots::under(&home.0);
+    std::fs::create_dir_all(&roots.sessions).unwrap();
+    std::fs::write(
+        roots.sessions.join(format!("{GONE}.jsonl")),
+        "not a header\n",
+    )
+    .unwrap();
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+    assert!(
+        report
+            .residue
+            .iter()
+            .any(|r| r.contains("header could not be read")),
+        "{:?}",
+        report.residue
+    );
+}

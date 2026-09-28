@@ -574,9 +574,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 return Ok(());
             }
             let report = mecha_core::forget::forget(
-                &mecha_core::forget::Roots::from_config(
-                    &mecha_core::config::Config::load_global()?
-                )?,
+                &mecha_core::forget::Roots::from_config(&forget_config(&dir, &id)?)?,
                 &id,
                 &GraphCli,
             )?;
@@ -594,6 +592,19 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The config the conversation staged under: its own workspace's project
+/// layer over the global file — `[outbox] dir` is not stripped from project
+/// layers, so the drafts may live where only that layer says. The directory
+/// this command happens to run in says nothing about it.
+fn forget_config(dir: &std::path::Path, id: &str) -> Result<mecha_core::config::Config> {
+    let header = Session::peek_meta(&dir.join(format!("{id}.jsonl")))
+        .or_else(|| Session::peek_meta(&dir.join(format!("{id}.jsonl.forgetting"))));
+    match header {
+        Some(meta) if meta.workspace.is_dir() => mecha_core::config::Config::load(&meta.workspace),
+        _ => mecha_core::config::Config::load_global(),
+    }
 }
 
 /// A prefix to the one whole id it names — `find`'s rule, so an ambiguous
