@@ -2273,6 +2273,7 @@ impl Session {
         if !dir.exists() {
             return Ok((Vec::new(), 0));
         }
+        let marks = Marks::load(dir)?;
         let mut out = Vec::new();
         let mut unreadable = 0usize;
         for entry in std::fs::read_dir(dir)? {
@@ -2281,7 +2282,10 @@ impl Session {
                 continue;
             }
             match Session::peek_header(&path) {
-                Some((meta, recorded)) => out.push((meta, path, recorded)),
+                Some((mut meta, recorded)) => {
+                    marks.apply(&mut meta);
+                    out.push((meta, path, recorded))
+                }
                 None => unreadable += 1,
             }
         }
@@ -2328,6 +2332,10 @@ impl Session {
         if !dir.exists() {
             return Ok((Vec::new(), 0));
         }
+        // The owner's marks first: a ledger that cannot be read stops the
+        // walk, since a session it would have withdrawn would otherwise be
+        // read as the owner's own work (`Marks`).
+        let marks = Marks::load(dir)?;
         let mut out = Vec::new();
         let mut unreadable = 0usize;
         for entry in std::fs::read_dir(dir)? {
@@ -2336,7 +2344,10 @@ impl Session {
                 continue;
             }
             match Session::peek_meta(&path) {
-                Some(meta) => out.push((meta, path)),
+                Some(mut meta) => {
+                    marks.apply(&mut meta);
+                    out.push((meta, path))
+                }
                 None => unreadable += 1,
             }
         }
@@ -2354,6 +2365,148 @@ impl Session {
             0 => anyhow::bail!("no session matching {id_prefix:?}"),
             1 => Ok(matches.into_iter().next().unwrap().1),
             n => anyhow::bail!("{id_prefix:?} matches {n} sessions; use a longer prefix"),
+        }
+    }
+}
+
+// ─── The owner's marks: a session reclassified after the fact ─────────────
+
+/// What an owner's mark does to a session. A closed set written to an
+/// append-only ledger, so a word this build cannot read loads as
+/// [`MarkAction::Unknown`] — and is read as a withdrawal, the direction
+/// every reader here fails toward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkAction {
+    /// Read the session as [`SessionKind::Experiment`] from now on: out of
+    /// every reader that admits by kind, and its appraisal and reflections
+    /// withdrawn.
+    Experiment,
+    /// Undo an earlier mark: the session reads as recorded again.
+    Unmark,
+    /// A word a newer build wrote.
+    #[serde(other)]
+    Unknown,
+}
+
+/// One line of the marks ledger. Only the owner writes one (`mecha sessions
+/// mark`, which refuses a run's shell); the transcript itself is never
+/// rewritten.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Mark {
+    pub session_id: String,
+    pub action: MarkAction,
+    pub at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The owner's marks on sessions, latest per session — ruling 4D
+/// (2026-09-28): a model-capability probe run as ordinary chat is not the
+/// owner's work, and nothing should learn the owner's goals from it.
+///
+/// Kept beside the transcripts at `<sessions>/marks/marks.jsonl` — in a
+/// subdirectory, because every `*.jsonl` directly in the sessions directory
+/// is read as a transcript — so a home with its own `MECHA_SESSION_DIR`
+/// carries its own marks.
+///
+/// **A ledger that cannot be read is an error, never "no marks".** A lost
+/// mark hands a probe back to the learner as the owner's own session, so a
+/// torn line or an unreadable file stops the listing that would have
+/// admitted it, and says which line.
+#[derive(Debug, Clone, Default)]
+pub struct Marks {
+    latest: std::collections::BTreeMap<String, Mark>,
+}
+
+impl Marks {
+    /// The ledger for the sessions in `sessions_dir`.
+    pub fn ledger(sessions_dir: &Path) -> PathBuf {
+        sessions_dir.join("marks").join("marks.jsonl")
+    }
+
+    /// Every mark on record. A missing ledger is no marks.
+    pub fn load(sessions_dir: &Path) -> Result<Marks> {
+        let path = Marks::ledger(sessions_dir);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Marks::default()),
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!(
+                        "reading the session marks at {} — refusing to list sessions a mark \
+                         may have withdrawn",
+                        path.display()
+                    )
+                })
+            }
+        };
+        let mut latest = std::collections::BTreeMap::new();
+        for (n, line) in text.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let mark: Mark = serde_json::from_str(line).with_context(|| {
+                format!(
+                    "line {} of the session marks at {} cannot be read — refusing to list \
+                     sessions a mark may have withdrawn",
+                    n + 1,
+                    path.display()
+                )
+            })?;
+            latest.insert(mark.session_id.clone(), mark);
+        }
+        Ok(Marks { latest })
+    }
+
+    /// Append one mark, synced before it returns.
+    pub fn append(sessions_dir: &Path, mark: &Mark) -> Result<()> {
+        use std::io::Write;
+        let path = Marks::ledger(sessions_dir);
+        let dir = path.parent().expect("the ledger has a directory");
+        crate::create_private_dir(dir).with_context(|| format!("creating {}", dir.display()))?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        let mut line = serde_json::to_string(mark)?;
+        line.push('\n');
+        file.write_all(line.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))?;
+        file.sync_data()
+            .with_context(|| format!("syncing {}", path.display()))?;
+        Ok(())
+    }
+
+    /// Whether the owner's latest mark withdraws this session. An unknown
+    /// action withdraws it (the type's doc).
+    pub fn withdrawn(&self, session_id: &str) -> bool {
+        self.latest
+            .get(session_id)
+            .is_some_and(|m| m.action != MarkAction::Unmark)
+    }
+
+    /// Every withdrawn session's id.
+    pub fn withdrawn_ids(&self) -> std::collections::BTreeSet<String> {
+        self.latest
+            .keys()
+            .filter(|id| self.withdrawn(id))
+            .cloned()
+            .collect()
+    }
+
+    /// The owner's latest mark on this session, whatever it did.
+    pub fn latest(&self, session_id: &str) -> Option<&Mark> {
+        self.latest.get(session_id)
+    }
+
+    /// Read a withdrawn session's header as an experiment's, so every
+    /// reader that admits by kind ([`SessionMeta::admitted_by_default`],
+    /// `runlog::Scan::admits`) passes it over with no change of its own.
+    pub fn apply(&self, meta: &mut SessionMeta) {
+        if self.withdrawn(&meta.id) {
+            meta.kind = Some(SessionKind::Experiment);
         }
     }
 }
@@ -4962,5 +5115,113 @@ mod extension_tests {
         assert_eq!(ever.len(), 3, "{ever:?}");
         assert!(ever.iter().all(|m| m.role == Role::User));
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod marks_tests {
+    use super::*;
+
+    fn home() -> PathBuf {
+        std::env::temp_dir().join(format!("mecha-marks-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn web_session(dir: &Path) -> String {
+        let s = Session::create(
+            dir,
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: Utc::now(),
+                provider: "local".into(),
+                model: "m".into(),
+                workspace: dir.to_path_buf(),
+                title: None,
+                kind: Some(SessionKind::Web),
+            },
+        )
+        .unwrap();
+        s.meta.id.clone()
+    }
+
+    fn mark(id: &str, action: MarkAction) -> Mark {
+        Mark {
+            session_id: id.into(),
+            action,
+            at: Utc::now(),
+            reason: None,
+        }
+    }
+
+    /// Ruling 4D: a marked session lists as an experiment — so every reader
+    /// that admits by kind passes it over — the ledger never reads as a
+    /// transcript, the latest mark wins, and the transcript is untouched.
+    #[test]
+    fn a_marked_session_lists_as_an_experiment_until_unmarked() {
+        ignore_kind_env_for_tests();
+        let dir = home();
+        let probe = web_session(&dir);
+        let work = web_session(&dir);
+        let before = std::fs::read(dir.join(format!("{probe}.jsonl"))).unwrap();
+
+        Marks::append(&dir, &mark(&probe, MarkAction::Experiment)).unwrap();
+        let (listed, unreadable) = Session::list_counting(&dir).unwrap();
+        assert_eq!(unreadable, 0, "the ledger is not read as a transcript");
+        let kind = |id: &str| listed.iter().find(|(m, _)| m.id == id).unwrap().0.kind;
+        assert_eq!(kind(&probe), Some(SessionKind::Experiment));
+        assert_eq!(kind(&work), Some(SessionKind::Web));
+        let (admitted, _) = split_admitted(listed);
+        assert!(admitted.iter().all(|(m, _)| m.id != probe));
+        assert_eq!(
+            std::fs::read(dir.join(format!("{probe}.jsonl"))).unwrap(),
+            before,
+            "the transcript is never rewritten"
+        );
+        let (headers, _) = Session::list_headers_counting(&dir).unwrap();
+        assert!(headers
+            .iter()
+            .any(|(m, _, _)| m.id == probe && m.kind == Some(SessionKind::Experiment)));
+
+        Marks::append(&dir, &mark(&probe, MarkAction::Unmark)).unwrap();
+        let marks = Marks::load(&dir).unwrap();
+        assert!(!marks.withdrawn(&probe));
+        assert!(marks.withdrawn_ids().is_empty());
+        let (listed, _) = Session::list_counting(&dir).unwrap();
+        assert_eq!(
+            listed.iter().find(|(m, _)| m.id == probe).unwrap().0.kind,
+            Some(SessionKind::Web)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A ledger that cannot be read stops the listing — a lost mark would
+    /// hand a probe back to the learner as the owner's work — and a word a
+    /// newer build wrote withdraws, the direction every reader fails.
+    #[test]
+    fn an_unreadable_ledger_stops_the_listing_and_an_unknown_action_withdraws() {
+        ignore_kind_env_for_tests();
+        let dir = home();
+        let probe = web_session(&dir);
+        let ledger = Marks::ledger(&dir);
+        std::fs::create_dir_all(ledger.parent().unwrap()).unwrap();
+        std::fs::write(
+            &ledger,
+            format!(
+                "{}\n{{\"session_id\": \"{probe}\", \"acti",
+                serde_json::to_string(&mark(&probe, MarkAction::Experiment)).unwrap()
+            ),
+        )
+        .unwrap();
+        let err = Session::list_counting(&dir).unwrap_err();
+        assert!(format!("{err:#}").contains("line 2"), "{err:#}");
+
+        std::fs::write(
+            &ledger,
+            format!(
+                "{{\"session_id\": \"{probe}\", \"action\": \"quarantine\", \"at\": \"2026-09-28T00:00:00Z\"}}\n"
+            ),
+        )
+        .unwrap();
+        assert!(Marks::load(&dir).unwrap().withdrawn(&probe));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
