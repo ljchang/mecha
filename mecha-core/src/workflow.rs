@@ -446,6 +446,26 @@ impl Workflow {
         }
         out
     }
+
+    /// Whether this workflow ran `session`: the session it was added with,
+    /// one a `started` event names, or one an owner disposition is about.
+    /// Such a session left the owner a workflow to close or cancel —
+    /// [`Self::owner_dispositions`] credits a disposition made while it was
+    /// the `started` one to it — whatever the workflow was handed on to
+    /// since, which `session_id` alone forgets (`start_task` overwrites it).
+    /// History past `EVENT_HISTORY_LIMIT` is pruned, and a `started` it held
+    /// is forgotten with it.
+    pub fn names_session(&self, session: &str) -> bool {
+        self.session_id.as_deref() == Some(session)
+            || self
+                .events
+                .iter()
+                .any(|e| e.kind == "started" && e.detail == session)
+            || self
+                .owner_dispositions()
+                .iter()
+                .any(|d| d.session.as_deref() == Some(session))
+    }
     pub fn section(&self, now: DateTime<Utc>) -> &'static str {
         if self.closed_at.is_some() {
             return "closed";
@@ -1752,6 +1772,14 @@ mod owner_verdict_tests {
                 (Disposition::Closed, Some("s-second"), false),
             ]
         );
+        // Handed on: `session_id` is the last `started`, yet every session
+        // the workflow ran is named — an owner disposition inside the first
+        // one's run would have been the first one's.
+        assert_eq!(w.session_id.as_deref(), Some("s-added"));
+        for s in ["s-added", "s-first", "s-second"] {
+            assert!(w.names_session(s), "{s}");
+        }
+        assert!(!w.names_session("s-elsewhere"));
         let mut never_started =
             Workflow::new("flow2".into(), "F".into(), PathBuf::from("/tmp"), now);
         never_started.session_id = Some("s-added".into());
