@@ -8,6 +8,7 @@
     ['graph', 'M5 7a2 2 0 104 0 2 2 0 10-4 0M15 17a2 2 0 104 0 2 2 0 10-4 0M15 5.5a2 2 0 104 0 2 2 0 10-4 0M8.7 8.2l5.4 7.4M9 6.7l4-0.5', true],
     ['review', 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5', true],
     ['tasks', 'M4 6h2M4 12h2M4 18h2M9 6h11M9 12h11M9 18h11', true],
+    ['library', 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15.5 9.5h.01', true],
   ];
   // Settings deliberately takes no slot here: it is chrome, and the shell
   // owns one gear in the same corner of every view (#118) — which is what

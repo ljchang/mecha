@@ -703,6 +703,23 @@ doing; this code writes how they look. Decisions, each a bug if undone:
 - **Every generation writes a manifest** (`images/<stem>.json`, `create_new`
   like the PNG): the scene as written, the compiled prompt, seed, sizes, the
   model files, and each entry's name, version and portrait hash.
+- **The web door hides on the server** (`serve/library.rs`). Locked entries
+  are absent from `GET /api/library` and their portraits 404 unless the
+  request carries a live unlock token; a blurred thumbnail would still ship
+  its bytes. The token is minted from the argon2id `lock.toml` (0600, set
+  only from the CLI), lives in process memory and the page's — never a
+  cookie or storage — and lapses after 30 idle minutes; five wrong passwords
+  in five minutes answer 429, and a damaged lock file errors, never opens.
+- **The web approves what it showed.** The page sends back the entry's
+  `shown_digest`; `approve_as_shown` re-reads and compares at the write, so
+  a text that changed between display and tap is refused.
+- **Save copies through the jail, and never from incognito.** A chat's
+  files exist to the server only while it is open, so the picture is staged
+  now (0700 scratch directory, removed on drop) and `add-character` runs as a
+  child. Both library routes that read a chat refuse an incognito key.
+- **Candidates are a review-queue row, not a `Backlog` field** — `Backlog` is
+  recorded per run and a new field moves every older row's comparison (the
+  `requests_on_owner` precedent); they are owed to nobody outside.
 
 ## Security model
 
