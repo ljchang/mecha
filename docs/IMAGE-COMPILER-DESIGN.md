@@ -128,11 +128,14 @@ The rules, each a measurement:
   two strangers. `"cast": []` means "someone else by that name".
 - **`image_library`** — list or search the library, with a line saying how
   entries are used (names in `cast`, descriptions never copied into the
-  prompt). **Returns approved entries only**, and so declares `Capabilities::default()`, on `skill`'s
-  footing: every approved entry's text crossed the owner. Candidates never
-  reach the model (research §5: the loop taints on `caps.untrusted_input &&
-  out.external`, per tool, so returning them would arm every lookup).
-  Locked entries are listed — the lock is for browsing.
+  prompt). **Returns approved entries only**, so it never declares
+  `untrusted_input`: every approved entry's text crossed the owner, and
+  candidates never reach the model (research §5: the loop taints on
+  `caps.untrusted_input && out.external`, per tool, so returning them would
+  arm every lookup). It **does** declare `private_data` — an entry describes
+  a person, and with no likeness field nothing says which are real
+  (`goal_context`'s footing). Locked entries are listed — the lock is for
+  browsing.
 - **`image_library_propose`** — stage a candidate character (a name, a
   description, and a workspace image as the portrait, read through the path
   jail) or style. Records `origin` from the conversation's taint
