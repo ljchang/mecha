@@ -1066,7 +1066,7 @@ class LocalTTS(OpenAITTSService):
         from loguru import logger
 
         logger.debug(
-            f"voice affect latch: context={context_id} key={self._affect_key} "
+            f"voice affect latch: context={context_id} key={key_for_log(self._affect_key)} "
             f"cfg_weight={self._affect_params[1]:.3f} (baseline "
             f"{self._cfg_weight:.3f})"
         )
@@ -1923,6 +1923,17 @@ class Unlogged:
 
 
 UNLOGGED = Unlogged()
+
+
+def key_for_log(key: str | None) -> str | None:
+    """A session key as a log line may show it. An incognito chat's is never
+    written down - that a chat of that name was spoken into is itself a trace
+    - and the namespace in front of it (`chat:`) stays, since it is what the
+    line is for. This file's records are `__main__`, which the pipecat
+    silence does not reach, so every line naming a key goes through here."""
+    if key and INCOGNITO_PREFIX in key:
+        return key.split(INCOGNITO_PREFIX, 1)[0] + "<incognito>"
+    return key
 
 
 def spoken_words(text: str, limit: int) -> str:

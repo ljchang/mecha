@@ -37,6 +37,9 @@
   // conversation, which the page forgets as well.
   let incognito = $state(false);
   let gone = $state(null);
+  // The server's prefix (`incognito::KEY_PREFIX`), which its ordinary door
+  // refuses: a key carrying it is an incognito chat before any read says so.
+  const INCOGNITO_PREFIX = 'incognito-';
   // Why a new incognito chat from the gone screen was refused: that screen
   // draws no transcript, so a notice pushed there would go unseen.
   let goneNote = $state(null);
@@ -643,9 +646,17 @@
 
   function switchTo(k) {
     if (k === key) return;
-    // The uplink ring is audio of what was said in the chat being left, and
-    // it outlives calls on purpose; an incognito chat's must not outlive the
-    // visit (the composer below is the same rule).
+    // A call is bound to the chat it was opened in (`startVoice`), so a
+    // switch that crosses the incognito line ends it: into one, a recorded
+    // call must not go on under a page that says nothing is kept; out of
+    // one, what was said there must not stay on screen (review of #376).
+    // The uplink ring is audio of the chat being left and outlives calls on
+    // purpose; an incognito chat's must not outlive the visit (the composer
+    // below is the same rule).
+    if (incognito || k.startsWith(INCOGNITO_PREFIX)) {
+      endVoice();
+      vEntries = [];
+    }
     if (incognito) dropRing(key);
     key = k;
     receivedInputs.clear();
@@ -976,6 +987,11 @@
   let vLevel = $state(0);
   let vSession = null;
   let voicePane = $state(null);
+  // What the live call was opened against — read at connect time like its
+  // key, never from the page's current chat, so the overlay describes where
+  // the words are actually going.
+  let vKey = $state(null);
+  let vIncognito = $state(false);
 
   function vScroll() {
     queueMicrotask(() => voicePane?.scrollTo({ top: voicePane.scrollHeight }));
@@ -999,6 +1015,8 @@
   function startVoice({ keep = false } = {}) {
     // connect() inside the tap handler — the audio unlock needs the gesture.
     if (!keep) vEntries = [];
+    vKey = key;
+    vIncognito = incognito;
     vState = { name: 'connecting', label: 'connecting' };
     vSession = createVoiceSession({
       // Same-origin: serve proxies to the loopback runner, so the offer
@@ -1942,10 +1960,10 @@
   {#if voiceOpen}
     <div class="voice-overlay">
       <div class="voice-top">
-        {#if incognito}
+        {#if vIncognito}
           <span class="chip incog">speaking into this incognito chat — nothing from the call is kept</span>
         {:else}
-          <span class="chip">speaking into {key === 'main' ? 'your chat' : `“${key}”`} — same conversation, same memory</span>
+          <span class="chip">speaking into {vKey === 'main' ? 'your chat' : `“${vKey}”`} — same conversation, same memory</span>
         {/if}
       </div>
       <div class="voice-stage">

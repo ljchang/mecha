@@ -4,6 +4,8 @@ the worker's own lines that keep their measurements and lose the words. Run
 in the worker's venv:
 `~/models/voice-worker-venv/bin/python scripts/voice/test_incognito.py`."""
 
+import asyncio
+import importlib
 import sys
 import unittest
 
@@ -11,9 +13,13 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
 from loguru import logger  # noqa: E402
 
+from echo_filter import BotSpeech  # noqa: E402
 from worker import (  # noqa: E402
+    LocalTTS,
+    OpenAITTSService,
     Unlogged,
     is_incognito,
+    key_for_log,
     named_chat_session,
     spoken_words,
     UNLOGGED,
@@ -27,10 +33,12 @@ SECRET = "the words nobody is meant to keep"
 
 
 def log_as(module: str, message: str):
-    """Log from `module`'s namespace. loguru names a record by the caller's
-    `__name__`, which is what `logger.disable` matches, so this is the line
-    pipecat's STT service writes as far as the silence can tell."""
-    exec("logger.debug(message)", {"__name__": module, "logger": logger, "message": message})
+    """Log from inside the real `module`: its own globals and its own
+    `logger`, so the record is named the way pipecat's are rather than by a
+    string this test chose. loguru names a record by the caller's
+    `__name__`, and that name is what `logger.disable` matches."""
+    mod = importlib.import_module(module)
+    exec("logger.debug(message)", vars(mod), {"message": message})
 
 
 class Captured:
@@ -113,6 +121,34 @@ class TheWorkersOwnLines(unittest.TestCase):
         with UNLOGGED.held(True):
             self.assertNotIn(SECRET, spoken_words(SECRET, 80))
         self.assertEqual(spoken_words(SECRET, 8), repr(SECRET[:8]))
+
+
+class TheChatsName(unittest.TestCase):
+    INCOGNITO_AFFECT_KEY = f"chat:{INCOGNITO_KEY}"
+
+    def test_the_affect_latch_does_not_name_an_incognito_chat(self):
+        # `LocalTTS` lives in the worker, so its records are not `pipecat`'s
+        # and the silence does not reach them; the key has to be kept out
+        # of the line itself. Driven on the real class, once per answer as
+        # the pipeline does, against a facade that is not there.
+        tts = LocalTTS(
+            api_key="unused",
+            base_url="http://127.0.0.1:9/v1",
+            settings=OpenAITTSService.Settings(voice="x", model="tts"),
+            echo_window=BotSpeech(),
+        )
+        tts.set_affect_key(self.INCOGNITO_AFFECT_KEY)
+        with Captured() as cap:
+            asyncio.run(tts.on_turn_context_created("ctx-1"))
+        latch = [line for line in cap.lines if "voice affect latch" in line]
+        self.assertEqual(len(latch), 1, "the latch line is how a silent hook is caught")
+        self.assertNotIn(INCOGNITO_KEY, latch[0])
+        self.assertIn("key=chat:<incognito>", latch[0])
+
+    def test_an_ordinary_key_is_logged_as_it_is(self):
+        self.assertEqual(key_for_log("chat:main"), "chat:main")
+        self.assertEqual(key_for_log("voice:webrtc-1a2b"), "voice:webrtc-1a2b")
+        self.assertIsNone(key_for_log(None))
 
 
 class TheSessionName(unittest.TestCase):

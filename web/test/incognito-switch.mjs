@@ -40,8 +40,12 @@ function page(start) {
      const receivedInputs = new Set(), inputDelivery = new Map();
      const dropped = [];
      const dropRing = (k) => dropped.push(k);
+     const INCOGNITO_PREFIX = 'incognito-';
+     let vEntries = [{ who: 'user', text: 'KUMQUAT' }];
+     let hungUp = 0;
+     const endVoice = () => hungUp++;
      ${switchToSrc}
-     return { switchTo, dropped, now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom }) };`,
+     return { switchTo, dropped, call: () => ({ hungUp, vEntries }), now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom }) };`,
   )(start);
 }
 
@@ -67,6 +71,14 @@ function is(actual, expected, what) {
   is(s.todo, [], "and the incognito chat's plan");
   is([s.gone, s.goneNote], [null, null], 'and the gone screen with its note');
   is(p.dropped, ['incognito-ab'], "and the audio its call buffered, by the chat's own key");
+  is(p.call(), { hungUp: 1, vEntries: [] }, 'and a call still speaking into it, with its words');
+}
+{
+  // Into an incognito chat with a recorded call live: the call ends rather
+  // than going on under a page that says nothing is kept (review of #376).
+  const p = page({ key: 'main', draft: '', attachments: [], incognito: false, gone: null });
+  p.switchTo('incognito-cd');
+  is(p.call().hungUp, 1, 'entering an incognito chat ends a call from a recorded one');
 }
 {
   const p = page({ key: 'main', draft: 'half a thought', attachments: ['inbox/a.pdf'], incognito: false, gone: null });
@@ -80,6 +92,7 @@ function is(actual, expected, what) {
   // in.
   is([s.partialRun, s.liveFrom], [false, 0], "and what the catch-up knew of the last chat's run is gone");
   is(p.dropped, [], 'and keeps its call audio for a reconnect');
+  is(p.call().hungUp, 0, 'and its call, which never crossed the incognito line');
 }
 {
   const p = page({ key: 'incognito-ab', draft: 'KUMQUAT', attachments: [], incognito: true, gone: 'ended' });
@@ -109,6 +122,14 @@ function is(actual, expected, what) {
   is(s.ended, 1, 'ending an incognito chat hangs up its call');
   is(s.vEntries, [], "and clears the call's words from the overlay");
   is(s.dropped, ['incognito-ab'], 'and drops the audio it buffered');
+}
+
+// The overlay's promise describes the call, not the page: a call is bound to
+// the chat it was opened in, and the page's `incognito` moves with every
+// switch (review of #376).
+{
+  const top = src.slice(src.indexOf('<div class="voice-top">'), src.indexOf('<div class="voice-stage">'));
+  is(top.includes('{#if vIncognito}') && !/\{#if incognito\}/.test(top), true, "the call overlay reads the call's own kind");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
