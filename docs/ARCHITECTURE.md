@@ -3742,7 +3742,8 @@ check. `Workflow::close` preserves that checked evidence while sharing the bound
 event append path. Cancellation is separate from completion, but both block new
 task, chat and trigger runs until the owner explicitly reopens the workflow.
 Cancellation cannot silently restart canceled work; the CLI failure names the
-exact reopening command, and Today retains a web recovery action.
+exact reopening command, and the web workflows view (`#tasks/workflows`,
+`Workflows.svelte`) retains a recovery action.
 
 Commitments and attention policy live in the owner's workflow store, outside
 project configuration. The trigger tick refreshes linked events and runs the same
@@ -5504,7 +5505,7 @@ when touching it:
   `Commitment::overdue` / `Commitment::follow_up_due`, which answer `false`
   for an undated commitment: `Workflow::section` never files it as urgent,
   `Workflow::tick` never raises a follow-up notice for it, and the web
-  Today page says "no deadline stated" (`web/src/lib/commitment.js`)
+  workflows view says "no deadline stated" (`web/src/lib/commitment.js`)
   where it used to render `new Date(undefined)`. `mecha workflow commit`
   still requires both dates; an evidence commitment is undated unless the
   owner wrote dates on a record-shaped one.
