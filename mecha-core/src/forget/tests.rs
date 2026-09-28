@@ -430,6 +430,8 @@ fn a_workspace_outside_mecha_is_never_touched() {
     let roots = Roots::under(&home.0);
     session(&roots, GONE, &project.0, CANARY);
     write(&project.0.join("src/main.rs"), "fn main() {}");
+    let spill = crate::tool::session_spill_dir_under(&home.0, &project.0.canonicalize().unwrap());
+    write(&spill.join("out-1.txt"), CANARY);
 
     let report = forget(
         &roots,
@@ -441,6 +443,8 @@ fn a_workspace_outside_mecha_is_never_touched() {
     assert!(report.complete);
     assert!(project.0.join("src/main.rs").exists());
     assert!(report.residue.iter().any(|r| r.contains("are yours")));
+    // But the spilled tool output is mecha's, not the project's: it goes.
+    assert!(!spill.exists(), "the project conversation's spill was kept");
 }
 
 #[test]
