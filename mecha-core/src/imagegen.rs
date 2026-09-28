@@ -2050,6 +2050,16 @@ mod tests {
         );
         assert_eq!(std::fs::read(dir.join(path)).unwrap(), PNG);
         assert!(!out.external, "our own output is not third-party content");
+        // For a run with no `image_view` — a blind provider, `--tool`, or
+        // `[tools] disabled` — this line is the only guard against it
+        // describing a picture it never saw.
+        assert!(
+            out.content
+                .contains("You have not seen it, so do not describe what it shows."),
+            "{}",
+            out.content
+        );
+        assert!(out.image.is_none(), "a generation returns no pixels");
 
         let seen = seen.lock().unwrap().clone();
         let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
@@ -2287,7 +2297,10 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert!(
-            out.content.contains("Edited inbox/me.jpg"),
+            out.content.contains("Edited inbox/me.jpg")
+                && out
+                    .content
+                    .contains("You have not seen it, so do not describe what it shows."),
             "{}",
             out.content
         );
