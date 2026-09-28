@@ -1272,8 +1272,11 @@ mecha learn [OPTIONS]
 | `--json` | With `--compare-sources`: the pass's tally and the report as JSON. |
 
 `learn` rewrites `rules/<domain>.learned.toml` within a fixed character budget;
-`rules/<domain>.user.toml` is yours and is never written by code. The store is a git
-repo, so `git log` is the learning history and `git revert` is the undo. Non-clean
+`rules/<domain>.user.toml` is yours and is never written by code. The store is plain
+files: `runs.jsonl` and `passes.jsonl` are the learning history, and
+`mecha rules retire` / `mecha rules restore` are the undo, one rule at a time. A store
+created before 2026-09-28 may still carry a `.git` directory; nothing commits to it any
+more, so never `git revert` there — it would rewind the store to a stale state. Non-clean
 reflections are excluded structurally, before any prompt is built.
 
 `--holdout` is deterministic (every k-th by id), because a measurement set that
