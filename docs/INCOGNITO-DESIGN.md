@@ -382,8 +382,9 @@ conversation has no `Session` to record into, and a closed key comes back
   words, and drops the uplink ring (`voice-core.js`'s `dropRing`) — the
   ring is audio of what was said, and it outlives calls on purpose.
 - **What it does not change.** `--voice-yes` travels with a spoken turn here
-  as in any hosted chat: the owner is speaking, and the interlock and the
-  outbox sit ahead of the approver either way. Audio crosses the tailnet to
+  as in any hosted chat — the owner's ruling of 2026-09-28: the owner is
+  speaking, and the interlock and the outbox sit ahead of the approver
+  either way. Audio crosses the tailnet to
   the worker and the STT and TTS servers and is kept by none of them.
 
 ## 7. The page
