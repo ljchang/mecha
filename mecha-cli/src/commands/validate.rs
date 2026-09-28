@@ -823,7 +823,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         println!(
             "{recorded_rows} row(s) appended to the validation ledger — `mecha rules` folds them"
         );
-        store.commit(&format!("validate: {recorded_rows} probe(s) → ledger"));
+        store.log_pass(&format!("validate: {recorded_rows} probe(s) → ledger"));
     }
     Ok(())
 }

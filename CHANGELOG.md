@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The learning store no longer uses git.** `~/.mecha/learning/` is plain
+  files: opening it no longer runs `git init` or writes a `.gitignore`, and a
+  pass no longer commits. Git history kept every deleted reflection's text,
+  which a chat deleted with all its traces must not leave behind. Each pass
+  now appends one line to `passes.jsonl` — when it ran and what it counted,
+  never content — beside `runs.jsonl` and each rule's `sources` and
+  retirement fields, which already carried the lineage anything reads; the
+  undo for a bad rule is `mecha rules retire`, per rule. An existing `.git`
+  in the store is left where it is, unused; removing it is the owner's call.
+
 - **The local model's prompt cache is 16 GiB, not 32** (`-cram`, both launch
   scripts). It fills over hours and never shrinks while a model stays loaded,
   and a full 32 GiB beside the model's own 43 GB left image generation out of
