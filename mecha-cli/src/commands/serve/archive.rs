@@ -30,13 +30,29 @@ fn sessions_dir() -> Result<std::path::PathBuf, axum::response::Response> {
 }
 
 /// Release `id` from the process, or answer why not (a 409's reason).
-async fn release(state: &super::WebState, id: &str) -> Result<(), &'static str> {
+///
+/// Two writers to ask, as resume asks them: this process's open chats, and a
+/// detached task run in another process — whose conversation this map cannot
+/// see, and whose workspace a delete would remove mid-tool-call.
+async fn release(state: &super::WebState, id: &str) -> Result<(), String> {
+    if let Some(task) = crate::commands::tasks::markers()
+        .ok()
+        .and_then(|m| m.live_writer_of(id))
+    {
+        return Err(format!(
+            "a run is working {task} in this conversation — stop it first \
+             (`mecha tasks stop {task}`)"
+        ));
+    }
     // No chat subsystem means no open conversations to let go of; archiving
     // and deleting the record still work.
     let Ok(chat) = chat_state(state) else {
         return Ok(());
     };
-    chat.release_recorded(id).await.map(|_| ())
+    chat.release_recorded(id)
+        .await
+        .map(|_| ())
+        .map_err(str::to_string)
 }
 
 fn busy(why: &str) -> axum::response::Response {
@@ -53,7 +69,7 @@ pub async fn archive(State(state): Web, Path(id): Path<String>) -> axum::respons
         return (StatusCode::NOT_FOUND, "no such conversation\n").into_response();
     }
     if let Err(why) = release(&state, &id).await {
-        return busy(why);
+        return busy(&why);
     }
     match mecha_core::archive::archive(&dir, &id, chrono::Utc::now()) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -87,7 +103,7 @@ pub async fn delete(State(state): Web, Path(id): Path<String>) -> axum::response
         return (StatusCode::NOT_FOUND, "no such conversation\n").into_response();
     }
     if let Err(why) = release(&state, &id).await {
-        return busy(why);
+        return busy(&why);
     }
     // Where this process's chats actually staged their drafts, when there is
     // a chat subsystem — it resolved `[outbox] dir` at start.
