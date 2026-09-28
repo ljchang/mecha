@@ -1612,7 +1612,8 @@ impl Tool for ImageGenerate {
                             "{} characters from the owner's image library are named \
                              ({}), and one picture holds at most {}. Split the scene into \
                              separate pictures, naming at most {} in each prompt and \
-                             putting those in `cast`.",
+                             putting those in `cast`. If you mean other people with those \
+                             names, pass \"cast\": [].",
                             order.len(),
                             order.join(", "),
                             crate::imagelib::MAX_CAST,
