@@ -799,6 +799,13 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
 async fn forward_offer(target: &str, body: axum::body::Bytes) -> Response {
     let client = reqwest::Client::new();
     let incognito = offer_names_incognito(&body);
+    // The prefix decides it, and a name carrying it must also be one the
+    // worker will accept: it validates to `valid_key`'s rule and would drop a
+    // malformed one — and with it the chat binding and the silence — while
+    // this side had vouched for the call (review of #376).
+    if incognito && !offer_session(&body).is_some_and(|s| chat::valid_key(&s)) {
+        return (StatusCode::BAD_REQUEST, "malformed chat session\n").into_response();
+    }
     if incognito && !runner_keeps_no_text(&client, target).await {
         return (StatusCode::CONFLICT, format!("{UNLOGGED_WORKER_WANTED}\n")).into_response();
     }
@@ -857,15 +864,19 @@ const UNLOGGED_WORKER_WANTED: &str = "this voice worker keeps call logs — rest
 /// passthrough the worker reads). Anything unreadable names nothing: the
 /// worker reads the same bytes and would name no chat either.
 fn offer_names_incognito(body: &[u8]) -> bool {
-    serde_json::from_slice::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| {
-            v.get("request_data")?
-                .get("session")?
-                .as_str()
-                .map(|s| incognito::is_incognito_key(s.trim()))
-        })
-        .unwrap_or(false)
+    offer_session(body).is_some_and(|s| incognito::is_incognito_key(&s))
+}
+
+/// The session an offer names, trimmed as the worker trims it.
+fn offer_session(body: &[u8]) -> Option<String> {
+    let v = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    Some(
+        v.get("request_data")?
+            .get("session")?
+            .as_str()?
+            .trim()
+            .to_string(),
+    )
 }
 
 /// Ask the runner beside `target` whether it holds its log silence for an
@@ -2319,6 +2330,20 @@ mod boundary_tests {
         );
 
         let (new, offers) = stub_runner(true).await;
+        // A name with the prefix that the worker would refuse is refused
+        // here, vouch or no: the worker would drop it, and the silence with it.
+        for bad in [
+            r#"{"request_data":{"session":"incognito-0123456789abcdef0123456789"}}"#,
+            r#"{"request_data":{"session":"incognito-ABC"}}"#,
+        ] {
+            let (status, _) = answer_of(forward_offer(&new, bad.into()).await).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        }
+        assert_eq!(
+            offers.load(Ordering::SeqCst),
+            0,
+            "a malformed name was forwarded"
+        );
         let (status, body) = answer_of(forward_offer(&new, incognito).await).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(offers.load(Ordering::SeqCst), 1);
