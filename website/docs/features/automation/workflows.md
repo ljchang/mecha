@@ -6,9 +6,15 @@ description: Track commitments, resume delegated work, verify results and review
 
 # Workflows and Today
 
-Today brings urgent work, decisions, verified results and waiting work onto the
-home screen. It includes pending drafts and unanswered questions even when you
-have not created a workflow. A source that cannot be read is reported as unavailable.
+`mecha workflow today` brings urgent work, decisions, verified results and
+waiting work into one readout. It includes pending drafts and unanswered
+questions even when you have not created a workflow. A source that cannot be
+read is reported as unavailable.
+
+In the web interface the workflows themselves are a view of the task board —
+**Tasks → workflows** — and the home page's **Follow-through** line opens it.
+Drafts and questions stay where they are answered: the outbox under Review, and
+the board's *waiting* view.
 
 Delegating a task creates a workflow automatically. The same record follows its
 web conversation, background work and answered questions. It links the existing
@@ -40,8 +46,8 @@ uses the same record. It carries only the dates you wrote in it: none in the
 original `beneficiary` shape, and whatever `due_at` / `follow_up_at` you
 include in the record shape. mecha never supplies a date. An undated commitment
 has **no deadline stated**: it is never marked overdue, never raises a
-follow-up reminder, and the Today page says "no deadline stated" rather than
-showing a date.
+follow-up reminder, and both `workflow today` and the web workflows view say
+"no deadline stated" rather than showing a date.
 
 Commitments are entered by you. Messages are not automatically treated as promises.
 Neither [appraisal](/docs/features/appraisal) nor its
@@ -62,7 +68,7 @@ mecha workflow close FLOW_ID
 
 Artifact paths are confined to the workflow's recorded workspace. Checks read
 regular UTF-8 files up to 4 MiB. A delivery check requires a recorded successful
-send; a staged draft or unknown delivery cannot pass. Today rereads the evidence,
+send; a staged draft or unknown delivery cannot pass. `workflow today` rereads the evidence,
 and closing checks it again. A workflow with no checks is not marked verified.
 A content check proves the specified text exists, not that an entire document is correct.
 Rejected drafts and abandoned questions count as resolved decisions, so they do not
@@ -77,8 +83,9 @@ are not tied to a task, so a cancelled workflow does not stop one.
 Cancellation does not claim success and requires an active runner to be stopped
 first. Closing a workflow leaves graph task closure to `mecha tasks set`.
 
-In the web interface, expand **Finished workflows** at the bottom of Today and
-choose **Reopen workflow** to continue a finished or cancelled task conversation.
+In the web interface, open **Tasks → workflows**, expand **Finished workflows**
+at the bottom and choose **Reopen workflow** to continue a finished or cancelled
+task conversation.
 This preserves the launch gates while making completion reversible from a phone.
 
 Each of these is also your verdict on the session that did the work, and

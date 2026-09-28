@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The web home is counts and doors.** Four large cards for what is yours —
+  mail that needs you, outbox drafts, questions a run is paused on, open
+  tasks — then one small card per review queue, and a line each for
+  follow-through and health. Every card opens its tab; nothing a tab already
+  shows is repeated. The Today list of workflows, which is what made the page
+  unusable, moves to the task board as its own view (`#tasks/workflows`),
+  keeping every verb and Reopen for finished ones; home's Follow-through line
+  opens it, and the Questions card opens the board's waiting view, where a
+  paused run's question is answered. Tasks' views now follow the route, so
+  Back returns to the last one. A count that could not be read is a dash,
+  never a zero.
+
 - **An incognito chat's model chip opens the picker too.** Every model it
   lists runs on this machine, since the chip reads only routers a local,
   loopback `follow_loaded` entry names, and the menu says so. Incognito's

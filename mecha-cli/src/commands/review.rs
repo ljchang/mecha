@@ -1742,6 +1742,16 @@ mod tests {
         };
         let labels = block("const queueLabels");
         let targets_src = block("const queueTargets");
+        // The queues with a large card of their own: a wire name here that
+        // no longer exists would leave that card reading "could not be read"
+        // and put the renamed queue back among the small cards.
+        let cards_src = block("const queueCards");
+        let cards: Vec<&str> = cards_src
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix('\''))
+            .filter_map(|l| l.split_once("':"))
+            .map(|(q, _)| q)
+            .collect();
 
         // The router's own tables, so a destination is checked against what
         // actually resolves rather than against a copy of it kept here.
@@ -1784,6 +1794,16 @@ mod tests {
                 "queue {name:?} has no entry in Home.svelte's queueLabels — the \
                  card renders under its wire name. Add a title, and a \
                  queueTargets entry if a page on the phone shows it."
+            );
+        }
+
+        assert!(!cards.is_empty(), "queueCards parsed as empty");
+        for queue in &cards {
+            assert!(
+                names.contains(queue),
+                "Home.svelte's queueCards names {queue:?}, which no longer exists — \
+                 its large card would read \"could not be read\" and the renamed \
+                 queue would come back as a small card below it."
             );
         }
 
