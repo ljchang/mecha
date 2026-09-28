@@ -226,7 +226,10 @@ The decisions that are this design's rather than the owner's:
   compute one, so any shell could approve a model's proposal unread (review
   of #385). The flag is gone: the CLI's only door for an untrusted candidate
   is the interactive question, and the web's is a page only this process
-  could have signed.
+  could have signed:
+  a client of this server, as every approve route on it is. An
+  owner-authenticated client can fetch a signature and send it back; the gap
+  closed was a shell with no server at all.
 - **Save copies, never points.** A chat's files are served only while the
   chat is open, so `POST /api/library/save` reads the picture through the
   jail now, stages it in a 0700 scratch directory, reads the seed from its

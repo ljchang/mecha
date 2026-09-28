@@ -29,6 +29,10 @@
 //! no one reading it (found on review of #385). This is the one write not
 //! made by a CLI child, because the CLI has no way to prove a person saw
 //! the text — the web page is that proof, and only this process can check it.
+//! What that buys, stated exactly: approval now requires a client of this
+//! server, as every approve route on it does; an owner-authenticated client
+//! can fetch a signature and send it back. The gap it closed was a shell
+//! with no server at all.
 //!
 //! **Writes honour the lock as reads do.** An action on a locked entry needs
 //! a live unlock token, and a hidden entry and a missing one answer the same

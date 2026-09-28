@@ -716,7 +716,10 @@ doing; this code writes how they look. Decisions, each a bug if undone:
 - **The web approves what it showed, and only it can vouch for that.** The
   list carries an HMAC of each entry's `shown_digest` under a key `serve`
   draws at start and never stores; approval checks it against the entry as
-  re-read and happens in `serve`'s process. A bare digest, passed to a CLI
+  re-read and happens in `serve`'s process — so approval needs a client of
+  this server, as every approve route on it does (an owner-authenticated
+  client can fetch a signature and replay it; the gap closed was a shell with
+  no server at all). A bare digest, passed to a CLI
   `--shown` flag, was computable by anything that can read the store — a
   shell could approve a model's proposal unread (review of #385); the flag
   is gone. Writes honour the lock as reads do: a locked entry is acted on

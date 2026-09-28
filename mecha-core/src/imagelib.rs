@@ -210,8 +210,46 @@ fn now() -> String {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
+    write_atomic_mode(path, bytes, None)
+}
+
+/// Write-then-rename through a temp file that is new or not at all: a fresh
+/// random name, `create_new`, and no symlink followed. A fixed `.tmp` name
+/// opened with `create(true)` kept an existing file's mode — so a lock file
+/// promised 0600 could arrive with any mode — and wrote through a symlink
+/// planted there, which the rename then installed as the file itself (review
+/// of #385; `serve`'s `write_private_temp` is the same fix, #258).
+fn write_atomic_mode(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<()> {
+    use std::io::Write;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow!("{} has no file name", path.display()))?;
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+        if let Some(mode) = mode {
+            options.mode(mode);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    let written = (|| -> Result<()> {
+        let mut f = options
+            .open(&tmp)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
     std::fs::rename(&tmp, path).with_context(|| format!("installing {}", path.display()))?;
     Ok(())
 }
@@ -681,23 +719,8 @@ pub fn set_lock_password(dir: &Path, password: &str) -> Result<()> {
         .to_string();
     std::fs::create_dir_all(dir)?;
     let text = toml::to_string_pretty(&LockFile { hash })?;
-    let path = dir.join(LOCK_FILE);
-    let tmp = path.with_extension("tmp");
-    {
-        use std::io::Write;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut f = options.open(&tmp).context("writing the lock file")?;
-        f.write_all(text.as_bytes())?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, &path).context("installing the lock file")?;
-    Ok(())
+    write_atomic_mode(&dir.join(LOCK_FILE), text.as_bytes(), Some(0o600))
+        .context("writing the lock file")
 }
 
 /// Whether `password` is the lock password. `Ok(false)` when none is set;
@@ -1295,6 +1318,22 @@ mod tests {
                 .permissions()
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
+        }
+        // A planted `lock.tmp` — a symlink to a file the planter owns — is
+        // neither written through nor installed as the lock.
+        #[cfg(unix)]
+        {
+            let decoy = dir.path().join("decoy");
+            std::fs::write(&decoy, "untouched").unwrap();
+            let _ = std::fs::remove_file(dir.path().join("lock.tmp"));
+            std::os::unix::fs::symlink(&decoy, dir.path().join("lock.tmp")).unwrap();
+            set_lock_password(dir.path(), "another horse").unwrap();
+            assert_eq!(std::fs::read_to_string(&decoy).unwrap(), "untouched");
+            assert!(!std::fs::symlink_metadata(dir.path().join("lock.toml"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert!(verify_lock_password(dir.path(), "another horse").unwrap());
         }
         // A damaged lock is a finding, never an open door.
         std::fs::write(dir.path().join("lock.toml"), "hash = \"nonsense\"").unwrap();
