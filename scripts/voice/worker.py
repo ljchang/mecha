@@ -1906,6 +1906,36 @@ def is_incognito(named: str | None) -> bool:
     return bool(named) and named.startswith(INCOGNITO_PREFIX)
 
 
+# How long an answered offer may wait for its browser to connect before the
+# call is ended. Pipecat gives the peer connection 60 s, but the bot built
+# for it runs on until the fifteen-minute idle timeout, holding VAD, turn
+# detection, STT and TTS on a one-GPU box - and, for a call into an
+# incognito chat, the process-wide log silence (`Unlogged`), so every other
+# call loses pipecat's lines for the quarter hour. Measured 2026-09-28: a
+# synthetic incognito offer that never connected held the silence from
+# 22:08:32 to its idle timeout at ~22:23:32, and an ordinary offer at 22:10:42
+# logged no pipecat lines at all. Ninety seconds is past pipecat's own
+# connection timeout and any ICE a cellular link completes.
+CONNECT_DEADLINE_SECS = 90.0
+
+
+async def end_unless_connected(connected: asyncio.Event, deadline_secs: float, end) -> bool:
+    """Wait up to `deadline_secs` for `connected`; if it never comes, say so
+    and `await end()`. Returns whether the call was ended. A call that
+    connects in time is left alone for the rest of its life - after that the
+    disconnect handler and the idle timeout own it."""
+    try:
+        await asyncio.wait_for(connected.wait(), deadline_secs)
+        return False
+    except asyncio.TimeoutError:
+        print(
+            f"voice client never connected after {deadline_secs:.0f}s - ending the call",
+            flush=True,
+        )
+        await end()
+        return True
+
+
 class Unlogged:
     """The live calls into incognito chats, and the log silence they hold.
 
@@ -2335,8 +2365,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
             "refused": refused or None,
         })
 
+    connected = asyncio.Event()
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
+        connected.set()
         print("voice client connected", flush=True)
         # See TRACK_IDLE_DISCARD_SECS. Two privates, and a guard on each:
         # this is a memory limit being relaxed, not a correctness rule, so a
@@ -2360,7 +2393,15 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
         print("voice client disconnected", flush=True)
         await runner.cancel()
 
-    await runner.run()
+    # An answered offer whose browser never connects ends here rather than at
+    # the idle timeout (`CONNECT_DEADLINE_SECS`).
+    deadline = asyncio.create_task(
+        end_unless_connected(connected, CONNECT_DEADLINE_SECS, runner.cancel)
+    )
+    try:
+        await runner.run()
+    finally:
+        deadline.cancel()
 
 
 async def bot(runner_args: RunnerArguments):
