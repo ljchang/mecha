@@ -601,10 +601,11 @@ none for a month after. What it bought:
 
 Roughly fifty parked task conversations, today, with nothing new built.
 
-> **Since 2026-09-28 the cap is 16384** (`LLAMA-SERVER.md` §Slots, the `-cram`
-> bullet). By then 32 GB had filled and was evicting — 118 in the three days
+> **Since 2026-09-28 the cap is 16384** (`LLAMA-SERVER.md` §Flags that cost
+> something to learn, the `-cram` bullet). By then 32 GB had filled and was evicting — 118 in the three days
 > before — and a full 32 GB left image generation no room on the shared pool.
-> Halve the right-hand column — about 25 typical parked tasks, three full slots.
+> Halve the right-hand column — about 25 typical parked tasks, and 2.9 full
+> slots (16,384 / 5,632 MiB).
 
 ### 3.2 R1 — Admission control, not memory management
 
