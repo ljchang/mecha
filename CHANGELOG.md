@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha sessions mark <id> experiment`** withdraws a session you ran as a
+  model probe from everything that learns from your sessions: the run
+  corpus, `reflect`, `distill`, `learn`, and its appraisal and scores. The
+  transcript is untouched, and `mecha sessions unmark` undoes it. Only you
+  can mark, from your own terminal; a run's shell is refused. The verb names
+  the session's graph episode, if it was distilled, for you to retract there.
+
 - **Voice calls in incognito chats.** An incognito chat now has the call
   button, and nothing of the call is kept. While such a call is live
   the voice worker silences pipecat's logging, which otherwise writes both

@@ -242,6 +242,39 @@ pub enum Args {
         #[arg(long)]
         json: bool,
     },
+
+    /// Mark a session as an experiment — a model probe run as ordinary
+    /// chat, not your own work. It leaves every reader that learns from
+    /// your sessions: the run corpus, `reflect`, `distill` and `learn`, and
+    /// its appraisal and scores are withdrawn. The transcript is untouched.
+    /// Only you can mark, at your own terminal; a run's shell is refused.
+    /// `sessions unmark` undoes it.
+    Mark {
+        /// Session id or unique prefix.
+        id: String,
+        /// What the session is. `experiment` is the only kind a mark sets.
+        #[arg(value_enum)]
+        kind: MarkKind,
+        /// Why — recorded with the mark.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Undo `sessions mark`: the session reads as recorded again.
+    Unmark {
+        /// Session id or unique prefix.
+        id: String,
+        /// Why — recorded with the undo.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+}
+
+/// What `sessions mark` can say a session is.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum MarkKind {
+    /// Not the owner's work: a model probe, a trial run by hand.
+    Experiment,
 }
 
 /// What `sessions appraise --appraise` says since row 2a-3 retired the
@@ -512,9 +545,122 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
         Args::Path { id } => println!("{}", Session::find(&dir, &id)?.display()),
 
+        Args::Mark { id, kind, reason } => {
+            let MarkKind::Experiment = kind;
+            mark(
+                &dir,
+                &id,
+                mecha_core::session::MarkAction::Experiment,
+                reason,
+                owners_hand,
+            )?
+        }
+        Args::Unmark { id, reason } => mark(
+            &dir,
+            &id,
+            mecha_core::session::MarkAction::Unmark,
+            reason,
+            owners_hand,
+        )?,
+
         Args::Stats { days, json } => stats(&dir, days, json)?,
     }
 
+    Ok(())
+}
+
+/// Refuse unless the owner is at their own terminal — the closure store's
+/// rule (`closure::attribute_explained`), stricter than a task close: an
+/// interactive run's shell is refused too, since a mark hides a session's
+/// record from every reader, and a run must not hide its own.
+fn owners_hand() -> Result<()> {
+    use mecha_core::closure::{self, Actor};
+    let pids = crate::commands::tasks::live_run_pids().context(
+        "the run markers could not be read, so whether a run is doing this cannot be told; \
+         refused",
+    )?;
+    let (actor, why) = closure::attribute_explained(
+        &closure::posture_from_env(),
+        &closure::ShellReading::from_registry(),
+        closure::run_ancestor(&pids),
+    );
+    if actor != Actor::Owner {
+        anyhow::bail!(
+            "{}; refusing — a mark withdraws a session from every reader, which only the \
+             owner does, at their own terminal",
+            why.unwrap_or_else(|| "this is not the owner's own terminal".into())
+        );
+    }
+    Ok(())
+}
+
+/// `sessions mark` and `unmark`: the owner's check, then one line on the
+/// marks ledger, then what it reached. `check` is the owner's-hand guard,
+/// passed in so a test can run the rest.
+fn mark(
+    dir: &std::path::Path,
+    id: &str,
+    action: mecha_core::session::MarkAction,
+    reason: Option<String>,
+    check: fn() -> Result<()>,
+) -> Result<()> {
+    use mecha_core::session::{Mark, MarkAction, Marks};
+    check()?;
+    let path = Session::find(dir, id)?;
+    let session_id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .context("the session file has no readable name")?
+        .to_string();
+    let marks = Marks::load(dir)?;
+    let marked = marks.withdrawn(&session_id);
+    match (action, marked) {
+        (MarkAction::Unmark, false) => {
+            println!("{session_id} is not marked; nothing written");
+            return Ok(());
+        }
+        (MarkAction::Experiment, true) => {
+            println!("{session_id} is already marked as an experiment; nothing written");
+            return Ok(());
+        }
+        _ => {}
+    }
+    Marks::append(
+        dir,
+        &Mark {
+            session_id: session_id.clone(),
+            action,
+            at: chrono::Utc::now(),
+            reason: reason.filter(|r| !r.trim().is_empty()),
+        },
+    )?;
+    if action == MarkAction::Unmark {
+        println!("{session_id} unmarked: it reads as recorded again");
+        return Ok(());
+    }
+    println!(
+        "{session_id} marked as an experiment: out of the run corpus, reflect, distill and \
+         learn, and its appraisal and scores are withdrawn"
+    );
+    // What it had already reached, from the stores that hold it.
+    let learning = mecha_core::learning::LearningStore::open(
+        mecha_core::learning::LearningStore::default_root()?,
+    )?;
+    let reflections = learning
+        .reflexions()?
+        .iter()
+        .filter(|r| r.session_id == session_id && !r.is_processed)
+        .count();
+    if reflections > 0 {
+        println!("  {reflections} unprocessed reflection(s) from it are withheld from learn");
+    }
+    if learning.distilled_sessions()?.contains(&session_id) {
+        println!(
+            "  it was distilled into the graph as episode ({}, {session_id}) — the graph is \
+             a separate store: retract the episode in its review if it should not stand",
+            mecha_core::distill::EPISODE_SOURCE
+        );
+    }
     Ok(())
 }
 

@@ -1061,6 +1061,12 @@ pub enum Recorded {
 /// The append-only text-appraisal store, `~/.mecha/appraisals/appraisals.jsonl`.
 pub struct AppraisalStore {
     root: PathBuf,
+    /// Where the owner's session marks are read from
+    /// ([`crate::session::Marks`]): the default opens set it to the session
+    /// store's, so a withdrawn session's appraisal and scores reach no
+    /// reader. `None` on [`Self::open`] — a store at an explicit root reads
+    /// no marks unless [`Self::with_marks_from`] says where.
+    marks_dir: Option<PathBuf>,
 }
 
 struct StoreLock {
@@ -1079,18 +1085,44 @@ impl AppraisalStore {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
-        Ok(AppraisalStore { root })
+        Ok(AppraisalStore {
+            root,
+            marks_dir: None,
+        })
     }
 
     pub fn open_default() -> Result<Self> {
-        Self::open(Self::default_root()?)
+        Ok(Self::open(Self::default_root()?)?
+            .with_marks_from(crate::session::Session::default_dir()?))
+    }
+
+    /// Read the owner's session marks from `sessions_dir`: a session a mark
+    /// withdraws has no appraisal and no score through this handle.
+    pub fn with_marks_from(mut self, sessions_dir: impl Into<PathBuf>) -> Self {
+        self.marks_dir = Some(sessions_dir.into());
+        self
+    }
+
+    /// The sessions the owner's marks withdraw. A marks ledger that cannot
+    /// be read is an error: every reader over this store then fails as it
+    /// would on the store itself, rather than serving a probe's appraisal
+    /// as the owner's.
+    fn withdrawn(&self) -> Result<std::collections::BTreeSet<String>> {
+        match &self.marks_dir {
+            None => Ok(Default::default()),
+            Some(dir) => Ok(crate::session::Marks::load(dir)?.withdrawn_ids()),
+        }
     }
 
     /// Open at the default location only if it already exists — a read path
     /// must not create the store it is about to report on.
     pub fn open_existing_default() -> Option<Self> {
         let root = Self::default_root().ok()?;
-        root.is_dir().then_some(AppraisalStore { root })
+        let marks_dir = crate::session::Session::default_dir().ok()?;
+        root.is_dir().then_some(AppraisalStore {
+            root,
+            marks_dir: Some(marks_dir),
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -1173,7 +1205,7 @@ impl AppraisalStore {
         if session_id.trim().is_empty() {
             return Ok(None);
         }
-        let (rows, _) = self.for_owner()?;
+        let (rows, _) = self.all_rows()?;
         Ok(rows
             .into_iter()
             .find(|r| r.session_id == session_id)
@@ -1207,6 +1239,16 @@ impl AppraisalStore {
     /// the owner's surfaces only**. A missing file is an empty store; a file
     /// that cannot be read is an `Err`.
     pub fn for_owner(&self) -> Result<(Vec<TextAppraisal>, usize)> {
+        let withdrawn = self.withdrawn()?;
+        let (mut rows, skipped) = self.all_rows()?;
+        rows.retain(|r| !withdrawn.contains(&r.session_id));
+        Ok((rows, skipped))
+    }
+
+    /// Every row, the owner's marks unapplied — what "is this session
+    /// already appraised?" asks, so a withdrawn session is never appraised
+    /// a second time.
+    fn all_rows(&self) -> Result<(Vec<TextAppraisal>, usize)> {
         let path = self.ledger();
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -1774,6 +1816,15 @@ impl AppraisalStore {
     /// Every score, oldest first, and how many lines were skipped. A
     /// missing file is no scores; one that cannot be read is an `Err`.
     pub fn scores(&self) -> Result<(Vec<Score>, usize)> {
+        let withdrawn = self.withdrawn()?;
+        let (mut scores, skipped) = self.all_scores()?;
+        scores.retain(|s| !withdrawn.contains(&s.session_id));
+        Ok((scores, skipped))
+    }
+
+    /// Every score, the owner's marks unapplied — what "already scored?"
+    /// asks.
+    fn all_scores(&self) -> Result<(Vec<Score>, usize)> {
         let path = self.scores_ledger();
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -1840,7 +1891,7 @@ impl AppraisalStore {
         };
         use std::io::Write;
         let _lock = self.lock()?;
-        let (existing, _) = self.scores()?;
+        let (existing, _) = self.all_scores()?;
         if existing.iter().any(|s| s.appraisal_id == appraisal.id) {
             return Ok(Scored::AlreadyScored);
         }
@@ -4031,6 +4082,100 @@ mod tests {
         std::fs::write(fresh.ledger(), ledger).unwrap();
         let s = fresh.score_summary(&blind, later).unwrap();
         assert_eq!(s.appraisals_unreadable, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Ruling 4D: a session the owner marked as an experiment has no
+    /// appraisal and no score through any door — the owner's, the clean
+    /// one, the scores the replay priority reads — yet it is still "on
+    /// record", so it is never appraised a second time. Unmarked, it is
+    /// back.
+    #[test]
+    fn a_marked_sessions_appraisal_and_score_are_withdrawn_from_every_door() {
+        use crate::session::{Mark, MarkAction, Marks};
+        let root = temp_root("marked");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals"))
+            .unwrap()
+            .with_marks_from(&dir);
+        let probe = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        let work = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        for ev in [&probe, &work] {
+            store
+                .record(
+                    ev,
+                    Draft {
+                        expected_act: Some(ExpectedAct::NoAct),
+                        ..draft()
+                    },
+                    "m",
+                    &known(),
+                )
+                .unwrap();
+        }
+        let tasks = json!({"items": [{"id": "t-budget", "status": "next"}]});
+        let owner = OwnerActs {
+            board: BoardRead::Read(&tasks),
+            ..OwnerActs::default()
+        };
+        let later = Utc::now() + chrono::Duration::hours(72);
+        store.score_due(&owner, later).unwrap();
+        assert_eq!(store.scores().unwrap().0.len(), 2);
+
+        let mark = |action| Mark {
+            session_id: probe.session_id().into(),
+            action,
+            at: Utc::now(),
+            reason: Some("a model probe".into()),
+        };
+        Marks::append(&dir, &mark(MarkAction::Experiment)).unwrap();
+        let only_work = |ids: Vec<&str>| assert_eq!(ids, vec![work.session_id()]);
+        only_work(
+            store
+                .for_owner()
+                .unwrap()
+                .0
+                .iter()
+                .map(|r| r.session_id.as_str())
+                .collect(),
+        );
+        only_work(
+            store
+                .clean()
+                .unwrap()
+                .appraisals
+                .iter()
+                .map(|c| c.session_id.as_str())
+                .collect(),
+        );
+        only_work(
+            store
+                .scores()
+                .unwrap()
+                .0
+                .iter()
+                .map(|s| s.session_id.as_str())
+                .collect(),
+        );
+        let summary = store.score_summary(&owner, later).unwrap();
+        assert_eq!((summary.appraisals, summary.scored), (1, 1));
+        assert!(
+            store.on_record(probe.session_id()).unwrap().is_some(),
+            "still on record: never appraised twice"
+        );
+        assert_eq!(
+            store.score_due(&owner, later).unwrap().scored,
+            1,
+            "and never scored twice"
+        );
+        assert_eq!(store.all_scores().unwrap().0.len(), 2);
+
+        // A store at an explicit root reads no marks unless told where.
+        let unmarked = AppraisalStore::open(root.join("appraisals")).unwrap();
+        assert_eq!(unmarked.for_owner().unwrap().0.len(), 2);
+
+        Marks::append(&dir, &mark(MarkAction::Unmark)).unwrap();
+        assert_eq!(store.for_owner().unwrap().0.len(), 2);
         let _ = std::fs::remove_dir_all(&root);
     }
 
