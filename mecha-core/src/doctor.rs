@@ -2062,6 +2062,23 @@ const STALE_CANDIDATE_AFTER: chrono::Duration = chrono::Duration::hours(72);
 /// the reader to skip the component it names.
 const STARVED_LEARNER_MIN_EXCLUDED: usize = 10;
 
+/// The learning store's `.git`, when one is left from before the store
+/// stopped using git (2026-09-28). Nothing commits there any more, but its
+/// history keeps every reflection and rule wording ever written — deleted
+/// ones included.
+///
+/// **A note, not a finding.** Keeping or removing that history is a decision
+/// the owner makes, not distress, and `mecha doctor` exits non-zero on any
+/// finding — the `vouched_note` rule: a standing decision reported as a
+/// finding keeps doctor red on every install that learned anything before
+/// the cutover, including one whose owner chose to keep it. And never a
+/// remedy, because doctor offers to *run* a remedy, and erasing history is
+/// not something to be one keypress away.
+pub fn legacy_learning_git(learning: &Path) -> Option<PathBuf> {
+    let git = learning.join(".git");
+    git.exists().then_some(git)
+}
+
 /// The starved learner: reflections keep arriving, the origin gate keeps
 /// excluding them, and no domain ever reaches `learn`'s floor — so the rule
 /// learner reports success every night and has produced nothing for weeks.
@@ -2074,33 +2091,8 @@ const STARVED_LEARNER_MIN_EXCLUDED: usize = 10;
 /// command: accept the rate, or change what evidence the loop can use. That
 /// is why its remedy is the dry-run that shows the classifications, never
 /// anything that loosens the gate.
-/// A learning store from before it stopped using git (2026-09-28) keeps its
-/// `.git`: nothing commits there any more, but its history holds every
-/// reflection and rule wording ever written — including ones the owner has
-/// since removed or deleted with a conversation. Removing it is the owner's
-/// decision, so this names the decision rather than making it: no remedy,
-/// because the doctor offers to *run* a remedy, and erasing history is not
-/// something to be one keypress away.
-fn check_legacy_learning_git(root: &Path) -> Option<Finding> {
-    let git = root.join(".git");
-    git.exists().then(|| Finding {
-        component: "learning".into(),
-        severity: Severity::Attention,
-        summary: "the learning store still carries its old git history".into(),
-        detail: format!(
-            "{} is no longer written to, but its history keeps every reflection and rule \
-             wording ever recorded, including deleted ones. Removing it (`rm -rf {}`) \
-             loses only that history; nothing reads it",
-            git.display(),
-            git.display()
-        ),
-        remedy: None,
-    })
-}
-
 fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let mut out = Vec::new();
-    out.extend(check_legacy_learning_git(root));
     let path = root.join("reflections.jsonl");
     if !path.is_file() {
         return out;
@@ -3184,30 +3176,6 @@ mod tests {
     /// consolidation made it the normal state on 2026-08-29, when `doctor`
     /// called the learner starved minutes after it turned 28 reflections
     /// into 12 rules.
-    /// A store from before 2026-09-28 keeps a `.git` nothing writes to,
-    /// holding every reflection ever recorded — deleted ones included. The
-    /// owner must be told there is a decision to make, and must not be one
-    /// `y` away from erasing history: named, never offered as a remedy.
-    #[test]
-    fn a_legacy_learning_git_directory_is_named_and_never_offered_as_a_remedy() {
-        let home = home("learning-legacy-git");
-        let root = home.join("learning");
-        std::fs::create_dir_all(&root).unwrap();
-        let now = Utc::now();
-        assert!(check_learning(&root, now).is_empty());
-
-        std::fs::create_dir_all(root.join(".git")).unwrap();
-        let findings = check_learning(&root, now);
-        let f = findings
-            .iter()
-            .find(|f| f.summary.contains("git history"))
-            .expect("a legacy .git goes unmentioned");
-        assert!(
-            f.remedy.is_none(),
-            "erasing history must not be a one-key remedy"
-        );
-        assert!(f.detail.contains("rm -rf"));
-    }
 
     #[test]
     fn a_learner_that_just_ran_is_not_starved() {
@@ -3278,6 +3246,24 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// A legacy `.git` is the owner's standing decision, not distress: it is
+    /// named by a note, never a finding (which would keep doctor red on every
+    /// install from before the cutover) and never a runnable remedy.
+    #[test]
+    fn a_legacy_learning_git_directory_is_a_note_not_a_finding() {
+        let home = home("learning-legacy-git");
+        let root = home.join("learning");
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(legacy_learning_git(&root), None);
+
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        assert_eq!(legacy_learning_git(&root), Some(root.join(".git")));
+        assert!(
+            check_learning(&root, Utc::now()).is_empty(),
+            "a standing decision must not make doctor exit non-zero"
+        );
     }
 
     /// A clean pool at the floor that `learn` will never consolidate — every
