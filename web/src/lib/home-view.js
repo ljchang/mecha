@@ -37,6 +37,22 @@ export function actionable(items) {
   return items.filter(isActionable);
 }
 
+/**
+ * A backlog queue as a card's count: `{ n, why }`. `undefined` while the
+ * backlog is still being asked. When the count is unknown, `why` carries the
+ * reason — `collect_queues()` reports an unreadable store as a null depth
+ * with the error in `detail`, and a card that keeps the dash but drops the
+ * detail has thrown away the only account of what went wrong.
+ */
+export function queueCount(summary, name) {
+  if (summary === undefined) return undefined;
+  if (summary === null) return { n: null, why: null };
+  const row = (summary.queues ?? []).find((q) => q.queue === name);
+  if (!row) return { n: null, why: null };
+  const n = row.depth ?? null;
+  return { n, why: n === null ? (row.detail ?? null) : null };
+}
+
 /** `workflow today`'s sections, in the order a person works through them. */
 export const SECTIONS = [
   ['urgent', 'Needs attention'],

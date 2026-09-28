@@ -1,6 +1,6 @@
 <script>
   import { apiFetch as fetch } from './api.js';
-  import { needsYou, fyi, actionable, workflowGroups, healthLine } from './home-view.js';
+  import { needsYou, fyi, actionable, workflowGroups, healthLine, queueCount } from './home-view.js';
   // Home is counts and doors. One card per place, a number, a tap into the
   // tab that has the rest — and nothing that tab already shows. The cards
   // never move: where Mail is today is where it is tomorrow, which is what
@@ -54,10 +54,6 @@
   });
 
   const dash = (v) => (v === null || v === undefined ? '—' : v.toLocaleString('en-US'));
-  // A count from the backlog: the queue's depth, `null` when the backlog
-  // could not be read, `undefined` while it is still being asked.
-  const depth = (name) =>
-    summary === undefined ? undefined : summary === null ? null : (summary.queues?.find((q) => q.queue === name)?.depth ?? null);
 
   const needs = $derived(needsYou(mail));
   const open = $derived(actionable(tasks));
@@ -70,10 +66,15 @@
   // The four places that are yours. `to` is where a tap lands; the question
   // card lands on the board's waiting view, which is where a paused run's
   // question is answered.
+  // A backlog card whose count is unknown shows the backlog's own reason.
+  const fromQueue = (label, to, sub) => {
+    const c = queueCount(summary, cardQueue[label]);
+    return { label, to, n: c?.n, sub, why: c?.why };
+  };
   const mine = $derived([
     { label: 'Mail', to: 'mail', n: Array.isArray(needs) ? needs.length : needs, sub: fyi(mail) ? `need you · ${fyi(mail)} FYI` : 'need you' },
-    { label: 'Outbox', to: 'review/outbox', n: depth(cardQueue.Outbox), sub: 'drafts to review' },
-    { label: 'Questions', to: 'tasks/waiting', n: depth(cardQueue.Questions), sub: 'a run waits on your answer' },
+    fromQueue('Outbox', 'review/outbox', 'drafts to review'),
+    fromQueue('Questions', 'tasks/waiting', 'a run waits on your answer'),
     { label: 'Tasks', to: 'tasks', n: Array.isArray(open) ? open.length : open, sub: overdue ? `to do · ${overdue} overdue` : 'to do next', hot: overdue > 0 },
   ]);
 
@@ -165,7 +166,7 @@
         <button class="card big" class:zero={c.n === 0} onclick={() => navigate(c.to)}>
           <span class="label">{c.label}<span class="chev" aria-hidden="true">›</span></span>
           <span class="count" class:hot={c.hot}>{c.n === undefined ? '' : dash(c.n)}</span>
-          <span class="sub">{c.n === 0 ? 'clear' : c.n === null ? 'could not be read' : c.sub}</span>
+          <span class="sub">{c.n === 0 ? 'clear' : c.n === null ? (c.why ?? 'could not be read') : c.sub}</span>
         </button>
       {/each}
     </div>

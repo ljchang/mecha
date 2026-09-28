@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { needsYou, fyi, actionable, isActionable, workflowGroups, healthLine } from '../src/lib/home-view.js';
+import { needsYou, fyi, actionable, isActionable, workflowGroups, healthLine, queueCount } from '../src/lib/home-view.js';
 
 // Unread passes through: null stays null, undefined stays undefined.
 assert.equal(needsYou(null), null);
@@ -71,6 +71,21 @@ assert.deepEqual(
 );
 assert.deepEqual(workflowGroups(null), []);
 
+// A backlog card: a count, or — when the store could not be read — the
+// backlog's own reason, never a zero and never a silent dash.
+const backlog = {
+  queues: [
+    { queue: 'outbox drafts', depth: 11, detail: '11 drafted with the trifecta armed' },
+    { queue: 'blocked questions', depth: null, detail: 'reading questions: permission denied' },
+  ],
+};
+assert.equal(queueCount(undefined, 'outbox drafts'), undefined);
+assert.deepEqual(queueCount(null, 'outbox drafts'), { n: null, why: null });
+assert.deepEqual(queueCount(backlog, 'outbox drafts'), { n: 11, why: null });
+assert.deepEqual(queueCount(backlog, 'blocked questions'), { n: null, why: 'reading questions: permission denied' });
+assert.deepEqual(queueCount(backlog, 'no such queue'), { n: null, why: null });
+assert.deepEqual(queueCount({ queues: [{ queue: 'outbox drafts', depth: 0 }] }, 'outbox drafts'), { n: 0, why: null });
+
 assert.equal(healthLine(null), null);
 assert.equal(healthLine(undefined), null);
 assert.equal(healthLine([]), 'Nothing silently wrong');
@@ -85,14 +100,17 @@ const board = read('Tasks.svelte');
 // with — imported, not copied, so there is nothing to drift.
 assert.match(board, /import \{ isActionable \} from '\.\/home-view\.js'/, 'Tasks imports the shared predicate');
 assert.match(board, /\['actionable', isActionable,/, "the board's default view is filtered by isActionable");
-const views = [...board.matchAll(/^\s*\['(\w+)', \(t\) =>/gm)].map((m) => m[1]);
+const views = [...board.matchAll(/^\s*\['(\w+)', (?:\(t\) =>|isActionable,)/gm)].map((m) => m[1]);
 views.push(board.match(/const WORKFLOWS = '(\w+)'/)[1]);
-assert.ok(views.includes('waiting') && views.includes('workflows'), `Tasks views parsed as ${views}`);
+assert.ok(['actionable', 'waiting', 'workflows'].every((v) => views.includes(v)), `Tasks views parsed as ${views}`);
 const targets = [...read('Home.svelte').matchAll(/'tasks\/(\w+)'/g)].map((m) => m[1]);
 assert.ok(targets.length >= 2, 'home links into at least two board views');
 for (const t of targets) assert.ok(views.includes(t), `home links to tasks/${t}, which Tasks does not have (${views})`);
 
-// Home stays counts: no row lists of another tab's items.
+// Narrower than "home stays counts": home does read mail, tasks and today
+// in full to reduce each to a number. What this pins is that it does not
+// read the three stores whose rows the first redesign listed — the outbox,
+// questions and sessions — which home counts from the backlog summary.
 const home = read('Home.svelte');
 for (const f of ['/api/outbox', '/api/questions', '/api/sessions']) {
   assert.ok(!home.includes(f), `Home.svelte reads ${f} — home shows counts, its tab shows the rows`);
