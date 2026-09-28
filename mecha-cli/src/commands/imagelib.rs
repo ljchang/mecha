@@ -165,9 +165,13 @@ fn read_secret(prompt: &str) -> Result<String> {
         unsafe {
             let mut t: libc::termios = std::mem::zeroed();
             if libc::tcgetattr(libc::STDIN_FILENO, &mut t) == 0 {
-                saved = Some(t);
-                t.c_lflag &= !libc::ECHO;
-                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+                let mut off = t;
+                off.c_lflag &= !libc::ECHO;
+                // Gated on the call that turns echo off, not the one that
+                // reads it (review of #385).
+                if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &off) == 0 {
+                    saved = Some(t);
+                }
             }
         }
         // A terminal whose echo cannot be turned off would show the password
