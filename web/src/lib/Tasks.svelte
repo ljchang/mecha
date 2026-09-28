@@ -1,6 +1,7 @@
 <script>
   import { apiFetch as fetch } from './api.js';
   import Dictate from './Dictate.svelte';
+  import Workflows from './Workflows.svelte';
   // The GTD board, over `mecha tasks …` — which reaches the graph's own
   // store through its MCP surface. Nothing here confirms: every status is
   // one tap from where it was, and the tool surface has no delete.
@@ -8,7 +9,11 @@
   let error = $state(null);
   // The appraisal of the task just closed, when there was one (S8).
   let closureNote = $state(null);
-  let filter = $state('actionable');
+  // The view comes from the route (`#tasks/waiting`, `#tasks/workflows`),
+  // so home can land on one and Back returns to the last. Derived, never
+  // copied into state: App does not remount this component on a hash change
+  // (Review.svelte records the trap), and every drawer entry navigates.
+  let { initial = null, navigate = () => {} } = $props();
   let selected = $state(null);
   let adding = $state(false);
   let moreFields = $state(false);
@@ -215,7 +220,12 @@
     ['waiting', (t) => t.status === 'waiting', 'blocked on someone else'],
     ['done', (t) => t.status === 'done' || t.status === 'dropped', 'finished or dropped'],
   ];
+  // Not a filter over tasks: the follow-through the assistant is carrying,
+  // which home opens from its one line (Workflows.svelte).
+  const WORKFLOWS = 'workflows';
+  const filter = $derived(initial === WORKFLOWS || filters.some(([n]) => n === initial) ? initial : 'actionable');
   const tasks = $derived.by(() => {
+    if (filter === WORKFLOWS) return [];
     const pred = filters.find(([name]) => name === filter)?.[1] ?? (() => true);
     return (data?.items ?? []).filter(pred);
   });
@@ -749,7 +759,7 @@
       <div class="drawer-head"><span class="drawer-title">Views</span></div>
       <div class="drawer-scroll">
         {#each filters as [name, _, blurb]}
-          <button class="drow" class:dactive={filter === name} onclick={() => { filter = name; drawer = false; closureNote = null; }}>
+          <button class="drow" class:dactive={filter === name} onclick={() => { navigate(name === 'actionable' ? 'tasks' : `tasks/${name}`); drawer = false; closureNote = null; }}>
             <span class="dname">{name}</span>
             <span class="dcount">{count(name) || ''}</span>
             <!-- The one view whose blurb is not a constant. "Blocked on
@@ -763,6 +773,11 @@
             </span>
           </button>
         {/each}
+        <button class="drow" class:dactive={filter === WORKFLOWS} onclick={() => { navigate(`tasks/${WORKFLOWS}`); drawer = false; closureNote = null; }}>
+          <span class="dname">{WORKFLOWS}</span>
+          <span class="dcount"></span>
+          <span class="dblurb">follow-through the assistant is carrying</span>
+        </button>
       </div>
     </aside>
   {/if}
@@ -770,7 +785,7 @@
   <div class="scroll">
     {#if error}<div class="warnline">{@render hazardGlyph()}<span>{error}</span></div>{/if}
     {#if closureNote}<div class="noteline">{closureNote}</div>{/if}
-    {#if data === null && !error}
+    {#if data === null && !error && filter !== WORKFLOWS}
       <div class="empty">reaching the graph…</div>
     {/if}
     <!-- Questions whose task is not on this board — asked without one, or
@@ -783,6 +798,9 @@
         {@render questionCard(q, q.task ? `task ${q.task}` : 'asked outside the board')}
       {/each}
     {/if}
+    {#if filter === WORKFLOWS}
+      <Workflows {navigate} />
+    {:else}
     {#each tasks as t}
       <!-- The card and its question are siblings, never nested. The row is
            itself a `<button>`, and a text field inside one is invalid HTML
@@ -1038,6 +1056,7 @@
     {:else}
       {#if data}<div class="empty">Nothing here.</div>{/if}
     {/each}
+    {/if}
     <div class="footnote">Every change is one tap and reversible — nothing here confirms.</div>
   </div>
 
