@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Archive or delete a conversation from the web chat's drawer.** Each row
   has a ⋯ control. **Archive** hides a conversation and keeps the record
   whole — learning, appraisal and the graph still read it — under a new
-  **archived** section, where it can be opened or restored. **Delete**
+  **archived** section; opening one (or **restore**) puts it back in the list. **Delete**
   removes the transcript and everything derived from it: its workspace,
   staged drafts and waiting questions, the reflections and learned rules
   drawn from it, appraisals, and its knowledge-graph episode. A delete that
@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the command line: `mecha sessions archive|unarchive|delete <id>`.
   Deleting a distilled conversation needs the mecha-graph release with
   `redact --source`.
+
+- **An image library of recurring characters and styles.** Add a character
+  once — a portrait and a short description — and name it in
+  `image_generate`'s new `cast` field, with what each person is wearing and
+  doing; the library supplies how they look, so the same people come back
+  across images. `style` applies a stored style. The model can propose an
+  entry (`image_library_propose`), which waits for you: `mecha imagelib list
+  --all`, `approve`, `reject`, `add-character`, `add-style`, `lock`. Every
+  generated image now also gets a manifest beside it (`images/<name>.json`)
+  recording how it was made. Install the new binary; nothing to configure.
 
 - **Voice calls in incognito chats.** An incognito chat now has the call
   button, and nothing of the call is kept. While such a call is live
