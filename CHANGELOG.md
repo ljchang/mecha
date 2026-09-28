@@ -36,6 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The appraisals' hit rate counts only predictions that could miss.** A
+  chat answer or a run that staged nothing leaves the owner no draft, task or
+  workflow to act on, so `no_act` is the only act that can be observed there
+  and predicting it is a hit by construction. `sessions appraise` read those
+  as "hit rate 100%" over four such scores; it now names them as forced and
+  prints no rate until a prediction risks a miss. Scoring, and the surprises
+  replay priority reads, are unchanged.
+
 - **A model switch waits for a reply in flight instead of failing.** The
   router refuses an explicit load with `model limit reached, try again
   later` while the loaded model is answering a request. `mecha model use`,
