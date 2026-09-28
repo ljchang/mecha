@@ -61,6 +61,9 @@ pub struct Roots {
     /// The front door's requests: a stranger's request is not the
     /// conversation's, so it survives, un-pointed from the triage run.
     pub requests: PathBuf,
+    /// Mail triage records: the owner's threads, so they stay; a drafting
+    /// conversation's pointer (`draft_session`) leaves them.
+    pub triage: PathBuf,
 }
 
 impl Roots {
@@ -97,6 +100,7 @@ impl Roots {
             triggers: crate::trigger::TriggerStore::default_root()?,
             workflows: home.join("workflows"),
             requests: home.join("requests"),
+            triage: crate::mail_triage::TriageStore::default_root()?,
             home,
         })
     }
@@ -117,6 +121,7 @@ impl Roots {
             triggers: home.join("triggers"),
             workflows: home.join("workflows"),
             requests: home.join("requests"),
+            triage: home.join("mail-triage"),
             home: home.to_path_buf(),
         }
     }
@@ -229,6 +234,18 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
                     list.len() != before
                 });
             nulled | unlinked
+        }),
+    );
+    // `mecha mail draft` stamps the drafting session into the thread's
+    // record. The thread is the owner's; only the pointer goes — removed, so
+    // readers see it absent rather than null. Temp-and-rename, as there.
+    report.attempt(
+        "mail triage",
+        edit_items(&roots.triage, |v| {
+            v.as_object_mut().is_some_and(|m| {
+                m.get("draft_session").and_then(Value::as_str) == Some(id)
+                    && m.remove("draft_session").is_some()
+            })
         }),
     );
     report.attempt(
@@ -374,28 +391,30 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
 
     // The backstop under the enumeration: every store it walked, searched
     // for the id afterwards. A field this file was never taught about is
-    // how a trace survives, and twice on review it was — a workflow event's
-    // `detail`, a message's `delivered_to`. What is found is said, file by
-    // file, rather than reported as a clean delete.
-    // Less the one line kept on purpose: a graph that did not answer leaves
-    // the distill ledger naming the session, so the retry still owes it an
-    // episode — the `graph:` error already says why.
-    let kept_for_graph = roots.learning.join("distilled.jsonl");
-    let (named, unread) = still_naming(roots, id);
-    for path in named
-        .into_iter()
-        .filter(|p| !(graph_failed && *p == kept_for_graph))
-    {
-        report.residue.push(format!(
-            "{} still names this session, in a field delete does not know",
-            path.display()
-        ));
-    }
-    for path in unread {
-        report.residue.push(format!(
-            "{} could not be read, so it may still name this session",
-            path.display()
-        ));
+    // how a trace survives, and on review it was, repeatedly — a workflow
+    // event's `detail`, a message's `delivered_to`, a triage record's
+    // `draft_session`. What is found is said, file by file, rather than
+    // reported as a clean delete.
+    //
+    // Only once every store answered: a partial delete keeps its keys on
+    // purpose (the outbox items, the reflections, the distill line the graph
+    // is owed), and naming those as traces delete "does not know" would
+    // contradict the errors that say why they were kept. The retry that
+    // finishes the delete runs the backstop then.
+    if report.errors.is_empty() {
+        let (named, unread) = still_naming(roots, id);
+        for path in named {
+            report.residue.push(format!(
+                "{} still names this session, in a field delete does not know",
+                path.display()
+            ));
+        }
+        for path in unread {
+            report.residue.push(format!(
+                "{} could not be read, so it may still name this session",
+                path.display()
+            ));
+        }
     }
 
     match &meta {
@@ -816,6 +835,7 @@ fn still_naming(roots: &Roots, id: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
         &roots.triggers,
         &roots.workflows,
         &roots.requests,
+        &roots.triage,
     ]
     .into_iter()
     .cloned()

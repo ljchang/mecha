@@ -4021,7 +4021,8 @@ keeps reading an archived session), delete removes all traces.
   session in `sessions/.archived/`, on the `runmarker`/`permit` pattern, so
   archive and restore are a create and a remove with nothing to race, and
   the transcript stays a record of what was said. `/api/history` is the one
-  reader that consults it.
+  reader that consults it, and resuming a conversation clears it (owner's
+  ruling, 2026-09-28: opening one says it is current again).
 - **Forgetting is an enumeration, and `forget.rs` is it.** An incognito chat
   forgets by removing one directory because nothing else was ever written; a
   recorded session was copied from by every nightly reader. A new store that

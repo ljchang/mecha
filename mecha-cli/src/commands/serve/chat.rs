@@ -3626,6 +3626,13 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
     }
+    // Opening an archived conversation takes it out of the archive (owner's
+    // ruling, 2026-09-28): picking it back up is the owner saying it is
+    // current again, and leaving the mark would file it away the moment the
+    // chat closed. Not fatal — a mark left behind only keeps it filed.
+    if let Err(e) = mecha_core::archive::unarchive(&dir, &meta.id) {
+        tracing::warn!("resumed {} but could not unarchive it: {e:#}", meta.id);
+    }
     // D15 — the plan comes back with the conversation, and two things then
     // read it: the transcript response serves it to the page, and
     // `carried_state` carries it across a compaction so a resumed session that
