@@ -66,6 +66,55 @@ header is not a session mecha wrote, and is skipped.
 `mecha sessions list` reads only each file's first line, so listing stays fast
 however large the store grows.
 
+### Archiving and deleting a conversation
+
+```bash
+mecha sessions archive 20260805T091500     # out of the web chat's list
+mecha sessions unarchive 20260805T091500   # back in
+mecha sessions delete 20260805T091500      # gone, with everything derived from it
+```
+
+**Archiving is filing.** It writes a marker in `sessions/.archived/` and
+nothing else: the transcript is untouched, and every reader here — the
+outcome corpus, reflection, appraisal, distillation — keeps reading it. Only
+the web chat's list consults the mark.
+
+### Deleting a conversation
+
+**Deleting is forgetting.** A recorded conversation was read by every nightly
+reader after the fact, so deleting one is a walk over every store that copies
+from a transcript:
+
+| Store | What goes |
+|---|---|
+| `sessions/` | the transcript, and its archive mark |
+| `work/…` and `spill/…` | the conversation's workspace and spilled tool output — only when mecha made the directory and no other conversation names it |
+| `outbox/`, `questions/`, `messages/` | drafts it staged, questions it left waiting, messages it sent |
+| `learning/` | its reflections; the mining and distill ledgers; validation rows and attempts for those reflections; proposals argued only from them; its logs' lines |
+| learned rules | a rule whose every source was one of its reflections is **removed** — not retired, which would keep the text and tell the learner it was measured harmful; a rule other conversations also support loses only the source |
+| `appraisals/`, `comparisons/`, `closures/`, `triggers/`, `workflows/` | rows about it; an owner's workflow keeps itself and loses the pointer |
+| the knowledge graph | its episode and everything extracted from it, through `mecha-graph redact --source agent:mecha --source-id <id> --vacuum` |
+
+The transcript is set aside first (`<id>.jsonl.forgetting`, which no listing
+reads) and removed last, only once every store has answered. If one could not
+— most often the graph binary — the delete reports **partly deleted** and the
+transcript stays set aside, so running the same command again finishes it.
+
+What is knowingly kept, and said so in the report:
+
+- the graph's **tombstone** for the session id, which is what stops a nightly
+  re-ingest from bringing the episode back, and its backups
+  (`~/.mecha-graph/*.bak`, `backups/`);
+- a workspace **shared** with another conversation (the web chat's `main`
+  key, a voice call's directory), and files in a project directory outside
+  `~/.mecha`, which are yours;
+- the learning store's `.git` directory on an install from before
+  2026-09-28, when the store stopped using git — its history still holds what
+  was removed until you delete that directory.
+
+Service logs and your own `session_end` hooks are outside mecha's stores and
+are not searched.
+
 ### recall: the record is searchable
 
 Sessions recorded by `chat`, the TUI, and resumed runs register a `recall`

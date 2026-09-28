@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Archive or delete a conversation from the web chat's drawer.** Each row
+  has a ⋯ control. **Archive** hides a conversation and keeps the record
+  whole — learning, appraisal and the graph still read it — under a new
+  **archived** section, where it can be opened or restored. **Delete**
+  removes the transcript and everything derived from it: its workspace,
+  staged drafts and waiting questions, the reflections and learned rules
+  drawn from it, appraisals, and its knowledge-graph episode. A delete that
+  could not reach a store says so and can be run again to finish. The same
+  from the command line: `mecha sessions archive|unarchive|delete <id>`.
+  Deleting a distilled conversation needs the mecha-graph release with
+  `redact --source`.
+
 ### Changed
 
 - **The local model's prompt cache is 16 GiB, not 32** (`-cram`, both launch

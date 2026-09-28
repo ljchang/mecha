@@ -1,0 +1,422 @@
+use super::*;
+use crate::message::Message;
+use crate::session::{Record, SessionKind};
+use std::cell::RefCell;
+
+const GONE: &str = "20260928T120000-deadbeef";
+const KEPT: &str = "20260928T130000-cafef00d";
+/// A phrase only the forgotten conversation ever said. Every copy of it — a
+/// lesson, a log line, an appraisal's quote — is a trace.
+const CANARY: &str = "the lighthouse keeper's violet umbrella";
+
+struct Scratch(PathBuf);
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch(name: &str) -> Scratch {
+    let dir = std::env::temp_dir().join(format!("mecha-forget-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    Scratch(dir)
+}
+
+struct Graph {
+    answer: RefCell<Vec<Result<GraphOutcome>>>,
+    asked: RefCell<Vec<String>>,
+}
+
+impl Graph {
+    fn answering(answers: Vec<Result<GraphOutcome>>) -> Self {
+        Graph {
+            answer: RefCell::new(answers),
+            asked: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl GraphRedactor for Graph {
+    fn redact_session(&self, id: &str) -> Result<GraphOutcome> {
+        self.asked.borrow_mut().push(id.to_string());
+        self.answer.borrow_mut().remove(0)
+    }
+}
+
+fn session(roots: &Roots, id: &str, workspace: &Path, said: &str) -> Session {
+    std::fs::create_dir_all(workspace).unwrap();
+    let s = Session::create(
+        &roots.sessions,
+        SessionMeta {
+            id: id.into(),
+            created_at: chrono::Utc::now(),
+            provider: "scripted".into(),
+            model: "m".into(),
+            workspace: workspace.to_path_buf(),
+            title: Some(format!("web: {said}")),
+            kind: Some(SessionKind::Web),
+        },
+    )
+    .unwrap();
+    s.append(&Record::Message(Message::user(said))).unwrap();
+    s
+}
+
+fn write(path: &Path, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+/// Every file under `dir` whose bytes contain `needle`.
+fn holding(dir: &Path, needle: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if std::fs::read(&p).is_ok_and(|b| String::from_utf8_lossy(&b).contains(needle))
+            {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// A home with every store holding one row from the conversation being
+/// forgotten and one from a conversation that is not.
+fn seeded(home: &Path) -> Roots {
+    let roots = Roots::under(home);
+    let gone_ws = home.join("work/web/chat-gone");
+    let kept_ws = home.join("work/web/chat-kept");
+    session(&roots, GONE, &gone_ws, CANARY);
+    session(&roots, KEPT, &kept_ws, "an ordinary afternoon");
+    write(&gone_ws.join("inbox/photo.txt"), CANARY);
+    let spill = crate::tool::session_spill_dir_under(home, &gone_ws);
+    write(&spill.join("out-1.txt"), CANARY);
+
+    let o = &roots.outbox;
+    write(
+        &o.join("item-gone.json"),
+        &format!(r#"{{"id":"item-gone","session_id":"{GONE}","args":{{"body":"{CANARY}"}}}}"#),
+    );
+    write(
+        &o.join("item-kept.json"),
+        &format!(r#"{{"id":"item-kept","session_id":"{KEPT}","args":{{}}}}"#),
+    );
+    write(
+        &roots.questions.join("q1.json"),
+        &format!(r#"{{"id":"q1","session_id":"{GONE}","question":"{CANARY}?"}}"#),
+    );
+    write(
+        &roots.questions.join("q2.json"),
+        &format!(r#"{{"id":"q2","session_id":"{KEPT}","question":"ok?"}}"#),
+    );
+    write(
+        &roots.messages.join("hermes/m1.json"),
+        &format!(r#"{{"id":"m1","from_session":"{GONE}","body":"{CANARY}"}}"#),
+    );
+    write(
+        &roots.messages.join("hermes/m2.json"),
+        &format!(r#"{{"id":"m2","from_session":"{KEPT}","body":"hi"}}"#),
+    );
+    write(&roots.messages.join(format!(".agents/{GONE}.json")), "{}");
+
+    let l = &roots.learning;
+    write(&l.join("reflections.jsonl"), &format!(
+        "{{\"id\":\"refl-gone\",\"session_id\":\"{GONE}\",\"reflexion_text\":\"Always remember {CANARY}.\"}}\n\
+         {{\"id\":\"refl-kept\",\"session_id\":\"{KEPT}\",\"reflexion_text\":\"Be brief.\",\"a_field_from_later\":1}}\n"
+    ));
+    write(&l.join("mined.jsonl"), &format!("{GONE}\n{KEPT}\n"));
+    write(&l.join("distilled.jsonl"), &format!("{GONE}\n{KEPT}\n"));
+    write(&l.join("mined_outbox.jsonl"), "item-gone\nitem-kept\n");
+    write(
+        &l.join("validations.jsonl"),
+        "{\"reflexion_id\":\"refl-gone\"}\n{\"reflexion_id\":\"refl-kept\"}\n",
+    );
+    write(&l.join("validation-attempts.jsonl"), &format!(
+        "{{\"reflexion_id\":\"refl-gone\",\"arms\":[{{\"text\":\"{CANARY}\"}}]}}\n{{\"reflexion_id\":\"refl-kept\",\"arms\":[]}}\n"
+    ));
+    write(
+        &l.join("proposals/p-only.json"),
+        &format!(
+            r#"{{"id":"p-only","reflexion_ids":["refl-gone"],"rules":[{{"text":"Mind {CANARY}."}}]}}"#
+        ),
+    );
+    write(
+        &l.join("proposals/p-both.json"),
+        r#"{"id":"p-both","reflexion_ids":["refl-gone","refl-kept"],"rules":[]}"#,
+    );
+    write(&l.join("rules/behavior.learned.toml"), &format!(
+        "[[rules]]\ntext = \"Mind {CANARY}.\"\nid = \"r-only\"\nsources = [\"refl-gone\"]\n\n\
+         [[rules]]\ntext = \"Keep answers short.\"\nid = \"r-both\"\nsources = [\"refl-gone\", \"refl-kept\"]\n\n\
+         [[rules]]\ntext = \"Predates lineage.\"\nid = \"r-old\"\n"
+    ));
+    write(
+        &l.join("rules/behavior.user.toml"),
+        "[[rules]]\ntext = \"The owner's own.\"\n",
+    );
+    write(
+        &l.join("logs/nightly.log"),
+        &format!(
+        "distill: · {GONE} → ep-1\n  · [steer] Always remember {CANARY}.\nreflect: 2 session(s)\n"
+    ),
+    );
+    write(
+        &roots.harness.join("candidates/c1.json"),
+        &format!(
+            r#"{{"id":"c1","measurement":{{"episodes":["{GONE}","{KEPT}"],"holdout_episodes":["{GONE}"]}}}}"#
+        ),
+    );
+
+    let a = &roots.appraisals;
+    write(&a.join("appraisals.jsonl"), &format!(
+        "{{\"session_id\":\"{GONE}\",\"interpretation\":\"{CANARY}\"}}\n{{\"session_id\":\"{KEPT}\"}}\n"
+    ));
+    write(
+        &a.join("scores.jsonl"),
+        &format!("{{\"session_id\":\"{GONE}\"}}\n{{\"session_id\":\"{KEPT}\"}}\n"),
+    );
+    write(
+        &a.join("counterfactuals.jsonl"),
+        &format!("{{\"session_id\":\"{GONE}\",\"quote\":\"{CANARY}\"}}\n"),
+    );
+    write(&roots.comparisons.join("comparisons.jsonl"), &format!(
+        "{{\"id\":\"c-a\",\"pointers\":{{\"session_id\":\"{GONE}\"}}}}\n\
+         {{\"id\":\"c-b\",\"pointers\":{{\"session_id\":\"{KEPT}\",\"reflection_id\":\"refl-gone\"}}}}\n\
+         {{\"id\":\"c-c\",\"pointers\":{{\"session_id\":\"{KEPT}\"}}}}\n"
+    ));
+    write(
+        &roots.closures.join("closures.jsonl"),
+        &format!("{{\"task\":\"t1\",\"sessions\":[\"{GONE}\",\"{KEPT}\"],\"reason\":\"done\"}}\n"),
+    );
+    write(
+        &roots.triggers.join("runs.jsonl"),
+        &format!(
+        "{{\"session_id\":\"{GONE}\",\"summary\":\"{CANARY}\"}}\n{{\"session_id\":\"{KEPT}\"}}\n"
+    ),
+    );
+    write(
+        &roots.workflows.join("w1.json"),
+        &format!(
+            r#"{{"id":"w1","title":"Weekly","session_id":"{GONE}","verify":[{{"session":"{GONE}"}}]}}"#
+        ),
+    );
+    write(
+        &home.join("slack/threads/C1-1.json"),
+        &format!(r#"{{"session_id":"{GONE}"}}"#),
+    );
+    write(
+        &home.join("regression-sessions.txt"),
+        &format!("{GONE}\n{KEPT}\n"),
+    );
+    crate::archive::archive(&roots.sessions, GONE, chrono::Utc::now()).unwrap();
+    roots
+}
+
+#[test]
+fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
+    let home = scratch("everywhere");
+    let roots = seeded(&home.0);
+    let kept_before =
+        std::fs::read_to_string(roots.sessions.join(format!("{KEPT}.jsonl"))).unwrap();
+    let graph = Graph::answering(vec![Ok(GraphOutcome::Redacted(1))]);
+    // Not vacuous: the fixture really does spread the session everywhere.
+    let seeded_ids = holding(&home.0, GONE).len();
+    let seeded_text = holding(&home.0, CANARY).len();
+    assert!(
+        seeded_ids >= 18 && seeded_text >= 12,
+        "{seeded_ids} / {seeded_text}"
+    );
+
+    let report = forget(&roots, GONE, &graph).unwrap();
+
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(report.complete);
+    assert_eq!(*graph.asked.borrow(), vec![GONE.to_string()]);
+    // The whole claim, asked of the bytes: nothing under the home names the
+    // session or says what it said.
+    assert_eq!(holding(&home.0, GONE), Vec::<PathBuf>::new());
+    assert_eq!(holding(&home.0, CANARY), Vec::<PathBuf>::new());
+    assert_eq!(holding(&home.0, "refl-gone"), Vec::<PathBuf>::new());
+    assert!(!home.0.join("work/web/chat-gone").exists());
+
+    // And everything that was not the session's is still there.
+    assert_eq!(
+        std::fs::read_to_string(roots.sessions.join(format!("{KEPT}.jsonl"))).unwrap(),
+        kept_before
+    );
+    let reflections = std::fs::read_to_string(roots.learning.join("reflections.jsonl")).unwrap();
+    assert!(
+        reflections.contains("\"a_field_from_later\":1"),
+        "a kept row lost a field this binary cannot name: {reflections}"
+    );
+    for (path, needle) in [
+        ("outbox/item-kept.json", KEPT),
+        ("questions/q2.json", KEPT),
+        ("messages/hermes/m2.json", KEPT),
+        ("learning/mined.jsonl", KEPT),
+        ("learning/distilled.jsonl", KEPT),
+        ("learning/mined_outbox.jsonl", "item-kept"),
+        ("learning/validations.jsonl", "refl-kept"),
+        ("learning/validation-attempts.jsonl", "refl-kept"),
+        ("learning/proposals/p-both.json", "refl-kept"),
+        ("learning/rules/behavior.user.toml", "The owner's own."),
+        ("learning/logs/nightly.log", "reflect: 2 session(s)"),
+        ("learning/harness/candidates/c1.json", KEPT),
+        ("appraisals/appraisals.jsonl", KEPT),
+        ("appraisals/scores.jsonl", KEPT),
+        ("comparisons/comparisons.jsonl", "c-c"),
+        ("closures/closures.jsonl", KEPT),
+        ("triggers/runs.jsonl", KEPT),
+        ("workflows/w1.json", "Weekly"),
+        ("regression-sessions.txt", KEPT),
+    ] {
+        let text = std::fs::read_to_string(home.0.join(path)).unwrap();
+        assert!(
+            text.contains(needle),
+            "{path} lost what was not the session's: {text}"
+        );
+    }
+    assert!(!roots.learning.join("proposals/p-only.json").exists());
+    assert!(home.0.join("work/web/chat-kept").exists());
+
+    // A rule the forgotten reflections alone argued for is gone — not
+    // retired, which would quote it to the learner forever; one with other
+    // support keeps it; one from before lineage is untouched.
+    let rules = crate::learning::LearningStore::open(&roots.learning)
+        .unwrap()
+        .learned_rules("behavior")
+        .unwrap();
+    let ids: Vec<_> = rules.iter().map(|r| r.id.clone().unwrap()).collect();
+    assert_eq!(ids, ["r-both", "r-old"]);
+    assert_eq!(rules[0].sources, ["refl-kept"]);
+    assert!(rules.iter().all(|r| r.retired_at.is_none()));
+}
+
+#[test]
+fn a_store_that_fails_keeps_the_transcript_to_finish_next_time() {
+    let home = scratch("retry");
+    let roots = seeded(&home.0);
+    let graph = Graph::answering(vec![
+        Err(anyhow::anyhow!("mecha-graph: not found")),
+        Ok(GraphOutcome::Redacted(1)),
+    ]);
+
+    let first = forget(&roots, GONE, &graph).unwrap();
+    assert!(!first.complete);
+    assert!(first.errors.iter().any(|e| e.starts_with("graph:")));
+    // Set aside, not deleted: no listing sees it, and the retry still has it.
+    let parked = roots.sessions.join(format!("{GONE}.jsonl.forgetting"));
+    assert!(parked.exists());
+    assert!(Session::list(&roots.sessions)
+        .unwrap()
+        .iter()
+        .all(|(m, _)| m.id != GONE));
+    // The graph still owes the episode, so the ledger that says so stays.
+    let distilled = std::fs::read_to_string(roots.learning.join("distilled.jsonl")).unwrap();
+    assert!(distilled.contains(GONE));
+
+    // Nothing lists it, so the doctor's reader must.
+    assert_eq!(unfinished(&roots.sessions), [GONE]);
+
+    let second = forget(&roots, GONE, &graph).unwrap();
+    assert!(unfinished(&roots.sessions).is_empty());
+    assert!(second.complete, "{:?}", second.errors);
+    assert!(!parked.exists());
+    assert_eq!(holding(&home.0, GONE), Vec::<PathBuf>::new());
+}
+
+#[test]
+fn a_distilled_session_with_no_graph_to_answer_is_not_forgotten() {
+    // "There is no graph" is only an answer when nothing was ever sent to one.
+    let home = scratch("absent");
+    let roots = seeded(&home.0);
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+    assert!(!report.complete);
+    assert!(report.errors.iter().any(|e| e.contains("distilled")));
+}
+
+#[test]
+fn a_shared_workspace_is_kept_and_said_to_be() {
+    let home = scratch("shared");
+    let roots = Roots::under(&home.0);
+    let main = home.0.join("work/web/main");
+    session(&roots, GONE, &main, CANARY);
+    session(&roots, KEPT, &main, "later, same key");
+    write(&main.join("notes.txt"), "the other conversation's file");
+
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+
+    assert!(report.complete, "{:?}", report.errors);
+    assert!(main.join("notes.txt").exists());
+    assert!(report
+        .residue
+        .iter()
+        .any(|r| r.contains("shared with 1 other")));
+}
+
+#[test]
+fn a_workspace_outside_mecha_is_never_touched() {
+    let home = scratch("project");
+    let project = scratch("project-dir");
+    let roots = Roots::under(&home.0);
+    session(&roots, GONE, &project.0, CANARY);
+    write(&project.0.join("src/main.rs"), "fn main() {}");
+
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+
+    assert!(report.complete);
+    assert!(project.0.join("src/main.rs").exists());
+    assert!(report.residue.iter().any(|r| r.contains("are yours")));
+}
+
+#[test]
+fn a_writer_still_holding_a_forgotten_session_cannot_bring_it_back() {
+    let home = scratch("writer");
+    let roots = Roots::under(&home.0);
+    let live = session(&roots, GONE, &home.0.join("work/web/chat-x"), CANARY);
+    forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+
+    assert!(live
+        .append(&Record::Message(Message::user(CANARY)))
+        .is_err());
+    assert!(
+        !live.path.exists(),
+        "an append recreated a deleted transcript"
+    );
+}
+
+#[test]
+fn an_unknown_session_is_an_error_and_a_prefix_is_not_an_id() {
+    let home = scratch("unknown");
+    let roots = Roots::under(&home.0);
+    session(&roots, GONE, &home.0.join("work/web/a"), CANARY);
+    let graph = Graph::answering(vec![]);
+    assert!(forget(&roots, "20260928T120000", &graph).is_err());
+    assert!(forget(&roots, "../sessions", &graph).is_err());
+    assert!(roots.sessions.join(format!("{GONE}.jsonl")).exists());
+}

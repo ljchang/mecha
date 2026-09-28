@@ -3998,6 +3998,51 @@ non-blocking flock, so a hand edit never contends with a fire.
   the reviewer, never asserted as equivalence. `Extra` and `Missing` are the
   replay outrunning or falling short of the recording.
 
+### Archive and forget
+
+`archive.rs` files a conversation away; `forget.rs` removes it and every
+trace of it. Owner's rulings, 2026-09-28: archive is filing (every reader
+keeps reading an archived session), delete removes all traces.
+
+- **The archive mark is a file, never a transcript record.** One file per
+  session in `sessions/.archived/`, on the `runmarker`/`permit` pattern, so
+  archive and restore are a create and a remove with nothing to race, and
+  the transcript stays a record of what was said. `/api/history` is the one
+  reader that consults it.
+- **Forgetting is an enumeration, and `forget.rs` is it.** An incognito chat
+  forgets by removing one directory because nothing else was ever written; a
+  recorded session was copied from by every nightly reader. A new store that
+  holds a session id, a reflection id, or a session's text must be taught to
+  `forget`, or it is a leak — the store-wide canary test
+  (`forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else`) seeds
+  one row per store and greps every file for the id and the text.
+- **Set aside first, removed last.** The transcript becomes
+  `<id>.jsonl.forgetting` (invisible to every `.jsonl` listing) before any
+  store is touched, and is removed only when every store answered. A failure
+  anywhere keeps it, so rerunning the forget finishes — an incomplete
+  delete says so and keeps the handle, never reports done.
+- **Rows are filtered as text.** A kept line is written back byte for byte;
+  a typed round-trip would drop fields a newer binary wrote from every row
+  that survived. Each store is rewritten under its own `<root>/.lock`, the
+  file its writers flock.
+- **A rule learned only from forgotten reflections is removed, not
+  retired.** Retirement keeps the text and quotes it to the learner as
+  measured harmful, which is both a trace and a false lesson.
+- **A workspace is the session's only if no other header names it.** Web
+  keys are reused (`main`, a resumed chat keeps its workspace) and voice
+  shares one directory, so ownership is checked against every header, and a
+  workspace outside `~/.mecha/work` is never touched.
+- **The graph answers for itself.** `mecha-graph redact --source agent:mecha
+  --source-id <id> --vacuum` through `$MECHA_GRAPH_BIN`; mecha never opens
+  the database. "No graph" is an answer only when neither the binary nor the
+  database exists *and* the distill ledger never listed the session — and a
+  failed graph step keeps the ledger line, so the retry still knows it owes
+  an episode.
+- **A live writer cannot resurrect a deleted transcript.** `Session::append`
+  creates the file only for the header; any later record finding it gone
+  errors. The web handlers also release the conversation from the process
+  first (`ChatState::release_recorded`) and refuse while a run is in flight.
+
 ## The run-quality corpus
 
 `Record::Outcome(RunStats)` is written once per finished run by every
