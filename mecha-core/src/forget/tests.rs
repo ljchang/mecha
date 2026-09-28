@@ -703,3 +703,28 @@ fn a_workflows_failure_keeps_the_item_keys_so_the_retry_unlinks_them() {
     let w1 = std::fs::read_to_string(wf.join("w1.json")).unwrap();
     assert!(!w1.contains("item-gone") && !w1.contains("\"q1\""), "{w1}");
 }
+
+#[test]
+fn an_unreadable_distill_ledger_is_owed_the_graph_not_read_as_clean() {
+    // "Could not read" is not "never distilled": the graph may hold the
+    // episode, so the delete must not report complete on a guess.
+    let home = scratch("ledger-unreadable");
+    let roots = Roots::under(&home.0);
+    session(&roots, GONE, &home.0.join("work/web/a"), CANARY);
+    std::fs::create_dir_all(roots.learning.join("distilled.jsonl")).unwrap();
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+    assert!(!report.complete);
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|e| e.starts_with("distill ledger")),
+        "{:?}",
+        report.errors
+    );
+}
