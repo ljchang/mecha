@@ -36,10 +36,13 @@ pub enum Cmd {
     /// entry is refused.
     Use {
         name: String,
-        /// Give up on the *load* after this many seconds. A cold load from disk
-        /// measured 33–39 s on 2026-09-26; the unit allows 600. The wait for
-        /// runs in progress before it has no limit, by the owner's ruling
-        /// (D13) — `--now` is the way past it.
+        /// Give up on the *load* after this many seconds, and, separately, on
+        /// a loaded model that stays busy answering a request for this long
+        /// before it (the router will not evict a busy model). A cold load from
+        /// disk measured 33–39 s on 2026-09-26; the unit allows 600. The wait
+        /// for runs in progress before either has no limit, by the owner's
+        /// ruling (D13) — `--now` is the way past both. A load that fails
+        /// and has to be rolled back (R1) gets its own `--wait-secs` too.
         #[arg(long, default_value_t = 600)]
         wait_secs: u64,
         /// Switch now: ask every run holding the model to stop at its next safe
@@ -310,8 +313,10 @@ async fn list(cfg: &Config, json: bool) -> Result<()> {
                 "  switching to {} (since {}) — waiting for: {}",
                 p.to,
                 p.started_at.format("%H:%M:%SZ"),
-                if p.past_the_wait || p.waiting_on.is_empty() {
+                if p.past_the_wait {
                     "nothing; the load is under way".to_string()
+                } else if p.waiting_on.is_empty() {
+                    "no runs; the loaded model may still be finishing a request".to_string()
                 } else {
                     p.waiting_on.join(", ")
                 }
@@ -455,13 +460,6 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
         // to become, so R2 below cuts off a reply in flight too.
         now = true;
     }
-    // The wait is over, so "switch now" has nothing left to hurry: say so,
-    // and the chip stops offering a button that would do nothing (found on
-    // review of #364). A hint, not a guard — a marker that cannot be
-    // written costs only that, so the switch goes on.
-    if let Err(e) = _switching.past_the_wait() {
-        eprintln!("warning: {e:#}");
-    }
     // Re-read after the wait, which can last hours: R1's rollback target and
     // "already resident" are about what is loaded now, not when this began.
     let list = router::models(&base)
@@ -490,6 +488,15 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
     );
 
     // R2: the resident model mid-reply is waited for, or — `--now` — cut off.
+    // `--now` is past its wait from here: its unload cannot be withdrawn —
+    // the last `still_pending` check is above — so the chip must stop
+    // offering cancel (and "switch now") now, not once the load is taken
+    // (found on review, pass 5).
+    if now && previous.is_some() {
+        if let Err(e) = _switching.past_the_wait() {
+            eprintln!("warning: {e:#}");
+        }
+    }
     if let Some(prev) = &previous {
         let busy = match mecha_core::brief::read_slots(&base, Some(prev)).await {
             mecha_core::brief::Slots::Read { busy, .. } => Some(busy),
@@ -526,8 +533,14 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
     }
 
     let started = Instant::now();
+    let mut hooks = SwitchHooks {
+        switching: &_switching,
+        now,
+        cut: false,
+        said: false,
+    };
     let loaded = tokio::select! {
-        r = router::load(&base, &model, Duration::from_secs(wait_secs)) => r,
+        r = router::load_with(&base, &model, Duration::from_secs(wait_secs), &mut hooks) => r,
         _ = interrupt.recv() => bail!(
             "interrupted while {model} was loading; the switch is withdrawn, and the router may \
              still finish the load — `mecha model list` shows what is loaded"
@@ -539,6 +552,33 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
         // meant to replace, rather than leaving the next request to load the
         // default.
         Err(failed) => {
+            // A switch withdrawn during a busy spell stops, and the model it
+            // meant to replace is still loaded: R1 has nothing to put back,
+            // and running it would load the busy model "back" — meeting the
+            // same refusal for the whole of `--wait-secs` (found on review).
+            // Only when it *is* still loaded, asked of the router: after
+            // `--now` unloaded it, a withdrawal racing a failing load leaves
+            // nothing resident, and R1 is exactly what puts it back (found on
+            // review, pass 4).
+            //
+            // Whatever ended the load — a withdrawal, or a busy spell that
+            // outlasted `--wait-secs` with nobody cancelling — the question
+            // R1 answers is "is the old model gone?". Still resident, there is
+            // nothing to put back, and asking to load it would meet the same
+            // busy refusal for a second full `--wait-secs` (found on review,
+            // pass 5: the guard was keyed on the withdrawal, not the reason).
+            let still_loaded = match (&previous, router::models(&base).await) {
+                (Some(prev), Some(l)) if router::readable(&l) => {
+                    router::resident(&l) == Some(prev.as_str())
+                }
+                _ => false,
+            };
+            if still_loaded {
+                return Err(failed.context(format!(
+                    "{} is still loaded, as it was before",
+                    previous.as_deref().unwrap_or_default()
+                )));
+            }
             let Some(prev) = previous else {
                 return Err(failed);
             };
@@ -558,6 +598,56 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
                     "{model} did not load, and loading {prev} back failed too: {back:#}"
                 ))),
             }
+        }
+    }
+}
+
+/// What a switch does while the router refuses its load because the loaded
+/// model is still answering a request. The switch is still only *waiting*
+/// then, so it stays hurriable and withdrawable — the chip keeps offering
+/// "switch now" and cancel, and both work (found on review: marked past its
+/// wait before the load, it offered neither while being refused for
+/// minutes).
+struct SwitchHooks<'a> {
+    switching: &'a mecha_core::hold::Switching,
+    /// `--now`, or hurried while it waited for runs.
+    now: bool,
+    /// Whether "stopping the loaded model now" has been said.
+    cut: bool,
+    said: bool,
+}
+
+impl router::LoadHooks for SwitchHooks<'_> {
+    fn busy(&mut self) -> router::OnBusy {
+        if !self.switching.still_pending() {
+            return router::OnBusy::Stop(anyhow::anyhow!(
+                "the switch was withdrawn (`mecha model cancel-switch`); the loaded model stays"
+            ));
+        }
+        // Asked for on every refusal while "now" holds: `load_with` cuts off
+        // once it succeeds and retries one that failed. `cut` only keeps the
+        // message to one line.
+        if self.now || self.switching.now_requested() {
+            if !std::mem::replace(&mut self.cut, true) {
+                eprintln!("stopping the loaded model now — the reply it is answering will fail");
+            }
+            return router::OnBusy::CutOff;
+        }
+        if !std::mem::replace(&mut self.said, true) {
+            eprintln!(
+                "the loaded model is answering a request; the switch waits for it to finish \
+                 (--now, or \"switch now\" on the chip, cuts it off)"
+            );
+        }
+        router::OnBusy::Wait
+    }
+
+    /// Past its wait now: "switch now" has nothing left to hurry and the
+    /// chip stops offering it (found on review of #364). A hint, not a guard
+    /// — a marker that cannot be written costs only that.
+    fn accepted(&mut self) {
+        if let Err(e) = self.switching.past_the_wait() {
+            eprintln!("warning: {e:#}");
         }
     }
 }
@@ -867,6 +957,42 @@ mod wait_tests {
             .unwrap()
             .unwrap();
         assert!(hurried, "the wait did not say it was hurried");
+    }
+
+    /// While the load is refused as busy the switch is still only waiting,
+    /// so its hooks keep "switch now" and cancel working: it waits, a hurry
+    /// cuts the busy model off (once), a withdrawal stops it, and only the
+    /// router taking the load marks it past its wait.
+    #[test]
+    fn a_busy_refusal_still_honours_switch_now_and_cancel() {
+        use router::{LoadHooks, OnBusy};
+        let home = crate::testenv::HomeGuard::new("model-busy-hooks");
+        let holds = Holds::new(home.dir.join("holds"));
+        let switching = holds
+            .begin_switch(ROUTER, Some("old"), "b")
+            .unwrap()
+            .unwrap();
+        let mut hooks = SwitchHooks {
+            switching: &switching,
+            now: false,
+            cut: false,
+            said: false,
+        };
+        assert!(matches!(hooks.busy(), OnBusy::Wait));
+        holds.request_now(ROUTER, "b").unwrap().unwrap();
+        assert!(matches!(hooks.busy(), OnBusy::CutOff));
+        // Asked again, so a cut-off that failed can be retried; `load_with`
+        // bounds a successful one.
+        assert!(matches!(hooks.busy(), OnBusy::CutOff));
+        let pending = holds.pending(ROUTER).unwrap();
+        assert!(
+            !holds.is_past_the_wait(ROUTER, &pending),
+            "past its wait while refused"
+        );
+        hooks.accepted();
+        assert!(holds.is_past_the_wait(ROUTER, &pending));
+        holds.withdraw_switch(ROUTER).unwrap();
+        assert!(matches!(hooks.busy(), OnBusy::Stop(e) if e.to_string().contains("withdrawn")));
     }
 
     /// The wait ends when the last hold drops — and not before.
