@@ -58,6 +58,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A voice call whose browser never connects ends after 90 seconds**, not
+  at the fifteen-minute idle timeout. Until now it held the speech models
+  for the quarter hour, and for a call into an incognito chat it kept the
+  voice worker's log silence on for every other call in that time. Restart
+  the voice worker to apply it.
+
 - **A model switch waits for a reply in flight instead of failing.** The
   router refuses an explicit load with `model limit reached, try again
   later` while the loaded model is answering a request. `mecha model use`,
