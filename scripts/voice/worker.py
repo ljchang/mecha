@@ -1065,8 +1065,14 @@ class LocalTTS(OpenAITTSService):
         self._affect_params = await self._poll_affect_params()
         from loguru import logger
 
+        # Not for a call into an incognito chat: this file's records are not
+        # `pipecat`'s, so the silence does not reach them, and the line would
+        # name the chat - or, redacted, still say one was spoken into, the
+        # fact the chat promised not to leave (review of #376).
+        if names_incognito(self._affect_key):
+            return
         logger.debug(
-            f"voice affect latch: context={context_id} key={key_for_log(self._affect_key)} "
+            f"voice affect latch: context={context_id} key={self._affect_key} "
             f"cfg_weight={self._affect_params[1]:.3f} (baseline "
             f"{self._cfg_weight:.3f})"
         )
@@ -1926,15 +1932,22 @@ class Unlogged:
 UNLOGGED = Unlogged()
 
 
-def key_for_log(key: str | None) -> str | None:
-    """A session key as a log line may show it. An incognito chat's is never
-    written down - that a chat of that name was spoken into is itself a trace
-    - and the namespace in front of it (`chat:`) stays, since it is what the
-    line is for. This file's records are `__main__`, which the pipecat
-    silence does not reach, so every line naming a key goes through here."""
-    if key and INCOGNITO_PREFIX in key:
-        return key.split(INCOGNITO_PREFIX, 1)[0] + "<incognito>"
-    return key
+def names_incognito(key: str | None) -> bool:
+    """Whether a namespaced session key (`chat:<id>`) is an incognito chat's.
+    This file's records are `__main__`, which the pipecat silence does not
+    reach, so a line that would name one is not written at all: redacted, it
+    would still say an incognito chat was spoken into."""
+    return bool(key) and key.startswith(f"chat:{INCOGNITO_PREFIX}")
+
+
+def session_line(session_key: str, named: str | None) -> str:
+    """The journal's line for a call starting. Nothing about an incognito
+    chat is written down - not its key, and not that one was spoken into,
+    which is the fact it promised not to leave (review of #376) - so such a
+    call reads as one that named no chat."""
+    if named and not is_incognito(named):
+        return f"voice session key: {session_key} (speaking into chat session {named!r})"
+    return f"voice session key: {session_key}"
 
 
 def spoken_words(text: str, limit: int) -> str:
@@ -1994,16 +2007,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
     # connection's own voice slot must not collide, so the namespace has to
     # match exactly on both sides of the poll.
     tts.set_affect_key(f"chat:{named}" if named else f"voice:{session_key}")
-    # An incognito chat's key is not written down either: that a chat of
-    # that name was spoken into is itself a trace the chat promised not to
-    # leave.
-    if is_incognito(named):
-        into = " (speaking into an incognito chat)"
-    elif named:
-        into = f" (speaking into chat session {named!r})"
-    else:
-        into = ""
-    print(f"voice session key: {session_key}{into}", flush=True)
+    print(session_line(session_key, named), flush=True)
     llm = OpenAILLMService(
         api_key="unused",
         base_url=FACADE_URL,

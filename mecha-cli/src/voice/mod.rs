@@ -796,6 +796,25 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
     }
 }
 
+/// Stamp a spoken turn for the situation brief — unless it is spoken into an
+/// incognito chat. The stamp is a file in the mecha home that outlives the
+/// chat, and every ordinary run started within the call window records it
+/// in its own brief: the fact that the call happened, written down twice
+/// (`INCOGNITO-DESIGN.md` §1; review of #376). Decided by the key alone, so
+/// a call the gate below will refuse leaves nothing either.
+fn stamp_presence(
+    presence: &mecha_core::brief::VoicePresence,
+    chat: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    if chat.is_some_and(crate::commands::serve::incognito::is_incognito_key) {
+        return;
+    }
+    if let Err(e) = presence.stamp(now) {
+        tracing::debug!("voice presence not stamped: {e:#}");
+    }
+}
+
 /// A chat session key as the journal may show it. An incognito chat's key is
 /// never written down: that a chat of that name was spoken into is itself a
 /// trace it promised not to leave (`INCOGNITO-DESIGN.md` §6.4) — and the
@@ -1832,9 +1851,7 @@ async fn completion(
     // that could not be written reads as no call, which is what it was
     // before 1h, and must never cost the turn.
     if let Ok(presence) = mecha_core::brief::VoicePresence::default_location() {
-        if let Err(e) = presence.stamp(chrono::Utc::now()) {
-            tracing::debug!("voice presence not stamped: {e:#}");
-        }
+        stamp_presence(&presence, head.chat.as_deref(), chrono::Utc::now());
     }
     let want_stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let id = format!("chatcmpl-{}", Session::new_id());
@@ -1921,10 +1938,16 @@ async fn completion(
                 )
                 .await,
                 Hosted::Failed(e) => {
-                    tracing::error!(
-                        "voice turn on chat session {:?} failed: {e}",
-                        key_for_log(chat_key)
-                    );
+                    // Not a word for an incognito chat: the refusal says what
+                    // kind of chat it is, and that one was spoken into is the
+                    // fact it promised not to leave. The caller gets the
+                    // error; the journal gets nothing.
+                    if !crate::commands::serve::incognito::is_incognito_key(chat_key) {
+                        tracing::error!(
+                            "voice turn on chat session {:?} failed: {e}",
+                            key_for_log(chat_key)
+                        );
+                    }
                     return write_json(stream, 500, &json!({"error": e})).await;
                 }
                 Hosted::Unknown => {
@@ -2655,6 +2678,32 @@ mod tests {
         assert!(
             wrapped >= 2,
             "the refusal paths no longer log through `key_for_log` ({wrapped} found)"
+        );
+    }
+
+    #[test]
+    fn a_spoken_turn_into_an_incognito_chat_leaves_no_presence_stamp() {
+        let home = std::env::temp_dir().join(format!("mecha-presence-{}", uuid::Uuid::new_v4()));
+        let presence = mecha_core::brief::VoicePresence::under(&home);
+        let stamp = home.join("runs").join("voice.json");
+        let now = chrono::Utc::now();
+        stamp_presence(&presence, Some("incognito-0123456789abcdef012345"), now);
+        assert!(!stamp.exists(), "an incognito call wrote the voice stamp");
+        // Not vacuous: the same call anywhere else stamps.
+        stamp_presence(&presence, Some("main"), now);
+        assert!(stamp.exists(), "an ordinary hosted call no longer stamps");
+        std::fs::remove_file(&stamp).unwrap();
+        stamp_presence(&presence, None, now);
+        assert!(stamp.exists(), "the facade's own slot no longer stamps");
+        let _ = std::fs::remove_dir_all(&home);
+        // And `completion` stamps through it, not around it.
+        let src = include_str!("mod.rs");
+        let start = src.find("\nasync fn completion(").expect("completion") + 1;
+        let body = &src[start..start + src[start..].find("\n}\n").expect("closes")];
+        assert!(body.contains("stamp_presence(&presence, head.chat.as_deref()"));
+        assert!(
+            !body.contains(".stamp("),
+            "`completion` stamps presence directly"
         );
     }
 

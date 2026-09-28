@@ -2173,6 +2173,24 @@ mod boundary_tests {
         assert_eq!(INCOGNITO_KEY_SEGMENT, format!("/{}", incognito::KEY_PREFIX));
     }
 
+    /// The prefix has two copies outside Rust, and each decides something:
+    /// the page's whether a switch hangs up a call, the worker's whether a
+    /// call holds the log silence (review of #376). Pinned to the one here.
+    #[test]
+    fn every_copy_of_the_incognito_prefix_is_the_servers() {
+        let page = include_str!("../../../../web/src/lib/Chat.svelte");
+        let worker = include_str!("../../../../scripts/voice/worker.py");
+        let want = incognito::KEY_PREFIX;
+        assert!(
+            page.contains(&format!("const INCOGNITO_PREFIX = '{want}';")),
+            "Chat.svelte's INCOGNITO_PREFIX is not {want:?}"
+        );
+        assert!(
+            worker.contains(&format!("\nINCOGNITO_PREFIX = \"{want}\"\n")),
+            "worker.py's INCOGNITO_PREFIX is not {want:?}"
+        );
+    }
+
     #[tokio::test]
     async fn the_session_list_is_not_cached() {
         let _home = crate::testenv::HomeGuard::new("incognito-list");

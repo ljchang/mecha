@@ -2688,7 +2688,11 @@ brief (which reads the board through the graph server) do not run.
   `Unlogged.held`, which disables the `pipecat` loguru namespace at the core
   (the runner swaps sinks, so a sink filter would vanish) for as long as any
   incognito call is live. A worker that predates it never sends the header,
-  so the chat stays text-only rather than trusting an unheld silence.
+  so the chat stays text-only rather than trusting an unheld silence. No
+  journal line says an incognito chat was spoken into (`session_line`, the
+  affect latch, the facade's refusal path), and the voice stamp
+  `brief::VoicePresence` is skipped for one (`stamp_presence`) — it outlives
+  the chat and lands in other runs' briefs.
 - **Closing** — End, 30 minutes with no turn and no ping from an open page
   (the reaper, once a minute; the owner's ruling is that an open page is
   use), or `serve` stopping — cancels a run in flight, forgets the todo plan, and removes the
