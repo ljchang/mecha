@@ -158,6 +158,9 @@ pub struct LoadError {
 pub struct Library {
     dir: PathBuf,
     entries: Vec<Entry>,
+    /// What did not load, kept beside what did so a lookup can tell "no such
+    /// entry" from "an entry that is broken".
+    errors: Vec<LoadError>,
 }
 
 pub fn validate_name(name: &str) -> Result<()> {
@@ -253,6 +256,7 @@ impl Library {
             Library {
                 dir: dir.to_path_buf(),
                 entries,
+                errors: errors.clone(),
             },
             errors,
         )
@@ -280,6 +284,11 @@ impl Library {
 
     pub fn approved(&self) -> impl Iterator<Item = &Entry> {
         self.entries.iter().filter(|e| e.status == Status::Approved)
+    }
+
+    /// Entries that did not load.
+    pub fn errors(&self) -> &[LoadError] {
+        &self.errors
     }
 
     pub fn candidates(&self) -> impl Iterator<Item = &Entry> {
@@ -401,14 +410,10 @@ pub fn create(dir: &Path, new: NewEntry) -> Result<Entry> {
             );
         }
     }
-    let portrait = new
-        .portrait
-        .as_deref()
-        .map(|b| store_blob(dir, b))
-        .transpose()?;
     let kind_dir = dir.join(new.kind.dir());
     std::fs::create_dir_all(&kind_dir)?;
     let entry_dir = kind_dir.join(&new.name);
+    // Claim the name before storing anything, so a collision leaves nothing.
     match std::fs::create_dir(&entry_dir) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -416,6 +421,20 @@ pub fn create(dir: &Path, new: NewEntry) -> Result<Entry> {
         }
         Err(e) => return Err(e).context("creating the entry"),
     }
+    let portrait = match new
+        .portrait
+        .as_deref()
+        .map(|b| store_blob(dir, b))
+        .transpose()
+    {
+        Ok(portrait) => portrait,
+        Err(e) => {
+            // Give the name back: an entry directory with no entry is a
+            // claim nothing can use or clear.
+            let _ = std::fs::remove_dir(&entry_dir);
+            return Err(e);
+        }
+    };
     let stamp = now();
     let entry = Entry {
         name: new.name,
@@ -515,9 +534,14 @@ pub fn update(
         toml::to_string_pretty(&old)?.as_bytes(),
     )?;
     entry.version = old.version + 1;
-    // The owner wrote the new version, so it is theirs whoever wrote the old.
-    entry.origin = Origin::Owner;
-    entry.status = Status::Approved;
+    // Only a rewritten text is the owner's. A new portrait or seed is not a
+    // reading of the text, so it must not approve a candidate or relabel its
+    // provenance — that would launder a model's text past `approve`'s
+    // untrusted-text question (found on review of #383).
+    if entry.text != old.text {
+        entry.origin = Origin::Owner;
+        entry.status = Status::Approved;
+    }
     entry.updated = now();
     write_entry(dir, &entry)?;
     Ok(entry)
@@ -580,6 +604,20 @@ fn number(n: usize) -> &'static str {
 }
 
 fn missing(lib: &Library, kind: Kind, name: &str) -> String {
+    // A corrupt entry is a finding, not an absence: said as such, or the
+    // model is told a character the owner can see does not exist.
+    let entry_dir = lib.dir.join(kind.dir()).join(name);
+    if lib
+        .errors
+        .iter()
+        .any(|e| e.path.parent() == Some(entry_dir.as_path()))
+    {
+        return format!(
+            "The {} `{name}` is in the library but its entry could not be read; the owner can \
+             check it with `mecha imagelib list`.",
+            kind.label()
+        );
+    }
     match lib.get(kind, name) {
         Some(e) if e.status == Status::Candidate => format!(
             "The {} `{name}` is waiting for the owner's approval and cannot be used yet.",
@@ -681,8 +719,12 @@ pub fn compile(
         }
     };
 
-    let scene = scene.trim().trim_end_matches('.');
-    let mut prompt = format!("{scene}.");
+    let scene = scene.trim();
+    let mut prompt = if scene.ends_with(['.', '!', '?']) {
+        scene.to_string()
+    } else {
+        format!("{scene}.")
+    };
     match people.len() {
         0 => {}
         1 => prompt.push_str(&format!(
@@ -917,6 +959,53 @@ mod tests {
     }
 
     #[test]
+    fn a_new_portrait_or_seed_never_approves_a_candidate() {
+        let dir = scratch();
+        create(dir.path(), character("theo", Origin::ModelUntrusted)).unwrap();
+        let e = update(dir.path(), Kind::Character, "theo", None, None, Some(7)).unwrap();
+        assert_eq!(e.status, Status::Candidate);
+        assert_eq!(e.origin, Origin::ModelUntrusted);
+        // Rewriting the text is the owner authoring it.
+        let e = update(
+            dir.path(),
+            Kind::Character,
+            "theo",
+            Some("theo, as the owner describes him".into()),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!((e.status, e.origin), (Status::Approved, Origin::Owner));
+    }
+
+    #[test]
+    fn a_collision_stores_nothing() {
+        let dir = scratch();
+        create(dir.path(), character("maya", Origin::Owner)).unwrap();
+        let mut other = character("maya", Origin::Owner);
+        let img = image::RgbImage::from_pixel(3, 3, image::Rgb([1, 2, 3]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        other.portrait = Some(png.into_inner());
+        assert!(create(dir.path(), other).is_err());
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("blobs")).unwrap().count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_broken_entry_is_said_to_be_broken() {
+        let dir = scratch();
+        create(dir.path(), character("maya", Origin::Owner)).unwrap();
+        std::fs::write(dir.path().join("characters/maya/entry.toml"), "not = [toml").unwrap();
+        let (lib, errors) = Library::load(dir.path());
+        assert_eq!(errors.len(), 1);
+        let why = compile(&lib, "x", &[member("maya")], None).unwrap_err();
+        assert!(why.contains("could not be read"), "{why}");
+    }
+
+    #[test]
     fn candidates_are_capped() {
         let dir = scratch();
         for i in 0..MAX_PENDING {
@@ -939,6 +1028,12 @@ mod tests {
             .starts_with("a diner at night. The person in the image (maya, a person"));
         assert!(c.prompt.contains("wearing a yellow raincoat, laughing"));
         assert!(c.prompt.contains("Exactly one person"));
+        let c = compile(&lib, "a surprise party!", &[member("maya")], None).unwrap();
+        assert!(
+            c.prompt.starts_with("a surprise party! The person"),
+            "{}",
+            c.prompt
+        );
         assert!(!c.prompt.contains("<image1>"));
         assert_eq!(c.references.len(), 1);
         assert_eq!(c.source_seeds, vec![1001]);

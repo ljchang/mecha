@@ -659,11 +659,19 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   only a `candidate`; `mecha imagelib` (and the web surface next) makes
   approved entries and approves candidates. A candidate never compiles and
   is never listed to the model.
-- **The lookup declares nothing because it returns approved entries only.**
-  `image_library` is on `skill`'s footing: every approved entry's text
-  crossed the owner. Returning candidates would need `untrusted_input` on
-  the *tool* — the loop taints on `caps.untrusted_input && out.external`,
-  per tool — which would arm every lookup (found on review of #380).
+- **The lookup is never untrusted, and is private.** `image_library` returns
+  approved entries only — every approved entry's text crossed the owner —
+  so it does not declare `untrusted_input`; returning candidates would need
+  that on the *tool*, since the loop taints on `caps.untrusted_input &&
+  out.external` per tool, and would arm every lookup (found on review of
+  #380). It does declare `private_data`: an entry describes a person, and with
+  no likeness field (the owner's ruling) nothing says which are real —
+  `goal_context`'s footing, not `skill`'s (review of #383). `image_generate`
+  returns names and versions only, so drawing a character arms nothing.
+- **An update approves nothing it did not rewrite.** A new portrait or seed
+  on a candidate leaves it a candidate with its origin; only a rewritten text
+  is the owner's (review of #383: `update --seed` had approved an untrusted
+  candidate unseen and relabelled it `owner`).
 - **Provenance is recorded, not claimed.** A proposal's `origin` comes from
   `ToolCtx::taint`; `None` is `model_untrusted`. `mecha imagelib approve
   --yes` is refused for an untrusted candidate: its text is shown and the

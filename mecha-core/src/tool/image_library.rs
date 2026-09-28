@@ -13,6 +13,18 @@
 //! capability would have to be declared on the tool — which would arm every
 //! lookup, approved-only included.
 //!
+//! ## It declares the private axis, because the library may hold people
+//!
+//! Untrusted is off; private is on. A character entry is a physical
+//! description of a person, and the owner ruled against marking which entries
+//! are real people (research §5, 2026-09-28) — so a lookup cannot tell an
+//! invented character from someone's likeness, and unknown is never clean.
+//! This is `goal_context`'s footing (the owner's charter, text only, declared
+//! private), not `skill`'s (a procedure). The cost, stated: a conversation
+//! that looked the library up and later reads untrusted content cannot use a
+//! `Chosen` sender. `image_generate` itself returns only names and versions,
+//! so drawing a character arms nothing (found on review of #383).
+//!
 //! ## A proposal changes nothing the owner uses
 //!
 //! `image_library_propose` stages a candidate and nothing else: a candidate is
@@ -78,9 +90,10 @@ impl Tool for ImageLibrary {
         true
     }
 
-    /// The owner's own text, approved entries only — see the module doc.
+    /// The owner's own text (approved entries only), and possibly a real
+    /// person's description — see the module doc.
     fn capabilities(&self) -> Capabilities {
-        Capabilities::default()
+        Capabilities::default().private()
     }
 
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -93,7 +106,7 @@ impl Tool for ImageLibrary {
             .and_then(Value::as_str)
             .map(|q| q.trim().to_lowercase())
             .filter(|q| !q.is_empty());
-        let (lib, _) = Library::load(&self.dir);
+        let (lib, errors) = Library::load(&self.dir);
         let lines: Vec<String> = lib
             .approved()
             .filter(|e| kind.is_none_or(|k| e.kind == k))
@@ -119,7 +132,20 @@ impl Tool for ImageLibrary {
         let how = "To draw a character, put its name in image_generate's `cast` with what they \
                    are wearing and doing; their look comes from their portrait. Do not copy \
                    these descriptions into the prompt. Put a style's name in `style`.";
-        Ok(ToolOutput::ok(format!("{}\n\n{how}", lines.join("\n"))))
+        // A broken entry is said, never silently absent.
+        let broken = if errors.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n{} entr{} could not be read; the owner can check with `mecha imagelib list`.",
+                errors.len(),
+                if errors.len() == 1 { "y" } else { "ies" }
+            )
+        };
+        Ok(ToolOutput::ok(format!(
+            "{}\n\n{how}{broken}",
+            lines.join("\n")
+        )))
     }
 }
 
@@ -357,13 +383,16 @@ mod tests {
     }
 
     #[test]
-    fn neither_door_arms_anything() {
-        for caps in [
-            ImageLibrary::new(PathBuf::new()).capabilities(),
-            ImageLibraryPropose::new(PathBuf::new()).capabilities(),
-        ] {
-            assert!(!caps.private_data && !caps.untrusted_input && !caps.destructive);
-            assert_eq!(caps.egress, crate::tool::Egress::None);
-        }
+    fn the_lookup_is_private_and_never_untrusted() {
+        // Private on purpose: the library may hold a real person's
+        // description and nothing marks which (see the module doc).
+        let lookup = ImageLibrary::new(PathBuf::new()).capabilities();
+        assert!(lookup.private_data);
+        assert!(!lookup.untrusted_input && !lookup.destructive);
+        assert_eq!(lookup.egress, crate::tool::Egress::None);
+        // A proposal returns a sentence about itself, nothing from the store.
+        let propose = ImageLibraryPropose::new(PathBuf::new()).capabilities();
+        assert!(!propose.private_data && !propose.untrusted_input && !propose.destructive);
+        assert_eq!(propose.egress, crate::tool::Egress::None);
     }
 }
