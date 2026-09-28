@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Deleting a distilled conversation needs the mecha-graph release with
   `redact --source`.
 
+- **Voice calls in incognito chats.** An incognito chat now has the call
+  button, and nothing of the call is kept. While such a call is live
+  the voice worker silences pipecat's logging, which otherwise writes both
+  sides of every call to the journal, and withholds the words from its own
+  lines. `mecha serve` asks the worker before it forwards such a call, so a
+  worker that has not been restarted is never handed one, and the page goes
+  on only if the answer confirms it. Ending the chat hangs up the call.
+  Restart the voice worker and `mecha serve`, and rebuild the page, to use
+  it.
+
 ### Changed
 
 - **The local model's prompt cache is 16 GiB, not 32** (`-cram`, both launch

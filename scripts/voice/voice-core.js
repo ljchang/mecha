@@ -23,6 +23,9 @@
  *                          // offer because that is the only message sent
  *                          // before the bot exists, and the bot is what
  *                          // has to know — the data channel opens too late
+ *     requireUnlogged,     // optional: go on only if the answer says nothing
+ *                          // of the call is logged (`refusesAnswer`) — set
+ *                          // for a call into an incognito chat
  *     onState,             // (name, label) — idle|connecting|listening|thinking|speaking|paused
  *     onTranscript,        // ({who: "user"|"bot", text, interim})
  *     onLevel,             // (0..1) real mic level, for state rings
@@ -364,6 +367,28 @@ export function ringFor(key, capMs = UPLINK_RING_MS) {
   return r;
 }
 
+/* Whether a call may go on with this answer: null, or why not. A call into
+   an incognito chat (`cfg.requireUnlogged`) needs the answer to say the
+   worker keeps no text of it - `unlogged`, added by `mecha serve` only after
+   the worker vouched (serve's `forward_offer`). Checked before the remote
+   description is set, so no media has flowed when it refuses: a `mecha
+   serve` too old to ask is refused here rather than trusted. */
+export function refusesAnswer(answer, cfg) {
+  if (cfg?.requireUnlogged && answer?.unlogged !== true) {
+    return "this mecha cannot keep an incognito call yet — update it to talk here";
+  }
+  return null;
+}
+
+/* Forget a conversation's ring. For an incognito chat that has ended or been
+   left: the ring is audio of what was said there, and it outlives calls on
+   purpose, so nothing else would ever let it go before the page does
+   (docs/INCOGNITO-DESIGN.md §7). A session still holding the ring keeps its
+   own reference; this only stops the next call finding it. */
+export function dropRing(key) {
+  rings.delete(key || "");
+}
+
 /* The cue policy over a behind-count, kept pure. `prev` is what was last
    decided; returns the next state and which sound, if any, to make. A
    "behind" cue is made once per episode, when the count first passes the
@@ -380,6 +405,7 @@ export function createVoiceSession(opts = {}) {
     offerUrl: "/api/offer",
     offerHeaders: {},
     sessionKey: null,
+    requireUnlogged: false,
     onState: () => {},
     onTranscript: () => {},
     onLevel: () => {},
@@ -910,8 +936,14 @@ export function createVoiceSession(opts = {}) {
       headers: { "Content-Type": "application/json", ...cfg.offerHeaders },
       body: JSON.stringify(offerBody),
     }).catch(() => null);
+    // A 409 is mecha refusing the call and saying why (an incognito chat
+    // and a voice worker that keeps logs); anything else is the line.
+    if (resp && resp.status === 409) { end((await resp.text()).trim()); return; }
     if (!resp || !resp.ok) { end("could not reach mecha — tap to retry"); return; }
-    await pc.setRemoteDescription(await resp.json());
+    const answer = await resp.json();
+    const refused = refusesAnswer(answer, cfg);
+    if (refused) { end(refused); return; }
+    await pc.setRemoteDescription(answer);
   }
 
   /* Voice/speed changes are fire-and-forget over the data channel: the
