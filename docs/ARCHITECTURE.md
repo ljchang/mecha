@@ -664,7 +664,11 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   never retried, and told the owner it existed; the named-character refusal
   also spells out the *whole* cast to copy (everyone named, in the prompt's
   order, keeping what was already given), because a skeleton of only the
-  missing names swapped who was missing each round (review of #384).
+  missing names swapped who was missing each round (review of #384). Past
+  `MAX_CAST` library characters it asks for separate pictures instead, with
+  no cast to copy — a skeleton of five is one `compile` refuses — and only
+  approved characters count toward that, so an invented cast name is
+  `compile`'s "no approved character" rather than a reason to split.
 - **The lookup picks by name first.** A query word that is an approved
   entry's name (of the kind asked) returns those entries only; otherwise
   every word of three letters or more must match a name or description (any
