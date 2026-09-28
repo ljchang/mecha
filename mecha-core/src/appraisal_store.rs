@@ -1663,13 +1663,14 @@ pub fn observe(
 /// take: a draft to release, edit or reject, a task to close or reopen, a
 /// workflow to close or cancel. The outputs [`observe`] opens a window on,
 /// read more widely: any closure naming the session counts, not only the
-/// owner's, and a workflow counts by its own `session_id` as well as by an
-/// owner disposition. Both widen "actionable", which keeps a hit in the rate
-/// — the direction this errs. Read at read time, so one arm can narrow
-/// later: `owner_dispositions` walks a bounded history, and a workflow that
-/// has since dropped a session's disposition names it only by its own
-/// `session_id`. Drafts resolve in place and closures are append-only, so
-/// those two arms are stable.
+/// owner's, and a workflow counts when it ran the session at all
+/// ([`crate::workflow::Workflow::names_session`] — its `session_id`, a
+/// `started` event, an owner disposition), not only when the owner
+/// disposed of it during that session. Both widen "actionable", which keeps
+/// a hit in the rate — the direction this errs. Read at read time, so the
+/// workflow arm can narrow later: its history is bounded, and a `started`
+/// pruned from it is forgotten. Drafts resolve in place and closures are
+/// append-only, so those two arms are stable.
 ///
 /// One act found is enough for `Some(true)`, whatever else could not be
 /// read — a task anchor proves it with the outbox unread. `Some(false)`
@@ -1693,12 +1694,7 @@ pub fn output_offers_act(
             .closures
             .iter()
             .any(|c| c.sessions.iter().any(|s| s == session_id));
-    let tracked = acts.workflows.iter().any(|w| {
-        w.session_id.as_deref() == Some(session_id)
-            || w.owner_dispositions()
-                .iter()
-                .any(|d| d.session.as_deref() == Some(session_id))
-    });
+    let tracked = acts.workflows.iter().any(|w| w.names_session(session_id));
     if drafted || tasked || tracked {
         return Some(true);
     }
@@ -4181,6 +4177,31 @@ mod tests {
             ..owner
         };
         assert_eq!(output_offers_act(chat.session_id(), None, &blind), None);
+        // A workflow the session ran and handed on: `session_id` names the
+        // later session and the only disposition is the later one's, yet the
+        // owner could have closed it inside the first one's run (review of
+        // #377).
+        let now = Utc::now();
+        let mut handed_on = crate::workflow::Workflow::new(
+            "flow-grant".into(),
+            "Prepare the grant reply".into(),
+            root.clone(),
+            now,
+        );
+        handed_on.record("started", chat.session_id(), now);
+        handed_on.record("started", "s-later", now);
+        handed_on.record("owner_closed", "Owner closed after verification", now);
+        handed_on.session_id = Some("s-later".into());
+        let flows = [handed_on];
+        let with_flow = OwnerActs {
+            workflows: &flows,
+            ..owner
+        };
+        assert_eq!(
+            output_offers_act(chat.session_id(), None, &with_flow),
+            Some(true)
+        );
+
         // One act found decides it whatever else is unread: a task anchor
         // with the outbox blind still could have missed.
         assert_eq!(
