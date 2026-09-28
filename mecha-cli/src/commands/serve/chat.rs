@@ -2050,14 +2050,14 @@ struct TurnOpts {
 /// logs were never quieted, and the chat stays text-only.
 fn spoken_turn_may_enter(opts: &TurnOpts, incognito: bool) -> Result<(), String> {
     if opts.spoken && incognito && !opts.unlogged {
-        return Err(
-            "an incognito chat takes a voice call only from a worker that keeps no \
-             text of it — restart the voice worker from this build"
-                .into(),
-        );
+        return Err(UNVOUCHED_CALL.into());
     }
     Ok(())
 }
+
+/// The refusal, said the same at both doors that give it.
+const UNVOUCHED_CALL: &str = "an incognito chat takes a voice call only from a worker that \
+     keeps no text of it — restart the voice worker from this build";
 
 /// `--voice-yes` does not survive hearing ourselves.
 ///
@@ -3038,6 +3038,14 @@ impl crate::voice::SessionHost for VoiceHost {
         // it is model-adjacent input the moment a page script can choose it.
         if !valid_key(key) {
             return Hosted::Unknown;
+        }
+        // Ahead of the barge-in below, which cancels the run in flight before
+        // `begin_turn` gets its turn to refuse: an unvouched call into an
+        // incognito chat would stop that chat's run and then be turned away
+        // (review of #376). The key alone decides it — the prefix names
+        // nothing but an incognito chat — and `begin_turn` still checks.
+        if super::incognito::is_incognito_key(key) && !unlogged {
+            return Hosted::Failed(UNVOUCHED_CALL.into());
         }
         // Followed once, before the lock: a rebuild can take as long as an MCP
         // server's start, and every conversation waits on that lock.
@@ -5004,6 +5012,28 @@ mod held_tests {
             1,
             "and the switch no longer sees it"
         );
+    }
+
+    /// An unvouched call is refused before anything else `speak` does — the
+    /// barge-in most of all. Measured on a key no session holds: had the
+    /// check come after the lookup, the answer would be the closed-chat one.
+    #[tokio::test]
+    async fn an_unvouched_call_is_refused_before_it_reaches_the_chat() {
+        use crate::voice::{Hosted, SessionHost};
+        let _home = crate::testenv::HomeGuard::new("incognito-voice-door");
+        let host = VoiceHost(test_chat());
+        let key = super::super::incognito::new_key();
+        match host.speak(&key, "hello", false, false).await {
+            Hosted::Failed(why) => assert_eq!(why, UNVOUCHED_CALL),
+            _ => panic!("an unvouched call into an incognito chat got past the door"),
+        }
+        match host.speak(&key, "hello", false, true).await {
+            Hosted::Failed(why) => assert_ne!(
+                why, UNVOUCHED_CALL,
+                "a vouched call was refused as unvouched"
+            ),
+            _ => panic!("a closed incognito chat answered a call"),
+        }
     }
 
     /// A spoken turn enters an incognito chat only on the worker's word that

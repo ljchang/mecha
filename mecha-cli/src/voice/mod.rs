@@ -2619,13 +2619,42 @@ mod tests {
             "<incognito>"
         );
         assert_eq!(key_for_log("main"), "main");
-        // And every line that names a hosted chat goes through it: the two
-        // that name `chat_key` are the refusal paths.
+        // And every log line in the facade door goes through it. Bounded to
+        // `completion`'s body, where every `chat_key` lives: an earlier cut
+        // at the first `#[cfg(test)]` read lines above `echo_span_tests`
+        // only, reached none of them, and passed with the key logged raw
+        // (review of #376 — this file's fourth source test to match the
+        // wrong region). Comments go first: one names `chat:{chat_key}`.
         let src = include_str!("mod.rs");
-        let code = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let start = src
+            .find("\nasync fn completion(")
+            .expect("the facade door still lives in `completion`")
+            + 1;
+        let len = src[start..]
+            .find("\n}\n")
+            .expect("`completion` still closes");
+        let body: String = src[start..start + len]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Each `tracing::` invocation, to its closing `);`: whatever it says
+        // about the key, it says through `key_for_log`.
+        let mut wrapped = 0;
+        for (at, _) in body.match_indices("tracing::") {
+            let call = &body[at..at + body[at..].find(");").expect("a closed call")];
+            wrapped += call.matches("key_for_log(chat_key)").count();
+            assert!(
+                !call
+                    .replace("key_for_log(chat_key)", "")
+                    .contains("chat_key"),
+                "a log line in `completion` names the chat key raw: {call}"
+            );
+        }
+        // Not vacuous: the two refusal paths are the lines this pins.
         assert!(
-            !code.contains("{chat_key:?}") && !code.contains("{chat_key}\""),
-            "a log line names the chat key without `key_for_log`"
+            wrapped >= 2,
+            "the refusal paths no longer log through `key_for_log` ({wrapped} found)"
         );
     }
 
