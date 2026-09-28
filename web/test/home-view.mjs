@@ -10,12 +10,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { needsYou, fyi, openTasks, workflowGroups, healthLine } from '../src/lib/home-view.js';
+import { needsYou, fyi, actionable, ACTIONABLE, workflowGroups, healthLine } from '../src/lib/home-view.js';
 
 // Unread passes through: null stays null, undefined stays undefined.
 assert.equal(needsYou(null), null);
 assert.equal(needsYou(undefined), undefined);
-assert.equal(openTasks(null), null);
+assert.equal(actionable(null), null);
 assert.equal(fyi(null), 0);
 
 // Mail's "Needs you" lane, in the desk's order — the count on home is the
@@ -30,19 +30,20 @@ const rows = [
 assert.deepEqual(needsYou(rows).map((r) => r.thread_id), ['c', 'a', 'e']);
 assert.equal(fyi(rows), 1);
 
-// Open tasks: overdue first, then by due date, then by status; the board is
-// read with --closed, and finished tasks never count.
+// The Tasks card counts what its tap lands on — the board's actionable view
+// (next or inbox) — not every open task: scheduled and waiting are other
+// views, and finished work (the board is read with --closed) is none.
 const tasks = [
   { id: 'w', status: 'waiting' },
   { id: 'n', status: 'next' },
   { id: 'late', status: 'next', due_at: '2026-09-20', overdue: true },
-  { id: 'soon', status: 'inbox', due_at: '2026-10-01' },
-  { id: 'sooner', status: 'waiting', due_at: '2026-09-29' },
+  { id: 'new', status: 'inbox' },
+  { id: 'later', status: 'scheduled', due_at: '2026-10-01' },
   { id: 'done', status: 'done', overdue: true },
   { id: 'gone', status: 'dropped' },
   { id: 'finished', status: 'next', completed_at: '2026-09-01' },
 ];
-assert.deepEqual(openTasks(tasks).map((t) => t.id), ['late', 'sooner', 'soon', 'n', 'w']);
+assert.deepEqual(actionable(tasks).map((t) => t.id), ['n', 'late', 'new']);
 
 // The workflows view shows workflows only — every section, urgent included
 // (overdue work must show during a snooze) — and leaves loose drafts and
@@ -73,6 +74,9 @@ assert.equal(healthLine([{ severity: 'attention' }, { severity: 'attention' }]),
 const here = path.dirname(fileURLToPath(import.meta.url));
 const read = (f) => fs.readFileSync(path.join(here, '..', 'src', 'lib', f), 'utf8');
 const board = read('Tasks.svelte');
+const boardActionable = JSON.parse(board.match(/const ACTIONABLE = (\[[^\]]*\])/)[1].replaceAll("'", '"'));
+assert.deepEqual(ACTIONABLE, boardActionable, "home's Tasks count and the board's default view must select the same statuses");
+assert.match(board, /\['actionable', \(t\) => ACTIONABLE\.includes\(t\.status\)/, 'the default view is still ACTIONABLE');
 const views = [...board.matchAll(/^\s*\['(\w+)', \(t\) =>/gm)].map((m) => m[1]);
 views.push(board.match(/const WORKFLOWS = '(\w+)'/)[1]);
 assert.ok(views.includes('waiting') && views.includes('workflows'), `Tasks views parsed as ${views}`);

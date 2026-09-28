@@ -1,4 +1,4 @@
-// The Today page's commitment line, dated and undated.
+// The workflows view's commitment line, dated and undated.
 //
 // `npm test` in web/. Plain node, like the rest of this rig. An undated
 // commitment (1f-2, ruling (b)) states no deadline: the line must say so in

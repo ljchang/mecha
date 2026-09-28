@@ -86,7 +86,13 @@ export const summary = {
   // ever say "fine" is a dashboard nobody believes.
   doctor: [
     {
+      component: 'outbox',
+      severity: 'broken',
+      summary: 'release failed: delivery outcome unknown — inspect the destination before retrying',
+    },
+    {
       component: 'mail',
+      severity: 'attention',
       summary: 'the personal account’s token expires in 6 days',
     },
   ],

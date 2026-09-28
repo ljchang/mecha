@@ -98,6 +98,7 @@ const DISTRESS = [
   'demo: no fixture',
   'The live demo is not built',
   'could not look',
+  'could not be read',
 ];
 
 const TYPES = {

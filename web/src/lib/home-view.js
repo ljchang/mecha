@@ -21,24 +21,19 @@ export function needsYou(rows) {
 /** Mail's FYI lane: classified, and the classifier said notify. */
 export const fyi = (rows) => (Array.isArray(rows) ? rows.filter((r) => laneOf(r) === 'notify').length : 0);
 
-const CLOSED = new Set(['done', 'dropped']);
-const STATUS_RANK = { next: 0, inbox: 1, waiting: 2 };
-
 /**
- * Open tasks, most pressing first: overdue, then by due date, then undated
- * by status. The board is read with `--closed`, so finished tasks are
- * filtered here.
+ * The board's default view, `actionable`: do next, or newly captured.
+ * `Tasks.svelte` declares the same pair, and web/test/home-view.mjs holds the
+ * two together — the Tasks card lands on that view, so it counts what that
+ * view shows. Counting every open task (scheduled and waiting too) put a 9
+ * on the card and three rows under the tap.
  */
-export function openTasks(items) {
+export const ACTIONABLE = ['next', 'inbox'];
+
+/** The tasks the Tasks card's tap lands on. */
+export function actionable(items) {
   if (!Array.isArray(items)) return items;
-  return items
-    .filter((t) => !CLOSED.has(t.status) && !t.completed_at)
-    .sort((a, b) => {
-      if (!!a.overdue !== !!b.overdue) return a.overdue ? -1 : 1;
-      if (a.due_at && b.due_at && a.due_at !== b.due_at) return a.due_at.localeCompare(b.due_at);
-      if (!!a.due_at !== !!b.due_at) return a.due_at ? -1 : 1;
-      return (STATUS_RANK[a.status] ?? 3) - (STATUS_RANK[b.status] ?? 3);
-    });
+  return items.filter((t) => ACTIONABLE.includes(t.status) && !t.completed_at);
 }
 
 /** `workflow today`'s sections, in the order a person works through them. */
