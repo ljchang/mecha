@@ -1634,14 +1634,6 @@ fn check_charter(path: &Path) -> Vec<Finding> {
     }
 }
 
-/// Report population-level run quality: the signals that are invisible in any
-/// single run and obvious across a few hundred.
-///
-/// Split by model, because a corpus spanning two has no single rate worth
-/// quoting — the blend is true and useless, and a threshold on it fires for
-/// the wrong model. Silent until there is enough of one model to say
-/// anything, which is the same rule as everywhere else here: unknown is not a
-/// finding.
 /// A delete that did not finish (`crate::forget`): the transcript is set
 /// aside, unlisted, and still holds the whole conversation the owner asked
 /// to be rid of. Broken, not attention — it is a promise half-kept, and the
@@ -1671,6 +1663,14 @@ fn check_unfinished_forgets(sessions: &Path) -> Vec<Finding> {
         .collect()
 }
 
+/// Report population-level run quality: the signals that are invisible in any
+/// single run and obvious across a few hundred.
+///
+/// Split by model, because a corpus spanning two has no single rate worth
+/// quoting — the blend is true and useless, and a threshold on it fires for
+/// the wrong model. Silent until there is enough of one model to say
+/// anything, which is the same rule as everywhere else here: unknown is not a
+/// finding.
 fn check_runs(sessions: &Path, charter: Option<&crate::charter::Charter>) -> Vec<Finding> {
     use crate::runlog::{Corpus, Scan};
 

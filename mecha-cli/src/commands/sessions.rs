@@ -574,7 +574,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 return Ok(());
             }
             let report = mecha_core::forget::forget(
-                &mecha_core::forget::Roots::from_env()?,
+                &mecha_core::forget::Roots::from_config(
+                    &mecha_core::config::Config::load_global()?
+                )?,
                 &id,
                 &GraphCli,
             )?;
