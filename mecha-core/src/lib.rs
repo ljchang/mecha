@@ -85,6 +85,7 @@ pub mod homeostat;
 pub mod hooks;
 pub mod image;
 pub mod imagegen;
+pub mod imagelib;
 pub mod learning;
 pub mod lesson_source;
 pub mod mail_triage;

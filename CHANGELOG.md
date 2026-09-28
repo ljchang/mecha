@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An image library of recurring characters and styles.** Add a character
+  once — a portrait and a short description — and name it in
+  `image_generate`'s new `cast` field, with what each person is wearing and
+  doing; the library supplies how they look, so the same people come back
+  across images. `style` applies a stored style. The model can propose an
+  entry (`image_library_propose`), which waits for you: `mecha imagelib list
+  --all`, `approve`, `reject`, `add-character`, `add-style`, `lock`. Every
+  generated image now also gets a manifest beside it (`images/<name>.json`)
+  recording how it was made. Install the new binary; nothing to configure.
+
 - **Voice calls in incognito chats.** An incognito chat now has the call
   button, and nothing of the call is kept. While such a call is live
   the voice worker silences pipecat's logging, which otherwise writes both
