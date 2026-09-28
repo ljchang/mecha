@@ -35,10 +35,7 @@ fn sessions_dir() -> Result<std::path::PathBuf, axum::response::Response> {
 /// detached task run in another process — whose conversation this map cannot
 /// see, and whose workspace a delete would remove mid-tool-call.
 async fn release(state: &super::WebState, id: &str) -> Result<(), String> {
-    if let Some(task) = crate::commands::tasks::markers()
-        .ok()
-        .and_then(|m| m.live_writer_of(id))
-    {
+    if let Some(task) = crate::commands::tasks::detached_writer(id).map_err(|e| format!("{e:#}"))? {
         return Err(format!(
             "a run is working {task} in this conversation — stop it first \
              (`mecha tasks stop {task}`)"
