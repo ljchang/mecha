@@ -41,7 +41,8 @@ pub enum Cmd {
         /// before it (the router will not evict a busy model). A cold load from
         /// disk measured 33–39 s on 2026-09-26; the unit allows 600. The wait
         /// for runs in progress before either has no limit, by the owner's
-        /// ruling (D13) — `--now` is the way past both.
+        /// ruling (D13) — `--now` is the way past both. A load that fails
+        /// and has to be rolled back (R1) gets its own `--wait-secs` too.
         #[arg(long, default_value_t = 600)]
         wait_secs: u64,
         /// Switch now: ask every run holding the model to stop at its next safe
@@ -487,6 +488,15 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
     );
 
     // R2: the resident model mid-reply is waited for, or — `--now` — cut off.
+    // `--now` is past its wait from here: its unload cannot be withdrawn —
+    // the last `still_pending` check is above — so the chip must stop
+    // offering cancel (and "switch now") now, not once the load is taken
+    // (found on review, pass 5).
+    if now && previous.is_some() {
+        if let Err(e) = _switching.past_the_wait() {
+            eprintln!("warning: {e:#}");
+        }
+    }
     if let Some(prev) = &previous {
         let busy = match mecha_core::brief::read_slots(&base, Some(prev)).await {
             mecha_core::brief::Slots::Read { busy, .. } => Some(busy),
@@ -550,16 +560,24 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
             // `--now` unloaded it, a withdrawal racing a failing load leaves
             // nothing resident, and R1 is exactly what puts it back (found on
             // review, pass 4).
-            if !_switching.still_pending() {
-                let still_loaded = match (&previous, router::models(&base).await) {
-                    (Some(prev), Some(l)) if router::readable(&l) => {
-                        router::resident(&l) == Some(prev.as_str())
-                    }
-                    _ => false,
-                };
-                if still_loaded {
-                    return Err(failed);
+            //
+            // Whatever ended the load — a withdrawal, or a busy spell that
+            // outlasted `--wait-secs` with nobody cancelling — the question
+            // R1 answers is "is the old model gone?". Still resident, there is
+            // nothing to put back, and asking to load it would meet the same
+            // busy refusal for a second full `--wait-secs` (found on review,
+            // pass 5: the guard was keyed on the withdrawal, not the reason).
+            let still_loaded = match (&previous, router::models(&base).await) {
+                (Some(prev), Some(l)) if router::readable(&l) => {
+                    router::resident(&l) == Some(prev.as_str())
                 }
+                _ => false,
+            };
+            if still_loaded {
+                return Err(failed.context(format!(
+                    "{} is still loaded, as it was before",
+                    previous.as_deref().unwrap_or_default()
+                )));
             }
             let Some(prev) = previous else {
                 return Err(failed);
