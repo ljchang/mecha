@@ -58,6 +58,9 @@ pub struct Roots {
     pub closures: PathBuf,
     pub triggers: PathBuf,
     pub workflows: PathBuf,
+    /// The front door's requests: a stranger's request is not the
+    /// conversation's, so it survives, un-pointed from the triage run.
+    pub requests: PathBuf,
 }
 
 impl Roots {
@@ -93,6 +96,7 @@ impl Roots {
             closures: crate::closure::ClosureStore::default_root()?,
             triggers: crate::trigger::TriggerStore::default_root()?,
             workflows: home.join("workflows"),
+            requests: home.join("requests"),
             home,
         })
     }
@@ -112,6 +116,7 @@ impl Roots {
             closures: home.join("closures"),
             triggers: home.join("triggers"),
             workflows: home.join("workflows"),
+            requests: home.join("requests"),
             home: home.to_path_buf(),
         }
     }
@@ -204,6 +209,23 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         "outbox",
         remove_items(&roots.outbox, |v| field_is(v, "session_id", id)),
     );
+    // No writer lock of its own: the front door writes each record by temp
+    // and rename, as `edit_items` does, so neither sees half of the other.
+    report.attempt(
+        "front-door requests",
+        edit_items(&roots.requests, |v| {
+            let nulled = null_fields(v, &["triage_session"], id);
+            let unlinked = v
+                .get_mut("outbox")
+                .and_then(Value::as_array_mut)
+                .is_some_and(|list| {
+                    let before = list.len();
+                    list.retain(|o| !o.as_str().is_some_and(|o| items.iter().any(|i| i == o)));
+                    list.len() != before
+                });
+            nulled | unlinked
+        }),
+    );
     report.attempt(
         "questions",
         remove_items(&roots.questions, |v| field_is(v, "session_id", id)).map(|v| v.len()),
@@ -279,7 +301,25 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         "workflows",
         with_lock(&roots.workflows, || {
             edit_items(&roots.workflows, |v| {
-                null_fields(v, &["session_id", "session"], id)
+                // The pointers, and the board's event log: `start_task`
+                // records the session as a `started` event's `detail`, and
+                // the owner-disposition reader resolves the session back out
+                // of it — so nulling `session_id` alone would leave the
+                // deleted conversation credited with the owner's close.
+                let nulled = null_fields(v, &["session_id", "session"], id);
+                let dropped = v
+                    .get_mut("events")
+                    .and_then(Value::as_array_mut)
+                    .is_some_and(|events| {
+                        let before = events.len();
+                        events.retain(|e| {
+                            !e.get("detail")
+                                .and_then(Value::as_str)
+                                .is_some_and(|d| d.contains(id))
+                        });
+                        events.len() != before
+                    });
+                nulled | dropped
             })
         }),
     );
@@ -296,12 +336,31 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
             l.trim() == id
         }),
     );
-    let _ = std::fs::remove_file(roots.messages.join(".agents").join(format!("{id}.json")));
+    // The file's *name* is the session id, so a failure here is a trace.
+    report.attempt(
+        "live-session marker",
+        remove_if_present(&roots.messages.join(".agents").join(format!("{id}.json"))),
+    );
+
+    // The backstop under the enumeration: every store it walked, searched
+    // for the id afterwards. A field this file was never taught about is
+    // how a trace survives, and twice on review it was — a workflow event's
+    // `detail`, a message's `delivered_to`. What is found is said, file by
+    // file, rather than reported as a clean delete.
+    for path in still_naming(roots, id) {
+        report.residue.push(format!(
+            "{} still names this session, in a field delete does not know",
+            path.display()
+        ));
+    }
 
     if let Some(meta) = &meta {
         purge_workspace(roots, id, meta, &mut report);
     }
-    let _ = crate::archive::unarchive(&roots.sessions, id);
+    report.attempt(
+        "archive mark",
+        crate::archive::unarchive(&roots.sessions, id).map(usize::from),
+    );
 
     if report.errors.is_empty() {
         std::fs::remove_file(&parked).with_context(|| format!("removing {}", parked.display()))?;
@@ -581,7 +640,7 @@ fn purge_logs(dir: &Path, id: &str, ids: &HashSet<String>, texts: &[String]) -> 
     Ok(n)
 }
 
-/// Every recipient's messages sent from the session, under that
+/// Every recipient's messages the session sent or received, under that
 /// recipient's lock.
 fn purge_mailbox(root: &Path, id: &str) -> Result<usize> {
     let Ok(read) = std::fs::read_dir(root) else {
@@ -597,7 +656,15 @@ fn purge_mailbox(root: &Path, id: &str) -> Result<usize> {
         if !dir.is_dir() || hidden {
             continue;
         }
-        n += remove_items(&dir, |v| field_is(v, "from_session", id))?.len();
+        // Both ends: what it sent, and what it received — `claim_pending`
+        // writes the claiming session into `delivered_to`, and a delivered
+        // message is kept (up to `keep_resolved`), not transient. Removed
+        // rather than un-pointed: a message with `delivered_to` cleared reads
+        // as undelivered and would be handed to the next session.
+        n += remove_items(&dir, |v| {
+            field_is(v, "from_session", id) || field_is(v, "delivered_to", id)
+        })?
+        .len();
     }
     Ok(n)
 }
@@ -666,6 +733,57 @@ fn purge_workspace(roots: &Roots, id: &str, meta: &SessionMeta, report: &mut Rep
     report.count("workspace", n);
 }
 
+/// Every file in the stores [`forget`] purges whose bytes still contain `id`.
+/// Skips each store's `.lock` and the learning store's legacy `.git`, which
+/// the report names on its own.
+fn still_naming(roots: &Roots, id: &str) -> Vec<PathBuf> {
+    let mut hits = Vec::new();
+    let mut stack: Vec<PathBuf> = [
+        &roots.outbox,
+        &roots.questions,
+        &roots.messages,
+        &roots.learning,
+        &roots.harness,
+        &roots.appraisals,
+        &roots.comparisons,
+        &roots.closures,
+        &roots.triggers,
+        &roots.workflows,
+        &roots.requests,
+    ]
+    .into_iter()
+    .cloned()
+    .chain([
+        roots.home.join("slack").join("threads"),
+        roots.home.join("regression-sessions.txt"),
+    ])
+    .collect();
+    let mut seen = HashSet::new();
+    while let Some(path) = stack.pop() {
+        if !seen.insert(path.clone()) {
+            continue; // the harness store lives inside the learning store
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name == ".git" || name == ".lock" {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.is_dir() {
+            if let Ok(read) = std::fs::read_dir(&path) {
+                stack.extend(read.flatten().map(|e| e.path()));
+            }
+        } else if meta.is_file()
+            && std::fs::read(&path).is_ok_and(|b| b.windows(id.len()).any(|w| w == id.as_bytes()))
+        {
+            hits.push(path);
+        }
+    }
+    hits.sort();
+    hits
+}
+
 // ─── Store primitives ───────────────────────────────────────────────────────
 
 /// Hold `<root>/.lock` — the writer lock every JSONL store here takes, on the
@@ -689,6 +807,15 @@ fn with_lock<T: Default>(root: &Path, f: impl FnOnce() -> Result<T>) -> Result<T
     let out = f();
     drop(file);
     out
+}
+
+/// Remove one file; absent is nothing to remove, any other failure is one.
+fn remove_if_present(path: &Path) -> Result<usize> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(1),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(e).with_context(|| format!("removing {}", path.display())),
+    }
 }
 
 fn field_is(v: &Value, key: &str, id: &str) -> bool {

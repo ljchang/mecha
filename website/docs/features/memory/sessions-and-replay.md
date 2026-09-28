@@ -89,11 +89,16 @@ from a transcript:
 |---|---|
 | `sessions/` | the transcript, and its archive mark |
 | `work/…` and `spill/…` | the conversation's workspace and spilled tool output — only when mecha made the directory and no other conversation names it |
-| `outbox/`, `questions/`, `messages/` | drafts it staged, questions it left waiting, messages it sent |
+| `outbox/`, `questions/`, `messages/` | drafts it staged, questions it left waiting, messages it sent or received |
 | `learning/` | its reflections; the mining and distill ledgers; validation rows and attempts for those reflections; proposals argued only from them; its logs' lines |
 | learned rules | a rule whose every source was one of its reflections is **removed** — not retired, which would keep the text and tell the learner it was measured harmful; a rule other conversations also support loses only the source |
-| `appraisals/`, `comparisons/`, `closures/`, `triggers/`, `workflows/` | rows about it; an owner's workflow keeps itself and loses the pointer |
+| `appraisals/`, `comparisons/`, `closures/`, `triggers/`, `workflows/` | rows about it; an owner's workflow keeps itself and loses the pointer and the event that recorded it starting |
+| `requests/` | a stranger's front-door request stays, but no longer names the conversation that triaged it or the drafts it staged |
 | the knowledge graph | its episode and everything extracted from it, through `mecha-graph redact --source agent:mecha --source-id <id> --vacuum --tombstone-absent` — the tombstone is written even when nothing was distilled yet, so a distill already in flight cannot add it afterwards |
+
+After the walk, every one of those stores is searched for the session id once
+more, and any file that still holds it is named in the report — a field the
+delete was never taught about is reported, never passed over as clean.
 
 The transcript is set aside first (`<id>.jsonl.forgetting`, which no listing
 reads) and removed last, only once every store has answered. If one could not
