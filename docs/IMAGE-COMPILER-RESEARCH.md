@@ -15,7 +15,7 @@ two web passes on this date (Qwen-Image 2.1's consistency levers; the prior
 art in products and research). Labels: **[official]** is the vendor's own
 docs, card or code; **[measured]** is a number someone published from a run;
 **[reported]** is a forum post, blog or issue; **[local]** was read or checked
-on this machine today; **[E1]**–**[E3]** and **[E8]** are this document's own
+on this machine today; **[E1]**–**[E3]**, **[E8]** and **[E9]** are this document's own
 experiments, run on this box the same day (§8). Qwen-Image 2.1 was released
 eight days before this document and its ecosystem is moving daily — re-check
 §2 before building.
@@ -54,10 +54,12 @@ principle 10 earning its keep.
 whatever the scene leaves unsaid** — wardrobe, pose, expression — so "a
 candid photograph of friends" came back as a line-up of the four portraits;
 stating them per person released all of it, in every reference format tried
-[E8]. **Every reference slot tends to become a person**, so two references of
-one character drew that character twice [E2]. And the cost curve has a
+[E8]. **Every reference slot tends to become a person**: two unnamed
+references of one character drew that character twice [E2], and binding a
+face and a full-body reference as one person still failed once in four
+[E9] — naming each person and stating the head count is what held. And the cost curve has a
 cliff: **three full-size references are cheap, four double the time**, while
-512² face crops keep identity at a fraction of the cost [E2]. The storage
+512² face crops keep identity at a fraction of the cost [E2, E3]. The storage
 format that follows [E8]: a character is **an approved front portrait (the
 canonical source), a tight face crop derived from it (what generation
 uses), and a short description**.
@@ -248,7 +250,8 @@ The library holds entries; the model names them; code compiles.
   pasted verbatim, never paraphrased.
 - **Three rules the measurements added** (§8): identity references go at
   **512²** unless a full-size one is the canvas [E2]; **one reference per
-  character per call**, because every slot tends to become a person [E2];
+  character per call, and the head count stated** ("exactly two people"),
+  because every slot tends to become a person [E2, E9];
   and **wardrobe, pose and expression are stated per person in every
   scene**, because a reference supplies its own when the text is silent
   [E3] — and stated, they land [E8].
@@ -327,8 +330,9 @@ Cost ≈ (characters + 2) × a pass before any repair: two people is ~4–5
 minutes. **E3 removed most of its premise**: native multi-reference held
 four people in one pass — all present, counted, in the requested
 left-to-right order, identity 0.72–0.92, no bleed (the highest similarity
-of any face to a *wrong* cast member was 0.40, inside the
-different-character band). C is kept for what E3 did not test: five or more
+of any face to a *wrong* cast member was 0.40 — at or just above the
+different-character band's 0.34 ceiling, and far below every same-person
+score, 0.72 or higher). C is kept for what E3 did not test: five or more
 people, physical interaction between them, and pose freedom (below).
 
 ### Tier D — trained cast (hours per character once; then fastest per image)
@@ -412,6 +416,16 @@ elsewhere, and a compiler that breaks one reopens a closed bug.
   library changes on every promotion, and a toggling block re-pays the
   prefix. Lookup is a tool call (`image_library` list/search), or at most a
   sorted snapshot taken at session start, as skills are.
+- **What the lookup declares follows from what it returns.** `skill`
+  declares `Capabilities::default()` because a skill body is the owner's own
+  words. `image_library` earns the same only if it returns **approved
+  entries only**: every approved entry's text crossed the owner at
+  promotion (and a non-clean draft's text was read, above). A staged
+  candidate is model-written text that may come from a tainted
+  conversation, so candidates are never returned to the model — they are
+  shown only on the owner's surfaces. If the lookup ever returns
+  candidates, it declares `untrusted_input` for those results
+  (`.from_outside()` on the output that carries them), not for the tool.
 - **Incognito may read the library and may not write it.** A promotion from
   an incognito chat is a trace by definition; whether the owner wants that
   door at all is a ruling for `INCOGNITO-DESIGN.md`, not this document.
@@ -476,7 +490,7 @@ the loopback ComfyUI, 1024² unless stated, at seeds distinct from the
 references'. Identity is ArcFace cosine (InsightFace `buffalo_l`) between the
 largest detected face and the character's portrait. **The bar:** two
 *different* characters' portraits score 0.10–0.34; a portrait against its own
-512² face crop, 0.88–0.96. 54 images (E1–E3 44, E8 10), no failures;
+512² face crop, 0.88–0.96. 59 images (E1–E3 41, E8 10, E9 8), no failures;
 each run checked for 16 GB free before every job and would have
 interrupted itself below 10 GB.
 
@@ -569,8 +583,9 @@ black/grey; plaid defeats it once); expression and pose were judged by eye.
   chin-on-hand and the look out of the window landed in every image, the
   closed eyes in five of six. E3's line-up was a prompt problem, not a
   storage problem.
-- **Identity drops once the face moves** — 0.46–0.78 here against E3's
-  0.83–0.92, lowest for the head-back laugh — and every face stays above the
+- **Identity drops once the face moves** — 0.46–0.78 here against
+  0.72–0.87 for the same four-person scene in E3, lowest for the head-back
+  laugh — and every face stays above the
   different-character band. Part of E3's height was the copying; how much of
   the drop is the model and how much is ArcFace on a laughing, tilted face
   is not separable from these runs.
@@ -581,10 +596,36 @@ black/grey; plaid defeats it once); expression and pose were judged by eye.
 - The black undershirt under two of the new outfits appears with tight crops
   that show no clothing at all, so it is the model's styling, not leakage.
 
+**E9 — binding a face and a full body as one person.** Full-body
+references for Maya and John with deliberately opposite builds (petite and
+very slender; very tall and heavyset, with a large belly), in plain grey
+clothes; then two friends standing on a sidewalk, head to toe, each in
+stated clothing, the build never mentioned in the scene text. 512²
+references, 25 steps, 1024².
+
+| Condition | People drawn | Identity | Build carried over | Reference's grey clothing leaked |
+|---|---|---|---|---|
+| F — face crops only | 2 | 0.81, 0.88 | — (generic builds) | — |
+| U — faces + bodies, prompt names only the faces | 2 | 0.83, 0.87 | not visibly | no |
+| B1 — bound, references grouped by kind (2 seeds) | 2, 2 | 0.84/0.86, 0.71/0.79 | at most slightly (John) | yes, both |
+| B2 — bound, grouped by person (2 seeds) | 2, **3** | 0.84/0.88, Maya twice | not visibly | yes, both |
+
+- **A body reference does not earn its slot yet.** Build did not visibly
+  transfer — partly this design's fault: the stated trench coat hid exactly
+  the build it was testing — while the reference's clothing leaked in every
+  bound image, and one bound image drew Maya twice, the copy dressed in the
+  reference's grey. A solo full-body shot also carries no scale: each
+  person fills their own frame, so it cannot say *tall* or *short*.
+- **Naming each person and stating the head count is what prevented
+  duplicates**: the unbound condition drew exactly two, where E2's
+  unnamed eight did not.
+- Face identity was unaffected by the extra references.
+
 **Still open**, in the order they would change the design:
 
-- **E9 — binding two references to one person**, so a character can carry a
-  face crop and a full-body sheet without being drawn twice.
+- **E9b — build, re-run with fitted clothing** so build is visible, and
+  with height stated in text; decides whether any body reference joins the
+  format before tier D's LoRAs are the answer.
 - **Identity under expression**: more seeds per condition, and a second
   canonical view (a smiling three-quarter crop) as the *measurement*
   reference, to separate model drift from ArcFace's penalty on a laugh.
@@ -648,9 +689,10 @@ transcript; and the lock changes nothing at generation.
 1. **Build tier A**, with the measured rules: identity as a pointer plus
    the entry's short description; a tight 512² face crop as the reference;
    one reference per character per call; wardrobe, pose and expression
-   stated per person in every scene; up to four people natively. A
-   character is stored as an approved front portrait, the crop derived from
-   it, and the description [E8]. The library store,
+   stated per person in every scene; the head count stated; up to four
+   people natively. A character is stored as an approved front portrait,
+   the crop derived from it, and the description — build and height in the
+   description, not a body reference [E8, E9]. The library store,
    `SceneSpec`-lite in the tool call, the per-model template, manifests,
    and owner-only promotion from the web image card. None of it is Qwen- or
    ComfyUI-specific except one template.
@@ -658,7 +700,11 @@ transcript; and the lock changes nothing at generation.
    rulings recorded there.
 3. **Raise `MAX_REFERENCES` only for crops**: eight 512² references cost
    less than two full-size ones [E2]; keep full-size references to three
-   until the cliff is understood.
+   until the cliff is understood. The cap has to be computed from the
+   decoded dimensions: today `imagegen.rs` bounds references by bytes
+   (`MAX_REFERENCE_BYTES`) and a magic-number sniff, which cannot tell a
+   512² crop from a 1024² portrait — and it should never come from a role
+   the tool call declares.
 4. **Tier B next** — embedding and detector checks are cheap and turn "the
    owner looks" into "the owner looks at failures"; E5 calibrates it from
    the first real entries.

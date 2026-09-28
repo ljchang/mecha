@@ -54,7 +54,7 @@ something shipped.
 | [`DOCS-RESEARCH.md`](DOCS-RESEARCH.md) | Which Google scope buys document access, and what each one costs in review |
 | [`GRAPH-UX-RESEARCH.md`](GRAPH-UX-RESEARCH.md) | What user interfaces work for a personal knowledge graph, and which features are worth exposing |
 | [`HARNESS-RESEARCH.md`](HARNESS-RESEARCH.md) | Where agent performance actually comes from — planning, the loop, or the tools |
-| [`IMAGE-COMPILER-RESEARCH.md`](IMAGE-COMPILER-RESEARCH.md) | How a library of characters, places and styles compiles a narrative into consistent generations — four tiers from fast to best, which survive a move to stable-diffusion.cpp, the owner's draft spec reviewed against the evidence, and what 54 local generations measured (identity by reference, the four-reference cliff, the storage format) |
+| [`IMAGE-COMPILER-RESEARCH.md`](IMAGE-COMPILER-RESEARCH.md) | How a library of characters and scenes compiles a narrative into consistent generations, and what local runs measured |
 | [`LEARNING-LOOP-RESEARCH.md`](LEARNING-LOOP-RESEARCH.md) | How the learning loop runs without the owner, what flowmail's two loops actually do, and how anyone would know it is improving |
 | `MAIL-CORPUS-RESEARCH.md` | What a year of this mailbox actually contains. **Gitignored** |
 | [`MAIL-UX-RESEARCH.md`](MAIL-UX-RESEARCH.md) | What the field has converged on for agent-driven email |
