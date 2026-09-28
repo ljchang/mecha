@@ -146,9 +146,21 @@ fn seeded(home: &Path) -> Roots {
             r#"{{"id":"p-only","reflexion_ids":["refl-gone"],"rules":[{{"text":"Mind {CANARY}."}}]}}"#
         ),
     );
+    // The realistic shape: a proposal *about* the learned set carries whole
+    // rule values, so a removed rule's text sits in `rules` and
+    // `rules_before` — and in a proposal that never argued from the
+    // forgotten reflections at all.
     write(
         &l.join("proposals/p-both.json"),
-        r#"{"id":"p-both","reflexion_ids":["refl-gone","refl-kept"],"rules":[]}"#,
+        &format!(
+            r#"{{"id":"p-both","reflexion_ids":["refl-gone","refl-kept"],"rules":[{{"text":"Mind {CANARY}.","sources":["refl-gone"]}},{{"text":"Keep answers short.","sources":["refl-gone","refl-kept"]}}],"rules_before":[{{"text":"Mind {CANARY}.","sources":["refl-gone"]}}]}}"#
+        ),
+    );
+    write(
+        &l.join("proposals/p-other.json"),
+        &format!(
+            r#"{{"id":"p-other","reflexion_ids":["refl-kept"],"rules":[],"rules_before":[{{"text":"Mind {CANARY}.","sources":["refl-gone"]}}]}}"#
+        ),
     );
     write(&l.join("rules/behavior.learned.toml"), &format!(
         "[[rules]]\ntext = \"Mind {CANARY}.\"\nid = \"r-only\"\nsources = [\"refl-gone\"]\n\n\
@@ -263,7 +275,8 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
         ("learning/mined_outbox.jsonl", "item-kept"),
         ("learning/validations.jsonl", "refl-kept"),
         ("learning/validation-attempts.jsonl", "refl-kept"),
-        ("learning/proposals/p-both.json", "refl-kept"),
+        ("learning/proposals/p-both.json", "Keep answers short."),
+        ("learning/proposals/p-other.json", "refl-kept"),
         ("learning/rules/behavior.user.toml", "The owner's own."),
         ("learning/logs/nightly.log", "reflect: 2 session(s)"),
         ("learning/harness/candidates/c1.json", KEPT),
@@ -419,4 +432,18 @@ fn an_unknown_session_is_an_error_and_a_prefix_is_not_an_id() {
     assert!(forget(&roots, "20260928T120000", &graph).is_err());
     assert!(forget(&roots, "../sessions", &graph).is_err());
     assert!(roots.sessions.join(format!("{GONE}.jsonl")).exists());
+}
+
+#[test]
+fn a_store_config_relocates_is_the_one_purged() {
+    // `[outbox] dir` / `[messages] dir`: asking only the environment would
+    // purge a default that does not exist and call the store clean.
+    let mut cfg = crate::config::Config::default();
+    cfg.outbox.dir = Some(PathBuf::from("/data/outbox"));
+    cfg.messages.dir = Some(PathBuf::from("/data/messages"));
+    let roots = Roots::from_config(&cfg).unwrap();
+    assert_eq!(roots.outbox, PathBuf::from("/data/outbox"));
+    assert_eq!(roots.messages, PathBuf::from("/data/messages"));
+    let plain = Roots::from_config(&crate::config::Config::default()).unwrap();
+    assert_eq!(plain.outbox, Roots::from_env().unwrap().outbox);
 }

@@ -40,8 +40,9 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Where each store lives. [`Roots::from_env`] asks each store for its own
-/// default, so every `MECHA_*_DIR` override a store honours is honoured here.
+/// Where each store lives. [`Roots::from_config`] is what a surface uses:
+/// each store's own default (so every `MECHA_*_DIR` override is honoured),
+/// then the directories config relocates.
 #[derive(Debug, Clone)]
 pub struct Roots {
     pub sessions: PathBuf,
@@ -60,6 +61,24 @@ pub struct Roots {
 }
 
 impl Roots {
+    /// [`Roots::from_env`], with the stores `config` relocates: `[outbox]
+    /// dir` and `[messages] dir`. Every surface that writes those stores
+    /// resolves them this way, so a forget that asked only the environment
+    /// would purge a default directory that does not exist and report the
+    /// store clean while the real one still holds the session's rows.
+    pub fn from_config(config: &crate::config::Config) -> Result<Self> {
+        let mut roots = Self::from_env()?;
+        if let Some(dir) = &config.outbox.dir {
+            roots.outbox = dir.clone();
+        }
+        if let Some(dir) = &config.messages.dir {
+            roots.messages = dir.clone();
+        }
+        Ok(roots)
+    }
+
+    /// Each store's own default, honouring every `MECHA_*_DIR` it does — and
+    /// nothing from config; a caller with a config uses [`Roots::from_config`].
     pub fn from_env() -> Result<Self> {
         let home = crate::work::mecha_home()?;
         Ok(Roots {
@@ -416,9 +435,14 @@ fn purge_learning(
     }
 }
 
-/// Proposals argued from the forgotten reflections: the ids come out, and a
+/// Proposals: the forgotten reflections leave `reflexion_ids`, and a
 /// proposal left arguing from nothing goes — its rule text was drawn from
-/// them and from nothing else.
+/// them and from nothing else. **Every** proposal's `rules` and
+/// `rules_before` are scrubbed by [`purge_rules`]' own rule, whether or not
+/// it argued from the forgotten reflections: a proposal carries whole rule
+/// values, so a rule removed from the live set would otherwise survive
+/// verbatim in a snapshot — and `mecha proposals accept` writes a proposal's
+/// `rules` back wholesale, which would put it back.
 fn purge_proposals(dir: &Path, ids: &HashSet<String>) -> Result<usize> {
     if ids.is_empty() || !dir.is_dir() {
         return Ok(0);
@@ -432,22 +456,51 @@ fn purge_proposals(dir: &Path, ids: &HashSet<String>) -> Result<usize> {
             Some(v) => v,
             None => continue,
         };
-        let Some(list) = v.get_mut("reflexion_ids").and_then(Value::as_array_mut) else {
-            continue;
-        };
-        let before = list.len();
-        list.retain(|r| !r.as_str().is_some_and(|r| ids.contains(r)));
-        if list.len() == before {
+        let mut changed = false;
+        for key in ["rules", "rules_before"] {
+            if let Some(rules) = v.get_mut(key).and_then(Value::as_array_mut) {
+                changed |= scrub_rules(rules, ids);
+            }
+        }
+        let mut emptied = false;
+        if let Some(list) = v.get_mut("reflexion_ids").and_then(Value::as_array_mut) {
+            let before = list.len();
+            list.retain(|r| !r.as_str().is_some_and(|r| ids.contains(r)));
+            if list.len() != before {
+                changed = true;
+                emptied = list.is_empty();
+            }
+        }
+        if !changed {
             continue;
         }
         n += 1;
-        if list.is_empty() {
+        if emptied {
             std::fs::remove_file(&path)?;
         } else {
             write_replacing(&path, serde_json::to_string_pretty(&v)?.as_bytes())?;
         }
     }
     Ok(n)
+}
+
+/// [`purge_rules`]' rule over JSON rule values: the forgotten ids leave each
+/// rule's `sources`, and a rule whose every source was forgotten goes.
+fn scrub_rules(rules: &mut Vec<Value>, ids: &HashSet<String>) -> bool {
+    let mut changed = false;
+    rules.retain_mut(|rule| {
+        let Some(sources) = rule.get_mut("sources").and_then(Value::as_array_mut) else {
+            return true;
+        };
+        let before = sources.len();
+        sources.retain(|s| !s.as_str().is_some_and(|s| ids.contains(s)));
+        if sources.len() == before {
+            return true;
+        }
+        changed = true;
+        !sources.is_empty()
+    });
+    changed
 }
 
 /// Learned rules: the forgotten reflections leave every rule's `sources`,

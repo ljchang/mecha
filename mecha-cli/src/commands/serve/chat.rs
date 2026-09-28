@@ -464,6 +464,12 @@ impl ChatState {
         Ok(Some(key))
     }
 
+    /// Where this process's chats stage their drafts — `[outbox] dir` as the
+    /// chat resolved it — so a delete purges the store the drafts are in.
+    pub(super) fn outbox_root(&self) -> &std::path::Path {
+        &self.outbox_root
+    }
+
     /// Close idle incognito chats once a minute until the server stops.
     pub fn spawn_incognito_reaper(self: &Arc<Self>) {
         // R3's reads ride on a configured server name, and a rename narrows

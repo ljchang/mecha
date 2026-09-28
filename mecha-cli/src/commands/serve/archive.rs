@@ -89,9 +89,18 @@ pub async fn delete(State(state): Web, Path(id): Path<String>) -> axum::response
     if let Err(why) = release(&state, &id).await {
         return busy(why);
     }
+    // Where this process's chats actually staged their drafts, when there is
+    // a chat subsystem — it resolved `[outbox] dir` at start.
+    let outbox = chat_state(&state)
+        .ok()
+        .map(|c| c.outbox_root().to_path_buf());
     // Files and a child process: off the async workers.
     let forgot = tokio::task::spawn_blocking(move || {
-        let roots = mecha_core::forget::Roots::from_env()?;
+        let mut roots =
+            mecha_core::forget::Roots::from_config(&mecha_core::config::Config::load_global()?)?;
+        if let Some(outbox) = outbox {
+            roots.outbox = outbox;
+        }
         mecha_core::forget::forget(&roots, &id, &crate::commands::sessions::GraphCli)
     })
     .await;
