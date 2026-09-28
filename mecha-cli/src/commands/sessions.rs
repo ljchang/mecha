@@ -642,6 +642,18 @@ fn mark(
         "{session_id} marked as an experiment: out of the run corpus, reflect, distill and \
          learn, and its appraisal and scores are withdrawn"
     );
+    // The mark is durable now; what it reached is a report, so a store that
+    // cannot be read says so rather than failing a command that succeeded
+    // (review of #382).
+    if let Err(e) = report_reach(&session_id) {
+        eprintln!("  what the mark reached could not be read: {e:#}");
+    }
+    Ok(())
+}
+
+/// What a fresh mark had already reached, from the stores that hold it.
+fn report_reach(session_id: &str) -> Result<()> {
+    let session_id = session_id.to_string();
     // What it had already reached, from the stores that hold it — read
     // only: a read path must not create the store it reports on (review of
     // #382). No learning store is nothing reached.
@@ -653,9 +665,39 @@ fn mark(
         .into_iter()
         .filter(|r| r.session_id == session_id)
         .collect();
-    let waiting = reflexions.iter().filter(|r| !r.is_processed).count();
-    if waiting > 0 {
-        println!("  {waiting} unprocessed reflection(s) from it are withheld from learn");
+    // An unprocessed one held by a pending proposal is named apart: the
+    // proposal already carries it, and `proposals accept` refuses it while
+    // the mark stands (review of #382).
+    let pending: Vec<_> = learning
+        .proposals()?
+        .into_iter()
+        .filter(|p| p.status == "pending")
+        .collect();
+    let held_by = |id: &str| {
+        pending
+            .iter()
+            .filter(|p| p.reflexion_ids.iter().any(|r| r == id))
+            .map(|p| p.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let unprocessed: Vec<_> = reflexions.iter().filter(|r| !r.is_processed).collect();
+    let mut holding: Vec<String> = unprocessed.iter().flat_map(|r| held_by(&r.id)).collect();
+    holding.sort();
+    holding.dedup();
+    let free = unprocessed
+        .iter()
+        .filter(|r| held_by(&r.id).is_empty())
+        .count();
+    if free > 0 {
+        println!("  {free} unprocessed reflection(s) from it are withheld from learn");
+    }
+    if !holding.is_empty() {
+        println!(
+            "  pending proposal(s) {} hold reflection(s) from it — accepting is refused while \
+             the mark stands; `mecha proposals reject` it and the next learn pass proposes \
+             again from the rest",
+            holding.join(", ")
+        );
     }
     // A processed one already reached `learn`: the mark cannot take back a
     // rule it minted, so name the live ones for the owner to retire rather
