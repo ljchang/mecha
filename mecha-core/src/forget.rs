@@ -198,14 +198,16 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
     let graph_failed = match graph.redact_session(id) {
         Ok(GraphOutcome::Redacted(n)) => {
             report.count("graph", n);
-            if n > 0 {
-                report.residue.push(
-                    "the graph keeps a tombstone naming this session id, so a nightly \
-                     re-ingest cannot bring the episode back; its backups \
-                     (~/.mecha-graph/*.bak and backups/) still hold the episode"
-                        .into(),
-                );
-            }
+            report.residue.push(if n > 0 {
+                "the graph keeps a tombstone naming this session id, so a nightly \
+                 re-ingest cannot bring the episode back; its backups \
+                 (~/.mecha-graph/*.bak and backups/) still hold the episode"
+                    .into()
+            } else {
+                "the graph keeps a tombstone naming this session id, so a distill \
+                 already in flight cannot add the conversation after the delete"
+                    .into()
+            });
             false
         }
         Ok(GraphOutcome::Absent) if distilled => {

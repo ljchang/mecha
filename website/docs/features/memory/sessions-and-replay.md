@@ -93,7 +93,7 @@ from a transcript:
 | `learning/` | its reflections; the mining and distill ledgers; validation rows and attempts for those reflections; proposals argued only from them; its logs' lines |
 | learned rules | a rule whose every source was one of its reflections is **removed** — not retired, which would keep the text and tell the learner it was measured harmful; a rule other conversations also support loses only the source |
 | `appraisals/`, `comparisons/`, `closures/`, `triggers/`, `workflows/` | rows about it; an owner's workflow keeps itself and loses the pointer |
-| the knowledge graph | its episode and everything extracted from it, through `mecha-graph redact --source agent:mecha --source-id <id> --vacuum` |
+| the knowledge graph | its episode and everything extracted from it, through `mecha-graph redact --source agent:mecha --source-id <id> --vacuum --tombstone-absent` — the tombstone is written even when nothing was distilled yet, so a distill already in flight cannot add it afterwards |
 
 The transcript is set aside first (`<id>.jsonl.forgetting`, which no listing
 reads) and removed last, only once every store has answered. If one could not
