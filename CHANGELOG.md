@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Back returns to the last one. A count that could not be read is a dash,
   never a zero.
 
+- **An incognito chat's model chip opens the picker too.** Every model it
+  lists runs on this machine, since the chip reads only routers a local,
+  loopback `follow_loaded` entry names, and the menu says so. Incognito's
+  local-only guarantee stays with its own provider and its per-turn check.
+  The owner's amendment to `INCOGNITO-DESIGN.md` §6.1 (2026-09-28).
+
 ## [0.1.22] - 2026-09-28
 
 ### Added
