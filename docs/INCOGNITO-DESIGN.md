@@ -370,8 +370,10 @@ conversation has no `Session` to record into, and a closed key comes back
   an ordinary call alongside loses pipecat's lines for the overlap, and a
   filter keyed on the call's context leaks on the first task started outside
   it. The worker's own lines that carry words keep their measurements and
-  lose the words (`spoken_words`); the session-key line does not name the
-  chat.
+  lose the words (`spoken_words`), and no line names the chat — the
+  worker's `key_for_log` (the affect latch's `key=`, once per answer, is
+  `worker.py`'s own record and outside the silence) and the facade's, on its
+  refusal path.
 - **The claim** (`X-Voice-Unlogged: 1`). Sent only from inside the silence,
   and checked there with a raise rather than an `assert`. The server's gate
   (`spoken_turn_may_enter`) admits a spoken turn into an incognito chat only
@@ -380,7 +382,10 @@ conversation has no `Session` to record into, and a closed key comes back
   trusting a silence nobody held.
 - **The page** hangs up the call when the chat ends, clears the overlay's
   words, and drops the uplink ring (`voice-core.js`'s `dropRing`) — the
-  ring is audio of what was said, and it outlives calls on purpose.
+  ring is audio of what was said, and it outlives calls on purpose. A switch
+  into or out of an incognito chat ends a live call too, since a call is
+  bound to the chat it was opened in, and the overlay's "nothing is kept"
+  reads the call's own kind, captured at connect, never the page's.
 - **What it does not change.** `--voice-yes` travels with a spoken turn here
   as in any hosted chat — the owner's ruling of 2026-09-28: the owner is
   speaking, and the interlock and the outbox sit ahead of the approver

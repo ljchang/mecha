@@ -796,6 +796,19 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
     }
 }
 
+/// A chat session key as the journal may show it. An incognito chat's key is
+/// never written down: that a chat of that name was spoken into is itself a
+/// trace it promised not to leave (`INCOGNITO-DESIGN.md` §6.4) — and the
+/// refusal path, the steady state until the worker restarts, is where it
+/// would otherwise land.
+fn key_for_log(key: &str) -> &str {
+    if crate::commands::serve::incognito::is_incognito_key(key) {
+        "<incognito>"
+    } else {
+        key
+    }
+}
+
 fn auth_ok(required: &Option<String>, header: &Option<String>) -> bool {
     match required {
         None => true,
@@ -1908,15 +1921,19 @@ async fn completion(
                 )
                 .await,
                 Hosted::Failed(e) => {
-                    tracing::error!("voice turn on chat session {chat_key:?} failed: {e}");
+                    tracing::error!(
+                        "voice turn on chat session {:?} failed: {e}",
+                        key_for_log(chat_key)
+                    );
                     return write_json(stream, 500, &json!({"error": e})).await;
                 }
                 Hosted::Unknown => {
                     tracing::warn!(
-                        "voice call named chat session {chat_key:?}, which is not a \
+                        "voice call named chat session {:?}, which is not a \
                          valid session key — answering in a conversation of its own \
                          instead. A valid key is created on demand, so this is the \
-                         caller's header, not a dropped session."
+                         caller's header, not a dropped session.",
+                        key_for_log(chat_key)
                     );
                     // `confirm_key` is still `chat:{chat_key}` below — this
                     // turn runs in the facade's own untracked slot instead,
@@ -2593,6 +2610,23 @@ mod tests {
         assert_eq!(head.session.as_deref(), Some("webrtc-1a2b"));
         assert_eq!(head.chat, None);
         assert!(!head.unlogged, "no header is no claim");
+    }
+
+    #[test]
+    fn an_incognito_key_never_reaches_the_journal() {
+        assert_eq!(
+            key_for_log("incognito-0123456789abcdef012345"),
+            "<incognito>"
+        );
+        assert_eq!(key_for_log("main"), "main");
+        // And every line that names a hosted chat goes through it: the two
+        // that name `chat_key` are the refusal paths.
+        let src = include_str!("mod.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap_or(src);
+        assert!(
+            !code.contains("{chat_key:?}") && !code.contains("{chat_key}\""),
+            "a log line names the chat key without `key_for_log`"
+        );
     }
 
     #[test]
