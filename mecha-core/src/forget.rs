@@ -186,8 +186,11 @@ const FORGETTING: &str = "jsonl.forgetting";
 /// the caller resolves prefixes, because a prefix that grew a second match
 /// between listing and deleting must not pick one.
 pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Report> {
+    // The archive's own rule, cap included: an id the archive mark would
+    // refuse could never finish its "archive mark" step.
     anyhow::ensure!(
         !id.is_empty()
+            && id.len() <= 128
             && id
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
@@ -243,8 +246,10 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         "mail triage",
         edit_items(&roots.triage, |v| {
             v.as_object_mut().is_some_and(|m| {
-                m.get("draft_session").and_then(Value::as_str) == Some(id)
-                    && m.remove("draft_session").is_some()
+                m.get(crate::mail_triage::DRAFT_SESSION)
+                    .and_then(Value::as_str)
+                    == Some(id)
+                    && m.remove(crate::mail_triage::DRAFT_SESSION).is_some()
             })
         }),
     );
@@ -367,17 +372,25 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
                 // of it — so nulling `session_id` alone would leave the
                 // deleted conversation credited with the owner's close.
                 let nulled = null_fields(v, &["session_id", "session"], id);
+                // Blanked, not dropped: the board resolves which run an owner's
+                // close disposed of *positionally* — the latest `started`
+                // before it — so dropping this one would hand its close to the
+                // run before. A blank detail resolves to unknown.
                 let dropped = v
                     .get_mut("events")
                     .and_then(Value::as_array_mut)
                     .is_some_and(|events| {
-                        let before = events.len();
-                        events.retain(|e| {
-                            !e.get("detail")
+                        let mut changed = false;
+                        for e in events.iter_mut() {
+                            if e.get("detail")
                                 .and_then(Value::as_str)
                                 .is_some_and(|d| d.contains(id))
-                        });
-                        events.len() != before
+                            {
+                                e["detail"] = Value::String(String::new());
+                                changed = true;
+                            }
+                        }
+                        changed
                     });
                 // And its links to the drafts and questions this delete
                 // removed: the board reads a link to a missing item as

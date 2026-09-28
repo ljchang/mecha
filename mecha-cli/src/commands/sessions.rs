@@ -569,6 +569,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             } else {
                 resolve_id(&dir, &id)?
             };
+            // A detached task run writes this conversation from another
+            // process; deleting under it removes its workspace mid-call.
+            if let Some(task) = super::tasks::markers()
+                .ok()
+                .and_then(|m| m.live_writer_of(&id))
+            {
+                anyhow::bail!(
+                    "a run is working {task} in {id} — stop it first (`mecha tasks stop {task}`)"
+                );
+            }
             if !yes && !confirm_delete(&dir, &id)? {
                 println!("kept {id}");
                 return Ok(());

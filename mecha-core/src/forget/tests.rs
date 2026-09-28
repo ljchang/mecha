@@ -635,3 +635,37 @@ fn comparisons_are_purged_in_a_home_that_never_reflected() {
         .any(|(s, n)| s == "comparisons" && *n == 1));
     assert_eq!(holding(&home.0, GONE), Vec::<PathBuf>::new());
 }
+
+#[test]
+fn a_workflows_started_event_is_blanked_so_no_other_run_is_credited() {
+    // The board resolves which run an owner's close disposed of positionally:
+    // the latest `started` before it. Dropping the forgotten run's `started`
+    // would hand its close to the run before; blanking keeps the positions.
+    let home = scratch("positional");
+    let roots = Roots::under(&home.0);
+    session(&roots, GONE, &home.0.join("work/web/a"), CANARY);
+    write(
+        &roots.workflows.join("w2.json"),
+        &format!(
+            r#"{{"id":"w2","events":[{{"at":"2026-09-28T10:00:00Z","kind":"started","detail":"{KEPT}"}},{{"at":"2026-09-28T11:00:00Z","kind":"owner_closed","detail":"a"}},{{"at":"2026-09-28T12:00:00Z","kind":"started","detail":"{GONE}"}},{{"at":"2026-09-28T13:00:00Z","kind":"owner_closed","detail":"b"}}]}}"#
+        ),
+    );
+    forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+    let v: Value =
+        serde_json::from_str(&std::fs::read_to_string(roots.workflows.join("w2.json")).unwrap())
+            .unwrap();
+    let events = v["events"].as_array().unwrap();
+    assert_eq!(
+        events.len(),
+        4,
+        "an event was dropped, shifting whose close is whose"
+    );
+    assert_eq!(events[0]["detail"], KEPT);
+    assert_eq!(events[2]["kind"], "started");
+    assert_eq!(events[2]["detail"], "");
+}

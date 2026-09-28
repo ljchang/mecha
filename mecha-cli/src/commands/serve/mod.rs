@@ -3496,6 +3496,29 @@ mod boundary_tests {
             .unwrap();
         assert_eq!(r.status(), StatusCode::NO_CONTENT);
 
+        // A detached task run writing this conversation from another process:
+        // delete refuses rather than remove its workspace mid-call.
+        let markers = crate::commands::tasks::markers().unwrap();
+        markers
+            .mark_running_for("task-live", None, Some(&id))
+            .unwrap();
+        let busy = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/sessions/{id}"))
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .header("x-mecha-request", "1")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(busy).await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
+        assert!(
+            transcript.exists(),
+            "a refused delete touched the transcript"
+        );
+        markers.clear("task-live");
+
         // Delete: a mutation like any other, so the intent header is required.
         let bare = Request::builder()
             .method("DELETE")
