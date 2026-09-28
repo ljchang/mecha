@@ -411,7 +411,12 @@ pub async fn act(
             return approve_shown(&state, entry, shown).await;
         }
         "reject" => vec!["imagelib", "reject", &name, "--kind", kind],
-        "lock" => vec!["imagelib", "lock", &name, "--kind", kind],
+        "lock" => {
+            if let Some(refusal) = no_lock_without_password(&state).await {
+                return refusal;
+            }
+            vec!["imagelib", "lock", &name, "--kind", kind]
+        }
         "unlock" => vec!["imagelib", "unlock", &name, "--kind", kind],
         "remove" => vec!["imagelib", "remove", &name, "--kind", kind, "--yes"],
         _ => unreachable!("actions are matched above"),
@@ -455,6 +460,24 @@ async fn approve_shown(state: &super::WebState, entry: Entry, shown: String) -> 
         Ok(Err(refusal)) => refusal.into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "approving\n").into_response(),
     }
+}
+
+/// Locking from the web with no password set would hide the entry with no
+/// way to show it again from here: refused, saying how to set one (review
+/// of #385). The terminal can still lock — it can also set the password.
+async fn no_lock_without_password(state: &super::WebState) -> Option<Response> {
+    let dir = state.library.dir.clone();
+    let has = tokio::task::spawn_blocking(move || imagelib::has_lock_password(&dir))
+        .await
+        .unwrap_or(false);
+    (!has).then(|| {
+        (
+            StatusCode::CONFLICT,
+            "set a lock password first (`mecha imagelib set-lock-password`), or a locked \
+             entry has no way back from here\n",
+        )
+            .into_response()
+    })
 }
 
 /// The manifest beside a chat image, when it has one.
@@ -512,15 +535,16 @@ pub async fn source(State(state): St, Query(q): Query<SourceQuery>) -> Response 
             .filter_map(|c| c["name"].as_str().map(str::to_string))
             .collect();
         let (lib, _) = Library::load(&dir);
-        let locked: Vec<&String> = cast
+        // A yes or no, never names: the page may hold no unlock token, and
+        // naming the locked characters in a picture would undo the list's
+        // hiding (review of #385). Nor the cast, which can hold a locked name.
+        let locked = cast
             .iter()
-            .filter(|n| lib.get(Kind::Character, n).is_some_and(|e| e.locked))
-            .collect();
+            .any(|n| lib.get(Kind::Character, n).is_some_and(|e| e.locked));
         serde_json::json!({
             "seed": manifest.as_ref().and_then(|m| m["seed"].as_u64()),
-            "cast": cast,
-            "locked_cast": locked,
-            "suggest_locked": !locked.is_empty(),
+            "suggest_locked": locked,
+            "has_password": imagelib::has_lock_password(&dir),
         })
     })
     .await;
@@ -555,6 +579,11 @@ pub async fn save(State(state): St, Json(body): Json<SaveBody>) -> Response {
             "a name is lowercase letters, digits and hyphens\n",
         )
             .into_response();
+    }
+    if body.locked {
+        if let Some(refusal) = no_lock_without_password(&state).await {
+            return refusal;
+        }
     }
     let ws = match super::chat::attachment_workspace(&state, &body.key, false).await {
         Ok(ws) => ws,
@@ -1111,6 +1140,75 @@ mod route_tests {
             assert_eq!(r.status(), StatusCode::NOT_FOUND, "{path}");
         }
         assert!(Library::load(&f.dir).0.get(Kind::Character, "x").is_none());
+    }
+
+    #[tokio::test]
+    async fn nothing_is_locked_from_the_web_without_a_password() {
+        let f = fixture_with(Some(super::super::chat::test_chat()));
+        std::fs::remove_file(f.dir.join("lock.toml")).unwrap();
+        let r = f
+            .app
+            .clone()
+            .oneshot(post(
+                "/api/library/character/maya/lock",
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+        assert!(
+            !Library::load(&f.dir)
+                .0
+                .get(Kind::Character, "maya")
+                .unwrap()
+                .locked
+        );
+        let r = f
+            .app
+            .clone()
+            .oneshot(post(
+                "/api/library/save",
+                serde_json::json!({"key": "libtest", "path": "inbox/face.png", "name": "x",
+                                   "description": "y", "locked": true}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn a_source_says_whether_not_who() {
+        let f = fixture_with(Some(super::super::chat::test_chat()));
+        let up = f
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/chat/srctest/upload?name=face.png")
+                    .header(TAILSCALE_LOGIN, "owner@example.com")
+                    .header("x-mecha-request", "1")
+                    .body(Body::from(png(50)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(up.status(), StatusCode::OK);
+        let r = f
+            .app
+            .clone()
+            .oneshot(get("/api/library/source?key=srctest&path=inbox/face.png"))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let v = json(r).await;
+        assert_eq!(v["suggest_locked"], false);
+        assert_eq!(v["has_password"], true);
+        // No names of any kind: a cast can hold a locked character's.
+        assert!(
+            v.get("cast").is_none() && v.get("locked_cast").is_none(),
+            "{v}"
+        );
     }
 
     #[tokio::test]

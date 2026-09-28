@@ -1213,19 +1213,28 @@
   // copies it in through the chat's jail and reads its seed from the
   // manifest beside it; this form only names and describes it. The lock box
   // starts checked when the picture was made from a locked character (the
-  // owner's ruling: inherited by default, and a tap unchecks it).
+  // owner's ruling: inherited by default, and a tap unchecks it) — and when
+  // the answer cannot be had, it starts checked too, because there the safe
+  // default and the fallback are the same side (review of #385). Save waits
+  // until the answer is in. With no lock password set the box is off and
+  // says why: a locked entry with no password has no way back from the page.
   let saving = $state(null);
   async function startSave(path) {
-    saving = { path, name: '', description: '', locked: false, busy: false, msg: null, lockedCast: [] };
+    saving = { path, name: '', description: '', locked: false, busy: false, msg: null, ready: false, inherited: false, hasPassword: true };
     try {
       const res = await fetch(`/api/library/source?key=${encodeURIComponent(key)}&path=${encodeURIComponent(path)}`);
-      if (res.ok && saving?.path === path) {
-        const src = await res.json();
-        saving.locked = !!src.suggest_locked;
-        saving.lockedCast = src.locked_cast ?? [];
-      }
-    } catch {
-      // The form still works without the defaults.
+      if (saving?.path !== path) return;
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const src = await res.json();
+      saving.hasPassword = !!src.has_password;
+      saving.inherited = !!src.suggest_locked;
+      saving.locked = saving.inherited && saving.hasPassword;
+    } catch (e) {
+      if (saving?.path !== path) return;
+      saving.locked = true;
+      saving.msg = `Could not check whether this picture used a locked character (${String(e?.message ?? e)}), so the lock box starts checked.`;
+    } finally {
+      if (saving?.path === path) saving.ready = true;
     }
   }
   async function saveToLibrary() {
@@ -1774,11 +1783,12 @@
                   <input placeholder="name, e.g. maya" bind:value={saving.name} autocomplete="off" />
                   <textarea rows="2" placeholder="a short description — include build and height" bind:value={saving.description}></textarea>
                   <label class="libsave-lock">
-                    <input type="checkbox" bind:checked={saving.locked} />
+                    <input type="checkbox" bind:checked={saving.locked} disabled={!saving.hasPassword} />
                     lock (hide while browsing)
-                    {#if saving.lockedCast.length}<span class="libsave-why">— made from locked {saving.lockedCast.join(', ')}</span>{/if}
+                    {#if saving.inherited}<span class="libsave-why">— made from a locked character</span>{/if}
+                    {#if !saving.hasPassword}<span class="libsave-why">— set a lock password first: <code>mecha imagelib set-lock-password</code></span>{/if}
                   </label>
-                  <button class="genedit" disabled={saving.busy || !validName(tameName(saving.name)) || !saving.description.trim()}>Save</button>
+                  <button class="genedit" disabled={!saving.ready || saving.busy || !validName(tameName(saving.name)) || !saving.description.trim()}>Save</button>
                 {/if}
                 {#if saving.msg}<div class="libsave-msg">{saving.msg}</div>{/if}
               </form>

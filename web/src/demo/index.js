@@ -113,7 +113,7 @@ export const ROUTES = [
   // `show`. Every store answers with the same demo listing — the pane is
   // what is being demonstrated, not the stores' distinct contents.
   ['GET', /^\/api\/library$/, () => fx.library],
-  ['GET', /^\/api\/library\/source$/, () => ({ seed: 4002, cast: ['maya'], locked_cast: [], suggest_locked: false })],
+  ['GET', /^\/api\/library\/source$/, () => ({ seed: 4002, suggest_locked: false, has_password: true })],
   // The demo has no lock password to check; saying so is the honest answer.
   ['POST', /^\/api\/library\/unlock$/, () => new Response('the demo has no lock password\n', { status: 403 })],
   ['POST', /^\/api\/library\/(relock|save)$/, () => ({ ok: true, output: '' })],
