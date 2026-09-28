@@ -274,8 +274,15 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
     // The graph before the learning store: whether the session was distilled
     // is read from the ledger the learning purge is about to empty, and a
     // graph that failed this time must still be owed the episode next time.
-    let distilled = std::fs::read_to_string(roots.learning.join("distilled.jsonl"))
-        .is_ok_and(|s| s.lines().any(|l| l.trim() == id));
+    let distilled = match read_lines(&roots.learning.join("distilled.jsonl")) {
+        Ok(lines) => lines.iter().any(|l| l.trim() == id),
+        // Unknown is never clean: a ledger that cannot be read may name the
+        // session, so the graph is owed the episode until it can be read.
+        Err(e) => {
+            report.errors.push(format!("distill ledger: {e:#}"));
+            true
+        }
+    };
     let graph_failed = match graph.redact_session(id) {
         Ok(GraphOutcome::Redacted(n)) => {
             report.count("graph", n);

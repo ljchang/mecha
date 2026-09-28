@@ -604,16 +604,39 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     Ok(())
 }
 
-/// The config the conversation staged under: its own workspace's project
-/// layer over the global file — `[outbox] dir` is not stripped from project
-/// layers, so the drafts may live where only that layer says. The directory
-/// this command happens to run in says nothing about it.
+/// The config the conversation staged under: the owner's project layer over
+/// the global file, for a conversation rooted in the owner's project —
+/// `[outbox] dir` is not stripped from project layers, so its drafts may live
+/// only where that layer says.
+///
+/// **Never a chat's own jail.** A web, voice or task conversation's
+/// workspace is under `~/.mecha/work`, where the model writes files; reading
+/// a `mecha.toml` there would let the conversation being deleted relocate
+/// the outbox the delete purges (the report then says clean while the
+/// drafts survive) or make itself undeletable with a config that does not
+/// validate. There, and whenever a project layer fails to load, the global
+/// file alone decides.
 fn forget_config(dir: &std::path::Path, id: &str) -> Result<mecha_core::config::Config> {
     let header = Session::peek_meta(&dir.join(format!("{id}.jsonl")))
         .or_else(|| Session::peek_meta(&dir.join(format!("{id}.jsonl.forgetting"))));
-    match header {
-        Some(meta) if meta.workspace.is_dir() => mecha_core::config::Config::load(&meta.workspace),
-        _ => mecha_core::config::Config::load_global(),
+    let jails = mecha_core::work::mecha_home()?.join("work");
+    let jails = jails.canonicalize().unwrap_or(jails);
+    let project = header.map(|m| m.workspace).filter(|ws| {
+        ws.is_dir()
+            && !ws
+                .canonicalize()
+                .unwrap_or_else(|_| ws.clone())
+                .starts_with(&jails)
+    });
+    match project {
+        Some(ws) => mecha_core::config::Config::load(&ws).or_else(|e| {
+            eprintln!(
+                "mecha: {}: project config not used for this delete ({e:#}); using the global config",
+                ws.display()
+            );
+            mecha_core::config::Config::load_global()
+        }),
+        None => mecha_core::config::Config::load_global(),
     }
 }
 
@@ -3115,5 +3138,51 @@ mod probe_readout_tests {
         let floors = Ok(Some((Summary::default(), 3)));
         assert_eq!(text_appraisals_json(&floors)["read"], false);
         assert!(text_appraisals_line(&floors).contains("floors"));
+    }
+
+    /// A chat's own jail never configures its delete: a `mecha.toml` the
+    /// model wrote there cannot relocate the outbox the delete purges, nor
+    /// make the conversation undeletable with a config that fails to load.
+    #[test]
+    fn a_chats_own_workspace_never_configures_its_delete() {
+        let home = crate::testenv::HomeGuard::new("forget-config");
+        let sessions = home.dir.join("sessions");
+        let jail = home.dir.join("work/web/chat-x");
+        std::fs::create_dir_all(&jail).unwrap();
+        std::fs::write(
+            jail.join("mecha.toml"),
+            "[outbox]\ndir = \"/tmp/elsewhere\"\n",
+        )
+        .unwrap();
+        let project = home.dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("mecha.toml"), "this is = = not toml").unwrap();
+        for (id, ws) in [
+            ("20260928T120000-jail", &jail),
+            ("20260928T120000-proj", &project),
+        ] {
+            mecha_core::session::Session::create(
+                &sessions,
+                mecha_core::session::SessionMeta {
+                    id: id.into(),
+                    created_at: chrono::Utc::now(),
+                    provider: "test".into(),
+                    model: "test".into(),
+                    workspace: ws.clone(),
+                    title: None,
+                    kind: Some(mecha_core::session::SessionKind::Test),
+                },
+            )
+            .unwrap();
+        }
+        let cfg = super::forget_config(&sessions, "20260928T120000-jail").unwrap();
+        assert_eq!(
+            cfg.outbox.dir, None,
+            "a chat's jail relocated the outbox its delete purges"
+        );
+        assert!(
+            super::forget_config(&sessions, "20260928T120000-proj").is_ok(),
+            "a project config that fails to load made the conversation undeletable"
+        );
     }
 }
