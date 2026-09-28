@@ -242,6 +242,37 @@ pub enum Args {
         #[arg(long)]
         json: bool,
     },
+
+    /// Take a conversation out of the web chat's list. The record is kept
+    /// whole and every reader — learning, appraisal, the graph — still
+    /// reads it; `unarchive` puts it back.
+    Archive {
+        /// Session id or unique prefix.
+        id: String,
+    },
+
+    /// Put an archived conversation back in the list.
+    Unarchive {
+        /// Session id or unique prefix.
+        id: String,
+    },
+
+    /// Permanently delete a conversation and every trace of it: the
+    /// transcript, its workspace, staged drafts and questions, the lessons
+    /// and rules learned from it, its appraisals, and its episode in the
+    /// knowledge graph. Cannot be undone.
+    Delete {
+        /// Session id or unique prefix.
+        id: String,
+
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+
+        /// Emit the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// What `sessions appraise --appraise` says since row 2a-3 retired the
@@ -513,9 +544,170 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         Args::Path { id } => println!("{}", Session::find(&dir, &id)?.display()),
 
         Args::Stats { days, json } => stats(&dir, days, json)?,
+
+        Args::Archive { id } => {
+            let id = resolve_id(&dir, &id)?;
+            mecha_core::archive::archive(&dir, &id, chrono::Utc::now())?;
+            println!("archived {id}");
+        }
+
+        Args::Unarchive { id } => {
+            let id = resolve_id(&dir, &id)?;
+            if mecha_core::archive::unarchive(&dir, &id)? {
+                println!("unarchived {id}");
+            } else {
+                println!("{id} was not archived");
+            }
+        }
+
+        Args::Delete { id, yes, json } => {
+            // A session set aside by a forget that did not finish is no
+            // longer listed, so `find` cannot see it; the whole id still
+            // names it, and running again is how it finishes.
+            let id = if dir.join(format!("{id}.jsonl.forgetting")).exists() {
+                id
+            } else {
+                resolve_id(&dir, &id)?
+            };
+            if !yes && !confirm_delete(&dir, &id)? {
+                println!("kept {id}");
+                return Ok(());
+            }
+            let report = mecha_core::forget::forget(
+                &mecha_core::forget::Roots::from_env()?,
+                &id,
+                &GraphCli,
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print_forget(&report);
+            }
+            if !report.complete {
+                anyhow::bail!(
+                    "{id} is only partly deleted; fix the above and run `mecha sessions delete {id}` again"
+                );
+            }
+        }
     }
 
     Ok(())
+}
+
+/// A prefix to the one whole id it names — `find`'s rule, so an ambiguous
+/// prefix is an error and never a pick.
+fn resolve_id(dir: &std::path::Path, prefix: &str) -> Result<String> {
+    let path = Session::find(dir, prefix)?;
+    Session::peek_meta(&path)
+        .map(|m| m.id)
+        .with_context(|| format!("{} has no header", path.display()))
+}
+
+fn confirm_delete(dir: &std::path::Path, id: &str) -> Result<bool> {
+    use std::io::Write;
+    let title = Session::peek_meta(&dir.join(format!("{id}.jsonl")))
+        .and_then(|m| m.title)
+        .unwrap_or_default();
+    print!(
+        "Permanently delete {id} {title:?} and everything learned from it? \
+         This cannot be undone. [y/N] "
+    );
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(line.trim(), "y" | "Y" | "yes"))
+}
+
+fn print_forget(report: &mecha_core::forget::Report) {
+    let removed: Vec<String> = report
+        .removed
+        .iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(store, n)| format!("{store} {n}"))
+        .collect();
+    println!(
+        "{} {}",
+        if report.complete {
+            "deleted"
+        } else {
+            "partly deleted"
+        },
+        report.id
+    );
+    if removed.is_empty() {
+        println!("  nothing else held it");
+    } else {
+        println!("  removed: {}", removed.join(", "));
+    }
+    for r in &report.residue {
+        println!("  left: {r}");
+    }
+    for e in &report.errors {
+        println!("  failed: {e}");
+    }
+}
+
+/// The knowledge graph, reached through its own binary — on
+/// `commands::review`'s rule for where that binary is. The graph is another
+/// program's store behind its own key; mecha asks it to redact, it never
+/// opens the database itself.
+pub(crate) struct GraphCli;
+
+impl mecha_core::forget::GraphRedactor for GraphCli {
+    fn redact_session(&self, id: &str) -> Result<mecha_core::forget::GraphOutcome> {
+        let bin = super::review::graph_bin();
+        let out = match std::process::Command::new(&bin)
+            .args([
+                "redact",
+                "--source",
+                mecha_core::distill::EPISODE_SOURCE,
+                "--source-id",
+                id,
+                "--vacuum",
+                "--json",
+            ])
+            .output()
+        {
+            Ok(out) => out,
+            // No binary is only "no graph" when there is no database either:
+            // a graph that exists and cannot be reached still holds the
+            // episode, and saying otherwise is the silently-degrading guard.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !graph_db().exists() => {
+                return Ok(mecha_core::forget::GraphOutcome::Absent);
+            }
+            Err(e) => {
+                return Err(anyhow::Error::new(e).context(format!(
+                    "running `{bin}` — install mecha-graph, or set MECHA_GRAPH_BIN"
+                )))
+            }
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            anyhow::bail!(
+                "`{bin} redact` failed: {}",
+                if stderr.trim().is_empty() {
+                    stdout.trim()
+                } else {
+                    stderr.trim()
+                }
+            );
+        }
+        let v: serde_json::Value = serde_json::from_str(stdout.trim())
+            .with_context(|| format!("`{bin} redact` answered something other than JSON"))?;
+        let n = v
+            .get("redacted")
+            .and_then(serde_json::Value::as_u64)
+            .with_context(|| format!("`{bin} redact` did not say how many it redacted: {v}"))?;
+        Ok(mecha_core::forget::GraphOutcome::Redacted(n as usize))
+    }
+}
+
+fn graph_db() -> std::path::PathBuf {
+    std::env::var_os("MECHA_GRAPH_DB")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".mecha-graph").join("graph.db")))
+        .unwrap_or_default()
 }
 
 /// One row of the rollup: everything recorded under one provider+model pair.

@@ -435,6 +435,35 @@ impl ChatState {
         close_incognito_locked(self, &mut sessions, key)
     }
 
+    /// Let go of the recorded conversation `id` if this process holds it:
+    /// the step before archiving or deleting one, so the rail stops listing
+    /// it and nothing here appends to its transcript again. `Ok(None)` when
+    /// no open chat holds it; `Err` while a run is in flight, because a run
+    /// owns the conversation until it ends and a delete under it would race
+    /// its last writes. Answers the key it was held under.
+    pub(super) async fn release_recorded(&self, id: &str) -> Result<Option<String>, &'static str> {
+        let mut sessions = self.sessions.lock().await;
+        let Some(key) = sessions
+            .iter()
+            .find(|(_, ws)| ws.session.kept().is_some_and(|s| s.meta.id == id))
+            .map(|(k, _)| k.clone())
+        else {
+            return Ok(None);
+        };
+        if sessions.get(&key).is_some_and(|ws| ws.live.is_some()) {
+            return Err("a run is in flight in this conversation — stop it first");
+        }
+        let ws = sessions.remove(&key).expect("found above");
+        ws.questions.shutdown();
+        if let Ok(mut routes) = self.routes.lock() {
+            routes.remove(&key);
+        }
+        if let Some(todo) = &self.follower.current().todo {
+            todo.forget_in(&ws.workspace);
+        }
+        Ok(Some(key))
+    }
+
     /// Close idle incognito chats once a minute until the server stops.
     pub fn spawn_incognito_reaper(self: &Arc<Self>) {
         // R3's reads ride on a configured server name, and a rename narrows
@@ -1161,7 +1190,9 @@ type Chat = State<super::WebState>;
 // The Err arm carries a whole `Response`; it is built once per refused
 // request, so the size is irrelevant next to the allocation it wraps.
 #[allow(clippy::result_large_err)]
-fn chat_state(state: &super::WebState) -> Result<&Arc<ChatState>, axum::response::Response> {
+pub(super) fn chat_state(
+    state: &super::WebState,
+) -> Result<&Arc<ChatState>, axum::response::Response> {
     state.chat.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3378,7 +3409,17 @@ const LISTING_SCAN_BYTES: usize = 256 * 1024;
 /// through, its first user line, and — when this process already holds it —
 /// the live key, so the drawer never offers to resume a conversation into a
 /// second copy of itself.
-pub async fn history(State(state): Chat) -> axum::response::Response {
+#[derive(serde::Deserialize, Default)]
+pub struct HistoryQuery {
+    /// The archived conversations instead of the listed ones.
+    #[serde(default)]
+    pub archived: bool,
+}
+
+pub async fn history(
+    State(state): Chat,
+    axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
+) -> axum::response::Response {
     let chat = match chat_state(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -3411,6 +3452,14 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
                     || t.starts_with(TASK_TITLE_PREFIX)
             })
     });
+    // Archiving is filing (`mecha_core::archive`): the listing is the one
+    // reader that consults the mark, and the archive is the same listing
+    // turned inside out.
+    let archived = match mecha_core::archive::archived(&dir) {
+        Ok(a) => a,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+    };
+    metas.retain(|(m, _)| archived.contains_key(&m.id) == query.archived);
     metas.sort_by_key(|(m, _)| std::cmp::Reverse(m.created_at));
     let mut rows = Vec::new();
     for (meta, path) in metas {
@@ -3442,6 +3491,7 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
                 .title
                 .filter(|t| Session::keeps_kind(meta.title.as_deref(), t)),
             "attached_key": attached.get(&meta.id),
+            "archived_at": archived.get(&meta.id).copied().flatten().map(|d| d.to_rfc3339()),
         }));
     }
     Json(serde_json::json!({ "sessions": rows })).into_response()
