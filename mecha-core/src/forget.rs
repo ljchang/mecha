@@ -841,13 +841,11 @@ fn purge_workspace(roots: &Roots, id: &str, meta: &SessionMeta, report: &mut Rep
         .canonicalize()
         .unwrap_or_else(|_| meta.workspace.clone());
     let work = work.canonicalize().unwrap_or(work);
-    if !ws.starts_with(&work) || ws == work {
-        report.residue.push(format!(
-            "files the conversation wrote in {} are yours and were kept",
-            meta.workspace.display()
-        ));
-        return;
-    }
+    // Mecha's own jail, or the owner's project — whose files are never this
+    // module's. The spill directory is mecha's either way (the capped tool
+    // output of whatever ran there), so it follows the ownership rule below
+    // even when the workspace itself is kept.
+    let ours = ws.starts_with(&work) && ws != work;
     let others = match Session::list(&roots.sessions) {
         Ok(all) => all
             .into_iter()
@@ -866,17 +864,33 @@ fn purge_workspace(roots: &Roots, id: &str, meta: &SessionMeta, report: &mut Rep
             return;
         }
     };
+    let spill = crate::tool::session_spill_dir_under(&roots.home, &ws);
+    if !ours {
+        report.residue.push(format!(
+            "files the conversation wrote in {} are yours and were kept",
+            meta.workspace.display()
+        ));
+    }
     if others > 0 {
         report.count("workspace", 0);
         report.residue.push(format!(
-            "{} is shared with {others} other conversation(s); its files were kept",
-            meta.workspace.display()
+            "{} is shared with {others} other conversation(s); its files{} were kept",
+            meta.workspace.display(),
+            if spill.exists() {
+                format!(" and its spilled tool output ({})", spill.display())
+            } else {
+                String::new()
+            }
         ));
         return;
     }
-    let spill = crate::tool::session_spill_dir_under(&roots.home, &ws);
+    let dirs: Vec<PathBuf> = if ours {
+        vec![ws.clone(), spill]
+    } else {
+        vec![spill]
+    };
     let mut n = 0;
-    for dir in [ws.clone(), spill] {
+    for dir in dirs {
         match std::fs::remove_dir_all(&dir) {
             Ok(()) => n += 1,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
