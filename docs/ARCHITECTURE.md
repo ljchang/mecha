@@ -4046,7 +4046,9 @@ keeps reading an archived session), delete removes all traces.
   shares one directory, so ownership is checked against every header, and a
   workspace outside `~/.mecha/work` is never touched.
 - **The graph answers for itself.** `mecha-graph redact --source agent:mecha
-  --source-id <id> --vacuum` through `$MECHA_GRAPH_BIN`; mecha never opens
+  --source-id <id> --vacuum --tombstone-absent` through `$MECHA_GRAPH_BIN`
+  — the tombstone even on no match, because a distill that read the
+  transcript before the delete lands after it; mecha never opens
   the database. "No graph" is an answer only when neither the binary nor the
   database exists *and* the distill ledger never listed the session — and a
   failed graph step keeps the ledger line, so the retry still knows it owes

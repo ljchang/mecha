@@ -664,6 +664,11 @@ impl mecha_core::forget::GraphRedactor for GraphCli {
                 "--source-id",
                 id,
                 "--vacuum",
+                // The session id is exact, so the tombstone is safe to write
+                // even when nothing matched — and it is what refuses a
+                // distill that read the transcript before the delete and
+                // lands after it.
+                "--tombstone-absent",
                 "--json",
             ])
             .output()
