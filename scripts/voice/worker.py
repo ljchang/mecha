@@ -22,6 +22,7 @@ The three legs are env-configurable base URLs (D6):
 
 import asyncio
 import collections
+import contextlib
 import os
 import sys
 import threading
@@ -895,10 +896,10 @@ class ParakeetSTT(SegmentGatedSTT):
         logger.debug(
             f"parakeet: duration={duration:.2f}s rms={rms:.4f} "
             f"over_speaker={echoey} segment_start={segment_started_at} "
-            f"text={text[:100]!r}"
+            f"text={spoken_words(text, 100)}"
         )
         if self.echo_window.is_probable_echo(text, bot_was_audible=echoey):
-            logger.debug(f"parakeet echo filter: {text[:60]!r} over_speaker={echoey}")
+            logger.debug(f"parakeet echo filter: {spoken_words(text, 60)} over_speaker={echoey}")
             return Transcription(text="")
         return Transcription(text=text)
 
@@ -1788,7 +1789,9 @@ class UplinkAudio:
             await asyncio.sleep(0.1)
         prefix = late_prefix(wall_from, wall_to, self._tz_offset_min, dropped_ms)
         self.late_turns += 1
-        logger.info(f"uplink: late turn ({(to_ms - from_ms) / 1000:.0f}s of audio): {prefix}{text[:80]!r}")
+        logger.info(
+            f"uplink: late turn ({(to_ms - from_ms) / 1000:.0f}s of audio): {prefix}{spoken_words(text, 80)}"
+        )
         # Appended to the context and run at once — not a `TranscriptionFrame`.
         # A transcript-only turn has no VAD edge for any stop strategy to
         # rule on, so it sat on the aggregator's 15 s wall-clock timeout
@@ -1819,7 +1822,119 @@ class UplinkAudio:
         return " ".join(parts)
 
 
-async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
+# ---- incognito: a call nothing keeps the words of ----
+#
+# `docs/INCOGNITO-DESIGN.md` §3.4. The journal this unit writes to is kept on
+# disk, and at pipecat's default level (the runner re-adds a DEBUG sink on
+# start) it holds both sides of every call: `Transcription: …` from the STT
+# service and every sentence the TTS service is handed. So while a call into
+# an incognito chat is live, the whole `pipecat` namespace is disabled - at the
+# logger's core, not on a sink, because `pipecat.runner.run` calls
+# `logger.remove()` and adds its own sink, and a filter on ours would be
+# thrown away with it, silently. This file's own lines that carry words keep
+# their measurements and lose the words (`spoken_words`).
+#
+# Process-wide on purpose: an ordinary call running beside an incognito one
+# loses pipecat's lines for the overlap. The narrower cut - a filter keyed on
+# the call's context - leaks on the first task started outside that context,
+# and the promise is the one that must not bend.
+#
+# The facade admits a spoken turn into an incognito chat only on
+# `X-Voice-Unlogged: 1`, which is sent only from inside `Unlogged.held` - so
+# a worker that predates this never makes the claim, and the chat stays
+# text-only rather than trusting a silence nobody held.
+INCOGNITO_PREFIX = "incognito-"
+
+
+def named_chat_session(body) -> str | None:
+    """The chat session the offer names (D3), or None.
+
+    Validated here as well as at the facade, and to the same rule
+    (mecha-cli's `valid_key`): this value becomes a directory name under the
+    producer root, it arrives from a browser, and a claim checked on only one
+    side of a seam is a claim nobody checks the day the other side is reached
+    directly. Refusing costs a call that is merely unshared; passing it on
+    costs whatever a bad name does."""
+    want = body.get("session") if isinstance(body, dict) else None
+    if not isinstance(want, str):
+        return None
+    want = want.strip()
+    if (
+        0 < len(want) <= 32
+        and want[0] not in "-_"
+        and all(c.islower() or c.isdigit() or c in "-_" for c in want)
+        and want.isascii()
+    ):
+        return want
+    if want:
+        print(f"voice: refusing malformed chat session {want!r}", flush=True)
+    return None
+
+
+def is_incognito(named: str | None) -> bool:
+    """Whether a named session is an incognito chat. The prefix is the
+    server's (`incognito::is_incognito_key`), which refuses it at the
+    ordinary door, so no recorded chat can carry it."""
+    return bool(named) and named.startswith(INCOGNITO_PREFIX)
+
+
+class Unlogged:
+    """The live calls into incognito chats, and the log silence they hold.
+
+    Counted, not flagged: two incognito calls overlap, and the first to end
+    must not lift the silence under the second."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._live = 0
+
+    @property
+    def active(self) -> bool:
+        return self._live > 0
+
+    def enter(self):
+        from loguru import logger
+
+        with self._lock:
+            self._live += 1
+            if self._live == 1:
+                logger.disable("pipecat")
+
+    def exit(self):
+        from loguru import logger
+
+        with self._lock:
+            self._live -= 1
+            if self._live == 0:
+                logger.enable("pipecat")
+
+    @contextlib.contextmanager
+    def held(self, quiet: bool):
+        """Hold the silence for one call's life when `quiet`; otherwise a
+        no-op, so the caller's shape is the same for every call."""
+        if not quiet:
+            yield
+            return
+        self.enter()
+        try:
+            yield
+        finally:
+            self.exit()
+
+
+UNLOGGED = Unlogged()
+
+
+def spoken_words(text: str, limit: int) -> str:
+    """Words for a log line: the first `limit` characters, or a placeholder
+    while any incognito call is live. The rest of the line - durations, RMS,
+    over-speaker - is a measurement and stays."""
+    if UNLOGGED.active:
+        return "<withheld: an incognito call is live>"
+    return repr(text[:limit])
+
+
+async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named: str | None = None):
     LoopSampler.start()
     stt = ParakeetSTT(api_key="unused", base_url=STT_URL)
     tts = LocalTTS(
@@ -1847,39 +1962,33 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     # own - talking and typing become one transcript, one taint slate, one
     # workspace. A second header rather than overloading the first, because
     # the two mean different things and only one of them is ours to mint.
-    #
-    # Validated here as well as at the facade, and to the same rule
-    # (mecha-cli's `valid_key`): this value becomes a directory name under
-    # the producer root, it arrives from a browser, and a claim checked on
-    # only one side of a seam is a claim nobody checks the day the other
-    # side is reached directly. Refusing costs a call that is merely
-    # unshared; passing it on costs whatever a bad name does.
-    named = None
-    body = runner_args.body if isinstance(runner_args.body, dict) else {}
-    want = body.get("session")
-    if isinstance(want, str):
-        want = want.strip()
-        if (
-            0 < len(want) <= 32
-            and want[0] not in "-_"
-            and all(c.islower() or c.isdigit() or c in "-_" for c in want)
-            and want.isascii()
-        ):
-            named = want
-        elif want:
-            print(f"voice: refusing malformed chat session {want!r}", flush=True)
+    # `named` is validated in `bot` (`named_chat_session`), before the
+    # transport exists, so an incognito call's silence covers all of it.
     if named:
         headers["X-Chat-Session"] = named
+    if is_incognito(named):
+        # True by construction: `bot` holds `UNLOGGED` for exactly this case,
+        # around the whole of this function. Checked rather than assumed -
+        # and not with `assert`, which `-O` strips - because the claim
+        # loosens a refusal on the other side: a call that cannot vouch ends.
+        if not UNLOGGED.active:
+            raise RuntimeError("an incognito call reached run_bot without its log silence")
+        headers["X-Voice-Unlogged"] = "1"
     # §6.2: the same namespaced key `mecha-cli`'s facade keys its cache by
     # (`hosted_completion`'s `confirm_key`) - a hosted chat session and this
     # connection's own voice slot must not collide, so the namespace has to
     # match exactly on both sides of the poll.
     tts.set_affect_key(f"chat:{named}" if named else f"voice:{session_key}")
-    print(
-        f"voice session key: {session_key}"
-        + (f" (speaking into chat session {named!r})" if named else ""),
-        flush=True,
-    )
+    # An incognito chat's key is not written down either: that a chat of
+    # that name was spoken into is itself a trace the chat promised not to
+    # leave.
+    if is_incognito(named):
+        into = " (speaking into an incognito chat)"
+    elif named:
+        into = f" (speaking into chat session {named!r})"
+    else:
+        into = ""
+    print(f"voice session key: {session_key}{into}", flush=True)
     llm = OpenAILLMService(
         api_key="unused",
         base_url=FACADE_URL,
@@ -2159,17 +2268,22 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
 async def bot(runner_args: RunnerArguments):
     webrtc_connection: SmallWebRTCConnection = runner_args.webrtc_connection
     body = runner_args.body if isinstance(runner_args.body, dict) else {}
-    # Decided here, from the offer, before any RTP frame is read: a switch
-    # mid-call would deliver the first words twice.
-    transport_cls = UplinkTransport if body.get("uplink") == "channel" else SmallWebRTCTransport
-    transport = transport_cls(
-        webrtc_connection=webrtc_connection,
-        params=TransportParams(
-            audio_in_enabled=True,
-            audio_out_enabled=True,
-        ),
-    )
-    await run_bot(transport, runner_args)
+    named = named_chat_session(body)
+    # Held before the transport exists and released only when the call is
+    # over, however it ends: nothing of an incognito call is logged at any
+    # point in its life.
+    with UNLOGGED.held(is_incognito(named)):
+        # Decided here, from the offer, before any RTP frame is read: a switch
+        # mid-call would deliver the first words twice.
+        transport_cls = UplinkTransport if body.get("uplink") == "channel" else SmallWebRTCTransport
+        transport = transport_cls(
+            webrtc_connection=webrtc_connection,
+            params=TransportParams(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+            ),
+        )
+        await run_bot(transport, runner_args, named)
 
 
 if __name__ == "__main__":

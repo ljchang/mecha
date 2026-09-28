@@ -18,6 +18,12 @@
 > sweep this one's; and `image_generate` is offered only where the server's
 > temp directory is named and on tmpfs (§6.3).
 > `ARCHITECTURE.md` §Incognito chat describes what is built.
+>
+> **Amended 2026-09-28 (owner): voice calls are in.** The v1 exclusion was
+> the voice worker's logging, and the worker now holds a log silence for the
+> length of an incognito call and vouches for it; the server admits a spoken
+> turn only on that word. §6.4 is the mechanism; §3.4, §7, §9 and §10 are
+> amended to match.
 
 **2026-09-25.** One question: *how does a web chat leave no trace once it is
 closed — not the transcript, not a title, not a count, not a file, not a log
@@ -133,7 +139,7 @@ mark, not in this design.
 | A cloud provider | The text, on the provider's servers | Refused: local only (§6.1) |
 | journald (`mecha serve`'s stderr) | `provider/openai.rs::log_dropped_reasoning` logs the **last ~400 characters of the model's reasoning at `warn`** when a local turn comes back empty | Content moves to `debug` for everyone (§9, step 0) |
 | ComfyUI | Job history (prompt text, file names) in memory; the preview PNG and uploaded references in its temp folder until it restarts | History deleted per job (#306 already); temp files deleted (§6.3) |
-| Voice worker | Logs transcripts at `info` (`scripts/voice/worker.py`) | No voice calls in incognito (v1). Dictation is fine: parakeet logs no text |
+| Voice worker | Pipecat logs both sides of a call at its default `DEBUG` — `Transcription: …` and every sentence handed to the TTS — and the worker's own `late turn` line carries words at `info`; all into a journal kept on disk | Silenced for the call, and vouched for (§6.4, amended 2026-09-28). Dictation was always fine: parakeet logs no text, nor does the TTS server (text rides a POST body) |
 
 ---
 
@@ -345,6 +351,41 @@ cache.
 
 ---
 
+### 6.4 Voice calls (amended 2026-09-28)
+
+The v1 table said the worker logged transcripts at `info`; measured, the
+larger trace was pipecat's own logging. The worker never configured loguru,
+and `pipecat.runner.run` re-adds a `DEBUG` sink on start, so every call's
+transcription and every spoken sentence reached the journal — 235 such lines
+in the fourteen days before the change. The mecha side already fit: a call
+that names a chat is a hosted turn in it (`VoiceHost::speak`), an incognito
+conversation has no `Session` to record into, and a closed key comes back
+`Closed` rather than as a new, recorded chat. What was missing was the worker.
+
+- **The silence** (`worker.py`'s `Unlogged`). While any incognito call is
+  live, the `pipecat` namespace is disabled at loguru's core —
+  `logger.disable`, not a sink filter, because the runner's `logger.remove()`
+  would discard a filter silently. Counted, so the first of two overlapping
+  calls to end does not lift the second's silence. Process-wide on purpose:
+  an ordinary call alongside loses pipecat's lines for the overlap, and a
+  filter keyed on the call's context leaks on the first task started outside
+  it. The worker's own lines that carry words keep their measurements and
+  lose the words (`spoken_words`); the session-key line does not name the
+  chat.
+- **The claim** (`X-Voice-Unlogged: 1`). Sent only from inside the silence,
+  and checked there with a raise rather than an `assert`. The server's gate
+  (`spoken_turn_may_enter`) admits a spoken turn into an incognito chat only
+  with it, reading anything but exactly `1` as no claim — so a worker that
+  predates the silence is refused, and the chat stays text-only instead of
+  trusting a silence nobody held.
+- **The page** hangs up the call when the chat ends, clears the overlay's
+  words, and drops the uplink ring (`voice-core.js`'s `dropRing`) — the
+  ring is audio of what was said, and it outlives calls on purpose.
+- **What it does not change.** `--voice-yes` travels with a spoken turn here
+  as in any hosted chat: the owner is speaking, and the interlock and the
+  outbox sit ahead of the approver either way. Audio crosses the tailnet to
+  the worker and the STT and TTS servers and is kept by none of them.
+
 ## 7. The page
 
 - **New incognito chat**, beside **+**, with its own icon.
@@ -352,8 +393,8 @@ cache.
   kept. It ends when you tap End, or after 30 minutes idle.*
 - **End** in the header; after it, the page shows that the chat is gone and
   offers a new one. There is no "earlier" entry to reopen.
-- The model chip offers only local models (amended 2026-09-28, §6.1); the voice-call button is absent;
-  dictation stays.
+- The model chip offers only local models (amended 2026-09-28, §6.1); the voice-call button is present
+  (amended 2026-09-28, §6.4) and its overlay says the call keeps nothing; dictation stays.
 - An edit's **Edit** button works as in any chat — inside the tmpfs folder.
 
 ---
@@ -408,7 +449,8 @@ server's history clear; `no-store` on every incognito route.
 3. **The withheld set**, the local-only refusal, and the search notice.
 4. **Images**: `server_temp_dir` and temp-file deletion; ComfyUI on a tmpfs
    temp directory.
-5. **The page**: door, banner, End, local-only chip (amended 2026-09-28, §6.1), no voice call.
+5. **The page**: door, banner, End, local-only chip (amended 2026-09-28, §6.1), and — amended
+   the same day — a voice call (§6.4).
 6. **The canary test** — written with step 1, green only when step 5 lands.
 7. **mecha-graph's unrecorded read path** (other repository), then graph reads
    come off the withheld list.
@@ -425,4 +467,6 @@ server's history clear; `no-store` on every incognito route.
 - **A `debug` log level.** `MECHA_LOG=debug` logs content by design, for
   diagnosis; incognito's promise is made at the default level, and the page
   says so if `serve` runs at `debug`.
-- **Voice calls**, in v1: the voice worker logs transcripts.
+- **The voice worker at a raised level.** Its silence covers pipecat and its
+  own words at every level, but a debugging patch that logs words from a new
+  line in `worker.py` is outside it until it goes through `spoken_words`.

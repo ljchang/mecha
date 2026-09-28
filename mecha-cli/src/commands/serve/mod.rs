@@ -3050,7 +3050,7 @@ mod boundary_tests {
         );
         assert!(matches!(
             chat::VoiceHost(chat.clone())
-                .speak("new", "too late", false)
+                .speak("new", "too late", false, false)
                 .await,
             crate::voice::Hosted::Failed(_)
         ));

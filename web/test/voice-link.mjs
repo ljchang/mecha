@@ -206,3 +206,13 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   assert.notEqual(ringFor('other'), a, 'a different conversation gets its own');
   console.log('ring per key: ok');
 }
+{
+  // An incognito chat's ring goes when the chat does: the next call under
+  // the key starts empty rather than replaying what was said there.
+  const { ringFor, dropRing } = await import('../../scripts/voice/voice-core.js');
+  const a = ringFor('incognito-ab'); a.push(0, new Uint8Array([1]).buffer);
+  dropRing('incognito-ab');
+  assert.notEqual(ringFor('incognito-ab'), a, 'a dropped ring is not found again');
+  assert.equal(ringFor('incognito-ab').pendingMs, 0, 'and nothing it held carries over');
+  console.log('ring dropped: ok');
+}
