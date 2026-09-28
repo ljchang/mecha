@@ -66,6 +66,9 @@ const ALLOWED_BUILTINS: &[&str] = &[
     "http_fetch",
     "image_generate",
     "image_view",
+    // Reads the owner's library and writes nothing; proposing an entry
+    // (`image_library_propose`) writes outside the room, so it stays out.
+    "image_library",
 ];
 
 /// The MCP server whose read-only tools an incognito chat may call (R3:

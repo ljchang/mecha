@@ -619,6 +619,76 @@ it becomes the second adapter when a re-run closes the gap. mistral.rs (FLUX
 only, no quantized diffusion) and candle (no Qwen-Image) could not run the
 model at all.
 
+## Image library
+
+`imagelib.rs` is the store of recurring characters and styles, and the
+compiler that turns a scene into what `image_generate` sends;
+`docs/IMAGE-COMPILER-DESIGN.md` is the contract and
+`docs/IMAGE-COMPILER-RESEARCH.md` the measurements (E1–E10, cited by
+number). The model names who is in the scene and what each is wearing and
+doing; this code writes how they look. Decisions, each a bug if undone:
+
+- **Identity is the portrait, not the words.** A character drawn from its
+  description alone was a different person (ArcFace 0.33, inside the band two
+  different characters score); pointing at the portrait scored 0.74, and the
+  description beside the pointer 0.78 (E1). So `compile` sends each cast
+  member's portrait as a reference and pastes the description verbatim
+  beside it — never the description alone, never a paraphrase.
+- **One reference per person, the head count stated, `wearing` and `doing`
+  required.** Every reference slot tends to become a person (two unnamed
+  references of one character drew it twice, E2, and a bound face-and-body
+  pair failed once in four, E9); a reference supplies its own outfit, pose
+  and stare when the scene is silent, and stated they land (E3, E8). The
+  prompt's shape — "the person in the image" for one, `<imageN>` left to
+  right with "Exactly N people" for more — is in `compile`, not asked of the
+  model.
+- **Portraits go at 512² (`REFERENCE_SIZE`), edits at 1024.** Four references
+  at 1024² took 190 s and four at 512² 79 s, and a whole portrait at 512²
+  held identity within a few hundredths of a tight crop (E2, E10). `Request`
+  carries `reference_size` for this; ComfyUI's encoder takes one size per
+  call, which is why `cast` and `reference_images` are refused together
+  until a per-reference size is measured.
+- **A character named without a `cast` is refused before the GPU.** The first
+  real run looked the characters up, wrote their descriptions into the prompt
+  and left `cast` out: two strangers (ArcFace 0.17 and 0.10 against their
+  portraits). `imagelib::named_in` catches an approved character's name as a
+  whole word in a non-edit prompt with no `cast` key; `"cast": []` says
+  "someone else by that name". The lookup's result also says how entries are
+  used, which alone was enough on the rerun (0.68 and 0.45).
+- **The owner approves; the model proposes.** `image_library_propose` makes
+  only a `candidate`; `mecha imagelib` (and the web surface next) makes
+  approved entries and approves candidates. A candidate never compiles and
+  is never listed to the model.
+- **The lookup declares nothing because it returns approved entries only.**
+  `image_library` is on `skill`'s footing: every approved entry's text
+  crossed the owner. Returning candidates would need `untrusted_input` on
+  the *tool* — the loop taints on `caps.untrusted_input && out.external`,
+  per tool — which would arm every lookup (found on review of #380).
+- **Provenance is recorded, not claimed.** A proposal's `origin` comes from
+  `ToolCtx::taint`; `None` is `model_untrusted`. `mecha imagelib approve
+  --yes` is refused for an untrusted candidate: its text is shown and the
+  question answered, because approved text rides into every prompt that
+  names it.
+- **Closed enums on disk fail closed.** An unreadable `status` loads as
+  `candidate` and an unreadable `origin` as `model_untrusted`.
+- **Names in, never paths; the directory is the name.** The model names
+  entries and the store resolves them; a hand-edited `portrait` that is not
+  a plain blob name refuses the entry, and a portrait whose bytes no longer
+  match their hash is refused rather than sent.
+- **Global only, no config key.** `~/.mecha/imagelib/`, for the skills and
+  `[[trigger]]` reason: a cloned repository must not bring a character into
+  a trusted session.
+- **The lock is a browse filter** (the owner's ruling, 2026-09-28): generation
+  ignores it. Incognito chats may call `image_library` and generate with a
+  cast; `image_library_propose` writes outside the room and is withheld.
+- **The same-seed rule, narrowed.** An edit still always samples fresh; a
+  cast generation keeps the model's seed — that is how a scene is revised with
+  its composition — except a cast member's `source_seed`, which is replaced
+  and said.
+- **Every generation writes a manifest** (`images/<stem>.json`, `create_new`
+  like the PNG): the scene as written, the compiled prompt, seed, sizes, the
+  model files, and each entry's name, version and portrait hash.
+
 ## Security model
 
 **The full trifecta map lives in `docs/TRIFECTA.md`** — the four ways a
