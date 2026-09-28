@@ -238,6 +238,12 @@ fn seeded(home: &Path) -> Roots {
             r#"{{"id":9,"kind":"meeting","triage_session":"{GONE}","outbox":["item-gone","item-kept"]}}"#
         ),
     );
+    // A mail thread whose reply the forgotten conversation drafted: the
+    // thread is the owner's and stays; the drafting pointer goes.
+    write(
+        &roots.triage.join("acct-thread1.json"),
+        &format!(r#"{{"thread":"thread1","verdict":"reply","draft_session":"{GONE}"}}"#),
+    );
     crate::archive::archive(&roots.sessions, GONE, chrono::Utc::now()).unwrap();
     roots
 }
@@ -301,6 +307,7 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
         ("workflows/w1.json", "Weekly"),
         ("regression-sessions.txt", KEPT),
         ("requests/0000000009-meeting.json", "item-kept"),
+        ("mail-triage/acct-thread1.json", "reply"),
     ] {
         let text = std::fs::read_to_string(home.0.join(path)).unwrap();
         assert!(

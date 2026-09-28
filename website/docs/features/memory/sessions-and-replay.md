@@ -94,6 +94,7 @@ from a transcript:
 | learned rules | a rule whose every source was one of its reflections is **removed** — not retired, which would keep the text and tell the learner it was measured harmful; a rule other conversations also support loses only the source |
 | `appraisals/`, `comparisons/`, `closures/`, `triggers/`, `workflows/` | rows about it; an owner's workflow keeps itself and loses the pointer and the event that recorded it starting |
 | `requests/` | a stranger's front-door request stays, but no longer names the conversation that triaged it or the drafts it staged |
+| `mail-triage/` | a mail thread's record stays, but no longer names the conversation that drafted its reply |
 | the knowledge graph | its episode and everything extracted from it, through `mecha-graph redact --source agent:mecha --source-id <id> --vacuum --tombstone-absent` — the tombstone is written even when nothing was distilled yet, so a distill already in flight cannot add it afterwards |
 
 After the walk, every one of those stores is searched for the session id once

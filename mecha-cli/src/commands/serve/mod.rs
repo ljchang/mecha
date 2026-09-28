@@ -3464,6 +3464,34 @@ mod boundary_tests {
             &id
         ));
 
+        // Opening an archived conversation un-archives it (owner's ruling).
+        let r = app
+            .clone()
+            .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        let r = app
+            .clone()
+            .oneshot(json_post(
+                "/api/resume",
+                serde_json::json!({ "id": id }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(
+            !mecha_core::archive::is_archived(&home.dir.join("sessions"), &id),
+            "opening an archived conversation left it archived"
+        );
+        // Resumed under a new key; let it go again so the delete below can run.
+        let r = app
+            .clone()
+            .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+
         // Delete: a mutation like any other, so the intent header is required.
         let bare = Request::builder()
             .method("DELETE")

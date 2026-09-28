@@ -928,6 +928,8 @@
       const data = await res.json();
       drawer = false;
       switchTo(data.key);
+      // Opening an archived one un-archives it server-side; the lists catch up.
+      refreshLists();
     } catch (e) {
       pushEntry({ kind: 'notice', text: `resume failed: ${e?.message ?? e}` });
     }
