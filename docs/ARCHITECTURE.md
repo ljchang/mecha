@@ -669,7 +669,8 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   entry's name (of the kind asked) returns those entries only; otherwise
   every word of three letters or more must match a name or description (any
   word returned the whole library, "and" being in every description); and a
-  query with no such word matches as one substring, so `jo` finds `jo`.
+  query with no such word — nothing of three letters or more, and no name —
+  matches as one substring, so a short fragment like `ya` finds `maya`.
   Names resolve against what the listing can return, or a candidate's name
   would blank a search and betray the candidate (review of #384).
 - **The owner approves; the model proposes — bounded in entries and in
