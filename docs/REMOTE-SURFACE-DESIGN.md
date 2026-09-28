@@ -660,6 +660,18 @@ filesystem (permits' reason), so the mechanism is `permit.rs`'s shape:
    test router: sixteen models, embedders and an MTP-only draft file among
    them, each loadable by name with bare flags. `start-router.sh` points
    `LLAMA_CACHE` at an empty directory, which leaves exactly the presets.
+8. **An explicit load is refused, not queued, while the resident model is
+   busy** (found by the first live switch from the chip, 2026-09-28).
+   `server_models::load` evicts only a model with no request in flight
+   (`pick_victim` skips `req_count != 0`). With `--models-max 1` full and
+   nothing idle, it throws `model limit reached, try again later` as a
+   500. A *routed* request waits in the scheduler's queue, but `POST
+   /models/load` does not. D13's holds cover runs, not every request (a
+   client that takes no hold, or a request between turns), so a switch can
+   meet a busy model after its wait. `router::load` retries that refusal,
+   and only that one, every second until `--wait-secs` runs out. Before
+   this fix it failed at once into R1's rollback, while `model use` printed
+   that it was waiting for the model to go idle.
 
 ### Build order
 
