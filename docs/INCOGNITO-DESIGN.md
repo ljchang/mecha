@@ -371,10 +371,18 @@ conversation has no `Session` to record into, and a closed key comes back
   its warnings and errors as well as its words — and a
   filter keyed on the call's context leaks on the first task started outside
   it. The worker's own lines that carry words keep their measurements and
-  lose the words (`spoken_words`), and no line names the chat — the
-  worker's `key_for_log` (the affect latch's `key=`, once per answer, is
-  `worker.py`'s own record and outside the silence) and the facade's, on its
-  refusal path.
+  lose the words (`spoken_words`). No line says an incognito chat was
+  spoken into, redacted or not: the worker's call-start line reads as a
+  call that named no chat (`session_line`), its affect latch — once per
+  answer, `worker.py`'s own record and so outside the silence — is not
+  written for such a call, and the facade's refusal path logs nothing for
+  an incognito key, since its message names the kind of chat.
+- **The voice stamp** (`brief::VoicePresence`, `~/.mecha/runs/voice.json`)
+  is not written for a turn into an incognito chat (`stamp_presence`),
+  decided by the key before the gate, so a refused call leaves none either.
+  It outlives the chat on disk, and every ordinary run started within the
+  call window records it in its own situation brief — the fact of the call,
+  written into another chat's transcript.
 - **The claim** (`X-Voice-Unlogged: 1`). Sent only from inside the silence,
   and checked there with a raise rather than an `assert`. The server's gate
   (`spoken_turn_may_enter`) admits a spoken turn into an incognito chat only
@@ -479,3 +487,8 @@ server's history clear; `no-store` on every incognito route.
 - **The voice worker at a raised level.** Its silence covers pipecat and its
   own words at every level, but a debugging patch that logs words from a new
   line in `worker.py` is outside it until it goes through `spoken_words`.
+- **That a voice call happened.** The worker's journal still has a call's
+  connect and disconnect lines, as for any call, and pipecat's lines are
+  absent for as long as it lasts — a gap a careful reader could take for an
+  incognito call. No line names the chat, says it was incognito, or carries
+  a word. Closing the gap would mean silencing pipecat for every call.

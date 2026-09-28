@@ -19,8 +19,9 @@ from worker import (  # noqa: E402
     OpenAITTSService,
     Unlogged,
     is_incognito,
-    key_for_log,
     named_chat_session,
+    names_incognito,
+    session_line,
     spoken_words,
     UNLOGGED,
 )
@@ -126,29 +127,46 @@ class TheWorkersOwnLines(unittest.TestCase):
 class TheChatsName(unittest.TestCase):
     INCOGNITO_AFFECT_KEY = f"chat:{INCOGNITO_KEY}"
 
-    def test_the_affect_latch_does_not_name_an_incognito_chat(self):
-        # `LocalTTS` lives in the worker, so its records are not `pipecat`'s
-        # and the silence does not reach them; the key has to be kept out
-        # of the line itself. Driven on the real class, once per answer as
-        # the pipeline does, against a facade that is not there.
+    @staticmethod
+    def latch_lines(affect_key: str) -> list[str]:
+        """The affect latch, driven on the real class once, as the pipeline
+        does per answer, against a facade that is not there."""
         tts = LocalTTS(
             api_key="unused",
             base_url="http://127.0.0.1:9/v1",
             settings=OpenAITTSService.Settings(voice="x", model="tts"),
             echo_window=BotSpeech(),
         )
-        tts.set_affect_key(self.INCOGNITO_AFFECT_KEY)
+        tts.set_affect_key(affect_key)
         with Captured() as cap:
             asyncio.run(tts.on_turn_context_created("ctx-1"))
-        latch = [line for line in cap.lines if "voice affect latch" in line]
-        self.assertEqual(len(latch), 1, "the latch line is how a silent hook is caught")
-        self.assertNotIn(INCOGNITO_KEY, latch[0])
-        self.assertIn("key=chat:<incognito>", latch[0])
+        return [line for line in cap.lines if "voice affect latch" in line]
 
-    def test_an_ordinary_key_is_logged_as_it_is(self):
-        self.assertEqual(key_for_log("chat:main"), "chat:main")
-        self.assertEqual(key_for_log("voice:webrtc-1a2b"), "voice:webrtc-1a2b")
-        self.assertIsNone(key_for_log(None))
+    def test_the_affect_latch_says_nothing_of_an_incognito_chat(self):
+        # `LocalTTS` lives in the worker, so its records are not `pipecat`'s
+        # and the silence does not reach them. Redacting the key would still
+        # say an incognito chat was spoken into, so the line is not written.
+        lines = self.latch_lines(self.INCOGNITO_AFFECT_KEY)
+        self.assertEqual(lines, [])
+
+    def test_the_affect_latch_still_logs_every_other_call(self):
+        # The non-vacuous half: the latch line is how a hook that stopped
+        # firing is caught, so an ordinary call must still write it.
+        lines = self.latch_lines("chat:main")
+        self.assertEqual(len(lines), 1)
+        self.assertIn("key=chat:main", lines[0])
+
+    def test_a_call_into_an_incognito_chat_starts_as_one_that_named_none(self):
+        line = session_line("webrtc-1a2b", INCOGNITO_KEY)
+        self.assertEqual(line, session_line("webrtc-1a2b", None))
+        self.assertNotIn("incognito", line)
+        self.assertIn("'main'", session_line("webrtc-1a2b", "main"))
+
+    def test_only_an_incognito_chat_key_is_recognised(self):
+        self.assertTrue(names_incognito(self.INCOGNITO_AFFECT_KEY))
+        self.assertFalse(names_incognito("chat:main"))
+        self.assertFalse(names_incognito("voice:webrtc-1a2b"))
+        self.assertFalse(names_incognito(None))
 
 
 class TheSessionName(unittest.TestCase):
