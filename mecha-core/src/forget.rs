@@ -273,14 +273,27 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
             true
         }
     };
-    purge_learning(roots, id, &items, graph_failed, &mut report);
+    purge_learning(roots, id, graph_failed, &mut report);
     // Only once every store keyed by the item ids has answered: a failure
     // above keeps the items, so the retry can still find those rows by them.
     if report.errors.is_empty() {
-        report.attempt(
-            "outbox",
-            remove_items(&roots.outbox, |v| field_is(v, "session_id", id)).map(|v| v.len()),
-        );
+        // The drafts, then the mined-drafts ledger lines naming them — in that
+        // order, so a failure between can leave an opaque item id behind but
+        // never a draft whose "already mined" mark is gone, which tonight's
+        // reflect would mine into a new lesson.
+        let removed = remove_items(&roots.outbox, |v| field_is(v, "session_id", id));
+        let ok = removed.is_ok();
+        report.attempt("outbox", removed.map(|v| v.len()));
+        if ok {
+            report.attempt(
+                "mined-drafts ledger",
+                with_lock(&roots.learning, || {
+                    filter_lines(&roots.learning.join("mined_outbox.jsonl"), |l| {
+                        items.iter().any(|i| i == l.trim())
+                    })
+                }),
+            );
+        }
     } else {
         report
             .errors
@@ -368,12 +381,19 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
     // the distill ledger naming the session, so the retry still owes it an
     // episode — the `graph:` error already says why.
     let kept_for_graph = roots.learning.join("distilled.jsonl");
-    for path in still_naming(roots, id)
+    let (named, unread) = still_naming(roots, id);
+    for path in named
         .into_iter()
         .filter(|p| !(graph_failed && *p == kept_for_graph))
     {
         report.residue.push(format!(
             "{} still names this session, in a field delete does not know",
+            path.display()
+        ));
+    }
+    for path in unread {
+        report.residue.push(format!(
+            "{} could not be read, so it may still name this session",
             path.display()
         ));
     }
@@ -404,9 +424,13 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
 /// Sessions a forget set aside and did not finish. Each still holds the
 /// whole conversation, and nothing lists it — `mecha doctor` reads this so an
 /// incomplete delete cannot go quiet once the page that reported it closes.
-pub fn unfinished(sessions: &Path) -> Vec<String> {
-    let Ok(read) = std::fs::read_dir(sessions) else {
-        return Vec::new();
+pub fn unfinished(sessions: &Path) -> Result<Vec<String>> {
+    // A store that cannot be listed is a finding, never an empty answer —
+    // this is the doctor's one view of a half-finished delete.
+    let read = match std::fs::read_dir(sessions) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("listing {}", sessions.display())),
     };
     let suffix = format!(".{FORGETTING}");
     let mut out: Vec<String> = read
@@ -419,51 +443,78 @@ pub fn unfinished(sessions: &Path) -> Vec<String> {
         })
         .collect();
     out.sort();
-    out
+    Ok(out)
 }
 
 /// The learning store, under its writer lock. With `keep_distilled`, the
 /// distill ledger keeps the session: the graph did not answer for it, and
 /// the retry must still know it has an episode to redact.
-fn purge_learning(
-    roots: &Roots,
-    id: &str,
-    outbox_items: &[String],
-    keep_distilled: bool,
-    report: &mut Report,
-) {
+fn purge_learning(roots: &Roots, id: &str, keep_distilled: bool, report: &mut Report) {
     let root = &roots.learning;
+    // The reflections are the key every ledger below is found by, so they are
+    // read first and removed last: a step that fails in between leaves them
+    // in place, and the retry finds everything again. Read without the lock
+    // — nothing adds a reflection for a session already set aside.
+    let mut ids: HashSet<String> = HashSet::new();
+    let mut texts: Vec<String> = Vec::new();
+    match read_lines(&root.join("reflections.jsonl")) {
+        Ok(lines) => {
+            for line in lines {
+                let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if field_is(&v, "session_id", id) {
+                    if let Some(r) = v.get("id").and_then(Value::as_str) {
+                        ids.insert(r.to_string());
+                    }
+                    if let Some(t) = v.get("reflexion_text").and_then(Value::as_str) {
+                        texts.push(t.to_string());
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            report.errors.push(format!("learning store: {e:#}"));
+            return;
+        }
+    }
+
+    // Sibling stores, each on its own existence: a home that appraises but
+    // never reflected has comparisons and no learning store.
+    let errors_before = report.errors.len();
+    report.attempt(
+        "harness candidates",
+        with_lock(&roots.harness, || {
+            edit_items(&roots.harness.join("candidates"), |v| scrub_string(v, id))
+        }),
+    );
+    report.attempt(
+        "comparisons",
+        with_lock(&roots.comparisons, || {
+            filter_jsonl(&roots.comparisons.join("comparisons.jsonl"), |v| {
+                let p = v.get("pointers");
+                p.and_then(|p| p.get("session_id")).and_then(Value::as_str) == Some(id)
+                    || p.and_then(|p| p.get("reflection_id"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|r| ids.contains(r))
+            })
+        }),
+    );
+    let siblings_answered = report.errors.len() == errors_before;
+
     if !root.is_dir() {
         report.count("reflections", 0);
         return;
     }
     let result = with_lock(root, || {
-        // The reflections are the key every other ledger here is found by,
-        // so they are read now and removed last: a step that fails in
-        // between leaves them in place, and the retry finds everything again.
-        let mut ids: HashSet<String> = HashSet::new();
-        let mut texts: Vec<String> = Vec::new();
-        for line in read_lines(&root.join("reflections.jsonl"))? {
-            let Ok(v) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-            if field_is(&v, "session_id", id) {
-                if let Some(r) = v.get("id").and_then(Value::as_str) {
-                    ids.insert(r.to_string());
-                }
-                if let Some(t) = v.get("reflexion_text").and_then(Value::as_str) {
-                    texts.push(t.to_string());
-                }
-            }
-        }
-
         let mut ledgers = filter_lines(&root.join("mined.jsonl"), |l| l.trim() == id)?;
         if !keep_distilled {
             ledgers += filter_lines(&root.join("distilled.jsonl"), |l| l.trim() == id)?;
         }
-        ledgers += filter_lines(&root.join("mined_outbox.jsonl"), |l| {
-            outbox_items.iter().any(|i| i == l.trim())
-        })?;
+        // Not `mined_outbox.jsonl`: it moves with the outbox items it names
+        // (see `forget`), because a ledger line gone while its draft stays
+        // makes the draft mineable again — and a fresh `writing` lesson from
+        // a forgotten conversation would ride in every future prompt.
         report.count("learning ledgers", ledgers);
 
         let by_reflexion = |v: &Value| {
@@ -478,30 +529,17 @@ fn purge_learning(
         report.count("proposals", purge_proposals(&root.join("proposals"), &ids)?);
         report.count("learned rules", purge_rules(&root.join("rules"), &ids)?);
         report.count(
-            "harness candidates",
-            with_lock(&roots.harness, || {
-                edit_items(&roots.harness.join("candidates"), |v| scrub_string(v, id))
-            })?,
-        );
-        report.count(
-            "comparisons",
-            with_lock(&roots.comparisons, || {
-                filter_jsonl(&roots.comparisons.join("comparisons.jsonl"), |v| {
-                    let p = v.get("pointers");
-                    p.and_then(|p| p.get("session_id")).and_then(Value::as_str) == Some(id)
-                        || p.and_then(|p| p.get("reflection_id"))
-                            .and_then(Value::as_str)
-                            .is_some_and(|r| ids.contains(r))
-                })
-            })?,
-        );
-        report.count(
             "learning logs",
             purge_logs(&root.join("logs"), id, &ids, &texts)?,
         );
-        let n = filter_jsonl(&root.join("reflections.jsonl"), |v| {
-            field_is(v, "session_id", id)
-        })?;
+        // The key last, and only once every store keyed by it answered.
+        let n = if siblings_answered {
+            filter_jsonl(&root.join("reflections.jsonl"), |v| {
+                field_is(v, "session_id", id)
+            })?
+        } else {
+            0
+        };
         report.count("reflections", n);
 
         if root.join(".git").exists() && (n > 0 || ledgers > 0) {
@@ -761,8 +799,11 @@ fn purge_workspace(roots: &Roots, id: &str, meta: &SessionMeta, report: &mut Rep
 /// Every file in the stores [`forget`] purges whose bytes still contain `id`.
 /// Skips each store's `.lock` and the learning store's legacy `.git`, which
 /// the report names on its own.
-fn still_naming(roots: &Roots, id: &str) -> Vec<PathBuf> {
+/// Also answers what could not be read: unknown is never clean, so a store
+/// the search could not open is said, never counted as holding nothing.
+fn still_naming(roots: &Roots, id: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut hits = Vec::new();
+    let mut unread = Vec::new();
     let mut stack: Vec<PathBuf> = [
         &roots.outbox,
         &roots.questions,
@@ -803,21 +844,38 @@ fn still_naming(roots: &Roots, id: &str) -> Vec<PathBuf> {
         if name == ".git" || name == ".lock" || name == format!("{id}.{FORGETTING}") {
             continue;
         }
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
-            continue;
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                unread.push(path);
+                continue;
+            }
         };
         if meta.is_dir() {
-            if let Ok(read) = std::fs::read_dir(&path) {
-                stack.extend(read.flatten().map(|e| e.path()));
+            match std::fs::read_dir(&path) {
+                Ok(read) => {
+                    for entry in read {
+                        match entry {
+                            Ok(e) => stack.push(e.path()),
+                            Err(_) => unread.push(path.clone()),
+                        }
+                    }
+                }
+                Err(_) => unread.push(path),
             }
-        } else if meta.is_file()
-            && std::fs::read(&path).is_ok_and(|b| b.windows(id.len()).any(|w| w == id.as_bytes()))
-        {
-            hits.push(path);
+        } else if meta.is_file() {
+            match std::fs::read(&path) {
+                Ok(b) if b.windows(id.len()).any(|w| w == id.as_bytes()) => hits.push(path),
+                Ok(_) => {}
+                Err(_) => unread.push(path),
+            }
         }
     }
     hits.sort();
-    hits
+    unread.sort();
+    unread.dedup();
+    (hits, unread)
 }
 
 // ─── Store primitives ───────────────────────────────────────────────────────

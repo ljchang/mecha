@@ -347,15 +347,23 @@ fn a_store_that_fails_keeps_the_transcript_to_finish_next_time() {
         .unwrap()
         .iter()
         .all(|(m, _)| m.id != GONE));
+    // The draft is kept for the retry, so its "already mined" mark must be
+    // too — or tonight's reflect mines the forgotten draft into a new lesson.
+    assert!(roots.outbox.join("item-gone.json").exists());
+    let mined = std::fs::read_to_string(roots.learning.join("mined_outbox.jsonl")).unwrap();
+    assert!(
+        mined.contains("item-gone"),
+        "a kept draft lost its mined mark"
+    );
     // The graph still owes the episode, so the ledger that says so stays.
     let distilled = std::fs::read_to_string(roots.learning.join("distilled.jsonl")).unwrap();
     assert!(distilled.contains(GONE));
 
     // Nothing lists it, so the doctor's reader must.
-    assert_eq!(unfinished(&roots.sessions), [GONE]);
+    assert_eq!(unfinished(&roots.sessions).unwrap(), [GONE]);
 
     let second = forget(&roots, GONE, &graph).unwrap();
-    assert!(unfinished(&roots.sessions).is_empty());
+    assert!(unfinished(&roots.sessions).unwrap().is_empty());
     assert!(second.complete, "{:?}", second.errors);
     assert!(!parked.exists());
     assert_eq!(holding(&home.0, GONE), Vec::<PathBuf>::new());
@@ -588,4 +596,30 @@ fn an_unreadable_header_says_its_workspace_was_not_found() {
         "{:?}",
         report.residue
     );
+}
+
+#[test]
+fn comparisons_are_purged_in_a_home_that_never_reflected() {
+    // `mecha sessions appraise` writes comparisons without ever creating the
+    // learning store; the purge must depend only on the store it purges.
+    let home = scratch("no-learning");
+    let roots = Roots::under(&home.0);
+    session(&roots, GONE, &home.0.join("work/web/a"), CANARY);
+    write(
+        &roots.comparisons.join("comparisons.jsonl"),
+        &format!("{{\"id\":\"c1\",\"pointers\":{{\"session_id\":\"{GONE}\"}}}}\n"),
+    );
+    assert!(!roots.learning.exists());
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+    assert!(report.complete, "{:?}", report.errors);
+    assert!(report
+        .removed
+        .iter()
+        .any(|(s, n)| s == "comparisons" && *n == 1));
+    assert_eq!(holding(&home.0, GONE), Vec::<PathBuf>::new());
 }

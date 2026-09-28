@@ -1639,7 +1639,17 @@ fn check_charter(path: &Path) -> Vec<Finding> {
 /// to be rid of. Broken, not attention — it is a promise half-kept, and the
 /// remedy is the same command run again.
 fn check_unfinished_forgets(sessions: &Path) -> Vec<Finding> {
-    crate::forget::unfinished(sessions)
+    let unfinished = match crate::forget::unfinished(sessions) {
+        Ok(ids) => ids,
+        Err(e) => {
+            return vec![Finding::unreadable(
+                "sessions",
+                "the session store",
+                format!("{e:#}"),
+            )]
+        }
+    };
+    unfinished
         .into_iter()
         .map(|id| Finding {
             component: "sessions".into(),
