@@ -189,7 +189,10 @@ fn seeded(home: &Path) -> Roots {
     write(
         &roots.harness.join("candidates/c1.json"),
         &format!(
-            r#"{{"id":"c1","measurement":{{"episodes":["{GONE}","{KEPT}"],"holdout_episodes":["{GONE}"]}}}}"#
+            // The shapes `Measurement::record` writes: bare ids in lists, a
+            // scalar `episode` in each divergence, the id inside caveat text,
+            // and opaque per-arm receipts.
+            r#"{{"id":"c1","measurement":{{"episodes":["{GONE}","{KEPT}"],"holdout_episodes":["{GONE}"],"divergence_detail":[{{"episode":"{GONE}","at":3}},{{"episode":"{KEPT}","at":1}}],"replay_caveats":["{GONE} — attached 2 times; replayed under the first config","{KEPT} — attached 2 times"],"arm_receipts":[{{"arm":"a","trace":{{"session":"{GONE}"}}}},{{"arm":"b","trace":{{"session":"{KEPT}"}}}}]}}}}"#
         ),
     );
 
