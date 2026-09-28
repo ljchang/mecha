@@ -1659,6 +1659,41 @@ pub fn observe(
     }
 }
 
+/// Whether `session_id`'s output left the owner an act from R16's set to
+/// take: a draft to release, edit or reject, a task to close or reopen, a
+/// workflow to close or cancel. The same outputs [`observe`] opens a window
+/// on, read the same way. `None` when a store it depends on could not be
+/// read — unknown, never "nothing to act on".
+///
+/// A chat answer or a run that staged nothing offers none of them, so
+/// `no_act` is the only answer [`observe`] can return for it: a prediction
+/// of `no_act` there is a hit by construction. [`ScoreSummary::forced`]
+/// counts those, and the hit rate leaves them out.
+pub fn output_offers_act(
+    session_id: &str,
+    anchor: Option<&GoalRef>,
+    acts: &OwnerActs<'_>,
+) -> Option<bool> {
+    if acts.outbox_unreadable || acts.closures_unreadable || acts.workflows_unreadable {
+        return None;
+    }
+    let drafted = acts.drafts.iter().any(|d| {
+        d.session_id.as_deref() == Some(session_id) && d.author() != crate::outbox::Author::Harness
+    });
+    let tasked = matches!(anchor, Some(GoalRef::Task(_)))
+        || acts
+            .closures
+            .iter()
+            .any(|c| c.sessions.iter().any(|s| s == session_id));
+    let tracked = acts.workflows.iter().any(|w| {
+        w.session_id.as_deref() == Some(session_id)
+            || w.owner_dispositions()
+                .iter()
+                .any(|d| d.session.as_deref() == Some(session_id))
+    });
+    Some(drafted || tasked || tracked)
+}
+
 /// One appraisal's prediction, scored: its expected act against the act
 /// that happened. Written once per appraisal, when the act resolves, and
 /// never rewritten — a later charter edit that moves the patience does not
@@ -1743,6 +1778,11 @@ pub struct ScoreSummary {
     pub with_expectation: usize,
     pub scored: usize,
     pub hits: usize,
+    /// Of the hits, those that could not have missed: a `no_act` prediction
+    /// on an output that offered the owner no act to take
+    /// ([`output_offers_act`]). Out of `hit_rate`'s numerator and
+    /// denominator both.
+    pub forced: usize,
     /// Misses — surprises.
     pub surprises: usize,
     /// Of the surprises, those on clean appraisals.
@@ -1757,7 +1797,9 @@ pub struct ScoreSummary {
     /// Task outputs this reader could not window, because it read no board
     /// — the read-only readout; `mecha distill` reads it and scores them.
     pub board_not_read: usize,
-    /// `hits / scored`; `None` over no scores.
+    /// `(hits − forced) / (scored − forced)`: the rate over predictions that
+    /// could have missed. `None` when there are none — a rate over forced
+    /// hits alone would read 100% for a predictor that never risked a miss.
     pub hit_rate: Option<f64>,
     /// Score lines that could not be read.
     pub skipped: usize,
@@ -1890,6 +1932,12 @@ impl AppraisalStore {
                 s.scored += 1;
                 if score.hit {
                     s.hits += 1;
+                    if score.expected == ExpectedAct::NoAct
+                        && output_offers_act(&row.session_id, row.anchor.as_ref(), acts)
+                            == Some(false)
+                    {
+                        s.forced += 1;
+                    }
                 } else {
                     s.surprises += 1;
                     if score.clean {
@@ -1906,7 +1954,8 @@ impl AppraisalStore {
                 ObservedAct::Act { .. } | ObservedAct::NoAct { .. } => s.resolved_unwritten += 1,
             }
         }
-        s.hit_rate = (s.scored > 0).then(|| s.hits as f64 / s.scored as f64);
+        let could_miss = s.scored - s.forced;
+        s.hit_rate = (could_miss > 0).then(|| (s.hits - s.forced) as f64 / could_miss as f64);
         Ok(s)
     }
 }
@@ -2453,6 +2502,12 @@ mod tests {
     /// result, a steer, the agent's answer, the run record and — when given
     /// — a taint checkpoint after the last message.
     fn session(root: &Path, taint: Option<Taint>) -> PathBuf {
+        session_on(root, taint, Some(GoalRef::Task("t-budget".into())))
+    }
+
+    /// [`session`], anchored to `goal` — or to nothing, the chat answer that
+    /// leaves the owner no act to take.
+    fn session_on(root: &Path, taint: Option<Taint>, goal: Option<GoalRef>) -> PathBuf {
         let session = Session::create(
             root,
             SessionMeta {
@@ -2471,17 +2526,11 @@ mod tests {
                 tools: vec!["mail_search".into()],
                 rules_workspace: Some(PathBuf::from("/project")),
                 rules_surface: Some(SessionKind::Task),
-                rules_goal: Some(crate::situation::GoalKey::Named(GoalRef::Task(
-                    "t-budget".into(),
-                ))),
+                rules_goal: goal.clone().map(crate::situation::GoalKey::Named),
                 ..Default::default()
             }))
             .unwrap();
-        session
-            .append(&Record::GoalAnchor {
-                goal: Some(GoalRef::Task("t-budget".into())),
-            })
-            .unwrap();
+        session.append(&Record::GoalAnchor { goal }).unwrap();
         for m in [
             Message::user("find when the budget review is"),
             Message::assistant(vec![Block::ToolUse {
@@ -4031,6 +4080,68 @@ mod tests {
         std::fs::write(fresh.ledger(), ledger).unwrap();
         let s = fresh.score_summary(&blind, later).unwrap();
         assert_eq!(s.appraisals_unreadable, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A `no_act` prediction on a run that left the owner nothing to act on
+    /// cannot miss, so it is a hit that says nothing: counted as forced and
+    /// kept out of the rate, where the task-anchored one — the owner could
+    /// have closed the task — stays in. Seven such hits read "hit rate 100%"
+    /// on the live store before this (2026-09-28).
+    #[test]
+    fn a_no_act_hit_on_an_output_with_nothing_to_act_on_is_forced_and_out_of_the_rate() {
+        let root = temp_root("forced");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let expect_nothing = Draft {
+            expected_act: Some(ExpectedAct::NoAct),
+            ..draft()
+        };
+        let chat = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        store
+            .record(&chat, expect_nothing.clone(), "m", &known())
+            .unwrap();
+        let tasks = json!({"items": [{"id": "t-budget", "status": "next"}]});
+        let owner = OwnerActs {
+            board: BoardRead::Read(&tasks),
+            ..OwnerActs::default()
+        };
+        let later = Utc::now() + chrono::Duration::hours(72);
+
+        // Only the forced hit on record: scored, and no rate — not 100%.
+        let alone = store.score_due(&owner, later).unwrap();
+        assert_eq!((alone.scored, alone.hits, alone.forced), (1, 1, 1));
+        assert_eq!(
+            alone.hit_rate, None,
+            "a rate over forced hits alone is no rate"
+        );
+
+        // A task-anchored no_act could have missed: it is the rate.
+        let task = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        store.record(&task, expect_nothing, "m", &known()).unwrap();
+        let both = store.score_due(&owner, later).unwrap();
+        assert_eq!((both.scored, both.hits, both.forced), (2, 2, 1));
+        assert_eq!(both.hit_rate, Some(1.0));
+
+        // What makes an output actionable, and what makes it unknown.
+        assert_eq!(
+            output_offers_act(chat.session_id(), None, &owner),
+            Some(false)
+        );
+        let drafts = [draft_of(&root, chat.session_id(), "pending", None)];
+        assert_eq!(
+            output_offers_act(chat.session_id(), None, &acts(&drafts)),
+            Some(true),
+            "a staged draft is an act to take"
+        );
+        let blind = OwnerActs {
+            outbox_unreadable: true,
+            ..owner
+        };
+        assert_eq!(output_offers_act(chat.session_id(), None, &blind), None);
+        // An unreadable store cannot call a hit forced: it stays in the rate.
+        let unsure = store.score_summary(&blind, later).unwrap();
+        assert_eq!((unsure.forced, unsure.hit_rate), (0, Some(1.0)));
         let _ = std::fs::remove_dir_all(&root);
     }
 

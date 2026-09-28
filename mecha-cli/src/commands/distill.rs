@@ -779,17 +779,30 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
         );
     }
     format!(
-        "appraisals' predictions: {} scored of {} ({} hit, {} surprise(s), {} of them on clean \
+        "appraisals' predictions: {} scored of {} ({} hit{}, {} surprise(s), {} of them on clean \
          appraisals; {}) · {} waiting for the owner's act or the window · {} resolved, to be \
          scored on the next distill · {} unknown (a store or the patience could not be read) · \
          {} task output(s) awaiting distill's board read{}",
         s.scored,
         s.with_expectation,
         s.hits,
+        if s.forced > 0 {
+            format!(
+                " — {} of them forced: `no_act` on a run that left nothing to act on",
+                s.forced
+            )
+        } else {
+            String::new()
+        },
         s.surprises,
         s.clean_surprises,
         match s.hit_rate {
-            Some(r) => format!("hit rate {:.0}%", r * 100.0),
+            Some(r) => format!(
+                "hit rate {:.0}% over the {} that could miss",
+                r * 100.0,
+                s.scored - s.forced
+            ),
+            None if s.scored > 0 => "no rate: none could miss".into(),
             None => "no rate".into(),
         },
         s.pending,
