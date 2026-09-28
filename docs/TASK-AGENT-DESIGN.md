@@ -586,26 +586,26 @@ a fifth waits.
 KV costs **22 KiB per token** here: the model is hybrid attention, 11 of 41
 layers holding a cache and 30 carrying a constant-size recurrent state, which
 is why the figure is 22 and not the 82 a per-layer count predicts. A full
-262,144-token slot is therefore ~5.5 GB, matching what the server reports.
+262,144-token slot is therefore ~5.5 GiB, matching what the server reports.
 
-`-cram 32768` was the prompt cache when this was written — 32 GB holding
+`-cram 32768` was the prompt cache when this was written — 32 GiB holding
 **evicted slot states, so a returning prefix is restored instead of
 re-prefilled**. Raised from the 8 GB default after 341 evictions in a day, and
 none for a month after. What it bought:
 
-| A parked session of | is | fits in 32 GB |
+| A parked session of | is | fits in 32 GiB |
 |---|---|---|
-| 30,000 tokens (a typical task) | 0.63 GB | **~50** |
-| 60,000 tokens | 1.26 GB | ~25 |
-| 262,144 tokens (a full slot) | 5.5 GB | ~6 |
+| 30,000 tokens (a typical task) | 0.63 GiB | **~50** |
+| 60,000 tokens | 1.26 GiB | ~25 |
+| 262,144 tokens (a full slot) | 5.5 GiB | ~6 |
 
 Roughly fifty parked task conversations, today, with nothing new built.
 
 > **Since 2026-09-28 the cap is 16384** (`LLAMA-SERVER.md` §Flags that cost
-> something to learn, the `-cram` bullet). By then 32 GB had filled and was evicting — 118 in the three days
-> before — and a full 32 GB left image generation no room on the shared pool.
-> Halve the right-hand column — about 25 typical parked tasks, and 2.9 full
-> slots (16,384 / 5,632 MiB).
+> something to learn, the `-cram` bullet). By then 32 GiB had filled and was
+> evicting — 118 in the three days before — and a full 32 GiB left image
+> generation no room on the shared pool. Halve the right-hand column — about
+> 25 typical parked tasks, and 2.9 full slots (16,384 / 5,632 MiB).
 
 ### 3.2 R1 — Admission control, not memory management
 
@@ -811,8 +811,9 @@ the argument.
 
 - **Does the prompt cache hold overnight?** §3.4's measurement. Everything in
   R2 rests on a parked session getting its prefix back after a night of
-  triggers and chat, and that has never been measured — only the absence of
-  evictions at 32 GB under today's traffic, which is not the same claim.
+  triggers and chat, and that has never been measured — only that 32 GiB went
+  a month without evictions and then, once full, evicted 118 times in three
+  days (2026-09-28), neither of which is the same claim.
 - ~~**Should the plan gate be skippable?**~~ **Moot as of 2026-08-26**: D12
   was decided against as written, so there is no gate to skip. What replaced
   the question is a narrower one — whether a *reviewable plan document*,

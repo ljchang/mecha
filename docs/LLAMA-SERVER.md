@@ -75,9 +75,9 @@ Only 11 of 41 layers hold a KV cache. Per token, per full-attention layer:
 
 | KV type | per token | 262,144 tokens |
 |---|---|---|
-| **f16** (default) | **22.0 KiB** | 5.5 GB |
-| q8_0 | 11.7 KiB | 2.9 GB |
-| q4_0 | 6.2 KiB | 1.5 GB |
+| **f16** (default) | **22.0 KiB** | 5.5 GiB |
+| q8_0 | 11.7 KiB | 2.9 GiB |
+| q4_0 | 6.2 KiB | 1.5 GiB |
 
 Plus a constant **~64 MiB per slot** of SSM recurrent state, flat in context
 length — so adding a slot is nearly free and adding *context* to a slot is what
