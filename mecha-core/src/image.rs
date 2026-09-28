@@ -59,37 +59,49 @@ const JPEG_QUALITY: u8 = 85;
 /// Returns `Ok(None)` when the extension is not one both backends read, so a
 /// caller can say "here is a path" for a PDF instead of failing.
 pub fn block_from_path(path: &Path) -> Result<Option<Block>> {
-    let Some(media_type) = image_media_type(path) else {
+    if image_media_type(path).is_none() {
         return Ok(None);
-    };
+    }
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
-    block_from_bytes(media_type, bytes, name, &path.display().to_string()).map(Some)
+    block_from_bytes(bytes, name, &path.display().to_string()).map(Some)
 }
 
 /// [`block_from_path`] for bytes a caller already read — through
 /// `WorkspaceFiles::read`, say, whose descriptor-held walk a second open by
-/// path would undo. `media_type` is the caller's (from the name, as
-/// [`image_media_type`] decides it); `what` names the file in errors.
-pub fn block_from_bytes(
-    media_type: &'static str,
-    bytes: Vec<u8>,
-    name: Option<String>,
-    what: &str,
-) -> Result<Block> {
-    // Dimensions are read from the header alone, so the common case — an
+/// path would undo. `what` names the file in errors.
+///
+/// **The bytes decide what it is, never the name.** A caller gates on the
+/// extension ([`image_media_type`]) to decide whether to try at all; the
+/// media type sent is the one the header says. Both halves are found on
+/// review of #368, and both fail the same way: a block the provider rejects
+/// rides into append-only history and fails every later request of that
+/// conversation — reachable from Slack and the web chat.
+pub fn block_from_bytes(bytes: Vec<u8>, name: Option<String>, what: &str) -> Result<Block> {
+    // Format and dimensions from the header alone, so the common case — an
     // image that is already small — never pays to decode the pixels.
-    let dims = image::ImageReader::new(std::io::Cursor::new(&bytes))
+    let header = image::ImageReader::new(std::io::Cursor::new(&bytes))
         .with_guessed_format()
         .ok()
-        .and_then(|r| r.into_dimensions().ok());
-    let oversized = dims.is_some_and(|(w, h)| w.max(h) > MAX_EDGE);
-    if !oversized && bytes.len() <= MAX_BYTES {
-        return Ok(Block::image(media_type, &bytes, name));
+        .and_then(|r| {
+            let format = r.format()?;
+            r.into_dimensions().ok().map(|dims| (format, dims))
+        });
+    // A header that cannot be read is not a picture, whatever its name says.
+    let Some((format, (w, h))) = header else {
+        bail!("{what} is named as an image but did not decode (its header could not be read)");
+    };
+    let oversized = w.max(h) > MAX_EDGE;
+    // A real JPEG named `.png` is sent as a JPEG: the type the provider
+    // checks is the type the bytes are. A format neither backend reads
+    // (a TIFF named `.png`) is re-encoded below rather than passed through.
+    if let Some(media_type) = media_type_of(format) {
+        if !oversized && bytes.len() <= MAX_BYTES {
+            return Ok(Block::image(media_type, &bytes, name));
+        }
     }
 
-    let img = image::load_from_memory(&bytes)
-        .with_context(|| format!("{what} is named as an image but did not decode"))?;
+    let img = decode(&bytes, what)?;
     // `thumbnail` preserves the aspect ratio and takes the *bound* rather
     // than a target, so an image that is oversized in only one dimension is
     // not stretched to fill the other.
@@ -131,17 +143,14 @@ pub fn block_from_bytes(
 /// every one above [`PASS_THROUGH_BYTES`], resent every turn for the rest of
 /// the conversation. The file on disk stays the original.
 pub fn rendered_block(bytes: &[u8], name: Option<String>) -> Result<Block> {
-    let img = image::load_from_memory(bytes).context("the image did not decode")?;
+    // Decoded even when it will pass through untouched: the decode is the
+    // proof it is a picture. A good header on a broken body would otherwise
+    // ride into the transcript, and a picture the provider rejects fails
+    // every later request of that conversation, not just this one.
+    let img = decode(bytes, "the picture")?;
     if bytes.len() <= PASS_THROUGH_BYTES && img.width().max(img.height()) <= MAX_EDGE {
-        let media_type = match image::guess_format(bytes) {
-            Ok(image::ImageFormat::Png) => "image/png",
-            Ok(image::ImageFormat::Jpeg) => "image/jpeg",
-            Ok(image::ImageFormat::Gif) => "image/gif",
-            Ok(image::ImageFormat::WebP) => "image/webp",
-            // Decoded, but not a type both backends read: re-encode below.
-            _ => "",
-        };
-        if !media_type.is_empty() {
+        // Decoded, but not a type both backends read: re-encode below.
+        if let Some(media_type) = image::guess_format(bytes).ok().and_then(media_type_of) {
             return Ok(Block::image(media_type, bytes, name));
         }
     }
@@ -165,6 +174,63 @@ pub fn rendered_block(bytes: &[u8], name: Option<String>) -> Result<Block> {
         );
     }
     Ok(Block::image("image/jpeg", &out, name))
+}
+
+/// The most pixels decoded, read from the header, and the allocation bound
+/// a decode runs under. The header is the file's claim about itself, and a
+/// few-hundred-kilobyte PNG can claim 40000×40000.
+///
+/// **What this adds, stated exactly** (corrected on review of #368): the
+/// allocation bound is `image`'s own default (`Limits::default()` carries
+/// `max_alloc: Some(512 MiB)`, and `load_from_memory` used it), so such a
+/// file was already refused — as "did not decode", which is the wrong
+/// diagnosis and the wrong fix. The pixel check says "too large to show"
+/// instead, from the header, before any decoder runs; `max_alloc` is set
+/// explicitly so the bound does not rest on a default nobody reads.
+///
+/// **By area, never by side** (found on review of #368): a per-side bound
+/// refused a 1440×20000 full-page screenshot — ~100 MB decoded — which the
+/// caps above exist to shrink and show. 128 megapixels is 512 MiB as 8-bit
+/// RGBA; a 16-bit decode of the same size is twice that and is stopped by
+/// `max_alloc`, not by this check.
+const MAX_DECODE_PIXELS: u64 = 128 * 1024 * 1024;
+const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
+
+/// Decode `bytes`, refusing at the header a picture past
+/// [`MAX_DECODE_PIXELS`] — said as too large, not as a failed decode, since
+/// the two lead to different fixes. `what` names it in either error.
+fn decode(bytes: &[u8], what: &str) -> Result<image::DynamicImage> {
+    let reader = || image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format();
+    if let Ok((w, h)) = reader()
+        .map_err(anyhow::Error::from)
+        .and_then(|r| Ok(r.into_dimensions()?))
+    {
+        if u64::from(w) * u64::from(h) > MAX_DECODE_PIXELS {
+            bail!(
+                "{what} is {w}×{h} — too large to show (over {} megapixels)",
+                MAX_DECODE_PIXELS / (1024 * 1024)
+            );
+        }
+    }
+    let mut reader = reader().with_context(|| format!("{what} could not be read"))?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    reader.limits(limits);
+    reader
+        .decode()
+        .with_context(|| format!("{what} is named as an image but did not decode"))
+}
+
+/// The media type both backends read for a sniffed format, or `None` for
+/// one they do not.
+fn media_type_of(format: image::ImageFormat) -> Option<&'static str> {
+    match format {
+        image::ImageFormat::Png => Some("image/png"),
+        image::ImageFormat::Jpeg => Some("image/jpeg"),
+        image::ImageFormat::Gif => Some("image/gif"),
+        image::ImageFormat::WebP => Some("image/webp"),
+        _ => None,
+    }
 }
 
 fn human(bytes: usize) -> String {
@@ -332,6 +398,102 @@ mod tests {
         assert!(rendered_block(b"not a png", None).is_err());
     }
 
+    /// A PNG that is only a header — signature, an IHDR claiming `w`×`h`, an
+    /// empty IDAT and IEND — so a test can ask about enormous dimensions without allocating
+    /// them.
+    fn png_claiming(w: u32, h: u32) -> Vec<u8> {
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut c = !0u32;
+            for &b in bytes {
+                c ^= u32::from(b);
+                for _ in 0..8 {
+                    c = if c & 1 != 0 {
+                        (c >> 1) ^ 0xEDB8_8320
+                    } else {
+                        c >> 1
+                    };
+                }
+            }
+            !c
+        }
+        fn chunk(out: &mut Vec<u8>, kind: &[u8], data: &[u8]) {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            let start = out.len();
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            let crc = crc32(&out[start..]);
+            out.extend_from_slice(&crc.to_be_bytes());
+        }
+        let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&w.to_be_bytes());
+        ihdr.extend_from_slice(&h.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+        chunk(&mut out, b"IHDR", &ihdr);
+        // The decoder reports dimensions only once it reaches image data; an
+        // empty stream is enough, since nothing here is ever decoded.
+        chunk(&mut out, b"IDAT", &[]);
+        chunk(&mut out, b"IEND", &[]);
+        out
+    }
+
+    /// A picture whose header claims more than the decode bound is refused
+    /// at the header, and said to be too large rather than broken. Fails with
+    /// `decode` back on a bare `load_from_memory`, which reports a failed
+    /// decode (or, on a real file of that size, allocates it).
+    #[test]
+    fn a_picture_claiming_enormous_dimensions_is_refused_as_too_large() {
+        let huge = png_claiming(40_000, 40_000);
+        let err = format!("{:#}", rendered_block(&huge, None).unwrap_err());
+        assert!(err.contains("too large"), "{err}");
+        let err = format!(
+            "{:#}",
+            block_from_bytes(huge, None, "huge.png").unwrap_err()
+        );
+        assert!(
+            err.contains("huge.png") && err.contains("too large"),
+            "{err}"
+        );
+    }
+
+    /// A tall screenshot — past any per-side bound, far inside the area one —
+    /// is shrunk and shown, as it was before the decode bound existed. Fails
+    /// on a per-side limit (found on review of #368).
+    #[test]
+    fn a_tall_screenshot_is_shrunk_rather_than_refused() {
+        let tall = png(200, 17_000);
+        let Block::Image { data, .. } = rendered_block(&tall, None).unwrap() else {
+            panic!("expected an image block")
+        };
+        use base64::Engine as _;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&data)
+            .unwrap();
+        let i = image::load_from_memory(&decoded).unwrap();
+        assert!(image::GenericImageView::height(&i) <= MAX_EDGE);
+        assert!(block_from_bytes(tall, None, "tall.png").is_ok());
+    }
+
+    /// A real JPEG named `.png` goes out as `image/jpeg`: the type the
+    /// provider checks is the type the bytes are. Fails on the extension's
+    /// answer, which Anthropic rejects as a mismatch (found on review of
+    /// #368).
+    #[test]
+    fn a_picture_is_typed_by_its_bytes_not_its_name() {
+        let mut jpeg = Vec::new();
+        image::RgbImage::from_pixel(40, 20, image::Rgb([200, 30, 30]))
+            .write_with_encoder(image::codecs::jpeg::JpegEncoder::new(&mut jpeg))
+            .unwrap();
+        let dir = std::env::temp_dir().join(format!("mecha-img-type-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = write(&dir, "shot.png", &jpeg);
+        let Block::Image { media_type, .. } = block_from_path(&p).unwrap().unwrap() else {
+            panic!("expected an image block")
+        };
+        assert_eq!(media_type, "image/jpeg");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// A caller must be able to tell "not an image" from "an image that
     /// failed", because the first is a normal thing to attach and the answer
     /// to it is to name the path.
@@ -349,9 +511,15 @@ mod tests {
     fn a_file_named_png_that_is_not_one_fails_loudly() {
         let dir = std::env::temp_dir().join(format!("mecha-img-lie-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let p = write(&dir, "lie.png", &vec![7u8; 6 * 1024 * 1024]);
-        let err = block_from_path(&p).unwrap_err().to_string();
-        assert!(err.contains("did not decode"), "got: {err}");
+        // Both sides of `MAX_BYTES`: under it is the pass-through path, which
+        // never decodes, so only the header check stands between a lie and
+        // the transcript (found on review of #368; the 6 MB case alone
+        // passed through the decode path and hid it).
+        for (name, size) in [("lie.png", 6 * 1024 * 1024), ("small-lie.png", 1024 * 1024)] {
+            let p = write(&dir, name, &vec![7u8; size]);
+            let err = block_from_path(&p).unwrap_err().to_string();
+            assert!(err.contains("did not decode"), "{name}: {err}");
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }
