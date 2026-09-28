@@ -208,4 +208,29 @@ fn the_owner_marks_a_probe_and_a_runs_shell_cannot() {
     let out = stdout(&mecha(&home, &["sessions", "unmark", &probe]));
     assert!(out.contains("unmarked"), "{out}");
     assert!(!Marks::load(&sessions).unwrap().withdrawn(&probe));
+
+    // A transcript restored under another file name is marked by the id in
+    // its header, which is what every reader keys on (review of #382).
+    let restored = Session::create(
+        &sessions,
+        SessionMeta {
+            id: Session::new_id(),
+            created_at: chrono::Utc::now(),
+            provider: "local".into(),
+            model: "m".into(),
+            workspace: home.clone(),
+            title: None,
+            kind: Some(SessionKind::Web),
+        },
+    )
+    .unwrap();
+    std::fs::rename(&restored.path, sessions.join("restored.jsonl")).unwrap();
+    let id = restored.meta.id.clone();
+    stdout(&mecha(&home, &["sessions", "mark", &id, "experiment"]));
+    assert!(Marks::load(&sessions).unwrap().withdrawn(&id));
+    let (listed, _) = Session::list_counting(&sessions).unwrap();
+    assert_eq!(
+        listed.iter().find(|(m, _)| m.id == id).unwrap().0.kind,
+        Some(SessionKind::Experiment)
+    );
 }

@@ -607,11 +607,12 @@ fn mark(
     use mecha_core::session::{Mark, MarkAction, Marks};
     check()?;
     let path = Session::find(dir, id)?;
-    let session_id = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .context("the session file has no readable name")?
-        .to_string();
+    // The header's id, which every reader keys on — never the file name,
+    // which a transcript restored under another name would not share, and
+    // a mark keyed on it would match nothing (review of #382).
+    let session_id = Session::peek_meta(&path)
+        .context("the session's header could not be read")?
+        .id;
     let marks = Marks::load(dir)?;
     let marked = marks.withdrawn(&session_id);
     match (action, marked) {
