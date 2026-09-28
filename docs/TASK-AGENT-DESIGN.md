@@ -699,10 +699,13 @@ than eviction, and not one there is anything here to copy.
 regression by name ("prompt cache reuse dropped: re-paid 15733 input tokens").
 Pointed at resumed task sessions it answers the one question §3.3 leaves open:
 does a conversation parked overnight actually get its prefix back, or has a
-night of triggers and chat pushed it out of 32 GB?
+night of triggers and chat pushed it out of the prompt cache (16 GiB since
+2026-09-28, 32 before)?
 
 That is a measurement, not a build, and it is the thing to do first. If parked
-sessions miss, the answer is a larger `-cram` before it is anything cleverer.
+sessions miss, the answer is a larger `-cram` before it is anything cleverer —
+within what the shared pool can spare: 32 GiB was lowered because a full cache
+left image generation out of memory, so a raise now trades against that.
 
 ---
 
