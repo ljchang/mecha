@@ -6550,7 +6550,17 @@ the owner's** (row 2b-2, R33, R37).
 - **Who writes and who reads.** `mecha distill` scores what has resolved
   on every writing pass — even one with nothing to distill or with the
   graph down, since windows close on quiet nights — with no model call. `sessions appraise` reads coverage
-  (`expectations` in `--json`), and `hit_rate` is `None` over no scores.
+  (`expectations` in `--json`).
+- **The hit rate is over predictions that could miss.** A chat answer or a
+  run that staged nothing leaves the owner no draft, task or workflow to act
+  on (`output_offers_act`), so `no_act` is the only answer `observe` can give
+  it and predicting `no_act` there is a hit by construction. Such hits are
+  counted as `forced` and left out of `hit_rate` on both sides; `hit_rate` is
+  `None` when no scored prediction could miss — over no scores, or over
+  forced ones alone, which read "100%" on the live store before (#377). An
+  unreadable act store never makes a hit forced. Classified at read time, so
+  `scores.jsonl` is unchanged and the surprises replay priority reads cannot
+  be forced.
 
 **The counts-only appraiser is retired into it** (row 2a-3, R25). Before,
 `appraise_with_model` ran a quarantined pass over `AppraiserEvidence` behind
