@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The web chat draws a picture once.** A model that looks (`image_view`)
+  at the picture it just made (`image_generate`) put the same image on the
+  page twice, because each row drew its own. A row whose picture is already
+  shown higher up keeps its row and shows the picture only when you tap it
+  open (`repeatedPictures` in `Chat.svelte`).
+
 - **A picture is typed by its bytes, not its name, at every door.** A file
   named `.png` that is not a picture used to pass through unread under
   5 MB, and a real JPEG named `.png` went out labelled `image/png`; the
