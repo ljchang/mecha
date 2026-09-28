@@ -28,6 +28,12 @@ const generatedImage = new Function(
    ${readOut('  function pictureOf(entry) {')}
    return pictureOf;`
 )();
+const repeatedPictures = new Function(
+  `${readOut('  const PICTURE = {', '\n  };\n')}
+   ${readOut('  function pictureOf(entry) {')}
+   ${readOut('  function repeatedPictures(entries) {')}
+   return repeatedPictures;`
+)();
 
 let passed = 0;
 let failed = 0;
@@ -95,6 +101,27 @@ for (const bad of [
   is(generatedImage(viewed(bad)), null, `a look refuses ${bad}`);
 }
 is(generatedImage(done('x', { name: 'constructor' })), null, 'a prototype key is no tool');
+
+// A picture drawn once is not drawn inline again: the `image_view` of the file
+// `image_generate` just saved keeps its row, with the picture behind the tap.
+const indices = (entries) => JSON.stringify([...repeatedPictures(entries)]);
+is(indices([done(ok), viewed(ok)]), '[1]', 'a look at the picture just made is a repeat');
+is(indices([viewed(ok), viewed(ok), done(ok)]), '[1,2]', 'the first to show it keeps it inline');
+is(
+  indices([done(ok), viewed('image: images/other.png')]),
+  '[]',
+  'a look at a different picture is not'
+);
+is(
+  indices([done(ok, { is_error: true }), viewed(ok)]),
+  '[]',
+  'a failed call drew nothing, so the look after it is the first'
+);
+is(
+  indices([{ kind: 'user', text: ok }, { kind: 'assistant', text: ok }, viewed(ok)]),
+  '[]',
+  'only tool rows draw pictures'
+);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
