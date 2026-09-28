@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha distill --backfill-appraisals`** appraises, after the fact, the
+  sessions distilled before appraisals existed whose clean steer or denial
+  was waiting only on an appraisal to be compared. There were 9 on the live
+  store. Nothing is pushed to the graph, and the rows written predict
+  nothing, since the outcome was already known. `--dry-run` lists them.
+
 - **An image library of recurring characters and styles.** Add a character
   once — a portrait and a short description — and name it in
   `image_generate`'s new `cast` field, with what each person is wearing and

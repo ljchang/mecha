@@ -722,6 +722,8 @@ pub fn parse_appraisal_reply(
         expected_act: string("expected_act")?
             .as_deref()
             .and_then(ExpectedAct::parse),
+        // The producer's word, never the reply's.
+        backfilled: false,
         unreadable_goals,
         goal_hypotheses: strings("goal_hypotheses")?,
         lessons: strings("lessons")?,
