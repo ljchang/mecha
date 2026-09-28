@@ -3531,6 +3531,28 @@ mod boundary_tests {
         );
         markers.clear("task-live");
 
+        // A marker store that cannot be read is not "no run": the delete
+        // refuses rather than remove a workspace a run may be using.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = markers.dir().to_path_buf();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let blind = Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/sessions/{id}"))
+                .header(TAILSCALE_LOGIN, "owner@example.com")
+                .header("x-mecha-request", "1")
+                .body(Body::empty())
+                .unwrap();
+            let status = app.clone().oneshot(blind).await.unwrap().status();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            // Root reads a 000 directory anyway; only then is this vacuous.
+            if std::fs::read_dir("/root").is_err() {
+                assert_eq!(status, StatusCode::CONFLICT);
+                assert!(transcript.exists());
+            }
+        }
+
         // Delete: a mutation like any other, so the intent header is required.
         let bare = Request::builder()
             .method("DELETE")

@@ -1472,6 +1472,8 @@ fn ensure_session_as<'a>(
                 if let Some(todo) = &bound.todo {
                     todo.rehydrate(&workspace, &convo.messages);
                 }
+                // Picked back up: out of the archive, as every resume is.
+                mecha_core::archive::reopened(&path, &meta.id);
                 (Session { meta, path }, convo)
             }
             None => (
