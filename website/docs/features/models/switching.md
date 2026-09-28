@@ -205,9 +205,11 @@ match = ["mecha model use gemma26"]
 justification = "Only the owner switches the model."
 ```
 
-In an [incognito chat](/docs/features/interfaces/incognito) the chip is a
-plain label: that chat runs only on the model on this machine, and it offers
-no picker.
+An [incognito chat](/docs/features/interfaces/incognito) offers the same
+picker. Every model it lists runs on this machine: the chip only knows the
+routers a `follow_loaded` entry names, and those must be local, on a
+loopback address. The menu says so in an incognito chat. What keeps
+incognito local is its own provider and its per-turn check, not the chip.
 
 ## See also
 

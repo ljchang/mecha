@@ -109,8 +109,8 @@ than opening a chat that can't keep its promise. The reasons:
 - **The chat model is not on this machine**, or its provider has
   `fallbacks`. A cloud provider keeps the text on its own servers, and a
   fallback would silently re-send the whole conversation to one the moment
-  the local server hiccuped. The model chip's tooltip says an incognito chat
-  runs only on the local model. It follows a
+  the local server hiccuped. The model chip's picker works here too, and
+  lists only models on this machine. The chat follows a
   [model switch](/docs/features/models/switching) like any web chat, and the
   checks run again on every turn against the model actually loaded.
 - **A deny-gate hook is configured** (`pre_tool` or `pre_task_close`).
