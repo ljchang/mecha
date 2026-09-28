@@ -786,13 +786,18 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
         s.scored,
         s.with_expectation,
         s.hits,
-        if s.forced > 0 {
-            format!(
-                " — {} of them forced: `no_act` on a run that left nothing to act on",
-                s.forced
-            )
-        } else {
-            String::new()
+        match (s.forced, s.forced_unknown) {
+            (0, 0) => String::new(),
+            (f, 0) =>
+                format!(" — {f} of them forced: `no_act` on a run that left nothing to act on"),
+            (0, u) => format!(
+                " — {u} of them unclassified: an act store could not be read, so whether they \
+                 could miss is unknown"
+            ),
+            (f, u) => format!(
+                " — {f} of them forced: `no_act` on a run that left nothing to act on; {u} \
+                 unclassified: an act store could not be read"
+            ),
         },
         s.surprises,
         s.clean_surprises,
@@ -800,8 +805,9 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
             Some(r) => format!(
                 "hit rate {:.0}% over the {} that could miss",
                 r * 100.0,
-                s.scored - s.forced
+                s.could_miss()
             ),
+            None if s.forced_unknown > 0 => "no rate: none known to be able to miss".into(),
             None if s.scored > 0 => "no rate: none could miss".into(),
             None => "no rate".into(),
         },
@@ -1143,6 +1149,21 @@ mod tests {
             rated.contains("hit rate 50% over the 2 that could miss"),
             "{rated}"
         );
+
+        // An unreadable act store: the hits are named as unclassified and
+        // never claimed as predictions that could miss.
+        let blind = expectations_line(&ScoreSummary {
+            scored: 4,
+            hits: 4,
+            forced_unknown: 4,
+            ..base.clone()
+        });
+        assert!(blind.contains("4 of them unclassified"), "{blind}");
+        assert!(
+            blind.contains("no rate: none known to be able to miss"),
+            "{blind}"
+        );
+        assert!(!blind.contains("could miss)"), "{blind}");
 
         let none = expectations_line(&base);
         assert!(none.contains("0 scored of 7"), "{none}");
