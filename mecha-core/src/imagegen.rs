@@ -3609,13 +3609,13 @@ mod tests {
         );
         assert!(
             out.content.contains(
-                r#""cast": [{"name": "john", "wearing": "…", "doing": "…"}, {"name": "maya""#
+                r#""cast": [{"name": "maya", "wearing": "…", "doing": "…"}, {"name": "john""#
             ),
             "{}",
             out.content
         );
         assert!(
-            out.content.contains("`john`, `maya` are characters"),
+            out.content.contains("`maya`, `john` are characters"),
             "{}",
             out.content
         );
