@@ -26,9 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A picture that claims to be enormous is refused at its header** instead
   of decoded: every image door (Slack, the TUI, `--image`, the web chat,
-  `image_view`) now decodes with a 16384 px side and 512 MiB allocation
-  bound, where a few-hundred-kilobyte PNG declaring 40000×40000 could ask
-  `serve` for ~4.8 GB.
+  `image_view`) now refuses at the header a picture over 128 megapixels and
+  decodes under a 512 MiB allocation bound, where a few-hundred-kilobyte PNG
+  declaring 40000×40000 could ask `serve` for ~4.8 GB. The bound is by area,
+  so a long full-page screenshot is still shrunk and shown.
 - **The web chat says when an attached picture was not shown** — a model
   that cannot see, more than 8 on one message, or a file that will not open
   — rather than clearing the chip as if it had been. `image_generate`'s

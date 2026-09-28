@@ -335,6 +335,14 @@ Three rules on the fold, each a bug if undone:
   rides in a user message, so unregistered it would be mined as a steer and
   shown as something the owner said and attached.
 
+**Every decode is bounded by area, at the header** (`image::decode`):
+over `MAX_DECODE_PIXELS` (128 megapixels) is refused as too large before a
+byte is allocated, and a decode runs under a 512 MiB `max_alloc`. The header
+is the file's claim about itself, and a few-hundred-kilobyte PNG can claim
+40000×40000 — ~4.8 GB inside `serve`, reachable from Slack and the web chat.
+By area rather than by side, because a 1440×20000 full-page screenshot is
+~100 MB and exactly the kind of picture the caps exist to shrink and show.
+
 The door is `image::rendered_block`: a picture at or under
 `PASS_THROUGH_BYTES` (1 MiB) that fits `MAX_EDGE` passes through byte for
 byte, because a small file is most often a screenshot of text, where JPEG's

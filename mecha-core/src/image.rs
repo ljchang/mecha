@@ -88,8 +88,7 @@ pub fn block_from_bytes(
         return Ok(Block::image(media_type, &bytes, name));
     }
 
-    let img = decode(&bytes)
-        .with_context(|| format!("{what} is named as an image but did not decode"))?;
+    let img = decode(&bytes, what)?;
     // `thumbnail` preserves the aspect ratio and takes the *bound* rather
     // than a target, so an image that is oversized in only one dimension is
     // not stretched to fill the other.
@@ -135,7 +134,7 @@ pub fn rendered_block(bytes: &[u8], name: Option<String>) -> Result<Block> {
     // proof it is a picture. A good header on a broken body would otherwise
     // ride into the transcript, and a picture the provider rejects fails
     // every later request of that conversation, not just this one.
-    let img = decode(bytes).context("the image did not decode")?;
+    let img = decode(bytes, "the picture")?;
     if bytes.len() <= PASS_THROUGH_BYTES && img.width().max(img.height()) <= MAX_EDGE {
         let media_type = match image::guess_format(bytes) {
             Ok(image::ImageFormat::Png) => "image/png",
@@ -171,23 +170,45 @@ pub fn rendered_block(bytes: &[u8], name: Option<String>) -> Result<Block> {
     Ok(Block::image("image/jpeg", &out, name))
 }
 
-/// Largest side decoded, and the most a decode may allocate. The header is
-/// the file's claim about itself: a flat-colour PNG of a few hundred kilobytes
-/// can declare 40000×40000 and ask the decoder for ~4.8 GB, in `serve`, which
-/// holds every session and every live run (found on review of #366; the
-/// Slack door had the same exposure). Every decode here goes through this, so
-/// the bound covers all the doors at once.
-const MAX_DECODE_EDGE: u32 = 16_384;
+/// The most pixels decoded, and the most a decode may allocate. The header
+/// is the file's claim about itself: a flat-colour PNG of a few hundred
+/// kilobytes can declare 40000×40000 and ask the decoder for ~4.8 GB, in
+/// `serve`, which holds every session and every live run (found on review of
+/// #366; the Slack door had the same exposure). Every decode here goes
+/// through [`decode`], so the bound covers all the doors at once.
+///
+/// **By area, never by side** (found on review of #368): a per-side bound
+/// refused a 1440×20000 full-page screenshot — ~100 MB decoded, the stitched
+/// kind people actually attach — which the caps above exist to shrink and
+/// show. 128 megapixels is 512 MiB as RGBA8, the allocation bound beside it;
+/// the pixel check reads the header, so it holds even for a decoder that
+/// does not honour `max_alloc`.
+const MAX_DECODE_PIXELS: u64 = 128 * 1024 * 1024;
 const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
 
-fn decode(bytes: &[u8]) -> Result<image::DynamicImage> {
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+/// Decode `bytes`, refusing at the header a picture past
+/// [`MAX_DECODE_PIXELS`] — said as too large, not as a failed decode, since
+/// the two lead to different fixes. `what` names it in either error.
+fn decode(bytes: &[u8], what: &str) -> Result<image::DynamicImage> {
+    let reader = || image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format();
+    if let Ok((w, h)) = reader()
+        .map_err(anyhow::Error::from)
+        .and_then(|r| Ok(r.into_dimensions()?))
+    {
+        if u64::from(w) * u64::from(h) > MAX_DECODE_PIXELS {
+            bail!(
+                "{what} is {w}×{h} — too large to show (over {} megapixels)",
+                MAX_DECODE_PIXELS / (1024 * 1024)
+            );
+        }
+    }
+    let mut reader = reader().with_context(|| format!("{what} could not be read"))?;
     let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_DECODE_EDGE);
-    limits.max_image_height = Some(MAX_DECODE_EDGE);
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
     reader.limits(limits);
-    Ok(reader.decode()?)
+    reader
+        .decode()
+        .with_context(|| format!("{what} is named as an image but did not decode"))
 }
 
 fn human(bytes: usize) -> String {
@@ -355,15 +376,80 @@ mod tests {
         assert!(rendered_block(b"not a png", None).is_err());
     }
 
-    /// A picture past the decode bound is refused at the header, not
-    /// allocated: 17000×1 is tiny on disk and in memory, so this passes
-    /// without the limits too — except that it would decode, and the
-    /// assertion is that it does not. Fails with `load_from_memory` back.
+    /// A PNG that is only a header — signature, an IHDR claiming `w`×`h`, an
+    /// empty IDAT and IEND — so a test can ask about enormous dimensions without allocating
+    /// them.
+    fn png_claiming(w: u32, h: u32) -> Vec<u8> {
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut c = !0u32;
+            for &b in bytes {
+                c ^= u32::from(b);
+                for _ in 0..8 {
+                    c = if c & 1 != 0 {
+                        (c >> 1) ^ 0xEDB8_8320
+                    } else {
+                        c >> 1
+                    };
+                }
+            }
+            !c
+        }
+        fn chunk(out: &mut Vec<u8>, kind: &[u8], data: &[u8]) {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            let start = out.len();
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            let crc = crc32(&out[start..]);
+            out.extend_from_slice(&crc.to_be_bytes());
+        }
+        let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&w.to_be_bytes());
+        ihdr.extend_from_slice(&h.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+        chunk(&mut out, b"IHDR", &ihdr);
+        // The decoder reports dimensions only once it reaches image data; an
+        // empty stream is enough, since nothing here is ever decoded.
+        chunk(&mut out, b"IDAT", &[]);
+        chunk(&mut out, b"IEND", &[]);
+        out
+    }
+
+    /// A picture whose header claims more than the decode bound is refused
+    /// at the header, and said to be too large rather than broken. Fails with
+    /// `decode` back on a bare `load_from_memory`, which reports a failed
+    /// decode (or, on a real file of that size, allocates it).
     #[test]
-    fn a_picture_past_the_decode_bound_is_refused_rather_than_allocated() {
-        let wide = png(MAX_DECODE_EDGE + 616, 1);
-        assert!(rendered_block(&wide, None).is_err());
-        assert!(block_from_bytes("image/png", wide, None, "wide.png").is_err());
+    fn a_picture_claiming_enormous_dimensions_is_refused_as_too_large() {
+        let huge = png_claiming(40_000, 40_000);
+        let err = format!("{:#}", rendered_block(&huge, None).unwrap_err());
+        assert!(err.contains("too large"), "{err}");
+        let err = format!(
+            "{:#}",
+            block_from_bytes("image/png", huge, None, "huge.png").unwrap_err()
+        );
+        assert!(
+            err.contains("huge.png") && err.contains("too large"),
+            "{err}"
+        );
+    }
+
+    /// A tall screenshot — past any per-side bound, far inside the area one —
+    /// is shrunk and shown, as it was before the decode bound existed. Fails
+    /// on a per-side limit (found on review of #368).
+    #[test]
+    fn a_tall_screenshot_is_shrunk_rather_than_refused() {
+        let tall = png(200, 17_000);
+        let Block::Image { data, .. } = rendered_block(&tall, None).unwrap() else {
+            panic!("expected an image block")
+        };
+        use base64::Engine as _;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&data)
+            .unwrap();
+        let i = image::load_from_memory(&decoded).unwrap();
+        assert!(image::GenericImageView::height(&i) <= MAX_EDGE);
+        assert!(block_from_bytes("image/png", tall, None, "tall.png").is_ok());
     }
 
     /// A caller must be able to tell "not an image" from "an image that
