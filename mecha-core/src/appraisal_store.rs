@@ -343,6 +343,11 @@ pub struct SessionEvidence {
     /// the session's end as appraised (R37's window opens here). `None`
     /// where the file system could not say.
     ended_at: Option<DateTime<Utc>>,
+    /// The run called a [`TASK_LINKING_TOOLS`] tool — over every message it
+    /// ever had, not the post-compaction list: a task call a summarising
+    /// compaction evicted still tied the session to the task (review of
+    /// #378). Ruling 1B's write-time test reads it.
+    touched_tasks: bool,
 }
 
 impl SessionEvidence {
@@ -408,11 +413,17 @@ impl SessionEvidence {
             situation,
             packet: packet(ever),
             ended_at: None,
+            touched_tasks: touched_tasks(ever),
         }
     }
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Whether the run ever called a task-linking tool, compaction or not.
+    pub fn touched_tasks(&self) -> bool {
+        self.touched_tasks
     }
 
     pub fn origin(&self) -> Origin {
@@ -4311,6 +4322,62 @@ mod tests {
             "reading the board links nothing"
         );
         assert!(!touched_tasks(&call("mail_search")));
+
+        // A task call a summarising compaction evicted still counts: the
+        // evidence reads every message the run ever had (review of #378).
+        let compacted = {
+            use crate::session::{Record, Session, SessionKind, SessionMeta};
+            let session = Session::create(
+                &dir,
+                SessionMeta {
+                    id: Session::new_id(),
+                    created_at: Utc::now(),
+                    provider: "scripted".into(),
+                    model: "scripted".into(),
+                    workspace: dir.clone(),
+                    title: None,
+                    kind: Some(SessionKind::Web),
+                },
+            )
+            .unwrap();
+            for m in [
+                Message::user("put the review on the board"),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "kg_task_update".into(),
+                    input: json!({"id": "t-budget"}),
+                }]),
+                Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "updated".into(),
+                    is_error: false,
+                }]),
+                Message::assistant(vec![Block::text("Done.")]),
+            ] {
+                session.append(&Record::Message(m)).unwrap();
+            }
+            session
+                .append(&Record::Rewrite {
+                    messages: vec![
+                        Message::user("[summary] the review is on the board"),
+                        Message::assistant(vec![Block::text("Done.")]),
+                    ],
+                })
+                .unwrap();
+            session.path
+        };
+        let (transcript, evidence) = SessionEvidence::read_with_transcript(&compacted).unwrap();
+        assert!(
+            !touched_tasks(&transcript.convo.messages),
+            "compaction evicted it"
+        );
+        assert!(evidence.touched_tasks(), "but the run did touch the board");
+        assert!(!withholds_expectation(
+            evidence.session_id(),
+            None,
+            &none,
+            evidence.touched_tasks()
+        ));
 
         // Stored: a withheld row is not asked; an omitted one is neither.
         let store = AppraisalStore::open(root.join("appraisals")).unwrap();
