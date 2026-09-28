@@ -111,9 +111,15 @@ impl Tool for ImageLibrary {
             .approved()
             .filter(|e| kind.is_none_or(|k| e.kind == k))
             .filter(|e| {
-                query
-                    .as_deref()
-                    .is_none_or(|q| e.name.contains(q) || e.text.to_lowercase().contains(q))
+                // Any word matches: the first live run searched "Maya John"
+                // as one phrase, found nothing, and went on without the
+                // library (2026-09-28).
+                query.as_deref().is_none_or(|q| {
+                    let text = e.text.to_lowercase();
+                    q.split(|c: char| c.is_whitespace() || c == ',')
+                        .filter(|w| !w.is_empty())
+                        .any(|w| e.name.contains(w) || text.contains(w))
+                })
             })
             .map(|e| format!("{} {} (v{}): {}", e.kind.label(), e.name, e.version, e.text))
             .collect();
@@ -328,6 +334,39 @@ mod tests {
             !list.external,
             "the owner's own text is not third-party content"
         );
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn a_search_of_several_names_finds_each() {
+        let lib = scratch();
+        let ws = scratch();
+        for name in ["maya", "john", "priya"] {
+            imagelib::create(
+                &lib,
+                NewEntry {
+                    kind: Kind::Style,
+                    name: name.into(),
+                    text: format!("{name}'s look"),
+                    portrait: None,
+                    source_seed: None,
+                    origin: Origin::Owner,
+                    locked: false,
+                },
+            )
+            .unwrap();
+        }
+        let out = ImageLibrary::new(lib.clone())
+            .call(json!({"query": "Maya John"}), &ctx(&ws, None))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("maya") && out.content.contains("john"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("priya"), "{}", out.content);
         std::fs::remove_dir_all(lib).ok();
         std::fs::remove_dir_all(ws).ok();
     }

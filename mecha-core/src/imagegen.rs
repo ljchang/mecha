@@ -1540,9 +1540,9 @@ impl Tool for ImageGenerate {
                 let broken = crate::imagelib::broken_named_in(&lib, &req.prompt);
                 if !broken.is_empty() {
                     return Ok(ToolOutput::err(format!(
-                        "{} named in the prompt {} in the owner's image library, but the entry \
-                         could not be read, so they cannot be drawn as themselves. The owner can \
-                         check with `mecha imagelib list`.",
+                        "Nothing was drawn. {} named in the prompt {} in the owner's image \
+                         library, but the entry could not be read, so they cannot be drawn as \
+                         themselves. The owner can check with `mecha imagelib list`.",
                         broken
                             .iter()
                             .map(|n| format!("`{n}`"))
@@ -1570,11 +1570,24 @@ impl Tool for ImageGenerate {
                         .map(|n| format!("`{n}`"))
                         .collect::<Vec<_>>()
                         .join(", ");
+                    // "Nothing was drawn" leads: the first live run read a
+                    // sentence that opened with the characters' names as
+                    // confirmation they had been drawn, never retried, and
+                    // told the owner the picture existed (2026-09-28). The
+                    // retry's shape is spelled out so the next call is a copy.
+                    let skeleton = named
+                        .iter()
+                        .map(|n| {
+                            format!("{{\"name\": \"{n}\", \"wearing\": \"…\", \"doing\": \"…\"}}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     return Ok(ToolOutput::err(format!(
-                        "{names} {} in the owner's image library. To draw them as themselves, \
-                         name them in `cast` — left to right, each with what they are wearing \
-                         and doing — and leave their looks out of the prompt: from words alone \
-                         they come out as different people. If you mean someone else with that \
+                        "Nothing was drawn. {names} {} in the owner's image library, and a \
+                         prompt that describes them in words draws strangers. Call \
+                         image_generate again with them in `cast`, in left-to-right order, each \
+                         with what they are wearing and doing, and leave their looks out of the \
+                         prompt: \"cast\": [{skeleton}]. If you mean someone else with that \
                          name, pass \"cast\": [].",
                         if named.len() == 1 {
                             "is a character"
@@ -3588,6 +3601,19 @@ mod tests {
             .await
             .unwrap();
         assert!(out.is_error);
+        // Unmistakable as a failure, and the retry is a copy away.
+        assert!(
+            out.content.starts_with("Nothing was drawn."),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains(
+                r#""cast": [{"name": "john", "wearing": "…", "doing": "…"}, {"name": "maya""#
+            ),
+            "{}",
+            out.content
+        );
         assert!(
             out.content.contains("`john`, `maya` are characters"),
             "{}",
