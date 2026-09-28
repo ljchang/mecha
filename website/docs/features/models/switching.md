@@ -142,8 +142,11 @@ waiting for 2 run(s) to finish: web chat, trigger morning-brief (--now stops the
   the new model. Web chat says so on the page (*Switching the model to X —
   this turn starts once it is loaded*), and a command says so on stderr.
 - **There is no time limit on the wait**, by design: a long delegated task
-  finishes on the model it started with. `--wait-secs` bounds only the
-  *load* after the wait.
+  finishes on the model it started with. `--wait-secs` bounds only what
+  comes after the wait. The router won't evict a model that is still
+  answering a request (from a client that takes no hold, say), so the
+  switch asks again each second until it can. It is still waiting then, so
+  **switch now** and **cancel** keep working.
 - **`--now` stops the runs instead.** Each one is asked to stop at its next
   safe point, as Ctrl-C would stop it, and gets 15 seconds before the switch
   goes ahead. A reply in progress ends early. Given for a switch that is

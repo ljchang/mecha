@@ -602,15 +602,58 @@ fn is_busy_refusal(status: reqwest::StatusCode, body: &str) -> bool {
     status == reqwest::StatusCode::INTERNAL_SERVER_ERROR && body.contains("model limit reached")
 }
 
+/// What a load does when the router turns it away because the loaded model
+/// is busy ([`LoadHooks::busy`]).
+pub enum OnBusy {
+    /// Ask again in a moment.
+    Wait,
+    /// Unload this model — the busy one, cutting its reply off — and ask
+    /// again: "switch now", reached while the load is being refused.
+    CutOff(String),
+    /// Give up with this error: the switch was withdrawn.
+    Stop(anyhow::Error),
+}
+
+/// What a caller of [`load_with`] is told while it runs. Both are asked
+/// synchronously between requests to the router.
+pub trait LoadHooks {
+    /// The router refused the load because the loaded model is busy.
+    fn busy(&mut self) -> OnBusy {
+        OnBusy::Wait
+    }
+    /// The router accepted the load: from here the load is under way and
+    /// nothing is left to hurry or withdraw.
+    fn accepted(&mut self) {}
+}
+
+struct NoHooks;
+impl LoadHooks for NoHooks {}
+
 /// Ask the router to load `model`, and wait until it is resident or has
 /// failed. The router evicts the idle model to make room; one with a request
 /// in flight is not evicted, and the router refuses the load until that
-/// request ends — so a busy refusal is asked again, until `wait` runs out,
-/// which is the wait a caller sees. The first switch from the web chip met
-/// this: a request in flight on the old model, a load refused at once, and
-/// R1's rollback — while the CLI said it was waiting for the model to go
-/// idle (2026-09-28).
+/// request ends — so a busy refusal is asked again. The first switch from the
+/// web chip met this: a request in flight on the old model, a load refused
+/// at once, and R1's rollback — while the CLI said it was waiting for the
+/// model to go idle (2026-09-28).
+///
+/// `wait` bounds the busy spell and, separately, the load once accepted: a
+/// busy spell ending near its bound must still leave the load its time, or
+/// R1 rolls back over a load that was going to finish (found on review).
 pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
+    load_with(base_url, model, wait, &mut NoHooks).await
+}
+
+/// [`load`], with `hooks` told of each busy refusal (and able to cut the busy
+/// model off, or stop) and of the load's acceptance — so a switch stays
+/// hurriable and withdrawable for as long as it is only waiting, which is
+/// what its surfaces say it is doing (found on review).
+pub async fn load_with(
+    base_url: &str,
+    model: &str,
+    wait: Duration,
+    hooks: &mut dyn LoadHooks,
+) -> Result<()> {
     let b = base(base_url);
     let http = client(Duration::from_secs(10)).context("building an HTTP client")?;
     let list = models(&b)
@@ -625,7 +668,7 @@ pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
                 .join(", ")
         );
     }
-    let deadline = tokio::time::Instant::now() + wait;
+    let busy_deadline = tokio::time::Instant::now() + wait;
     let mut busy_since: Option<tokio::time::Instant> = None;
     let (status, body) = loop {
         let resp = http
@@ -644,7 +687,19 @@ pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
             break (status, body);
         }
         let since = *busy_since.get_or_insert_with(tokio::time::Instant::now);
-        if tokio::time::Instant::now() + BUSY_RETRY >= deadline {
+        match hooks.busy() {
+            OnBusy::Wait => {}
+            OnBusy::Stop(why) => return Err(why),
+            OnBusy::CutOff(busy) => {
+                // Not fatal, as `--now`'s own unload is not: the next ask
+                // says whether the model is still in the way.
+                if let Err(e) = unload(&b, &busy, wait).await {
+                    tracing::warn!("cutting off {busy}: {e:#}");
+                }
+                continue;
+            }
+        }
+        if tokio::time::Instant::now() + BUSY_RETRY >= busy_deadline {
             bail!(
                 "{model} was not loaded after {}s: the model it replaces had a request in \
                  flight the whole time, and the router will not evict a busy model (it said: \
@@ -667,11 +722,13 @@ pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
     // `server_models::load` sets the model `LOADING` before the POST handler
     // returns (`c841aee`), so by the first poll the stale status is gone.
     let refusal = if status.is_success() {
+        hooks.accepted();
         None
     } else {
         Some(format!("{status} from POST /models/load: {}", body.trim()))
     };
     let started_at = tokio::time::Instant::now();
+    let deadline = started_at + wait;
     let mut started = false;
     loop {
         if let Some(list) = list_on(&http, &b).await {
@@ -1165,6 +1222,103 @@ mod tests {
             3,
             "{lines:?}"
         );
+    }
+
+    /// Hooks that record what the load told them, and answer busy refusals
+    /// from a script.
+    struct Scripted {
+        answers: Vec<&'static str>,
+        busy: usize,
+        accepted: usize,
+    }
+    impl LoadHooks for Scripted {
+        fn busy(&mut self) -> OnBusy {
+            self.busy += 1;
+            match self.answers.get(self.busy - 1).copied() {
+                Some("cut") => OnBusy::CutOff("old".into()),
+                Some("stop") => OnBusy::Stop(anyhow::anyhow!("withdrawn")),
+                _ => OnBusy::Wait,
+            }
+        }
+        fn accepted(&mut self) {
+            self.accepted += 1;
+        }
+    }
+
+    const BUSY: &str = r#"{"error":{"code":500,"message":"model limit reached, try again later","type":"server_error"}}"#;
+    const ROUTER: &str = r#"{"role":"router","model_alias":"llama-server"}"#;
+    const OLD_LOADED: &str = r#"{"data":[{"id":"m","status":{"value":"unloaded"}},{"id":"old","status":{"value":"loaded"}}]}"#;
+    const NONE_LOADED: &str = r#"{"data":[{"id":"m","status":{"value":"unloaded"}},{"id":"old","status":{"value":"unloaded"}}]}"#;
+    const M_LOADED: &str = r#"{"data":[{"id":"m","status":{"value":"loaded"}},{"id":"old","status":{"value":"unloaded"}}]}"#;
+
+    /// "Switch now" reached while the load is refused cuts the busy model off
+    /// and loads — where the switch used to sit out the busy spell with
+    /// neither button on the chip doing anything (found on review).
+    #[tokio::test]
+    async fn switch_now_during_a_busy_refusal_cuts_the_busy_model_off() {
+        let (url, server) = stub_status(vec![
+            (200, ROUTER),
+            (200, OLD_LOADED),
+            (500, BUSY),
+            (200, r#"{"success":true}"#), // POST /models/unload
+            (200, NONE_LOADED),           // unload's poll
+            (200, r#"{"success":true}"#), // POST /models/load again
+            (200, M_LOADED),
+        ])
+        .await;
+        let mut hooks = Scripted {
+            answers: vec!["cut"],
+            busy: 0,
+            accepted: 0,
+        };
+        load_with(&url, "m", Duration::from_secs(30), &mut hooks)
+            .await
+            .unwrap();
+        let lines = server.await.unwrap();
+        assert!(
+            lines.contains(&"POST /models/unload HTTP/1.1".to_string()),
+            "{lines:?}"
+        );
+        assert_eq!((hooks.busy, hooks.accepted), (1, 1));
+    }
+
+    /// A switch withdrawn while its load is refused stops, and is never told
+    /// it was accepted.
+    #[tokio::test]
+    async fn a_withdrawn_switch_stops_during_a_busy_refusal() {
+        let (url, server) = stub_status(vec![(200, ROUTER), (200, OLD_LOADED), (500, BUSY)]).await;
+        let mut hooks = Scripted {
+            answers: vec!["stop"],
+            busy: 0,
+            accepted: 0,
+        };
+        let err = load_with(&url, "m", Duration::from_secs(30), &mut hooks)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("withdrawn"), "{err:#}");
+        assert_eq!(hooks.accepted, 0);
+        server.await.unwrap();
+    }
+
+    /// A busy spell that ends near its bound still leaves the load its whole
+    /// `wait`: one shared budget rolled back over a load that was about to
+    /// finish (found on review).
+    #[tokio::test]
+    async fn the_load_gets_its_own_wait_after_a_busy_spell() {
+        let loading = r#"{"data":[{"id":"m","status":{"value":"loading"}},{"id":"old","status":{"value":"unloaded"}}]}"#;
+        let (url, server) = stub_status(vec![
+            (200, ROUTER),
+            (200, OLD_LOADED),
+            (500, BUSY),
+            (500, BUSY),
+            (200, r#"{"success":true}"#),
+            (200, loading),
+            (200, loading),
+            (200, M_LOADED),
+        ])
+        .await;
+        load(&url, "m", Duration::from_millis(2500)).await.unwrap();
+        server.await.unwrap();
     }
 
     /// A busy refusal that outlasts `wait` says so — the model was busy the
