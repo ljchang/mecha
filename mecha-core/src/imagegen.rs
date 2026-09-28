@@ -1560,9 +1560,11 @@ impl Tool for ImageGenerate {
                             .collect()
                     })
                     .unwrap_or_default();
-                let named: Vec<String> = crate::imagelib::named_in(&lib, &req.prompt)
-                    .into_iter()
-                    .filter(|n| !cast.contains(n))
+                let in_prompt = crate::imagelib::named_in(&lib, &req.prompt);
+                let named: Vec<String> = in_prompt
+                    .iter()
+                    .filter(|n| !cast.contains(*n))
+                    .cloned()
                     .collect();
                 if !named.is_empty() {
                     let names = named
@@ -1575,10 +1577,38 @@ impl Tool for ImageGenerate {
                     // confirmation they had been drawn, never retried, and
                     // told the owner the picture existed (2026-09-28). The
                     // retry's shape is spelled out so the next call is a copy.
-                    let skeleton = named
+                    //
+                    // The skeleton is the *whole* cast, not the missing names:
+                    // everyone the prompt names, in its order, then anyone
+                    // already cast it does not name, each carrying what the
+                    // call already said they wear and do. A skeleton of only
+                    // the missing names, copied, dropped the ones already
+                    // there, and the next refusal asked for those instead —
+                    // round and round (review of #384).
+                    let given = |n: &str| {
+                        ask.as_ref()
+                            .and_then(|a| a.cast.iter().find(|m| m.name.trim().to_lowercase() == n))
+                    };
+                    let mut order: Vec<String> = in_prompt.clone();
+                    for m in ask.iter().flat_map(|a| a.cast.iter()) {
+                        let n = m.name.trim().to_lowercase();
+                        if !order.contains(&n) {
+                            order.push(n);
+                        }
+                    }
+                    let quote =
+                        |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"…\"".into());
+                    let skeleton = order
                         .iter()
                         .map(|n| {
-                            format!("{{\"name\": \"{n}\", \"wearing\": \"…\", \"doing\": \"…\"}}")
+                            let (wearing, doing) = match given(n) {
+                                Some(m) => (quote(m.wearing.trim()), quote(m.doing.trim())),
+                                None => (quote("…"), quote("…")),
+                            };
+                            format!(
+                                "{{\"name\": {}, \"wearing\": {wearing}, \"doing\": {doing}}}",
+                                quote(n)
+                            )
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
@@ -1626,7 +1656,11 @@ impl Tool for ImageGenerate {
                 ask.style.as_deref(),
             ) {
                 Ok(compiled) => compiled,
-                Err(why) => return Ok(ToolOutput::err(why)),
+                // Every compile refusal is before the GPU, and says so first: a
+                // refusal that opened with a character's name was read as a
+                // finished picture (2026-09-28), and this site covers every
+                // error `compile` has or will have (review of #384).
+                Err(why) => return Ok(ToolOutput::err(format!("Nothing was drawn. {why}"))),
             };
             req.prompt = compiled.prompt;
             if !compiled.references.is_empty() {
@@ -3650,6 +3684,37 @@ mod tests {
         assert!(out.is_error, "{}", out.content);
         assert!(
             out.content.contains("`john` is a character"),
+            "{}",
+            out.content
+        );
+        // The retry is the whole cast, in the prompt's order, keeping what
+        // was already said — a copy converges instead of swapping who is
+        // missing each round.
+        assert!(
+            out.content.contains(
+                r#""cast": [{"name": "maya", "wearing": "a coat", "doing": "laughing"}, {"name": "john", "wearing": "…", "doing": "…"}]"#
+            ),
+            "{}",
+            out.content
+        );
+        // And a literal copy of that is refused before the GPU, saying so.
+        let out = t
+            .call(
+                json!({"prompt": "Maya laughing, John at the next table",
+                       "cast": [{"name": "maya", "wearing": "a coat", "doing": "laughing"},
+                                {"name": "john", "wearing": "…", "doing": "…"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.starts_with("Nothing was drawn."),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("`john` needs `wearing` and `doing`"),
             "{}",
             out.content
         );
