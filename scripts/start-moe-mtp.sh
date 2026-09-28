@@ -175,15 +175,16 @@ MMPROJ=$(mmproj_or_die "$S" unsloth/Qwen3.6-35B-A3B-MTP-GGUF) || exit 1
 NP="${MECHA_LLAMA_NP:-4}"
 CTX="${MECHA_LLAMA_CTX:-1048576}"
 # The prompt cache holds evicted slot states so a returning prefix is restored
-# instead of re-prefilled. The 8192 MiB default (8.6 GB) holds only ONE full
-# 262k slot's KV (~5.5 GB at f16), and it thrashed under -np 1 (note 2 above):
-# 341 "making room for prompt cache entry" evictions between Aug 19 and 20,
-# each one paying a re-prefill at ~1,570 tok/s. Matters more with every slot
-# added. 32768 held for a month, then filled: 118 evictions in the three days
-# to 2026-09-28 (median entry 0.5 GB, mean 1.3, p90 3.6, max 7.9), and a full
-# 32 GiB left image generation no room beside the model on the shared 121 GB
-# pool. 16384 (17.2 GB) is the owner's ruling of that day: about 34 median
-# entries or 13 mean ones, and three full slots where the default held one.
+# instead of re-prefilled. All in MiB: a full 262k slot's KV is 5,632 (22.0
+# KiB x 262,144, f16). The 8,192 default holds one (1.45), and it thrashed
+# under -np 1 (note 2 above): 341 "making room for prompt cache entry"
+# evictions between Aug 19 and 20, each one paying a re-prefill at
+# ~1,570 tok/s. Matters more with every slot added. 32,768 held for a month,
+# then filled: 118 evictions in the three days to 2026-09-28 (entries: median
+# 536, mean 1,319, p90 3,627, max 7,855), and a full 32 GiB left image
+# generation no room beside the model on the shared 121 GB pool. 16,384 is
+# the owner's ruling of that day: about 30 median entries (16,384 / 536) or
+# 12 mean ones (/ 1,319), and 2.9 full slots (/ 5,632).
 CRAM="${MECHA_LLAMA_CRAM:-16384}"
 
 # **`--cache-idle-slots` is deliberately absent. Do not add it back.**

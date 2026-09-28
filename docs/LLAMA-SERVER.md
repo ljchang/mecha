@@ -179,16 +179,17 @@ whatever placement decision is made at load is never revisited.
   throughput unchanged (84.92 vs 84.99 single, 135.32 vs 140.33 4-stream). It
   bought nothing and cost the thing slots exist to protect. mecha's own cache
   lens is what caught it.
-- **`-cram` (prompt cache) defaults to 8192 MiB** (8.6 GB), which holds only
-  *one* full 262k slot's KV at f16 (~5.5 GB), and it thrashed: 341 evictions in
-  a day, under the single slot §Measured: what slots buy describes. It ran at
-  32768 from August, with zero evictions at first; by 2026-09-28 it sat full,
-  evicting (118 in three days: median entry 0.5 GB, mean 1.3, p90 3.6, max 7.9),
-  and a full 32 GiB left image generation no room beside a loaded model. **It is
-  16384 (17.2 GB) since that day, the owner's ruling** — about 34 median entries
-  or 13 mean ones, and three full slots where the default held one. The cache
-  fills over hours and never shrinks while the model stays loaded, so size it
-  against what else must fit, not against a fresh start.
+- **`-cram` (prompt cache) defaults to 8192 MiB.** All in MiB: a full 262k
+  slot's KV is 5,632 (22.0 KiB × 262,144 at f16, §What the KV cache actually
+  costs), so the default holds one (1.45), and it thrashed: 341 evictions in a
+  day, under the single slot §Measured: what slots buy describes. It ran at
+  32,768 from August, with zero evictions at first; by 2026-09-28 it sat full,
+  evicting (118 in three days; entries: median 536, mean 1,319, p90 3,627, max
+  7,855), and a full 32 GiB left image generation no room beside a loaded model.
+  **It is 16,384 since that day, the owner's ruling** — about 30 median entries
+  (16,384 / 536) or 12 mean ones (/ 1,319), and 2.9 full slots (/ 5,632). The
+  cache fills over hours and never shrinks while the model stays loaded, so size
+  it against what else must fit, not against a fresh start.
 - **`--reasoning-budget` is a server flag; the per-request `reasoning_budget`
   field is silently ignored by this build.** ollama's runner never passes the
   flag, so a model served through it reasons unbounded.
