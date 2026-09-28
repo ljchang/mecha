@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Voice calls in incognito chats.** An incognito chat now has the call
+  button, and nothing of the call is kept. While such a call is live
+  the voice worker silences pipecat's logging, which otherwise writes both
+  sides of every call to the journal, and withholds the words from its own
+  lines. It tells the server so on each turn (`X-Voice-Unlogged`), and the
+  server admits a spoken turn into an incognito chat only on that word, so
+  an older worker is still refused. Ending the chat hangs up the call.
+  Restart the voice worker and `mecha serve` to use it.
+
 ### Changed
 
 - **The local model's prompt cache is 16 GiB, not 32** (`-cram`, both launch

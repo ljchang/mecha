@@ -2680,8 +2680,15 @@ brief (which reads the board through the graph server) do not run.
   cannot hold the door shut. ComfyUI's executor cache keeps the last prompt in
   RAM until the next job or the idle unload — accepted, like llama-server's
   KV cache.
-- **No hooks, no voice.** `pre_tool`/`post_tool` receive tool input and
-  output; the voice worker logs what it hears.
+- **No hooks.** `pre_tool`/`post_tool` receive tool input and output.
+- **A voice call only on the worker's word** (`spoken_turn_may_enter`,
+  INCOGNITO-DESIGN §6.4). At its default level pipecat logs both sides of a
+  call to a journal kept on disk, so a spoken turn enters an incognito chat
+  only with `X-Voice-Unlogged: 1` — sent by the worker from inside
+  `Unlogged.held`, which disables the `pipecat` loguru namespace at the core
+  (the runner swaps sinks, so a sink filter would vanish) for as long as any
+  incognito call is live. A worker that predates it never sends the header,
+  so the chat stays text-only rather than trusting an unheld silence.
 - **Closing** — End, 30 minutes with no turn and no ping from an open page
   (the reaper, once a minute; the owner's ruling is that an open page is
   use), or `serve` stopping — cancels a run in flight, forgets the todo plan, and removes the
@@ -2698,10 +2705,12 @@ brief (which reads the board through the graph server) do not run.
   one argued allowance), and a generated picture is not a link in an incognito chat
   (opening it in a tab writes its address into the browser's history).
 - **The page** (`Chat.svelte`): a second new-chat button beside **+**, a banner
-  that does not scroll away and carries the search notice, **End**, no voice
-  call, and — on End or a `410` — a screen saying the chat is gone, with the
-  conversation dropped from the tab's memory too: the event stream closes,
-  and an event already in flight is dropped rather than drawn.
+  that does not scroll away and carries the search notice, **End**, a voice
+  call whose overlay says it keeps nothing, and — on End or a `410` — a
+  screen saying the chat is gone, with the conversation dropped from the
+  tab's memory too: the event stream closes, an event already in flight is
+  dropped rather than drawn, and a live call is hung up with its words and
+  its uplink ring (`dropRing`) gone.
 
 The end-to-end test drives the real routes: a turn and an upload carrying a
 canary, a scan of the whole mecha home (nothing while open, nothing after),

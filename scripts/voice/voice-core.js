@@ -364,6 +364,15 @@ export function ringFor(key, capMs = UPLINK_RING_MS) {
   return r;
 }
 
+/* Forget a conversation's ring. For an incognito chat that has ended or been
+   left: the ring is audio of what was said there, and it outlives calls on
+   purpose, so nothing else would ever let it go before the page does
+   (docs/INCOGNITO-DESIGN.md §7). A session still holding the ring keeps its
+   own reference; this only stops the next call finding it. */
+export function dropRing(key) {
+  rings.delete(key || "");
+}
+
 /* The cue policy over a behind-count, kept pure. `prev` is what was last
    decided; returns the next state and which sound, if any, to make. A
    "behind" cue is made once per episode, when the count first passes the

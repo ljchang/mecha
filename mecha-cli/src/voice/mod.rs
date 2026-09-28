@@ -158,7 +158,11 @@ pub trait SessionHost: Send + Sync {
     /// approval card cannot be tapped mid-sentence. It is deliberately not
     /// the host's posture to decide, and deliberately not sticky — a typed
     /// turn in the same conversation still runs at whatever the page says.
-    async fn speak(&self, key: &str, utterance: &str, approve_all: bool) -> Hosted;
+    ///
+    /// `unlogged` is the worker's `X-Voice-Unlogged`: it keeps no text of
+    /// this call. The host alone decides what that admits — today, a spoken
+    /// turn into an incognito chat, which is refused without it.
+    async fn speak(&self, key: &str, utterance: &str, approve_all: bool, unlogged: bool) -> Hosted;
 }
 
 /// Open a spoken turn with the D10 block when the conversation has not just
@@ -747,6 +751,10 @@ struct Head {
     /// header carrying two meanings is a value nobody can validate, and a
     /// page is free to name a session `webrtc-anything`.
     chat: Option<String>,
+    /// `X-Voice-Unlogged: 1`: the worker holds its log silence for this call
+    /// (`INCOGNITO-DESIGN.md` §3.4). Anything but exactly `1` is absent — a
+    /// claim that loosens a refusal is read strictly or not at all.
+    unlogged: bool,
     body_start: usize,
 }
 
@@ -760,6 +768,7 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
             let mut authorization = None;
             let mut session = None;
             let mut chat = None;
+            let mut unlogged = false;
             for h in req.headers.iter() {
                 if h.name.eq_ignore_ascii_case("content-length") {
                     content_length = std::str::from_utf8(h.value)?.trim().parse()?;
@@ -769,6 +778,8 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
                     session = Some(String::from_utf8_lossy(h.value).trim().to_string());
                 } else if h.name.eq_ignore_ascii_case("x-chat-session") {
                     chat = Some(String::from_utf8_lossy(h.value).trim().to_string());
+                } else if h.name.eq_ignore_ascii_case("x-voice-unlogged") {
+                    unlogged = h.value == b"1";
                 }
             }
             Ok(Some(Head {
@@ -778,6 +789,7 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
                 authorization,
                 session,
                 chat,
+                unlogged,
                 body_start,
             }))
         }
@@ -1873,7 +1885,10 @@ async fn completion(
     // where it matters: the page's transcript simply does not move.
     if let (Some(chat_key), Some(host)) = (&head.chat, &shared.mount.host) {
         if !chat_key.is_empty() {
-            match host.speak(chat_key, &text, shared.mount.approve_all).await {
+            match host
+                .speak(chat_key, &text, shared.mount.approve_all, head.unlogged)
+                .await
+            {
                 Hosted::Started(turn) => {
                     return hosted_completion(
                         stream,
@@ -2577,6 +2592,27 @@ mod tests {
         let head = parse_head(raw).unwrap().expect("complete");
         assert_eq!(head.session.as_deref(), Some("webrtc-1a2b"));
         assert_eq!(head.chat, None);
+        assert!(!head.unlogged, "no header is no claim");
+    }
+
+    #[test]
+    fn only_an_exact_one_vouches_that_a_call_is_unlogged() {
+        // The header loosens a refusal (a spoken turn into an incognito
+        // chat), so anything short of the worker's exact claim reads as no
+        // claim at all.
+        let with = |v: &str| {
+            let raw = format!(
+                "POST /v1/chat/completions HTTP/1.1\r\nX-Chat-Session: incognito-0123456789abcdef012345\r\nX-Voice-Unlogged: {v}\r\nContent-Length: 0\r\n\r\n"
+            );
+            parse_head(raw.as_bytes())
+                .unwrap()
+                .expect("complete")
+                .unlogged
+        };
+        assert!(with("1"));
+        for not in ["0", "true", "yes", "", "11", "1 please"] {
+            assert!(!with(not), "{not:?} was read as a claim");
+        }
     }
 
     #[test]

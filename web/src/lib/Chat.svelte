@@ -13,7 +13,7 @@
   // travels in the WebRTC offer, the facade resolves it against the same
   // conversation this view is rendering, and spoken turns arrive here over
   // the ordinary SSE feed like any other.
-  import { createVoiceSession } from '../../../scripts/voice/voice-core.js';
+  import { createVoiceSession, dropRing } from '../../../scripts/voice/voice-core.js';
 
   let key = $state('main');
   let mode = $state('read_only');
@@ -31,8 +31,8 @@
   let handing = $state(false);
   // **Incognito** (`docs/INCOGNITO-DESIGN.md`): a chat nothing keeps. The
   // server says which kind a chat is (`incognito` on the transcript read);
-  // the page adds the banner, End, the search notice, and leaves out the
-  // voice call. `gone` is why an incognito chat is over — ended here, or
+  // the page adds the banner, End and the search notice, and its voice call
+  // says it keeps nothing. `gone` is why an incognito chat is over — ended here, or
   // closed by the server while the page was away — and it replaces the
   // conversation, which the page forgets as well.
   let incognito = $state(false);
@@ -643,6 +643,10 @@
 
   function switchTo(k) {
     if (k === key) return;
+    // The uplink ring is audio of what was said in the chat being left, and
+    // it outlives calls on purpose; an incognito chat's must not outlive the
+    // visit (the composer below is the same rule).
+    if (incognito) dropRing(key);
     key = k;
     receivedInputs.clear();
     inputDelivery.clear();
@@ -682,6 +686,11 @@
   // What the page itself holds of a conversation. An incognito chat that has
   // ended must not live on in this tab's memory either.
   function forget() {
+    // A call still speaking into the chat that has gone ends with it, and
+    // what it showed and buffered goes too.
+    endVoice();
+    vEntries = [];
+    dropRing(key);
     entries = [];
     streaming = '';
     draft = '';
@@ -1908,18 +1917,16 @@
           }
         }}
       ></textarea>
-      {#if !incognito}
-        <!-- No voice call in an incognito chat: the voice worker keeps
-             transcripts (design §3.4), and the server refuses spoken turns
-             into one anyway. -->
-        <button
-          class="round voice"
-          onclick={startVoice}
-          title="start a voice call in this conversation"
-        >
-          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="var(--accent-400)" stroke-width="1.8" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /></svg>
-        </button>
-      {/if}
+      <!-- In an incognito chat too: the worker holds its log silence for
+           the call and vouches for it, and the server admits a spoken turn
+           into the chat only on that word (design §3.4). -->
+      <button
+        class="round voice"
+        onclick={startVoice}
+        title={incognito ? 'start a voice call — nothing from it is kept' : 'start a voice call in this conversation'}
+      >
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="var(--accent-400)" stroke-width="1.8" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /></svg>
+      </button>
       {#if running}
         <button class="round stop" onclick={cancel} title="stop at the next safe point">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
@@ -1935,7 +1942,11 @@
   {#if voiceOpen}
     <div class="voice-overlay">
       <div class="voice-top">
-        <span class="chip">speaking into {key === 'main' ? 'your chat' : `“${key}”`} — same conversation, same memory</span>
+        {#if incognito}
+          <span class="chip incog">speaking into this incognito chat — nothing from the call is kept</span>
+        {:else}
+          <span class="chip">speaking into {key === 'main' ? 'your chat' : `“${key}”`} — same conversation, same memory</span>
+        {/if}
       </div>
       <div class="voice-stage">
         <!-- A button, not decoration: the idle label tells people to tap this
@@ -2980,6 +2991,13 @@
     display: flex;
     justify-content: center;
     padding: 22px 20px 0;
+  }
+  /* The incognito door's own outline (`.newbtn.incog`), so the call says
+     which kind of chat it is speaking into before a word is said. */
+  .voice-top .chip.incog {
+    color: var(--text-muted);
+    background: var(--bg);
+    border-color: var(--text-muted);
   }
   .voice-stage {
     flex: 1;
