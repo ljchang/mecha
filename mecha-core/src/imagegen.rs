@@ -1592,7 +1592,14 @@ impl Tool for ImageGenerate {
                     let mut order: Vec<String> = in_prompt.clone();
                     for m in ask.iter().flat_map(|a| a.cast.iter()) {
                         let n = m.name.trim().to_lowercase();
-                        if !order.contains(&n) {
+                        // Only library characters count toward the head count
+                        // or belong in the sentence below: a name that is no
+                        // entry is `compile`'s `missing` to report, not a
+                        // reason to split the scene (review of #384).
+                        let known = lib
+                            .get(crate::imagelib::Kind::Character, &n)
+                            .is_some_and(|e| e.status == crate::imagelib::Status::Approved);
+                        if known && !order.contains(&n) {
                             order.push(n);
                         }
                     }
@@ -3803,6 +3810,35 @@ mod tests {
             .unwrap()
             .iter()
             .any(|l| l.starts_with("POST /prompt")));
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    #[tokio::test]
+    async fn an_invented_cast_name_is_reported_as_unknown_not_counted() {
+        let (url, _) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let member = |n: &str| json!({"name": n, "wearing": "a coat", "doing": "waving"});
+        let out = t
+            .call(
+                json!({"prompt": "Maya and John at a picnic",
+                       "cast": [member("maya"), member("alice"), member("bob"), member("carol")]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        // Two library people are named, so no split — and alice, bob and
+        // carol are not claimed to be the owner's characters.
+        assert!(!out.content.contains("Split the scene"), "{}", out.content);
+        assert!(!out.content.contains("alice"), "{}", out.content);
+        assert!(
+            out.content.contains("`john` is a character"),
+            "{}",
+            out.content
+        );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
