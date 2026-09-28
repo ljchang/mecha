@@ -1806,6 +1806,10 @@ mod tests {
             include_str!("../../../web/src/lib/Settings.svelte"),
             "const PANES =",
         );
+        let library_panes = js_string_array(
+            include_str!("../../../web/src/lib/library.js"),
+            "export const PANES =",
+        );
 
         // Every `name: "…"` in this file is a Queue row; keep it that way, or
         // this reads a literal that is not a queue.
@@ -1865,6 +1869,7 @@ mod tests {
             let panes = match view {
                 "review" => &review_panes,
                 "settings" => &settings_panes,
+                "library" => &library_panes,
                 // `graph`'s sub-hash is a search term, not a fixed pane.
                 _ => continue,
             };

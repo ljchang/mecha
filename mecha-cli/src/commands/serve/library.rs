@@ -645,14 +645,17 @@ pub async fn save(State(state): St, Json(body): Json<SaveBody>) -> Response {
     };
     let portrait = staged.file().to_string_lossy().into_owned();
     let seed = seed.map(|s| s.to_string());
+    // `--description=…` rather than two arguments: the owner types this, and
+    // a description that opens with a dash is a description, not a flag
+    // (`settings.rs`'s `reason_arg` records the same lesson; review of #385).
+    let description = format!("--description={}", body.description);
     let mut args = vec![
         "imagelib",
         "add-character",
         &body.name,
         "--portrait",
         &portrait,
-        "--description",
-        &body.description,
+        &description,
     ];
     if let Some(seed) = &seed {
         args.extend(["--seed", seed]);
