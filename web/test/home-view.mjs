@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { needsYou, fyi, actionable, ACTIONABLE, workflowGroups, healthLine } from '../src/lib/home-view.js';
+import { needsYou, fyi, actionable, isActionable, workflowGroups, healthLine } from '../src/lib/home-view.js';
 
 // Unread passes through: null stays null, undefined stays undefined.
 assert.equal(needsYou(null), null);
@@ -32,7 +32,9 @@ assert.equal(fyi(rows), 1);
 
 // The Tasks card counts what its tap lands on — the board's actionable view
 // (next or inbox) — not every open task: scheduled and waiting are other
-// views, and finished work (the board is read with --closed) is none.
+// views, and closed statuses are none. `completed_at` alone does not close a
+// task here, because it does not on the board either: one predicate, two
+// readers, and the fixture below holds a row that would split two copies.
 const tasks = [
   { id: 'w', status: 'waiting' },
   { id: 'n', status: 'next' },
@@ -43,7 +45,12 @@ const tasks = [
   { id: 'gone', status: 'dropped' },
   { id: 'finished', status: 'next', completed_at: '2026-09-01' },
 ];
-assert.deepEqual(actionable(tasks).map((t) => t.id), ['n', 'late', 'new']);
+assert.deepEqual(actionable(tasks).map((t) => t.id), ['n', 'late', 'new', 'finished']);
+assert.deepEqual(
+  actionable(tasks).map((t) => t.id),
+  tasks.filter(isActionable).map((t) => t.id),
+  'the card counts with the same predicate the board filters with',
+);
 
 // The workflows view shows workflows only — every section, urgent included
 // (overdue work must show during a snooze) — and leaves loose drafts and
@@ -74,9 +81,10 @@ assert.equal(healthLine([{ severity: 'attention' }, { severity: 'attention' }]),
 const here = path.dirname(fileURLToPath(import.meta.url));
 const read = (f) => fs.readFileSync(path.join(here, '..', 'src', 'lib', f), 'utf8');
 const board = read('Tasks.svelte');
-const boardActionable = JSON.parse(board.match(/const ACTIONABLE = (\[[^\]]*\])/)[1].replaceAll("'", '"'));
-assert.deepEqual(ACTIONABLE, boardActionable, "home's Tasks count and the board's default view must select the same statuses");
-assert.match(board, /\['actionable', \(t\) => ACTIONABLE\.includes\(t\.status\)/, 'the default view is still ACTIONABLE');
+// The board's default view filters with the very predicate the card counts
+// with — imported, not copied, so there is nothing to drift.
+assert.match(board, /import \{ isActionable \} from '\.\/home-view\.js'/, 'Tasks imports the shared predicate');
+assert.match(board, /\['actionable', isActionable,/, "the board's default view is filtered by isActionable");
 const views = [...board.matchAll(/^\s*\['(\w+)', \(t\) =>/gm)].map((m) => m[1]);
 views.push(board.match(/const WORKFLOWS = '(\w+)'/)[1]);
 assert.ok(views.includes('waiting') && views.includes('workflows'), `Tasks views parsed as ${views}`);
