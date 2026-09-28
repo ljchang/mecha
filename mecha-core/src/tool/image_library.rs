@@ -81,7 +81,7 @@ impl Tool for ImageLibrary {
             "type": "object",
             "properties": {
                 "kind": {"type": "string", "enum": ["character", "style", "all"]},
-                "query": {"type": "string", "description": "A word to match in names and descriptions."}
+                "query": {"type": "string", "description": "Names or words: a name picks that entry; otherwise every word must appear in an entry's name or description."}
             }
         })
     }
@@ -153,8 +153,9 @@ impl Tool for ImageLibrary {
 ///   matching any word against descriptions returned the whole library on any
 ///   phrase ("and" is in "tall and lean") — every character's physical
 ///   description into context, on a tool declared private.
-/// - **Otherwise any word of three letters or more**, against names and
-///   descriptions; words under three are dropped ("a" is in "priya") —
+/// - **Otherwise every word of three letters or more**, against names and
+///   descriptions — all of them, since "and" survives the floor; words under
+///   three are dropped ("a" is in "priya") —
 /// - **unless none is left**, when the whole query matches as one substring,
 ///   so a character named `jo` can still be found by its own name.
 struct Search {
@@ -189,7 +190,10 @@ impl Search {
         if long.peek().is_none() {
             return e.name.contains(q) || text.contains(q);
         }
-        long.any(|w| e.name.contains(&w) || text.contains(&w))
+        // Every long word, not any: "and" is three letters and sits in "tall
+        // and lean", so any-word returned the whole library on a phrase with
+        // no name in it — the query a search is for (review of #384).
+        long.all(|w| e.name.contains(&w) || text.contains(&w))
     }
 }
 
@@ -390,12 +394,12 @@ mod tests {
             imagelib::create(
                 &lib,
                 NewEntry {
-                    kind: Kind::Style,
+                    kind: Kind::Character,
                     name: name.into(),
+                    portrait: Some(png()),
                     // Descriptions that read like real ones: every one
                     // carries "and", which the phrase below also does.
                     text: format!("{name}, tall and lean, with dark hair"),
-                    portrait: None,
                     source_seed: None,
                     origin: Origin::Owner,
                     locked: false,
@@ -421,7 +425,7 @@ mod tests {
             .call(json!({"query": "jo"}), &ctx(&ws, None))
             .await
             .unwrap();
-        assert!(out.content.contains("style jo (v1)"), "{}", out.content);
+        assert!(out.content.contains("character jo (v1)"), "{}", out.content);
         // With no name in it, a query searches descriptions.
         let out = ImageLibrary::new(lib.clone())
             .call(json!({"query": "dark hair"}), &ctx(&ws, None))
@@ -429,6 +433,21 @@ mod tests {
             .unwrap();
         assert!(
             out.content.contains("priya") && out.content.contains("maya"),
+            "{}",
+            out.content
+        );
+        // A phrase with no name in it matches on every long word, not any —
+        // "and" is in every description here, and matched them all.
+        let out = ImageLibrary::new(lib.clone())
+            .call(
+                json!({"query": "a dog and a cat on a sofa"}),
+                &ctx(&ws, None),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content
+                .starts_with("Nothing in the image library matches."),
             "{}",
             out.content
         );
