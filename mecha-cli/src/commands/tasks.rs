@@ -2278,6 +2278,23 @@ pub(crate) fn markers() -> Result<mecha_core::runmarker::RunMarkers> {
     )))
 }
 
+/// The detached task run writing session `session`, if any — for a surface
+/// about to remove what that run is using. A marker store that exists but
+/// cannot be read is an error, never "no run": `live_writer_of` alone folds
+/// the two together, and a delete read that as permission to remove a live
+/// run's workspace.
+pub(crate) fn detached_writer(session: &str) -> Result<Option<String>> {
+    let m = markers()?;
+    match std::fs::read_dir(m.dir()) {
+        Ok(_) => Ok(m.live_writer_of(session)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(anyhow::Error::new(e).context(format!(
+            "cannot tell whether a task run is writing this conversation: reading {}",
+            m.dir().display()
+        ))),
+    }
+}
+
 /// Where task-run markers live under a mecha home — said once, for
 /// [`markers`] and for the closure guard's walk over every guard home.
 fn markers_dir_under(home: &std::path::Path) -> std::path::PathBuf {
@@ -2762,6 +2779,7 @@ async fn work(
                 meta.id,
                 prior.messages.len()
             );
+            mecha_core::archive::reopened(&path, &meta.id);
             (mecha_core::session::Session { meta, path }, prior)
         }
         None => (

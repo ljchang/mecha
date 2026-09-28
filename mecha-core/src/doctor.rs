@@ -308,6 +308,7 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_triggers(&home.join("triggers"), now, charter));
     findings.extend(check_charter(&home.join("charter.toml")));
     findings.extend(check_runs(&home.join("sessions"), charter));
+    findings.extend(check_unfinished_forgets(&home.join("sessions")));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
     findings.extend(check_learning(&home.join("learning"), now));
     findings.extend(check_proposal_review(&home.join("learning"), now));
@@ -1631,6 +1632,45 @@ fn check_charter(path: &Path) -> Vec<Finding> {
         }],
         Ok(_) => Vec::new(),
     }
+}
+
+/// A delete that did not finish (`crate::forget`): the transcript is set
+/// aside, unlisted, and still holds the whole conversation the owner asked
+/// to be rid of. Broken, not attention — it is a promise half-kept, and the
+/// remedy is the same command run again.
+fn check_unfinished_forgets(sessions: &Path) -> Vec<Finding> {
+    let unfinished = match crate::forget::unfinished(sessions) {
+        Ok(ids) => ids,
+        Err(e) => {
+            return vec![Finding::unreadable(
+                "sessions",
+                "the session store",
+                format!("{e:#}"),
+            )]
+        }
+    };
+    unfinished
+        .into_iter()
+        .map(|id| Finding {
+            component: "sessions".into(),
+            severity: Severity::Broken,
+            summary: format!("conversation {id} is only partly deleted"),
+            detail: "a delete stopped before every store answered; the transcript is set \
+                     aside and still holds the conversation"
+                .into(),
+            remedy: Some(Remedy {
+                description: "finish the delete".into(),
+                argv: vec![
+                    "mecha".into(),
+                    "sessions".into(),
+                    "delete".into(),
+                    id.clone(),
+                    "--yes".into(),
+                ],
+                needs_terminal: false,
+            }),
+        })
+        .collect()
 }
 
 /// Report population-level run quality: the signals that are invisible in any

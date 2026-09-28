@@ -329,6 +329,7 @@ async fn answer_and_resume(
         }
     }
 
+    mecha_core::archive::reopened(&path, &meta.id);
     let session = Session { meta, path };
 
     // The same surface the asking run had: it still may not close its own
