@@ -36,6 +36,12 @@ pub const MAX_CAST_FIELD: usize = 300;
 pub const MAX_PENDING: usize = 50;
 /// A portrait larger than this is refused rather than read.
 pub const MAX_PORTRAIT_BYTES: u64 = 25 * 1024 * 1024;
+/// A *proposed* portrait: kept on disk until the owner rules on it, from a
+/// tool that needs no approval, so the pending cap has to bound bytes as well
+/// as entries — 50 × 4 MB, not 50 × 25 MB (review of #383). A 1024² PNG from
+/// the image server measured 1.85 MB on 2026-09-28, so 4 MB refuses nothing
+/// ordinary; references go at [`REFERENCE_SIZE`] regardless.
+pub const MAX_PROPOSED_PORTRAIT_BYTES: u64 = 4 * 1024 * 1024;
 /// The size references are sent at, in pixels a side. E2: four references at
 /// 1024² took 190 s and four at 512² 79 s; E10: a whole portrait at 512² held
 /// identity within a few hundredths of a tight face crop.
@@ -402,6 +408,15 @@ pub fn create(dir: &Path, new: NewEntry) -> Result<Entry> {
         Status::Candidate
     };
     if status == Status::Candidate {
+        if let Some(bytes) = &new.portrait {
+            if bytes.len() as u64 > MAX_PROPOSED_PORTRAIT_BYTES {
+                bail!(
+                    "a proposed portrait is capped at {} MB; this one is {:.1} MB",
+                    MAX_PROPOSED_PORTRAIT_BYTES / (1024 * 1024),
+                    bytes.len() as f64 / (1024.0 * 1024.0)
+                );
+            }
+        }
         let (lib, _) = Library::load(dir);
         if lib.candidates().count() >= MAX_PENDING {
             bail!(
@@ -1090,6 +1105,21 @@ mod tests {
         // The name is free, and nothing lingers under removed/.
         assert!(!dir.path().join("removed").exists());
         assert!(reject(dir.path(), Kind::Character, "maya").is_err());
+    }
+
+    #[test]
+    fn a_proposed_portrait_is_capped_in_bytes_and_the_owners_is_not() {
+        let dir = scratch();
+        let mut big = png();
+        big.resize((MAX_PROPOSED_PORTRAIT_BYTES + 1) as usize, 0);
+        let mut proposed = character("big", Origin::ModelClean);
+        proposed.portrait = Some(big.clone());
+        let why = create(dir.path(), proposed).unwrap_err();
+        assert!(format!("{why}").contains("capped at 4 MB"), "{why}");
+        assert!(!dir.path().join("characters/big").exists());
+        let mut owned = character("big", Origin::Owner);
+        owned.portrait = Some(big);
+        create(dir.path(), owned).unwrap();
     }
 
     #[test]

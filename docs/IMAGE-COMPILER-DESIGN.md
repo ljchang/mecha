@@ -122,8 +122,8 @@ The rules, each a measurement:
 ## 4. Tools
 
 - **`image_generate`** — `cast` and `style` as above. The result names each
-  entry and its version. **A prompt naming an approved character with no
-  `cast` key is refused** before any GPU time: the first real run (2026-09-28)
+  entry and its version. **A prompt naming an approved character who is
+  not in `cast` is refused** before any GPU time: the first real run (2026-09-28)
   copied the looked-up descriptions into the prompt, left `cast` out, and drew
   two strangers. `"cast": []` means "someone else by that name".
 - **`image_library`** — list or search the library, with a line saying how
@@ -140,7 +140,8 @@ The rules, each a measurement:
   description, and a workspace image as the portrait, read through the path
   jail) or style. Records `origin` from the conversation's taint
   (`ToolCtx::taint`; `None` is `model_untrusted`). Refuses a name already in
-  use in any state, and refuses beyond 50 pending candidates. It creates only
+  use in any state, beyond 50 pending candidates, and a portrait over 4 MB —
+  the cap bounds bytes, not only entries. It creates only
   a candidate, which changes nothing the owner uses until approved — so it is
   `read_only` on the footing `image_generate` has: a web chat starts
   read-only and proposing a character should be one request in it.

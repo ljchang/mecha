@@ -652,11 +652,14 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   real run looked the characters up, wrote their descriptions into the prompt
   and left `cast` out: two strangers (ArcFace 0.17 and 0.10 against their
   portraits). `imagelib::named_in` catches an approved character's name as a
-  whole word in a non-edit prompt with no `cast` key; `"cast": []` says
-  "someone else by that name". The lookup's result also says how entries are
+  whole word in any non-edit prompt, minus the names already in `cast` — a
+  cast of one does not excuse a second character named beside it (review of
+  #383); an explicit `"cast": []` says "someone else by that name". The lookup's result also says how entries are
   used, which alone was enough on the rerun (0.68 and 0.45).
-- **The owner approves; the model proposes — and a rejection leaves
-  nothing.** `mecha imagelib reject` deletes the candidate and its portrait
+- **The owner approves; the model proposes — bounded in entries and in
+  bytes, and a rejection leaves nothing.** At most `MAX_PENDING` candidates,
+  each portrait at most `MAX_PROPOSED_PORTRAIT_BYTES` (4 MB; the owner's own
+  stay at 25), because the proposing tool reaches no approver. `mecha imagelib reject` deletes the candidate and its portrait
   unless another entry names that blob; moving it aside had freed the name
   and the pending slot while the bytes stayed, so the cap bounded the queue
   but not the disk (review of #383). `image_library_propose` makes
