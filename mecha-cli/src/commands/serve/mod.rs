@@ -782,9 +782,28 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
     let Some(target) = &state.offer_target else {
         return (StatusCode::NOT_FOUND, "voice offers are disabled\n").into_response();
     };
+    forward_offer(target, body).await
+}
+
+/// The pipe behind `offer_proxy`, apart from the state that switches it off.
+///
+/// An offer naming an incognito chat is the one exception to "a pipe, not a
+/// participant" (`INCOGNITO-DESIGN.md` §6.4). The worker logs a call from the
+/// moment it holds the offer unless it keeps no text of it, and a worker
+/// that predates the silence would write the chat's key — and then its
+/// words — before the facade's gate ever ran. So the runner is asked first
+/// (`runner_keeps_no_text`), and without a yes the offer never reaches it;
+/// with one, the answer says so (`unlogged`), which the page requires before
+/// it lets a word through. Refused without a log line: the refusal would say
+/// what kind of chat was called.
+async fn forward_offer(target: &str, body: axum::body::Bytes) -> Response {
     let client = reqwest::Client::new();
+    let incognito = offer_names_incognito(&body);
+    if incognito && !runner_keeps_no_text(&client, target).await {
+        return (StatusCode::CONFLICT, format!("{UNLOGGED_WORKER_WANTED}\n")).into_response();
+    }
     let sent = client
-        .post(target.as_str())
+        .post(target)
         .header("content-type", "application/json")
         .body(body.to_vec())
         .timeout(std::time::Duration::from_secs(15))
@@ -805,7 +824,11 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
                 Ok(bytes) => (
                     status,
                     [("content-type", "application/json")],
-                    bytes.to_vec(),
+                    if incognito && status.is_success() {
+                        vouched_answer(&bytes)
+                    } else {
+                        bytes.to_vec()
+                    },
                 )
                     .into_response(),
                 Err(e) => {
@@ -822,6 +845,66 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
             )
                 .into_response()
         }
+    }
+}
+
+/// What the page shows when a call into an incognito chat is refused at the
+/// door because the voice worker cannot keep it unlogged.
+const UNLOGGED_WORKER_WANTED: &str = "this voice worker keeps call logs — restart \
+     mecha-voice-worker to talk in an incognito chat";
+
+/// Whether an offer names an incognito chat (`request_data.session`, the
+/// passthrough the worker reads). Anything unreadable names nothing: the
+/// worker reads the same bytes and would name no chat either.
+fn offer_names_incognito(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("request_data")?
+                .get("session")?
+                .as_str()
+                .map(|s| incognito::is_incognito_key(s.trim()))
+        })
+        .unwrap_or(false)
+}
+
+/// Ask the runner beside `target` whether it holds its log silence for an
+/// incognito call: `GET /mecha/unlogged`, answered `{"unlogged": true}` by a
+/// worker that does. Anything else — a 404 from one that predates it, a
+/// timeout, a body that says otherwise — is no.
+async fn runner_keeps_no_text(client: &reqwest::Client, target: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(target).and_then(|t| t.join("/mecha/unlogged")) else {
+        return false;
+    };
+    let Ok(resp) = client
+        .get(url)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+    else {
+        return false;
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    resp.json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|v| v.get("unlogged")?.as_bool())
+        == Some(true)
+}
+
+/// The runner's answer with `"unlogged": true` added — the page's condition
+/// for letting a word into an incognito call. `setRemoteDescription` ignores
+/// the extra member. An answer that is not a JSON object passes unchanged,
+/// and without the flag the page refuses the call.
+fn vouched_answer(bytes: &[u8]) -> Vec<u8> {
+    match serde_json::from_slice::<serde_json::Value>(bytes) {
+        Ok(serde_json::Value::Object(mut answer)) => {
+            answer.insert("unlogged".into(), serde_json::Value::Bool(true));
+            serde_json::to_vec(&answer).unwrap_or_else(|_| bytes.to_vec())
+        }
+        _ => bytes.to_vec(),
     }
 }
 
@@ -2166,6 +2249,97 @@ mod boundary_tests {
         );
         assert!(chat.close_incognito(&fresh).await);
         drop(runtime);
+    }
+
+    /// A stand-in runner: `/api/offer` counts what reaches it and answers an
+    /// SDP-shaped object; `/mecha/unlogged` exists only when `vouches`.
+    async fn stub_runner(vouches: bool) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let offers = Arc::new(AtomicUsize::new(0));
+        let seen = offers.clone();
+        let mut app = Router::new().route(
+            "/api/offer",
+            axum::routing::post(move || {
+                let seen = seen.clone();
+                async move {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    Json(serde_json::json!({"sdp": "v=0", "type": "answer", "pc_id": "pc-1"}))
+                }
+            }),
+        );
+        if vouches {
+            app = app.route(
+                "/mecha/unlogged",
+                axum::routing::get(|| async { Json(serde_json::json!({"unlogged": true})) }),
+            );
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+        (format!("http://{addr}/api/offer"), offers)
+    }
+
+    async fn answer_of(resp: Response) -> (StatusCode, Vec<u8>) {
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, body.to_vec())
+    }
+
+    /// An incognito offer reaches the runner only if it keeps no text of the
+    /// call, and the page learns so from the answer; an ordinary one is the
+    /// pipe it always was (review of #376: the facade's gate came after the
+    /// worker had logged).
+    #[tokio::test]
+    async fn an_incognito_offer_reaches_only_a_runner_that_keeps_no_text() {
+        use std::sync::atomic::Ordering;
+        let incognito = axum::body::Bytes::from(
+            r#"{"sdp":"x","type":"offer","request_data":{"session":"incognito-0123456789abcdef012345"}}"#,
+        );
+        let ordinary = axum::body::Bytes::from(
+            r#"{"sdp":"x","type":"offer","request_data":{"session":"main"}}"#,
+        );
+
+        let (old, offers) = stub_runner(false).await;
+        let (status, body) = answer_of(forward_offer(&old, incognito.clone()).await).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(String::from_utf8_lossy(&body).contains("restart mecha-voice-worker"));
+        assert_eq!(
+            offers.load(Ordering::SeqCst),
+            0,
+            "an old worker was handed the offer"
+        );
+        let (status, body) = answer_of(forward_offer(&old, ordinary.clone()).await).await;
+        assert_eq!(status, StatusCode::OK, "an ordinary call needs no vouch");
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            answer.get("unlogged").is_none(),
+            "an ordinary answer was vouched for"
+        );
+
+        let (new, offers) = stub_runner(true).await;
+        let (status, body) = answer_of(forward_offer(&new, incognito).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(offers.load(Ordering::SeqCst), 1);
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(answer["unlogged"], serde_json::Value::Bool(true));
+        assert_eq!(answer["sdp"], "v=0", "the answer itself passes through");
+    }
+
+    #[test]
+    fn only_an_offer_naming_an_incognito_chat_is_one() {
+        assert!(offer_names_incognito(
+            br#"{"request_data":{"session":"incognito-0123456789abcdef012345"}}"#
+        ));
+        for body in [
+            &br#"{"request_data":{"session":"main"}}"#[..],
+            br#"{"request_data":{"uplink":"channel"}}"#,
+            br#"{"sdp":"x"}"#,
+            b"not json",
+        ] {
+            assert!(!offer_names_incognito(body));
+        }
     }
 
     #[test]

@@ -13,10 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   button, and nothing of the call is kept. While such a call is live
   the voice worker silences pipecat's logging, which otherwise writes both
   sides of every call to the journal, and withholds the words from its own
-  lines. It tells the server so on each turn (`X-Voice-Unlogged`), and the
-  server admits a spoken turn into an incognito chat only on that word, so
-  an older worker is still refused. Ending the chat hangs up the call.
-  Restart the voice worker and `mecha serve` to use it.
+  lines. `mecha serve` asks the worker before it forwards such a call, so a
+  worker that has not been restarted is never handed one, and the page goes
+  on only if the answer confirms it. Ending the chat hangs up the call.
+  Restart the voice worker and `mecha serve`, and rebuild the page, to use
+  it.
 
 ### Changed
 

@@ -8,6 +8,7 @@ import asyncio
 import importlib
 import sys
 import unittest
+import warnings
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
@@ -24,6 +25,7 @@ from worker import (  # noqa: E402
     session_line,
     spoken_words,
     UNLOGGED,
+    install,
 )
 
 # The shape `incognito::new_key` mints: the prefix and 22 hex digits, 32
@@ -167,6 +169,49 @@ class TheChatsName(unittest.TestCase):
         self.assertFalse(names_incognito("chat:main"))
         self.assertFalse(names_incognito("voice:webrtc-1a2b"))
         self.assertFalse(names_incognito(None))
+
+
+class TheRunnersDoor(unittest.TestCase):
+    """What `install` adds to the runner's app: the vouch `mecha serve` asks
+    for, and the silence over the offer itself. On a fresh app with a stand-
+    in `/api/offer`, since the runner's own needs a peer connection."""
+
+    def client(self):
+        from fastapi import FastAPI, Request
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            from fastapi.testclient import TestClient
+
+        app = FastAPI()
+        self.during = []
+
+        @app.post("/api/offer")
+        async def offer(request: Request):
+            # What the runner's handler would see: the body, whole, and the
+            # silence, held or not, while it runs.
+            self.during.append((UNLOGGED.active, await request.json()))
+            return {"sdp": "v=0", "type": "answer"}
+
+        install(app)
+        return TestClient(app)
+
+    def test_the_worker_vouches_for_itself(self):
+        r = self.client().get("/mecha/unlogged")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"unlogged": True})
+
+    def test_an_incognito_offer_is_handled_inside_the_silence(self):
+        body = {"sdp": "x", "type": "offer", "request_data": {"session": INCOGNITO_KEY}}
+        r = self.client().post("/api/offer", json=body)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.during, [(True, body)], "held, and the body replayed intact")
+        self.assertFalse(UNLOGGED.active, "the offer's silence outlived it")
+
+    def test_an_ordinary_offer_is_not(self):
+        body = {"sdp": "x", "type": "offer", "request_data": {"session": "main"}}
+        self.client().post("/api/offer", json=body)
+        self.assertEqual(self.during, [(False, body)])
 
 
 class TheSessionName(unittest.TestCase):

@@ -752,7 +752,7 @@ struct Head {
     /// page is free to name a session `webrtc-anything`.
     chat: Option<String>,
     /// `X-Voice-Unlogged: 1`: the worker holds its log silence for this call
-    /// (`INCOGNITO-DESIGN.md` §3.4). Anything but exactly `1` is absent — a
+    /// (`INCOGNITO-DESIGN.md` §6.4). Anything but exactly `1` is absent — a
     /// claim that loosens a refusal is read strictly or not at all.
     unlogged: bool,
     body_start: usize,

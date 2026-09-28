@@ -216,3 +216,15 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   assert.equal(ringFor('incognito-ab').pendingMs, 0, 'and nothing it held carries over');
   console.log('ring dropped: ok');
 }
+{
+  // An incognito call goes on only on an answer that says nothing of it is
+  // logged; `mecha serve` adds that only after the worker vouched.
+  const { refusesAnswer } = await import('../../scripts/voice/voice-core.js');
+  const sdp = { sdp: 'v=0', type: 'answer' };
+  assert.match(refusesAnswer(sdp, { requireUnlogged: true }), /incognito/, 'an old serve is refused');
+  assert.ok(refusesAnswer({ ...sdp, unlogged: 'true' }, { requireUnlogged: true }), 'only a real true counts');
+  assert.equal(refusesAnswer({ ...sdp, unlogged: true }, { requireUnlogged: true }), null);
+  assert.equal(refusesAnswer(sdp, { requireUnlogged: false }), null, 'an ordinary call needs nothing');
+  assert.equal(refusesAnswer(sdp, {}), null);
+  console.log('incognito answer gate: ok');
+}

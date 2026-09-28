@@ -79,6 +79,7 @@ function is(actual, expected, what) {
   const p = page({ key: 'main', draft: '', attachments: [], incognito: false, gone: null });
   p.switchTo('incognito-cd');
   is(p.call().hungUp, 1, 'entering an incognito chat ends a call from a recorded one');
+  is(p.dropped, [], "and leaves the recorded chat's ring for its next call");
 }
 {
   const p = page({ key: 'main', draft: 'half a thought', attachments: ['inbox/a.pdf'], incognito: false, gone: null });
