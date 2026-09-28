@@ -1435,8 +1435,14 @@ async fn prepare_tools_carrying(
         match mecha_core::imagelib::Library::default_dir() {
             Ok(dir) => {
                 use mecha_core::tool::image_library::{ImageLibrary, ImageLibraryPropose};
-                let asked =
-                    |name: &str| opts.tools.is_empty() || opts.tools.iter().any(|t| t == name);
+                // `[tools]` narrows these like any builtin, as `image_view`'s
+                // registration below does — the proposing door writes into
+                // the mecha home with no approver, so its off switch must work
+                // (found on review of #383).
+                let asked = |name: &str| {
+                    (opts.tools.is_empty() || opts.tools.iter().any(|t| t == name))
+                        && cfg.tools.registers(name)
+                };
                 if asked("image_library") {
                     registry.insert(Arc::new(ImageLibrary::new(dir.clone())));
                 }

@@ -540,6 +540,9 @@ pub fn update(
         entry.portrait = Some(store_blob(dir, &bytes)?);
         entry.source_seed = source_seed;
     } else if source_seed.is_some() {
+        if kind != Kind::Character {
+            bail!("a style has no portrait, so no seed");
+        }
         entry.source_seed = source_seed;
     }
     if entry.text == old.text
@@ -839,6 +842,31 @@ pub fn named_in(lib: &Library, prompt: &str) -> Vec<String> {
         .filter(|e| e.kind == Kind::Character && words.contains(&e.name))
         .map(|e| e.name.clone())
         .collect()
+}
+
+/// Characters whose entries did not load, named as whole words in a prompt.
+/// A broken entry is invisible to [`named_in`], and the guard behind it must
+/// not read that invisibility as absence.
+pub fn broken_named_in(lib: &Library, prompt: &str) -> Vec<String> {
+    let words: std::collections::BTreeSet<String> = prompt
+        .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let characters = lib.dir.join(Kind::Character.dir());
+    let mut out: Vec<String> = lib
+        .errors
+        .iter()
+        .filter_map(|e| {
+            let entry = e.path.parent()?;
+            (entry.parent()? == characters.as_path()).then_some(())?;
+            entry.file_name()?.to_str().map(str::to_string)
+        })
+        .filter(|name| words.contains(name))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn capitalize(s: &str) -> String {

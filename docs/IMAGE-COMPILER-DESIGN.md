@@ -184,6 +184,12 @@ image reproducible, and what phase 2's lineage and "save to library" read.
 - **The web surface** — Save to library, the Library tab, the character page,
   the "show locked" toggle, candidates in `/queues`. Phase 2, from §1's
   rulings.
+- **Candidates in `backlog.rs`'s walk** — deferred with the surface, and the
+  cost is stated: until then a waiting candidate is visible only to `mecha
+  imagelib list --all`; `mecha review`, `doctor` and the goal system read
+  zero, and at 50 pending the only signal is the model's refusal text. The
+  walk is the reader that makes the queue visible without a browser, so it
+  lands with phase 2's `/queues` row, not after it (review of #383).
 - **Locations, scene assets, lineage and branching** (draft §6–7, §20).
 - **Tier B checks** (face embedding, detector, VLM) and the repair loop.
 - **Cast plus an edit canvas in one call** — needs a per-reference
