@@ -336,6 +336,10 @@ fn a_store_that_fails_keeps_the_transcript_to_finish_next_time() {
     let first = forget(&roots, GONE, &graph).unwrap();
     assert!(!first.complete);
     assert!(first.errors.iter().any(|e| e.starts_with("graph:")));
+    assert!(
+        !first.residue.iter().any(|r| r.contains("distilled.jsonl")),
+        "the ledger line kept for the retry is not a field delete does not know"
+    );
     // Set aside, not deleted: no listing sees it, and the retry still has it.
     let parked = roots.sessions.join(format!("{GONE}.jsonl.forgetting"));
     assert!(parked.exists());
@@ -487,4 +491,39 @@ fn a_trace_in_a_field_delete_does_not_know_is_reported_not_hidden() {
         "{:?}",
         report.residue
     );
+}
+
+#[test]
+fn a_learning_failure_leaves_the_keys_so_the_retry_still_finds_their_rows() {
+    // A rule file this binary cannot parse stops the learning purge part-way.
+    // The reflections are the key every rule and ledger is found by; had they
+    // gone first, the retry would find nothing by them and report clean.
+    let home = scratch("learning-retry");
+    let roots = seeded(&home.0);
+    let rules = roots.learning.join("rules/behavior.learned.toml");
+    let good = std::fs::read_to_string(&rules).unwrap();
+    std::fs::write(&rules, "[[rules]\nthis is not toml").unwrap();
+    let graph = Graph::answering(vec![
+        Ok(GraphOutcome::Redacted(0)),
+        Ok(GraphOutcome::Redacted(0)),
+    ]);
+
+    let first = forget(&roots, GONE, &graph).unwrap();
+    assert!(!first.complete);
+    assert!(first.errors.iter().any(|e| e.starts_with("learning store")));
+    let reflections = std::fs::read_to_string(roots.learning.join("reflections.jsonl")).unwrap();
+    assert!(
+        reflections.contains("refl-gone"),
+        "the key went before its rows"
+    );
+    assert!(
+        roots.outbox.join("item-gone.json").exists(),
+        "an outbox key went early"
+    );
+
+    std::fs::write(&rules, good).unwrap();
+    let second = forget(&roots, GONE, &graph).unwrap();
+    assert!(second.complete, "{:?}", second.errors);
+    assert_eq!(holding(&home.0, "refl-gone"), Vec::<PathBuf>::new());
+    assert_eq!(holding(&home.0, "item-gone"), Vec::<PathBuf>::new());
 }

@@ -202,13 +202,18 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         ..Report::default()
     };
 
-    // Outbox first: the learning store's ledger of mined drafts is keyed by
-    // the item ids this finds.
-    let items = report_items(
-        &mut report,
-        "outbox",
-        remove_items(&roots.outbox, |v| field_is(v, "session_id", id)),
-    );
+    // **A key is removed after everything keyed by it.** The outbox items'
+    // ids key the learning store's mined-drafts ledger and the front door's
+    // links, so the items are *found* here and removed only after both have
+    // answered — removed first, a failure in between would leave a retry
+    // with no ids to find those rows by, and it would report clean.
+    let items = match matching_items(&roots.outbox, |v| field_is(v, "session_id", id)) {
+        Ok(items) => items,
+        Err(e) => {
+            report.errors.push(format!("outbox: {e:#}"));
+            Vec::new()
+        }
+    };
     // No writer lock of its own: the front door writes each record by temp
     // and rename, as `edit_items` does, so neither sees half of the other.
     report.attempt(
@@ -269,6 +274,18 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         }
     };
     purge_learning(roots, id, &items, graph_failed, &mut report);
+    // Only once every store keyed by the item ids has answered: a failure
+    // above keeps the items, so the retry can still find those rows by them.
+    if report.errors.is_empty() {
+        report.attempt(
+            "outbox",
+            remove_items(&roots.outbox, |v| field_is(v, "session_id", id)).map(|v| v.len()),
+        );
+    } else {
+        report
+            .errors
+            .push("outbox: kept until the stores above finish, for the retry".into());
+    }
     report.attempt(
         "appraisals",
         with_lock(&roots.appraisals, || {
@@ -347,7 +364,14 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
     // how a trace survives, and twice on review it was — a workflow event's
     // `detail`, a message's `delivered_to`. What is found is said, file by
     // file, rather than reported as a clean delete.
-    for path in still_naming(roots, id) {
+    // Less the one line kept on purpose: a graph that did not answer leaves
+    // the distill ledger naming the session, so the retry still owes it an
+    // episode — the `graph:` error already says why.
+    let kept_for_graph = roots.learning.join("distilled.jsonl");
+    for path in still_naming(roots, id)
+        .into_iter()
+        .filter(|p| !(graph_failed && *p == kept_for_graph))
+    {
         report.residue.push(format!(
             "{} still names this session, in a field delete does not know",
             path.display()
@@ -390,19 +414,6 @@ pub fn unfinished(sessions: &Path) -> Vec<String> {
     out
 }
 
-fn report_items(report: &mut Report, store: &str, r: Result<Vec<String>>) -> Vec<String> {
-    match r {
-        Ok(ids) => {
-            report.count(store, ids.len());
-            ids
-        }
-        Err(e) => {
-            report.errors.push(format!("{store}: {e:#}"));
-            Vec::new()
-        }
-    }
-}
-
 /// The learning store, under its writer lock. With `keep_distilled`, the
 /// distill ledger keeps the session: the graph did not answer for it, and
 /// the retry must still know it has an episode to redact.
@@ -419,12 +430,16 @@ fn purge_learning(
         return;
     }
     let result = with_lock(root, || {
-        // The reflections first: every other ledger here is keyed by their ids.
+        // The reflections are the key every other ledger here is found by,
+        // so they are read now and removed last: a step that fails in
+        // between leaves them in place, and the retry finds everything again.
         let mut ids: HashSet<String> = HashSet::new();
         let mut texts: Vec<String> = Vec::new();
-        let n = filter_jsonl(&root.join("reflections.jsonl"), |v| {
-            let hit = field_is(v, "session_id", id);
-            if hit {
+        for line in read_lines(&root.join("reflections.jsonl"))? {
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if field_is(&v, "session_id", id) {
                 if let Some(r) = v.get("id").and_then(Value::as_str) {
                     ids.insert(r.to_string());
                 }
@@ -432,9 +447,7 @@ fn purge_learning(
                     texts.push(t.to_string());
                 }
             }
-            hit
-        })?;
-        report.count("reflections", n);
+        }
 
         let mut ledgers = filter_lines(&root.join("mined.jsonl"), |l| l.trim() == id)?;
         if !keep_distilled {
@@ -478,6 +491,10 @@ fn purge_learning(
             "learning logs",
             purge_logs(&root.join("logs"), id, &ids, &texts)?,
         );
+        let n = filter_jsonl(&root.join("reflections.jsonl"), |v| {
+            field_is(v, "session_id", id)
+        })?;
+        report.count("reflections", n);
 
         if root.join(".git").exists() && (n > 0 || ledgers > 0) {
             report.residue.push(format!(
@@ -756,6 +773,11 @@ fn still_naming(roots: &Roots, id: &str) -> Vec<PathBuf> {
     .chain([
         roots.home.join("slack").join("threads"),
         roots.home.join("regression-sessions.txt"),
+        // Named, not purged: a Slack remote attach record keeps the session
+        // and its workspace past detach, and a crashed task run leaves its
+        // marker (`runmarker`).
+        roots.home.join("remote"),
+        roots.home.join("taskruns"),
     ])
     .collect();
     let mut seen = HashSet::new();
@@ -816,6 +838,36 @@ fn remove_if_present(path: &Path) -> Result<usize> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
         Err(e) => Err(e).with_context(|| format!("removing {}", path.display())),
     }
+}
+
+/// A file's lines; absent is none.
+fn read_lines(path: &Path) -> Result<Vec<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(t) => Ok(t.lines().map(str::to_string).collect()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// The ids (file stems) of the `*.json` items in `dir` the predicate picks,
+/// touching nothing — the read half of [`remove_items`].
+fn matching_items(dir: &Path, pick: impl Fn(&Value) -> bool) -> Result<Vec<String>> {
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for path in json_files(dir)? {
+        let hit = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .is_some_and(|v| pick(&v));
+        if hit {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                out.push(stem.to_string());
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn field_is(v: &Value, key: &str, id: &str) -> bool {
