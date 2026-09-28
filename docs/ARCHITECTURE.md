@@ -338,8 +338,10 @@ Three rules on the fold, each a bug if undone:
 **Every door reads the header before it trusts a name** (`image::decode`,
 `block_from_bytes`). A file named `.png` whose header cannot be read is
 refused rather than passed through — under `MAX_BYTES` it used to ride into
-the transcript unread, and a picture the provider rejects fails every later
-request of that conversation. Over `MAX_DECODE_PIXELS` (128 megapixels) is
+the transcript unread — and the media type sent is the one the header says,
+so a JPEG named `.png` goes out as `image/jpeg`. A picture the provider
+rejects fails every later request of that conversation, so both halves
+matter. Over `MAX_DECODE_PIXELS` (128 megapixels) is
 refused as *too large to show*, by area rather than by side, because a
 1440×20000 full-page screenshot is ~100 MB and exactly what the caps exist
 to shrink and show. The allocation itself was already bounded by the

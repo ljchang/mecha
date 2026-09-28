@@ -1111,10 +1111,11 @@ fn attached_images(workspace: &std::path::Path, paths: &[String]) -> Vec<Block> 
     };
     let mut blocks = Vec::new();
     for path in paths {
-        let Some(media_type) = mecha_core::message::image_media_type(std::path::Path::new(path))
-        else {
+        // The name decides whether to try; the bytes decide what it is
+        // (`image::block_from_bytes`).
+        if mecha_core::message::image_media_type(std::path::Path::new(path)).is_none() {
             continue;
-        };
+        }
         if blocks.len() == MAX_ATTACHED_IMAGES {
             tracing::info!(
                 "more than {MAX_ATTACHED_IMAGES} pictures on one turn; the rest by path"
@@ -1143,7 +1144,7 @@ fn attached_images(workspace: &std::path::Path, paths: &[String]) -> Vec<Block> 
                 continue;
             }
         };
-        match mecha_core::image::block_from_bytes(media_type, bytes, Some(path.clone()), path) {
+        match mecha_core::image::block_from_bytes(bytes, Some(path.clone()), path) {
             Ok(block) => blocks.push(block),
             Err(e) => tracing::warn!("attachment {path} not attached: {e:#}"),
         }

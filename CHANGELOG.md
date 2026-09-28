@@ -24,10 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A file named as a picture that is not one is refused at every door**
-  instead of riding into the conversation: under 5 MB it used to pass
-  through unread, and a picture the provider rejects fails every later
-  request of that chat. Reachable from Slack and the web chat.
+- **A picture is typed by its bytes, not its name, at every door.** A file
+  named `.png` that is not a picture used to pass through unread under
+  5 MB, and a real JPEG named `.png` went out labelled `image/png`; the
+  provider rejects either, and a rejected picture fails every later request
+  of that chat. The first is refused, the second sent as `image/jpeg`.
+  Reachable from Slack and the web chat.
 - **A picture over 128 megapixels is refused as too large to show**, from
   its header, rather than reported as a failed decode (the `image` crate's
   default 512 MiB allocation cap already stopped the allocation; the error
