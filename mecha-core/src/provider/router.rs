@@ -671,9 +671,13 @@ pub async fn load_with(
     }
     let busy_deadline = tokio::time::Instant::now() + wait;
     let mut busy_since: Option<tokio::time::Instant> = None;
-    // "Switch now" cuts the busy model off once; a later ask to is waited
-    // out like any busy refusal, bounded here rather than by each caller.
+    // "Switch now" cuts the busy model off once it *succeeds*: a later ask
+    // is waited out like any busy refusal, bounded here rather than by each
+    // caller. A cut-off that fails (the list unreadable, the unload refused)
+    // is said, and asked again on the next refusal — latched on the attempt,
+    // one blip spent the owner's "switch now" in silence (found on review).
     let mut cut = false;
+    let mut cut_failed: Option<String> = None;
     let (status, body) = loop {
         let resp = http
             .post(format!("{b}/models/load"))
@@ -708,23 +712,35 @@ pub async fn load_with(
                     .filter(|l| readable(l))
                     .and_then(|l| resident(&l).map(str::to_string));
                 let left = busy_deadline.saturating_duration_since(tokio::time::Instant::now());
-                match resident {
-                    Some(busy) if busy != model => {
-                        // Not fatal, as `--now`'s own unload is not: the next
-                        // ask says whether the model is still in the way.
-                        if let Err(e) = unload(&b, &busy, left).await {
-                            tracing::warn!("cutting off {busy}: {e:#}");
-                        }
+                let failed = match resident {
+                    Some(busy) if busy != model => match unload(&b, &busy, left).await {
+                        Ok(()) => None,
+                        Err(e) => Some(format!("cutting off {busy} failed: {e:#}")),
+                    },
+                    _ => Some(format!(
+                        "could not tell which model {b} has busy (its model list did not \
+                         read in full), so nothing was cut off"
+                    )),
+                };
+                match failed {
+                    None => continue,
+                    Some(why) => {
+                        cut = false;
+                        eprintln!("warning: {why}; asking again on the next refusal");
+                        cut_failed = Some(why);
                     }
-                    _ => tracing::warn!(
-                        "asked to cut off the busy model, but {b} names no other one resident"
-                    ),
                 }
-                continue;
             }
             OnBusy::CutOff => {}
         }
         if tokio::time::Instant::now() + BUSY_RETRY >= busy_deadline {
+            if let Some(why) = cut_failed {
+                bail!(
+                    "{model} was not loaded after {}s: the router kept refusing it as busy, and \
+                     \"switch now\" could not cut the busy model off ({why})",
+                    since.elapsed().as_secs()
+                );
+            }
             bail!(
                 "{model} was not loaded after {}s: the model it replaces had a request in \
                  flight the whole time, and the router will not evict a busy model (it said: \

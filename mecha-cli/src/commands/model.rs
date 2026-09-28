@@ -612,7 +612,7 @@ struct SwitchHooks<'a> {
     switching: &'a mecha_core::hold::Switching,
     /// `--now`, or hurried while it waited for runs.
     now: bool,
-    /// Whether the busy model has been cut off already: once is the ask.
+    /// Whether "stopping the loaded model now" has been said.
     cut: bool,
     said: bool,
 }
@@ -624,9 +624,13 @@ impl router::LoadHooks for SwitchHooks<'_> {
                 "the switch was withdrawn (`mecha model cancel-switch`); the loaded model stays"
             ));
         }
-        if !self.cut && (self.now || self.switching.now_requested()) {
-            self.cut = true;
-            eprintln!("stopping the loaded model now — the reply it is answering will fail");
+        // Asked for on every refusal while "now" holds: `load_with` cuts off
+        // once it succeeds and retries one that failed. `cut` only keeps the
+        // message to one line.
+        if self.now || self.switching.now_requested() {
+            if !std::mem::replace(&mut self.cut, true) {
+                eprintln!("stopping the loaded model now — the reply it is answering will fail");
+            }
             return router::OnBusy::CutOff;
         }
         if !std::mem::replace(&mut self.said, true) {
@@ -977,7 +981,9 @@ mod wait_tests {
         assert!(matches!(hooks.busy(), OnBusy::Wait));
         holds.request_now(ROUTER, "b").unwrap().unwrap();
         assert!(matches!(hooks.busy(), OnBusy::CutOff));
-        assert!(matches!(hooks.busy(), OnBusy::Wait), "cut off twice");
+        // Asked again, so a cut-off that failed can be retried; `load_with`
+        // bounds a successful one.
+        assert!(matches!(hooks.busy(), OnBusy::CutOff));
         let pending = holds.pending(ROUTER).unwrap();
         assert!(
             !holds.is_past_the_wait(ROUTER, &pending),
