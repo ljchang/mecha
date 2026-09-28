@@ -417,7 +417,8 @@ edited.
 
 The one sensor to add beyond R1 is **prompt-cache eviction rate**. `-cram
 32768` was raised from the 8 GB default after 341 evictions in a day, and none
-since; that is a homeostatic variable with a known-good range and a recorded
+for a month — then 118 in three days once it had filled, and it was lowered to
+16384 on 2026-09-28 to leave image generation room; that is a homeostatic variable with a known-good range and a recorded
 excursion, which is exactly the shape a setpoint wants. Nothing watches it
 today.
 

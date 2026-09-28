@@ -178,9 +178,13 @@ CTX="${MECHA_LLAMA_CTX:-1048576}"
 # instead of re-prefilled. The 8192 MiB default is smaller than ONE 262k slot's
 # KV (~5.5 GB at f16), so it thrashed: 341 "making room for prompt cache entry"
 # evictions between Aug 19 and Aug 20, each one paying a re-prefill at
-# ~1,570 tok/s. Matters more with every slot added. At 32768 there have been
-# zero evictions.
-CRAM="${MECHA_LLAMA_CRAM:-32768}"
+# ~1,570 tok/s. Matters more with every slot added. 32768 held for a month,
+# then filled: 118 evictions in the three days to 2026-09-28 (median entry
+# 0.5 GB, p90 3.6, max 7.9), and a full 32 GiB left image generation no room
+# beside the model on the shared 121 GB pool. 16384 is the owner's ruling of
+# that day — about twelve median entries, and still three full slots, never
+# the one-slot thrash of the default.
+CRAM="${MECHA_LLAMA_CRAM:-16384}"
 
 # **`--cache-idle-slots` is deliberately absent. Do not add it back.**
 #
