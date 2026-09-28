@@ -869,6 +869,41 @@ mod wait_tests {
         assert!(hurried, "the wait did not say it was hurried");
     }
 
+    /// While the load is refused as busy the switch is still only waiting,
+    /// so its hooks keep "switch now" and cancel working: it waits, a hurry
+    /// cuts the busy model off (once), a withdrawal stops it, and only the
+    /// router taking the load marks it past its wait.
+    #[test]
+    fn a_busy_refusal_still_honours_switch_now_and_cancel() {
+        use router::{LoadHooks, OnBusy};
+        let home = crate::testenv::HomeGuard::new("model-busy-hooks");
+        let holds = Holds::new(home.dir.join("holds"));
+        let switching = holds
+            .begin_switch(ROUTER, Some("old"), "b")
+            .unwrap()
+            .unwrap();
+        let mut hooks = SwitchHooks {
+            switching: &switching,
+            previous: Some("old".into()),
+            now: false,
+            cut: false,
+            said: false,
+        };
+        assert!(matches!(hooks.busy(), OnBusy::Wait));
+        holds.request_now(ROUTER, "b").unwrap().unwrap();
+        assert!(matches!(hooks.busy(), OnBusy::CutOff(m) if m == "old"));
+        assert!(matches!(hooks.busy(), OnBusy::Wait), "cut off twice");
+        let pending = holds.pending(ROUTER).unwrap();
+        assert!(
+            !holds.is_past_the_wait(ROUTER, &pending),
+            "past its wait while refused"
+        );
+        hooks.accepted();
+        assert!(holds.is_past_the_wait(ROUTER, &pending));
+        holds.withdraw_switch(ROUTER).unwrap();
+        assert!(matches!(hooks.busy(), OnBusy::Stop(e) if e.to_string().contains("withdrawn")));
+    }
+
     /// The wait ends when the last hold drops — and not before.
     #[tokio::test]
     async fn the_wait_ends_when_the_last_hold_drops() {
