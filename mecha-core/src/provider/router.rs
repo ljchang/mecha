@@ -701,8 +701,11 @@ pub async fn load_with(
                 // has already unloaded the one it knew (found on review). So
                 // ask what is loaded now, and cut that off, within what is
                 // left of the busy budget rather than a third `wait`.
+                // Only from a list this reads in full, as everywhere else
+                // here: what it authorises is cutting off a reply in flight.
                 let resident = models(&b)
                     .await
+                    .filter(|l| readable(l))
                     .and_then(|l| resident(&l).map(str::to_string));
                 let left = busy_deadline.saturating_duration_since(tokio::time::Instant::now());
                 match resident {
@@ -1343,10 +1346,16 @@ mod tests {
             (200, r#"{"success":true}"#),
             (200, loading),
             (200, loading),
+            (200, loading),
+            (200, loading),
+            (200, loading),
             (200, M_LOADED),
         ])
         .await;
-        load(&url, "m", Duration::from_millis(2500)).await.unwrap();
+        // Two busy refusals take ~2 s, then five `loading` polls ~2.5 s: the
+        // load is seen at ~4.5 s, past a deadline shared from the start (4 s)
+        // and well inside the load's own (~2 s + 4 s).
+        load(&url, "m", Duration::from_millis(4000)).await.unwrap();
         server.await.unwrap();
     }
 
