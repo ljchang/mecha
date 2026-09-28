@@ -67,6 +67,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             }
         }
         convo = prior;
+        mecha_core::archive::reopened(&path, &meta.id);
         session = Some(Session { meta, path });
     } else if !args.no_session {
         session = Some(Session::create(

@@ -38,6 +38,7 @@ use axum::{Json, Router};
 
 use mecha_core::config::Config;
 
+mod archive;
 mod board;
 mod chat;
 mod files;
@@ -305,6 +306,15 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         )
         .route("/api/sessions", get(chat::sessions))
         .route("/api/history", get(chat::history))
+        .route("/api/sessions/{id}", axum::routing::delete(archive::delete))
+        .route(
+            "/api/sessions/{id}/archive",
+            axum::routing::post(archive::archive),
+        )
+        .route(
+            "/api/sessions/{id}/unarchive",
+            axum::routing::post(archive::unarchive),
+        )
         .route("/api/resume", axum::routing::post(chat::resume))
         .route("/api/incognito", axum::routing::post(chat::open_incognito))
         .route(
@@ -782,9 +792,46 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
     let Some(target) = &state.offer_target else {
         return (StatusCode::NOT_FOUND, "voice offers are disabled\n").into_response();
     };
+    forward_offer(target, body).await
+}
+
+/// The pipe behind `offer_proxy`, apart from the state that switches it off.
+///
+/// An offer naming an incognito chat is the one exception to "a pipe, not a
+/// participant" (`INCOGNITO-DESIGN.md` §6.4). The worker logs a call from the
+/// moment it holds the offer unless it keeps no text of it, and a worker
+/// that predates the silence would write the chat's key — and then its
+/// words — before the facade's gate ever ran. So the runner is asked first
+/// (`runner_keeps_no_text`), and without a yes the offer never reaches it;
+/// with one, the answer says so (`unlogged`), which the page requires before
+/// it lets a word through. Refused without a log line: the refusal would say
+/// what kind of chat was called.
+async fn forward_offer(target: &str, body: axum::body::Bytes) -> Response {
     let client = reqwest::Client::new();
+    // An offer serve cannot read is not one it relays: the worker's parser
+    // accepts shapes `serde_json` refuses (`NaN`, deeper nesting), so an
+    // unreadable body could name an incognito chat to the worker while
+    // naming nothing here (review of #376). The page only ever sends an
+    // object.
+    let Some(offer) = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .filter(|v| v.is_object())
+    else {
+        return (StatusCode::BAD_REQUEST, "malformed offer\n").into_response();
+    };
+    let incognito = offer_names_incognito(&offer);
+    // The prefix decides it, and a name carrying it must also be one the
+    // worker will accept: it validates to `valid_key`'s rule and would drop a
+    // malformed one — and with it the chat binding and the silence — while
+    // this side had vouched for the call (review of #376).
+    if incognito && !offer_session(&offer).is_some_and(|s| chat::valid_key(&s)) {
+        return (StatusCode::BAD_REQUEST, "malformed chat session\n").into_response();
+    }
+    if incognito && !runner_keeps_no_text(&client, target).await {
+        return (StatusCode::CONFLICT, format!("{UNLOGGED_WORKER_WANTED}\n")).into_response();
+    }
     let sent = client
-        .post(target.as_str())
+        .post(target)
         .header("content-type", "application/json")
         .body(body.to_vec())
         .timeout(std::time::Duration::from_secs(15))
@@ -805,7 +852,11 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
                 Ok(bytes) => (
                     status,
                     [("content-type", "application/json")],
-                    bytes.to_vec(),
+                    if incognito && status.is_success() {
+                        vouched_answer(&bytes)
+                    } else {
+                        bytes.to_vec()
+                    },
                 )
                     .into_response(),
                 Err(e) => {
@@ -822,6 +873,69 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
             )
                 .into_response()
         }
+    }
+}
+
+/// What the page shows when a call into an incognito chat is refused at the
+/// door because the voice worker cannot keep it unlogged.
+const UNLOGGED_WORKER_WANTED: &str = "this voice worker keeps call logs — restart \
+     mecha-voice-worker to talk in an incognito chat";
+
+/// Whether an offer names an incognito chat (`request_data.session`, the
+/// passthrough the worker reads), on the prefix as the worker decides it.
+fn offer_names_incognito(offer: &serde_json::Value) -> bool {
+    offer_session(offer).is_some_and(|s| incognito::is_incognito_key(&s))
+}
+
+/// The session an offer names, trimmed as the worker trims it.
+fn offer_session(offer: &serde_json::Value) -> Option<String> {
+    Some(
+        offer
+            .get("request_data")?
+            .get("session")?
+            .as_str()?
+            .trim()
+            .to_string(),
+    )
+}
+
+/// Ask the runner beside `target` whether it holds its log silence for an
+/// incognito call: `GET /mecha/unlogged`, answered `{"unlogged": true}` by a
+/// worker that does. Anything else — a 404 from one that predates it, a
+/// timeout, a body that says otherwise — is no.
+async fn runner_keeps_no_text(client: &reqwest::Client, target: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(target).and_then(|t| t.join("/mecha/unlogged")) else {
+        return false;
+    };
+    let Ok(resp) = client
+        .get(url)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+    else {
+        return false;
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    resp.json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|v| v.get("unlogged")?.as_bool())
+        == Some(true)
+}
+
+/// The runner's answer with `"unlogged": true` added — the page's condition
+/// for letting a word into an incognito call. `setRemoteDescription` ignores
+/// the extra member. An answer that is not a JSON object passes unchanged,
+/// and without the flag the page refuses the call.
+fn vouched_answer(bytes: &[u8]) -> Vec<u8> {
+    match serde_json::from_slice::<serde_json::Value>(bytes) {
+        Ok(serde_json::Value::Object(mut answer)) => {
+            answer.insert("unlogged".into(), serde_json::Value::Bool(true));
+            serde_json::to_vec(&answer).unwrap_or_else(|_| bytes.to_vec())
+        }
+        _ => bytes.to_vec(),
     }
 }
 
@@ -1777,9 +1891,13 @@ mod boundary_tests {
                 if meta.is_dir() {
                     stack.push(path);
                 } else if meta.is_file()
-                    && std::fs::read(&path)
-                        .is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes()))
+                    && (path
+                        .file_name()
+                        .is_some_and(|n| n.to_string_lossy().contains(needle))
+                        || std::fs::read(&path)
+                            .is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes())))
                 {
+                    // A name is a copy too.
                     hits.push(path);
                 }
             }
@@ -2168,9 +2286,149 @@ mod boundary_tests {
         drop(runtime);
     }
 
+    /// A stand-in runner: `/api/offer` counts what reaches it and answers an
+    /// SDP-shaped object; `/mecha/unlogged` exists only when `vouches`.
+    async fn stub_runner(vouches: bool) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let offers = Arc::new(AtomicUsize::new(0));
+        let seen = offers.clone();
+        let mut app = Router::new().route(
+            "/api/offer",
+            axum::routing::post(move || {
+                let seen = seen.clone();
+                async move {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    Json(serde_json::json!({"sdp": "v=0", "type": "answer", "pc_id": "pc-1"}))
+                }
+            }),
+        );
+        if vouches {
+            app = app.route(
+                "/mecha/unlogged",
+                axum::routing::get(|| async { Json(serde_json::json!({"unlogged": true})) }),
+            );
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+        (format!("http://{addr}/api/offer"), offers)
+    }
+
+    async fn answer_of(resp: Response) -> (StatusCode, Vec<u8>) {
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, body.to_vec())
+    }
+
+    /// An incognito offer reaches the runner only if it keeps no text of the
+    /// call, and the page learns so from the answer; an ordinary one is the
+    /// pipe it always was (review of #376: the facade's gate came after the
+    /// worker had logged).
+    #[tokio::test]
+    async fn an_incognito_offer_reaches_only_a_runner_that_keeps_no_text() {
+        use std::sync::atomic::Ordering;
+        let incognito = axum::body::Bytes::from(
+            r#"{"sdp":"x","type":"offer","request_data":{"session":"incognito-0123456789abcdef012345"}}"#,
+        );
+        let ordinary = axum::body::Bytes::from(
+            r#"{"sdp":"x","type":"offer","request_data":{"session":"main"}}"#,
+        );
+
+        let (old, offers) = stub_runner(false).await;
+        let (status, body) = answer_of(forward_offer(&old, incognito.clone()).await).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(String::from_utf8_lossy(&body).contains("restart mecha-voice-worker"));
+        assert_eq!(
+            offers.load(Ordering::SeqCst),
+            0,
+            "an old worker was handed the offer"
+        );
+        let (status, body) = answer_of(forward_offer(&old, ordinary.clone()).await).await;
+        assert_eq!(status, StatusCode::OK, "an ordinary call needs no vouch");
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            answer.get("unlogged").is_none(),
+            "an ordinary answer was vouched for"
+        );
+
+        let (new, offers) = stub_runner(true).await;
+        // A name with the prefix that the worker would refuse is refused
+        // here, vouch or no: the worker would drop it, and the silence with it.
+        for bad in [
+            r#"{"request_data":{"session":"incognito-0123456789abcdef0123456789"}}"#,
+            r#"{"request_data":{"session":"incognito-ABC"}}"#,
+        ] {
+            let (status, _) = answer_of(forward_offer(&new, bad.into()).await).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        }
+        assert_eq!(
+            offers.load(Ordering::SeqCst),
+            0,
+            "a malformed name was forwarded"
+        );
+        let (status, body) = answer_of(forward_offer(&new, incognito).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(offers.load(Ordering::SeqCst), 1);
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(answer["unlogged"], serde_json::Value::Bool(true));
+        assert_eq!(answer["sdp"], "v=0", "the answer itself passes through");
+    }
+
+    #[test]
+    fn only_an_offer_naming_an_incognito_chat_is_one() {
+        let named = |body: &str| offer_names_incognito(&serde_json::from_str(body).unwrap());
+        assert!(named(
+            r#"{"request_data":{"session":"incognito-0123456789abcdef012345"}}"#
+        ));
+        for body in [
+            r#"{"request_data":{"session":"main"}}"#,
+            r#"{"request_data":{"uplink":"channel"}}"#,
+            r#"{"sdp":"x"}"#,
+        ] {
+            assert!(!named(body));
+        }
+    }
+
+    /// An offer serve cannot read never reaches the runner: the worker's
+    /// parser takes shapes this one refuses, and could find a chat in it.
+    #[tokio::test]
+    async fn an_offer_serve_cannot_read_is_not_relayed() {
+        use std::sync::atomic::Ordering;
+        let (target, offers) = stub_runner(false).await;
+        for body in [
+            "not json",
+            r#"{"request_data":{"session":"incognito-0123456789abcdef012345"},"x":NaN}"#,
+            "[1, 2]",
+        ] {
+            let (status, _) = answer_of(forward_offer(&target, body.into()).await).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        }
+        assert_eq!(offers.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn the_no_store_needle_is_the_key_prefix() {
         assert_eq!(INCOGNITO_KEY_SEGMENT, format!("/{}", incognito::KEY_PREFIX));
+    }
+
+    /// The prefix has two copies outside Rust, and each decides something:
+    /// the page's whether a switch hangs up a call, the worker's whether a
+    /// call holds the log silence (review of #376). Pinned to the one here.
+    #[test]
+    fn every_copy_of_the_incognito_prefix_is_the_servers() {
+        let page = include_str!("../../../../web/src/lib/Chat.svelte");
+        let worker = include_str!("../../../../scripts/voice/worker.py");
+        let want = incognito::KEY_PREFIX;
+        assert!(
+            page.contains(&format!("const INCOGNITO_PREFIX = '{want}';")),
+            "Chat.svelte's INCOGNITO_PREFIX is not {want:?}"
+        );
+        assert!(
+            worker.contains(&format!("\nINCOGNITO_PREFIX = \"{want}\"\n")),
+            "worker.py's INCOGNITO_PREFIX is not {want:?}"
+        );
     }
 
     #[tokio::test]
@@ -2748,10 +3006,22 @@ mod boundary_tests {
         // While open: the picture is in the room, and the server has already
         // been asked to forget the job and has lost its preview.
         let room = chat.room_of(&key).await.unwrap();
-        let pictures: Vec<_> = std::fs::read_dir(room.workspace.join("images"))
-            .map(|d| d.flatten().collect())
+        let files: Vec<String> = std::fs::read_dir(room.workspace.join("images"))
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
             .unwrap_or_default();
-        assert_eq!(pictures.len(), 1, "the picture landed in the room");
+        let pictures: Vec<&String> = files.iter().filter(|n| n.ends_with(".png")).collect();
+        assert_eq!(
+            pictures.len(),
+            1,
+            "the picture landed in the room: {files:?}"
+        );
+        // Its manifest is in the room beside it — and goes with the room,
+        // which the close below checks for every file, not just the picture.
+        assert_eq!(files.len(), 2, "the picture and its manifest: {files:?}");
         let seen = seen.lock().unwrap().clone();
         let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
         assert!(
@@ -3050,7 +3320,7 @@ mod boundary_tests {
         );
         assert!(matches!(
             chat::VoiceHost(chat.clone())
-                .speak("new", "too late", false)
+                .speak("new", "too late", false, false)
                 .await,
             crate::voice::Hosted::Failed(_)
         ));
@@ -3118,6 +3388,206 @@ mod boundary_tests {
                 .count(),
             1
         );
+    }
+
+    /// Point the graph redactor at nothing for the guard's lifetime: a test
+    /// that deletes a conversation must never reach the owner's live graph,
+    /// which `mecha-graph` on `PATH` and `~/.mecha-graph` would. Under the
+    /// `HomeGuard` lock, which serialises every test that moves environment.
+    struct NoGraph(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl NoGraph {
+        fn under(home: &std::path::Path) -> Self {
+            let saved = ["MECHA_GRAPH_BIN", "MECHA_GRAPH_DB"]
+                .into_iter()
+                .map(|k| (k, std::env::var_os(k)))
+                .collect();
+            std::env::set_var("MECHA_GRAPH_BIN", home.join("no-such-mecha-graph"));
+            std::env::set_var("MECHA_GRAPH_DB", home.join("no-such-graph.db"));
+            NoGraph(saved)
+        }
+    }
+    impl Drop for NoGraph {
+        fn drop(&mut self) {
+            for (k, v) in &self.0 {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_archived_chat_leaves_the_lists_and_a_deleted_one_leaves_no_trace() {
+        const CANARY: &str = "the cartographer's lemon-yellow kayak";
+        let home = crate::testenv::HomeGuard::new("web-archive-delete");
+        let _graph = NoGraph::under(&home.dir);
+        let app = app(chat::test_chat_answering("noted", false));
+        converse(&app, "chat-arch", CANARY).await;
+        let rail = body(app.clone().oneshot(get("/api/sessions")).await.unwrap()).await;
+        let id = rail["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["key"] == "chat-arch")
+            .and_then(|r| r["id"].as_str())
+            .unwrap()
+            .to_string();
+        let listed = |v: &serde_json::Value, id: &str| {
+            v["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["id"] == id)
+        };
+
+        // Archive: out of the rail and the list, into the archive, and the
+        // record untouched.
+        let transcript = home.dir.join("sessions").join(format!("{id}.jsonl"));
+        let before = std::fs::read(&transcript).unwrap();
+        let r = app
+            .clone()
+            .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        assert!(!listed(
+            &body(app.clone().oneshot(get("/api/sessions")).await.unwrap()).await,
+            &id
+        ));
+        assert!(!listed(
+            &body(app.clone().oneshot(get("/api/history")).await.unwrap()).await,
+            &id
+        ));
+        let archived = body(
+            app.clone()
+                .oneshot(get("/api/history?archived=true"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(listed(&archived, &id), "{archived}");
+        assert_eq!(std::fs::read(&transcript).unwrap(), before);
+
+        let r = app
+            .clone()
+            .oneshot(post(&format!("/api/sessions/{id}/unarchive"), ""))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        assert!(listed(
+            &body(app.clone().oneshot(get("/api/history")).await.unwrap()).await,
+            &id
+        ));
+
+        // Opening an archived conversation un-archives it (owner's ruling).
+        let r = app
+            .clone()
+            .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        let r = app
+            .clone()
+            .oneshot(json_post(
+                "/api/resume",
+                serde_json::json!({ "id": id }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(
+            !mecha_core::archive::is_archived(&home.dir.join("sessions"), &id),
+            "opening an archived conversation left it archived"
+        );
+        // Resumed under a new key; let it go again so the delete below can run.
+        let r = app
+            .clone()
+            .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+
+        // A detached task run writing this conversation from another process:
+        // delete refuses rather than remove its workspace mid-call.
+        let markers = crate::commands::tasks::markers().unwrap();
+        markers
+            .mark_running_for("task-live", None, Some(&id))
+            .unwrap();
+        let busy = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/sessions/{id}"))
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .header("x-mecha-request", "1")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(busy).await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
+        assert!(
+            transcript.exists(),
+            "a refused delete touched the transcript"
+        );
+        markers.clear("task-live");
+
+        // A marker store that cannot be read is not "no run": the delete
+        // refuses rather than remove a workspace a run may be using.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = markers.dir().to_path_buf();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let blind = Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/sessions/{id}"))
+                .header(TAILSCALE_LOGIN, "owner@example.com")
+                .header("x-mecha-request", "1")
+                .body(Body::empty())
+                .unwrap();
+            let status = app.clone().oneshot(blind).await.unwrap().status();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            // Root reads a 000 directory anyway; only then is this vacuous.
+            if std::fs::read_dir("/root").is_err() {
+                assert_eq!(status, StatusCode::CONFLICT);
+                assert!(transcript.exists());
+            }
+        }
+
+        // Delete: a mutation like any other, so the intent header is required.
+        let bare = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/sessions/{id}"))
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(bare).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        assert!(transcript.exists());
+
+        assert!(
+            !files_containing(&home.dir, CANARY).is_empty(),
+            "the canary was never recorded"
+        );
+        let del = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/sessions/{id}"))
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .header("x-mecha-request", "1")
+            .body(Body::empty())
+            .unwrap();
+        let r = app.clone().oneshot(del).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let report = body(r).await;
+        assert_eq!(report["complete"], true, "{report}");
+        assert_eq!(files_containing(&home.dir, CANARY), Vec::<PathBuf>::new());
+        assert_eq!(files_containing(&home.dir, &id), Vec::<PathBuf>::new());
+        assert!(!listed(
+            &body(app.clone().oneshot(get("/api/history")).await.unwrap()).await,
+            &id
+        ));
+        assert!(!home.dir.join("work/web/chat-arch").exists());
     }
 
     #[tokio::test]

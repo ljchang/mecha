@@ -1428,6 +1428,30 @@ async fn prepare_tools_carrying(
                 Err(e) => eprintln!("mecha: image_generate not registered — {e:#}"),
             }
         }
+        // The image library's two doors ride with `[image]`: without a server
+        // there is nothing to compile a cast into. The store is global only
+        // (`~/.mecha/imagelib`), with no config key — a cloned repository must
+        // not choose where characters come from.
+        match mecha_core::imagelib::Library::default_dir() {
+            Ok(dir) => {
+                use mecha_core::tool::image_library::{ImageLibrary, ImageLibraryPropose};
+                // `[tools]` narrows these like any builtin, as `image_view`'s
+                // registration below does — the proposing door writes into
+                // the mecha home with no approver, so its off switch must work
+                // (found on review of #383).
+                let asked = |name: &str| {
+                    (opts.tools.is_empty() || opts.tools.iter().any(|t| t == name))
+                        && cfg.tools.registers(name)
+                };
+                if asked("image_library") {
+                    registry.insert(Arc::new(ImageLibrary::new(dir.clone())));
+                }
+                if asked("image_library_propose") {
+                    registry.insert(Arc::new(ImageLibraryPropose::new(dir)));
+                }
+            }
+            Err(e) => eprintln!("mecha: image library tools not registered — {e:#}"),
+        }
     }
     // `image_view` reaches no server, so it is not `[image]`'s: it is how any
     // model with eyes looks at a workspace picture — a result, or an
