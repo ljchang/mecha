@@ -808,7 +808,12 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
                 r * 100.0,
                 s.could_miss()
             ),
-            None if s.forced_unknown > 0 => "no rate: none known to be able to miss".into(),
+            // The reason the rate is withheld, not a claim that nothing
+            // could miss: a surprise beside it did (review of #377).
+            None if s.forced_unknown > 0 => format!(
+                "no rate: {} hit(s) could not be classified",
+                s.forced_unknown
+            ),
             None if s.scored > 0 => "no rate: none could miss".into(),
             None => "no rate".into(),
         },
@@ -1151,19 +1156,22 @@ mod tests {
             "{rated}"
         );
 
-        // An unreadable act store: the hits are named as unclassified and
-        // never claimed as predictions that could miss.
+        // An unreadable act store: the hits are named as unclassified, and
+        // the withheld rate says why — never that nothing could miss, beside
+        // a surprise that did.
         let blind = expectations_line(&ScoreSummary {
-            scored: 4,
+            scored: 5,
             hits: 4,
             forced_unknown: 4,
+            surprises: 1,
             ..base.clone()
         });
         assert!(blind.contains("4 of them unclassified"), "{blind}");
         assert!(
-            blind.contains("no rate: none known to be able to miss"),
+            blind.contains("no rate: 4 hit(s) could not be classified"),
             "{blind}"
         );
+        assert!(!blind.contains("none"), "{blind}");
         assert!(!blind.contains("could miss)"), "{blind}");
 
         let none = expectations_line(&base);

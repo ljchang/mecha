@@ -6562,7 +6562,11 @@ the owner's** (row 2b-2, R33, R37).
   could miss either: with nothing found in what was read, the hit is
   `forced_unknown`, named on the line, and while any is on record the rate
   is withheld — an unjudged hit gets no rate. Dropping only those hits would
-  push the rate down instead, since surprises are never classified. One act found decides it whatever else is
+  push the rate down instead, since surprises are never classified.
+  Forcing is one-sided on purpose: a prediction of some other act on an
+  output that offered none is a miss by construction and stays in the rate,
+  because predicting an impossible act is a real error where predicting the
+  only possible one is not a real success. One act found decides it whatever else is
   unread (a task anchor, with the outbox blind). Classified at read time, so
   `scores.jsonl` is unchanged and the surprises replay priority reads cannot
   be forced.
