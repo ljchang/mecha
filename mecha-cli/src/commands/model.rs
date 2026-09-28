@@ -546,8 +546,20 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
             // meant to replace is still loaded: R1 has nothing to put back,
             // and running it would load the busy model "back" — meeting the
             // same refusal for the whole of `--wait-secs` (found on review).
+            // Only when it *is* still loaded, asked of the router: after
+            // `--now` unloaded it, a withdrawal racing a failing load leaves
+            // nothing resident, and R1 is exactly what puts it back (found on
+            // review, pass 4).
             if !_switching.still_pending() {
-                return Err(failed);
+                let still_loaded = match (&previous, router::models(&base).await) {
+                    (Some(prev), Some(l)) if router::readable(&l) => {
+                        router::resident(&l) == Some(prev.as_str())
+                    }
+                    _ => false,
+                };
+                if still_loaded {
+                    return Err(failed);
+                }
             }
             let Some(prev) = previous else {
                 return Err(failed);
