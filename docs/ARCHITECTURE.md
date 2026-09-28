@@ -4029,6 +4029,13 @@ keeps reading an archived session), delete removes all traces.
   `forget`, or it is a leak — the store-wide canary test
   (`forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else`) seeds
   one row per store and greps every file for the id and the text.
+- **The enumeration has a backstop, and the fixture must be the stores'
+  real shape.** After the walk every purged store is grepped for the id and
+  each surviving file is named in the residue. Review found three stores the
+  walk missed (a workflow's `started` event `detail`, a message's
+  `delivered_to`, a front-door request's `triage_session`), and the canary
+  test passed through all three because its fixture rows were hand-written
+  in shapes the stores do not write.
 - **Set aside first, removed last.** The transcript becomes
   `<id>.jsonl.forgetting` (invisible to every `.jsonl` listing) before any
   store is touched, and is removed only when every store answered. A failure

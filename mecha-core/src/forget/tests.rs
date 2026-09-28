@@ -123,6 +123,11 @@ fn seeded(home: &Path) -> Roots {
         &roots.messages.join("hermes/m2.json"),
         &format!(r#"{{"id":"m2","from_session":"{KEPT}","body":"hi"}}"#),
     );
+    // Received, not sent: `claim_pending` stamps the claiming session.
+    write(
+        &roots.messages.join("hermes/m3.json"),
+        &format!(r#"{{"id":"m3","from_session":"{KEPT}","delivered_to":"{GONE}","body":"hello"}}"#),
+    );
     write(&roots.messages.join(format!(".agents/{GONE}.json")), "{}");
 
     let l = &roots.learning;
@@ -214,7 +219,7 @@ fn seeded(home: &Path) -> Roots {
     write(
         &roots.workflows.join("w1.json"),
         &format!(
-            r#"{{"id":"w1","title":"Weekly","session_id":"{GONE}","verify":[{{"session":"{GONE}"}}]}}"#
+            r#"{{"id":"w1","title":"Weekly","session_id":"{GONE}","events":[{{"at":"2026-09-28T12:00:00Z","kind":"started","detail":"{GONE}"}},{{"at":"2026-09-28T12:05:00Z","kind":"note","detail":"kept"}}],"verify_history":[{{"session":"{GONE}"}}]}}"#
         ),
     );
     write(
@@ -224,6 +229,14 @@ fn seeded(home: &Path) -> Roots {
     write(
         &home.join("regression-sessions.txt"),
         &format!("{GONE}\n{KEPT}\n"),
+    );
+    // A stranger's request the forgotten conversation triaged: the request
+    // stays, un-pointed, and loses its link to the draft that was removed.
+    write(
+        &roots.requests.join("0000000009-meeting.json"),
+        &format!(
+            r#"{{"id":9,"kind":"meeting","triage_session":"{GONE}","outbox":["item-gone","item-kept"]}}"#
+        ),
     );
     crate::archive::archive(&roots.sessions, GONE, chrono::Utc::now()).unwrap();
     roots
@@ -287,6 +300,7 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
         ("triggers/runs.jsonl", KEPT),
         ("workflows/w1.json", "Weekly"),
         ("regression-sessions.txt", KEPT),
+        ("requests/0000000009-meeting.json", "item-kept"),
     ] {
         let text = std::fs::read_to_string(home.0.join(path)).unwrap();
         assert!(
@@ -446,4 +460,31 @@ fn a_store_config_relocates_is_the_one_purged() {
     assert_eq!(roots.messages, PathBuf::from("/data/messages"));
     let plain = Roots::from_config(&crate::config::Config::default()).unwrap();
     assert_eq!(plain.outbox, Roots::from_env().unwrap().outbox);
+}
+
+#[test]
+fn a_trace_in_a_field_delete_does_not_know_is_reported_not_hidden() {
+    let home = scratch("unknown-field");
+    let roots = Roots::under(&home.0);
+    session(&roots, GONE, &home.0.join("work/web/a"), CANARY);
+    // A store row that names the session somewhere no purge looks.
+    write(
+        &roots.questions.join("q9.json"),
+        &format!(r#"{{"id":"q9","session_id":"{KEPT}","note":"see {GONE}"}}"#),
+    );
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+    assert!(report.complete);
+    assert!(
+        report
+            .residue
+            .iter()
+            .any(|r| r.contains("q9.json") && r.contains("does not know")),
+        "{:?}",
+        report.residue
+    );
 }
