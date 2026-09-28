@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scripts). It fills over hours and never shrinks while a model stays loaded,
   and a full 32 GiB beside the model's own 43 GB left image generation out of
   memory on the shared pool. 16 GiB still holds 2.9 full 262k slots (5,632 MiB
-  each), where the 8 GiB default, which thrashed, held one. Restart the router to apply
-  it; `MECHA_LLAMA_CRAM` still overrides.
+  each), where the 8 GiB default, which thrashed, held one. Restart the router
+  to apply it; `MECHA_LLAMA_CRAM` still overrides.
 
 - **The web home is counts and doors.** Four large cards for what is yours —
   mail that needs you, outbox drafts, questions a run is paused on, open
