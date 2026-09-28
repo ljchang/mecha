@@ -107,7 +107,7 @@ impl Tool for ImageLibrary {
             .map(|q| q.trim().to_lowercase())
             .filter(|q| !q.is_empty());
         let (lib, errors) = Library::load(&self.dir);
-        let search = Search::new(&lib, query.as_deref());
+        let search = Search::new(&lib, query.as_deref(), kind);
         let lines: Vec<String> = lib
             .approved()
             .filter(|e| kind.is_none_or(|k| e.kind == k))
@@ -162,10 +162,18 @@ struct Search {
 }
 
 impl Search {
-    fn new(lib: &Library, query: Option<&str>) -> Search {
+    /// Names resolve against what the listing can return — approved entries
+    /// of the kind asked for. Against every entry, a candidate's name
+    /// collapsed a search to name-only mode and then was filtered out,
+    /// returning nothing, and the emptiness told the model a candidate by
+    /// that name existed (review of #384).
+    fn new(lib: &Library, query: Option<&str>, kind: Option<Kind>) -> Search {
         let by_name = query.and_then(|q| {
             let names: std::collections::BTreeSet<String> = words(q)
-                .filter(|w| lib.all().iter().any(|e| &e.name == w))
+                .filter(|w| {
+                    lib.approved()
+                        .any(|e| &e.name == w && kind.is_none_or(|k| e.kind == k))
+                })
                 .collect();
             (!names.is_empty()).then_some(names)
         });
@@ -421,6 +429,51 @@ mod tests {
             .unwrap();
         assert!(
             out.content.contains("priya") && out.content.contains("maya"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn a_candidates_name_does_not_empty_a_search() {
+        let lib = scratch();
+        let ws = scratch();
+        imagelib::create(
+            &lib,
+            NewEntry {
+                kind: Kind::Style,
+                name: "picnic-park".into(),
+                text: "a sunny park with checked blankets".into(),
+                portrait: None,
+                source_seed: None,
+                origin: Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        // A candidate the model staged, named like the word searched for.
+        imagelib::create(
+            &lib,
+            NewEntry {
+                kind: Kind::Style,
+                name: "picnic".into(),
+                text: "proposed".into(),
+                portrait: None,
+                source_seed: None,
+                origin: Origin::ModelClean,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let out = ImageLibrary::new(lib.clone())
+            .call(json!({"query": "picnic"}), &ctx(&ws, None))
+            .await
+            .unwrap();
+        assert!(out.content.contains("style picnic-park"), "{}", out.content);
+        assert!(
+            !out.content.contains("style picnic (v1)"),
             "{}",
             out.content
         );
