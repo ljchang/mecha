@@ -600,6 +600,10 @@ default after 341 evictions in a day; none since. What it buys:
 
 Roughly fifty parked task conversations, today, with nothing new built.
 
+> **Since 2026-09-28 the cap is 16384** (`LLAMA-SERVER.md` §Slots, the `-cram`
+> bullet): a full 32 GB left image generation no room on the shared pool. Halve
+> the right-hand column — about 25 typical parked tasks, three full slots.
+
 ### 3.2 R1 — Admission control, not memory management
 
 The scarce resource is **a slot, not memory**. `-c` is divided across slots and

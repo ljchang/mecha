@@ -152,7 +152,7 @@ mmproj = $MP
 $(qwen_vision)
 ctx-size = ${MECHA_LLAMA_CTX:-1048576}
 parallel = ${MECHA_LLAMA_NP:-4}
-cache-ram = ${MECHA_LLAMA_CRAM:-32768}
+cache-ram = ${MECHA_LLAMA_CRAM:-16384}
 spec-type = draft-mtp
 load-on-startup = true
 $(qwen_sampling 0.6)
@@ -173,7 +173,7 @@ mmproj = $MP
 $(qwen_vision)
 ctx-size = ${MECHA_LLAMA_CTX:-1048576}
 parallel = ${MECHA_LLAMA_NP:-4}
-cache-ram = ${MECHA_LLAMA_CRAM:-32768}
+cache-ram = ${MECHA_LLAMA_CRAM:-16384}
 $(qwen_sampling 0.6)
 EOF
 else

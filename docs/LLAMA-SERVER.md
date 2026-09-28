@@ -180,8 +180,14 @@ whatever placement decision is made at load is never revisited.
   bought nothing and cost the thing slots exist to protect. mecha's own cache
   lens is what caught it.
 - **`-cram` (prompt cache) defaults to 8192 MiB**, which is smaller than *one*
-  262k slot's KV at f16 (~5.5 GB), so it thrashes. At 32768 there have been zero
-  evictions.
+  262k slot's KV at f16 (~5.5 GB), so it thrashes. It ran at 32768 from August,
+  with zero evictions at first; by 2026-09-28 it sat full, evicting (118 in three
+  days: median entry 0.5 GB, p90 3.6, max 7.9), and a full 32 GiB left image
+  generation no room beside a loaded model. **It is 16384 since that day, the
+  owner's ruling** — room for about three full slots, so it cannot thrash the
+  way the default did. The cache fills over hours and never shrinks while the
+  model stays loaded, so size it against what else must fit, not against a
+  fresh start.
 - **`--reasoning-budget` is a server flag; the per-request `reasoning_budget`
   field is silently ignored by this build.** ollama's runner never passes the
   flag, so a model served through it reasons unbounded.

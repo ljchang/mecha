@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The local model's prompt cache is 16 GiB, not 32** (`-cram`, both launch
+  scripts). It fills over hours and never shrinks while a model stays loaded,
+  and a full 32 GiB beside the model's own 43 GB left image generation out of
+  memory on the shared pool. 16 GiB still holds about three full 262k slots, so
+  it cannot thrash the way the 8 GiB default did. Restart the router to apply
+  it; `MECHA_LLAMA_CRAM` still overrides.
+
+### Changed
+
 - **The web home is counts and doors.** Four large cards for what is yours —
   mail that needs you, outbox drafts, questions a run is paused on, open
   tasks — then one small card per review queue, and a line each for
