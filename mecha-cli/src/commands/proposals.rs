@@ -161,6 +161,30 @@ fn accept(store: &LearningStore, id: &str, force: bool) -> Result<()> {
     if p.status != "pending" {
         bail!("proposal {} is {}, not pending", p.id, p.status);
     }
+    // A reflection from a session the owner marked as an experiment (ruling
+    // 4D) is not the owner's lesson, and a proposal's rules are consolidated
+    // across its reflections, so the part it contributed cannot be cut out.
+    // Refused whatever `--force` says: the mark is the owner's, and the
+    // ledger unread is refused too (review of #382).
+    let withdrawn =
+        mecha_core::session::Marks::load(&mecha_core::session::Session::default_dir()?)?
+            .withdrawn_ids();
+    let marked: Vec<String> = store
+        .reflexions()?
+        .into_iter()
+        .filter(|r| p.reflexion_ids.contains(&r.id) && withdrawn.contains(&r.session_id))
+        .map(|r| r.id)
+        .collect();
+    if !marked.is_empty() {
+        bail!(
+            "proposal {} rests on reflection(s) from a session you marked as an experiment ({}); \
+             reject it with `mecha proposals reject {}` — the next learn pass proposes again \
+             from the rest",
+            p.id,
+            marked.join(", "),
+            p.id
+        );
+    }
     // The evidence measured the candidate against these exact rules. If the
     // live set moved, the diff on screen is not the change being applied.
     let live = store.learned_rules(&p.domain)?;

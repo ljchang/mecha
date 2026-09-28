@@ -995,6 +995,12 @@ fn admission(
     if r.is_processed {
         return Admission::Processed;
     }
+    // The owner's mark on the session, before a pending proposal's claim:
+    // `proposals accept` refuses a proposal holding one, so it is withheld,
+    // not awaiting review (review of #382).
+    if withdrawn.contains(&r.session_id) {
+        return Admission::Withdrawn;
+    }
     if claimed.contains(&r.id) {
         return Admission::Claimed;
     }
@@ -1005,11 +1011,6 @@ fn admission(
     // reported as though it were theirs.
     if r.dropped_at.is_some() {
         return Admission::Dropped;
-    }
-    // The owner's mark on the session, counted apart from a drop: one is a
-    // verdict on the lesson, the other on where it came from.
-    if withdrawn.contains(&r.session_id) {
-        return Admission::Withdrawn;
     }
     if r.trigger == Trigger::Mismatch.as_str()
         && !serde_json::from_str::<mecha_core::planning::StepFeedback>(&r.context)
@@ -1679,9 +1680,14 @@ mod tests {
         let admitted = refl("steer", Some(Basis::NoFact));
         assert_eq!(admission(&admitted, &none, &none), Admission::Admitted);
         assert_eq!(admission(&admitted, &none, &marked), Admission::Withdrawn);
-        let mut dropped = refl("steer", Some(Basis::NoFact));
-        dropped.dropped_at = Some("2026-09-28T00:00:00Z".into());
-        assert_eq!(admission(&dropped, &none, &marked), Admission::Dropped);
+        // Checked before a pending proposal's claim: `proposals accept`
+        // refuses a proposal holding it, so it is not awaiting review.
+        let claimed: std::collections::BTreeSet<String> = [admitted.id.clone()].into();
+        assert_eq!(admission(&admitted, &claimed, &none), Admission::Claimed);
+        assert_eq!(
+            admission(&admitted, &claimed, &marked),
+            Admission::Withdrawn
+        );
     }
 
     #[test]

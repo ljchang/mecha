@@ -2349,6 +2349,15 @@ impl AppraisalStore {
     /// were skipped — **for the owner's surfaces**, as [`Self::for_owner`]
     /// is. A missing file is none; one that cannot be read is an `Err`.
     pub fn counterfactuals(&self) -> Result<(Vec<Counterfactual>, usize)> {
+        // A door like `for_owner`: a session the owner marked shows no
+        // reflection drawn from it either (review of #382).
+        let withdrawn = self.withdrawn()?;
+        let (mut rows, skipped) = self.all_counterfactuals()?;
+        rows.retain(|c| !withdrawn.contains(&c.session_id));
+        Ok((rows, skipped))
+    }
+
+    fn all_counterfactuals(&self) -> Result<(Vec<Counterfactual>, usize)> {
         let path = self.counterfactuals_ledger();
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -4169,6 +4178,27 @@ mod tests {
             "and never scored twice"
         );
         assert_eq!(store.all_scores().unwrap().0.len(), 2);
+
+        // The counterfactual reflections are a door too.
+        std::fs::write(
+            store.counterfactuals_ledger(),
+            format!(
+                "{}\n{}\n",
+                json!({"id": "cf-probe", "at": "2026-09-28T00:00:00Z", "session_id": probe.session_id()}),
+                json!({"id": "cf-work", "at": "2026-09-28T00:00:00Z", "session_id": work.session_id()})
+            ),
+        )
+        .unwrap();
+        only_work(
+            store
+                .counterfactuals()
+                .unwrap()
+                .0
+                .iter()
+                .map(|c| c.session_id.as_str())
+                .collect(),
+        );
+        assert_eq!(store.all_counterfactuals().unwrap().0.len(), 2);
 
         // A store at an explicit root reads no marks unless told where.
         let unmarked = AppraisalStore::open(root.join("appraisals")).unwrap();

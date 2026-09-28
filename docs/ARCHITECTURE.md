@@ -4056,7 +4056,11 @@ The design decisions, each of which is a bug if undone:
   `reflect`, `distill`) passes it over with no change of its own. Its text
   appraisal and scores leave every door of the appraisal store, though it
   stays on record so it is never appraised twice, and `learn` withholds
-  its reflections (`Admission::Withdrawn`).
+  its reflections (`Admission::Withdrawn`, ahead of a pending proposal's
+  claim). `proposals accept` refuses a proposal resting on one, even with
+  `--force`, because a consolidated rule cannot shed one reflection's part.
+  A rule already learned from it is named for the owner to retire, never
+  passed over in silence.
   - **A ledger that cannot be read stops the listing.** A lost mark would
     hand the probe back to the learner as the owner's work, and a word a
     newer build wrote reads as a withdrawal.

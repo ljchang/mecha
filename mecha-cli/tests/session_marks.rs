@@ -104,6 +104,34 @@ fn the_owner_marks_a_probe_and_a_runs_shell_cannot() {
     }))
     .unwrap();
     learning.write_learned_rules("behavior", &[rule]).unwrap();
+    // And a second, still unprocessed, is held by a pending proposal.
+    let held: Reflexion = serde_json::from_value(json!({
+        "id": "refl-held",
+        "domain": "behavior",
+        "session_id": probe,
+        "trigger": "denial",
+        "context": "c",
+        "intervention": "no",
+        "reflexion_text": "Retry the refused call.",
+        "error_type": null,
+        "confidence": null,
+        "created_at": "2026-09-27T00:00:00Z",
+        "origin": "clean"
+    }))
+    .unwrap();
+    learning.append_reflexion(&held).unwrap();
+    let proposal: mecha_core::learning::Proposal = serde_json::from_value(json!({
+        "id": "p-held",
+        "domain": "behavior",
+        "status": "pending",
+        "reflexion_ids": ["refl-held"],
+        "rules_before": [],
+        "rules": [{"text": "Retry the refused call."}],
+        "evidence": "",
+        "created_at": "2026-09-27T00:00:00Z"
+    }))
+    .unwrap();
+    learning.write_proposal(&proposal).unwrap();
 
     // The owner, at their own terminal: marked, and told what it reached —
     // including the graph episode, which is a separate store.
@@ -124,6 +152,29 @@ fn the_owner_marks_a_probe_and_a_runs_shell_cannot() {
         out.contains("1 reflection(s) from it already reached learn")
             && out.contains("rule-from-probe"),
         "the live rule is named, never passed over in silence: {out}"
+    );
+    assert!(
+        out.contains("pending proposal(s) p-held hold reflection(s) from it"),
+        "a held reflection is named with its proposal, never called withheld: {out}"
+    );
+    assert!(!out.contains("withheld from learn"), "{out}");
+    // And the proposal cannot mint its rule while the mark stands, --force
+    // or not.
+    let out = mecha(&home, &["proposals", "accept", "p-held", "--force"]);
+    assert!(!out.status.success(), "accepting must be refused");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("marked as an experiment") && err.contains("refl-held"),
+        "{err}"
+    );
+    assert_eq!(
+        LearningStore::open(home.join("learning"))
+            .unwrap()
+            .learned_rules("behavior")
+            .unwrap()
+            .len(),
+        1,
+        "no rule written"
     );
     let marks = Marks::load(&sessions).unwrap();
     assert!(marks.withdrawn(&probe));
