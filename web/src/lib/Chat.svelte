@@ -863,10 +863,11 @@
   async function archiveChat(id, archived = true) {
     menuFor = null;
     try {
-      const res = await fetch(
-        `/api/sessions/${encodeURIComponent(id)}/${archived ? 'archive' : 'unarchive'}`,
-        { method: 'POST' },
-      );
+      // Two literal calls rather than one built path: the docs demo's
+      // check reads each `fetch` literal to prove every endpoint is answered.
+      const res = archived
+        ? await fetch(`/api/sessions/${encodeURIComponent(id)}/archive`, { method: 'POST' })
+        : await fetch(`/api/sessions/${encodeURIComponent(id)}/unarchive`, { method: 'POST' });
       if (!res.ok) throw new Error((await res.text()).trim());
       if (archived) leaveIfShowing(id);
       drawerNote = { text: archived ? 'archived — find it under “archived” below' : 'restored to the list' };
