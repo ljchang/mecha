@@ -267,7 +267,8 @@ The parts that bite hardest:
     written once the router stops refusing the load as busy (`LoadHooks::accepted`),
     is keyed the same way and is why the chip stops offering "switch now"
     once the load is under way. Until then — the wait for runs, and a busy
-    spell after it — "switch now" and cancel both still act. It is a separate file, not
+    spell after it — "switch now" and cancel both still act. `--now` is
+    marked past its wait before its own unload, which cannot be withdrawn. It is a separate file, not
     a field rewritten into the switch file: a rewrite racing `cancel-switch`
     could restore a withdrawn switch that the switcher's `still_pending`
     would then believe. Markers are written through a uniquely named temp

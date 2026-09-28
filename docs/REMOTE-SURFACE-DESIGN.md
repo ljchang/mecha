@@ -439,8 +439,10 @@ request by its `model` field. What follows was read in
   not loaded starts loading it, and evicts the least recently used model
   to make room.
 - **Only an idle model is evicted** (`server_lru_sched::pick_victim` skips
-  a model with a request in flight or one still loading). A request that
-  needs the slot joins a queue. A switch can never cut a reply off halfway.
+  a model with a request in flight or one still loading). A *routed*
+  request that needs the slot joins a queue; an explicit `POST
+  /models/load` is refused instead (trap 8). Eviction never cuts a reply
+  off halfway; only `--now`, by unloading, does.
 - **Each preset carries its model's whole flag set:** `--mmproj`, MTP
   drafting, `-c`/`-np`, sampling and `--reasoning-budget`. A switch
   therefore never un-tunes a model. The router controls the alias, host and
