@@ -1534,6 +1534,23 @@ impl Tool for ImageGenerate {
         if !is_edit && !waived {
             if let Some(dir) = &self.library_dir {
                 let (lib, _) = crate::imagelib::Library::load(dir);
+                // A broken entry is invisible to `named_in`, so it is checked
+                // on its own: otherwise a corrupt `maya` lets "Maya at a
+                // diner" reach the GPU and draw a stranger (review of #383).
+                let broken = crate::imagelib::broken_named_in(&lib, &req.prompt);
+                if !broken.is_empty() {
+                    return Ok(ToolOutput::err(format!(
+                        "{} named in the prompt {} in the owner's image library, but the entry \
+                         could not be read, so they cannot be drawn as themselves. The owner can \
+                         check with `mecha imagelib list`.",
+                        broken
+                            .iter()
+                            .map(|n| format!("`{n}`"))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        if broken.len() == 1 { "is" } else { "are" }
+                    )));
+                }
                 let cast: std::collections::BTreeSet<String> = ask
                     .as_ref()
                     .map(|a| {
@@ -3610,6 +3627,19 @@ mod tests {
             "{}",
             out.content
         );
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        // A broken entry is refused by name, not passed as an unknown word.
+        std::fs::write(lib.join("characters/john/entry.toml"), "not = [toml").unwrap();
+        let out = t
+            .call(json!({"prompt": "John alone on a bench"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("could not be read"), "{}", out.content);
         assert!(!seen
             .lock()
             .unwrap()

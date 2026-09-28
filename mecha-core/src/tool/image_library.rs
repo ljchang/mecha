@@ -210,7 +210,9 @@ impl Tool for ImageLibraryPropose {
                 .unwrap_or_default()
                 .to_string()
         };
-        let (name, text) = (field("name"), field("text"));
+        // Lowercased, as `compile` lowercases a cast name: "Maya" in a cast
+        // works, so "Maya" in a proposal should too.
+        let (name, text) = (field("name").to_lowercase(), field("text"));
         let portrait = match (kind, input.get("portrait").and_then(Value::as_str)) {
             (Kind::Character, Some(path)) => {
                 match crate::imagegen::read_references(ctx, &[path.trim().to_string()]).await {
