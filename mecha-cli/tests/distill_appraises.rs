@@ -137,6 +137,7 @@ fn session(home: &Path, marker: &str, untrusted: bool, age_mins: i64) -> String 
         untrusted,
         age_mins,
         Some(GoalRef::Task("task-1".into())),
+        "mail_search",
     )
 }
 
@@ -148,6 +149,7 @@ fn session_on(
     untrusted: bool,
     age_mins: i64,
     goal: Option<GoalRef>,
+    tool: &str,
 ) -> String {
     let session = Session::create(
         &home.join("sessions"),
@@ -164,7 +166,7 @@ fn session_on(
     .unwrap();
     session
         .append(&Record::Config(RunConfig {
-            tools: vec!["mail_search".into()],
+            tools: vec![tool.into()],
             rules_surface: Some(SessionKind::Task),
             // The goal the run was matched toward (2c-1) — what "the same
             // situation and goal" is keyed on.
@@ -177,7 +179,7 @@ fn session_on(
         Message::user(format!("Please check the budget review date for {marker}.")),
         Message::assistant(vec![Block::ToolUse {
             id: "t1".into(),
-            name: "mail_search".into(),
+            name: tool.into(),
             input: json!({"query": "budget review"}),
         }]),
         Message::tool_results(vec![Block::ToolResult {
@@ -498,19 +500,28 @@ async fn distill_asks_no_expected_act_of_an_output_with_nothing_to_act_on() {
     let home = seed(&root.0, &base_url);
     let work = root.0.join("work");
 
-    let chat = session_on(&home, "delta", false, 30, None);
+    let chat = session_on(&home, "delta", false, 30, None, "mail_search");
     let tasked = session(&home, "echo", false, 20);
-    ok(&mecha(&home, &work, &["distill"]).await, "distill");
+    // Unanchored, but it touched the board: the owner may close that task
+    // later, naming this session, so the question is still asked.
+    let board = session_on(&home, "foxtrot", false, 10, None, "kg_task_update");
+    let out = ok(&mecha(&home, &work, &["distill"]).await, "distill");
+    assert!(
+        out.contains("1 not asked: the output offered nothing to act on"),
+        "{out}"
+    );
 
     let store = AppraisalStore::open(home.join("appraisals")).unwrap();
     let (rows, _) = store.for_owner().unwrap();
     let of = |id: &str| rows.iter().find(|r| r.session_id == id).unwrap();
     assert_eq!(
-        of(&chat).expected_act,
-        None,
-        "nothing to act on: not stored"
+        (of(&chat).expected_act, of(&chat).expected_act_withheld),
+        (None, true),
+        "nothing to act on: withheld, and the row says so"
     );
     assert_eq!(of(&tasked).expected_act, Some(ExpectedAct::NoAct));
+    assert!(!of(&tasked).expected_act_withheld);
+    assert_eq!(of(&board).expected_act, Some(ExpectedAct::NoAct));
 
     // What each follow-up asked, told apart by the owner's turn's marker.
     let asks = follow_ups(&seen, 0);
@@ -522,5 +533,6 @@ async fn distill_asks_no_expected_act_of_an_output_with_nothing_to_act_on() {
     };
     assert!(ask_of("delta").contains("so leave out expected_act"));
     assert!(!ask_of("echo").contains("so leave out expected_act"));
+    assert!(!ask_of("foxtrot").contains("so leave out expected_act"));
     server.abort();
 }
