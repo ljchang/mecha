@@ -1151,6 +1151,23 @@
     return m ? m[1] : null;
   }
 
+  // The rows whose picture is already drawn higher up — an `image_view` of the
+  // file `image_generate` just saved, most often. A repeat keeps its row and
+  // shows the picture inside the disclosure instead of drawing it inline a
+  // second time. Indices into `entries`, first occurrence wins.
+  function repeatedPictures(entries) {
+    const seen = new Set();
+    const again = new Set();
+    entries.forEach((entry, i) => {
+      const picture = entry.kind === 'tool' ? pictureOf(entry) : null;
+      if (!picture) return;
+      if (seen.has(picture)) again.add(i);
+      else seen.add(picture);
+    });
+    return again;
+  }
+  const repeats = $derived(repeatedPictures(entries));
+
   const workspaceFile = (path) => `/api/chat/${key}/file?path=${encodeURIComponent(path)}`;
 
   // Seed the input with the file to edit and leave the cursor after it.
@@ -1557,7 +1574,7 @@
     {#if error}
       <div class="notice">{error}</div>
     {/if}
-    {#each entries as entry}
+    {#each entries as entry, i}
       {#if entry.kind === 'user'}
         <div class="bubble" class:queued={entry.queued}>
           {entry.text}
@@ -1577,6 +1594,7 @@
         {@const digest = toolDigest(entry.draft)}
         {@const detail = !!(entry.draft || entry.args || entry.preview)}
         {@const picture = pictureOf(entry)}
+        {@const repeat = repeats.has(i)}
         <div class="tool" class:err={entry.is_error} class:blocked={entry.blocked}>
           <button
             class="toolhead"
@@ -1635,12 +1653,23 @@
             {:else if !entry.blocked}
               <div class="tsep">answered with nothing</div>
             {/if}
+            <!-- A picture already drawn above is not drawn inline again; it
+                 is here, one tap away, for whoever wants to see it. -->
+            {#if picture && repeat}
+              {#if incognito}
+                <span class="genimg inpanel"><img src={workspaceFile(picture)} alt="viewed" loading="lazy" /></span>
+              {:else}
+                <a class="genimg inpanel" href={workspaceFile(picture)} target="_blank" rel="noopener">
+                  <img src={workspaceFile(picture)} alt="viewed" loading="lazy" />
+                </a>
+              {/if}
+            {/if}
           </div>
         {/if}
         <!-- Outside the disclosure: the picture is the answer, not a detail
              of the call. Served from this session's own jail, images only
              (serve/files.rs), so a tap opens it full size. -->
-        {#if picture}
+        {#if picture && !repeat}
           {#if incognito}
             <!-- No link in an incognito chat: opening the picture in a tab
                  writes its address into the browser's history, which
@@ -2482,6 +2511,9 @@
     border: 1px solid var(--accent-400);
     border-radius: 999px;
     cursor: pointer;
+  }
+  .genimg.inpanel {
+    margin: 0;
   }
   .genimg img {
     display: block;
