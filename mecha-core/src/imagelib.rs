@@ -740,7 +740,9 @@ pub fn compile(
             .filter(|e| e.status == Status::Approved)
             .ok_or_else(|| missing(lib, Kind::Character, &name))?;
         let (wearing, doing) = (member.wearing.trim(), member.doing.trim());
-        if wearing.is_empty() || doing.is_empty() {
+        // A placeholder copied from a refusal's example is no answer.
+        let blank = |s: &str| s.is_empty() || s.chars().all(|c| c == '…' || c == '.');
+        if blank(wearing) || blank(doing) {
             return Err(format!(
                 "`{name}` needs `wearing` and `doing`: a reference supplies its own outfit and \
                  pose when the scene does not say."
@@ -1230,6 +1232,12 @@ mod tests {
         m.wearing = " ".into();
         let why = compile(&lib, "x", &[m], None).unwrap_err();
         assert!(why.contains("wearing"), "{why}");
+        // The refusal's own placeholder, copied literally, is no answer.
+        let mut m = member("maya");
+        m.doing = "…".into();
+        assert!(compile(&lib, "x", &[m], None)
+            .unwrap_err()
+            .contains("doing"));
     }
 
     #[test]

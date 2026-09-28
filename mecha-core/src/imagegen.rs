@@ -3665,6 +3665,11 @@ mod tests {
             .await
             .unwrap();
         assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.starts_with("Nothing was drawn."),
+            "{}",
+            out.content
+        );
         assert!(out.content.contains("could not be read"), "{}", out.content);
         assert!(!seen
             .lock()
