@@ -1865,8 +1865,7 @@ fn learned_within(root: &Path, now: DateTime<Utc>, window: chrono::Duration) -> 
 
 /// Read a domain's learned rules **without constructing a store**.
 ///
-/// `LearningStore::open` creates directories, runs `git init` and writes a
-/// `.gitignore`. Doctor reports on stores; it must not bring one into being,
+/// `LearningStore::open` creates directories. Doctor reports on stores; it must not bring one into being,
 /// or running the health check on a machine that has never learned anything
 /// leaves a store behind that says it has.
 ///
@@ -1961,8 +1960,7 @@ fn check_proposal_review(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         // would have applied fine.
         //
         // Two things were wrong here. `LearningStore::open` is a **writing**
-        // constructor (it creates `root` and `root/rules`, runs `git init`,
-        // writes `.gitignore`), and a check that reports on a store must not
+        // constructor (it creates `root` and `root/rules`), and a check that reports on a store must not
         // create one — the rule this module states two checks up about
         // `Charter::load`. And the comparison was an order-insensitive set of
         // *active* rule texts, where `accept`'s `same_rules` compares
