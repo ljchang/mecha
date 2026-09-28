@@ -139,7 +139,7 @@ runs the other way.
 
 The harness is an ordinary HTTP client; nothing in it holds weights. Point
 `[providers.local] base_url` at spark over a tailnet and the entire local server
-document still applies unchanged — the slot geometry, `-cram 32768`, the
+document still applies unchanged — the slot geometry, `-cram 16384`, the
 `--cache-idle-slots` finding, `context_window = -c / -np`. Weights never move,
 mail bytes only ever reach a machine you own, and the trust story is exactly what
 it is today.
