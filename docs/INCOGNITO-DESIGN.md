@@ -367,7 +367,8 @@ conversation has no `Session` to record into, and a closed key comes back
   `logger.disable`, not a sink filter, because the runner's `logger.remove()`
   would discard a filter silently. Counted, so the first of two overlapping
   calls to end does not lift the second's silence. Process-wide on purpose:
-  an ordinary call alongside loses pipecat's lines for the overlap, and a
+  an ordinary call alongside loses all of pipecat's lines for the overlap —
+  its warnings and errors as well as its words — and a
   filter keyed on the call's context leaks on the first task started outside
   it. The worker's own lines that carry words keep their measurements and
   lose the words (`spoken_words`), and no line names the chat — the
@@ -379,7 +380,9 @@ conversation has no `Session` to record into, and a closed key comes back
   (`spoken_turn_may_enter`) admits a spoken turn into an incognito chat only
   with it, reading anything but exactly `1` as no claim — so a worker that
   predates the silence is refused, and the chat stays text-only instead of
-  trusting a silence nobody held.
+  trusting a silence nobody held. `VoiceHost::speak` refuses such a call
+  before its barge-in, so an unvouched call does not stop the chat's run in
+  flight on its way to being turned away.
 - **The page** hangs up the call when the chat ends, clears the overlay's
   words, and drops the uplink ring (`voice-core.js`'s `dropRing`) — the
   ring is audio of what was said, and it outlives calls on purpose. A switch

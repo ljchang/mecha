@@ -1835,9 +1835,10 @@ class UplinkAudio:
 # their measurements and lose the words (`spoken_words`).
 #
 # Process-wide on purpose: an ordinary call running beside an incognito one
-# loses pipecat's lines for the overlap. The narrower cut - a filter keyed on
-# the call's context - leaks on the first task started outside that context,
-# and the promise is the one that must not bend.
+# loses all of pipecat's lines for the overlap, warnings and errors included.
+# The narrower cut - a filter keyed on the call's context - leaks on the
+# first task started outside that context, and the promise is the one that
+# must not bend.
 #
 # The facade admits a spoken turn into an incognito chat only on
 # `X-Voice-Unlogged: 1`, which is sent only from inside `Unlogged.held` - so
@@ -1945,7 +1946,10 @@ def spoken_words(text: str, limit: int) -> str:
     return repr(text[:limit])
 
 
-async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named: str | None = None):
+# `named` is required, with no default: a second caller that forgot it would
+# silently lose the chat binding - and an incognito call its silence - rather
+# than fail.
+async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named: str | None):
     LoopSampler.start()
     stt = ParakeetSTT(api_key="unused", base_url=STT_URL)
     tts = LocalTTS(
