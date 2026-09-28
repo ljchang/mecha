@@ -310,6 +310,12 @@ pub struct Draft {
     /// The owner act expected next time, from R16's closed set — what 2b-2
     /// scores the prediction by.
     pub expected_act: Option<ExpectedAct>,
+    /// Written after the fact by `mecha distill --backfill-appraisals`, for
+    /// a session distilled before the appraisal leg existed (ruling 3D→D,
+    /// 2026-09-28). Set by the producer, never by a model; such a row
+    /// carries no `expected_act`, because the outcome was already known when
+    /// it was written — a prediction then is a postdiction.
+    pub backfilled: bool,
     /// Goal words the producer could not read as a pointer at all — counted
     /// on the record with the ones that did not resolve.
     pub unreadable_goals: usize,
@@ -408,6 +414,13 @@ impl SessionEvidence {
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// When the transcript was last written, as the read happened — the
+    /// session's end as appraised. `None` where the file system could not
+    /// say.
+    pub fn ended_at(&self) -> Option<DateTime<Utc>> {
+        self.ended_at
     }
 
     pub fn origin(&self) -> Origin {
@@ -550,6 +563,10 @@ pub struct TextAppraisal {
         deserialize_with = "de_expected_act"
     )]
     pub expected_act: Option<ExpectedAct>,
+    /// Written after the fact ([`Draft::backfilled`]). Absent on every row
+    /// before the field — written when its session was distilled.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub backfilled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub goal_hypotheses: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -728,7 +745,12 @@ impl TextAppraisal {
             prediction,
             // The structural half is kept even when the prose prediction is
             // empty: an expected act is a prediction on its own.
-            expected_act: draft.expected_act.filter(|a| *a != ExpectedAct::Unknown),
+            // A backfilled row predicts nothing, whatever a producer passed:
+            // the store enforces it, not only the producer.
+            expected_act: draft
+                .expected_act
+                .filter(|a| *a != ExpectedAct::Unknown && !draft.backfilled),
+            backfilled: draft.backfilled,
             goal_hypotheses,
             lessons,
             goals_unresolved,
@@ -1741,6 +1763,10 @@ pub struct ScoreSummary {
     pub appraisals: usize,
     /// Appraisals carrying a readable expected act.
     pub with_expectation: usize,
+    /// Appraisals written after the fact, which predict nothing
+    /// ([`Draft::backfilled`]): counted apart, never read as the appraiser
+    /// declining to predict.
+    pub backfilled: usize,
     pub scored: usize,
     pub hits: usize,
     /// Misses — surprises.
@@ -1883,6 +1909,9 @@ impl AppraisalStore {
         };
         for row in &rows {
             if !row.expected_act.is_some_and(|a| a != ExpectedAct::Unknown) {
+                if row.backfilled {
+                    s.backfilled += 1;
+                }
                 continue;
             }
             s.with_expectation += 1;
@@ -2533,6 +2562,7 @@ mod tests {
     /// turn, a judgment resting on both.
     fn draft() -> Draft {
         Draft {
+            backfilled: false,
             interpretation: "The run found the review date in the owner's mail and was asked \
                              to pass it on; it matters because the task is the budget review."
                 .into(),
@@ -4031,6 +4061,37 @@ mod tests {
         std::fs::write(fresh.ledger(), ledger).unwrap();
         let s = fresh.score_summary(&blind, later).unwrap();
         assert_eq!(s.appraisals_unreadable, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Ruling 3D→D: a backfilled row predicts nothing — the store drops an
+    /// expected act whatever the producer passed, since the outcome was
+    /// known when it was written — and the readout counts it apart from an
+    /// appraisal that left the field out.
+    #[test]
+    fn a_backfilled_appraisal_predicts_nothing_and_is_counted_apart() {
+        let root = temp_root("backfilled");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let late = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        store
+            .record(
+                &late,
+                Draft {
+                    expected_act: Some(ExpectedAct::NoAct),
+                    backfilled: true,
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let rows = store.for_owner().unwrap().0;
+        assert_eq!((rows[0].expected_act, rows[0].backfilled), (None, true));
+        let s = store
+            .score_summary(&OwnerActs::default(), Utc::now())
+            .unwrap();
+        assert_eq!((s.appraisals, s.with_expectation, s.backfilled), (1, 0, 1));
         let _ = std::fs::remove_dir_all(&root);
     }
 

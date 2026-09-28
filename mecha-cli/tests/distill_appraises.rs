@@ -469,3 +469,149 @@ async fn distill_appraises_each_session_once_behind_the_right_door() {
     assert_eq!(e["scored"], 0);
     assert!(e["hit_rate"].is_null(), "no rate over nothing: {e:#}");
 }
+
+/// Ruling 3D→D end to end: `mecha distill --backfill-appraisals` appraises
+/// exactly the distilled sessions whose clean steer or denial waits only on
+/// an appraisal — nothing pushed to the graph, nothing re-marked, no
+/// prediction on the row — and never shows a later session's appraisal to
+/// an older one as an earlier appraisal.
+#[tokio::test]
+async fn a_backfill_appraises_only_what_row_2e_1_waits_on_and_pushes_nothing() {
+    if !python3() {
+        return;
+    }
+    mecha_core::session::ignore_kind_env_for_tests();
+    let root =
+        Root(std::env::temp_dir().join(format!("mecha-distill-backfill-{}", Session::new_id())));
+    let (base_url, seen, server) = fixture_model().await;
+    let home = seed(&root.0, &base_url);
+    let work = root.0.join("work");
+
+    // The situation a past appraisal is looked up by needs a workspace
+    // key, which `session`'s config does not record: give these sessions
+    // one, so an earlier appraisal *could* be shown and the check below
+    // means something.
+    let keyed = |id: &str| {
+        use std::io::Write;
+        let config = Record::Config(RunConfig {
+            tools: vec!["mail_search".into()],
+            rules_workspace: Some(PathBuf::from("/project")),
+            rules_surface: Some(SessionKind::Task),
+            rules_goal: Some(mecha_core::situation::GoalKey::Named(GoalRef::Task(
+                "task-1".into(),
+            ))),
+            ..Default::default()
+        });
+        let mut f = std::fs::File::options()
+            .append(true)
+            .open(home.join("sessions").join(format!("{id}.jsonl")))
+            .unwrap();
+        writeln!(f, "{}", serde_json::to_string(&config).unwrap()).unwrap();
+    };
+
+    // A session appraised the ordinary way, now, in the same situation.
+    let india = session(&home, "india", false, 5);
+    keyed(&india);
+    ok(&mecha(&home, &work, &["distill"]).await, "distill");
+    let staged_before = std::fs::read_to_string(root.0.join("board").join("staged.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .count();
+
+    // Two older sessions distilled before the appraisal leg: one with a
+    // clean steer the reflector learned from, one with nothing.
+    let golf = session(&home, "golf", false, 60 * 24 * 30);
+    let hotel = session(&home, "hotel", false, 60 * 24 * 29);
+    keyed(&golf);
+    keyed(&hotel);
+    let month_ago = std::time::SystemTime::now() - Duration::from_secs(30 * 24 * 3600);
+    for id in [&golf, &hotel] {
+        std::fs::File::options()
+            .write(true)
+            .open(home.join("sessions").join(format!("{id}.jsonl")))
+            .unwrap()
+            .set_modified(month_ago)
+            .unwrap();
+    }
+    let learning = mecha_core::learning::LearningStore::open(home.join("learning")).unwrap();
+    learning.mark_distilled(&golf).unwrap();
+    learning.mark_distilled(&hotel).unwrap();
+    let steer: mecha_core::learning::Reflexion = serde_json::from_value(json!({
+        "id": "refl-golf",
+        "domain": "behavior",
+        "session_id": golf,
+        "trigger": "steer",
+        "context": "the run searched the wrong folder",
+        "intervention": "look in the mail instead",
+        "reflexion_text": "Search the owner's mail before the files.",
+        "error_type": null,
+        "confidence": null,
+        "created_at": "2026-08-29T00:00:00Z",
+        "origin": "clean"
+    }))
+    .unwrap();
+    learning.append_reflexion(&steer).unwrap();
+    let ledger_before =
+        std::fs::read_to_string(home.join("learning").join("distilled.jsonl")).unwrap();
+
+    let dry = ok(
+        &mecha(
+            &home,
+            &work,
+            &["distill", "--backfill-appraisals", "--dry-run"],
+        )
+        .await,
+        "distill --backfill-appraisals --dry-run",
+    );
+    assert!(dry.contains(&golf) && !dry.contains(&hotel), "{dry}");
+    assert!(
+        dry.contains("1 session(s) would be appraised after the fact"),
+        "{dry}"
+    );
+
+    let asked_from = seen.lock().unwrap().len();
+    let out = ok(
+        &mecha(&home, &work, &["distill", "--backfill-appraisals"]).await,
+        "distill --backfill-appraisals",
+    );
+    assert!(
+        out.contains("backfilled: written after the outcome"),
+        "{out}"
+    );
+
+    let store = AppraisalStore::open(home.join("appraisals")).unwrap();
+    let (rows, _) = store.for_owner().unwrap();
+    let of = |id: &str| rows.iter().find(|r| r.session_id == id);
+    let golf_row = of(&golf).expect("golf appraised");
+    assert!(golf_row.backfilled);
+    assert_eq!(golf_row.expected_act, None, "no prediction after the fact");
+    assert!(of(&hotel).is_none(), "nothing waits on hotel's appraisal");
+    assert!(!of(&india).unwrap().backfilled);
+
+    // Nothing pushed, nothing re-marked.
+    let staged_after = std::fs::read_to_string(root.0.join("board").join("staged.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .count();
+    assert_eq!(staged_after, staged_before, "no episode pushed");
+    assert_eq!(
+        std::fs::read_to_string(home.join("learning").join("distilled.jsonl")).unwrap(),
+        ledger_before,
+        "no session re-marked"
+    );
+
+    // India's appraisal came after golf ended: not shown as an earlier one.
+    let asks = follow_ups(&seen, asked_from);
+    assert_eq!(asks.len(), 1, "one follow-up: golf's");
+    // (The fixture labels every appraisal it writes from the request's
+    // marker, which the ordinary pass's request does not carry, so the
+    // section is checked, not a name in it.)
+    assert!(
+        asks[0].to_string().contains(
+            "Earlier appraisals of the same situation and goal (clean runs only)\\nNone is on record."
+        ),
+        "a later session's appraisal is not an earlier one: {}",
+        asks[0]
+    );
+    server.abort();
+}
