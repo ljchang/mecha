@@ -1665,7 +1665,11 @@ pub fn observe(
 /// read more widely: any closure naming the session counts, not only the
 /// owner's, and a workflow counts by its own `session_id` as well as by an
 /// owner disposition. Both widen "actionable", which keeps a hit in the rate
-/// — the direction this errs.
+/// — the direction this errs. Read at read time, so one arm can narrow
+/// later: `owner_dispositions` walks a bounded history, and a workflow that
+/// has since dropped a session's disposition names it only by its own
+/// `session_id`. Drafts resolve in place and closures are append-only, so
+/// those two arms are stable.
 ///
 /// One act found is enough for `Some(true)`, whatever else could not be
 /// read — a task anchor proves it with the outbox unread. `Some(false)`
@@ -1780,7 +1784,8 @@ pub enum Scored {
 }
 
 /// Coverage of the appraisals' predictions: how many are scored, how many
-/// wait, and a hit rate only over scores that exist.
+/// wait, and a hit rate only over predictions known to have been able to
+/// miss.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ScoreSummary {
     pub appraisals: usize,
@@ -1795,8 +1800,8 @@ pub struct ScoreSummary {
     pub forced: usize,
     /// Of the hits, `no_act` predictions whose output could not be
     /// classified — an act store unreadable and no act found in what was
-    /// read. Neither forced nor known to have risked a miss, so out of
-    /// `hit_rate` on both sides too: an unjudged hit gets no rate.
+    /// read. Neither forced nor known to have risked a miss: while any is on
+    /// record, `hit_rate` is `None` — an unjudged hit gets no rate.
     pub forced_unknown: usize,
     /// Misses — surprises.
     pub surprises: usize,
@@ -1812,11 +1817,11 @@ pub struct ScoreSummary {
     /// Task outputs this reader could not window, because it read no board
     /// — the read-only readout; `mecha distill` reads it and scores them.
     pub board_not_read: usize,
-    /// `(hits − forced − forced_unknown) / (scored − forced −
-    /// forced_unknown)`: the rate over predictions known to have been able
-    /// to miss ([`ScoreSummary::could_miss`]). `None` when there are none —
-    /// a rate over forced hits alone would read 100% for a predictor that
-    /// never risked a miss.
+    /// `(hits − forced) / (scored − forced)`: the rate over predictions
+    /// known to have been able to miss ([`ScoreSummary::could_miss`]).
+    /// `None` when there are none — a rate over forced hits alone would read
+    /// 100% for a predictor that never risked a miss — and `None` while any
+    /// hit is unclassified (`forced_unknown`).
     pub hit_rate: Option<f64>,
     /// Score lines that could not be read.
     pub skipped: usize,
@@ -1830,7 +1835,9 @@ impl ScoreSummary {
     /// nor unclassified. `hit_rate`'s denominator. Never underflows — both
     /// are counted only on hits.
     pub fn could_miss(&self) -> usize {
-        self.scored - self.forced - self.forced_unknown
+        self.scored
+            .saturating_sub(self.forced)
+            .saturating_sub(self.forced_unknown)
     }
 }
 
@@ -1985,8 +1992,12 @@ impl AppraisalStore {
             }
         }
         let could_miss = s.could_miss();
-        s.hit_rate = (could_miss > 0)
-            .then(|| (s.hits - s.forced - s.forced_unknown) as f64 / could_miss as f64);
+        // An unjudged hit withholds the rate outright: surprises are never
+        // classified, so dropping only the unjudged hits would leave a ratio
+        // over the surprises and the judged hits — a rate pushed down, not a
+        // dash (found on review of #377).
+        s.hit_rate = (could_miss > 0 && s.forced_unknown == 0)
+            .then(|| (s.hits - s.forced) as f64 / could_miss as f64);
         Ok(s)
     }
 }
@@ -4117,7 +4128,7 @@ mod tests {
     /// A `no_act` prediction on a run that left the owner nothing to act on
     /// cannot miss, so it is a hit that says nothing: counted as forced and
     /// kept out of the rate, where the task-anchored one — the owner could
-    /// have closed the task — stays in. Seven such hits read "hit rate 100%"
+    /// have closed the task — stays in. Four such hits read "hit rate 100%"
     /// on the live store before this (2026-09-28).
     #[test]
     fn a_no_act_hit_on_an_output_with_nothing_to_act_on_is_forced_and_out_of_the_rate() {
@@ -4183,11 +4194,70 @@ mod tests {
             (unsure.forced, unsure.forced_unknown, unsure.could_miss()),
             (0, 1, 1)
         );
-        assert_eq!(
-            unsure.hit_rate,
-            Some(1.0),
-            "over the task-anchored one alone"
-        );
+        assert_eq!(unsure.hit_rate, None, "an unjudged hit withholds the rate");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// With a surprise on record beside an unclassified hit, the rate is
+    /// withheld, not pushed down: surprises are never classified, so a
+    /// ratio that dropped only the unjudged hit would read 0% here where
+    /// the truth is 1 of 2 or unknown (found on review of #377).
+    #[test]
+    fn an_unclassified_hit_beside_a_surprise_withholds_the_rate() {
+        let root = temp_root("forced-surprise");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let chat = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        store
+            .record(
+                &chat,
+                Draft {
+                    expected_act: Some(ExpectedAct::NoAct),
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let busy = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        store
+            .record(
+                &busy,
+                Draft {
+                    expected_act: Some(ExpectedAct::ReleasedUnchanged),
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let rejected_at = Utc::now() + chrono::Duration::hours(1);
+        let drafts = [draft_of(
+            &root,
+            busy.session_id(),
+            "rejected",
+            Some(rejected_at),
+        )];
+        let tasks = json!({"items": [{"id": "t-budget", "status": "next"}]});
+        let owner = OwnerActs {
+            board: BoardRead::Read(&tasks),
+            ..acts(&drafts)
+        };
+        let later = Utc::now() + chrono::Duration::hours(72);
+        // Scored while every store read: one forced hit, one surprise.
+        let read = store.score_due(&owner, later).unwrap();
+        assert_eq!((read.hits, read.forced, read.surprises), (1, 1, 1));
+        assert_eq!(read.hit_rate, Some(0.0), "the surprise alone could miss");
+
+        // The outbox then goes unreadable: the chat's hit can no longer be
+        // classified, and the rate is withheld rather than left at 0%.
+        let blind = OwnerActs {
+            outbox_unreadable: true,
+            ..owner
+        };
+        let s = store.score_summary(&blind, later).unwrap();
+        assert_eq!((s.forced, s.forced_unknown, s.surprises), (0, 1, 1));
+        assert_eq!(s.hit_rate, None);
         let _ = std::fs::remove_dir_all(&root);
     }
 

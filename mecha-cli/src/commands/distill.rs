@@ -765,7 +765,8 @@ pub(crate) fn owner_acts(
 }
 
 /// One line of coverage: scored, hits and surprises, what waits, what is
-/// unknown — and a hit rate only over scores that exist.
+/// unknown — and a hit rate only over predictions known to have been able
+/// to miss.
 pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -> String {
     if s.with_expectation == 0 {
         return format!(
@@ -789,14 +790,14 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
         match (s.forced, s.forced_unknown) {
             (0, 0) => String::new(),
             (f, 0) =>
-                format!(" — {f} of them forced: `no_act` on a run that left nothing to act on"),
+                format!(" [{f} of them forced: `no_act` on a run that left nothing to act on]"),
             (0, u) => format!(
-                " — {u} of them unclassified: an act store could not be read, so whether they \
-                 could miss is unknown"
+                " [{u} of them unclassified: an act store could not be read, so whether they \
+                 could miss is unknown]"
             ),
             (f, u) => format!(
-                " — {f} of them forced: `no_act` on a run that left nothing to act on; {u} \
-                 unclassified: an act store could not be read"
+                " [{f} of them forced: `no_act` on a run that left nothing to act on; {u} \
+                 unclassified: an act store could not be read]"
             ),
         },
         s.surprises,
@@ -1129,7 +1130,7 @@ mod tests {
             pending: 3,
             ..base.clone()
         });
-        assert!(forced.contains("4 hit — 4 of them forced"), "{forced}");
+        assert!(forced.contains("4 hit [4 of them forced"), "{forced}");
         assert!(forced.contains("no rate: none could miss"), "{forced}");
         assert!(
             !forced.contains('%'),

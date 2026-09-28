@@ -6560,8 +6560,9 @@ the owner's** (row 2b-2, R33, R37).
   forced ones alone, which read "100%" on the live store before (#377). An
   unreadable act store never makes a hit forced, and never vouches that it
   could miss either: with nothing found in what was read, the hit is
-  `forced_unknown`, named on the line and out of the rate both ways — an
-  unjudged hit gets no rate. One act found decides it whatever else is
+  `forced_unknown`, named on the line, and while any is on record the rate
+  is withheld — an unjudged hit gets no rate. Dropping only those hits would
+  push the rate down instead, since surprises are never classified. One act found decides it whatever else is
   unread (a task anchor, with the outbox blind). Classified at read time, so
   `scores.jsonl` is unchanged and the surprises replay priority reads cannot
   be forced.
