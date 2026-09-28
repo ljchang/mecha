@@ -59,40 +59,46 @@ const JPEG_QUALITY: u8 = 85;
 /// Returns `Ok(None)` when the extension is not one both backends read, so a
 /// caller can say "here is a path" for a PDF instead of failing.
 pub fn block_from_path(path: &Path) -> Result<Option<Block>> {
-    let Some(media_type) = image_media_type(path) else {
+    if image_media_type(path).is_none() {
         return Ok(None);
-    };
+    }
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
-    block_from_bytes(media_type, bytes, name, &path.display().to_string()).map(Some)
+    block_from_bytes(bytes, name, &path.display().to_string()).map(Some)
 }
 
 /// [`block_from_path`] for bytes a caller already read — through
 /// `WorkspaceFiles::read`, say, whose descriptor-held walk a second open by
-/// path would undo. `media_type` is the caller's (from the name, as
-/// [`image_media_type`] decides it); `what` names the file in errors.
-pub fn block_from_bytes(
-    media_type: &'static str,
-    bytes: Vec<u8>,
-    name: Option<String>,
-    what: &str,
-) -> Result<Block> {
-    // Dimensions are read from the header alone, so the common case — an
+/// path would undo. `what` names the file in errors.
+///
+/// **The bytes decide what it is, never the name.** A caller gates on the
+/// extension ([`image_media_type`]) to decide whether to try at all; the
+/// media type sent is the one the header says. Both halves are found on
+/// review of #368, and both fail the same way: a block the provider rejects
+/// rides into append-only history and fails every later request of that
+/// conversation — reachable from Slack and the web chat.
+pub fn block_from_bytes(bytes: Vec<u8>, name: Option<String>, what: &str) -> Result<Block> {
+    // Format and dimensions from the header alone, so the common case — an
     // image that is already small — never pays to decode the pixels.
-    let dims = image::ImageReader::new(std::io::Cursor::new(&bytes))
+    let header = image::ImageReader::new(std::io::Cursor::new(&bytes))
         .with_guessed_format()
         .ok()
-        .and_then(|r| r.into_dimensions().ok());
-    // A header that cannot be read is not a picture, whatever its name says:
-    // passed through, it would ride into append-only history, and a picture
-    // the provider rejects fails every later request of that conversation
-    // (found on review of #368 — reachable from Slack and the web chat).
-    let Some((w, h)) = dims else {
+        .and_then(|r| {
+            let format = r.format()?;
+            r.into_dimensions().ok().map(|dims| (format, dims))
+        });
+    // A header that cannot be read is not a picture, whatever its name says.
+    let Some((format, (w, h))) = header else {
         bail!("{what} is named as an image but did not decode (its header could not be read)");
     };
     let oversized = w.max(h) > MAX_EDGE;
-    if !oversized && bytes.len() <= MAX_BYTES {
-        return Ok(Block::image(media_type, &bytes, name));
+    // A real JPEG named `.png` is sent as a JPEG: the type the provider
+    // checks is the type the bytes are. A format neither backend reads
+    // (a TIFF named `.png`) is re-encoded below rather than passed through.
+    if let Some(media_type) = media_type_of(format) {
+        if !oversized && bytes.len() <= MAX_BYTES {
+            return Ok(Block::image(media_type, &bytes, name));
+        }
     }
 
     let img = decode(&bytes, what)?;
@@ -143,15 +149,8 @@ pub fn rendered_block(bytes: &[u8], name: Option<String>) -> Result<Block> {
     // every later request of that conversation, not just this one.
     let img = decode(bytes, "the picture")?;
     if bytes.len() <= PASS_THROUGH_BYTES && img.width().max(img.height()) <= MAX_EDGE {
-        let media_type = match image::guess_format(bytes) {
-            Ok(image::ImageFormat::Png) => "image/png",
-            Ok(image::ImageFormat::Jpeg) => "image/jpeg",
-            Ok(image::ImageFormat::Gif) => "image/gif",
-            Ok(image::ImageFormat::WebP) => "image/webp",
-            // Decoded, but not a type both backends read: re-encode below.
-            _ => "",
-        };
-        if !media_type.is_empty() {
+        // Decoded, but not a type both backends read: re-encode below.
+        if let Some(media_type) = image::guess_format(bytes).ok().and_then(media_type_of) {
             return Ok(Block::image(media_type, bytes, name));
         }
     }
@@ -220,6 +219,18 @@ fn decode(bytes: &[u8], what: &str) -> Result<image::DynamicImage> {
     reader
         .decode()
         .with_context(|| format!("{what} is named as an image but did not decode"))
+}
+
+/// The media type both backends read for a sniffed format, or `None` for
+/// one they do not.
+fn media_type_of(format: image::ImageFormat) -> Option<&'static str> {
+    match format {
+        image::ImageFormat::Png => Some("image/png"),
+        image::ImageFormat::Jpeg => Some("image/jpeg"),
+        image::ImageFormat::Gif => Some("image/gif"),
+        image::ImageFormat::WebP => Some("image/webp"),
+        _ => None,
+    }
 }
 
 fn human(bytes: usize) -> String {
@@ -437,7 +448,7 @@ mod tests {
         assert!(err.contains("too large"), "{err}");
         let err = format!(
             "{:#}",
-            block_from_bytes("image/png", huge, None, "huge.png").unwrap_err()
+            block_from_bytes(huge, None, "huge.png").unwrap_err()
         );
         assert!(
             err.contains("huge.png") && err.contains("too large"),
@@ -460,7 +471,27 @@ mod tests {
             .unwrap();
         let i = image::load_from_memory(&decoded).unwrap();
         assert!(image::GenericImageView::height(&i) <= MAX_EDGE);
-        assert!(block_from_bytes("image/png", tall, None, "tall.png").is_ok());
+        assert!(block_from_bytes(tall, None, "tall.png").is_ok());
+    }
+
+    /// A real JPEG named `.png` goes out as `image/jpeg`: the type the
+    /// provider checks is the type the bytes are. Fails on the extension's
+    /// answer, which Anthropic rejects as a mismatch (found on review of
+    /// #368).
+    #[test]
+    fn a_picture_is_typed_by_its_bytes_not_its_name() {
+        let mut jpeg = Vec::new();
+        image::RgbImage::from_pixel(40, 20, image::Rgb([200, 30, 30]))
+            .write_with_encoder(image::codecs::jpeg::JpegEncoder::new(&mut jpeg))
+            .unwrap();
+        let dir = std::env::temp_dir().join(format!("mecha-img-type-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = write(&dir, "shot.png", &jpeg);
+        let Block::Image { media_type, .. } = block_from_path(&p).unwrap().unwrap() else {
+            panic!("expected an image block")
+        };
+        assert_eq!(media_type, "image/jpeg");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A caller must be able to tell "not an image" from "an image that
