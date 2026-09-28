@@ -1,6 +1,6 @@
 <script>
   import { apiFetch as fetch } from './api.js';
-  import { needsYou, fyi, actionable, healthLine } from './home-view.js';
+  import { needsYou, fyi, actionable, workflowGroups, healthLine } from './home-view.js';
   // Home is counts and doors. One card per place, a number, a tap into the
   // tab that has the rest — and nothing that tab already shows. The cards
   // never move: where Mail is today is where it is tomorrow, which is what
@@ -62,7 +62,9 @@
   const needs = $derived(needsYou(mail));
   const open = $derived(actionable(tasks));
   const overdue = $derived(Array.isArray(open) ? open.filter((t) => t.overdue).length : 0);
-  const workflows = $derived(today ? (today.items ?? []).filter((i) => i.workflow).length : today);
+  // The same function the workflows view renders, so the line and the page
+  // it opens cannot count differently.
+  const workflows = $derived(today ? workflowGroups(today).reduce((n, g) => n + g.items.length, 0) : today);
   const health = $derived(healthLine(summary?.doctor));
 
   // The four places that are yours. `to` is where a tap lands; the question
@@ -70,14 +72,22 @@
   // question is answered.
   const mine = $derived([
     { label: 'Mail', to: 'mail', n: Array.isArray(needs) ? needs.length : needs, sub: fyi(mail) ? `need you · ${fyi(mail)} FYI` : 'need you' },
-    { label: 'Outbox', to: 'review/outbox', n: depth('outbox drafts'), sub: 'drafts to review' },
-    { label: 'Questions', to: 'tasks/waiting', n: depth('blocked questions'), sub: 'a run waits on your answer' },
+    { label: 'Outbox', to: 'review/outbox', n: depth(cardQueue.Outbox), sub: 'drafts to review' },
+    { label: 'Questions', to: 'tasks/waiting', n: depth(cardQueue.Questions), sub: 'a run waits on your answer' },
     { label: 'Tasks', to: 'tasks', n: Array.isArray(open) ? open.length : open, sub: overdue ? `to do · ${overdue} overdue` : 'to do next', hot: overdue > 0 },
   ]);
 
-  // The two queues with a card above are not repeated below.
-  const MINE = new Set(['outbox drafts', 'blocked questions']);
-  const machine = $derived((summary?.queues ?? []).filter((q) => !MINE.has(q.queue)));
+  // The two queues with a large card of their own, by wire name, and not
+  // repeated as small cards below. A map rather than literals at each use
+  // because the Rust guard reads it: a renamed queue fails `cargo test` here
+  // too, instead of leaving the big card reading "could not be read" for a
+  // queue that reads fine *and* the same queue back as a small card.
+  const queueCards = {
+    'outbox drafts': 'Outbox',
+    'blocked questions': 'Questions',
+  };
+  const cardQueue = Object.fromEntries(Object.entries(queueCards).map(([q, label]) => [label, q]));
+  const machine = $derived((summary?.queues ?? []).filter((q) => !(q.queue in queueCards)));
 
   // Every name `collect_queues()` can push, in its order. A queue missing
   // from here renders under its raw wire name, which is how `blocked

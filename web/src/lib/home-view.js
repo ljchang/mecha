@@ -22,18 +22,19 @@ export function needsYou(rows) {
 export const fyi = (rows) => (Array.isArray(rows) ? rows.filter((r) => laneOf(r) === 'notify').length : 0);
 
 /**
- * The board's default view, `actionable`: do next, or newly captured.
- * `Tasks.svelte` declares the same pair, and web/test/home-view.mjs holds the
- * two together — the Tasks card lands on that view, so it counts what that
- * view shows. Counting every open task (scheduled and waiting too) put a 9
- * on the card and three rows under the tap.
+ * The board's default view, `actionable`: do next, or newly captured. One
+ * predicate for two readers — `Tasks.svelte` filters its default view with
+ * it and home's Tasks card counts with it — because the card lands on that
+ * view, so it must count what that view shows. Counting every open task
+ * (scheduled and waiting too) put a 9 on the card and three rows under the
+ * tap, and a second copy of the predicate is how the two drift again.
  */
-export const ACTIONABLE = ['next', 'inbox'];
+export const isActionable = (t) => t.status === 'next' || t.status === 'inbox';
 
 /** The tasks the Tasks card's tap lands on. */
 export function actionable(items) {
   if (!Array.isArray(items)) return items;
-  return items.filter((t) => ACTIONABLE.includes(t.status) && !t.completed_at);
+  return items.filter(isActionable);
 }
 
 /** `workflow today`'s sections, in the order a person works through them. */

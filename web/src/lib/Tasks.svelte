@@ -2,6 +2,7 @@
   import { apiFetch as fetch } from './api.js';
   import Dictate from './Dictate.svelte';
   import Workflows from './Workflows.svelte';
+  import { isActionable } from './home-view.js';
   // The GTD board, over `mecha tasks …` — which reaches the graph's own
   // store through its MCP surface. Nothing here confirms: every status is
   // one tap from where it was, and the tool surface has no delete.
@@ -213,9 +214,9 @@
   // The GTD views, drawer entries rather than chips: each says what it
   // MEANS, because 'waiting' as a bare word on a chip explained nothing.
   let drawer = $state(false);
-  const ACTIONABLE = ['next', 'inbox'];
   const filters = [
-    ['actionable', (t) => ACTIONABLE.includes(t.status), 'do next, or newly captured'],
+    // Shared with home's Tasks card, which counts what this view shows.
+    ['actionable', isActionable, 'do next, or newly captured'],
     ['scheduled', (t) => t.status === 'scheduled', 'has a date; surfaces then'],
     ['waiting', (t) => t.status === 'waiting', 'blocked on someone else'],
     ['done', (t) => t.status === 'done' || t.status === 'dropped', 'finished or dropped'],

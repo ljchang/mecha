@@ -29,10 +29,17 @@
       error = String(e.message ?? e);
     }
   }
+  // Every thirty seconds while someone is looking, as home does.
   $effect(() => {
     load();
-    const timer = setInterval(load, 30_000);
-    return () => clearInterval(timer);
+    const seen = () => document.visibilityState === 'visible';
+    const timer = setInterval(() => seen() && load(), 30_000);
+    const onShow = () => seen() && load();
+    document.addEventListener('visibilitychange', onShow);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onShow);
+    };
   });
 
   async function act(id, action, body = {}) {
