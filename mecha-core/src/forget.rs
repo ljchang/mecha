@@ -794,8 +794,12 @@ fn purge_logs(dir: &Path, id: &str, ids: &HashSet<String>, texts: &[String]) -> 
 /// Every recipient's messages the session sent or received, under that
 /// recipient's lock.
 fn purge_mailbox(root: &Path, id: &str) -> Result<usize> {
-    let Ok(read) = std::fs::read_dir(root) else {
-        return Ok(0);
+    let read = match std::fs::read_dir(root) {
+        Ok(r) => r,
+        // Absent is nothing to purge; unreadable is a finding — an error, so
+        // the transcript is kept and the retry can finish once it can read.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e).with_context(|| format!("listing {}", root.display())),
     };
     let mut n = 0;
     for entry in read {

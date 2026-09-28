@@ -728,3 +728,33 @@ fn an_unreadable_distill_ledger_is_owed_the_graph_not_read_as_clean() {
         report.errors
     );
 }
+
+#[test]
+fn an_unreadable_mailbox_keeps_the_transcript_for_the_retry() {
+    // Unreadable is not "nothing there": the delete must not report clean,
+    // remove the transcript, and leave the messages with no way to finish.
+    use std::os::unix::fs::PermissionsExt;
+    let home = scratch("mailbox-unreadable");
+    let roots = seeded(&home.0);
+    std::fs::set_permissions(&roots.messages, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Redacted(0))]),
+    )
+    .unwrap();
+    std::fs::set_permissions(&roots.messages, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if report.errors.is_empty() && report.complete {
+        return; // running as root: the directory could not be made unreadable
+    }
+    assert!(!report.complete);
+    assert!(
+        report.errors.iter().any(|e| e.starts_with("messages")),
+        "{:?}",
+        report.errors
+    );
+    assert!(roots
+        .sessions
+        .join(format!("{GONE}.jsonl.forgetting"))
+        .exists());
+}

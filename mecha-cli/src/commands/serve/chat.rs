@@ -3508,7 +3508,16 @@ pub async fn history(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
     };
     metas.retain(|(m, _)| archived.contains_key(&m.id) == query.archived);
-    metas.sort_by_key(|(m, _)| std::cmp::Reverse(m.created_at));
+    if query.archived {
+        // Newest *filed* first: the rows are dated by when they were archived,
+        // and under the 40-row cap the ones filed longest ago must not be the
+        // ones that fall off the page — restore is only reachable from a row.
+        metas.sort_by_key(|(m, _)| {
+            std::cmp::Reverse((archived.get(&m.id).copied().flatten(), m.created_at))
+        });
+    } else {
+        metas.sort_by_key(|(m, _)| std::cmp::Reverse(m.created_at));
+    }
     let mut rows = Vec::new();
     for (meta, path) in metas {
         if rows.len() >= 40 {
