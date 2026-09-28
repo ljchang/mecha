@@ -103,6 +103,13 @@ struct Model {
     /// `unfollowable`'s rule, worded for a model that may not be loaded).
     /// The chip offers only models runs would follow.
     would_not_follow: Option<String>,
+    /// Why an incognito chat would refuse its turns on this model — the
+    /// entry a run binds for it has `fallbacks`, or is not on this machine —
+    /// or `None` when it would not. The same rule the incognito door and
+    /// every incognito turn apply (`incognito::provider_is_local`), asked of
+    /// the entry `router::followed` binds; the chip greys out such a model in
+    /// an incognito chat rather than offer one that strands it.
+    incognito_refusal: Option<String>,
 }
 
 /// How long `--now` (or a hurried switch) gives the runs it asked to stop.
@@ -189,12 +196,34 @@ fn router_of(cfg: &Config, base: &str, list: &[router::RouterModel]) -> Router {
                 } else {
                     router::would_not_follow(cfg, base, &m.id)
                 },
+                incognito_refusal: incognito_refusal(cfg, base, &m.id),
             })
             .collect(),
         unserved,
         pending_switch: None,
         base_url: base.to_string(),
     }
+}
+
+/// Why an incognito chat would refuse its turns were `model` the one loaded
+/// on the router at `base`: the entry a default run would bind for it
+/// (`router::followed` — the default itself when it names the model), put
+/// to the incognito rule. `None` when it passes, or when no single entry
+/// would be bound — `would_not_follow` says that one.
+fn incognito_refusal(cfg: &Config, base: &str, model: &str) -> Option<String> {
+    let seen = [router::Seen {
+        base_url: base.to_string(),
+        resident: Some(model.to_string()),
+        slots: None,
+    }];
+    let bound = router::followed(cfg, &cfg.default_provider, &seen).or_else(|| {
+        let default = cfg.providers.get(&cfg.default_provider)?;
+        (router::follows_here(default)
+            && default.base_url.as_deref().map(router::base).as_deref() == Some(base)
+            && default.model.as_deref() == Some(model))
+        .then(|| cfg.default_provider.clone())
+    })?;
+    crate::commands::serve::incognito::provider_is_local(cfg, &bound).err()
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
@@ -712,6 +741,28 @@ mod tests {
             why("qwen3.6-35b-a3b")
         );
         assert!(why("orphan").contains("once loaded"), "{}", why("orphan"));
+    }
+
+    /// A model whose bound entry has `fallbacks` is one an incognito chat
+    /// would refuse — asked by the incognito rule itself — and the default,
+    /// local with none, is not.
+    #[test]
+    fn a_model_bound_to_an_entry_with_fallbacks_is_refused_for_incognito() {
+        let mut c = cfg();
+        c.providers.insert(
+            "cloudy".into(),
+            ProviderConfig {
+                kind: "local".into(),
+                base_url: Some(BASE.into()),
+                model: Some("x".into()),
+                fallbacks: vec!["anthropic".into()],
+                ..Default::default()
+            },
+        );
+        let why = incognito_refusal(&c, BASE, "x").expect("offered to incognito");
+        assert!(why.contains("fallbacks"), "{why}");
+        assert_eq!(incognito_refusal(&c, BASE, "qwen3.6-35b-a3b"), None);
+        assert_eq!(incognito_refusal(&c, BASE, "nobody-names-it"), None);
     }
 
     /// An unknown status makes "what is loaded" unknown — never "nothing" —

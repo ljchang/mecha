@@ -408,7 +408,7 @@ server's history clear; `no-store` on every incognito route.
 3. **The withheld set**, the local-only refusal, and the search notice.
 4. **Images**: `server_temp_dir` and temp-file deletion; ComfyUI on a tmpfs
    temp directory.
-5. **The page**: door, banner, End, locked chip, no voice call.
+5. **The page**: door, banner, End, local-only chip (amended 2026-09-28, §6.1), no voice call.
 6. **The canary test** — written with step 1, green only when step 5 lands.
 7. **mecha-graph's unrecorded read path** (other repository), then graph reads
    come off the withheld list.

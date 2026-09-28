@@ -53,6 +53,14 @@ t('a single provider entry is the name handed to `use`', rs.find((x) => x.id ===
 t('a model several entries name is handed by id', rows(router([m('x', 'unloaded', { providers: ['p', 'q'] })]))[0].name === 'x');
 t('a model runs would not follow is refused, with why', rs.find((x) => x.id === 'odd-c').disabled && rs.find((x) => x.id === 'odd-c').why === 'no entry names it');
 t('an R4 mismatch is refused, with why', rows(router([m('x', 'unloaded', { sampling_mismatches: ['temp 0.7 vs 0.6'] })]))[0].why === 'temp 0.7 vs 0.6');
+{
+  const withFallbacks = router([m('cloudy-x', 'unloaded', { incognito_refusal: 'the provider `cloudy` has fallbacks (anthropic)' }), m('local-y', 'unloaded')]);
+  const plain = rows(withFallbacks);
+  const incog = rows(withFallbacks, true);
+  t('an ordinary chat offers a model with fallbacks', !plain[0].disabled);
+  t('an incognito chat refuses it, saying why', incog[0].disabled && incog[0].why.includes('fallbacks'));
+  t('and still offers a local one', !incog[1].disabled);
+}
 t('an unreadable list marks nothing current', !rows(router([m('a', 'loaded')], { readable: false }))[0].current);
 
 // ---- phase ----
