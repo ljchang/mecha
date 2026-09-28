@@ -206,3 +206,25 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   assert.notEqual(ringFor('other'), a, 'a different conversation gets its own');
   console.log('ring per key: ok');
 }
+{
+  // An incognito chat's ring goes when the chat does: the next call under
+  // the key starts empty rather than replaying what was said there.
+  const { ringFor, dropRing } = await import('../../scripts/voice/voice-core.js');
+  const a = ringFor('incognito-ab'); a.push(0, new Uint8Array([1]).buffer);
+  dropRing('incognito-ab');
+  assert.notEqual(ringFor('incognito-ab'), a, 'a dropped ring is not found again');
+  assert.equal(ringFor('incognito-ab').pendingMs, 0, 'and nothing it held carries over');
+  console.log('ring dropped: ok');
+}
+{
+  // An incognito call goes on only on an answer that says nothing of it is
+  // logged; `mecha serve` adds that only after the worker vouched.
+  const { refusesAnswer } = await import('../../scripts/voice/voice-core.js');
+  const sdp = { sdp: 'v=0', type: 'answer' };
+  assert.match(refusesAnswer(sdp, { requireUnlogged: true }), /incognito/, 'an old serve is refused');
+  assert.ok(refusesAnswer({ ...sdp, unlogged: 'true' }, { requireUnlogged: true }), 'only a real true counts');
+  assert.equal(refusesAnswer({ ...sdp, unlogged: true }, { requireUnlogged: true }), null);
+  assert.equal(refusesAnswer(sdp, { requireUnlogged: false }), null, 'an ordinary call needs nothing');
+  assert.equal(refusesAnswer(sdp, {}), null);
+  console.log('incognito answer gate: ok');
+}
