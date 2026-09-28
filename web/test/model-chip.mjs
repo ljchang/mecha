@@ -88,6 +88,13 @@ const past = phase(router([m('qwen-a', 'loaded'), m('gemma-b', 'unloaded')], {
 t('a waiting switch can be hurried', canHurry(pw));
 t('a switch past its wait cannot', past.past && !canHurry(past));
 t('past its wait it says it is switching, not waiting', waitingLine(past) === 'switching to gemma-b…');
+{
+  const busyNoRuns = phase(router([m('qwen-a', 'loaded'), m('gemma-b', 'unloaded')], {
+    pending_switch: { to: 'gemma-b', from: 'qwen-a', started_at: '2026-09-28T03:21:40Z', waiting_on: [], readable: true, past_the_wait: false },
+  }));
+  t('no runs but not past its wait is a busy model, and says so', waitingLine(busyNoRuns).startsWith('waiting for the loaded model to finish a request'));
+  t('and it can still be hurried', canHurry(busyNoRuns));
+}
 t('a stuck switch cannot be hurried', !canHurry(stuck));
 t('an older list without the flag is still waiting', phase(router([m('a', 'loaded')], { pending_switch: { to: 'b', waiting_on: ['x'] } })).past === false);
 const loadingNow = router([m('qwen-a', 'unloaded'), m('gemma-b', 'loading')], {

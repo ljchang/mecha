@@ -162,7 +162,11 @@ export function waitingLine(ph) {
     return 'a switch file here cannot be read, and every run on this router waits for it — cancel withdraws it';
   }
   if (ph.loading) return `loading ${ph.to}…`;
-  if (ph.past || !ph.waitingOn.length) return `switching to ${ph.to}…`;
+  if (ph.past) return `switching to ${ph.to}…`;
+  // No runs left, but the router has not taken the load: the loaded model is
+  // still answering a request (a client that takes no hold). Not "switching"
+  // — "switch now" and cancel both still act here (found on review of #371).
+  if (!ph.waitingOn.length) return `waiting for the loaded model to finish a request — switching to ${ph.to} next`;
   return `waiting for: ${ph.waitingOn.join(', ')}`;
 }
 

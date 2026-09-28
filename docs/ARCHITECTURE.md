@@ -264,8 +264,11 @@ The parts that bite hardest:
     another model is never hurried in the first's name.
     `Switching`'s own drop and `withdraw_switch` remove it; `cancel-switch`
     sweeps any left over. Its sibling `.past` (`Switching::past_the_wait`),
-    written once the wait returns, is keyed the same way and is why the chip
-    stops offering "switch now" during the unload. It is a separate file, not
+    written once the router stops refusing the load as busy (`LoadHooks::accepted`),
+    is keyed the same way and is why the chip stops offering "switch now"
+    once the load is under way. Until then — the wait for runs, and a busy
+    spell after it — "switch now" and cancel both still act. `--now` is
+    marked past its wait before its own unload, which cannot be withdrawn. It is a separate file, not
     a field rewritten into the switch file: a rewrite racing `cancel-switch`
     could restore a withdrawn switch that the switcher's `still_pending`
     would then believe. Markers are written through a uniquely named temp

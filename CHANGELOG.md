@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local-only guarantee stays with its own provider and its per-turn check.
   The owner's amendment to `INCOGNITO-DESIGN.md` §6.1 (2026-09-28).
 
+### Fixed
+
+- **A model switch waits for a reply in flight instead of failing.** The
+  router refuses an explicit load with `model limit reached, try again
+  later` while the loaded model is answering a request. `mecha model use`,
+  and the web chip that runs it, now retries every second until the
+  request ends, within `--wait-secs`. Before, the switch failed at once and
+  loaded the old model back. The first live switch from the chip hit this.
+
 ## [0.1.22] - 2026-09-28
 
 ### Added
