@@ -186,9 +186,9 @@ whatever placement decision is made at load is never revisited.
   median entry 0.5 GB, mean 1.3, p90 3.6, max 7.9), and a full 32 GiB left
   image generation no room beside a loaded model. **It is 16384 (17.2 GB)
   since that day, the owner's ruling** — about thirty median entries or twelve
-  mean ones, and three full slots where the default held one. The cache fills over hours and never shrinks while the
-  model stays loaded, so size it against what else must fit, not against a
-  fresh start.
+  mean ones, and three full slots where the default held one. The cache fills
+  over hours and never shrinks while the model stays loaded, so size it against
+  what else must fit, not against a fresh start.
 - **`--reasoning-budget` is a server flag; the per-request `reasoning_budget`
   field is silently ignored by this build.** ollama's runner never passes the
   flag, so a model served through it reasons unbounded.

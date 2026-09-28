@@ -588,9 +588,10 @@ layers holding a cache and 30 carrying a constant-size recurrent state, which
 is why the figure is 22 and not the 82 a per-layer count predicts. A full
 262,144-token slot is therefore ~5.5 GB, matching what the server reports.
 
-`-cram 32768` is the prompt cache — 32 GB holding **evicted slot states, so a
-returning prefix is restored instead of re-prefilled**. Raised from the 8 GB
-default after 341 evictions in a day; none since. What it buys:
+`-cram 32768` was the prompt cache when this was written — 32 GB holding
+**evicted slot states, so a returning prefix is restored instead of
+re-prefilled**. Raised from the 8 GB default after 341 evictions in a day, and
+none for a month after. What it bought:
 
 | A parked session of | is | fits in 32 GB |
 |---|---|---|
@@ -601,8 +602,9 @@ default after 341 evictions in a day; none since. What it buys:
 Roughly fifty parked task conversations, today, with nothing new built.
 
 > **Since 2026-09-28 the cap is 16384** (`LLAMA-SERVER.md` §Slots, the `-cram`
-> bullet): a full 32 GB left image generation no room on the shared pool. Halve
-> the right-hand column — about 25 typical parked tasks, three full slots.
+> bullet). By then 32 GB had filled and was evicting — 118 in the three days
+> before — and a full 32 GB left image generation no room on the shared pool.
+> Halve the right-hand column — about 25 typical parked tasks, three full slots.
 
 ### 3.2 R1 — Admission control, not memory management
 
