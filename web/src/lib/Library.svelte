@@ -10,10 +10,11 @@
   // candidate proposed while the model was reading outside content is
   // approved as read, never as whatever it says by the time the tap lands.
   //
-  // Locked entries are hidden by the server, not by this page. Unlocking
-  // trades the lock password for a token held in a variable here — no
-  // cookie, no storage — so a reload locks again, and it lapses on its own
-  // after half an hour idle. Generation never looks at the lock.
+  // Locked entries are hidden by the server, not by this page. Showing them
+  // trades the lock password — or nothing, when none is set, which makes the
+  // lock a plain toggle (the owner's ruling) — for a token held in a variable
+  // here: no cookie, no storage, so a reload hides them again, and it lapses
+  // on its own after half an hour idle. Generation never looks at the lock.
   let { initial = '', navigate = () => {} } = $props();
 
   const pane = $derived(paneOf(initial));
@@ -136,7 +137,7 @@
       title={token ? 'showing locked entries — tap to hide them' : 'show locked entries'}
       aria-label={token ? 'hide locked entries' : 'show locked entries'}
       aria-pressed={!!token}
-      onclick={() => (token ? relock() : (sheet = 'unlock'))}
+      onclick={() => (token ? relock() : data?.has_password ? (sheet = 'unlock') : unlock())}
     >
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
         {#if token}<path d="M7 11V7a5 5 0 019.9-1M5 11h14v10H5z" />{:else}<path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" />{/if}
@@ -172,9 +173,7 @@
         </div>
       {:else}
         <div class="btnrow">
-          <!-- Locking with no password set would hide the entry with no way
-               to show it again from here, so the button asks for one first. -->
-          <button class="abtn" disabled={busy} onclick={() => (open.locked || data?.has_password ? act(open, open.locked ? 'unlock' : 'lock') : (sheet = 'unlock'))}>
+          <button class="abtn" disabled={busy} onclick={() => act(open, open.locked ? 'unlock' : 'lock')}>
             {open.locked ? 'Unlock' : 'Lock'}
           </button>
           <button class="abtn" disabled={busy} onclick={() => (sheet = 'remove')}>Remove</button>
@@ -231,10 +230,6 @@
             </div>
           </form>
           <div class="barnote">Until you reload or leave it idle for half an hour.</div>
-        {:else}
-          <div class="sheet-text">No lock password yet</div>
-          <div class="barnote">Set one in a terminal: <code>mecha imagelib set-lock-password</code></div>
-          <button class="abtn" onclick={() => (sheet = null)}>OK</button>
         {/if}
       {:else if sheet === 'remove'}
         <div class="sheet-text">Remove {open?.name}?</div>

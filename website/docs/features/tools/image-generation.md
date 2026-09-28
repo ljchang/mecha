@@ -108,12 +108,14 @@ you approve it: in the **Library** tab under **Waiting**, or with
 `mecha imagelib list --all` and `mecha imagelib approve sam`. You approve
 exactly the text you were shown.
 
-**Locking.** A locked entry is hidden while you browse the Library tab, and
-still works in any chat. Set a password once with
-`mecha imagelib set-lock-password`; the lock button in the Library tab asks
-for it and shows locked entries until you reload or leave it idle for half an
-hour. A character saved from a picture made with a locked character starts
-locked; untick the box to save it unlocked.
+**Locking.** Locking a character hides the whole entry — card, portrait and
+description — while you browse the Library tab; it still works in any chat,
+and pictures already in your chats are untouched. The lock button at the top
+of the Library tab shows locked entries until you reload or leave it idle for
+half an hour. With no password it is a plain toggle; to require one, set it
+once with `mecha imagelib set-lock-password`. A character saved from a
+picture made with a locked character starts locked; untick the box to save
+it unlocked.
 
 Every generated picture also gets a small `.json` file beside it recording
 how it was made — the prompt, the seed, and which library entries (and which

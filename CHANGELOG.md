@@ -12,9 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The image library in the web app.** A **Library** tab shows your
   characters and styles, with a **Waiting** pane for ones the model proposed:
   read the text, then approve or reject. **Save to library** under any picture
-  in chat makes it a recurring character. A lock button shows locked entries
-  after `mecha imagelib set-lock-password`; locked entries stay usable in
-  chats. Waiting candidates also appear among Home's review cards. Rebuild the
+  in chat makes it a recurring character. Locking hides a character while
+  browsing (it stays usable in chats); the lock button shows locked entries
+  again — a plain toggle, or password-protected once you run
+  `mecha imagelib set-lock-password`. Waiting candidates also appear among Home's review cards. Rebuild the
   page and restart `mecha serve` to use it.
 
 - **An image library of recurring characters and styles.** Add a character

@@ -25,7 +25,13 @@ Settled; the build follows them and does not re-ask.
 - **The web surface ships second**, minimal: save to library, browse, lock.
 - **The lock is a browsing filter, not an access control.** Generation
   always has access to locked entries. Things made from a locked entry start
-  locked, and any item can be unlocked individually.
+  locked, and any item can be unlocked individually. It hides the whole
+  entry — card, portrait, description — from the library only; pictures
+  already in chats are untouched.
+- **The password is optional** (a later ruling the same day). With none set,
+  the Library tab's lock is a plain show/hide toggle; with one set
+  (`mecha imagelib set-lock-password`), showing locked entries asks for it.
+  Locking works either way.
 - **No likeness rule in the compiler** — declined; the chat model's
   guardrails are the control (research §5 states the cost).
 
@@ -202,12 +208,14 @@ The decisions that are this design's rather than the owner's:
   receive its bytes. The list and every locked portrait carry `no-store`; an
   open portrait is content-addressed and cached `immutable`.
 - **The unlock is a token in the page's memory.** `POST /api/library/unlock`
-  checks the password against `lock.toml` (argon2id, 0600, set only by
-  `mecha imagelib set-lock-password`, read without echo) and returns a token
-  the page keeps in a variable — no cookie, no storage, which
-  `web/test/no-storage.mjs` forbids — and sends as `?unlock=`. It lapses after
-  30 idle minutes, a reload drops it, and five wrong passwords in five
-  minutes answer 429. A damaged lock file errors; it never opens.
+  returns a token the page keeps in a variable — no cookie, no storage,
+  which `web/test/no-storage.mjs` forbids — and sends as `?unlock=`; it lapses
+  after 30 idle minutes and a reload drops it. With no password set it is
+  granted for the asking: the lock is then a plain toggle (§1). With one,
+  it is checked against `lock.toml` (argon2id, 0600, set only by
+  `mecha imagelib set-lock-password`, read without echo); five wrong
+  passwords in five minutes answer 429. The file's presence decides which,
+  so a damaged lock file is verified, errors, and never opens as if absent.
 - **Approval is of the text shown, vouched for by the server.** The list
   carries, per entry, an HMAC of its `shown_digest` (kind, name, version,
   text) under a key the server draws at start and never stores; the approve
