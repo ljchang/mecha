@@ -523,6 +523,8 @@ mod tests {
             ("kg_search", true),
             ("docs__docs_read", true),
             ("image_generate", true),
+            ("image_library", true),
+            ("image_library_propose", true),
             ("research", false),
             ("http_fetch", true),
             ("a_tool_added_tomorrow", true),
@@ -547,6 +549,8 @@ mod tests {
                 "a_tool_added_tomorrow",
                 "docs__docs_read",
                 "http_fetch",
+                // Read-only, but it writes a candidate outside the room.
+                "image_library_propose",
                 "kg_search",
                 "mail__calendar_create_event",
                 "mail__mail_send",

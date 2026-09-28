@@ -170,7 +170,13 @@ image reproducible, and what phase 2's lineage and "save to library" read.
 - `approve <name>` — prints the entry's text and asks; `--yes` skips the
   question **only for `model_clean`**. An untrusted candidate's text is read
   before it can ride into prompts.
-- `reject <name>`, `lock <name>`, `unlock <name>`, `update <name> …`.
+- `reject <name>` deletes a candidate outright, with its portrait unless another
+  entry names the same blob — nothing was generated from a candidate, and a
+  kept portrait would let propose-reject-propose fill the mecha home.
+  `remove <name>` moves any entry aside under `removed/`, portrait kept,
+  because manifests may name it.
+- `lock <name>`, `unlock <name>`, `update <name> …` — an update approves
+  nothing it did not rewrite: only new text makes an entry the owner's.
 
 ## 7. Not in phase 1
 
