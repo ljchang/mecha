@@ -9,8 +9,12 @@
   import { reader, routerOf, unavailable, rows, phase, busy, pollEvery, canHurry, chipLabel, waitingLine, outcomeNote } from './model-chip.js';
 
   /// `model` is what this chat's agent is bound to — the label until the
-  /// router has been read. An incognito chat runs only on the model on this
-  /// machine and offers no picker.
+  /// router has been read. An incognito chat gets the same picker: every model
+  /// it lists is on this machine by construction (`model list` reads only the
+  /// routers `follow_loaded` entries name, and `router::follows_here` admits
+  /// those only as `kind = "local"` on a loopback address), and incognito's
+  /// local-only guarantee is its own provider and per-turn gate, never this
+  /// chip (owner's ruling, 2026-09-28, amending INCOGNITO-DESIGN §6.1).
   let { model = '', incognito = false } = $props();
 
   let data = $state(null);
@@ -25,7 +29,7 @@
 
   const router = $derived(routerOf(data));
   const ph = $derived(phase(router));
-  const list = $derived(rows(router));
+  const list = $derived(rows(router, incognito));
   const note = $derived(busy(ph) ? null : outcomeNote(data, asked));
   const down = $derived(data ? unavailable(data) : readError);
 
@@ -47,12 +51,11 @@
   // `model` is read so a turn that moved this chat's agent re-reads the router.
   $effect(() => {
     void model;
-    if (incognito) return;
     refresh();
   });
   // A number, so a read that changes nothing but the data does not restart
   // the timer.
-  const every = $derived(incognito ? null : pollEvery(ph, open));
+  const every = $derived(pollEvery(ph, open));
   $effect(() => {
     if (!every) return;
     const t = setInterval(refresh, every);
@@ -119,84 +122,83 @@
 
 <svelte:window onpointerdown={outside} onkeydown={keydown} />
 
-{#if incognito}
-  <span class="chip" title="an incognito chat runs only on the model on this machine">{model || '…'}</span>
-{:else}
-  <span class="wrap" bind:this={wrapEl}>
-    <button
-      class="chip pick"
-      class:moving={busy(ph)}
-      class:bad={!!note && !open}
-      onclick={toggle}
-      aria-haspopup="menu"
-      aria-expanded={open}
-      title={note && !open ? note.text : 'the model answering every surface — tap to switch'}
-    >
-      {chipLabel(ph, model)}
-      <svg viewBox="0 0 10 6" width="8" height="5" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></svg>
-    </button>
-    {#if open}
-      <div class="menu" role="menu" aria-label="switch model">
-        {#if down}
-          <p class="line bad">{down}</p>
-        {:else if !router}
-          <p class="line">reading…</p>
-        {:else}
-          {#if !router.readable}
-            <p class="line bad">the router's list is one this build cannot fully read — which model is loaded is unknown</p>
-          {/if}
-          {#each list as row (row.id)}
-            <button
-              class="row"
-              class:current={row.current}
-              role="menuitemradio"
-              aria-checked={row.current}
-              disabled={row.disabled || acting || ph.kind === 'switching'}
-              title={row.why ?? (row.name !== row.id ? `[providers.${row.name}]` : undefined)}
-              onclick={() => pick(row)}
-            >
-              <span class="dot" aria-hidden="true">{row.current ? '●' : ''}</span>
-              <span class="id">{row.id}</span>
-              {#if ph.kind === 'switching' && ph.to === row.id}
-                <span class="word moving">{ph.loading ? 'loading' : 'next'}</span>
-              {:else if row.disabled}
-                <span class="word bad">runs would not follow</span>
-              {:else if row.word}
-                <span class="word">{row.word}</span>
-              {/if}
-            </button>
-          {/each}
-          {#if ph.kind === 'switching'}
-            <div class="pending">
-              <p class="line">{waitingLine(ph)}</p>
-              {#if ph.stuck}
-                <!-- No switcher to hurry: cancel is the only way out. -->
-                <div class="acts">
-                  <button class="act quiet" onclick={cancelSwitch} disabled={acting} title="withdraw the unreadable switch; the loaded model stays">cancel</button>
-                </div>
-              {:else if canHurry(ph)}
-                <div class="acts">
-                  <!-- R2's way out of D13's wait: the runs it names stop at
-                       their next safe point, and a reply in progress ends
-                       early. -->
-                  <button class="act" onclick={switchNow} disabled={acting} title="stop the runs it waits for, then switch">switch now</button>
-                  <button class="act quiet" onclick={cancelSwitch} disabled={acting} title="withdraw the switch; the loaded model stays">cancel</button>
-                </div>
-              {/if}
-            </div>
-          {/if}
-          <p class="line hint">One model answers every surface — chat, voice, Slack and background work. A switch waits for runs in progress.</p>
+<span class="wrap" bind:this={wrapEl}>
+  <button
+    class="chip pick"
+    class:moving={busy(ph)}
+    class:bad={!!note && !open}
+    onclick={toggle}
+    aria-haspopup="menu"
+    aria-expanded={open}
+    title={note && !open ? note.text : 'the model answering every surface — tap to switch'}
+  >
+    {chipLabel(ph, model)}
+    <svg viewBox="0 0 10 6" width="8" height="5" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></svg>
+  </button>
+  {#if open}
+    <div class="menu" role="menu" aria-label="switch model">
+      {#if down}
+        <p class="line bad">{down}</p>
+      {:else if !router}
+        <p class="line">reading…</p>
+      {:else}
+        {#if !router.readable}
+          <p class="line bad">the router's list is one this build cannot fully read — which model is loaded is unknown</p>
         {/if}
-        {#if actError}<p class="line bad">{actError}</p>{/if}
-        {#if note}<p class="line" class:bad={note.tone === 'bad'} class:warn={note.tone === 'warn'}>{note.text}</p>{/if}
-      </div>
-    {/if}
-    <!-- A failure the owner did not stay to watch still says so once the chip
-         is at rest — R1 loaded the old model back, or the load timed out: the
-         chip's outline and its title above, and here for a screen reader. -->
-    {#if note && !open}<span class="sr-only" role="status">{note.text}</span>{/if}
-  </span>
-{/if}
+        {#each list as row (row.id)}
+          <button
+            class="row"
+            class:current={row.current}
+            role="menuitemradio"
+            aria-checked={row.current}
+            disabled={row.disabled || acting || ph.kind === 'switching'}
+            title={row.why ?? (row.name !== row.id ? `[providers.${row.name}]` : undefined)}
+            onclick={() => pick(row)}
+          >
+            <span class="dot" aria-hidden="true">{row.current ? '●' : ''}</span>
+            <span class="id">{row.id}</span>
+            {#if ph.kind === 'switching' && ph.to === row.id}
+              <span class="word moving">{ph.loading ? 'loading' : 'next'}</span>
+            {:else if row.disabled}
+              <span class="word bad">{row.why?.startsWith('an incognito chat') ? 'not for incognito' : 'runs would not follow'}</span>
+            {:else if row.word}
+              <span class="word">{row.word}</span>
+            {/if}
+          </button>
+        {/each}
+        {#if ph.kind === 'switching'}
+          <div class="pending">
+            <p class="line">{waitingLine(ph)}</p>
+            {#if ph.stuck}
+              <!-- No switcher to hurry: cancel is the only way out. -->
+              <div class="acts">
+                <button class="act quiet" onclick={cancelSwitch} disabled={acting} title="withdraw the unreadable switch; the loaded model stays">cancel</button>
+              </div>
+            {:else if canHurry(ph)}
+              <div class="acts">
+                <!-- R2's way out of D13's wait: the runs it names stop at
+                     their next safe point, and a reply in progress ends
+                     early. -->
+                <button class="act" onclick={switchNow} disabled={acting} title="stop the runs it waits for, then switch">switch now</button>
+                <button class="act quiet" onclick={cancelSwitch} disabled={acting} title="withdraw the switch; the loaded model stays">cancel</button>
+              </div>
+            {/if}
+          </div>
+        {/if}
+        <p class="line hint">One model answers every surface — chat, voice, Slack and background work. A switch waits for runs in progress.</p>
+        {#if incognito}
+          <p class="line">Every model here runs on this machine, so this chat stays local whichever you pick.</p>
+        {/if}
+      {/if}
+      {#if actError}<p class="line bad">{actError}</p>{/if}
+      {#if note}<p class="line" class:bad={note.tone === 'bad'} class:warn={note.tone === 'warn'}>{note.text}</p>{/if}
+    </div>
+  {/if}
+  <!-- A failure the owner did not stay to watch still says so once the chip
+       is at rest — R1 loaded the old model back, or the load timed out: the
+       chip's outline and its title above, and here for a screen reader. -->
+  {#if note && !open}<span class="sr-only" role="status">{note.text}</span>{/if}
+</span>
 
 <style>
   .wrap {

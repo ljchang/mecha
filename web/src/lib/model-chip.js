@@ -36,12 +36,17 @@ const STATUS_WORD = {
 /// across routers cannot pick the wrong one. A row is refused (with its
 /// reason) when runs would not follow it, or when R4 would refuse the load —
 /// the page does not offer what the CLI would turn down.
-export function rows(router) {
+/// In an incognito chat a model is also refused when the entry a run binds
+/// for it would make the chat refuse its turns (`incognito_refusal`: cloud
+/// `fallbacks`, or not on this machine) — offering it would strand the chat
+/// after a menu promising it stays local (found on review).
+export function rows(router, incognito = false) {
   if (!router) return [];
   return (router.models ?? []).map((m) => {
     const why =
       m.would_not_follow ??
-      (m.sampling_mismatches?.length ? m.sampling_mismatches.join('; ') : null);
+      (m.sampling_mismatches?.length ? m.sampling_mismatches.join('; ') : null) ??
+      (incognito && m.incognito_refusal ? `an incognito chat refuses it: ${m.incognito_refusal}` : null);
     return {
       id: m.id,
       name: m.providers?.length === 1 ? m.providers[0] : m.id,
@@ -128,8 +133,7 @@ export function pollEvery(ph, open) {
 }
 
 /// The chip's text. `fallback` is the model this chat's agent is bound to,
-/// shown until the router has been read (and on an incognito chat, which
-/// never offers the picker).
+/// shown until the router has been read.
 export function chipLabel(ph, fallback) {
   switch (ph.kind) {
     case 'switching':
