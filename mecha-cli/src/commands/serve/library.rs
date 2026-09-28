@@ -10,9 +10,11 @@
 //! owner's ruling, 2026-09-28). Locked entries are left out of the list and
 //! their portraits answer 404 unless the request carries a live unlock token
 //! — a blurred thumbnail would still ship its bytes to the page and the
-//! browser's cache. The token is minted by `POST /api/library/unlock` from
-//! the password `mecha imagelib set-lock-password` set, held in this
-//! process's memory only, and expires after [`UNLOCK_IDLE`] without use.
+//! browser's cache. The token is minted by `POST /api/library/unlock` — from
+//! the password `mecha imagelib set-lock-password` set, or, when none is set,
+//! for the asking: the password is optional, and without one the lock is a
+//! plain show/hide toggle (the owner's ruling, 2026-09-28). It is held in
+//! this process's memory only and expires after [`UNLOCK_IDLE`] without use.
 //! The page keeps it in a variable — no cookie and no storage, which
 //! `web/test/no-storage.mjs` forbids — so a reload locks again. Generation
 //! ignores all of this: the lock hides, it never withholds.
@@ -297,6 +299,8 @@ pub async fn portrait(
 
 #[derive(Deserialize)]
 pub struct UnlockBody {
+    /// Absent when no password is set: then the lock is a plain toggle.
+    #[serde(default)]
     password: String,
 }
 
@@ -304,6 +308,23 @@ pub struct UnlockBody {
 /// per process; a wrong password and an unset one answer the same 403, so
 /// the door says nothing about which it was.
 pub async fn unlock(State(state): St, Json(body): Json<UnlockBody>) -> Response {
+    // No password set: the lock is a plain show/hide toggle (the owner's
+    // ruling, 2026-09-28 — the password is optional). Checked by the file's
+    // presence, so a damaged lock file still goes through verification below
+    // and errors, never opens.
+    let dir = state.library.dir.clone();
+    let has = tokio::task::spawn_blocking(move || imagelib::has_lock_password(&dir))
+        .await
+        .unwrap_or(true);
+    if !has {
+        return no_store(
+            Json(serde_json::json!({
+                "token": state.library.grant(),
+                "idle_secs": UNLOCK_IDLE.as_secs(),
+            }))
+            .into_response(),
+        );
+    }
     if !state.library.may_try() {
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -411,12 +432,7 @@ pub async fn act(
             return approve_shown(&state, entry, shown).await;
         }
         "reject" => vec!["imagelib", "reject", &name, "--kind", kind],
-        "lock" => {
-            if let Some(refusal) = no_lock_without_password(&state).await {
-                return refusal;
-            }
-            vec!["imagelib", "lock", &name, "--kind", kind]
-        }
+        "lock" => vec!["imagelib", "lock", &name, "--kind", kind],
         "unlock" => vec!["imagelib", "unlock", &name, "--kind", kind],
         "remove" => vec!["imagelib", "remove", &name, "--kind", kind, "--yes"],
         _ => unreachable!("actions are matched above"),
@@ -460,24 +476,6 @@ async fn approve_shown(state: &super::WebState, entry: Entry, shown: String) -> 
         Ok(Err(refusal)) => refusal.into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "approving\n").into_response(),
     }
-}
-
-/// Locking from the web with no password set would hide the entry with no
-/// way to show it again from here: refused, saying how to set one (review
-/// of #385). The terminal can still lock — it can also set the password.
-async fn no_lock_without_password(state: &super::WebState) -> Option<Response> {
-    let dir = state.library.dir.clone();
-    let has = tokio::task::spawn_blocking(move || imagelib::has_lock_password(&dir))
-        .await
-        .unwrap_or(false);
-    (!has).then(|| {
-        (
-            StatusCode::CONFLICT,
-            "set a lock password first (`mecha imagelib set-lock-password`), or a locked \
-             entry has no way back from here\n",
-        )
-            .into_response()
-    })
 }
 
 /// The manifest beside a chat image, when it has one.
@@ -579,11 +577,6 @@ pub async fn save(State(state): St, Json(body): Json<SaveBody>) -> Response {
             "a name is lowercase letters, digits and hyphens\n",
         )
             .into_response();
-    }
-    if body.locked {
-        if let Some(refusal) = no_lock_without_password(&state).await {
-            return refusal;
-        }
     }
     let ws = match super::chat::attachment_workspace(&state, &body.key, false).await {
         Ok(ws) => ws,
@@ -1143,37 +1136,42 @@ mod route_tests {
     }
 
     #[tokio::test]
-    async fn nothing_is_locked_from_the_web_without_a_password() {
-        let f = fixture_with(Some(super::super::chat::test_chat()));
+    async fn without_a_password_the_lock_is_a_plain_toggle() {
+        let f = fixture();
         std::fs::remove_file(f.dir.join("lock.toml")).unwrap();
+        let list = json(f.app.clone().oneshot(get("/api/library")).await.unwrap()).await;
+        assert_eq!(list["has_password"], false);
+        assert_eq!(list["hidden_locked"], 1, "still hidden until the toggle");
         let r = f
             .app
             .clone()
-            .oneshot(post(
-                "/api/library/character/maya/lock",
-                serde_json::json!({}),
-            ))
+            .oneshot(post("/api/library/unlock", serde_json::json!({})))
             .await
             .unwrap();
-        assert_eq!(r.status(), StatusCode::CONFLICT);
-        assert!(
-            !Library::load(&f.dir)
-                .0
-                .get(Kind::Character, "maya")
-                .unwrap()
-                .locked
-        );
+        assert_eq!(r.status(), StatusCode::OK);
+        let token = json(r).await["token"].as_str().unwrap().to_string();
+        let list = json(
+            f.app
+                .clone()
+                .oneshot(get(&format!("/api/library?unlock={token}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(names(&list).contains(&"theo".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_damaged_lock_file_never_opens_as_if_absent() {
+        let f = fixture();
+        std::fs::write(f.dir.join("lock.toml"), "hash = \"nonsense\"").unwrap();
         let r = f
             .app
             .clone()
-            .oneshot(post(
-                "/api/library/save",
-                serde_json::json!({"key": "libtest", "path": "inbox/face.png", "name": "x",
-                                   "description": "y", "locked": true}),
-            ))
+            .oneshot(post("/api/library/unlock", serde_json::json!({})))
             .await
             .unwrap();
-        assert_eq!(r.status(), StatusCode::CONFLICT);
+        assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]

@@ -119,7 +119,7 @@ export const library = {
   ],
   hidden_locked: 1,
   unlocked: false,
-  has_password: true,
+  has_password: false,
   unreadable: 0,
 };
 

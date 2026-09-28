@@ -706,10 +706,13 @@ doing; this code writes how they look. Decisions, each a bug if undone:
 - **The web door hides on the server** (`serve/library.rs`). Locked entries
   are absent from `GET /api/library` and their portraits 404 unless the
   request carries a live unlock token; a blurred thumbnail would still ship
-  its bytes. The token is minted from the argon2id `lock.toml` (0600, set
-  only from the CLI), lives in process memory and the page's — never a
-  cookie or storage — and lapses after 30 idle minutes; five wrong passwords
-  in five minutes answer 429, and a damaged lock file errors, never opens.
+  its bytes. The token lives in process memory and the page's — never a
+  cookie or storage — and lapses after 30 idle minutes. The password is
+  optional (the owner's ruling): with no `lock.toml` the token is granted for
+  the asking and the lock is a plain toggle; with one, the argon2id hash
+  (0600, set only from the CLI) is checked, five wrong passwords in five
+  minutes answer 429, and a damaged file errors — the file's presence
+  decides, so damage never reads as absence.
 - **The web approves what it showed, and only it can vouch for that.** The
   list carries an HMAC of each entry's `shown_digest` under a key `serve`
   draws at start and never stores; approval checks it against the entry as

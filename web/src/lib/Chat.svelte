@@ -1216,19 +1216,18 @@
   // owner's ruling: inherited by default, and a tap unchecks it) — and when
   // the answer cannot be had, it starts checked too, because there the safe
   // default and the fallback are the same side (review of #385). Save waits
-  // until the answer is in. With no lock password set the box is off and
-  // says why: a locked entry with no password has no way back from the page.
+  // until the answer is in. A password is optional: without one the Library
+  // tab's lock is a plain toggle, so locking here always has a way back.
   let saving = $state(null);
   async function startSave(path) {
-    saving = { path, name: '', description: '', locked: false, busy: false, msg: null, ready: false, inherited: false, hasPassword: true };
+    saving = { path, name: '', description: '', locked: false, busy: false, msg: null, ready: false, inherited: false };
     try {
       const res = await fetch(`/api/library/source?key=${encodeURIComponent(key)}&path=${encodeURIComponent(path)}`);
       if (saving?.path !== path) return;
       if (!res.ok) throw new Error((await res.text()).trim());
       const src = await res.json();
-      saving.hasPassword = !!src.has_password;
       saving.inherited = !!src.suggest_locked;
-      saving.locked = saving.inherited && saving.hasPassword;
+      saving.locked = saving.inherited;
     } catch (e) {
       if (saving?.path !== path) return;
       saving.locked = true;
@@ -1783,10 +1782,9 @@
                   <input placeholder="name, e.g. maya" bind:value={saving.name} autocomplete="off" />
                   <textarea rows="2" placeholder="a short description — include build and height" bind:value={saving.description}></textarea>
                   <label class="libsave-lock">
-                    <input type="checkbox" bind:checked={saving.locked} disabled={!saving.hasPassword} />
+                    <input type="checkbox" bind:checked={saving.locked} />
                     lock (hide while browsing)
                     {#if saving.inherited}<span class="libsave-why">— made from a locked character</span>{/if}
-                    {#if !saving.hasPassword}<span class="libsave-why">— set a lock password first: <code>mecha imagelib set-lock-password</code></span>{/if}
                   </label>
                   <button class="genedit" disabled={!saving.ready || saving.busy || !validName(tameName(saving.name)) || !saving.description.trim()}>Save</button>
                 {/if}
