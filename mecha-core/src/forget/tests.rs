@@ -669,3 +669,37 @@ fn a_workflows_started_event_is_blanked_so_no_other_run_is_credited() {
     assert_eq!(events[2]["kind"], "started");
     assert_eq!(events[2]["detail"], "");
 }
+
+#[test]
+fn a_workflows_failure_keeps_the_item_keys_so_the_retry_unlinks_them() {
+    // The workflows store is unlinked by the outbox and question ids; were
+    // the items removed first, a workflows failure would leave the retry
+    // with no ids to unlink by, and the board would file the task urgent.
+    use std::os::unix::fs::PermissionsExt;
+    let home = scratch("workflows-retry");
+    let roots = seeded(&home.0);
+    let wf = roots.workflows.clone();
+    std::fs::set_permissions(&wf, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let graph = Graph::answering(vec![
+        Ok(GraphOutcome::Redacted(0)),
+        Ok(GraphOutcome::Redacted(0)),
+    ]);
+    let first = forget(&roots, GONE, &graph).unwrap();
+    std::fs::set_permissions(&wf, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if first.complete {
+        // Running as root: the directory could not be made unwritable.
+        return;
+    }
+    assert!(
+        roots.outbox.join("item-gone.json").exists(),
+        "an item key went before its links"
+    );
+    assert!(
+        roots.questions.join("q1.json").exists(),
+        "a question key went before its links"
+    );
+    let second = forget(&roots, GONE, &graph).unwrap();
+    assert!(second.complete, "{:?}", second.errors);
+    let w1 = std::fs::read_to_string(wf.join("w1.json")).unwrap();
+    assert!(!w1.contains("item-gone") && !w1.contains("\"q1\""), "{w1}");
+}

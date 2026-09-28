@@ -836,6 +836,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
             todo.rehydrate(&ws, &prior.messages);
         }
         convo = prior;
+        mecha_core::archive::reopened(&path, &meta.id);
         session = Some(Session { meta, path });
     } else if !no_session {
         session = Some(Session::create(

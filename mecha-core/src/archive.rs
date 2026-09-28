@@ -91,6 +91,19 @@ pub fn archived(sessions: &Path) -> Result<HashMap<String, Option<DateTime<Utc>>
     Ok(out)
 }
 
+/// The transcript at `path` was picked back up: it leaves the archive (owner's
+/// ruling, 2026-09-28 — opening a conversation says it is current again).
+/// Every surface that resumes one calls this, not only the web drawer. Not
+/// fatal: a mark left behind only keeps it filed.
+pub fn reopened(path: &Path, id: &str) {
+    let Some(sessions) = path.parent() else {
+        return;
+    };
+    if let Err(e) = unarchive(sessions, id) {
+        tracing::warn!("resumed {id} but could not unarchive it: {e:#}");
+    }
+}
+
 pub fn is_archived(sessions: &Path, id: &str) -> bool {
     marker(sessions, id).is_ok_and(|p| p.exists())
 }
@@ -153,6 +166,15 @@ mod tests {
         archive(d.path(), id, first).unwrap();
         archive(d.path(), id, Utc::now()).unwrap();
         assert_eq!(archived(d.path()).unwrap()[id], Some(first));
+    }
+
+    #[test]
+    fn a_reopened_transcript_leaves_the_archive() {
+        let d = store("reopened");
+        let id = "20260928T120000-aaaa";
+        archive(d.path(), id, Utc::now()).unwrap();
+        reopened(&d.path().join(format!("{id}.jsonl")), id);
+        assert!(!is_archived(d.path(), id));
     }
 
     #[test]
