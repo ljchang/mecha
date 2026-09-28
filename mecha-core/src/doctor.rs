@@ -308,6 +308,7 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_triggers(&home.join("triggers"), now, charter));
     findings.extend(check_charter(&home.join("charter.toml")));
     findings.extend(check_runs(&home.join("sessions"), charter));
+    findings.extend(check_unfinished_forgets(&home.join("sessions")));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
     findings.extend(check_learning(&home.join("learning"), now));
     findings.extend(check_proposal_review(&home.join("learning"), now));
@@ -1633,6 +1634,45 @@ fn check_charter(path: &Path) -> Vec<Finding> {
     }
 }
 
+/// A delete that did not finish (`crate::forget`): the transcript is set
+/// aside, unlisted, and still holds the whole conversation the owner asked
+/// to be rid of. Broken, not attention — it is a promise half-kept, and the
+/// remedy is the same command run again.
+fn check_unfinished_forgets(sessions: &Path) -> Vec<Finding> {
+    let unfinished = match crate::forget::unfinished(sessions) {
+        Ok(ids) => ids,
+        Err(e) => {
+            return vec![Finding::unreadable(
+                "sessions",
+                "the session store",
+                format!("{e:#}"),
+            )]
+        }
+    };
+    unfinished
+        .into_iter()
+        .map(|id| Finding {
+            component: "sessions".into(),
+            severity: Severity::Broken,
+            summary: format!("conversation {id} is only partly deleted"),
+            detail: "a delete stopped before every store answered; the transcript is set \
+                     aside and still holds the conversation"
+                .into(),
+            remedy: Some(Remedy {
+                description: "finish the delete".into(),
+                argv: vec![
+                    "mecha".into(),
+                    "sessions".into(),
+                    "delete".into(),
+                    id.clone(),
+                    "--yes".into(),
+                ],
+                needs_terminal: false,
+            }),
+        })
+        .collect()
+}
+
 /// Report population-level run quality: the signals that are invisible in any
 /// single run and obvious across a few hundred.
 ///
@@ -1865,8 +1905,7 @@ fn learned_within(root: &Path, now: DateTime<Utc>, window: chrono::Duration) -> 
 
 /// Read a domain's learned rules **without constructing a store**.
 ///
-/// `LearningStore::open` creates directories, runs `git init` and writes a
-/// `.gitignore`. Doctor reports on stores; it must not bring one into being,
+/// `LearningStore::open` creates directories. Doctor reports on stores; it must not bring one into being,
 /// or running the health check on a machine that has never learned anything
 /// leaves a store behind that says it has.
 ///
@@ -1961,8 +2000,7 @@ fn check_proposal_review(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         // would have applied fine.
         //
         // Two things were wrong here. `LearningStore::open` is a **writing**
-        // constructor (it creates `root` and `root/rules`, runs `git init`,
-        // writes `.gitignore`), and a check that reports on a store must not
+        // constructor (it creates `root` and `root/rules`), and a check that reports on a store must not
         // create one — the rule this module states two checks up about
         // `Charter::load`. And the comparison was an order-insensitive set of
         // *active* rule texts, where `accept`'s `same_rules` compares
@@ -2063,6 +2101,23 @@ const STALE_CANDIDATE_AFTER: chrono::Duration = chrono::Duration::hours(72);
 /// High on the doctor rule: a finding that fires on every fresh setup trains
 /// the reader to skip the component it names.
 const STARVED_LEARNER_MIN_EXCLUDED: usize = 10;
+
+/// The learning store's `.git`, when one is left from before the store
+/// stopped using git (2026-09-28). Nothing commits there any more, but its
+/// history keeps every reflection and rule wording ever written — deleted
+/// ones included.
+///
+/// **A note, not a finding.** Keeping or removing that history is a decision
+/// the owner makes, not distress, and `mecha doctor` exits non-zero on any
+/// finding — the `vouched_note` rule: a standing decision reported as a
+/// finding keeps doctor red on every install that learned anything before
+/// the cutover, including one whose owner chose to keep it. And never a
+/// remedy, because doctor offers to *run* a remedy, and erasing history is
+/// not something to be one keypress away.
+pub fn legacy_learning_git(learning: &Path) -> Option<PathBuf> {
+    let git = learning.join(".git");
+    git.exists().then_some(git)
+}
 
 /// The starved learner: reflections keep arriving, the origin gate keeps
 /// excluding them, and no domain ever reaches `learn`'s floor — so the rule
@@ -3161,6 +3216,7 @@ mod tests {
     /// consolidation made it the normal state on 2026-08-29, when `doctor`
     /// called the learner starved minutes after it turned 28 reflections
     /// into 12 rules.
+
     #[test]
     fn a_learner_that_just_ran_is_not_starved() {
         let home = home("learning-just-ran");
@@ -3230,6 +3286,24 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// A legacy `.git` is the owner's standing decision, not distress: it is
+    /// named by a note, never a finding (which would keep doctor red on every
+    /// install from before the cutover) and never a runnable remedy.
+    #[test]
+    fn a_legacy_learning_git_directory_is_a_note_not_a_finding() {
+        let home = home("learning-legacy-git");
+        let root = home.join("learning");
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(legacy_learning_git(&root), None);
+
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        assert_eq!(legacy_learning_git(&root), Some(root.join(".git")));
+        assert!(
+            check_learning(&root, Utc::now()).is_empty(),
+            "a standing decision must not make doctor exit non-zero"
+        );
     }
 
     /// A clean pool at the floor that `learn` will never consolidate — every

@@ -194,7 +194,15 @@ pub struct Request {
     pub seed: u64,
     /// Images to edit or draw from, in order: `<image1>` is the first.
     pub references: Vec<Reference>,
+    /// The size each reference is scaled to, in pixels a side, before it
+    /// reaches the model. An edit keeps 1024 — its canvas is the picture;
+    /// library portraits go at [`crate::imagelib::REFERENCE_SIZE`], because
+    /// four at 1024² doubled the time and 512² held identity (research E2, E10).
+    pub reference_size: u32,
 }
+
+/// The reference size for an edit: the canvas at full detail.
+pub const EDIT_REFERENCE_SIZE: u32 = 1024;
 
 /// A reference image, read out of the run's workspace.
 #[derive(Debug, Clone, PartialEq)]
@@ -216,7 +224,7 @@ const MAX_REFERENCES: usize = 4;
 const MAX_REFERENCE_BYTES: u64 = 25 * 1024 * 1024;
 
 /// The image type of `bytes`, by magic number, as an upload extension.
-fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("png")
     } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
@@ -467,7 +475,7 @@ pub async fn forget_trail(cfg: &ImageConfig, entries: &[TrailEntry]) -> Result<(
 pub fn comfy_graph(cfg: &ImageConfig, req: &Request, uploaded: &[String]) -> Value {
     let mut encode = json!({
         "clip": ["clip", 0], "prompt": req.prompt, "negative_prompt": req.negative,
-        "resolution": 1024});
+        "resolution": req.reference_size});
     let mut graph = json!({
         "unet": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": cfg.diffusion_model}},
         "clip": {"class_type": "CLIPLoader", "inputs": {
@@ -1189,9 +1197,11 @@ async fn save(ctx: &ToolCtx, seed: u64, bytes: &[u8]) -> Result<String> {
 
 /// Read each reference out of the run's workspace, through the path jail.
 ///
-/// The pixels go to the loopback server and nowhere else — never into the
-/// conversation, so nothing here arms taint; the result names paths only.
-async fn read_references(
+/// The pixels never enter the conversation, so nothing here arms taint; the
+/// result names paths only. `image_generate` sends them to the loopback
+/// server; `image_library_propose` keeps one as a candidate's portrait in the
+/// owner's library, bounded by `imagelib::MAX_PROPOSED_PORTRAIT_BYTES`.
+pub(crate) async fn read_references(
     ctx: &ToolCtx,
     paths: &[String],
 ) -> std::result::Result<Vec<Reference>, String> {
@@ -1249,6 +1259,17 @@ pub struct ImageGenerate {
     /// Bumped per finished generation; an idle-unload timer fires only if it
     /// still holds the value it was armed with.
     generation: Arc<AtomicU64>,
+    /// The image library a `cast` or `style` resolves against, read afresh on
+    /// every call so an entry the owner just approved is usable at once.
+    /// `None` when the mecha home cannot be resolved.
+    library_dir: Option<std::path::PathBuf>,
+}
+
+/// What a call asked of the image library: people and a style, by name.
+#[derive(Debug, Clone, Default)]
+struct LibraryAsk {
+    cast: Vec<crate::imagelib::CastMember>,
+    style: Option<String>,
 }
 
 impl ImageGenerate {
@@ -1258,7 +1279,15 @@ impl ImageGenerate {
             backend: Arc::new(ComfyUi::for_config(&cfg)?),
             cfg,
             generation: Arc::new(AtomicU64::new(0)),
+            library_dir: crate::imagelib::Library::default_dir().ok(),
         })
+    }
+
+    /// Resolve `cast` and `style` against this library instead of the one in
+    /// the mecha home.
+    pub fn with_library_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.library_dir = Some(dir);
+        self
     }
 
     #[cfg(test)]
@@ -1269,9 +1298,13 @@ impl ImageGenerate {
         self
     }
 
-    /// The call's input, validated, and the reference paths still to read —
-    /// reading needs the run's workspace, which [`Self::call`] has.
-    fn request(&self, input: &Value) -> std::result::Result<(Request, Vec<String>), String> {
+    /// The call's input, validated, the reference paths still to read —
+    /// reading needs the run's workspace, which [`Self::call`] has — and what
+    /// it asks of the image library, compiled there too.
+    fn request(
+        &self,
+        input: &Value,
+    ) -> std::result::Result<(Request, Vec<String>, Option<LibraryAsk>), String> {
         let prompt = input
             .get("prompt")
             .and_then(Value::as_str)
@@ -1310,6 +1343,42 @@ impl ImageGenerate {
                 references.len()
             ));
         }
+        let cast: Vec<crate::imagelib::CastMember> = match input.get("cast") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|v| {
+                    let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+                    Some(crate::imagelib::CastMember {
+                        name: field("name")?,
+                        wearing: field("wearing").unwrap_or_default(),
+                        doing: field("doing").unwrap_or_default(),
+                    })
+                })
+                .collect::<Option<_>>()
+                .ok_or("each `cast` entry needs a `name`, `wearing` and `doing`.")?,
+            Some(_) => return Err("`cast` must be a list of people.".into()),
+        };
+        let style = match input.get("style") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) if s.trim().is_empty() => None,
+            Some(Value::String(s)) => Some(s.trim().to_string()),
+            Some(_) => return Err("`style` must be a style's name.".into()),
+        };
+        // One reference size per call is all the encoder takes, and an edit's
+        // canvas wants full detail while portraits go at 512² — so the two do
+        // not share a call yet. Editing a picture that already has the people
+        // in it needs no cast: they carry their own identity.
+        if !cast.is_empty() && !references.is_empty() {
+            return Err(
+                "`cast` and `reference_images` cannot be combined yet. To change a \
+                        picture that already shows the people, pass it in reference_images \
+                        and describe the change; to draw the cast in a new scene, use cast \
+                        alone."
+                    .into(),
+            );
+        }
+        let ask = (!cast.is_empty() || style.is_some()).then_some(LibraryAsk { cast, style });
         let size = match input.get("size").and_then(Value::as_str) {
             // An edit follows its first reference's shape unless asked not to.
             None if !references.is_empty() => None,
@@ -1332,8 +1401,10 @@ impl ImageGenerate {
                 steps: self.cfg.steps,
                 seed,
                 references: Vec::new(),
+                reference_size: EDIT_REFERENCE_SIZE,
             },
             references,
+            ask,
         ))
     }
 
@@ -1368,7 +1439,10 @@ impl Tool for ImageGenerate {
          what to keep, e.g. \"Keep <image1> unchanged except: the jacket is now yellow\". The \
          result is not shown to you. If image_view is among your tools, look at it only when the \
          task needs you to see it — the user asked you to check, compare or describe it, or an edit depends on \
-         what is where — not to confirm that it worked."
+         what is where — not to confirm that it worked. To draw the owner's recurring characters, name \
+         them in cast, left to right, with what each is wearing and doing (image_library lists who \
+         exists); the library supplies how they look, so do not describe their faces in the prompt. \
+         style names a stored style."
     }
 
     fn input_schema(&self) -> Value {
@@ -1398,6 +1472,24 @@ impl Tool for ImageGenerate {
                     "type": "integer",
                     "minimum": 0,
                     "description": "Without reference_images, an earlier result's seed keeps its composition while the prompt changes. Omit it for a new image. An edit always uses a fresh seed, so it is ignored there."
+                },
+                "cast": {
+                    "type": "array",
+                    "maxItems": crate::imagelib::MAX_CAST,
+                    "description": "The owner's characters in this image, left to right, by name from image_library. The prompt then describes the setting, camera and light; each person's look comes from the library. Not combined with reference_images.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "wearing": {"type": "string", "description": "Their clothes in this scene."},
+                            "doing": {"type": "string", "description": "Pose, expression and action in this scene."}
+                        },
+                        "required": ["name", "wearing", "doing"]
+                    }
+                },
+                "style": {
+                    "type": "string",
+                    "description": "A stored style's name from image_library, applied verbatim."
                 }
             },
             "required": ["prompt"]
@@ -1424,10 +1516,75 @@ impl Tool for ImageGenerate {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let (mut req, paths) = match self.request(&input) {
+        let (mut req, paths, ask) = match self.request(&input) {
             Ok(parsed) => parsed,
             Err(why) => return Ok(ToolOutput::err(why)),
         };
+        let is_edit = !paths.is_empty();
+        let scene_prompt = req.prompt.clone();
+        // A library character named in the prompt but not in `cast` is drawn
+        // from words alone, and comes out as someone else — the first real
+        // run did exactly this (research E1; `imagelib::named_in`). Refused
+        // before a minute of GPU is spent, on every new image: a cast of one
+        // does not excuse a second character named beside it (review of
+        // #383). An explicit `"cast": []` says "someone else by that name";
+        // `null` is no cast, as `request` reads it; an edit's people carry
+        // their own identity.
+        let waived = matches!(input.get("cast"), Some(Value::Array(a)) if a.is_empty());
+        if !is_edit && !waived {
+            if let Some(dir) = &self.library_dir {
+                let (lib, _) = crate::imagelib::Library::load(dir);
+                // A broken entry is invisible to `named_in`, so it is checked
+                // on its own: otherwise a corrupt `maya` lets "Maya at a
+                // diner" reach the GPU and draw a stranger (review of #383).
+                let broken = crate::imagelib::broken_named_in(&lib, &req.prompt);
+                if !broken.is_empty() {
+                    return Ok(ToolOutput::err(format!(
+                        "{} named in the prompt {} in the owner's image library, but the entry \
+                         could not be read, so they cannot be drawn as themselves. The owner can \
+                         check with `mecha imagelib list`.",
+                        broken
+                            .iter()
+                            .map(|n| format!("`{n}`"))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        if broken.len() == 1 { "is" } else { "are" }
+                    )));
+                }
+                let cast: std::collections::BTreeSet<String> = ask
+                    .as_ref()
+                    .map(|a| {
+                        a.cast
+                            .iter()
+                            .map(|m| m.name.trim().to_lowercase())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let named: Vec<String> = crate::imagelib::named_in(&lib, &req.prompt)
+                    .into_iter()
+                    .filter(|n| !cast.contains(n))
+                    .collect();
+                if !named.is_empty() {
+                    let names = named
+                        .iter()
+                        .map(|n| format!("`{n}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Ok(ToolOutput::err(format!(
+                        "{names} {} in the owner's image library. To draw them as themselves, \
+                         name them in `cast` — left to right, each with what they are wearing \
+                         and doing — and leave their looks out of the prompt: from words alone \
+                         they come out as different people. If you mean someone else with that \
+                         name, pass \"cast\": [].",
+                        if named.len() == 1 {
+                            "is a character"
+                        } else {
+                            "are characters"
+                        }
+                    )));
+                }
+            }
+        }
         // Before reading anything: up to a hundred megabytes of references is
         // itself a cost on the pool this check guards.
         if let Err(why) = memory_verdict(mem_available_mb(), self.cfg.min_available_mb) {
@@ -1437,6 +1594,43 @@ impl Tool for ImageGenerate {
             Ok(references) => references,
             Err(why) => return Ok(ToolOutput::err(why)),
         };
+        // The library's half: the model named who and what style; this code
+        // writes how they look — each portrait as a reference at 512², each
+        // description verbatim beside its pointer.
+        let mut used = Vec::new();
+        let mut source_seeds = Vec::new();
+        if let Some(ask) = &ask {
+            let Some(dir) = &self.library_dir else {
+                return Ok(ToolOutput::err(
+                    "The image library is not available: the mecha home could not be resolved.",
+                ));
+            };
+            let (lib, _) = crate::imagelib::Library::load(dir);
+            let compiled = match crate::imagelib::compile(
+                &lib,
+                &req.prompt,
+                &ask.cast,
+                ask.style.as_deref(),
+            ) {
+                Ok(compiled) => compiled,
+                Err(why) => return Ok(ToolOutput::err(why)),
+            };
+            req.prompt = compiled.prompt;
+            if !compiled.references.is_empty() {
+                req.references = compiled
+                    .references
+                    .into_iter()
+                    .map(|(name, bytes, ext)| Reference {
+                        path: format!("library:{name}"),
+                        bytes,
+                        ext,
+                    })
+                    .collect();
+                req.reference_size = crate::imagelib::REFERENCE_SIZE;
+            }
+            used = compiled.used;
+            source_seeds = compiled.source_seeds;
+        }
         // An edit always samples at a fresh seed. The seed that drew a picture
         // starts from the noise that drew it, and the model redraws it rather
         // than editing it — measured on 2026-09-25: four edits sampled at the
@@ -1448,12 +1642,23 @@ impl Tool for ImageGenerate {
         // because a text-to-image result tells the model its seed keeps the
         // composition.
         let mut reseeded = None;
-        if !req.references.is_empty() {
+        if is_edit {
             if let Some(asked) = input.get("seed").and_then(Value::as_u64) {
                 while req.seed == asked {
                     req.seed = fresh_seed();
                 }
                 reseeded = Some(asked);
+            }
+        }
+        // A cast generation keeps the model's seed — that is how a scene is
+        // revised with its composition — except the seed that drew a cast
+        // member's portrait, the same trap narrowed to the one seed known to
+        // spring it.
+        let mut portrait_seed = None;
+        if !is_edit && source_seeds.contains(&req.seed) {
+            portrait_seed = Some(req.seed);
+            while source_seeds.contains(&req.seed) {
+                req.seed = fresh_seed();
             }
         }
         // A call that starts invalidates any idle timer already armed, so a
@@ -1531,24 +1736,80 @@ impl Tool for ImageGenerate {
             Some((w, h)) => format!("{w}×{h}"),
             None => "reference-shaped".to_string(),
         };
+        let manifest = json!({
+            "image": path,
+            "created": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "prompt": scene_prompt,
+            "compiled_prompt": (req.prompt != scene_prompt).then_some(&req.prompt),
+            "negative_prompt": req.negative,
+            "seed": req.seed,
+            "steps": req.steps,
+            "size": req.size,
+            "reference_size": req.reference_size,
+            "reference_images": if is_edit { json!(paths) } else { Value::Null },
+            "cast": ask.as_ref().filter(|a| !a.cast.is_empty()).map(|a| a.cast.iter()
+                .zip(used.iter().filter(|u| u.kind == crate::imagelib::Kind::Character))
+                .map(|(m, u)| json!({
+                "name": u.name, "version": u.version, "portrait": u.portrait,
+                "wearing": m.wearing.trim(), "doing": m.doing.trim(),
+            })).collect::<Vec<_>>()),
+            "style": used.iter().find(|u| u.kind == crate::imagelib::Kind::Style)
+                .map(|u| json!({"name": u.name, "version": u.version})),
+            "model": {
+                "backend": "comfyui",
+                "diffusion_model": self.cfg.diffusion_model,
+                "text_encoder": self.cfg.text_encoder,
+                "vae": self.cfg.vae,
+            },
+        });
+        let manifest_note = match write_manifest(ctx, &path, &manifest).await {
+            Ok(()) => String::new(),
+            Err(e) => format!(" (Its manifest was not written: {e:#}.)"),
+        };
         let mut text = format!("image: {path}\n");
-        if req.references.is_empty() {
+        if !is_edit {
+            let of = if used.is_empty() {
+                String::new()
+            } else {
+                let names: Vec<String> = used
+                    .iter()
+                    .map(|u| format!("{} {} (v{})", u.kind.label(), u.name, u.version))
+                    .collect();
+                format!(" with {}", names.join(", "))
+            };
+            let same_cast = if ask.as_ref().is_some_and(|a| !a.cast.is_empty()) {
+                " the same cast,"
+            } else {
+                ""
+            };
             text.push_str(&format!(
-                "Generated a {size} image in {secs} s (seed {}, {} steps) and saved it to {path} \
-                 in the workspace. To revise it, call image_generate again with an edited prompt and seed {} \
+                "Generated a {size} image{of} in {secs} s (seed {}, {} steps) and saved it to {path} \
+                 in the workspace. To revise it, call image_generate again with{same_cast} an edited prompt and seed {} \
                  to keep the composition, or edit it by passing {path} in reference_images. You have \
                  not seen it, so do not describe what it shows.",
                 req.seed, req.steps, req.seed
             ));
         } else {
             let sources: Vec<&str> = req.references.iter().map(|r| r.path.as_str()).collect();
+            let styled = used
+                .iter()
+                .find(|u| u.kind == crate::imagelib::Kind::Style)
+                .map(|u| format!(" in style {} (v{})", u.name, u.version))
+                .unwrap_or_default();
             text.push_str(&format!(
-                "Edited {} into a {size} image in {secs} s (seed {}, {} steps) and saved it to \
-                 {path} in the workspace; the original is unchanged. To change it further, edit \
-                 {path} next. You have not seen it, so do not describe what it shows.",
+                "Edited {}{styled} into a {size} image in {secs} s (seed {}, {} steps) and saved \
+                 it to {path} in the workspace; the original is unchanged. To change it further, \
+                 edit {path} next. You have not seen it, so do not describe what it shows.",
                 sources.join(", "),
                 req.seed,
                 req.steps
+            ));
+        }
+        if let Some(asked) = portrait_seed {
+            text.push_str(&format!(
+                " (Seed {asked} was not used: it drew a cast member's portrait, and sampling at \
+                 it redraws the portrait instead of placing the person. Seed {} was used.)",
+                req.seed
             ));
         }
         if let Some(asked) = reseeded {
@@ -1559,9 +1820,30 @@ impl Tool for ImageGenerate {
                 req.seed
             ));
         }
+        text.push_str(&manifest_note);
         text.push_str(&left);
         Ok(ToolOutput::ok(text))
     }
+}
+
+/// Write a generation's manifest beside its PNG — `images/<stem>.json`, new
+/// or not at all, like the picture. It is what makes the image reproducible,
+/// and what "save to library" and lineage read.
+async fn write_manifest(ctx: &ToolCtx, png: &str, manifest: &Value) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let stem = png
+        .strip_suffix(".png")
+        .ok_or_else(|| anyhow!("`{png}` is not a PNG path"))?;
+    let path = ctx.resolve(&format!("{stem}.json"))?;
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let mut file = options.open(&path).await?;
+    file.write_all(serde_json::to_string_pretty(manifest)?.as_bytes())
+        .await?;
+    file.flush().await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1853,6 +2135,8 @@ mod tests {
         // And the schema has nowhere to put a destination. `reference_images`
         // names *sources*, and each goes through the path jail: reading a
         // workspace file into a loopback server sends nothing anywhere.
+        // `cast` and `style` name library entries, resolved by this code in
+        // the owner's store — names, never paths or addresses.
         let schema = t.input_schema();
         let props = schema["properties"].as_object().unwrap();
         let mut keys: Vec<_> = props.keys().map(String::as_str).collect();
@@ -1860,11 +2144,13 @@ mod tests {
         assert_eq!(
             keys,
             [
+                "cast",
                 "negative_prompt",
                 "prompt",
                 "reference_images",
                 "seed",
-                "size"
+                "size",
+                "style"
             ]
         );
     }
@@ -1889,6 +2175,7 @@ mod tests {
             steps: 40,
             seed: 7,
             references: Vec::new(),
+            reference_size: EDIT_REFERENCE_SIZE,
         };
         let g = comfy_graph(&cfg, &req, &[]);
         let mut classes: Vec<_> = g
@@ -1962,7 +2249,7 @@ mod tests {
         assert!(t
             .request(&json!({"prompt": "x", "reference_images": five}))
             .is_err());
-        let (r, paths) = t
+        let (r, paths, _) = t
             .request(&json!({"prompt": " a fox ", "size": "portrait", "seed": 3}))
             .unwrap();
         assert_eq!(
@@ -1971,9 +2258,9 @@ mod tests {
         );
         assert_eq!(r.steps, 40);
         // No size: square for a new image, the reference's shape for an edit.
-        let (r, _) = t.request(&json!({"prompt": "x"})).unwrap();
+        let (r, _, _) = t.request(&json!({"prompt": "x"})).unwrap();
         assert_eq!(r.size, Some((1024, 1024)));
-        let (r, paths) = t
+        let (r, paths, _) = t
             .request(&json!({"prompt": "x", "reference_images": ["inbox/me.jpg"]}))
             .unwrap();
         assert_eq!((r.size, paths), (None, vec!["inbox/me.jpg".to_string()]));
@@ -1989,6 +2276,7 @@ mod tests {
             steps: 40,
             seed: 9,
             references: Vec::new(),
+            reference_size: EDIT_REFERENCE_SIZE,
         };
         let g = comfy_graph(&cfg, &req, &["a.png".into(), "b.jpg".into()]);
         assert_eq!(g["ref1"]["class_type"], "LoadImage");
@@ -2085,7 +2373,17 @@ mod tests {
         let first = |o: &ToolOutput| o.content.lines().next().unwrap().to_string();
         assert!(!a.is_error && !b.is_error);
         assert_ne!(first(&a), first(&b));
-        assert_eq!(std::fs::read_dir(dir.join("images")).unwrap().count(), 2);
+        let names: Vec<String> = std::fs::read_dir(dir.join("images"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        let pngs: Vec<&String> = names.iter().filter(|n| n.ends_with(".png")).collect();
+        assert_eq!(pngs.len(), 2);
+        // Each picture has its manifest beside it.
+        for png in pngs {
+            let json = png.replace(".png", ".json");
+            assert!(names.contains(&json), "{json} missing from {names:?}");
+        }
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -3102,5 +3400,283 @@ mod tests {
             out.content
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A library holding approved characters, each with a real (decodable)
+    /// portrait and a known source seed, 900 upward.
+    fn library_with(names: &[&str]) -> std::path::PathBuf {
+        let dir = tempdir();
+        for (i, name) in names.iter().enumerate() {
+            let img = image::RgbImage::from_pixel(2, 2, image::Rgb([40 * i as u8, 10, 10]));
+            let mut png = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            crate::imagelib::create(
+                &dir,
+                crate::imagelib::NewEntry {
+                    kind: crate::imagelib::Kind::Character,
+                    name: name.to_string(),
+                    text: format!("{name}, a memorable face"),
+                    portrait: Some(png.into_inner()),
+                    source_seed: Some(900 + i as u64),
+                    origin: crate::imagelib::Origin::Owner,
+                    locked: false,
+                },
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    fn two_people() -> Value {
+        json!([
+            {"name": "maya", "wearing": "a yellow raincoat", "doing": "laughing"},
+            {"name": "john", "wearing": "a flannel shirt", "doing": "smiling"}
+        ])
+    }
+
+    #[tokio::test]
+    async fn a_cast_compiles_into_portraits_at_512_and_a_manifest() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let out = t
+            .call(
+                json!({"prompt": "a diner booth at night", "seed": 5, "cast": two_people()}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("with character maya (v1), character john (v1)"),
+            "{}",
+            out.content
+        );
+        // Not an edit: the seed the model chose is kept, so a scene can be
+        // revised with its composition.
+        assert!(out.content.contains("(seed 5,"), "{}", out.content);
+
+        let seen = seen.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(uploads, 2, "one portrait per person");
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(submitted.contains("\"resolution\":512"), "{submitted}");
+        assert!(
+            submitted.contains("<image1> (maya, a memorable face)"),
+            "{submitted}"
+        );
+        assert!(
+            submitted.contains("wearing a flannel shirt, smiling"),
+            "{submitted}"
+        );
+        assert!(submitted.contains("Exactly two people"), "{submitted}");
+        // A portrait is not a canvas: the default is square, not its shape.
+        assert!(submitted.contains("\"width\":1024"), "{submitted}");
+
+        let png = out
+            .content
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("image: ")
+            .unwrap();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(dir.join(png.replace(".png", ".json"))).unwrap())
+                .unwrap();
+        assert_eq!(manifest["prompt"], "a diner booth at night");
+        assert!(manifest["compiled_prompt"]
+            .as_str()
+            .unwrap()
+            .contains("<image2> (john"));
+        assert_eq!(manifest["cast"][0]["name"], "maya");
+        assert_eq!(manifest["cast"][0]["version"], 1);
+        assert_eq!(manifest["cast"][1]["wearing"], "a flannel shirt");
+        assert!(manifest["cast"][0]["portrait"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256-"));
+        assert_eq!(manifest["reference_size"], 512);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    #[tokio::test]
+    async fn the_seed_that_drew_a_portrait_is_never_sampled_for_its_scene() {
+        let (url, _) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        // 901 drew john's portrait.
+        let out = t
+            .call(
+                json!({"prompt": "a park", "seed": 901, "cast": two_people()}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("Seed 901 was not used"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("(seed 901,"), "{}", out.content);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    #[tokio::test]
+    async fn a_candidate_never_reaches_the_server() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya"]);
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb([1, 2, 3]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Character,
+                name: "john".into(),
+                text: "john, proposed by a model".into(),
+                portrait: Some(png.into_inner()),
+                source_seed: None,
+                origin: crate::imagelib::Origin::ModelClean,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let t = tool(&url).with_library_dir(lib.clone());
+        let out = t
+            .call(
+                json!({"prompt": "a park", "cast": two_people()}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("waiting for the owner's approval"),
+            "{}",
+            out.content
+        );
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    #[tokio::test]
+    async fn a_character_named_without_a_cast_is_sent_back_before_the_gpu() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let out = t
+            .call(
+                json!({"prompt": "Maya and John on a park bench"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("`john`, `maya` are characters"),
+            "{}",
+            out.content
+        );
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        // `null` is no cast too, and is sent back the same way.
+        let out = t
+            .call(
+                json!({"prompt": "Maya and John on a park bench", "cast": null}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        // Casting one character does not excuse another named beside them.
+        let out = t
+            .call(
+                json!({"prompt": "Maya laughing, John at the next table",
+                       "cast": [{"name": "maya", "wearing": "a coat", "doing": "laughing"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("`john` is a character"),
+            "{}",
+            out.content
+        );
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        // A broken entry is refused by name, not passed as an unknown word.
+        std::fs::write(lib.join("characters/john/entry.toml"), "not = [toml").unwrap();
+        let out = t
+            .call(json!({"prompt": "John alone on a bench"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("could not be read"), "{}", out.content);
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        // "Someone else by that name" is said with an explicit empty cast.
+        let out = t
+            .call(
+                json!({"prompt": "Maya the explorer", "cast": []}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    #[tokio::test]
+    async fn a_cast_and_an_edit_canvas_are_not_combined_yet() {
+        let lib = library_with(&["maya", "john"]);
+        let t = tool("http://127.0.0.1:1").with_library_dir(lib.clone());
+        let dir = tempdir();
+        let out = t
+            .call(
+                json!({"prompt": "x", "cast": two_people(), "reference_images": ["images/a.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("cannot be combined yet"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
     }
 }

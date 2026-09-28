@@ -435,6 +435,41 @@ impl ChatState {
         close_incognito_locked(self, &mut sessions, key)
     }
 
+    /// Let go of the recorded conversation `id` if this process holds it:
+    /// the step before archiving or deleting one, so the rail stops listing
+    /// it and nothing here appends to its transcript again. `Ok(None)` when
+    /// no open chat holds it; `Err` while a run is in flight, because a run
+    /// owns the conversation until it ends and a delete under it would race
+    /// its last writes. Answers the key it was held under.
+    pub(super) async fn release_recorded(&self, id: &str) -> Result<Option<String>, &'static str> {
+        let mut sessions = self.sessions.lock().await;
+        let Some(key) = sessions
+            .iter()
+            .find(|(_, ws)| ws.session.kept().is_some_and(|s| s.meta.id == id))
+            .map(|(k, _)| k.clone())
+        else {
+            return Ok(None);
+        };
+        if sessions.get(&key).is_some_and(|ws| ws.live.is_some()) {
+            return Err("a run is in flight in this conversation — stop it first");
+        }
+        let ws = sessions.remove(&key).expect("found above");
+        ws.questions.shutdown();
+        if let Ok(mut routes) = self.routes.lock() {
+            routes.remove(&key);
+        }
+        if let Some(todo) = &self.follower.current().todo {
+            todo.forget_in(&ws.workspace);
+        }
+        Ok(Some(key))
+    }
+
+    /// Where this process's chats stage their drafts — `[outbox] dir` as the
+    /// chat resolved it — so a delete purges the store the drafts are in.
+    pub(super) fn outbox_root(&self) -> &std::path::Path {
+        &self.outbox_root
+    }
+
     /// Close idle incognito chats once a minute until the server stops.
     pub fn spawn_incognito_reaper(self: &Arc<Self>) {
         // R3's reads ride on a configured server name, and a rename narrows
@@ -1161,7 +1196,9 @@ type Chat = State<super::WebState>;
 // The Err arm carries a whole `Response`; it is built once per refused
 // request, so the size is irrelevant next to the allocation it wraps.
 #[allow(clippy::result_large_err)]
-fn chat_state(state: &super::WebState) -> Result<&Arc<ChatState>, axum::response::Response> {
+pub(super) fn chat_state(
+    state: &super::WebState,
+) -> Result<&Arc<ChatState>, axum::response::Response> {
     state.chat.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1268,6 +1305,7 @@ pub(super) async fn open_task_conversation(
                 request_id: None,
                 spoken: false,
                 approve_all: false,
+                unlogged: false,
                 images: Vec::new(),
             },
         );
@@ -1434,6 +1472,8 @@ fn ensure_session_as<'a>(
                 if let Some(todo) = &bound.todo {
                     todo.rehydrate(&workspace, &convo.messages);
                 }
+                // Picked back up: out of the archive, as every resume is.
+                mecha_core::archive::reopened(&path, &meta.id);
                 (Session { meta, path }, convo)
             }
             None => (
@@ -1946,6 +1986,7 @@ pub async fn send(
         TurnOpts {
             spoken: false,
             approve_all: false,
+            unlogged: false,
             request_id: Some(request_id),
             images,
         },
@@ -2024,12 +2065,38 @@ struct TurnOpts {
     /// sends still stage through the outbox, and taint now accumulates
     /// across both doors instead of being reset by opening a call.
     approve_all: bool,
+    /// The voice worker vouched that it keeps no text of this call
+    /// (`X-Voice-Unlogged`, `INCOGNITO-DESIGN.md` §6.4): the one condition
+    /// under which a spoken turn may enter an incognito chat. A claim the
+    /// worker makes only once its log silence is held, so a worker that
+    /// predates the silence never makes it and the chat stays text-only.
+    unlogged: bool,
     /// Pictures the owner attached (`attached_images`), put on the turn
     /// after its text. Arming `private_data` needs nothing here: the loop
     /// reads any image off the messages at the run's start
     /// (`Taint::arm_for_content`) — captured, not composed.
     images: Vec<Block>,
 }
+
+/// Whether a spoken turn may enter this conversation.
+///
+/// The voice worker is a process the incognito promise has to cover: at its
+/// default level pipecat logs every transcription and every sentence it
+/// speaks, into a journal kept on disk (`INCOGNITO-DESIGN.md` §6.4). So a
+/// call into an incognito chat is admitted only when the worker vouches for
+/// this call — `X-Voice-Unlogged`, sent only while its silence is held. The
+/// refusal is the default: a worker that cannot make the claim is one whose
+/// logs were never quieted, and the chat stays text-only.
+fn spoken_turn_may_enter(opts: &TurnOpts, incognito: bool) -> Result<(), String> {
+    if opts.spoken && incognito && !opts.unlogged {
+        return Err(UNVOUCHED_CALL.into());
+    }
+    Ok(())
+}
+
+/// The refusal, said the same at both doors that give it.
+const UNVOUCHED_CALL: &str = "an incognito chat takes a voice call only from a worker that \
+     keeps no text of it — restart the voice worker from this build";
 
 /// `--voice-yes` does not survive hearing ourselves.
 ///
@@ -2078,6 +2145,7 @@ mod narrowing_tests {
             request_id: None,
             spoken: true,
             approve_all: true,
+            unlogged: false,
             images: Vec::new(),
         }
     }
@@ -2105,6 +2173,7 @@ mod narrowing_tests {
             request_id: None,
             spoken: false,
             approve_all: true,
+            unlogged: false,
             images: Vec::new(),
         };
         assert!(narrow_for_echo(typed, Some(OFFER), "delete it").approve_all);
@@ -2116,6 +2185,7 @@ mod narrowing_tests {
             request_id: None,
             spoken: true,
             approve_all: false,
+            unlogged: false,
             images: Vec::new(),
         };
         assert!(!narrow_for_echo(off, Some(OFFER), "delete it").approve_all);
@@ -2208,11 +2278,7 @@ fn begin_turn(
     let ws = sessions
         .get_mut(key)
         .ok_or_else(|| TurnError::Failed("no such session".into()))?;
-    // Text only (v1): the voice worker logs what it hears, which is a trace
-    // this chat promised not to leave (`INCOGNITO-DESIGN.md` §3.4).
-    if opts.spoken && ws.session.room().is_some() {
-        return Err(TurnError::Failed("an incognito chat is text-only".into()));
-    }
+    spoken_turn_may_enter(&opts, ws.session.room().is_some()).map_err(TurnError::Failed)?;
     // Incognito's gates, re-derived against the binding this turn runs on
     // (`incognito_gates`): `open_incognito` checked the one it opened on, and
     // a switch rebuilds from the config on disk.
@@ -2998,13 +3064,27 @@ pub struct VoiceHost(pub Arc<ChatState>);
 
 #[async_trait::async_trait]
 impl crate::voice::SessionHost for VoiceHost {
-    async fn speak(&self, key: &str, utterance: &str, approve_all: bool) -> crate::voice::Hosted {
+    async fn speak(
+        &self,
+        key: &str,
+        utterance: &str,
+        approve_all: bool,
+        unlogged: bool,
+    ) -> crate::voice::Hosted {
         use crate::voice::Hosted;
         // Containment stays with the side that owns the filesystem: a
         // session key becomes a directory name under the producer root, and
         // it is model-adjacent input the moment a page script can choose it.
         if !valid_key(key) {
             return Hosted::Unknown;
+        }
+        // Ahead of the barge-in below, which cancels the run in flight before
+        // `begin_turn` gets its turn to refuse: an unvouched call into an
+        // incognito chat would stop that chat's run and then be turned away
+        // (review of #376). The key alone decides it — the prefix names
+        // nothing but an incognito chat — and `begin_turn` still checks.
+        if super::incognito::is_incognito_key(key) && !unlogged {
+            return Hosted::Failed(UNVOUCHED_CALL.into());
         }
         // Followed once, before the lock: a rebuild can take as long as an MCP
         // server's start, and every conversation waits on that lock.
@@ -3045,6 +3125,7 @@ impl crate::voice::SessionHost for VoiceHost {
                             request_id: None,
                             spoken: true,
                             approve_all,
+                            unlogged,
                             images: Vec::new(),
                         },
                     ) {
@@ -3378,7 +3459,17 @@ const LISTING_SCAN_BYTES: usize = 256 * 1024;
 /// through, its first user line, and — when this process already holds it —
 /// the live key, so the drawer never offers to resume a conversation into a
 /// second copy of itself.
-pub async fn history(State(state): Chat) -> axum::response::Response {
+#[derive(serde::Deserialize, Default)]
+pub struct HistoryQuery {
+    /// The archived conversations instead of the listed ones.
+    #[serde(default)]
+    pub archived: bool,
+}
+
+pub async fn history(
+    State(state): Chat,
+    axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
+) -> axum::response::Response {
     let chat = match chat_state(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -3411,7 +3502,24 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
                     || t.starts_with(TASK_TITLE_PREFIX)
             })
     });
-    metas.sort_by_key(|(m, _)| std::cmp::Reverse(m.created_at));
+    // Archiving is filing (`mecha_core::archive`): the listing is the one
+    // reader that consults the mark, and the archive is the same listing
+    // turned inside out.
+    let archived = match mecha_core::archive::archived(&dir) {
+        Ok(a) => a,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+    };
+    metas.retain(|(m, _)| archived.contains_key(&m.id) == query.archived);
+    if query.archived {
+        // Newest *filed* first: the rows are dated by when they were archived,
+        // and under the 40-row cap the ones filed longest ago must not be the
+        // ones that fall off the page — restore is only reachable from a row.
+        metas.sort_by_key(|(m, _)| {
+            std::cmp::Reverse((archived.get(&m.id).copied().flatten(), m.created_at))
+        });
+    } else {
+        metas.sort_by_key(|(m, _)| std::cmp::Reverse(m.created_at));
+    }
     let mut rows = Vec::new();
     for (meta, path) in metas {
         if rows.len() >= 40 {
@@ -3442,6 +3550,7 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
                 .title
                 .filter(|t| Session::keeps_kind(meta.title.as_deref(), t)),
             "attached_key": attached.get(&meta.id),
+            "archived_at": archived.get(&meta.id).copied().flatten().map(|d| d.to_rfc3339()),
         }));
     }
     Json(serde_json::json!({ "sessions": rows })).into_response()
@@ -3527,6 +3636,13 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
         .and_then(|()| mecha_core::work::ensure_outside_mecha_home(&workspace))
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
+    }
+    // Opening an archived conversation takes it out of the archive (owner's
+    // ruling, 2026-09-28): picking it back up is the owner saying it is
+    // current again, and leaving the mark would file it away the moment the
+    // chat closed. Not fatal — a mark left behind only keeps it filed.
+    if let Err(e) = mecha_core::archive::unarchive(&dir, &meta.id) {
+        tracing::warn!("resumed {} but could not unarchive it: {e:#}", meta.id);
     }
     // D15 — the plan comes back with the conversation, and two things then
     // read it: the transcript response serves it to the page, and
@@ -4959,6 +5075,7 @@ mod held_tests {
                 request_id: None,
                 spoken: true,
                 approve_all: false,
+                unlogged: false,
                 images: Vec::new(),
             },
         );
@@ -4968,6 +5085,98 @@ mod held_tests {
             holds.live(router).len(),
             1,
             "and the switch no longer sees it"
+        );
+    }
+
+    /// An unvouched call is refused before anything else `speak` does — the
+    /// barge-in most of all. Measured on a key no session holds: had the
+    /// check come after the lookup, the answer would be the closed-chat one.
+    #[tokio::test]
+    async fn an_unvouched_call_is_refused_before_it_reaches_the_chat() {
+        use crate::voice::{Hosted, SessionHost};
+        let _home = crate::testenv::HomeGuard::new("incognito-voice-door");
+        let host = VoiceHost(test_chat());
+        let key = super::super::incognito::new_key();
+        match host.speak(&key, "hello", false, false).await {
+            Hosted::Failed(why) => assert_eq!(why, UNVOUCHED_CALL),
+            _ => panic!("an unvouched call into an incognito chat got past the door"),
+        }
+        match host.speak(&key, "hello", false, true).await {
+            Hosted::Failed(why) => assert_ne!(
+                why, UNVOUCHED_CALL,
+                "a vouched call was refused as unvouched"
+            ),
+            _ => panic!("a closed incognito chat answered a call"),
+        }
+    }
+
+    /// A spoken turn enters an incognito chat only on the worker's word that
+    /// it keeps no text of the call; without it the chat stays text-only, and
+    /// typing never needed it. A turn the gate admits goes on to the checks
+    /// every incognito turn meets — here the local-model gate, since the test
+    /// binding's provider is not local — so "admitted" is measured as "refused
+    /// exactly as a typed turn is", and never by the voice gate's words.
+    #[test]
+    fn a_spoken_turn_enters_an_incognito_chat_only_when_the_worker_keeps_no_text() {
+        let home = crate::testenv::HomeGuard::new("incognito-voice");
+        let chat = test_chat();
+        let key = super::super::incognito::new_key();
+        let room = super::super::incognito::Room::open(&home.dir.join("rooms"), &key).unwrap();
+        let workspace = room.workspace.clone();
+        let (events, _) = broadcast::channel(4);
+        let mut sessions = HashMap::from([(
+            key.clone(),
+            WebSession {
+                conversation: None,
+                session: Recording::Incognito(Arc::new(room)),
+                workspace,
+                live: None,
+                events,
+                last_usage: Arc::default(),
+                withheld: Arc::from([]),
+                task: None,
+                mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                questions: Default::default(),
+                titled_at: 0,
+                last_turn_spoken: false,
+                recorded_generation: 1,
+            },
+        )]);
+        let mut turn = |spoken: bool, unlogged: bool| {
+            begin_turn(
+                &chat,
+                &chat.follower.current(),
+                &mut None,
+                &mut sessions,
+                &key,
+                "hello",
+                TurnOpts {
+                    request_id: None,
+                    spoken,
+                    approve_all: false,
+                    unlogged,
+                    images: Vec::new(),
+                },
+            )
+        };
+        let why = |r: Result<Started, TurnError>| match r {
+            Err(TurnError::Failed(why)) => why,
+            _ => panic!("the test binding should stop every incognito turn somewhere"),
+        };
+        let refused = why(turn(true, false));
+        assert!(
+            refused.contains("keeps no text"),
+            "a call from a worker that logs was let into an incognito chat: {refused}"
+        );
+        let typed = why(turn(false, false));
+        assert!(
+            !typed.contains("keeps no text"),
+            "a typed turn was asked for the worker's word"
+        );
+        assert_eq!(
+            why(turn(true, true)),
+            typed,
+            "a vouched call met a different refusal than a typed turn"
         );
     }
 }
@@ -5067,6 +5276,7 @@ mod workflow_recording_tests {
                     request_id: Some("rejected-request".into()),
                     spoken: true,
                     approve_all: false,
+                    unlogged: false,
                     images: Vec::new(),
                 },
             );

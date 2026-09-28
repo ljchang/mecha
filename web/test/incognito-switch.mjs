@@ -38,8 +38,14 @@ function page(start) {
      let affect = 1, valence = 1, sawAffectThisRun = true;
      let partialRun = true, liveFrom = 3;
      const receivedInputs = new Set(), inputDelivery = new Map();
+     const dropped = [];
+     const dropRing = (k) => dropped.push(k);
+     const INCOGNITO_PREFIX = 'incognito-';
+     let vEntries = [{ who: 'user', text: 'KUMQUAT' }];
+     let hungUp = 0;
+     const endVoice = () => hungUp++;
      ${switchToSrc}
-     return { switchTo, now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom }) };`,
+     return { switchTo, dropped, call: () => ({ hungUp, vEntries }), now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom }) };`,
   )(start);
 }
 
@@ -64,6 +70,16 @@ function is(actual, expected, what) {
   is([s.key, s.draft, s.attachments, s.incognito], ['main', '', [], false], 'leaving incognito clears the composer');
   is(s.todo, [], "and the incognito chat's plan");
   is([s.gone, s.goneNote], [null, null], 'and the gone screen with its note');
+  is(p.dropped, ['incognito-ab'], "and the audio its call buffered, by the chat's own key");
+  is(p.call(), { hungUp: 1, vEntries: [] }, 'and a call still speaking into it, with its words');
+}
+{
+  // Into an incognito chat with a recorded call live: the call ends rather
+  // than going on under a page that says nothing is kept (review of #376).
+  const p = page({ key: 'main', draft: '', attachments: [], incognito: false, gone: null });
+  p.switchTo('incognito-cd');
+  is(p.call().hungUp, 1, 'entering an incognito chat ends a call from a recorded one');
+  is(p.dropped, [], "and leaves the recorded chat's ring for its next call");
 }
 {
   const p = page({ key: 'main', draft: 'half a thought', attachments: ['inbox/a.pdf'], incognito: false, gone: null });
@@ -76,11 +92,58 @@ function is(actual, expected, what) {
   // new key) would spend one redundant transcript read on the chat you are
   // in.
   is([s.partialRun, s.liveFrom], [false, 0], "and what the catch-up knew of the last chat's run is gone");
+  is(p.dropped, [], 'and keeps its call audio for a reconnect');
+  is(p.call().hungUp, 0, 'and its call, which never crossed the incognito line');
 }
 {
   const p = page({ key: 'incognito-ab', draft: 'KUMQUAT', attachments: [], incognito: true, gone: 'ended' });
   p.switchTo('incognito-ab');
   is(p.now().draft, 'KUMQUAT', 'switching to the same chat is a no-op');
+}
+
+// An incognito chat that ends takes its voice call with it: the call is
+// hung up, and what the overlay showed and the ring buffered are gone
+// (`forget`, which End and a server-side close both reach).
+{
+  const forgetSrc = readOut('  function forget() {');
+  const s = new Function(
+    `'use strict';
+     let key = 'incognito-ab';
+     let entries = ['x'], streaming = 'y', draft = 'z', attachments = ['a'], todo = ['t'];
+     let usage = 1, taint = 1, affect = 1, valence = 1;
+     let vEntries = [{ who: 'user', text: 'KUMQUAT' }];
+     let ended = 0;
+     const dropped = [];
+     const endVoice = () => ended++;
+     const dropRing = (k) => dropped.push(k);
+     ${forgetSrc}
+     forget();
+     return { ended, vEntries, dropped, entries };`,
+  )();
+  is(s.ended, 1, 'ending an incognito chat hangs up its call');
+  is(s.vEntries, [], "and clears the call's words from the overlay");
+  is(s.dropped, ['incognito-ab'], 'and drops the audio it buffered');
+}
+
+// The overlay's promise describes the call, not the page: a call is bound to
+// the chat it was opened in, and the page's `incognito` moves with every
+// switch (review of #376).
+{
+  const top = src.slice(src.indexOf('<div class="voice-top">'), src.indexOf('<div class="voice-stage">'));
+  is(top.includes('{#if vIncognito}') && !/\{#if incognito\}/.test(top), true, "the call overlay reads the call's own kind");
+}
+
+// A call's incognito-ness is read off the key it sends, not only the page's
+// flag: after a switch the flag is false until the transcript read returns,
+// and a tap in that window must still require the vouch (review of #376).
+{
+  const start = readOut('  function startVoice({ keep = false } = {}) {');
+  is(
+    start.includes('requireUnlogged: incognito || key.startsWith(INCOGNITO_PREFIX)') &&
+      start.includes('vIncognito = incognito || key.startsWith(INCOGNITO_PREFIX)'),
+    true,
+    'a call into an incognito key requires the vouch before the page knows',
+  );
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
