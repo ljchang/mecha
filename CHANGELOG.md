@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-09-28
+
 ### Added
 
 - **The model can look at an image, on request** (`image_view`, the owner's
@@ -3920,7 +3922,8 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.21...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.22...HEAD
+[0.1.22]: https://github.com/ljchang/mecha/releases/tag/v0.1.22
 [0.1.21]: https://github.com/ljchang/mecha/releases/tag/v0.1.21
 [0.1.20]: https://github.com/ljchang/mecha/releases/tag/v0.1.20
 [0.1.19]: https://github.com/ljchang/mecha/releases/tag/v0.1.19
