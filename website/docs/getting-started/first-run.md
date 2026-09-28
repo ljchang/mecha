@@ -153,7 +153,7 @@ rsync -a --delete dist/ ~/.mecha/web/dist/
 tailscale serve --bg 63242                     # what makes it reachable
 ```
 
-Then open Today, chat, mail, the graph, review queues, tasks, and settings.
+Then open home, chat, mail, the graph, review queues, tasks, and settings.
 They share the CLI stores and the same approval rules. A session there starts **read-only**: reads run, and
 anything that would send stages in the outbox instead.
 
@@ -175,7 +175,8 @@ mecha outbox
 ```
 
 Answer a parked question with `mecha questions answer`, or review a draft with
-`mecha outbox review`. Today also offers those decisions in the browser. See
+`mecha outbox review`. The browser offers the same decisions: drafts under
+Review → Outbox, questions in the task board's *waiting* view. See
 [Workflows and Today](/docs/features/automation/workflows) to add commitments, reminders,
 and explicit completion checks.
 

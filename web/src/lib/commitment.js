@@ -1,4 +1,4 @@
-// How a workflow's commitment reads on the Today page.
+// How a workflow's commitment reads in the web workflows view (#tasks/workflows).
 //
 // `due_at` became optional in 1f-2 (ruling (b), 2026-09-25): a commitment an
 // owner states through appraisal evidence names a party and an expectation

@@ -110,7 +110,7 @@
     {:else if view === 'review'}
       <Review initial={route.sub} {navigate} />
     {:else if view === 'tasks'}
-      <Tasks />
+      <Tasks initial={route.sub} {navigate} />
     {:else if view === 'graph'}
       <Graph initial={route.sub} />
     {:else if view === 'settings'}
