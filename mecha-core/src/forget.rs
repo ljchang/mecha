@@ -573,7 +573,7 @@ fn purge_learning(roots: &Roots, id: &str, keep_distilled: bool, report: &mut Re
     report.attempt(
         "harness candidates",
         with_lock(&roots.harness, || {
-            edit_items(&roots.harness.join("candidates"), |v| scrub_string(v, id))
+            edit_items(&roots.harness.join("candidates"), |v| scrub_deep(v, id))
         }),
     );
     report.attempt(
@@ -1077,23 +1077,40 @@ fn null_fields(v: &mut Value, keys: &[&str], id: &str) -> bool {
     changed
 }
 
-/// Drop `id` wherever it is an element of a string array, at any depth: for
-/// records whose only trace is a list of session ids (a measurement's
-/// episodes).
-fn scrub_string(v: &mut Value, id: &str) -> bool {
+/// Take `id` out of a record, at any depth, whatever shape it is in: an
+/// array entry that holds it anywhere inside — a bare id, a caveat string
+/// naming it, an object whose field is it — goes whole, and a lone string
+/// field containing it is blanked. For a measurement record, whose session
+/// ids sit in `episodes` lists, in `divergence_detail` entries' scalar
+/// `episode`, in `replay_caveats` text and inside opaque `arm_receipts`: an
+/// entry about a forgotten episode is that episode's, and goes with it.
+fn scrub_deep(v: &mut Value, id: &str) -> bool {
+    fn holds(v: &Value, id: &str) -> bool {
+        match v {
+            Value::String(s) => s.contains(id),
+            Value::Array(list) => list.iter().any(|c| holds(c, id)),
+            Value::Object(map) => map.values().any(|c| holds(c, id)),
+            _ => false,
+        }
+    }
     match v {
         Value::Array(list) => {
             let before = list.len();
-            list.retain(|s| s.as_str() != Some(id));
-            let mut changed = list.len() != before;
-            for child in list {
-                changed |= scrub_string(child, id);
+            list.retain(|c| !holds(c, id));
+            list.len() != before
+        }
+        Value::Object(map) => {
+            let mut changed = false;
+            for child in map.values_mut() {
+                if child.as_str().is_some_and(|s| s.contains(id)) {
+                    *child = Value::String(String::new());
+                    changed = true;
+                } else {
+                    changed |= scrub_deep(child, id);
+                }
             }
             changed
         }
-        Value::Object(map) => map
-            .values_mut()
-            .fold(false, |acc, child| scrub_string(child, id) | acc),
         _ => false,
     }
 }
