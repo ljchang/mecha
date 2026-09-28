@@ -588,9 +588,28 @@ pub async fn unload(base_url: &str, model: &str, wait: Duration) -> Result<()> {
 /// that raced a load already under way) before the refusal is the answer.
 const REFUSAL_GRACE: Duration = Duration::from_secs(10);
 
+/// How often a load the router turned away because the resident model was
+/// busy is asked again.
+const BUSY_RETRY: Duration = Duration::from_secs(1);
+
+/// The router's answer to an explicit load while the resident model has a
+/// request in flight: `server_models::load` at `c841aee` throws "model limit
+/// reached, try again later" when `--models-max` is full and `pick_victim`
+/// finds nothing idle to evict (it skips any model whose `req_count != 0`).
+/// Unlike a routed request, an explicit load is not queued — it is refused,
+/// and "try again later" is meant literally.
+fn is_busy_refusal(status: reqwest::StatusCode, body: &str) -> bool {
+    status == reqwest::StatusCode::INTERNAL_SERVER_ERROR && body.contains("model limit reached")
+}
+
 /// Ask the router to load `model`, and wait until it is resident or has
 /// failed. The router evicts the idle model to make room; one with a request
-/// in flight finishes it first, which is the wait a caller sees.
+/// in flight is not evicted, and the router refuses the load until that
+/// request ends — so a busy refusal is asked again, until `wait` runs out,
+/// which is the wait a caller sees. The first switch from the web chip met
+/// this: a request in flight on the old model, a load refused at once, and
+/// R1's rollback — while the CLI said it was waiting for the model to go
+/// idle (2026-09-28).
 pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
     let b = base(base_url);
     let http = client(Duration::from_secs(10)).context("building an HTTP client")?;
@@ -606,12 +625,37 @@ pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
                 .join(", ")
         );
     }
-    let resp = http
-        .post(format!("{b}/models/load"))
-        .json(&serde_json::json!({ "model": model }))
-        .send()
-        .await
-        .with_context(|| format!("POST {b}/models/load"))?;
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut busy_since: Option<tokio::time::Instant> = None;
+    let (status, body) = loop {
+        let resp = http
+            .post(format!("{b}/models/load"))
+            .json(&serde_json::json!({ "model": model }))
+            .send()
+            .await
+            .with_context(|| format!("POST {b}/models/load"))?;
+        let status = resp.status();
+        let body = if status.is_success() {
+            String::new()
+        } else {
+            resp.text().await.unwrap_or_default()
+        };
+        if !is_busy_refusal(status, &body) {
+            break (status, body);
+        }
+        let since = *busy_since.get_or_insert_with(tokio::time::Instant::now);
+        if tokio::time::Instant::now() + BUSY_RETRY >= deadline {
+            bail!(
+                "{model} was not loaded after {}s: the model it replaces had a request in \
+                 flight the whole time, and the router will not evict a busy model (it said: \
+                 {})",
+                since.elapsed().as_secs(),
+                body.trim()
+            );
+        }
+        tracing::info!("{b} is busy; asking it to load {model} again");
+        tokio::time::sleep(BUSY_RETRY).await;
+    };
     // The router refuses a load in two cases (`post_router_models_load` at
     // `c841aee`): a model it does not know, which the check above rules out,
     // and one already running, which the poll below sees as resident. Any
@@ -622,17 +666,12 @@ pub async fn load(base_url: &str, model: &str, wait: Duration) -> Result<()> {
     // A `failed` flag left by an earlier attempt is never read as this one's:
     // `server_models::load` sets the model `LOADING` before the POST handler
     // returns (`c841aee`), so by the first poll the stale status is gone.
-    let status = resp.status();
     let refusal = if status.is_success() {
         None
     } else {
-        Some(format!(
-            "{status} from POST /models/load: {}",
-            resp.text().await.unwrap_or_default().trim()
-        ))
+        Some(format!("{status} from POST /models/load: {}", body.trim()))
     };
     let started_at = tokio::time::Instant::now();
-    let deadline = started_at + wait;
     let mut started = false;
     loop {
         if let Some(list) = list_on(&http, &b).await {
@@ -947,19 +986,27 @@ mod tests {
 
     /// A stub server answering one request per body, in order.
     async fn stub(bodies: Vec<&'static str>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        stub_status(bodies.into_iter().map(|b| (200, b)).collect()).await
+    }
+
+    /// `stub`, with each answer's HTTP status.
+    async fn stub_status(
+        answers: Vec<(u16, &'static str)>,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let mut lines = Vec::new();
-            for body in bodies {
+            for (code, body) in answers {
                 let (mut s, _) = listener.accept().await.unwrap();
                 let mut buf = [0u8; 2048];
                 let n = s.read(&mut buf).await.unwrap();
                 let head = String::from_utf8_lossy(&buf[..n]).to_string();
                 lines.push(head.lines().next().unwrap_or_default().to_string());
                 let reply = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {code} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    if code == 200 { "OK" } else { "Error" },
                     body.len()
                 );
                 s.write_all(reply.as_bytes()).await.unwrap();
@@ -1087,6 +1134,70 @@ mod tests {
             "{w:?}"
         );
         observe(&Config::default(), false).await;
+    }
+
+    /// A load refused because the resident model is busy is asked again, and
+    /// goes through once the request ends — where it used to fail at once and
+    /// send the switch into R1's rollback (the first live switch from the
+    /// chip, 2026-09-28). The refusal is the router's exact text.
+    #[tokio::test]
+    async fn a_load_refused_while_the_model_is_busy_is_asked_again() {
+        let router = r#"{"role":"router","model_alias":"llama-server"}"#;
+        let unloaded = r#"{"data":[{"id":"m","status":{"value":"unloaded"}},{"id":"old","status":{"value":"loaded"}}]}"#;
+        let busy = r#"{"error":{"code":500,"message":"model limit reached, try again later","type":"server_error"}}"#;
+        let loaded = r#"{"data":[{"id":"m","status":{"value":"loaded"}},{"id":"old","status":{"value":"unloaded"}}]}"#;
+        let (url, server) = stub_status(vec![
+            (200, router),
+            (200, unloaded),
+            (500, busy),
+            (500, busy),
+            (200, r#"{"success":true}"#),
+            (200, loaded),
+        ])
+        .await;
+        load(&url, "m", Duration::from_secs(30)).await.unwrap();
+        let lines = server.await.unwrap();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| *l == "POST /models/load HTTP/1.1")
+                .count(),
+            3,
+            "{lines:?}"
+        );
+    }
+
+    /// A busy refusal that outlasts `wait` says so — the model was busy the
+    /// whole time — rather than blaming the load; any other refusal is still
+    /// not retried.
+    #[tokio::test]
+    async fn a_busy_refusal_that_outlasts_the_wait_says_why() {
+        let router = r#"{"role":"router","model_alias":"llama-server"}"#;
+        let unloaded = r#"{"data":[{"id":"m","status":{"value":"unloaded"}}]}"#;
+        let busy = r#"{"error":{"code":500,"message":"model limit reached, try again later","type":"server_error"}}"#;
+        let (url, server) = stub_status(vec![
+            (200, router),
+            (200, unloaded),
+            (500, busy),
+            (500, busy),
+        ])
+        .await;
+        let err = load(&url, "m", Duration::from_millis(1500))
+            .await
+            .unwrap_err();
+        let said = format!("{err:#}");
+        assert!(said.contains("request in flight"), "{said}");
+        assert!(said.contains("model limit reached"), "{said}");
+        server.abort();
+
+        assert!(!is_busy_refusal(
+            reqwest::StatusCode::BAD_REQUEST,
+            "model limit reached"
+        ));
+        assert!(!is_busy_refusal(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":{"message":"model name=m is not found"}}"#
+        ));
     }
 
     /// `load` stops at once on a status this build does not know, instead of
