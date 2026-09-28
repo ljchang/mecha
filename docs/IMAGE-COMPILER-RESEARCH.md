@@ -415,15 +415,14 @@ elsewhere, and a compiler that breaks one reopens a closed bug.
 - **Incognito may read the library and may not write it.** A promotion from
   an incognito chat is a trace by definition; whether the owner wants that
   door at all is a ruling for `INCOGNITO-DESIGN.md`, not this document.
-- **A real person's likeness is a different object from an invented
-  character.** A library makes a likeness reusable by name, in any scene,
-  indefinitely. Recommended: every entry records `likeness: invented |
-  person`; a `person` entry records whose likeness it is and that they agreed
-  to be in it; and the compiler refuses sexual or nude depictions of a
-  `person` entry outright, the way `loopback_url` refuses a remote server —
-  structurally, not by prompting. Invented characters carry no such limit.
-  The owner's ruling to make; the recommendation is stated because the
-  library is what turns a one-off edit into a standing capability.
+- **Real people's likenesses: no rule in the compiler — the owner's
+  ruling, 2026-09-28.** Proposed here: entries marked `invented | person`,
+  a `person` entry recording consent, and a structural refusal of sexual or
+  nude depictions of a `person` entry. Declined; the chat model's own
+  guardrails are the control. The cost, stated: the router's presets include
+  uncensored and abliterated chat models and the local image model has no
+  filter of its own, so that control is whatever the selected chat model
+  does.
 
 ## 6. The backend contract
 
@@ -619,8 +618,8 @@ to settle (Svelte 5, the web surface's stack):
 - **Library tab** — character, location and style cards: counts and a
   thumbnail, not lists (the home page's ruling of 2026-09-28).
 - **Character page** — the canonical portrait, its derived crop, an angle
-  sheet for looking at (E8), the description, the likeness field, version
-  history, and the scenes the character appears in.
+  sheet for looking at (E8), the description, version history, and the
+  scenes the character appears in.
 - **Scene page** — the image, its lineage (parent → edits), the
   `SceneSpec` that produced it, "make a variation", "branch from here".
 - **Promotion** — "Save to library…" beside the web chat image card's
@@ -642,8 +641,7 @@ What follows for the build: the **server** withholds locked items from
 browse pages and thumbnail requests while the toggle is off (a blurred
 thumbnail still ships its bytes to the page and the cache); the password is
 typed only in the lock dialog, never in chat, where it would land in a
-transcript; and the lock changes nothing the compiler checks — the likeness
-rule (§5) applies at generation whether an entry is locked or not.
+transcript; and the lock changes nothing at generation.
 
 ## 10. Recommendation
 
