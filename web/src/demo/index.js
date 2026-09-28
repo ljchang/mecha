@@ -69,7 +69,11 @@ export const ROUTES = [
     closed: [{ id: 'demo-finished', title: 'Prepare the conference travel summary', state: 'closed', closed_at: '2026-09-07T16:00:00Z' }],
     items: [
       { id: 'demo-reply', title: 'Review the reply about the grant meeting', section: 'decisions', state: 'draft ready for review', outbox: ['demo-reply'] },
-      { id: 'demo-waiting', title: 'Prepare for the lab meeting', section: 'waiting', state: 'waiting for your answer', task_id: 'demo-task' },
+      { id: 'demo-waiting', title: 'Prepare for the lab meeting', section: 'waiting', state: 'awaiting_owner', task_id: 'demo-task', workflow: true, waiting_for: ['A question needs your answer'] },
+      // A loose draft whose send may not have landed: the server titles it
+      // with the store's terminal one-liner, and home names it from the
+      // outbox row instead — which is what this fixture is here to show.
+      { id: 'ob-4416', title: 'mail__mail_reply {"body_markdown":"Happy to — Thursday at two works…', section: 'urgent', state: 'delivery uncertain', outbox: ['ob-4416'] },
     ],
   })],
 

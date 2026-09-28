@@ -25,7 +25,7 @@ assert.doesNotMatch(undated, /Invalid Date|1970/);
 // The page reads the line through the helper, not its own `new Date` of a
 // field that may be absent.
 const here = path.dirname(fileURLToPath(import.meta.url));
-const page = fs.readFileSync(path.join(here, '..', 'src', 'lib', 'Today.svelte'), 'utf8');
+const page = fs.readFileSync(path.join(here, '..', 'src', 'lib', 'Workflows.svelte'), 'utf8');
 assert.match(page, /commitmentLine\(item\.commitment\)/);
 assert.doesNotMatch(page, /new Date\(item\.commitment\.due_at\)/);
 
