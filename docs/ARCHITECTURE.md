@@ -710,9 +710,14 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   only from the CLI), lives in process memory and the page's — never a
   cookie or storage — and lapses after 30 idle minutes; five wrong passwords
   in five minutes answer 429, and a damaged lock file errors, never opens.
-- **The web approves what it showed.** The page sends back the entry's
-  `shown_digest`; `approve_as_shown` re-reads and compares at the write, so
-  a text that changed between display and tap is refused.
+- **The web approves what it showed, and only it can vouch for that.** The
+  list carries an HMAC of each entry's `shown_digest` under a key `serve`
+  draws at start and never stores; approval checks it against the entry as
+  re-read and happens in `serve`'s process. A bare digest, passed to a CLI
+  `--shown` flag, was computable by anything that can read the store — a
+  shell could approve a model's proposal unread (review of #385); the flag
+  is gone. Writes honour the lock as reads do: a locked entry is acted on
+  only with a live token, and hidden answers exactly as missing.
 - **Save copies through the jail, and never from incognito.** A chat's
   files exist to the server only while it is open, so the picture is staged
   now (0700 scratch directory, removed on drop) and `add-character` runs as a
