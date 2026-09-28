@@ -29,17 +29,18 @@ fn sessions_dir() -> Result<std::path::PathBuf, axum::response::Response> {
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response())
 }
 
-/// Release `id` from the process, or answer why not.
-async fn release(state: &super::WebState, id: &str) -> Result<(), axum::response::Response> {
+/// Release `id` from the process, or answer why not (a 409's reason).
+async fn release(state: &super::WebState, id: &str) -> Result<(), &'static str> {
     // No chat subsystem means no open conversations to let go of; archiving
     // and deleting the record still work.
     let Ok(chat) = chat_state(state) else {
         return Ok(());
     };
-    chat.release_recorded(id)
-        .await
-        .map(|_| ())
-        .map_err(|why| (StatusCode::CONFLICT, format!("{why}\n")).into_response())
+    chat.release_recorded(id).await.map(|_| ())
+}
+
+fn busy(why: &str) -> axum::response::Response {
+    (StatusCode::CONFLICT, format!("{why}\n")).into_response()
 }
 
 /// POST /api/sessions/{id}/archive — out of the list, still on the record.
@@ -51,8 +52,8 @@ pub async fn archive(State(state): Web, Path(id): Path<String>) -> axum::respons
     if !dir.join(format!("{id}.jsonl")).is_file() {
         return (StatusCode::NOT_FOUND, "no such conversation\n").into_response();
     }
-    if let Err(r) = release(&state, &id).await {
-        return r;
+    if let Err(why) = release(&state, &id).await {
+        return busy(why);
     }
     match mecha_core::archive::archive(&dir, &id, chrono::Utc::now()) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -85,8 +86,8 @@ pub async fn delete(State(state): Web, Path(id): Path<String>) -> axum::response
     if !known {
         return (StatusCode::NOT_FOUND, "no such conversation\n").into_response();
     }
-    if let Err(r) = release(&state, &id).await {
-        return r;
+    if let Err(why) = release(&state, &id).await {
+        return busy(why);
     }
     // Files and a child process: off the async workers.
     let forgot = tokio::task::spawn_blocking(move || {
