@@ -190,7 +190,7 @@ mecha's fixed graph: what is loaded into the model is a structured field
 checked against a list, never text a model wrote. `Request` was already
 shaped after sd.cpp's API; a compiler that targets the contract in §6 needs
 nothing from ComfyUI that sd.cpp lacks. What held the migration back was
-speed and text rendering (§Image generation's bake-off), not features.
+speed and text rendering (the engine comparison in §Image generation), not features.
 
 ## 3. What the field has converged on
 
@@ -424,8 +424,13 @@ elsewhere, and a compiler that breaks one reopens a closed bug.
   candidate is model-written text that may come from a tainted
   conversation, so candidates are never returned to the model — they are
   shown only on the owner's surfaces. If the lookup ever returns
-  candidates, it declares `untrusted_input` for those results
-  (`.from_outside()` on the output that carries them), not for the tool.
+  candidates, the **tool** declares `Capabilities::untrusted_input` *and*
+  the output carrying them is marked `.from_outside()` — the loop's rule is
+  `caps.untrusted_input && out.external`, with `caps` read per tool, so the
+  per-result marking alone taints nothing. That is the cost of returning
+  candidates at all: the capability is static, so it would arm every
+  lookup, approved-only included — which is why candidates never reach the
+  model and `image_library` keeps `Capabilities::default()`.
 - **Incognito may read the library and may not write it.** A promotion from
   an incognito chat is a trace by definition; whether the owner wants that
   door at all is a ruling for `INCOGNITO-DESIGN.md`, not this document.
@@ -589,7 +594,8 @@ black/grey; plaid defeats it once); expression and pose were judged by eye.
   different-character band. Part of E3's height was the copying; how much of
   the drop is the model and how much is ArcFace on a laughing, tilted face
   is not separable from these runs.
-- **Crop + description is best and cheapest**, consistent with E1. The
+- **Crop + description is best, and as cheap as the bare crop**,
+  consistent with E1. The
   angle sheet was the weakest generation reference (each face is a quarter
   of a 1024² panel) and hit the four-full-size-reference cliff; sheets are
   for browsing and for the validator's comparisons, not for generation.
