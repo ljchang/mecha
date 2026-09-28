@@ -185,7 +185,7 @@ fn accept(store: &LearningStore, id: &str, force: bool) -> Result<()> {
     p.status = "accepted".into();
     p.resolved_at = Some(chrono::Utc::now().to_rfc3339());
     store.write_proposal(&p)?;
-    store.commit(&format!(
+    store.log_pass(&format!(
         "accept[{}]: proposal {} — {} rule(s)",
         p.domain,
         p.id,
@@ -210,7 +210,7 @@ fn reject(store: &LearningStore, id: &str, reason: Option<String>) -> Result<()>
     p.resolved_at = Some(chrono::Utc::now().to_rfc3339());
     p.reason = reason;
     store.write_proposal(&p)?;
-    store.commit(&format!("reject[{}]: proposal {}", p.domain, p.id));
+    store.log_pass(&format!("reject[{}]: proposal {}", p.domain, p.id));
     println!("rejected; its reflections will not be re-argued");
     Ok(())
 }
@@ -351,7 +351,7 @@ fn supersede_cmd(
         store.write_proposal(p)?;
         done += 1;
     }
-    store.commit(&format!(
+    store.log_pass(&format!(
         "supersede: {done} proposal(s), {} reflection(s) released",
         released.len()
     ));

@@ -54,6 +54,7 @@ something shipped.
 | [`DOCS-RESEARCH.md`](DOCS-RESEARCH.md) | Which Google scope buys document access, and what each one costs in review |
 | [`GRAPH-UX-RESEARCH.md`](GRAPH-UX-RESEARCH.md) | What user interfaces work for a personal knowledge graph, and which features are worth exposing |
 | [`HARNESS-RESEARCH.md`](HARNESS-RESEARCH.md) | Where agent performance actually comes from — planning, the loop, or the tools |
+| [`IMAGE-COMPILER-RESEARCH.md`](IMAGE-COMPILER-RESEARCH.md) | How a library of characters and scenes compiles a narrative into consistent generations, and what local runs measured |
 | [`LEARNING-LOOP-RESEARCH.md`](LEARNING-LOOP-RESEARCH.md) | How the learning loop runs without the owner, what flowmail's two loops actually do, and how anyone would know it is improving |
 | `MAIL-CORPUS-RESEARCH.md` | What a year of this mailbox actually contains. **Gitignored** |
 | [`MAIL-UX-RESEARCH.md`](MAIL-UX-RESEARCH.md) | What the field has converged on for agent-driven email |
@@ -85,6 +86,7 @@ something shipped.
 | [`EXPERIMENT-DESIGN.md`](EXPERIMENT-DESIGN.md) | The instrument that states, from artifacts alone, what differed between two runs and what it cost. §5 depends on `BRANCHING-DESIGN.md`; issue #60 holds the communication policy question. Part II (§13–§21): ablation as a closed lever set, the lifetime trial for cross-session subsystems, the principal simulator, and the datasets for grading the appraisal system |
 | [`FACTORY-DOCS-DESIGN.md`](FACTORY-DOCS-DESIGN.md) | The published documentation site and what belongs on it |
 | [`GOAL-SYSTEM-DESIGN.md`](GOAL-SYSTEM-DESIGN.md) | What a run is *for*, the signed error signal that follows, and its three consumers. Read §7 before letting a disposition stand in for a structural check |
+| [`IMAGE-COMPILER-DESIGN.md`](IMAGE-COMPILER-DESIGN.md) | The image library and scene compiler: the owner's rulings, the store, the compile rules, and what phase 1 leaves out |
 | [`INCOGNITO-DESIGN.md`](INCOGNITO-DESIGN.md) | A web chat that leaves no trace once closed: the owner's rulings, the audit of every place a chat writes today, and what closes each. §8 is how "no trace" is measured |
 | [`LEARNING-AUTONOMY-DESIGN.md`](LEARNING-AUTONOMY-DESIGN.md) | Why learning is ungated per domain, what replaces the gate, and the cost in `behavior`. Read §3 before loosening anything |
 | [`MAIL-UX-DESIGN.md`](MAIL-UX-DESIGN.md) | Mail as a surface you work: the phases, and what each settled |

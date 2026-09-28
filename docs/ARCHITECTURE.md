@@ -619,6 +619,91 @@ it becomes the second adapter when a re-run closes the gap. mistral.rs (FLUX
 only, no quantized diffusion) and candle (no Qwen-Image) could not run the
 model at all.
 
+## Image library
+
+`imagelib.rs` is the store of recurring characters and styles, and the
+compiler that turns a scene into what `image_generate` sends;
+`docs/IMAGE-COMPILER-DESIGN.md` is the contract and
+`docs/IMAGE-COMPILER-RESEARCH.md` the measurements (E1–E10, cited by
+number). The model names who is in the scene and what each is wearing and
+doing; this code writes how they look. Decisions, each a bug if undone:
+
+- **Identity is the portrait, not the words.** A character drawn from its
+  description alone was a different person (ArcFace 0.33, inside the band two
+  different characters score); pointing at the portrait scored 0.74, and the
+  description beside the pointer 0.78 (E1). So `compile` sends each cast
+  member's portrait as a reference and pastes the description verbatim
+  beside it — never the description alone, never a paraphrase.
+- **One reference per person, the head count stated, `wearing` and `doing`
+  required.** Every reference slot tends to become a person (two unnamed
+  references of one character drew it twice, E2, and a bound face-and-body
+  pair failed once in four, E9); a reference supplies its own outfit, pose
+  and stare when the scene is silent, and stated they land (E3, E8). The
+  prompt's shape — "the person in the image" for one, `<imageN>` left to
+  right with "Exactly N people" for more — is in `compile`, not asked of the
+  model.
+- **Portraits go at 512² (`REFERENCE_SIZE`), edits at 1024.** Four references
+  at 1024² took 190 s and four at 512² 79 s, and a whole portrait at 512²
+  held identity within a few hundredths of a tight crop (E2, E10). `Request`
+  carries `reference_size` for this; ComfyUI's encoder takes one size per
+  call, which is why `cast` and `reference_images` are refused together
+  until a per-reference size is measured.
+- **A character named without a `cast` is refused before the GPU.** The first
+  real run looked the characters up, wrote their descriptions into the prompt
+  and left `cast` out: two strangers (ArcFace 0.17 and 0.10 against their
+  portraits). `imagelib::named_in` catches an approved character's name as a
+  whole word in any non-edit prompt, minus the names already in `cast` — a
+  cast of one does not excuse a second character named beside it (review of
+  #383); an explicit `"cast": []` says "someone else by that name". The lookup's result also says how entries are
+  used, which alone was enough on the rerun (0.68 and 0.45).
+- **The owner approves; the model proposes — bounded in entries and in
+  bytes, and a rejection leaves nothing.** At most `MAX_PENDING` candidates,
+  each portrait at most `MAX_PROPOSED_PORTRAIT_BYTES` (4 MB; the owner's own
+  stay at 25), because the proposing tool reaches no approver. `mecha imagelib reject` deletes the candidate and its portrait
+  unless another entry names that blob; moving it aside had freed the name
+  and the pending slot while the bytes stayed, so the cap bounded the queue
+  but not the disk (review of #383). `image_library_propose` makes
+  only a `candidate`; `mecha imagelib` (and the web surface next) makes
+  approved entries and approves candidates. A candidate never compiles and
+  is never listed to the model.
+- **The lookup is never untrusted, and is private.** `image_library` returns
+  approved entries only — every approved entry's text crossed the owner —
+  so it does not declare `untrusted_input`; returning candidates would need
+  that on the *tool*, since the loop taints on `caps.untrusted_input &&
+  out.external` per tool, and would arm every lookup (found on review of
+  #380). It does declare `private_data`: an entry describes a person, and with
+  no likeness field (the owner's ruling) nothing says which are real —
+  `goal_context`'s footing, not `skill`'s (review of #383). `image_generate`
+  returns names and versions only, so drawing a character arms nothing.
+- **An update approves nothing it did not rewrite.** A new portrait or seed
+  on a candidate leaves it a candidate with its origin; only a rewritten text
+  is the owner's (review of #383: `update --seed` had approved an untrusted
+  candidate unseen and relabelled it `owner`).
+- **Provenance is recorded, not claimed.** A proposal's `origin` comes from
+  `ToolCtx::taint`; `None` is `model_untrusted`. `mecha imagelib approve
+  --yes` is refused for an untrusted candidate: its text is shown and the
+  question answered, because approved text rides into every prompt that
+  names it.
+- **Closed enums on disk fail closed.** An unreadable `status` loads as
+  `candidate` and an unreadable `origin` as `model_untrusted`.
+- **Names in, never paths; the directory is the name.** The model names
+  entries and the store resolves them; a hand-edited `portrait` that is not
+  a plain blob name refuses the entry, and a portrait whose bytes no longer
+  match their hash is refused rather than sent.
+- **Global only, no config key.** `~/.mecha/imagelib/`, for the skills and
+  `[[trigger]]` reason: a cloned repository must not bring a character into
+  a trusted session.
+- **The lock is a browse filter** (the owner's ruling, 2026-09-28): generation
+  ignores it. Incognito chats may call `image_library` and generate with a
+  cast; `image_library_propose` writes outside the room and is withheld.
+- **The same-seed rule, narrowed.** An edit still always samples fresh; a
+  cast generation keeps the model's seed — that is how a scene is revised with
+  its composition — except a cast member's `source_seed`, which is replaced
+  and said.
+- **Every generation writes a manifest** (`images/<stem>.json`, `create_new`
+  like the PNG): the scene as written, the compiled prompt, seed, sizes, the
+  model files, and each entry's name, version and portrait hash.
+
 ## Security model
 
 **The full trifecta map lives in `docs/TRIFECTA.md`** — the four ways a
@@ -2680,8 +2765,19 @@ brief (which reads the board through the graph server) do not run.
   cannot hold the door shut. ComfyUI's executor cache keeps the last prompt in
   RAM until the next job or the idle unload — accepted, like llama-server's
   KV cache.
-- **No hooks, no voice.** `pre_tool`/`post_tool` receive tool input and
-  output; the voice worker logs what it hears.
+- **No hooks.** `pre_tool`/`post_tool` receive tool input and output.
+- **A voice call only on the worker's word** (`spoken_turn_may_enter`,
+  INCOGNITO-DESIGN §6.4). At its default level pipecat logs both sides of a
+  call to a journal kept on disk, so a spoken turn enters an incognito chat
+  only with `X-Voice-Unlogged: 1` — sent by the worker from inside
+  `Unlogged.held`, which disables the `pipecat` loguru namespace at the core
+  (the runner swaps sinks, so a sink filter would vanish) for as long as any
+  incognito call is live. A worker that predates it never sends the header,
+  so the chat stays text-only rather than trusting an unheld silence. No
+  journal line says an incognito chat was spoken into (`session_line`, the
+  affect latch, the facade's refusal path), and the voice stamp
+  `brief::VoicePresence` is skipped for one (`stamp_presence`) — it outlives
+  the chat and lands in other runs' briefs.
 - **Closing** — End, 30 minutes with no turn and no ping from an open page
   (the reaper, once a minute; the owner's ruling is that an open page is
   use), or `serve` stopping — cancels a run in flight, forgets the todo plan, and removes the
@@ -2698,10 +2794,12 @@ brief (which reads the board through the graph server) do not run.
   one argued allowance), and a generated picture is not a link in an incognito chat
   (opening it in a tab writes its address into the browser's history).
 - **The page** (`Chat.svelte`): a second new-chat button beside **+**, a banner
-  that does not scroll away and carries the search notice, **End**, no voice
-  call, and — on End or a `410` — a screen saying the chat is gone, with the
-  conversation dropped from the tab's memory too: the event stream closes,
-  and an event already in flight is dropped rather than drawn.
+  that does not scroll away and carries the search notice, **End**, a voice
+  call whose overlay says it keeps nothing, and — on End or a `410` — a
+  screen saying the chat is gone, with the conversation dropped from the
+  tab's memory too: the event stream closes, an event already in flight is
+  dropped rather than drawn, and a live call is hung up with its words and
+  its uplink ring (`dropRing`) gone.
 
 The end-to-end test drives the real routes: a turn and an upload carrying a
 canary, a scan of the whole mecha home (nothing while open, nothing after),
@@ -3997,6 +4095,61 @@ non-blocking flock, so a hand edit never contends with a fire.
   within a week; whether changed arguments are a different action is left to
   the reviewer, never asserted as equivalence. `Extra` and `Missing` are the
   replay outrunning or falling short of the recording.
+
+### Archive and forget
+
+`archive.rs` files a conversation away; `forget.rs` removes it and every
+trace of it. Owner's rulings, 2026-09-28: archive is filing (every reader
+keeps reading an archived session), delete removes all traces.
+
+- **The archive mark is a file, never a transcript record.** One file per
+  session in `sessions/.archived/`, on the `runmarker`/`permit` pattern, so
+  archive and restore are a create and a remove with nothing to race, and
+  the transcript stays a record of what was said. `/api/history` is the one
+  reader that consults it, and resuming a conversation clears it (owner's
+  ruling, 2026-09-28: opening one says it is current again).
+- **Forgetting is an enumeration, and `forget.rs` is it.** An incognito chat
+  forgets by removing one directory because nothing else was ever written; a
+  recorded session was copied from by every nightly reader. A new store that
+  holds a session id, a reflection id, or a session's text must be taught to
+  `forget`, or it is a leak — the store-wide canary test
+  (`forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else`) seeds
+  one row per store and greps every file for the id and the text.
+- **The enumeration has a backstop, and the fixture must be the stores'
+  real shape.** After the walk every purged store is grepped for the id and
+  each surviving file is named in the residue. Review found three stores the
+  walk missed (a workflow's `started` event `detail`, a message's
+  `delivered_to`, a front-door request's `triage_session`), and the canary
+  test passed through all three because its fixture rows were hand-written
+  in shapes the stores do not write.
+- **Set aside first, removed last.** The transcript becomes
+  `<id>.jsonl.forgetting` (invisible to every `.jsonl` listing) before any
+  store is touched, and is removed only when every store answered. A failure
+  anywhere keeps it, so rerunning the forget finishes — an incomplete
+  delete says so and keeps the handle, never reports done.
+- **Rows are filtered as text.** A kept line is written back byte for byte;
+  a typed round-trip would drop fields a newer binary wrote from every row
+  that survived. Each store is rewritten under its own `<root>/.lock`, the
+  file its writers flock.
+- **A rule learned only from forgotten reflections is removed, not
+  retired.** Retirement keeps the text and quotes it to the learner as
+  measured harmful, which is both a trace and a false lesson.
+- **A workspace is the session's only if no other header names it.** Web
+  keys are reused (`main`, a resumed chat keeps its workspace) and voice
+  shares one directory, so ownership is checked against every header, and a
+  workspace outside `~/.mecha/work` is never touched.
+- **The graph answers for itself.** `mecha-graph redact --source agent:mecha
+  --source-id <id> --vacuum --tombstone-absent` through `$MECHA_GRAPH_BIN`
+  — the tombstone even on no match, because a distill that read the
+  transcript before the delete lands after it; mecha never opens
+  the database. "No graph" is an answer only when neither the binary nor the
+  database exists *and* the distill ledger never listed the session — and a
+  failed graph step keeps the ledger line, so the retry still knows it owes
+  an episode.
+- **A live writer cannot resurrect a deleted transcript.** `Session::append`
+  creates the file only for the header; any later record finding it gone
+  errors. The web handlers also release the conversation from the process
+  first (`ChatState::release_recorded`) and refuse while a run is in flight.
 
 ## The run-quality corpus
 

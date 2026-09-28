@@ -7,6 +7,7 @@
 pub mod ask;
 pub mod builtin;
 pub mod goal_context;
+pub mod image_library;
 pub mod image_view;
 pub mod profile;
 pub mod recall;
@@ -939,14 +940,22 @@ fn fresh_spill_dir() -> Option<PathBuf> {
 /// workspace, which is stable across its turns, and aged out by
 /// `mecha work clean`.
 pub fn session_spill_dir(workspace: &Path) -> Option<PathBuf> {
+    Some(session_spill_dir_under(
+        &crate::work::mecha_home().ok()?,
+        workspace,
+    ))
+}
+
+/// [`session_spill_dir`] under an explicit mecha home — for a reader that was
+/// handed its roots rather than asking the environment (`forget::Roots`).
+pub fn session_spill_dir_under(home: &Path, workspace: &Path) -> PathBuf {
     use sha2::Digest;
-    let home = crate::work::mecha_home().ok()?;
     let canonical = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf());
     let digest = sha2::Sha256::digest(canonical.as_os_str().as_encoded_bytes());
     let id: String = digest.iter().take(16).map(|b| format!("{b:02x}")).collect();
-    Some(home.join(SESSION_SPILL_ROOT).join(id))
+    home.join(SESSION_SPILL_ROOT).join(id)
 }
 
 /// The root the jail admits for a spill directory: the directory itself,
