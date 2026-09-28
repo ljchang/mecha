@@ -670,6 +670,9 @@ pub async fn load_with(
     }
     let busy_deadline = tokio::time::Instant::now() + wait;
     let mut busy_since: Option<tokio::time::Instant> = None;
+    // "Switch now" cuts the busy model off once; a later ask to is waited
+    // out like any busy refusal, bounded here rather than by each caller.
+    let mut cut = false;
     let (status, body) = loop {
         let resp = http
             .post(format!("{b}/models/load"))
@@ -690,7 +693,7 @@ pub async fn load_with(
         match hooks.busy() {
             OnBusy::Wait => {}
             OnBusy::Stop(why) => return Err(why),
-            OnBusy::CutOff(busy) => {
+            OnBusy::CutOff(busy) if !std::mem::replace(&mut cut, true) => {
                 // Not fatal, as `--now`'s own unload is not: the next ask
                 // says whether the model is still in the way.
                 if let Err(e) = unload(&b, &busy, wait).await {
@@ -698,6 +701,7 @@ pub async fn load_with(
                 }
                 continue;
             }
+            OnBusy::CutOff(_) => {}
         }
         if tokio::time::Instant::now() + BUSY_RETRY >= busy_deadline {
             bail!(
@@ -721,8 +725,13 @@ pub async fn load_with(
     // A `failed` flag left by an earlier attempt is never read as this one's:
     // `server_models::load` sets the model `LOADING` before the POST handler
     // returns (`c841aee`), so by the first poll the stale status is gone.
+    // Past the busy wait, whatever the router answered: accepted, already
+    // running (the poll below resolves it), or refused for good (it fails).
+    // Nothing is left for "switch now" to hurry — gated on success, the
+    // marker went unwritten for an already-running model and the chip kept
+    // offering a button nothing read (found on review).
+    hooks.accepted();
     let refusal = if status.is_success() {
-        hooks.accepted();
         None
     } else {
         Some(format!("{status} from POST /models/load: {}", body.trim()))
