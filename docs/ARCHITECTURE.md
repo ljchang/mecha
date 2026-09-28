@@ -320,7 +320,12 @@ Three rules on the fold, each a bug if undone:
 
 - **Only for a model that can see.** To a blind one the image would render
   as a placeholder line on every turn for the life of the conversation; it is
-  told in the result instead, and nothing is armed on its account.
+  told in the result instead. The *fold* arms nothing then; the tool's own
+  declaration still does — `image_view` is `private()`, and `run_tools` arms
+  from a declaration whatever the result — because a read of the owner's
+  file is private whether or not anyone could see it (found on review of
+  #365: the sentence used to say nothing was armed, which read as licence
+  to drop the declaration).
 - **A look arms `private_data`**, from the turn the pixels arrive — what
   `arm_for_content` reads off any image at the next run's start anyway, and
   what `image_view` declares: it is `fs_read` for pictures. Drawing arms
@@ -329,6 +334,19 @@ Three rules on the fold, each a bug if undone:
   web chat does not draw an image in a results turn as an owner bubble. It
   rides in a user message, so unregistered it would be mined as a steer and
   shown as something the owner said and attached.
+
+**Every door reads the header before it trusts a name** (`image::decode`,
+`block_from_bytes`). A file named `.png` whose header cannot be read is
+refused rather than passed through — under `MAX_BYTES` it used to ride into
+the transcript unread — and the media type sent is the one the header says,
+so a JPEG named `.png` goes out as `image/jpeg`. A picture the provider
+rejects fails every later request of that conversation, so both halves
+matter. Over `MAX_DECODE_PIXELS` (128 megapixels) is
+refused as *too large to show*, by area rather than by side, because a
+1440×20000 full-page screenshot is ~100 MB and exactly what the caps exist
+to shrink and show. The allocation itself was already bounded by the
+`image` crate's default 512 MiB `max_alloc`, set explicitly now; what the
+pixel check changed is the diagnosis, from "did not decode" to "too large".
 
 The door is `image::rendered_block`: a picture at or under
 `PASS_THROUGH_BYTES` (1 MiB) that fits `MAX_EDGE` passes through byte for

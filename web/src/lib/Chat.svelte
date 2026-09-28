@@ -1093,8 +1093,20 @@
       if (data.started || data.steered) {
         receiveInput({ type: data.started ? 'user' : 'queued', text, request_id, spoken: false });
       }
+      // Pictures the text names that the model was not shown — said here,
+      // since the chip is already gone. Only a blind model is a reason the
+      // server can name; the rest (the cap, an unreadable file, a chat with
+      // no workspace) are said as what happened, not guessed at.
+      if (data.started && data.pictures_not_shown > 0) {
+        pushEntry({
+          kind: 'notice',
+          text: data.model_sees
+            ? `${data.pictures_not_shown} picture(s) went in by name only — the model was not shown them.`
+            : 'This model cannot see images, so the picture(s) went in by name only.',
+        });
+      }
       // A steer carries text only, so a picture sent into a working run is
-      // named and not shown — said here, since the chip is already gone.
+      // named and not shown.
       if (data.steered && attached.some((p) => /\.(png|jpe?g|gif|webp)$/i.test(p))) {
         pushEntry({
           kind: 'notice',

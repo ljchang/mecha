@@ -24,6 +24,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A picture is typed by its bytes, not its name, at every door.** A file
+  named `.png` that is not a picture used to pass through unread under
+  5 MB, and a real JPEG named `.png` went out labelled `image/png`; the
+  provider rejects either, and a rejected picture fails every later request
+  of that chat. The first is refused, the second sent as `image/jpeg`.
+  Reachable from Slack and the web chat.
+- **A picture over 128 megapixels is refused as too large to show**, from
+  its header, rather than reported as a failed decode (the `image` crate's
+  default 512 MiB allocation cap already stopped the allocation; the error
+  said the wrong thing). The bound is by area, so a long full-page
+  screenshot is still shrunk and shown.
+- **The web chat says when an attached picture was not shown** — a model
+  that cannot see, more than 8 on one message, or a file that will not open
+  — rather than clearing the chip as if it had been. `image_generate`'s
+  result again tells a run it has not seen the picture, so one without
+  `image_view` does not describe it.
+
 - **A picture uploaded in the web chat reaches the model as pixels**
   (`REMOTE-SURFACE-DESIGN.md` D6, built half-way on 2026-08-24). The page
   named an upload's path and nothing else, so the model could not see what

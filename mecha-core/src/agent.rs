@@ -4744,8 +4744,10 @@ impl Agent {
 
             // Only for a model that can see: to one that cannot, the image
             // would render as a placeholder line every turn for the life of
-            // the conversation, and arm `private_data` on the strength of
-            // pixels nobody looked at. It is told so in the result instead.
+            // the conversation. It is told so in the result instead; the
+            // fold arms nothing then, while the tool's own declaration (read
+            // just above) still does — a read of the owner's file is private
+            // whether or not anyone could see it.
             // Armed here rather than left to `arm_for_content` at the next
             // run's start, so the pixels are counted from the turn they
             // arrive — the same answer, a run sooner.
@@ -5211,7 +5213,9 @@ mod tests {
     }
 
     /// A blind model gets no placeholder to carry for the life of the
-    /// conversation, is told in words, and nothing is armed on its account.
+    /// conversation and is told in words, and the *fold* arms nothing —
+    /// `PaintTool` declares no capabilities, so this measures the fold alone;
+    /// a declaring tool (`image_view`) still arms through its declaration.
     #[tokio::test]
     async fn a_model_that_cannot_see_is_told_rather_than_handed_a_placeholder() {
         let (convo, sent) = paint_once(false).await;

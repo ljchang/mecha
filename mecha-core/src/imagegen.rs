@@ -1536,7 +1536,8 @@ impl Tool for ImageGenerate {
             text.push_str(&format!(
                 "Generated a {size} image in {secs} s (seed {}, {} steps) and saved it to {path} \
                  in the workspace. To revise it, call image_generate again with an edited prompt and seed {} \
-                 to keep the composition, or edit it by passing {path} in reference_images.",
+                 to keep the composition, or edit it by passing {path} in reference_images. You have \
+                 not seen it, so do not describe what it shows.",
                 req.seed, req.steps, req.seed
             ));
         } else {
@@ -1544,7 +1545,7 @@ impl Tool for ImageGenerate {
             text.push_str(&format!(
                 "Edited {} into a {size} image in {secs} s (seed {}, {} steps) and saved it to \
                  {path} in the workspace; the original is unchanged. To change it further, edit \
-                 {path} next.",
+                 {path} next. You have not seen it, so do not describe what it shows.",
                 sources.join(", "),
                 req.seed,
                 req.steps
@@ -2049,6 +2050,16 @@ mod tests {
         );
         assert_eq!(std::fs::read(dir.join(path)).unwrap(), PNG);
         assert!(!out.external, "our own output is not third-party content");
+        // For a run with no `image_view` — a blind provider, `--tool`, or
+        // `[tools] disabled` — this line is the only guard against it
+        // describing a picture it never saw.
+        assert!(
+            out.content
+                .contains("You have not seen it, so do not describe what it shows."),
+            "{}",
+            out.content
+        );
+        assert!(out.image.is_none(), "a generation returns no pixels");
 
         let seen = seen.lock().unwrap().clone();
         let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
@@ -2286,7 +2297,10 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert!(
-            out.content.contains("Edited inbox/me.jpg"),
+            out.content.contains("Edited inbox/me.jpg")
+                && out
+                    .content
+                    .contains("You have not seen it, so do not describe what it shows."),
             "{}",
             out.content
         );
