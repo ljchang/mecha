@@ -1027,6 +1027,9 @@
       // than bound reactively — switching sessions mid-call must not
       // silently redirect the words being spoken into a different one.
       sessionKey: key,
+      // An incognito call goes on only if the answer says nothing of it is
+      // logged (`refusesAnswer`), read here at connect like the key.
+      requireUnlogged: incognito,
       onState: (name, label) => (vState = { name, label }),
       onTranscript,
       onLevel: (level) => (vLevel = level),
@@ -1081,6 +1084,10 @@
       vSession = null;
       voiceOpen = false;
       vLevel = 0;
+      // A hang-up is not a dropped line, so an incognito call's ring has no
+      // reconnect to carry audio into; the reconnect path ends its session
+      // directly and keeps the ring (review of #376).
+      if (vIncognito) dropRing(vKey);
     }
   }
 

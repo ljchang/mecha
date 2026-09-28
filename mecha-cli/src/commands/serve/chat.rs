@@ -2027,7 +2027,7 @@ struct TurnOpts {
     /// across both doors instead of being reset by opening a call.
     approve_all: bool,
     /// The voice worker vouched that it keeps no text of this call
-    /// (`X-Voice-Unlogged`, `INCOGNITO-DESIGN.md` §3.4): the one condition
+    /// (`X-Voice-Unlogged`, `INCOGNITO-DESIGN.md` §6.4): the one condition
     /// under which a spoken turn may enter an incognito chat. A claim the
     /// worker makes only once its log silence is held, so a worker that
     /// predates the silence never makes it and the chat stays text-only.
@@ -2043,7 +2043,7 @@ struct TurnOpts {
 ///
 /// The voice worker is a process the incognito promise has to cover: at its
 /// default level pipecat logs every transcription and every sentence it
-/// speaks, into a journal kept on disk (`INCOGNITO-DESIGN.md` §3.4). So a
+/// speaks, into a journal kept on disk (`INCOGNITO-DESIGN.md` §6.4). So a
 /// call into an incognito chat is admitted only when the worker vouches for
 /// this call — `X-Voice-Unlogged`, sent only while its silence is held. The
 /// refusal is the default: a worker that cannot make the claim is one whose

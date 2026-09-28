@@ -383,14 +383,24 @@ conversation has no `Session` to record into, and a closed key comes back
   It outlives the chat on disk, and every ordinary run started within the
   call window records it in its own situation brief — the fact of the call,
   written into another chat's transcript.
-- **The claim** (`X-Voice-Unlogged: 1`). Sent only from inside the silence,
-  and checked there with a raise rather than an `assert`. The server's gate
-  (`spoken_turn_may_enter`) admits a spoken turn into an incognito chat only
-  with it, reading anything but exactly `1` as no claim — so a worker that
-  predates the silence is refused, and the chat stays text-only instead of
-  trusting a silence nobody held. `VoiceHost::speak` refuses such a call
-  before its barge-in, so an unvouched call does not stop the chat's run in
-  flight on its way to being turned away.
+- **The door** (`serve::forward_offer`). A worker logs a call from the
+  moment it holds the offer, so a vouch checked at the facade would come
+  after an old worker had already written the words. `mecha serve` therefore
+  asks the runner `GET /mecha/unlogged` before it forwards an offer naming
+  an incognito chat; anything but `{"unlogged": true}` is a `409` and the
+  worker never sees the offer — not the chat's key, not a word. With the
+  vouch, serve adds `"unlogged": true` to the answer, and the page
+  (`voice-core.js`'s `refusesAnswer`) sets no remote description, so lets no
+  media flow, without it — so a `mecha serve` too old to ask is refused too.
+  The worker's `OfferSilence` holds the silence while the runner handles the
+  offer, whose error path logs the whole request at DEBUG.
+- **The claim** (`X-Voice-Unlogged: 1`), per turn. Sent only from inside the
+  silence, and checked there with a raise rather than an `assert`. The
+  facade's gate (`spoken_turn_may_enter`) admits a spoken turn into an
+  incognito chat only with it, reading anything but exactly `1` as no claim.
+  Behind the door it is the second line, not the first; `VoiceHost::speak`
+  applies it before its barge-in, so an unvouched turn does not stop the
+  chat's run in flight on its way to being refused.
 - **The page** hangs up the call when the chat ends, clears the overlay's
   words, and drops the uplink ring (`voice-core.js`'s `dropRing`) — the
   ring is audio of what was said, and it outlives calls on purpose. A switch

@@ -23,6 +23,7 @@ The three legs are env-configurable base URLs (D6):
 import asyncio
 import collections
 import contextlib
+import json
 import os
 import sys
 import threading
@@ -1059,7 +1060,12 @@ class LocalTTS(OpenAITTSService):
         ordinary, mostly-neutral day, which is exactly the silent-inertness
         failure this exists to catch. Debug level, once per answer: the same
         shape as the percent-encoding bug this module already shipped and
-        fixed, which was also silently inert until someone went looking."""
+        fixed, which was also silently inert until someone went looking.
+
+        **Except for a call into an incognito chat**, where the line is not
+        written at all: it would say one was spoken into, and this file's
+        records are outside the pipecat silence. The detector is off for
+        those calls; every other call still carries it."""
         await super().on_turn_context_created(context_id)
         self._affect_context_id = context_id
         self._affect_params = await self._poll_affect_params()
@@ -1830,7 +1836,7 @@ class UplinkAudio:
 
 # ---- incognito: a call nothing keeps the words of ----
 #
-# `docs/INCOGNITO-DESIGN.md` §3.4. The journal this unit writes to is kept on
+# `docs/INCOGNITO-DESIGN.md` §6.4. The journal this unit writes to is kept on
 # disk, and at pipecat's default level (the runner re-adds a DEBUG sink on
 # start) it holds both sides of every call: `Transcription: …` from the STT
 # service and every sentence the TTS service is handed. So while a call into
@@ -1846,10 +1852,11 @@ class UplinkAudio:
 # first task started outside that context, and the promise is the one that
 # must not bend.
 #
-# The facade admits a spoken turn into an incognito chat only on
-# `X-Voice-Unlogged: 1`, which is sent only from inside `Unlogged.held` - so
-# a worker that predates this never makes the claim, and the chat stays
-# text-only rather than trusting a silence nobody held.
+# `mecha serve` hands this worker an offer naming an incognito chat only
+# after `GET /mecha/unlogged` answers yes (`install`), so a worker that
+# predates the silence is never handed one. Per turn, the facade admits a
+# spoken turn into an incognito chat only on `X-Voice-Unlogged: 1`, sent
+# only from inside `Unlogged.held`.
 INCOGNITO_PREFIX = "incognito-"
 
 
@@ -1938,6 +1945,64 @@ def names_incognito(key: str | None) -> bool:
     reach, so a line that would name one is not written at all: redacted, it
     would still say an incognito chat was spoken into."""
     return bool(key) and key.startswith(f"chat:{INCOGNITO_PREFIX}")
+
+
+class OfferSilence:
+    """Hold the silence while an offer naming an incognito chat is handled.
+
+    `bot` holds it for the call, but the runner handles the offer first,
+    and on its error path logs the whole request - `request_data.session`,
+    the chat's key, included - at DEBUG. Pure ASGI rather than Starlette's
+    `BaseHTTPMiddleware`: the body is read once here and replayed to the
+    runner exactly as it arrived."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("method") != "POST" or not scope.get(
+            "path", ""
+        ).endswith("/api/offer"):
+            await self.app(scope, receive, send)
+            return
+        chunks, more = [], True
+        while more:
+            message = await receive()
+            if message.get("type") != "http.request":
+                break
+            chunks.append(message.get("body", b""))
+            more = message.get("more_body", False)
+        body = b"".join(chunks)
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        try:
+            named = named_chat_session((json.loads(body) or {}).get("request_data"))
+        except (ValueError, AttributeError):
+            named = None
+        with UNLOGGED.held(is_incognito(named)):
+            await self.app(scope, replay, send)
+
+
+def install(app) -> None:
+    """What this worker adds to the runner's app, before `main` starts it.
+
+    `GET /mecha/unlogged` is the vouch `mecha serve` asks for before it
+    forwards an offer naming an incognito chat: a worker that predates the
+    silence has no such route, so it is never handed the offer - never the
+    chat's key, never a word (`serve::forward_offer`, review of #376)."""
+
+    @app.get("/mecha/unlogged")
+    async def unlogged():
+        return {"unlogged": True}
+
+    app.add_middleware(OfferSilence)
 
 
 def session_line(session_key: str, named: str | None) -> str:
@@ -2306,6 +2371,7 @@ async def bot(runner_args: RunnerArguments):
 
 
 if __name__ == "__main__":
-    from pipecat.runner.run import main
+    from pipecat.runner.run import app, main
 
+    install(app)
     main()
