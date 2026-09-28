@@ -1046,7 +1046,15 @@ impl Appraiser {
             past_unreadable: clean.is_err(),
             known: cx.known,
         });
-        let answered = match distiller.appraise(turn, &inputs).await {
+        // Ruling 1B: an output with nothing for the owner to act on is asked
+        // for no expected act — the stores the scorer reads, read the same
+        // way, so an unreadable one leaves the question asked.
+        let offers_act = mecha_core::appraisal_store::output_offers_act(
+            id,
+            evidence.anchor(),
+            &owner_acts(&self.stores),
+        );
+        let answered = match distiller.appraise(turn, &inputs, offers_act).await {
             Ok(a) => a,
             Err(e) => {
                 eprintln!("· {id} — appraisal failed: {e:#}");
