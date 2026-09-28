@@ -439,7 +439,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     }
                     if hidden_experiments > 0 {
                         why.push(format!(
-                            "{hidden_experiments} experiment session(s) hidden (they belong to a trial home)"
+                            "{hidden_experiments} experiment session(s) hidden — trial runs, and any you marked with `sessions mark`; `--kind experiment` shows them"
                         ));
                     }
                     if unkinded > 0 && kind.is_some() {
@@ -481,7 +481,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             }
             if hidden_experiments > 0 {
                 println!(
-                    "({hidden_experiments} experiment session(s) hidden; they belong to a trial home)"
+                    "({hidden_experiments} experiment session(s) hidden — trial runs, and any you marked with `sessions mark`; `--kind experiment` shows them)"
                 );
             }
         }
@@ -642,17 +642,51 @@ fn mark(
         "{session_id} marked as an experiment: out of the run corpus, reflect, distill and \
          learn, and its appraisal and scores are withdrawn"
     );
-    // What it had already reached, from the stores that hold it.
-    let learning = mecha_core::learning::LearningStore::open(
-        mecha_core::learning::LearningStore::default_root()?,
-    )?;
-    let reflections = learning
+    // What it had already reached, from the stores that hold it — read
+    // only: a read path must not create the store it reports on (review of
+    // #382). No learning store is nothing reached.
+    let Some(learning) = mecha_core::learning::LearningStore::open_existing_default() else {
+        return Ok(());
+    };
+    let reflexions: Vec<_> = learning
         .reflexions()?
+        .into_iter()
+        .filter(|r| r.session_id == session_id)
+        .collect();
+    let waiting = reflexions.iter().filter(|r| !r.is_processed).count();
+    if waiting > 0 {
+        println!("  {waiting} unprocessed reflection(s) from it are withheld from learn");
+    }
+    // A processed one already reached `learn`: the mark cannot take back a
+    // rule it minted, so name the live ones for the owner to retire rather
+    // than fall silent, which would read as "nothing here" (review of #382).
+    let ids: std::collections::BTreeSet<&str> = reflexions
         .iter()
-        .filter(|r| r.session_id == session_id && !r.is_processed)
-        .count();
-    if reflections > 0 {
-        println!("  {reflections} unprocessed reflection(s) from it are withheld from learn");
+        .filter(|r| r.is_processed)
+        .map(|r| r.id.as_str())
+        .collect();
+    if !ids.is_empty() {
+        let mut live = Vec::new();
+        for domain in learning.domains() {
+            for rule in learning.learned_rules(&domain)? {
+                if rule.active() && rule.sources.iter().any(|s| ids.contains(s.as_str())) {
+                    live.push(rule.id.clone().unwrap_or_else(|| rule.text.clone()));
+                }
+            }
+        }
+        println!(
+            "  {} reflection(s) from it already reached learn; the mark does not take back a \
+             rule{}",
+            ids.len(),
+            if live.is_empty() {
+                " — none of them is behind a live rule".to_string()
+            } else {
+                format!(
+                    ". Live rule(s) resting on them — retire with `mecha rules retire`: {}",
+                    live.join(", ")
+                )
+            }
+        );
     }
     if learning.distilled_sessions()?.contains(&session_id) {
         println!(
