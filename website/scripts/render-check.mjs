@@ -76,6 +76,9 @@ const ROUTES = [
   ...[...declared[1].matchAll(/'([^']+)'/g)].map((m) => (m[1] === 'home' ? '' : m[1])),
   'review/graph',
   'review/frontdoor',
+  // The board's views are hash suffixes as well; home links into these two.
+  'tasks/waiting',
+  'tasks/workflows',
   // Settings' panes are hash suffixes too, and they hold nearly all of the
   // settings code — a gate that visits only `#settings` checks three rows and
   // a chevron.
@@ -521,7 +524,9 @@ for (const route of ROUTES) {
         }
         return originalFetch(url, options);
       };
-      location.hash = 'home';
+      // Workflows are a view of the task board (they left home on
+      // 2026-09-28); the hash change is what mounts it under the probe.
+      location.hash = 'tasks/workflows';
     });
     await page.getByRole('button', {name: 'Finish workflow', exact: true}).click({timeout: 5000});
     await page.locator('summary').filter({hasText: 'Finished workflows'}).click({timeout: 5000});

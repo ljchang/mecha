@@ -61,6 +61,7 @@
 {#if !today && !error}<div class="empty">Reading your workflows…</div>{/if}
 {#if today}
   {#each groups as g (g.key)}
+    <section aria-label={g.label}>
     <h2>{g.label} <span>{g.items.length}</span></h2>
     {#each g.items as item (item.id)}
       <article class:urgent={g.key === 'urgent'}>
@@ -79,6 +80,7 @@
         </div>
       </article>
     {/each}
+    </section>
   {:else}
     <div class="empty">No workflow is open.</div>
   {/each}
@@ -100,7 +102,7 @@
 
 <style>
   h2 { font-size: 13px; font-weight: 600; color: var(--text-muted); margin: 18px 0 8px; }
-  h2:first-of-type { margin-top: 4px; }
+  section:first-of-type h2 { margin-top: 4px; }
   h2 span, summary span { font-family: var(--mono); font-weight: 400; margin-left: 6px; }
   h3 { font-size: 15px; margin: 0; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
   article { background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); padding: 14px; margin-bottom: 8px; }
