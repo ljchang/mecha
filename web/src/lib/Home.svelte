@@ -1,6 +1,6 @@
 <script>
   import { apiFetch as fetch } from './api.js';
-  import { needsYou, fyi, openTasks, healthLine } from './home-view.js';
+  import { needsYou, fyi, actionable, healthLine } from './home-view.js';
   // Home is counts and doors. One card per place, a number, a tap into the
   // tab that has the rest — and nothing that tab already shows. The cards
   // never move: where Mail is today is where it is tomorrow, which is what
@@ -36,6 +36,7 @@
     mail = m.status === 'fulfilled' && Array.isArray(m.value) ? m.value : null;
     tasks = t.status === 'fulfilled' ? (t.value?.items ?? null) : null;
     today = w.status === 'fulfilled' ? w.value : null;
+    if (!summary?.doctor?.length) healthOpen = false;
   }
 
   // Every thirty seconds while someone is looking; a phone in a pocket
@@ -59,7 +60,7 @@
     summary === undefined ? undefined : summary === null ? null : (summary.queues?.find((q) => q.queue === name)?.depth ?? null);
 
   const needs = $derived(needsYou(mail));
-  const open = $derived(openTasks(tasks));
+  const open = $derived(actionable(tasks));
   const overdue = $derived(Array.isArray(open) ? open.filter((t) => t.overdue).length : 0);
   const workflows = $derived(today ? (today.items ?? []).filter((i) => i.workflow).length : today);
   const health = $derived(healthLine(summary?.doctor));
@@ -71,7 +72,7 @@
     { label: 'Mail', to: 'mail', n: Array.isArray(needs) ? needs.length : needs, sub: fyi(mail) ? `need you · ${fyi(mail)} FYI` : 'need you' },
     { label: 'Outbox', to: 'review/outbox', n: depth('outbox drafts'), sub: 'drafts to review' },
     { label: 'Questions', to: 'tasks/waiting', n: depth('blocked questions'), sub: 'a run waits on your answer' },
-    { label: 'Tasks', to: 'tasks', n: Array.isArray(open) ? open.length : open, sub: overdue ? `open · ${overdue} overdue` : 'open', hot: overdue > 0 },
+    { label: 'Tasks', to: 'tasks', n: Array.isArray(open) ? open.length : open, sub: overdue ? `to do · ${overdue} overdue` : 'to do next', hot: overdue > 0 },
   ]);
 
   // The two queues with a card above are not repeated below.
@@ -338,7 +339,8 @@
   }
   /* A zero is a quiet number: the eye goes to what has something in it. */
   .zero .count {
-    color: #4a4a5c;
+    color: var(--text-muted);
+    opacity: 0.45;
   }
 
   /* ---- the machine's queues: smaller, one line of detail each ---- */
