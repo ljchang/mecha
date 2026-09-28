@@ -1880,9 +1880,23 @@ def named_chat_session(body) -> str | None:
         and want.isascii()
     ):
         return want
-    if want:
+    if want.startswith(INCOGNITO_PREFIX):
+        # Refused without repeating it: a name carrying the prefix is one
+        # an incognito chat may have sent, and it is not written down.
+        print("voice: refusing a malformed chat session", flush=True)
+    elif want:
         print(f"voice: refusing malformed chat session {want!r}", flush=True)
     return None
+
+
+def offers_incognito(request_data) -> bool:
+    """Whether an offer's session names an incognito chat, read off the raw
+    string before `named_chat_session` validates it. The silence keys on
+    this, so a malformed name carrying the prefix still holds it: `mecha
+    serve` decides on the prefix, and the two sides must never disagree in
+    the direction that logs (review of #376)."""
+    want = request_data.get("session") if isinstance(request_data, dict) else None
+    return isinstance(want, str) and want.strip().startswith(INCOGNITO_PREFIX)
 
 
 def is_incognito(named: str | None) -> bool:
@@ -1983,10 +1997,10 @@ class OfferSilence:
             return await receive()
 
         try:
-            named = named_chat_session((json.loads(body) or {}).get("request_data"))
+            quiet = offers_incognito((json.loads(body) or {}).get("request_data"))
         except (ValueError, AttributeError):
-            named = None
-        with UNLOGGED.held(is_incognito(named)):
+            quiet = False
+        with UNLOGGED.held(quiet):
             await self.app(scope, replay, send)
 
 
@@ -2352,11 +2366,20 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
 async def bot(runner_args: RunnerArguments):
     webrtc_connection: SmallWebRTCConnection = runner_args.webrtc_connection
     body = runner_args.body if isinstance(runner_args.body, dict) else {}
-    named = named_chat_session(body)
+    quiet = offers_incognito(body)
     # Held before the transport exists and released only when the call is
     # over, however it ends: nothing of an incognito call is logged at any
-    # point in its life.
-    with UNLOGGED.held(is_incognito(named)):
+    # point in its life. Keyed on the raw name, so it covers the refusal
+    # just below as well.
+    with UNLOGGED.held(quiet):
+        named = named_chat_session(body)
+        if quiet and not is_incognito(named):
+            # A name that claimed to be incognito and failed validation.
+            # Going on would drop the chat binding and answer in the
+            # facade's own, recorded, slot while the page says nothing is
+            # kept; the call ends instead.
+            await webrtc_connection.disconnect()
+            return
         # Decided here, from the offer, before any RTP frame is read: a switch
         # mid-call would deliver the first words twice.
         transport_cls = UplinkTransport if body.get("uplink") == "channel" else SmallWebRTCTransport

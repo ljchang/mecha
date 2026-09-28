@@ -5,7 +5,10 @@ in the worker's venv:
 `~/models/voice-worker-venv/bin/python scripts/voice/test_incognito.py`."""
 
 import asyncio
+import contextlib
 import importlib
+import inspect
+import io
 import sys
 import unittest
 import warnings
@@ -22,6 +25,7 @@ from worker import (  # noqa: E402
     is_incognito,
     named_chat_session,
     names_incognito,
+    offers_incognito,
     session_line,
     spoken_words,
     UNLOGGED,
@@ -213,6 +217,28 @@ class TheRunnersDoor(unittest.TestCase):
         self.client().post("/api/offer", json=body)
         self.assertEqual(self.during, [(False, body)])
 
+    def test_a_malformed_incognito_name_is_handled_inside_the_silence_too(self):
+        # `mecha serve` decides on the prefix; the worker must never read the
+        # same offer as ordinary and log it (review of #376).
+        body = {"sdp": "x", "type": "offer", "request_data": {"session": "incognito-ABC"}}
+        self.client().post("/api/offer", json=body)
+        self.assertEqual(self.during, [(True, body)])
+
+    def test_the_runner_serves_the_app_install_decorates(self):
+        # `install` runs against `pipecat.runner.run.app` in `__main__`; a
+        # runner that served some other app would 404 the vouch, and every
+        # incognito call would read as a worker nobody restarted.
+        import pipecat.runner.run as runner
+        from fastapi import FastAPI
+
+        self.assertIsInstance(runner.app, FastAPI)
+        self.assertIn("uvicorn.run(app,", inspect.getsource(runner.main))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            from fastapi.testclient import TestClient
+        install(runner.app)
+        self.assertEqual(TestClient(runner.app).get("/mecha/unlogged").json(), {"unlogged": True})
+
 
 class TheSessionName(unittest.TestCase):
     def test_an_incognito_key_passes_and_is_recognised(self):
@@ -224,6 +250,21 @@ class TheSessionName(unittest.TestCase):
         self.assertEqual(named_chat_session({"session": "main"}), "main")
         self.assertFalse(is_incognito("main"))
         self.assertFalse(is_incognito(None))
+
+    def test_a_name_with_the_prefix_is_incognito_before_it_is_valid(self):
+        self.assertTrue(offers_incognito({"session": INCOGNITO_KEY}))
+        self.assertTrue(offers_incognito({"session": " incognito-ABC"}))
+        self.assertFalse(offers_incognito({"session": "main"}))
+        self.assertFalse(offers_incognito({}))
+        self.assertFalse(offers_incognito(None))
+
+    def test_a_malformed_incognito_name_is_refused_without_being_repeated(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertIsNone(named_chat_session({"session": "incognito-ABC"}))
+            self.assertIsNone(named_chat_session({"session": "Main"}))
+        self.assertNotIn("incognito-ABC", out.getvalue())
+        self.assertIn("'Main'", out.getvalue(), "an ordinary malformed name is still named")
 
     def test_malformed_names_are_refused(self):
         for bad in ["", "-x", "Main", "a/b", "x" * 33, "incognito-ÿ", 7]:

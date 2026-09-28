@@ -393,7 +393,11 @@ conversation has no `Session` to record into, and a closed key comes back
   (`voice-core.js`'s `refusesAnswer`) sets no remote description, so lets no
   media flow, without it — so a `mecha serve` too old to ask is refused too.
   The worker's `OfferSilence` holds the silence while the runner handles the
-  offer, whose error path logs the whole request at DEBUG.
+  offer, whose error path logs the whole request at DEBUG. Both sides call a
+  name incognito on its prefix, before validating it (`offers_incognito`):
+  serve refuses a prefixed name `valid_key` rejects, and the worker holds the
+  silence for one and ends the call rather than answer it in the facade's
+  recorded slot — so the two can never disagree in the direction that logs.
 - **The claim** (`X-Voice-Unlogged: 1`), per turn. Sent only from inside the
   silence, and checked there with a raise rather than an `assert`. The
   facade's gate (`spoken_turn_may_enter`) admits a spoken turn into an
