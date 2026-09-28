@@ -248,9 +248,10 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
             })
         }),
     );
-    report.attempt(
+    let questions = report_ids(
+        &mut report,
         "questions",
-        remove_items(&roots.questions, |v| field_is(v, "session_id", id)).map(|v| v.len()),
+        remove_items(&roots.questions, |v| field_is(v, "session_id", id)),
     );
     report.attempt("messages", purge_mailbox(&roots.messages, id));
     // The graph before the learning store: whether the session was distilled
@@ -338,9 +339,21 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
     );
     report.attempt(
         "trigger ledger",
+        // The row stays: `runs.jsonl` *is* the schedule marker (`last_slots`
+        // reads a trigger's last fired slot from it), and dropping the row
+        // would rewind the schedule and fire that slot again — the briefing
+        // sent twice. Only the pointer to the conversation leaves it.
         with_lock(&roots.triggers, || {
-            filter_jsonl(&roots.triggers.join("runs.jsonl"), |v| {
-                field_is(v, "session_id", id)
+            edit_jsonl(&roots.triggers.join("runs.jsonl"), |v| {
+                let Some(m) = v.as_object_mut() else {
+                    return false;
+                };
+                if m.get("session_id").and_then(Value::as_str) != Some(id) {
+                    return false;
+                }
+                m.remove("session_id");
+                m.remove("summary");
+                true
             })
         }),
     );
@@ -366,7 +379,23 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
                         });
                         events.len() != before
                     });
-                nulled | dropped
+                // And its links to the drafts and questions this delete
+                // removed: the board reads a link to a missing item as
+                // `unreadable`, which it files as urgent — forever.
+                let unlinked = ["outbox", "questions"].into_iter().fold(false, |acc, key| {
+                    let gone: &[String] = if key == "outbox" { &items } else { &questions };
+                    v.get_mut(key)
+                        .and_then(Value::as_array_mut)
+                        .is_some_and(|list| {
+                            let before = list.len();
+                            list.retain(|x| {
+                                !x.as_str().is_some_and(|x| gone.iter().any(|g| g == x))
+                            });
+                            list.len() != before
+                        })
+                        | acc
+                });
+                nulled | dropped | unlinked
             })
         }),
     );
@@ -387,6 +416,13 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
     report.attempt(
         "live-session marker",
         remove_if_present(&roots.messages.join(".agents").join(format!("{id}.json"))),
+    );
+
+    // Before the backstop, which also reads file *names*: the mark's name is
+    // the session id.
+    report.attempt(
+        "archive mark",
+        crate::archive::unarchive(&roots.sessions, id).map(usize::from),
     );
 
     // The backstop under the enumeration: every store it walked, searched
@@ -428,10 +464,6 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
                 .into(),
         ),
     }
-    report.attempt(
-        "archive mark",
-        crate::archive::unarchive(&roots.sessions, id).map(usize::from),
-    );
 
     if report.errors.is_empty() {
         std::fs::remove_file(&parked).with_context(|| format!("removing {}", parked.display()))?;
@@ -885,7 +917,10 @@ fn still_naming(roots: &Roots, id: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
                 Err(_) => unread.push(path),
             }
         } else if meta.is_file() {
+            // A name is a copy too: a marker keyed by the session id holds it
+            // only in its name.
             match std::fs::read(&path) {
+                Ok(_) if name.contains(id) => hits.push(path),
                 Ok(b) if b.windows(id.len()).any(|w| w == id.as_bytes()) => hits.push(path),
                 Ok(_) => {}
                 Err(_) => unread.push(path),
@@ -929,6 +964,21 @@ fn remove_if_present(path: &Path) -> Result<usize> {
         Ok(()) => Ok(1),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
         Err(e) => Err(e).with_context(|| format!("removing {}", path.display())),
+    }
+}
+
+/// [`remove_items`]'s ids into the report; an error is recorded and no ids
+/// are known.
+fn report_ids(report: &mut Report, store: &str, r: Result<Vec<String>>) -> Vec<String> {
+    match r {
+        Ok(ids) => {
+            report.count(store, ids.len());
+            ids
+        }
+        Err(e) => {
+            report.errors.push(format!("{store}: {e:#}"));
+            Vec::new()
+        }
     }
 }
 

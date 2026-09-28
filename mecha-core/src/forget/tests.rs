@@ -77,8 +77,12 @@ fn holding(dir: &Path, needle: &str) -> Vec<PathBuf> {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
-            } else if std::fs::read(&p).is_ok_and(|b| String::from_utf8_lossy(&b).contains(needle))
+            } else if p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().contains(needle))
+                || std::fs::read(&p).is_ok_and(|b| String::from_utf8_lossy(&b).contains(needle))
             {
+                // A name is a copy too: `.agents/<id>.json`, `.archived/<id>`.
                 out.push(p);
             }
         }
@@ -210,16 +214,13 @@ fn seeded(home: &Path) -> Roots {
         &roots.closures.join("closures.jsonl"),
         &format!("{{\"task\":\"t1\",\"sessions\":[\"{GONE}\",\"{KEPT}\"],\"reason\":\"done\"}}\n"),
     );
-    write(
-        &roots.triggers.join("runs.jsonl"),
-        &format!(
-        "{{\"session_id\":\"{GONE}\",\"summary\":\"{CANARY}\"}}\n{{\"session_id\":\"{KEPT}\"}}\n"
-    ),
-    );
+    write(&roots.triggers.join("runs.jsonl"), &format!(
+        "{{\"trigger\":\"briefing\",\"slot\":\"2026-09-28T07:00:00Z\",\"session_id\":\"{GONE}\",\"summary\":\"{CANARY}\"}}\n{{\"trigger\":\"briefing\",\"session_id\":\"{KEPT}\"}}\n"
+    ));
     write(
         &roots.workflows.join("w1.json"),
         &format!(
-            r#"{{"id":"w1","title":"Weekly","session_id":"{GONE}","events":[{{"at":"2026-09-28T12:00:00Z","kind":"started","detail":"{GONE}"}},{{"at":"2026-09-28T12:05:00Z","kind":"note","detail":"kept"}}],"verify_history":[{{"session":"{GONE}"}}]}}"#
+            r#"{{"id":"w1","title":"Weekly","session_id":"{GONE}","outbox":["item-gone","item-kept"],"questions":["q1","q2"],"events":[{{"at":"2026-09-28T12:00:00Z","kind":"started","detail":"{GONE}"}},{{"at":"2026-09-28T12:05:00Z","kind":"note","detail":"kept"}}],"verify_history":[{{"session":"{GONE}"}}]}}"#
         ),
     );
     write(
@@ -304,6 +305,10 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
         ("comparisons/comparisons.jsonl", "c-c"),
         ("closures/closures.jsonl", KEPT),
         ("triggers/runs.jsonl", KEPT),
+        // The run row is the schedule marker; losing it re-fires the slot.
+        ("triggers/runs.jsonl", "2026-09-28T07:00:00Z"),
+        ("workflows/w1.json", "item-kept"),
+        ("workflows/w1.json", "q2"),
         ("workflows/w1.json", "Weekly"),
         ("regression-sessions.txt", KEPT),
         ("requests/0000000009-meeting.json", "item-kept"),

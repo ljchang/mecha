@@ -1891,9 +1891,13 @@ mod boundary_tests {
                 if meta.is_dir() {
                     stack.push(path);
                 } else if meta.is_file()
-                    && std::fs::read(&path)
-                        .is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes()))
+                    && (path
+                        .file_name()
+                        .is_some_and(|n| n.to_string_lossy().contains(needle))
+                        || std::fs::read(&path)
+                            .is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes())))
                 {
+                    // A name is a copy too.
                     hits.push(path);
                 }
             }
