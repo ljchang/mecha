@@ -176,14 +176,14 @@ NP="${MECHA_LLAMA_NP:-4}"
 CTX="${MECHA_LLAMA_CTX:-1048576}"
 # The prompt cache holds evicted slot states so a returning prefix is restored
 # instead of re-prefilled. The 8192 MiB default (8.6 GB) holds only ONE full
-# 262k slot's KV (~5.5 GB at f16) beside four live slots, so it thrashed: 341
-# "making room for prompt cache entry" evictions between Aug 19 and Aug 20,
+# 262k slot's KV (~5.5 GB at f16), and it thrashed under -np 1 (note 2 above):
+# 341 "making room for prompt cache entry" evictions between Aug 19 and 20,
 # each one paying a re-prefill at ~1,570 tok/s. Matters more with every slot
 # added. 32768 held for a month, then filled: 118 evictions in the three days
 # to 2026-09-28 (median entry 0.5 GB, mean 1.3, p90 3.6, max 7.9), and a full
 # 32 GiB left image generation no room beside the model on the shared 121 GB
-# pool. 16384 (17.2 GB) is the owner's ruling of that day: about thirty median
-# entries or twelve mean ones, and three full slots where the default held one.
+# pool. 16384 (17.2 GB) is the owner's ruling of that day: about 34 median
+# entries or 13 mean ones, and three full slots where the default held one.
 CRAM="${MECHA_LLAMA_CRAM:-16384}"
 
 # **`--cache-idle-slots` is deliberately absent. Do not add it back.**
