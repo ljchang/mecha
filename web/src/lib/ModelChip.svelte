@@ -9,8 +9,12 @@
   import { reader, routerOf, unavailable, rows, phase, busy, pollEvery, canHurry, chipLabel, waitingLine, outcomeNote } from './model-chip.js';
 
   /// `model` is what this chat's agent is bound to — the label until the
-  /// router has been read. An incognito chat runs only on the model on this
-  /// machine and offers no picker.
+  /// router has been read. An incognito chat gets the same picker: every model
+  /// it lists is on this machine by construction (`model list` reads only the
+  /// routers `follow_loaded` entries name, and `router::follows_here` admits
+  /// those only as `kind = "local"` on a loopback address), and incognito's
+  /// local-only guarantee is its own provider and per-turn gate, never this
+  /// chip (owner's ruling, 2026-09-28, amending INCOGNITO-DESIGN §6.1).
   let { model = '', incognito = false } = $props();
 
   let data = $state(null);
@@ -47,12 +51,11 @@
   // `model` is read so a turn that moved this chat's agent re-reads the router.
   $effect(() => {
     void model;
-    if (incognito) return;
     refresh();
   });
   // A number, so a read that changes nothing but the data does not restart
   // the timer.
-  const every = $derived(incognito ? null : pollEvery(ph, open));
+  const every = $derived(pollEvery(ph, open));
   $effect(() => {
     if (!every) return;
     const t = setInterval(refresh, every);
@@ -119,10 +122,7 @@
 
 <svelte:window onpointerdown={outside} onkeydown={keydown} />
 
-{#if incognito}
-  <span class="chip" title="an incognito chat runs only on the model on this machine">{model || '…'}</span>
-{:else}
-  <span class="wrap" bind:this={wrapEl}>
+<span class="wrap" bind:this={wrapEl}>
     <button
       class="chip pick"
       class:moving={busy(ph)}
@@ -186,6 +186,9 @@
             </div>
           {/if}
           <p class="line hint">One model answers every surface — chat, voice, Slack and background work. A switch waits for runs in progress.</p>
+          {#if incognito}
+            <p class="line">Every model here runs on this machine, so this chat stays local whichever you pick.</p>
+          {/if}
         {/if}
         {#if actError}<p class="line bad">{actError}</p>{/if}
         {#if note}<p class="line" class:bad={note.tone === 'bad'} class:warn={note.tone === 'warn'}>{note.text}</p>{/if}
@@ -196,7 +199,6 @@
          chip's outline and its title above, and here for a screen reader. -->
     {#if note && !open}<span class="sr-only" role="status">{note.text}</span>{/if}
   </span>
-{/if}
 
 <style>
   .wrap {

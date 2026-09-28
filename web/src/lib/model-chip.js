@@ -128,8 +128,7 @@ export function pollEvery(ph, open) {
 }
 
 /// The chip's text. `fallback` is the model this chat's agent is bound to,
-/// shown until the router has been read (and on an incognito chat, which
-/// never offers the picker).
+/// shown until the router has been read.
 export function chipLabel(ph, fallback) {
   switch (ph.kind) {
     case 'switching':

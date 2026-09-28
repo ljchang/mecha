@@ -263,6 +263,17 @@ An incognito session is refused on a cloud provider, and the model chip is
 locked. A cloud provider's retention is the provider's; "no trace" cannot be
 promised about someone else's servers.
 
+*Amended 2026-09-28 (owner's ruling):* the chip is no longer locked. Since
+the router (REMOTE-SURFACE-DESIGN §14), the chip's picker lists only the
+models of routers a `follow_loaded` entry names, and `router::follows_here`
+admits those only as `kind = "local"` on a loopback address. Every model it
+offers is on this machine by construction. An incognito chat binds through
+the same `Follower`, and `incognito_gates` re-checks local-only on every
+turn. So the picker changes nothing about where the text goes, and an
+incognito chat offers it like any other, saying in the menu that every
+model listed is local. As the next paragraph says, the lock was never the
+mechanism.
+
 **The chip lock is not the mechanism — `fallbacks` would bypass it.**
 `setup::build_agent` wraps the primary in `provider::Failover` whenever
 `[provider] fallbacks` is non-empty, and `serve` builds one agent for the
@@ -341,7 +352,7 @@ cache.
   kept. It ends when you tap End, or after 30 minutes idle.*
 - **End** in the header; after it, the page shows that the chat is gone and
   offers a new one. There is no "earlier" entry to reopen.
-- The model chip is locked to local; the voice-call button is absent;
+- The model chip offers only local models (amended 2026-09-28, §6.1); the voice-call button is absent;
   dictation stays.
 - An edit's **Edit** button works as in any chat — inside the tmpfs folder.
 
