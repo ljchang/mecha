@@ -164,6 +164,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             todo.rehydrate(&ws, &prior.messages);
         }
         convo = prior;
+        mecha_core::archive::reopened(&path, &meta.id);
         session = Some(Session { meta, path });
     } else if !args.no_session {
         session = Some(Session::create(

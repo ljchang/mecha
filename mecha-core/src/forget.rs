@@ -61,6 +61,9 @@ pub struct Roots {
     /// The front door's requests: a stranger's request is not the
     /// conversation's, so it survives, un-pointed from the triage run.
     pub requests: PathBuf,
+    /// The standing regression check's pin list — `MECHA_REGRESSION_PINS`,
+    /// as `scripts/replay-regression.sh` reads it.
+    pub regression_pins: PathBuf,
     /// Mail triage records: the owner's threads, so they stay; a drafting
     /// conversation's pointer (`draft_session`) leaves them.
     pub triage: PathBuf,
@@ -101,6 +104,10 @@ impl Roots {
             workflows: home.join("workflows"),
             requests: home.join("requests"),
             triage: crate::mail_triage::TriageStore::default_root()?,
+            regression_pins: std::env::var_os("MECHA_REGRESSION_PINS")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join("regression-sessions.txt")),
             home,
         })
     }
@@ -122,6 +129,7 @@ impl Roots {
             workflows: home.join("workflows"),
             requests: home.join("requests"),
             triage: home.join("mail-triage"),
+            regression_pins: home.join("regression-sessions.txt"),
             home: home.to_path_buf(),
         }
     }
@@ -253,11 +261,15 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
             })
         }),
     );
-    let questions = report_ids(
-        &mut report,
-        "questions",
-        remove_items(&roots.questions, |v| field_is(v, "session_id", id)),
-    );
+    // Found now, removed last — with the outbox items, for the same reason:
+    // the workflows store is unlinked by these ids.
+    let questions = match matching_items(&roots.questions, |v| field_is(v, "session_id", id)) {
+        Ok(q) => q,
+        Err(e) => {
+            report.errors.push(format!("questions: {e:#}"));
+            Vec::new()
+        }
+    };
     report.attempt("messages", purge_mailbox(&roots.messages, id));
     // The graph before the learning store: whether the session was distilled
     // is read from the ledger the learning purge is about to empty, and a
@@ -297,31 +309,6 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         }
     };
     purge_learning(roots, id, graph_failed, &mut report);
-    // Only once every store keyed by the item ids has answered: a failure
-    // above keeps the items, so the retry can still find those rows by them.
-    if report.errors.is_empty() {
-        // The drafts, then the mined-drafts ledger lines naming them — in that
-        // order, so a failure between can leave an opaque item id behind but
-        // never a draft whose "already mined" mark is gone, which tonight's
-        // reflect would mine into a new lesson.
-        let removed = remove_items(&roots.outbox, |v| field_is(v, "session_id", id));
-        let ok = removed.is_ok();
-        report.attempt("outbox", removed.map(|v| v.len()));
-        if ok {
-            report.attempt(
-                "mined-drafts ledger",
-                with_lock(&roots.learning, || {
-                    filter_lines(&roots.learning.join("mined_outbox.jsonl"), |l| {
-                        items.iter().any(|i| i == l.trim())
-                    })
-                }),
-            );
-        }
-    } else {
-        report
-            .errors
-            .push("outbox: kept until the stores above finish, for the retry".into());
-    }
     report.attempt(
         "appraisals",
         with_lock(&roots.appraisals, || {
@@ -421,15 +408,45 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
     );
     report.attempt(
         "regression pins",
-        filter_lines(&roots.home.join("regression-sessions.txt"), |l| {
-            l.trim() == id
-        }),
+        filter_lines(&roots.regression_pins, |l| l.trim() == id),
     );
     // The file's *name* is the session id, so a failure here is a trace.
     report.attempt(
         "live-session marker",
         remove_if_present(&roots.messages.join(".agents").join(format!("{id}.json"))),
     );
+
+    // **The keys last.** The outbox items and the questions are the ids the
+    // mined-drafts ledger, the front door and the workflows are unlinked by,
+    // so they go only once every one of those has answered: a failure above
+    // keeps them, and the retry can still find those rows by them.
+    if report.errors.is_empty() {
+        // The drafts, then the mined-drafts ledger lines naming them — in that
+        // order, so a failure between can leave an opaque item id behind but
+        // never a draft whose "already mined" mark is gone, which tonight's
+        // reflect would mine into a new lesson.
+        let removed = remove_items(&roots.outbox, |v| field_is(v, "session_id", id));
+        let ok = removed.is_ok();
+        report.attempt("outbox", removed.map(|v| v.len()));
+        if ok {
+            report.attempt(
+                "mined-drafts ledger",
+                with_lock(&roots.learning, || {
+                    filter_lines(&roots.learning.join("mined_outbox.jsonl"), |l| {
+                        items.iter().any(|i| i == l.trim())
+                    })
+                }),
+            );
+        }
+        report.attempt(
+            "questions",
+            remove_items(&roots.questions, |v| field_is(v, "session_id", id)).map(|v| v.len()),
+        );
+    } else {
+        report
+            .errors
+            .push("outbox and questions: kept until the stores above finish, for the retry".into());
+    }
 
     // Before the backstop, which also reads file *names*: the mark's name is
     // the session id.
@@ -886,7 +903,7 @@ fn still_naming(roots: &Roots, id: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
     .cloned()
     .chain([
         roots.home.join("slack").join("threads"),
-        roots.home.join("regression-sessions.txt"),
+        roots.regression_pins.clone(),
         // Named, not purged: a Slack remote attach record keeps the session
         // and its workspace past detach, and a crashed task run leaves its
         // marker (`runmarker`).
@@ -977,21 +994,6 @@ fn remove_if_present(path: &Path) -> Result<usize> {
         Ok(()) => Ok(1),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
         Err(e) => Err(e).with_context(|| format!("removing {}", path.display())),
-    }
-}
-
-/// [`remove_items`]'s ids into the report; an error is recorded and no ids
-/// are known.
-fn report_ids(report: &mut Report, store: &str, r: Result<Vec<String>>) -> Vec<String> {
-    match r {
-        Ok(ids) => {
-            report.count(store, ids.len());
-            ids
-        }
-        Err(e) => {
-            report.errors.push(format!("{store}: {e:#}"));
-            Vec::new()
-        }
     }
 }
 
