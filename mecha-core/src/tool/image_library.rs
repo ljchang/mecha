@@ -420,12 +420,25 @@ mod tests {
             out.content
         );
         assert!(!out.content.contains("priya"), "{}", out.content);
-        // A short name is still found by itself.
+        // A short name is found by name.
         let out = ImageLibrary::new(lib.clone())
             .call(json!({"query": "jo"}), &ctx(&ws, None))
             .await
             .unwrap();
         assert!(out.content.contains("character jo (v1)"), "{}", out.content);
+        // A short word that is no one's name falls back to one substring —
+        // the branch the name above never reaches: "ya" is in maya and priya.
+        let out = ImageLibrary::new(lib.clone())
+            .call(json!({"query": "ya"}), &ctx(&ws, None))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("character maya (v1)")
+                && out.content.contains("character priya (v1)")
+                && !out.content.contains("character john"),
+            "{}",
+            out.content
+        );
         // With no name in it, a query searches descriptions.
         let out = ImageLibrary::new(lib.clone())
             .call(json!({"query": "dark hair"}), &ctx(&ws, None))
