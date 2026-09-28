@@ -1098,3 +1098,55 @@ impl Appraiser {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::appraisal_store::ScoreSummary;
+
+    /// The readout's rate has three shapes, and the one that read "hit rate
+    /// 100%" over four forced hits on the live store (#377) must not come
+    /// back: forced hits are named, and a rate is printed only over the
+    /// predictions that could have missed.
+    #[test]
+    fn the_expectations_line_names_forced_hits_and_rates_only_what_could_miss() {
+        let base = ScoreSummary {
+            appraisals: 7,
+            with_expectation: 7,
+            ..ScoreSummary::default()
+        };
+
+        let forced = expectations_line(&ScoreSummary {
+            scored: 4,
+            hits: 4,
+            forced: 4,
+            pending: 3,
+            ..base.clone()
+        });
+        assert!(forced.contains("4 hit — 4 of them forced"), "{forced}");
+        assert!(forced.contains("no rate: none could miss"), "{forced}");
+        assert!(
+            !forced.contains('%'),
+            "no percentage over forced hits: {forced}"
+        );
+
+        let rated = expectations_line(&ScoreSummary {
+            scored: 3,
+            hits: 2,
+            forced: 1,
+            surprises: 1,
+            hit_rate: Some(0.5),
+            ..base.clone()
+        });
+        assert!(rated.contains("1 of them forced"), "{rated}");
+        assert!(
+            rated.contains("hit rate 50% over the 2 that could miss"),
+            "{rated}"
+        );
+
+        let none = expectations_line(&base);
+        assert!(none.contains("0 scored of 7"), "{none}");
+        assert!(none.contains("; no rate)"), "{none}");
+        assert!(!none.contains("forced"), "{none}");
+    }
+}
