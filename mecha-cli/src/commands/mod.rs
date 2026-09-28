@@ -11,6 +11,7 @@ pub mod exp;
 pub mod frontdoor;
 pub mod gossip;
 pub mod harness;
+pub mod imagelib;
 pub mod kg;
 pub mod learn;
 pub mod learning_report;

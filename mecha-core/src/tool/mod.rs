@@ -7,6 +7,7 @@
 pub mod ask;
 pub mod builtin;
 pub mod goal_context;
+pub mod image_library;
 pub mod image_view;
 pub mod profile;
 pub mod recall;

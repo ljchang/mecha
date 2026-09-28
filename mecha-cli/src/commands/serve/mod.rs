@@ -3006,10 +3006,22 @@ mod boundary_tests {
         // While open: the picture is in the room, and the server has already
         // been asked to forget the job and has lost its preview.
         let room = chat.room_of(&key).await.unwrap();
-        let pictures: Vec<_> = std::fs::read_dir(room.workspace.join("images"))
-            .map(|d| d.flatten().collect())
+        let files: Vec<String> = std::fs::read_dir(room.workspace.join("images"))
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
             .unwrap_or_default();
-        assert_eq!(pictures.len(), 1, "the picture landed in the room");
+        let pictures: Vec<&String> = files.iter().filter(|n| n.ends_with(".png")).collect();
+        assert_eq!(
+            pictures.len(),
+            1,
+            "the picture landed in the room: {files:?}"
+        );
+        // Its manifest is in the room beside it — and goes with the room,
+        // which the close below checks for every file, not just the picture.
+        assert_eq!(files.len(), 2, "the picture and its manifest: {files:?}");
         let seen = seen.lock().unwrap().clone();
         let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
         assert!(
