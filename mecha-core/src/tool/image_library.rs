@@ -116,8 +116,10 @@ impl Tool for ImageLibrary {
                 // library (2026-09-28).
                 query.as_deref().is_none_or(|q| {
                     let text = e.text.to_lowercase();
+                    // Words under three letters match almost anything as a
+                    // substring ("a" is in "priya"), so they are dropped.
                     q.split(|c: char| c.is_whitespace() || c == ',')
-                        .filter(|w| !w.is_empty())
+                        .filter(|w| w.chars().count() >= 3)
                         .any(|w| e.name.contains(w) || text.contains(w))
                 })
             })
@@ -358,7 +360,10 @@ mod tests {
             .unwrap();
         }
         let out = ImageLibrary::new(lib.clone())
-            .call(json!({"query": "Maya John"}), &ctx(&ws, None))
+            .call(
+                json!({"query": "a picture of Maya and John"}),
+                &ctx(&ws, None),
+            )
             .await
             .unwrap();
         assert!(
