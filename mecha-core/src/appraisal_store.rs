@@ -1661,9 +1661,16 @@ pub fn observe(
 
 /// Whether `session_id`'s output left the owner an act from R16's set to
 /// take: a draft to release, edit or reject, a task to close or reopen, a
-/// workflow to close or cancel. The same outputs [`observe`] opens a window
-/// on, read the same way. `None` when a store it depends on could not be
-/// read — unknown, never "nothing to act on".
+/// workflow to close or cancel. The outputs [`observe`] opens a window on,
+/// read more widely: any closure naming the session counts, not only the
+/// owner's, and a workflow counts by its own `session_id` as well as by an
+/// owner disposition. Both widen "actionable", which keeps a hit in the rate
+/// — the direction this errs.
+///
+/// One act found is enough for `Some(true)`, whatever else could not be
+/// read — a task anchor proves it with the outbox unread. `Some(false)`
+/// needs every store read; with one unreadable and nothing found, the
+/// answer is `None` — unknown, never "nothing to act on".
 ///
 /// A chat answer or a run that staged nothing offers none of them, so
 /// `no_act` is the only answer [`observe`] can return for it: a prediction
@@ -1674,9 +1681,6 @@ pub fn output_offers_act(
     anchor: Option<&GoalRef>,
     acts: &OwnerActs<'_>,
 ) -> Option<bool> {
-    if acts.outbox_unreadable || acts.closures_unreadable || acts.workflows_unreadable {
-        return None;
-    }
     let drafted = acts.drafts.iter().any(|d| {
         d.session_id.as_deref() == Some(session_id) && d.author() != crate::outbox::Author::Harness
     });
@@ -1691,7 +1695,13 @@ pub fn output_offers_act(
                 .iter()
                 .any(|d| d.session.as_deref() == Some(session_id))
     });
-    Some(drafted || tasked || tracked)
+    if drafted || tasked || tracked {
+        return Some(true);
+    }
+    if acts.outbox_unreadable || acts.closures_unreadable || acts.workflows_unreadable {
+        return None;
+    }
+    Some(false)
 }
 
 /// One appraisal's prediction, scored: its expected act against the act
@@ -1783,6 +1793,11 @@ pub struct ScoreSummary {
     /// ([`output_offers_act`]). Out of `hit_rate`'s numerator and
     /// denominator both.
     pub forced: usize,
+    /// Of the hits, `no_act` predictions whose output could not be
+    /// classified — an act store unreadable and no act found in what was
+    /// read. Neither forced nor known to have risked a miss, so out of
+    /// `hit_rate` on both sides too: an unjudged hit gets no rate.
+    pub forced_unknown: usize,
     /// Misses — surprises.
     pub surprises: usize,
     /// Of the surprises, those on clean appraisals.
@@ -1797,15 +1812,26 @@ pub struct ScoreSummary {
     /// Task outputs this reader could not window, because it read no board
     /// — the read-only readout; `mecha distill` reads it and scores them.
     pub board_not_read: usize,
-    /// `(hits − forced) / (scored − forced)`: the rate over predictions that
-    /// could have missed. `None` when there are none — a rate over forced
-    /// hits alone would read 100% for a predictor that never risked a miss.
+    /// `(hits − forced − forced_unknown) / (scored − forced −
+    /// forced_unknown)`: the rate over predictions known to have been able
+    /// to miss ([`ScoreSummary::could_miss`]). `None` when there are none —
+    /// a rate over forced hits alone would read 100% for a predictor that
+    /// never risked a miss.
     pub hit_rate: Option<f64>,
     /// Score lines that could not be read.
     pub skipped: usize,
     /// Appraisal lines that could not be read — each may have carried an
     /// expectation, so every count above is a floor when this is not zero.
     pub appraisals_unreadable: usize,
+}
+
+impl ScoreSummary {
+    /// Scored predictions known to have been able to miss: neither forced
+    /// nor unclassified. `hit_rate`'s denominator. Never underflows — both
+    /// are counted only on hits.
+    pub fn could_miss(&self) -> usize {
+        self.scored - self.forced - self.forced_unknown
+    }
 }
 
 impl AppraisalStore {
@@ -1932,11 +1958,15 @@ impl AppraisalStore {
                 s.scored += 1;
                 if score.hit {
                     s.hits += 1;
-                    if score.expected == ExpectedAct::NoAct
-                        && output_offers_act(&row.session_id, row.anchor.as_ref(), acts)
-                            == Some(false)
-                    {
-                        s.forced += 1;
+                    if score.expected == ExpectedAct::NoAct {
+                        match output_offers_act(&row.session_id, row.anchor.as_ref(), acts) {
+                            Some(false) => s.forced += 1,
+                            // The store that decides "could miss" could not be
+                            // read: not forced, and not evidence that this one
+                            // could have missed.
+                            None => s.forced_unknown += 1,
+                            Some(true) => {}
+                        }
                     }
                 } else {
                     s.surprises += 1;
@@ -1954,8 +1984,9 @@ impl AppraisalStore {
                 ObservedAct::Act { .. } | ObservedAct::NoAct { .. } => s.resolved_unwritten += 1,
             }
         }
-        let could_miss = s.scored - s.forced;
-        s.hit_rate = (could_miss > 0).then(|| (s.hits - s.forced) as f64 / could_miss as f64);
+        let could_miss = s.could_miss();
+        s.hit_rate = (could_miss > 0)
+            .then(|| (s.hits - s.forced - s.forced_unknown) as f64 / could_miss as f64);
         Ok(s)
     }
 }
@@ -4139,9 +4170,24 @@ mod tests {
             ..owner
         };
         assert_eq!(output_offers_act(chat.session_id(), None, &blind), None);
-        // An unreadable store cannot call a hit forced: it stays in the rate.
+        // One act found decides it whatever else is unread: a task anchor
+        // with the outbox blind still could have missed.
+        assert_eq!(
+            output_offers_act(task.session_id(), task.anchor(), &blind),
+            Some(true)
+        );
+        // An unreadable store cannot call a hit forced, and cannot vouch that
+        // it could have missed: unclassified, and out of the rate both ways.
         let unsure = store.score_summary(&blind, later).unwrap();
-        assert_eq!((unsure.forced, unsure.hit_rate), (0, Some(1.0)));
+        assert_eq!(
+            (unsure.forced, unsure.forced_unknown, unsure.could_miss()),
+            (0, 1, 1)
+        );
+        assert_eq!(
+            unsure.hit_rate,
+            Some(1.0),
+            "over the task-anchored one alone"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
