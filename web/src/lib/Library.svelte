@@ -1,6 +1,10 @@
 <script>
+  import { untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
-  import { PANES, paneOf, entriesFor, counts, originLabel, listUrl } from './library.js';
+  import {
+    PANES, paneOf, entriesFor, counts, originLabel, listUrl, tameName,
+    TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody,
+  } from './library.js';
   // The image library: the characters and styles `image_generate` compiles a
   // scene against (docs/IMAGE-COMPILER-DESIGN.md §7).
   //
@@ -15,6 +19,12 @@
   // lock a plain toggle (the owner's ruling) — for a token held in a variable
   // here: no cookie, no storage, so a reload hides them again, and it lapses
   // on its own after half an hour idle. Generation never looks at the lock.
+  //
+  // Adding and editing are the owner's own acts, each the same `mecha
+  // imagelib` command the terminal runs. A portrait is scaled down and
+  // re-encoded here before it is sent (PORTRAIT_EDGE), which also leaves the
+  // photo's metadata behind. Edit is offered on approved entries only: a
+  // candidate is approved or rejected as the model wrote it.
   let { initial = '', navigate = () => {} } = $props();
 
   const pane = $derived(paneOf(initial));
@@ -28,8 +38,25 @@
   let password = $state('');
   let busy = $state(false);
   let toast = $state(null);
+  // The add/edit form: { mode, kind, name, text, locked, portrait, preview }.
+  let form = $state(null);
+  let preparing = $state(false);
 
   const shown = $derived(entriesFor(pane, data?.entries));
+
+  // A pane change — a chip, the back button, a typed hash — leaves whatever
+  // was open in the pane before: a half-filled form must not follow the owner
+  // into a pane it does not belong to.
+  let lastPane = untrack(() => pane);
+  $effect(() => {
+    const now = pane;
+    untrack(() => {
+      if (now === lastPane) return;
+      lastPane = now;
+      open = null;
+      closeForm();
+    });
+  });
   const tally = $derived(counts(data?.entries));
 
   async function load() {
@@ -87,6 +114,73 @@
     }
   }
 
+  function startAdd(kind) {
+    open = null;
+    form = { mode: 'add', kind, name: '', text: '', locked: false, portrait: null, preview: null };
+  }
+
+  function startEdit(entry) {
+    form = { mode: 'edit', kind: entry.kind, name: entry.name, text: entry.text, locked: entry.locked, portrait: null, preview: null };
+  }
+
+  // A picked file, scaled to fit PORTRAIT_EDGE and re-encoded as JPEG, as
+  // base64 for the JSON body. createImageBitmap applies the photo's
+  // orientation, so a phone portrait stays upright.
+  async function pick(file) {
+    if (!file || !form) return;
+    preparing = true;
+    try {
+      const bitmap = await createImageBitmap(file);
+      const { w, h } = fitWithin(bitmap.width, bitmap.height, PORTRAIT_EDGE);
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+      bitmap.close?.();
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+      if (!blob) throw new Error('this picture could not be read');
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      if (form.preview) URL.revokeObjectURL(form.preview);
+      form.portrait = btoa(binary);
+      form.preview = URL.createObjectURL(blob);
+    } catch (e) {
+      say(String(e?.message ?? e));
+    } finally {
+      preparing = false;
+    }
+  }
+
+  function closeForm() {
+    if (form?.preview) URL.revokeObjectURL(form.preview);
+    form = null;
+  }
+
+  async function submitForm() {
+    const entry = form.mode === 'edit' ? open : null;
+    if (formProblem(form, entry)) return;
+    busy = true;
+    try {
+      const res = await fetch(form.mode === 'add' ? '/api/library/add' : '/api/library/edit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(formBody(form, entry, token)),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const { kind, name, mode } = form;
+      say(mode === 'add' ? `Added ${name}` : `Saved ${name}`);
+      closeForm();
+      await load();
+      // Land on what was just made, when this view may show it.
+      open = data?.entries.find((e) => e.kind === kind && e.name === name) ?? null;
+    } catch (e) {
+      say(String(e?.message ?? e));
+    } finally {
+      busy = false;
+    }
+  }
+
   async function act(entry, action) {
     busy = true;
     try {
@@ -124,7 +218,7 @@
   <header class="head">
     <div class="chips">
       {#each PANES as p}
-        <button class="chipbtn" class:active={pane === p} onclick={() => { open = null; navigate(`library/${p}`); }}>
+        <button class="chipbtn" class:active={pane === p} onclick={() => { open = null; closeForm(); navigate(`library/${p}`); }}>
           {label[p]}<span class="chipcount">{data ? tally[p] : '—'}</span>
         </button>
       {/each}
@@ -149,7 +243,68 @@
     {#if error}
       <div class="warnline">{error}</div>
     {/if}
-    {#if open}
+    {#if form}
+      {@const problem = formProblem(form, form.mode === 'edit' ? open : null)}
+      <div class="deckhead">
+        <button class="backbtn" aria-label="back" onclick={closeForm}>
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M15 5l-7 7 7 7" /></svg>
+        </button>
+        <span class="dtitle">{form.mode === 'add' ? `new ${form.kind}` : `${form.kind} · ${form.name} · edit`}</span>
+      </div>
+      <form class="libform" onsubmit={(e) => { e.preventDefault(); submitForm(); }}>
+        {#if form.kind === 'character'}
+          <label class="drop" class:filled={!!(form.preview || (form.mode === 'edit' && open?.portrait))}>
+            {#if form.preview}
+              <img src={form.preview} alt="new portrait" />
+            {:else if form.mode === 'edit' && open?.portrait}
+              <img src={open.portrait} alt={open.name} />
+            {:else}
+              <span class="dropnote">{preparing ? 'reading…' : 'choose a portrait'}</span>
+            {/if}
+            <input type="file" accept="image/png,image/jpeg,image/webp" onchange={(e) => pick(e.currentTarget.files?.[0])} />
+          </label>
+          <div class="barnote">
+            {form.mode === 'edit' ? 'Tap the picture to replace it. ' : ''}One person, facing the camera, face and shoulders
+            clearly visible — it is sent as that person's reference in every picture that names them.
+          </div>
+        {/if}
+        {#if form.mode === 'add'}
+          <input
+            class="editbox"
+            placeholder={form.kind === 'style' ? 'name, e.g. watercolour' : 'name, e.g. maya'}
+            autocomplete="off"
+            value={form.name}
+            oninput={(e) => (form.name = tameName(e.currentTarget.value))}
+          />
+        {/if}
+        <textarea
+          class="editbox"
+          rows={form.kind === 'style' ? 5 : 3}
+          maxlength={TEXT_MAX[form.kind]}
+          placeholder={form.kind === 'style'
+            ? 'how pictures in this style look — medium, palette, light, texture'
+            : 'a short description: age, build and height, hair, anything distinctive — not clothing'}
+          bind:value={form.text}
+        ></textarea>
+        <div class="counter">{form.text.trim().length} / {TEXT_MAX[form.kind]}</div>
+        {#if form.mode === 'add'}
+          <label class="lockline">
+            <input type="checkbox" bind:checked={form.locked} />
+            lock (hide while browsing)
+          </label>
+        {/if}
+        <div class="btnrow">
+          <button type="button" class="abtn" onclick={closeForm}>Cancel</button>
+          <button class="abtn primary" disabled={busy || preparing || !!problem}>
+            {form.mode === 'add' ? 'Add' : 'Save'}
+          </button>
+        </div>
+        {#if problem && problem !== 'nothing changed yet'}<div class="barnote">Still needs {problem}.</div>{/if}
+        {#if form.mode === 'edit'}
+          <div class="barnote">Saving makes a new version; pictures already made keep the one they used.</div>
+        {/if}
+      </form>
+    {:else if open}
       <div class="deckhead">
         <button class="backbtn" aria-label="back" onclick={() => (open = null)}>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M15 5l-7 7 7 7" /></svg>
@@ -173,6 +328,7 @@
         </div>
       {:else}
         <div class="btnrow">
+          <button class="abtn" disabled={busy} onclick={() => startEdit(open)}>Edit</button>
           <button class="abtn" disabled={busy} onclick={() => act(open, open.locked ? 'unlock' : 'lock')}>
             {open.locked ? 'Unlock' : 'Lock'}
           </button>
@@ -183,13 +339,13 @@
           <code>{open.name}</code> and say what they are wearing and doing.
         </div>
       {/if}
-    {:else if data && shown.length === 0}
-      <div class="empty">
-        {#if pane === 'candidates'}Nothing is waiting.
-        {:else if pane === 'styles'}No styles yet — <code>mecha imagelib add-style</code>.
-        {:else}No characters yet. Tap <b>Save to library</b> under a picture in chat.{/if}
-      </div>
+    {:else if data && shown.length === 0 && pane === 'candidates'}
+      <div class="empty">Nothing is waiting.</div>
     {:else if pane === 'styles'}
+      <button class="rowbtn card addrow" onclick={() => startAdd('style')}>
+        <span class="topic">+ Add style</span>
+        <span class="readingline">A name and a few lines on how the pictures should look.</span>
+      </button>
       {#each shown as e (e.name)}
         <button class="rowbtn card" onclick={() => (open = e)}>
           <span class="rowtop"><span class="topic">{e.name}</span>{#if e.locked}<span class="badge">locked</span>{/if}<span class="when">v{e.version}</span></span>
@@ -198,6 +354,12 @@
       {/each}
     {:else}
       <div class="grid">
+        {#if pane === 'characters'}
+          <button class="tile addtile" onclick={() => startAdd('character')}>
+            <span class="addmark">+</span>
+            <span class="tname">Add character</span>
+          </button>
+        {/if}
         {#each shown as e (e.kind + e.name)}
           <button class="tile" onclick={() => (open = e)}>
             {#if e.portrait}<img src={e.portrait} alt={e.name} loading="lazy" />{:else}<span class="noimg">{e.kind}</span>{/if}
@@ -206,7 +368,10 @@
         {/each}
       </div>
     {/if}
-    {#if data?.hidden_locked && !token}
+    {#if !form && !open && data && shown.length === 0 && pane === 'characters'}
+      <div class="empty">No characters yet. Add one from a portrait, or tap <b>Save to library</b> under a picture in chat.</div>
+    {/if}
+    {#if data?.hidden_locked && !token && !form}
       <div class="hidden">{data.hidden_locked} locked {data.hidden_locked === 1 ? 'entry' : 'entries'} hidden</div>
     {/if}
     {#if data?.unreadable}
@@ -300,4 +465,17 @@
   .sheet-text { font-size: 15px; font-weight: 500; }
   .toast { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 10px 16px; font-size: 13px; white-space: nowrap; max-width: 90%; overflow: hidden; text-overflow: ellipsis; z-index: 7; }
   code { font-family: var(--mono); font-size: 11px; }
+  .addtile { border-style: dashed; align-items: stretch; }
+  .addmark { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; color: var(--accent-400); font-size: 40px; font-weight: 300; }
+  .addrow { border-style: dashed; }
+  .libform { display: flex; flex-direction: column; gap: 10px; max-width: 480px; }
+  .libform .editbox { margin-bottom: 0; }
+  .libform textarea.editbox { resize: vertical; font-size: 14px; line-height: 1.5; }
+  .drop { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; max-width: 320px; aspect-ratio: 1; border: 1px dashed var(--accent-700); border-radius: var(--radius); overflow: hidden; cursor: pointer; background: var(--surface); }
+  .drop.filled { border-style: solid; }
+  .drop img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .dropnote { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+  .counter { font-family: var(--mono); font-size: 10px; color: var(--text-muted); text-align: right; margin-top: -6px; }
+  .lockline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
 </style>

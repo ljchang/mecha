@@ -38,6 +38,15 @@
 //! a live unlock token, and a hidden entry and a missing one answer the same
 //! 404 before any child runs — otherwise `unlock` was a way to reveal a
 //! hidden entry with no password, and the 200/409 split named which exist.
+//!
+//! **The owner adds and edits here too** — a character from an uploaded
+//! portrait, a style from its text, a new description or portrait for an
+//! approved entry — each the same `mecha imagelib` child the terminal runs.
+//! A portrait arrives base64 in the JSON body beside its name and text, so
+//! none of the owner's words ride in a URL, and is staged in a private
+//! scratch directory for the child to read. Edit is for approved entries
+//! only: a candidate is approved or rejected as the model wrote it, where it
+//! can be read, rather than rewritten into approval on the way past.
 
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{header, StatusCode};
@@ -411,25 +420,7 @@ pub async fn act(
     ) {
         return (StatusCode::NOT_FOUND, "no such action\n").into_response();
     }
-    // The lock holds for writes as for reads: a locked entry is acted on
-    // only while unlocked, and hidden answers exactly as missing does.
-    let unlocked = state.library.unlocked(body.unlock.as_deref());
-    let entry = {
-        let dir = state.library.dir.clone();
-        let (k, n) = (kind, name.clone());
-        tokio::task::spawn_blocking(move || {
-            let kind = if k == "style" {
-                Kind::Style
-            } else {
-                Kind::Character
-            };
-            Library::load(&dir).0.get(kind, &n).cloned()
-        })
-        .await
-        .ok()
-        .flatten()
-    };
-    let Some(entry) = entry.filter(|e| !e.locked || unlocked) else {
+    let Some(entry) = visible(&state, kind, &name, body.unlock.as_deref()).await else {
         return (StatusCode::NOT_FOUND, "no such entry\n").into_response();
     };
     let args: Vec<&str> = match action.as_str() {
@@ -446,6 +437,197 @@ pub async fn act(
         _ => unreachable!("actions are matched above"),
     };
     super::review::verb(&state, &args).await
+}
+
+/// The entry as this request may see it. The lock holds for writes as for
+/// reads: a locked entry is acted on only while unlocked, and hidden answers
+/// exactly as missing does.
+async fn visible(
+    state: &super::WebState,
+    kind: &'static str,
+    name: &str,
+    unlock: Option<&str>,
+) -> Option<Entry> {
+    let unlocked = state.library.unlocked(unlock);
+    let dir = state.library.dir.clone();
+    let n = name.to_string();
+    let kind = if kind == "style" {
+        Kind::Style
+    } else {
+        Kind::Character
+    };
+    tokio::task::spawn_blocking(move || Library::load(&dir).0.get(kind, &n).cloned())
+        .await
+        .ok()
+        .flatten()
+        .filter(|e| !e.locked || unlocked)
+}
+
+/// The largest body `add` and `edit` take: a portrait at the store's cap,
+/// base64'd, and room for the rest of the JSON.
+pub const MAX_WRITE_BODY: usize =
+    (imagelib::MAX_PORTRAIT_BYTES as usize).div_ceil(3) * 4 + 64 * 1024;
+
+/// A portrait as the page sends it — base64 — decoded, capped, and staged in
+/// a private scratch directory for the child to read.
+async fn stage_portrait(b64: &str) -> Result<tempdir::Dir, Response> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .map_err(|_| (StatusCode::BAD_REQUEST, "the portrait is not base64\n").into_response())?;
+    if bytes.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "the portrait is empty\n").into_response());
+    }
+    if bytes.len() as u64 > imagelib::MAX_PORTRAIT_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "the picture is over the portrait cap\n",
+        )
+            .into_response());
+    }
+    tokio::task::spawn_blocking(move || {
+        tempdir::Dir::new().and_then(|d| std::fs::write(d.file(), &bytes).map(|_| d))
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could not stage the picture for saving\n",
+        )
+            .into_response()
+    })
+}
+
+#[derive(Deserialize)]
+pub struct AddBody {
+    kind: String,
+    name: String,
+    /// A character's description, or a style's text.
+    text: String,
+    #[serde(default)]
+    locked: bool,
+    /// A character's portrait, base64.
+    #[serde(default)]
+    portrait: Option<String>,
+}
+
+/// POST /api/library/add — a new character from an uploaded portrait, or a
+/// new style from its text: `mecha imagelib add-character` / `add-style`.
+/// The owner's own act, so approved on creation.
+pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
+    let Some(kind) = parse_kind(&body.kind) else {
+        return (StatusCode::BAD_REQUEST, "kind is character or style\n").into_response();
+    };
+    if imagelib::validate_name(&body.name).is_err() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "a name is lowercase letters, digits and hyphens\n",
+        )
+            .into_response();
+    }
+    // `--flag=…` throughout: a text that opens with a dash is text, not a
+    // flag (review of #385).
+    let text = match kind {
+        "character" => format!("--description={}", body.text),
+        _ => format!("--text={}", body.text),
+    };
+    let staged = match (kind, body.portrait.as_deref()) {
+        ("character", Some(b64)) => match stage_portrait(b64).await {
+            Ok(dir) => Some(dir),
+            Err(refusal) => return refusal,
+        },
+        ("character", None) => {
+            return (StatusCode::BAD_REQUEST, "a character needs a portrait\n").into_response()
+        }
+        (_, Some(_)) => {
+            return (StatusCode::BAD_REQUEST, "a style has no portrait\n").into_response()
+        }
+        (_, None) => None,
+    };
+    let portrait = staged
+        .as_ref()
+        .map(|d| d.file().to_string_lossy().into_owned());
+    let mut args = match &portrait {
+        Some(path) => vec!["imagelib", "add-character", &body.name, "--portrait", path],
+        None => vec!["imagelib", "add-style", &body.name],
+    };
+    args.push(&text);
+    if body.locked {
+        args.push("--locked");
+    }
+    let response = super::review::verb(&state, &args).await;
+    drop(staged);
+    response
+}
+
+#[derive(Deserialize)]
+pub struct EditBody {
+    kind: String,
+    name: String,
+    /// A new description or style text; absent leaves it.
+    #[serde(default)]
+    text: Option<String>,
+    /// A character's new portrait, base64; absent leaves it.
+    #[serde(default)]
+    portrait: Option<String>,
+    /// The unlock token, for a locked entry.
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// POST /api/library/edit — a new version of an approved entry: `mecha
+/// imagelib update`. The old version stays in its history, so a picture's
+/// manifest naming it still resolves. An uploaded portrait has no seed, so
+/// the entry's recorded seed goes with the old portrait.
+pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
+    let Some(kind) = parse_kind(&body.kind) else {
+        return (StatusCode::BAD_REQUEST, "kind is character or style\n").into_response();
+    };
+    if imagelib::validate_name(&body.name).is_err() {
+        return (StatusCode::BAD_REQUEST, "not an entry name\n").into_response();
+    }
+    if body.text.is_none() && body.portrait.is_none() {
+        return (StatusCode::BAD_REQUEST, "nothing to change\n").into_response();
+    }
+    if kind == "style" && body.portrait.is_some() {
+        return (StatusCode::BAD_REQUEST, "a style has no portrait\n").into_response();
+    }
+    let Some(entry) = visible(&state, kind, &body.name, body.unlock.as_deref()).await else {
+        return (StatusCode::NOT_FOUND, "no such entry\n").into_response();
+    };
+    if entry.status != imagelib::Status::Approved {
+        return (
+            StatusCode::CONFLICT,
+            format!(
+                "`{}` is waiting for a decision — approve or reject it as written first\n",
+                entry.name
+            ),
+        )
+            .into_response();
+    }
+    let staged = match body.portrait.as_deref() {
+        Some(b64) => match stage_portrait(b64).await {
+            Ok(dir) => Some(dir),
+            Err(refusal) => return refusal,
+        },
+        None => None,
+    };
+    let portrait = staged
+        .as_ref()
+        .map(|d| d.file().to_string_lossy().into_owned());
+    let text = body.text.as_ref().map(|t| format!("--text={t}"));
+    let mut args = vec!["imagelib", "update", &body.name, "--kind", kind];
+    if let Some(text) = &text {
+        args.push(text);
+    }
+    if let Some(path) = &portrait {
+        args.extend(["--portrait", path]);
+    }
+    let response = super::review::verb(&state, &args).await;
+    drop(staged);
+    response
 }
 
 #[derive(Deserialize)]
@@ -1260,5 +1442,100 @@ mod route_tests {
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Every refusal `add` and `edit` make before a child runs — the writes
+    /// themselves are driven against a real `mecha serve` in
+    /// `tests/image_library_web.rs`, since here the child would be this test.
+    #[tokio::test]
+    async fn add_and_edit_refuse_before_any_child_runs() {
+        use base64::Engine;
+        let f = fixture();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(png(40));
+        let status = |uri: &'static str, body: serde_json::Value| {
+            let app = f.app.clone();
+            async move { app.oneshot(post(uri, body)).await.unwrap().status() }
+        };
+        let add = "/api/library/add";
+        let edit = "/api/library/edit";
+        for (body, want) in [
+            // A character needs a portrait; a style has none.
+            (
+                serde_json::json!({"kind": "character", "name": "ada", "text": "x"}),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                serde_json::json!({"kind": "style", "name": "ink", "text": "x", "portrait": b64}),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                serde_json::json!({"kind": "character", "name": "ada", "text": "x", "portrait": "%%%"}),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                serde_json::json!({"kind": "character", "name": "Ada", "text": "x", "portrait": b64}),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                serde_json::json!({"kind": "person", "name": "ada", "text": "x"}),
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            assert_eq!(status(add, body.clone()).await, want, "{body}");
+        }
+        for (body, want) in [
+            (
+                serde_json::json!({"kind": "character", "name": "maya"}),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                serde_json::json!({"kind": "style", "name": "maya", "portrait": b64}),
+                StatusCode::BAD_REQUEST,
+            ),
+            // Locked and no token: hidden, and hidden answers as missing.
+            (
+                serde_json::json!({"kind": "character", "name": "theo", "text": "new"}),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                serde_json::json!({"kind": "character", "name": "nobody", "text": "new"}),
+                StatusCode::NOT_FOUND,
+            ),
+            // A candidate is decided as written, not edited into approval.
+            (
+                serde_json::json!({"kind": "character", "name": "sam", "text": "new"}),
+                StatusCode::CONFLICT,
+            ),
+        ] {
+            assert_eq!(status(edit, body.clone()).await, want, "{body}");
+        }
+        // Nothing reached the store: sam is still the model's words.
+        let (lib, _) = Library::load(&f.dir);
+        let sam = lib.get(Kind::Character, "sam").unwrap();
+        assert_eq!(sam.status, imagelib::Status::Candidate);
+        assert_eq!(sam.text, "sam, a memorable face");
+    }
+
+    /// A portrait at the store's cap fits the body limit; axum's 2 MB default
+    /// would have answered 413 before the handler's own cap could speak.
+    #[tokio::test]
+    async fn a_large_portrait_reaches_the_handler() {
+        let f = fixture();
+        // 3 MB of base64 that is not valid base64 past the limit check: the
+        // handler, not the body limit, must be what refuses it.
+        let body = serde_json::json!({
+            "kind": "character", "name": "ada", "text": "x",
+            "portrait": "%".repeat(3 * 1024 * 1024),
+        });
+        let r = f
+            .app
+            .clone()
+            .oneshot(post("/api/library/add", body))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        let text =
+            String::from_utf8(to_bytes(r.into_body(), 10_000).await.unwrap().to_vec()).unwrap();
+        assert!(text.contains("not base64"), "{text}");
     }
 }
