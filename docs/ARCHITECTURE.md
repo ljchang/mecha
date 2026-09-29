@@ -585,7 +585,7 @@ uploaded to ComfyUI's *temp* directory, which it empties on start, so a
 private photo is not left in its `input/`; the encoder takes the VAE and splices
 them in as latents, and the canvas follows the first reference's shape unless
 a size is asked for. The pixels go to the loopback server and never into the
-conversation, so the capabilities do not change. Two rules:
+conversation, so the capabilities do not change. Three rules:
 
 - **An edit always samples at a fresh seed.** Measured on 2026-09-25: four
   edits sampled at the seed that drew the reference came back as near-copies,
@@ -596,6 +596,33 @@ conversation, so the capabilities do not change. Two rules:
   no name to read it from (found on review of #306). A seed the model passes
   with references is replaced and the result says so; structural, because a
   text-to-image result tells the model its seed keeps the composition.
+- **An edit prompt is an instruction, never a description of the scene.**
+  The edit model reads a caption of the whole scene, or "keep the picture
+  unchanged", as the picture it already has, and returns it. On 2026-09-29,
+  one picture, model and setting, on the same 12 seeds, with only the prompt
+  varied: a caption of the scene stood a sitting woman up 0 times; "Have Maya
+  stand up…" alone, 8 (3 near-copies, 1 partial); the same after "Keep the
+  watercolor style, the lake, willow tree, and red checkered blanket
+  unchanged.", 12. The seed only decides which way an ambiguous prompt tips,
+  which is why the failure looked random. The tool description and the
+  `prompt` field ask for the kept parts named, then the instruction; a
+  guidance that said "describe the finished picture" produced the caption
+  that failed.
+- **An edit that kept the layout says so, and never retries by itself.**
+  The model never sees the result, and reported a near-copy as the change
+  made, so a retry in the same chat repeated the edit. Each edit's
+  `layout_similarity` to its first reference (grayscale 32² thumbnails,
+  correlated) goes in the manifest; at `NEAR_COPY_LAYOUT` (0.75) the result
+  says the layout did not change and how to retry: edit the original with the
+  prompt rewritten as an instruction, or redraw from the library by the names
+  in the original's manifest. It
+  gives the names only, each checked against the library, since the manifest
+  is a workspace file. A recolour also keeps the layout (it scored 0.78–1.00
+  where moves scored ≤ 0.67), which is why the tool reports rather than
+  retries: only the model knows which it asked for, and a blind retry would
+  cost every recolour a minute. A near-copy records `near_copy_of`, so a
+  retry that edits the near-copy still counts against the original, and the
+  second within 15 minutes says stop and tell the owner.
 - **The web chat's Edit button starts a sentence, it does not send one** —
   `Edit images/…png: ` in the input, cursor after it. The path is what lets
   the model name the right reference; the change is the owner's to describe.

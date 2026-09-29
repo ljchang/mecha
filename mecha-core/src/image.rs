@@ -199,7 +199,7 @@ const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
 /// Decode `bytes`, refusing at the header a picture past
 /// [`MAX_DECODE_PIXELS`] — said as too large, not as a failed decode, since
 /// the two lead to different fixes. `what` names it in either error.
-fn decode(bytes: &[u8], what: &str) -> Result<image::DynamicImage> {
+pub(crate) fn decode(bytes: &[u8], what: &str) -> Result<image::DynamicImage> {
     let reader = || image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format();
     if let Ok((w, h)) = reader()
         .map_err(anyhow::Error::from)
