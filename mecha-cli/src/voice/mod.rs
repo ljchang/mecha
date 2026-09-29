@@ -2084,7 +2084,7 @@ async fn completion(
     // to the run that wrote it. Fail closed like the connector: a run that
     // would stage drafts without attribution must not run at all.
     if let Some(shared_route) = &bound.agent.context().outbox {
-        match OutboxStore::open(&shared.outbox_root) {
+        match OutboxStore::open_like(&shared_route.store, &shared.outbox_root) {
             Ok(store) => {
                 let mine = OutboxRoute::new(
                     store,

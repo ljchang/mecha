@@ -339,11 +339,19 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // nothing, so without this count the gate going inert reads exactly
     // like a gate with nothing to hold back (found on review of #332).
     let mut admitted_bases = AdmittedBases::default();
+    // The owner's session marks (ruling 4D). A ledger that cannot be read
+    // stops the pass: a lost mark would admit a probe's lesson as the
+    // owner's.
+    let withdrawn =
+        mecha_core::session::Marks::load(&mecha_core::session::Session::default_dir()?)?
+            .withdrawn_ids();
+    let mut withdrawn_by_mark = 0usize;
     for r in store.reflexions()? {
-        match admission(&r, &claimed) {
+        match admission(&r, &claimed, &withdrawn) {
             Admission::Processed => {}
             Admission::Claimed => awaiting_review += 1,
             Admission::Dropped => dropped_by_owner += 1,
+            Admission::Withdrawn => withdrawn_by_mark += 1,
             Admission::Unsupported => unsupported_observations += 1,
             Admission::Origin => excluded_by_origin += 1,
             Admission::Attribution(class) => *withheld_by_class.entry(class).or_default() += 1,
@@ -378,6 +386,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         println!(
             "{dropped_by_owner} reflection(s) dropped by you — kept as evidence, never a \
              candidate again"
+        );
+    }
+    if withdrawn_by_mark > 0 {
+        println!(
+            "{withdrawn_by_mark} reflection(s) from sessions you marked as experiments — \
+             kept, never a candidate while the mark stands"
         );
     }
     // R34: rules and waiting reflections toward a goal that has closed,
@@ -1001,6 +1015,9 @@ enum Admission {
     /// Claimed by a pending proposal.
     Claimed,
     Dropped,
+    /// From a session the owner marked as an experiment (ruling 4D): not
+    /// the owner's work, so no lesson about the owner comes from it.
+    Withdrawn,
     /// A mismatch with no verified failure behind it.
     Unsupported,
     /// Held back by the provenance gate.
@@ -1012,9 +1029,20 @@ enum Admission {
 
 /// The pool's gates, in order — pure, so what reaches a learner is tested
 /// without one.
-fn admission(r: &mecha_core::learning::Reflexion, claimed: &BTreeSet<String>) -> Admission {
+fn admission(
+    r: &mecha_core::learning::Reflexion,
+    claimed: &BTreeSet<String>,
+    withdrawn: &BTreeSet<String>,
+) -> Admission {
     if r.is_processed {
         return Admission::Processed;
+    }
+    // The owner's mark on the session, before a pending proposal's claim:
+    // `proposals accept` refuses a proposal holding one, so it is withheld,
+    // not awaiting review (review of #382). Not over the owner's own drop,
+    // which is the more specific act and keeps its own count.
+    if withdrawn.contains(&r.session_id) && r.dropped_at.is_none() {
+        return Admission::Withdrawn;
     }
     if claimed.contains(&r.id) {
         return Admission::Claimed;
@@ -1693,7 +1721,7 @@ mod tests {
                 let r = refl(trigger, basis);
                 assert!(r.learnable(), "the provenance gate admits it");
                 assert_eq!(
-                    admission(&r, &none),
+                    admission(&r, &none, &none),
                     Admission::Attribution(class),
                     "{trigger} {basis:?}"
                 );
@@ -1701,7 +1729,7 @@ mod tests {
         }
         for basis in [Basis::RightGiven, Basis::NoFact] {
             assert_eq!(
-                admission(&refl("steer", Some(basis)), &none),
+                admission(&refl("steer", Some(basis)), &none, &none),
                 Admission::Admitted
             );
         }
@@ -1709,15 +1737,35 @@ mod tests {
         // the owner's voice, not the agent's behaviour.
         let mut edit = refl("edit", None);
         edit.domain = "writing".into();
-        assert_eq!(admission(&edit, &none), Admission::Admitted);
+        assert_eq!(admission(&edit, &none, &none), Admission::Admitted);
         // The owner's own words outrank the class, as they outrank origin.
         let mut owned = refl("steer", Some(Basis::WrongGiven));
         owned.edited_at = Some("2026-09-26T00:00:00Z".into());
-        assert_eq!(admission(&owned, &none), Admission::Admitted);
+        assert_eq!(admission(&owned, &none, &none), Admission::Admitted);
         // And provenance still decides first: the gate it was is unchanged.
         let mut tainted = refl("steer", Some(Basis::RightGiven));
         tainted.origin = Origin::Untrusted;
-        assert_eq!(admission(&tainted, &none), Admission::Origin);
+        assert_eq!(admission(&tainted, &none, &none), Admission::Origin);
+        // The owner's mark on its session withholds a lesson that would
+        // otherwise be admitted (ruling 4D), and a drop still reads as the
+        // owner's drop, not as the mark.
+        let marked: std::collections::BTreeSet<String> = ["s".to_string()].into();
+        let admitted = refl("steer", Some(Basis::NoFact));
+        assert_eq!(admission(&admitted, &none, &none), Admission::Admitted);
+        assert_eq!(admission(&admitted, &none, &marked), Admission::Withdrawn);
+        // Checked before a pending proposal's claim: `proposals accept`
+        // refuses a proposal holding it, so it is not awaiting review.
+        let claimed: std::collections::BTreeSet<String> = [admitted.id.clone()].into();
+        assert_eq!(admission(&admitted, &claimed, &none), Admission::Claimed);
+        assert_eq!(
+            admission(&admitted, &claimed, &marked),
+            Admission::Withdrawn
+        );
+        // The owner's own drop keeps its count under a mark: the more
+        // specific act (review of #382).
+        let mut dropped = refl("steer", Some(Basis::NoFact));
+        dropped.dropped_at = Some("2026-09-28T00:00:00Z".into());
+        assert_eq!(admission(&dropped, &none, &marked), Admission::Dropped);
     }
 
     #[test]
