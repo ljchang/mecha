@@ -818,7 +818,7 @@ module.
   not yet offered. They ship in the public crate, so a test holds them to the
   design's §15 wording rules.
 - **Reserved names.** Persona folders sit beside `files/`, `groups/`,
-  `relationships/`, `voices/`, `scenarios/` and `removed/`, so none of those
+  `relationships/`, `voices/`, `scenarios/`, `removed/` and `sessions/`, so none of those
   can name a persona. A `persona.toml` planted in one is a load error.
 - **The lock is the image library's.** It is a browse filter
   (`Store::visible`), not encryption, and uses the library's `lock.toml`
