@@ -1491,6 +1491,31 @@ async fn prepare_tools_carrying(
             );
         }
     }
+    // PDFs, on `[image]`'s rule: only with `[documents]` configured, and a
+    // configuration whose promises cannot be kept (a remote OCR server, a
+    // docker confinement) is refused out loud rather than registered.
+    // `[tools]` narrows it like any builtin. An incognito chat never offers
+    // it: its cache writes outside the room (`incognito::ALLOWED_BUILTINS`).
+    if let Some(docs) = cfg.documents.clone() {
+        let name = "document_read";
+        if (opts.tools.is_empty() || opts.tools.iter().any(|t| t == name))
+            && cfg.tools.registers(name)
+        {
+            let cache = if docs.cache {
+                mecha_core::document::Cache::default_dir()
+                    .ok()
+                    .map(mecha_core::document::Cache::new)
+            } else {
+                None
+            };
+            match mecha_core::document::Extractor::new(docs, cache) {
+                Ok(ex) => {
+                    registry.insert(Arc::new(mecha_core::tool::document::DocumentRead::new(ex)));
+                }
+                Err(e) => eprintln!("mecha: document_read not registered — {e:#}"),
+            }
+        }
+    }
     let mut clients = Vec::new();
     // Named servers are dropped before connecting rather than after: a server
     // that is off should not have been spawned, since spawning it is what runs

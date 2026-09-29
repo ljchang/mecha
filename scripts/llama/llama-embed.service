@@ -1,0 +1,30 @@
+# The embeddings llama-server (harrier-oss-v1-0.6b), on demand: started by
+# llama-embed-proxy.service when a connection arrives on llama-embed.socket,
+# stopped when the proxy idles out. Behind mecha-graph's `embed`, `precheck`'s
+# semantic tier and every `kg_search`.
+#
+# It has been a unit since 2026-08-19, when a reboot restored every consumer
+# of the model server and not the server itself, and the nightly classified 0
+# of 16 threads and logged SUCCESS. That reason now lives in the socket: it is
+# enabled at boot, so after a reboot or an idle stop a request is a cold start,
+# never "connection refused". This unit has no [Install] section on purpose —
+# enabled at boot it would be "needed" by default.target forever and never
+# stop.
+[Unit]
+Description=llama-server embeddings for mecha-graph (harrier-oss-v1-0.6b, backend :18081)
+Documentation=file://%h/.local/bin/mecha-embed-server
+StopWhenUnneeded=yes
+
+[Service]
+Type=exec
+Environment=MECHA_EMBED_PORT=18081
+ExecStart=%h/.local/bin/mecha-embed-server
+# Active only once /health answers ok: a starting server is not a ready one,
+# and the proxy is ordered after this unit's start job, ExecStartPost included.
+ExecStartPost=%h/.local/bin/mecha-wait-healthy 18081 120
+TimeoutStartSec=180
+# Deliberately not Restart=always, matching llama-local: a server that cannot
+# load should stay down and be visible, not loop.
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT

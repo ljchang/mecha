@@ -466,6 +466,10 @@ pub enum Command {
     /// for it in ~/.mecha/skills, and which of them this run would load.
     Skills(commands::skills::Args),
 
+    /// Extract a PDF — its text layer, and a local OCR model's transcript for
+    /// scans — and manage the extraction cache.
+    Document(commands::document::Args),
+
     /// The image library — recurring characters and styles that
     /// image_generate's `cast` and `style` compile against. List, add,
     /// approve a model's proposal, lock for browsing.
@@ -613,6 +617,7 @@ impl Command {
             | Command::Review(_)
             | Command::Skills(_)
             | Command::Imagelib(_)
+            | Command::Document(_)
             | Command::Persona(_)
             | Command::Charter(_)
             | Command::Config(_)
@@ -680,6 +685,7 @@ impl Command {
             | Command::Review(_)
             | Command::Skills(_)
             | Command::Imagelib(_)
+            | Command::Document(_)
             | Command::Persona(_)
             | Command::Charter(_)
             | Command::Config(_)
@@ -844,6 +850,7 @@ async fn dispatch() -> Result<()> {
         Command::Tools(args) => commands::tools::execute(&cli.global, args).await,
         Command::Skills(args) => commands::skills::execute(&cli.global, args).await,
         Command::Imagelib(args) => commands::imagelib::execute(&cli.global, args).await,
+        Command::Document(args) => commands::document::execute(args).await,
         Command::Persona(args) => commands::persona::execute(&cli.global, args).await,
         Command::Charter(args) => commands::charter::execute(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
