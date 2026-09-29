@@ -558,7 +558,24 @@ fn read_prose(path: &Path) -> Result<String> {
             MAX_PROSE_BYTES / 1024
         );
     }
-    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    if let Some(c) = text.chars().find(|c| is_forbidden_control(*c)) {
+        bail!(
+            "{} holds a control character (U+{:04X}); only newlines and tabs are allowed",
+            path.display(),
+            c as u32
+        );
+    }
+    Ok(text)
+}
+
+/// A control character a terminal or page could act on. Prose from this
+/// store is printed raw before a `[y/N]` (`mecha persona approve`), so text
+/// that could repaint the screen would repaint the review of itself —
+/// `imagelib::validate_text`'s rule, with tabs allowed for Markdown.
+fn is_forbidden_control(c: char) -> bool {
+    c.is_control() && !matches!(c, '\n' | '\t' | '\r')
 }
 
 fn dir_name(path: &Path) -> Option<String> {
@@ -913,8 +930,11 @@ fn load_persona(dir: &Path, name: &str) -> Result<Persona> {
     let raw = read_prose(&dir.join("persona.toml"))?;
     let settings: Settings = toml::from_str(&raw)?;
     let mut notes = unknown_values(&toml::from_str(&raw)?);
-    if settings.display.chars().count() > MAX_DISPLAY {
-        bail!("display is capped at {MAX_DISPLAY} characters");
+    // A TOML escape (`"\u001b"`) survives the file-level check.
+    if settings.display.chars().count() > MAX_DISPLAY
+        || settings.display.chars().any(char::is_control)
+    {
+        bail!("display is one line of at most {MAX_DISPLAY} characters, no control characters");
     }
     for r in &settings.relationship.0 {
         validate_name(r).context("in `relationship`")?;
@@ -1031,7 +1051,12 @@ pub fn seed_starters(dir: &Path) -> Result<Vec<String>> {
     std::fs::create_dir_all(&rel)?;
     let seeded_path = rel.join(SEEDED);
     let mut seeded: BTreeSet<String> = match std::fs::read_to_string(&seeded_path) {
-        Ok(s) => s.lines().map(|l| l.trim().to_string()).collect(),
+        Ok(s) => s
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(str::to_string)
+            .collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", seeded_path.display())),
     };
@@ -1098,7 +1123,9 @@ pub struct NewPersona {
     pub voice: Option<String>,
     pub groups: Vec<String>,
     pub locked: bool,
-    pub origin: Option<Origin>,
+    /// Who wrote it. Only `Owner` is approved on creation; the default is
+    /// `ModelUntrusted`, so a door that forgets to say makes a candidate.
+    pub origin: Origin,
 }
 
 fn quoted(s: &str) -> String {
@@ -1294,7 +1321,7 @@ pub fn create(dir: &Path, lib: &imagelib::Library, new: NewPersona) -> Result<Pe
         motivation_template(&new.display).as_bytes(),
     )?;
     let at = now();
-    let origin = new.origin.unwrap_or(Origin::Owner);
+    let origin = new.origin;
     write_state(
         &pdir,
         &State {
@@ -1418,10 +1445,15 @@ pub fn snapshot(dir: &Path, name: &str) -> Result<State> {
 /// The owner's approval of a persona made outside mecha or proposed by a
 /// model. The CLI shows it first.
 pub fn approve(dir: &Path, name: &str) -> Result<State> {
-    let (_, p) = current(dir, name)?;
+    let (store, p) = current(dir, name)?;
     if p.state.status == Status::Approved {
         bail!("`{name}` is already approved");
     }
+    // Everything that can refuse runs before the approval is written, so a
+    // refusal leaves the persona exactly as unapproved as it was.
+    store
+        .version_files(&p)
+        .with_context(|| format!("`{name}` cannot be approved yet"))?;
     let mut state = p.state;
     state.status = Status::Approved;
     if state.created.is_empty() {
@@ -1475,6 +1507,7 @@ mod tests {
     fn new(name: &str) -> NewPersona {
         NewPersona {
             name: name.into(),
+            origin: Origin::Owner,
             ..NewPersona::default()
         }
     }
@@ -1718,6 +1751,8 @@ mod tests {
             !rel.join("coach.md").exists(),
             "a deleted starter came back"
         );
+        let seeded = std::fs::read_to_string(rel.join(SEEDED)).unwrap();
+        assert_eq!(seeded.matches('#').count(), 1, "{seeded}");
         // An upgrade shipping a starter not yet offered adds just that one.
         let seeded = std::fs::read_to_string(rel.join(SEEDED)).unwrap();
         std::fs::write(rel.join(SEEDED), seeded.replace("romantic\n", "")).unwrap();
@@ -1867,6 +1902,64 @@ mod tests {
             assert!(root.is_dir(), "{}", root.display());
             assert!(!dir.join("mara/sessions").starts_with(root));
         }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn prose_that_could_repaint_a_terminal_does_not_load() {
+        let dir = scratch();
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        create(&dir, &no_lib(), new("priya")).unwrap();
+        std::fs::write(dir.join("mara/identity.md"), "## Core\nDry.\x1b[2J\tok\n").unwrap();
+        let toml = dir.join("priya/persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(&toml, text.replace("\"priya\"", "\"pri\\u001bya\"")).unwrap();
+        let store = Store::load(&dir);
+        assert!(store.get("mara").is_none());
+        assert!(store.get("priya").is_none());
+        let why: Vec<&str> = store.errors().iter().map(|e| e.why.as_str()).collect();
+        assert!(why.iter().any(|w| w.contains("U+001B")), "{why:?}");
+        assert!(
+            why.iter().any(|w| w.contains("no control characters")),
+            "{why:?}"
+        );
+        // Tabs are Markdown, not an attack.
+        std::fs::write(dir.join("mara/identity.md"), "## Core\n\tDry.\r\n").unwrap();
+        assert!(Store::load(&dir).get("mara").is_some());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_door_that_forgets_the_origin_makes_a_candidate() {
+        let dir = scratch();
+        let p = create(
+            &dir,
+            &no_lib(),
+            NewPersona {
+                name: "ada".into(),
+                ..NewPersona::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(p.state.status, Status::Candidate);
+        assert_eq!(p.state.origin, Origin::ModelUntrusted);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_approval_that_cannot_version_writes_nothing() {
+        let dir = scratch();
+        ensure_layout(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("ada")).unwrap();
+        std::fs::write(dir.join("ada/persona.toml"), "relationship = \"rival\"\n").unwrap();
+        std::fs::write(dir.join("ada/identity.md"), "## Core\nA patient.\n").unwrap();
+        let refused = approve(&dir, "ada").unwrap_err();
+        assert!(format!("{refused:#}").contains("rival"), "{refused:#}");
+        assert!(!dir.join("ada/state.toml").exists());
+        assert_eq!(
+            Store::load(&dir).get("ada").unwrap().state.status,
+            Status::Candidate
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
