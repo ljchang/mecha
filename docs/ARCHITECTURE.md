@@ -4683,7 +4683,12 @@ The decisions that carry it, each a bug if undone:
   the hash of the empty string with no ids is *recorded and empty* (the
   lever off, or no store — `RulesCarried::none`); no hash at all is a
   record from before the field and reads as *unknown*, as does `delivered:
-  None` against this build's `Some([])`. `mecha replay` prints which
+  None` against this build's `Some([])`. A fourth: no hash *with*
+  `rules_skipped` is a run whose block was rendered past a learned-rules
+  file that could not be read (D1 in `LEARNING-STORE-RESEARCH.md`: skipped
+  rather than failing the run). That is also *unknown*, for a reason the
+  record names; tenure's scan reports such sessions as a caveat rather
+  than passing over them as carrying nothing. `mecha replay` prints which
   (`RunConfig::rules_arm_note`), and "unknown" must never print as
   "nothing", the dash-is-never-zero shape one store over.
 - **A divergent episode is dropped, not scored.** Replay answers from the
