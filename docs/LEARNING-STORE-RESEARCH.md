@@ -185,6 +185,16 @@ adopted. **D2 stays open** — see the caveat under it.
   learner that a lesson it may still need is harmful. Keeping history this
   way needs a distinct mark ("superseded", shown to nobody as harmful), not
   retirement.
+  **Recommendation (2026-09-29, awaiting the owner):** no change to storage
+  or to consolidation. The history is already on disk — every
+  consolidation passes through a proposal whose `rules_before`/`rules`
+  snapshot the text, and `runs.jsonl` counts it — and nothing in the code
+  asks for it. A superseded mark in `learned.toml` would grow the file that
+  feeds every prompt and make every reader filter it, to answer a question
+  only an audit asks. The cheap version answers the audit: `mecha rules show
+  <id>` resolves a vanished id from the proposal snapshots ("dropped in
+  consolidation on DATE by proposal P; last text …"), read-only, touching
+  nothing that reaches a prompt.
 - **D3 — The move trigger.** Adopt §6's trigger (cross-store queries or
   indexed retrieval at run start), so the database decision is made when it
   buys something, not before?
