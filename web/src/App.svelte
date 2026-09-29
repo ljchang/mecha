@@ -6,13 +6,14 @@
   import Mail from './lib/Mail.svelte';
   import MailDesk from './lib/MailDesk.svelte';
   import Tasks from './lib/Tasks.svelte';
+  import Library from './lib/Library.svelte';
   import Graph from './lib/Graph.svelte';
   import Settings from './lib/Settings.svelte';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
   // A hash may carry a sub-view after a slash (#review/frontdoor), which the
   // view's component interprets; the router only splits it.
-  const views = ['home', 'chat', 'mail', 'review', 'tasks', 'graph', 'settings'];
+  const views = ['home', 'chat', 'mail', 'review', 'tasks', 'graph', 'library', 'settings'];
   const fromHash = () => {
     let [h, s] = location.hash.slice(1).split('/');
     // The notes tab folded into graph (NOTES-GRAPH-DESIGN.md D1); the old
@@ -113,6 +114,8 @@
       <Tasks initial={route.sub} {navigate} />
     {:else if view === 'graph'}
       <Graph initial={route.sub} />
+    {:else if view === 'library'}
+      <Library initial={route.sub} {navigate} />
     {:else if view === 'settings'}
       <Settings initial={route.sub} {navigate} {backTo} />
     {:else}
