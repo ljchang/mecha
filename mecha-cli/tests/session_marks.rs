@@ -176,6 +176,22 @@ fn the_owner_marks_a_probe_and_a_runs_shell_cannot() {
         1,
         "no rule written"
     );
+    // The refusal names the verb that frees the rest unconsumed — never
+    // `reject`, which would burn them — and `supersede --stale` sweeps it
+    // (review of #382).
+    assert!(err.contains("mecha proposals supersede p-held"), "{err}");
+    assert!(!err.contains("proposals reject"), "{err}");
+    stdout(&mecha(&home, &["proposals", "supersede", "--stale"]));
+    let after = LearningStore::open(home.join("learning")).unwrap();
+    assert_eq!(after.proposal("p-held").unwrap().status, "superseded");
+    assert!(
+        after
+            .reflexions()
+            .unwrap()
+            .iter()
+            .any(|r| r.id == "refl-held" && !r.is_processed),
+        "released unconsumed"
+    );
     let marks = Marks::load(&sessions).unwrap();
     assert!(marks.withdrawn(&probe));
     assert_eq!(

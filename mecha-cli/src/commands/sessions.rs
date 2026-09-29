@@ -778,8 +778,8 @@ fn report_reach(session_id: &str) -> Result<()> {
     if !holding.is_empty() {
         println!(
             "  pending proposal(s) {} hold reflection(s) from it — accepting is refused while \
-             the mark stands; `mecha proposals reject` it and the next learn pass proposes \
-             again from the rest",
+             the mark stands; `mecha proposals supersede --stale` releases the rest unconsumed, \
+             and the next learn pass proposes again from them",
             holding.join(", ")
         );
     }
