@@ -158,6 +158,39 @@ archive|unarchive|delete`, and `/api/sessions/{id}`.
 
 Deploy order: #381 needs a mecha-graph that has `--tombstone-absent`.
 
+**2026-09-27 — appraisal wiring, the day after: the measurement passes join
+the nightly, rows 2e-4b and 3a-2 land behind levers, and every owner act on
+a draft records who made it (#333, #342–#345, #348, #352, #356).** The
+authority is `APPRAISAL-WIRING-DESIGN.md`, rulings R42 and R43 in its §6.
+
+- **The nightly now measures.** #333 (`f62e345a`) adds `mecha sessions
+  compare` (2d-1) and `mecha learn --compare-sources` (2e-1) to
+  `scripts/ruminate.sh`. It counts an owner-bound check point as
+  `owner_bound`, apart from `unavailable` (`pointwise_pass::Tally`), by the
+  owner's ruling of 2026-09-26.
+- **Row 2e-4b ships as two halves, both behind levers that ship off.**
+  #342 (`a03362e9`, 2e-4b-1): planning success examples, drawn from what
+  the owner verified (`[agent] success_examples`). #345 (`c4576665`,
+  2e-4b-2, R43): contrast evidence, where a correction in a verified
+  success's region is reflected beside that success
+  (`[agent] contrast_evidence`).
+- **Row 3a-2.** #344 (`779fb70d`, R42): a task run's situation brief names
+  its previous attempts (`brief::attempts`) and quotes only the owner.
+- **R16a's ruling D3, carried to every act on a draft.** A reject's reason
+  is the owner's words only at the owner's own door: #343 (`6d33a017`,
+  `OutboxItem::resolved_by`). An edit is the owner's writing only when the
+  owner made every edit and the release: #348 (`d32f9318`,
+  `OutboxItem::owners_edit`). A draft released unchanged is the owner's
+  verdict only when the owner released it: #352 (`e3afb783`,
+  `OutboxItem::owners_unchanged_release`). #356 (`218fd600`) is the
+  follow-ups: structural docs, "sent unedited", and previous attempts that
+  name the owner only for the owner's own act.
+
+The two 2e-4b levers' measured `mecha exp` runs are owed. The edit and
+reject signs stayed actor-blind until #387 (HANDOFF). Verified on `main` at
+`2847fbfe`: `grep -c compare scripts/ruminate.sh` prints 9, and each symbol
+named above is present.
+
 **2026-09-27 — a web chat opened or reconnected mid-run keeps its history
 (#358).** Reported from the phone with a screenshot: an incognito chat showed
 no history and no pictures, and its transcript began at whatever tool call
