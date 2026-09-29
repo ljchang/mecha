@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha sessions mark <id> experiment`** withdraws a session you ran as a
+  model probe from everything that learns from your sessions: the run
+  corpus, `reflect`, `distill`, `learn`, and its appraisal and scores. The
+  transcript is untouched, and `mecha sessions unmark` undoes it. Only you
+  can mark, from your own terminal; a run's shell is refused. The verb names
+  the session's graph episode, if it was distilled, for you to retract there.
+
 - **`mecha distill --backfill-appraisals`** appraises, after the fact, the
   sessions distilled before appraisals existed whose clean steer or denial
   was waiting only on an appraisal to be compared. There were 9 on the live
