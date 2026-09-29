@@ -250,7 +250,11 @@ uploads, forgets the job history, and sweeps the rooms a dead `serve` left.
 temp directory is named and on tmpfs (`incognito::images_forgettable`,
 `[image] server_temp_dir`). The canary's remaining legs rode with it: an
 image prompt against `fake_image_server`, a `$TMPDIR` scan (`TmpDir`), and
-the default log level.
+the default log level. The same PR fixed #326's three review minors: the banner now
+says the chat ends "30 minutes after this page is closed", a chat reaped
+between two reads draws the gone screen rather than an error strip, and
+focus returns to the composer after a new chat is opened from the gone
+screen.
 
 **2026-09-25/26 — appraisal wiring, phase 2 continued: the gate's
 acceptance rule completed, the appraisal's prediction scored, and learning

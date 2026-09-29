@@ -26,10 +26,10 @@ maps which document holds what.
 installed.** What shipped is in HISTORY under 2026-09-28 and 2026-09-29.
 Open:
 
-- **`extras` on `image_generate` for people not in the library: open as
-  PR #390** (`feat/image-extras`). The evidence is
-  `IMAGE-COMPILER-RESEARCH.md` §E11 and §E12, which exist on that branch and
-  not yet on main:
+- **`extras` on `image_generate` for people not in the library: merged as
+  #390 (`a6941f8d`), not deployed.** Checked 2026-09-29: the installed binary
+  (`c6ae2c69`) carries none of the literals #390 added. The evidence is
+  `IMAGE-COMPILER-RESEARCH.md` §E11 and §E12:
   - E11 (4 images): the compiled "Exactly N people" pushes a described
     waiter into the background, while counted wording puts him in the scene.
   - E12 (4 images, 2 arms × 2 seeds): with the softer wording the waiter
