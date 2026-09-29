@@ -37,15 +37,24 @@ Open:
     else comes back as four right faces.
   #390 changes the default head-count wording from "Exactly N people" to
   "each of the N appears exactly once", with a total only when `extras` are
-  given. The same PR closed three items this block used to list: the temp
-  file `imagelib::write_atomic_mode` leaked on a rename error, the stopword
-  miss in library search (`tool::image_library`'s `STOPWORDS`: "picnic in
-  the park" had missed `picnic-park`), and the `imagelib.rs` line in
-  CLAUDE.md's module map. All three are merged and not deployed.
-- **#385's remaining last-pass minors:** the docs should say that locking
-  does not reach portraits already cached `immutable`, and the route tests
-  for the CLI-child actions (reject, lock, unlock, remove, save) should run
-  under `testenv::HomeGuard`.
+  given. It also closed four items this block used to list:
+  - the temp file `imagelib::write_atomic_mode` leaked on a rename error;
+  - the stopword miss in library search (`tool::image_library`'s
+    `STOPWORDS`: "picnic in the park" had missed `picnic-park`);
+  - the `imagelib.rs` line in CLAUDE.md's module map;
+  - the note in `ARCHITECTURE.md`'s image-library section that locking does
+    not reach portraits a browser already cached `immutable`.
+  **#391 (`fc0b7c75`) followed from #390's review:**
+  - a scene with only `extras` draws with no head count ("Also in the
+    scene: …") and needs no library;
+  - the rename cleanup gets a test that can go red
+    (`a_failed_install_leaves_no_temp_file_behind`);
+  - the `ARCHITECTURE.md` bullet names its exceptions.
+  #390 and #391 are both merged and not deployed; the installed binary
+  carries none of their literals.
+- **#385's remaining last-pass minor:** the route tests for the CLI-child
+  actions (reject, lock, unlock, remove, save) should run under
+  `testenv::HomeGuard`.
 - **The live library holds test entries** `maya`, `john` and `watercolour`,
   plus a model-proposed candidate, `sam`, awaiting the owner's approve or
   reject. Whether to keep them is the owner's call.
