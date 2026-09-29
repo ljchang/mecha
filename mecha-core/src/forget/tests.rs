@@ -859,7 +859,7 @@ fn the_document_cache_is_named_because_delete_cannot_find_a_session_in_it() {
         report
             .residue
             .iter()
-            .any(|r| r.contains("~/.mecha/documents/")),
+            .any(|r| r.contains(&roots.documents.display().to_string())),
         "{:?}",
         report.residue
     );
@@ -880,4 +880,32 @@ fn no_document_cache_is_not_named() {
     .unwrap();
 
     assert!(!report.residue.iter().any(|r| r.contains("documents")));
+}
+
+#[test]
+fn a_relocated_document_cache_is_the_one_named() {
+    let home = scratch("documents-moved");
+    let mut roots = Roots::under(&home.0);
+    let elsewhere = home.0.join("elsewhere/doc-cache");
+    roots.documents = elsewhere.clone();
+    let main = home.0.join("work/web/main");
+    session(&roots, GONE, &main, CANARY);
+    write(
+        &elsewhere.join("0123abcd/layer.json"),
+        r#"{"sha256":"0123abcd"}"#,
+    );
+
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+
+    let shown = elsewhere.display().to_string();
+    assert!(
+        report.residue.iter().any(|r| r.contains(&shown)),
+        "{:?}",
+        report.residue
+    );
 }
