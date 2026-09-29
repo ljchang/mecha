@@ -75,11 +75,16 @@ the backfill's result are in HISTORY under 2026-09-29; the install is in
   whether synthetic evidence counts), or waiting for sessions that stay clean
   end to end. `mecha learn --compare-sources` was not run, since there is
   nothing for it to compare.
-- **`lesson_source::backfill_targets` should drop sessions that ended
-  tainted.** That taint is on disk before any model call. Without the filter,
-  the backfill spent 22 minutes of local-model seats on 8 rows that could
-  never enter the comparison. It is a small change to a merged PR, so it
-  waits for the owner.
+- **The backfill should drop sessions that ended tainted.** That taint is on
+  disk before any model call. Without the filter, the backfill spent 22
+  minutes of local-model seats on 8 rows that could never enter the
+  comparison. `lesson_source::backfill_targets` sees only the learning
+  store, and the end taint lives in the transcript (`SessionEvidence`).
+  So either its caller, `distill::backfill_targets`, passes in the tainted
+  ids, or the wrapper filters on them. The case for core is its own doc
+  comment: it is "the same predicate the pass uses", and the end taint is
+  exactly such a reason. It is a small change to a merged PR, so it waits
+  for the owner.
 - **One target is left: `20260826T184906`.** Its appraisal reply was
   unusable and nothing was stored. A re-run would pick it up, and it would
   most likely come out not clean like the other 8.
@@ -3295,6 +3300,7 @@ next move is an ordinary fast-forward by the recipe. Four
 Claude Code sessions still hold `mecha-graph-mcp` children on a deleted
 binary (pids 2006709, 52563, 53059 and 54331; each `/proc/<pid>/exe` reads
 `(deleted)`, checked 2026-09-29). They refresh when those sessions restart.
+The 19:50Z entry below ends 2006709, which closed with the mecha-46 session.
 
 **2026-09-29 04:06Z, mecha-d7: `mecha` from `8103d746` (#390, #391, #394)
 and its dist (`index-OHSoDwAD.js`).** `mecha-slack`, `mecha-triggers`,
@@ -3321,7 +3327,9 @@ it does not depend on `mecha-core`), the graph binaries (no commits since
 2026-09-28 23:54Z at the time), the voice worker (`worker.py` unchanged),
 ComfyUI and the dist (`web/` unchanged since #394). The mecha-46 session
 was closed at the owner's word to free memory, which ended graph child
-2006709. The backfill ran against this binary, 20:30–20:52Z, which started before mecha-d7's 20:48Z reinstall and its `[documents]` config edit, and neither disturbed it (0 failed).
+2006709. The backfill ran against this binary, 20:30–20:52Z, which started
+before mecha-d7's 20:48Z reinstall and its `[documents]` config edit, and
+neither disturbed it (0 failed).
 
 **2026-09-29 21:05Z, mecha-5d: `mecha` from `b26537b0` (#408).** The
 installed binary already carried `document_read`, so mecha-d7's 20:48Z
