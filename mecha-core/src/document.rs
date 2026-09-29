@@ -113,8 +113,9 @@ pub struct DocumentsConfig {
     /// load and answer `/health` (measured cold: ~3 s; a page cache miss
     /// and a busy GPU make it longer).
     pub ocr_ready_secs: u64,
-    /// One page's OCR may take this long before it is abandoned. Also the
-    /// wall clock for each confined poppler call.
+    /// One page's OCR may take this long before it is abandoned — end to
+    /// end: its layout pass and every region it is read in, not each region
+    /// on its own. Also the wall clock for each confined poppler call.
     pub page_timeout_secs: u64,
     /// Output token cap per page. The densest of 48 measured pages wrote
     /// 1,678 (design §8); a page cut off at the cap is an error, not a page.
@@ -1745,7 +1746,21 @@ impl Extractor {
                                     scratch.insert(Scratch::new(bytes)?)
                                 }
                             };
-                            let work = self.read_page(client, st, s, &sha, n, size);
+                            // One bound for the whole page: each region read
+                            // carries its own timeout, and a page of many
+                            // regions against a wedged server would otherwise
+                            // run for page_timeout × regions (found on review).
+                            let limit = Duration::from_secs(self.cfg.page_timeout_secs.max(1));
+                            let work = async {
+                                tokio::time::timeout(
+                                    limit,
+                                    self.read_page(client, st, s, &sha, n, size),
+                                )
+                                .await
+                                .unwrap_or_else(|_| {
+                                    Err(anyhow!("the page did not finish within {limit:?}"))
+                                })
+                            };
                             // Raced against the token: a cancel drops the page
                             // mid-read — the region requests in flight and the
                             // layout exchange with it — rather than waiting it out.
