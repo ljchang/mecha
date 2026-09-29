@@ -2376,11 +2376,45 @@ fn check_rule_files(root: &Path) -> Vec<Finding> {
             },
             Err(e) => e.to_string(),
         };
+        // What stops, or goes on without them, depends on who reads the
+        // domain: every run, one pass, or nothing at all. Say which, never a
+        // consequence the domain does not have (`PASS_DOMAINS`' ruling: a
+        // permanent false positive is where a real one hides).
+        let reader = if crate::learning::RUN_DOMAINS.contains(&domain.as_str()) {
+            Some((
+                "every run refuses to start",
+                "runs are going on without them",
+            ))
+        } else if crate::learning::PASS_DOMAINS.contains(&domain.as_str()) {
+            Some((
+                "`mecha mail classify` refuses to run",
+                "the mail classifier is going on without them",
+            ))
+        } else {
+            None
+        };
+        let Some((stops, without)) = reader else {
+            out.push(Finding {
+                component: "learning".to_string(),
+                severity: Severity::Attention,
+                summary: format!(
+                    "`{name}` does not parse, and no run or pass reads `{domain}` rules"
+                ),
+                detail: format!(
+                    "{}: {error}. Nothing stops over it, and nothing would load it if it \
+                     parsed: check the filename against the routed domains ({}).",
+                    path.display(),
+                    crate::learning::routed_domains().join(", ")
+                ),
+                remedy: None,
+            });
+            continue;
+        };
         out.push(if user {
             Finding {
                 component: "learning".to_string(),
                 severity: Severity::Broken,
-                summary: format!("your `{domain}` rules do not parse — every run refuses to start"),
+                summary: format!("your `{domain}` rules do not parse — {stops}"),
                 detail: format!("{}: {error}", path.display()),
                 remedy: Some(Remedy {
                     description: "edit them with a parse check before the save".to_string(),
@@ -2399,13 +2433,12 @@ fn check_rule_files(root: &Path) -> Vec<Finding> {
             Finding {
                 component: "learning".to_string(),
                 severity: Severity::Attention,
-                summary: format!(
-                    "learned `{domain}` rules do not parse — runs are going on without them"
-                ),
+                summary: format!("learned `{domain}` rules do not parse — {without}"),
                 detail: format!(
-                    "{}: {error}. Each run skips this file and records its rule set as \
-                     unknown, and `mecha learn` will not consolidate over it. Fix it by \
-                     hand, or remove it to start the domain's learned rules afresh.",
+                    "{}: {error}. Each read that renders a prompt skips this file (a run \
+                     records its rule set as unknown), and `mecha learn` will not \
+                     consolidate over it. Fix it by hand, or remove it to start the \
+                     domain's learned rules afresh.",
                     path.display()
                 ),
                 remedy: None,
@@ -2759,13 +2792,38 @@ mod tests {
         )
         .unwrap();
 
+        std::fs::write(root.join("rules/triage.user.toml"), broken).unwrap();
+        std::fs::write(root.join("rules/behaviour.user.toml"), broken).unwrap();
+
         let found = check_rule_files(&root);
-        assert_eq!(found.len(), 2, "{found:#?}");
+        assert_eq!(found.len(), 4, "{found:#?}");
         let user = found
             .iter()
             .find(|f| f.summary.contains("your `behavior`"))
             .unwrap();
         assert!(matches!(user.severity, Severity::Broken));
+        assert!(user.summary.contains("every run refuses to start"));
+        // Only the classifier reads triage: no claim about every run.
+        let triage = found
+            .iter()
+            .find(|f| f.summary.contains("your `triage`"))
+            .unwrap();
+        assert!(
+            triage.summary.contains("mail classify"),
+            "{}",
+            triage.summary
+        );
+        // A typo'd domain is read by nothing, so nothing stops over it.
+        let typo = found
+            .iter()
+            .find(|f| f.summary.contains("behaviour"))
+            .unwrap();
+        assert!(matches!(typo.severity, Severity::Attention));
+        assert!(
+            typo.summary.contains("no run or pass reads"),
+            "{}",
+            typo.summary
+        );
         let argv = &user.remedy.as_ref().unwrap().argv;
         assert_eq!(argv[..4], ["mecha", "rules", "edit", "--user"]);
         let learned = found

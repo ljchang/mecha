@@ -1773,7 +1773,9 @@ impl LearningStore {
             for rule in self
                 .user_rules(domain)?
                 .iter()
-                .chain(self.learned_rules(domain)?.iter())
+                // Learned rules read the way the block is (D1): one unreadable
+                // file must not take every domain's warning with it.
+                .chain(self.learned_or_skip(domain, &mut Vec::new()).iter())
             {
                 if !rule.active() {
                     continue;
@@ -1837,7 +1839,7 @@ impl LearningStore {
             let has_active = self
                 .user_rules(&domain)?
                 .iter()
-                .chain(self.learned_rules(&domain)?.iter())
+                .chain(self.learned_or_skip(&domain, &mut Vec::new()).iter())
                 .any(|r| r.active());
             if has_active {
                 out.push(domain);
@@ -1854,7 +1856,7 @@ impl LearningStore {
         let mut out = Vec::new();
         for domain in self.domains() {
             let active = self
-                .learned_rules(&domain)?
+                .learned_or_skip(&domain, &mut Vec::new())
                 .iter()
                 .filter(|r| r.active())
                 .count();
