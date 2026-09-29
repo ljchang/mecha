@@ -3398,9 +3398,17 @@ X3 unparked).
   it, because a forecast of the owner's approval shown to the reviewer or
   the acting model is a way to steer the verdict.
 - **Where it is on:** the agent's route turns it on with the charter
-  window, and every surface's own route copies the setting
-  (`OutboxStore::forecasting`). Tests pass a fixed window, so none reads
-  the machine's charter.
+  window. Every surface that opens its own store per session does it with
+  `OutboxStore::open_like`, so the setting cannot be dropped by omission.
+  Tests pass a fixed window, so none reads the machine's charter.
+- **Off the staging path's critical cost:** the history is the newest
+  `HISTORY_LIMIT` items (ids sort by time), the window is resolved once per
+  store, and the ledger's lock is tried, never waited on.
+- **History is what the ledger forecast as real.** A smoke run's draft
+  (`MECHA_SESSION_KIND=test`) is recorded `test`, predicts nothing, never
+  counts as history, and the readout sets it aside. The instrument must not
+  measure its own tests. Drafts from before forecasting began are not
+  history either.
 - **Scored only at read time**, by `sessions appraise` (`forecast::summarize`),
   under the patience window recorded on the forecast when it was made
   (`patience_secs`), so a later edit to the charter's outbox line cannot

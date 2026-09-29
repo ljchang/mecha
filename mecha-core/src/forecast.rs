@@ -91,9 +91,19 @@ pub struct Forecast {
     /// from before the field: scored by today's window instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patience_secs: Option<i64>,
+    /// Staged by a smoke run (`MECHA_SESSION_KIND=test`): recorded so the
+    /// draft is not counted as unforecast, predicted nothing, never history,
+    /// and set aside by the readout — the instrument must not measure its
+    /// own tests (review of #401).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub test: bool,
     #[serde(default)]
     pub source: Source,
 }
+
+/// How many of the newest items a staging reads for its history: bounded, so
+/// the staging path does not pay for the whole store as it grows.
+pub const HISTORY_LIMIT: usize = 500;
 
 /// Where the ledger lives for an outbox rooted at `outbox_root` — in a
 /// subdirectory, out of the item walk.
@@ -258,14 +268,29 @@ pub fn record(
     item: &OutboxItem,
     history: Option<&[OutboxItem]>,
     patience: Option<chrono::Duration>,
+    test: bool,
 ) -> Result<Option<Forecast>> {
     if !forecasts(item) {
         return Ok(None);
     }
     let now = at(&item.created_at).unwrap_or_else(Utc::now);
-    let (expected, basis, basis_unreadable) = match (history, patience) {
-        (Some(h), Some(p)) => {
-            let (e, b) = base_rate(&item.tool, armed(item), h, p, now);
+    // History is the drafts this ledger forecast as real: a smoke run's, an
+    // owner-typed one, and one from before forecasting began never are.
+    // An unreadable ledger is no basis.
+    let admitted: Option<std::collections::HashSet<String>> = match load(outbox_root) {
+        Ok((made, 0)) => Some(
+            made.into_iter()
+                .filter(|f| !f.test)
+                .map(|f| f.item_id)
+                .collect(),
+        ),
+        _ => None,
+    };
+    let (expected, basis, basis_unreadable) = match (test, history, patience, &admitted) {
+        (true, ..) => (None, 0, false),
+        (false, Some(h), Some(p), Some(ids)) => {
+            let real: Vec<OutboxItem> = h.iter().filter(|i| ids.contains(&i.id)).cloned().collect();
+            let (e, b) = base_rate(&item.tool, armed(item), &real, p, now);
             (e, b, false)
         }
         _ => (None, 0, true),
@@ -280,6 +305,7 @@ pub fn record(
         basis,
         basis_unreadable,
         patience_secs: patience.map(|p| p.num_seconds()),
+        test,
         source: Source::BaseRate,
     };
     let path = ledger(outbox_root);
@@ -302,7 +328,10 @@ pub fn record(
     Ok(Some(f))
 }
 
-/// Hold `<dir>/.lock` until the returned handle drops.
+/// Hold `<dir>/.lock` until the returned handle drops — tried, never waited
+/// on: the staging path must not hang on a `forget` rewrite (review of
+/// #401). A lock still held after a short while is an error, which the
+/// staging logs and the readout counts as an unforecast draft.
 fn lock(dir: &Path) -> Result<std::fs::File> {
     use std::os::unix::io::AsRawFd;
     let file = std::fs::OpenOptions::new()
@@ -311,11 +340,14 @@ fn lock(dir: &Path) -> Result<std::fs::File> {
         .write(true)
         .open(dir.join(".lock"))
         .with_context(|| format!("opening {}", dir.join(".lock").display()))?;
-    // SAFETY: flock on an fd we own, held open until `file` drops.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("locking the forecast ledger");
+    for _ in 0..20 {
+        // SAFETY: flock on an fd we own, held open until `file` drops.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(file);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    Ok(file)
+    anyhow::bail!("the forecast ledger stayed locked; this draft goes unforecast")
 }
 
 /// Every forecast on record, and how many lines could not be read. A
@@ -342,6 +374,9 @@ pub fn load(outbox_root: &Path) -> Result<(Vec<Forecast>, usize)> {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Summary {
     pub forecasts: usize,
+    /// Recorded for smoke runs' drafts, and set aside: not scored, not a
+    /// basis, not unforecast.
+    pub tests_set_aside: usize,
     /// Made with no stamped history on a similar draft: nothing to score.
     pub no_basis: usize,
     /// Of those, made when the history or the window could not be read —
@@ -385,12 +420,16 @@ pub fn summarize(
     now: DateTime<Utc>,
 ) -> Summary {
     let mut s = Summary {
-        forecasts: made.len(),
+        forecasts: made.iter().filter(|f| !f.test).count(),
         skipped,
         outbox_unreadable: !items_complete,
         ..Summary::default()
     };
     for f in made {
+        if f.test {
+            s.tests_set_aside += 1;
+            continue;
+        }
         let expected = match f.expected {
             None => {
                 s.no_basis += 1;

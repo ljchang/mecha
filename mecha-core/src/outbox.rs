@@ -857,6 +857,9 @@ pub struct OutboxStore {
     /// on it, and the window it judges by (`crate::forecast`). Off unless
     /// asked for.
     forecasting: Option<crate::forecast::Window>,
+    /// The window, resolved once per store: the charter is read on the
+    /// first forecast, not on every draft (review of #401).
+    forecast_patience: std::sync::OnceLock<Option<chrono::Duration>>,
 }
 
 /// Holds the store's writer lock for as long as it lives.
@@ -878,6 +881,19 @@ impl OutboxStore {
         Ok(OutboxStore {
             root,
             forecasting: None,
+            forecast_patience: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// Open `root` the way `shared` is open: a surface that opens its own
+    /// store per session carries the shared route's forecasting by
+    /// construction, never by a copy each caller must remember (review of
+    /// #401).
+    pub fn open_like(shared: &OutboxStore, root: impl Into<PathBuf>) -> Result<Self> {
+        let store = OutboxStore::open(root)?;
+        Ok(match shared.forecasting {
+            Some(w) => store.with_forecasts(w),
+            None => store,
         })
     }
 
@@ -902,6 +918,7 @@ impl OutboxStore {
         root.is_dir().then_some(OutboxStore {
             root,
             forecasting: None,
+            forecast_patience: std::sync::OnceLock::new(),
         })
     }
 
@@ -985,18 +1002,29 @@ impl OutboxStore {
         self.write_item(&item)?;
         // The forecast, sealed beside the items. It is a measurement, never
         // a guard, so a failure to write one does not fail the staging — it
-        // is counted as an unforecast draft on the readout instead. A
-        // history that could not be read whole makes a forecast with no
-        // basis, never a guess from part of it.
+        // is counted as an unforecast draft on the readout instead. Kept off
+        // the staging's critical path as far as it can be: a bounded read of
+        // the newest items, a window resolved once per store, and a lock
+        // that is tried rather than waited on (review of #401). A history
+        // that could not be read whole makes a forecast with no basis, never
+        // a guess from part of it. A smoke run's draft is recorded as such
+        // and never predicted from, so the instrument does not measure its
+        // own tests.
         if let Some(window) = self.forecasting {
             if crate::forecast::forecasts(&item) {
-                let history = match self.items_counting() {
-                    Ok((h, 0)) => Some(h),
-                    _ => None,
+                let test = crate::session::SessionKind::test_override()
+                    == Some(crate::session::SessionKind::Test);
+                let history = if test {
+                    None
+                } else {
+                    match self.items_newest(crate::forecast::HISTORY_LIMIT) {
+                        Ok((h, 0)) => Some(h),
+                        _ => None,
+                    }
                 };
-                let patience = window.patience();
+                let patience = *self.forecast_patience.get_or_init(|| window.patience());
                 if let Err(e) =
-                    crate::forecast::record(&self.root, &item, history.as_deref(), patience)
+                    crate::forecast::record(&self.root, &item, history.as_deref(), patience, test)
                 {
                     tracing::warn!("no forecast recorded for draft {}: {e:#}", item.id);
                 }
@@ -1064,6 +1092,29 @@ impl OutboxStore {
     pub fn items_strict(&self) -> Result<Vec<OutboxItem>> {
         let mut skipped = 0usize;
         self.items_impl(true, &mut skipped)
+    }
+
+    /// The newest `limit` items, by id (which sorts by staging time), and
+    /// how many of those could not be read. A bounded read for a caller on
+    /// the staging path, which must not pay for the whole store.
+    pub fn items_newest(&self, limit: usize) -> Result<(Vec<OutboxItem>, usize)> {
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(&self.root)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+            .collect();
+        paths.sort();
+        let mut out = Vec::new();
+        let mut skipped = 0usize;
+        for path in paths.iter().rev().take(limit) {
+            match std::fs::read_to_string(path)
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+            {
+                Some(item) => out.push(item),
+                None => skipped += 1,
+            }
+        }
+        Ok((out, skipped))
     }
 
     fn items_impl(&self, strict: bool, skipped: &mut usize) -> Result<Vec<OutboxItem>> {

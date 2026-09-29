@@ -1478,6 +1478,7 @@ fn forecasts_line(
     );
     for (n, what) in [
         (s.pending, "waiting for the owner or the window"),
+        (s.tests_set_aside, "from smoke runs set aside"),
         (
             s.window_unreadable,
             "unscored: the outbox's patience window could not be read (check the charter)",
