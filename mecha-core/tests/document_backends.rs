@@ -611,3 +611,62 @@ async fn a_cancelled_run_stops_a_layout_read_mid_page() {
         started.elapsed()
     );
 }
+
+/// `page_timeout_secs` bounds a page end to end. A server that answers
+/// `/health` and then never answers a completion must cost the page its one
+/// budget — not a budget per region, which is what a page of many regions
+/// read two at a time used to pay (found on review of #406).
+#[tokio::test]
+async fn a_wedged_server_costs_a_page_one_timeout_not_one_per_region() {
+    if support::unavailable("poppler + bwrap", poppler_and_bwrap()) {
+        return;
+    }
+    if support::unavailable(
+        "the layout stage (scripts/layout/install.sh)",
+        layout_installed(),
+    ) {
+        return;
+    }
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { return };
+            let mut buf = [0u8; 4096];
+            let n = conn.read(&mut buf).unwrap_or(0);
+            if String::from_utf8_lossy(&buf[..n]).starts_with("GET /health") {
+                let body = r#"{"status":"ok"}"#;
+                let _ = write!(
+                    conn,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            } else {
+                // A completion: accepted, never answered.
+                held.push(conn);
+            }
+        }
+    });
+    let ex = Extractor::new(
+        DocumentsConfig {
+            page_timeout_secs: 3,
+            ..layout_config(format!("http://127.0.0.1:{port}"))
+        },
+        None,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let out = ex
+        .extract(&table_pdf(), "1", Mode::Ocr, false, None)
+        .await
+        .unwrap();
+    let err = out.pages[0].ocr_error.clone().unwrap_or_default();
+    assert!(err.contains("the page did not finish within"), "{err}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+}
