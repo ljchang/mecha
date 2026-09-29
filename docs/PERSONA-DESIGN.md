@@ -292,7 +292,8 @@ ruling already names what kind: a mecha-owned SQLite, never `graph.db`
 ```
 ~/.mecha/personas/
   about-me.md                    owner: what every persona may know about you (§4.5)
-  groups.toml                    owner: named groups — `work = ["mara", "priya"]` (§4.5)
+  groups.toml                    owner: which groups exist — `[work]`; membership lives in
+                                 each persona.toml, once (§4.5)
   groups/<group>/about-me.md     owner: what that group may know about you
   groups/<group>/files/          material that group of personas can read (§10.2)
   files/                         material every persona can read (§10.2)
@@ -301,7 +302,8 @@ ruling already names what kind: a mecha-owned SQLite, never `graph.db`
   relationships/<name>.md        relationship templates: starters and the owner's own (§5)
   voices/<name>/                 voice profiles: a reference clip and settings (§11)
   <persona>/
-    persona.toml                 structured fields the code reads (§4.3)
+    persona.toml                 the owner's fields — never rewritten by code (§4.3)
+    state.toml                   machine-written: status, origin, locked, version, digest (§4.3)
     identity.md                  owner prose: who they are, how they speak;
                                  its `## Core` section is the re-anchor (§12.5)
     motivation.md                owner prose: wants and values (§6)
@@ -340,6 +342,13 @@ one unlock shows locked characters and locked personas together (§8.3).
 - **Structured fields are TOML with unknown fields denied**, like the charter
   and config: a misspelt key fails the load by name, and §5's fail-closed rule
   decides what an unknown *value* does.
+- **What the owner writes and what the machine writes are separate files.**
+  `persona.toml` holds only the owner's fields and is never rewritten by
+  code — the charter's rule, and the practical reason: the TOML library in
+  the tree cannot edit a file without dropping its comments. `state.toml`
+  beside it holds what the machine keeps — `status`, `origin`, `locked`,
+  `version`, `digest`, `created`, `updated` — so `mecha persona lock` is a
+  machine-state write, which is what it is. (Settled in building phase 1.)
 - **Memory is SQLite, one database per persona** (§9.10). It is the part
   that grows without bound — many personas, long conversations, months of
   them — and the part searched on every turn and written by more than one
@@ -362,10 +371,6 @@ relationship = "colleague"       # a template in relationships/ (§5), or none
 character = "mara"               # an imagelib Character: her portrait
 voice     = "mara-low"           # voices/mara-low.toml (§11)
 groups    = ["work"]             # §4.5
-status    = "approved"
-origin    = "owner"
-locked    = false
-version   = 3
 model     = "local"              # §12.6: pinned; a change is shown, never silent
 
 [tools]                          # ∩ the eligibility rule, §3.3
@@ -427,8 +432,10 @@ comes from one of three levels:
 | **A group** | personas the owner put in it | `groups/<group>/about-me.md` | facts shared with that group, in `shared.db`, tagged with it |
 | **One persona** | that persona only | its `identity.md`, `motivation.md` | its `memory.db` |
 
-- **Groups are the owner's** — named in `groups.toml`, joined in a
-  persona's `groups`. A persona cannot add itself to one or create one. The
+- **Groups are the owner's** — declared in `groups.toml`, joined in a
+  persona's `groups`, and listed in exactly one place: membership lives only
+  in each `persona.toml`, so the two can never disagree, and a persona
+  naming an undeclared group is a broken link, named. A persona cannot add itself to one or create one. The
   point is the owner's example: the colleague and the devil's advocate can
   share what they know about a project while the friend does not.
 - **Nothing moves up a level on its own.** A fact enters `memory.db` as the
