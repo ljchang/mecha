@@ -19,8 +19,8 @@ use crate::{probe, setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
 use mecha_core::learning::{
-    batches_by_region, budget_refuses, LeapRun, Learner, LearningStore, Proposal, Trigger,
-    MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
+    batches_by_region, budget_refuses, LeapRun, Learner, LearningStore, Proposal, RuleCommit,
+    Trigger, MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
 };
 use mecha_core::session::Session;
 use std::collections::{BTreeMap, BTreeSet};
@@ -289,6 +289,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     } else {
         Some(store.lock()?)
     };
+    // A change a crash interrupted is finished before this pass reads the
+    // rules and the pool it would otherwise re-argue.
+    if !args.dry_run {
+        if let Some(line) = store.resume_interrupted()? {
+            println!("{line}");
+            store.log_pass(&format!("resume: {line}"));
+        }
+    }
 
     anyhow::ensure!(
         (0.0..1.0).contains(&args.holdout),
@@ -857,7 +865,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 reason: None,
                 scope: Some(region.clone()),
             };
-            store.write_proposal(&proposal)?;
+            // An applied proposal is written by the commit below, with the
+            // rules it records; written here, a crash in between would leave
+            // it `auto_applied` over rules that never went live.
+            if !applied {
+                store.write_proposal(&proposal)?;
+            }
             println!(
                 "{domain}: proposal {} [{status}] — {} rule(s) from {} reflection(s)",
                 proposal.id,
@@ -884,9 +897,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     rules_after: rules.len() as u32,
                     created_at: chrono::Utc::now().to_rfc3339(),
                 };
-                store.write_learned_rules(domain, &rules)?;
-                store.mark_reflexions_processed(&ids, &run.id)?;
-                store.append_run(&run)?;
+                store.commit_rules(&RuleCommit {
+                    run,
+                    reflexion_ids: ids.clone(),
+                    rules: rules.clone(),
+                    proposal: Some(proposal.clone()),
+                })?;
                 for (text, from, to) in &widenings {
                     println!("{domain}: widened — \"{text}\" loaded with {from}, now {to}");
                 }
@@ -926,9 +942,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             created_at: chrono::Utc::now().to_rfc3339(),
         };
 
-        store.write_learned_rules(domain, &rules)?;
-        store.mark_reflexions_processed(&ids, &run.id)?;
-        store.append_run(&run)?;
+        store.commit_rules(&RuleCommit {
+            run: run.clone(),
+            reflexion_ids: ids.clone(),
+            rules: rules.clone(),
+            proposal: None,
+        })?;
         for (text, from, to) in &widenings {
             println!("{domain}: widened — \"{text}\" loaded with {from}, now {to}");
         }

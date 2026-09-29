@@ -311,6 +311,7 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_unfinished_forgets(&home.join("sessions")));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
     findings.extend(check_learning(&home.join("learning"), now));
+    findings.extend(check_rule_commits(&home.join("learning"), now));
     findings.extend(check_proposal_review(&home.join("learning"), now));
     // The graph store is `~/.mecha-graph`, a hidden sibling of the mecha home
     // by that store's own convention — resolved relative to `home` so a test
@@ -2131,6 +2132,66 @@ pub fn legacy_learning_git(learning: &Path) -> Option<PathBuf> {
 /// command: accept the rate, or change what evidence the loop can use. That
 /// is why its remedy is the dry-run that shows the classifications, never
 /// anything that loosens the gate.
+/// A rule change a crash interrupted, and one recovery set aside
+/// (`LearningStore::commit_rules`, `resume_interrupted`). A commit in flight
+/// lasts milliseconds with no model call in it, so one older than a minute
+/// was interrupted.
+fn check_rule_commits(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let pending = root.join(crate::learning::COMMIT_FILE);
+    if let Ok(meta) = std::fs::metadata(&pending) {
+        let written = meta.modified().ok().map(DateTime::<Utc>::from);
+        if written.is_none_or(|t| now - t > chrono::Duration::minutes(1)) {
+            out.push(Finding {
+                component: "learning".to_string(),
+                severity: Severity::Attention,
+                summary: "a rule change was interrupted part-way".to_string(),
+                detail: format!(
+                    "{} records a change to the learned rules that did not finish. The \
+                     next `mecha learn` or `mecha proposals accept` finishes it before \
+                     doing anything else, and the nightly pass runs `learn`.",
+                    pending.display()
+                ),
+                remedy: None,
+            });
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
+    let mut aside: Vec<String> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| {
+            n.starts_with(crate::learning::UNFINISHED_COMMIT_PREFIX) && n.ends_with(".json")
+        })
+        .collect();
+    aside.sort();
+    if !aside.is_empty() {
+        out.push(Finding {
+            component: "learning".to_string(),
+            severity: Severity::Attention,
+            summary: format!(
+                "{} interrupted rule change(s) were set aside rather than finished",
+                aside.len()
+            ),
+            detail: format!(
+                "The live rules had moved by the time recovery ran, or the record was \
+                 unreadable, so finishing would have overwritten a later decision. Nothing \
+                 in them went live, and their reflections were left for the next pass to \
+                 learn from again. Read what each would have written, then delete it: {}.",
+                aside
+                    .iter()
+                    .map(|n| root.join(n).display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            remedy: None,
+        });
+    }
+    out
+}
+
 fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let mut out = Vec::new();
     let path = root.join("reflections.jsonl");
@@ -2669,6 +2730,36 @@ mod tests {
     use crate::outbox::{OutboxItem, OutboxKind};
     use serde_json::json;
     use std::path::PathBuf;
+
+    /// A commit record older than any commit takes is an interrupted one; a
+    /// fresh one is a pass in flight and says nothing.
+    #[test]
+    fn an_interrupted_rule_change_is_reported_and_one_in_flight_is_not() {
+        let root = std::env::temp_dir()
+            .join("mecha-doctor-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(crate::learning::COMMIT_FILE), "{}").unwrap();
+        let now = Utc::now();
+        assert!(check_rule_commits(&root, now).is_empty());
+        let later = check_rule_commits(&root, now + chrono::Duration::minutes(5));
+        assert_eq!(later.len(), 1, "{later:#?}");
+        assert!(later[0].summary.contains("interrupted"));
+
+        std::fs::remove_file(root.join(crate::learning::COMMIT_FILE)).unwrap();
+        std::fs::write(
+            root.join(format!(
+                "{}20260929T060000.000Z.json",
+                crate::learning::UNFINISHED_COMMIT_PREFIX
+            )),
+            "{}",
+        )
+        .unwrap();
+        let aside = check_rule_commits(&root, now);
+        assert_eq!(aside.len(), 1, "{aside:#?}");
+        assert!(aside[0].summary.contains("set aside"));
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     /// A booking that never reached the calendar for a reason the sweep did
     /// **not** record. Every failure other than a collision writes no ledger

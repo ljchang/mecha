@@ -54,6 +54,8 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod commit_tests;
 mod lossless;
 
 // ─── Reflections ────────────────────────────────────────────────────────────
@@ -1882,6 +1884,53 @@ pub struct LeapRun {
     pub created_at: String,
 }
 
+/// A rule change going live, as [`LearningStore::commit_rules`] takes it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleCommit {
+    /// The run the change is recorded as. Its id marks the reflections.
+    pub run: LeapRun,
+    /// The reflections the change consumes.
+    pub reflexion_ids: Vec<String>,
+    /// The domain's learned rules after the change.
+    pub rules: Vec<Rule>,
+    /// The proposal that records why, in its final state. `None` for an
+    /// ungated consolidation, which writes no proposal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<Proposal>,
+}
+
+/// What [`COMMIT_FILE`] holds: the change, and the live rules it was made
+/// against. Recovery needs both to tell "landed" from "never landed" from
+/// "moved since".
+#[derive(Debug, Serialize, Deserialize)]
+struct CommitIntent {
+    #[serde(flatten)]
+    change: RuleCommit,
+    rules_before: Vec<Rule>,
+}
+
+/// A rule change in progress, or one a crash interrupted. It exists only
+/// between the first and last write of [`LearningStore::commit_rules`],
+/// which is milliseconds with no model call in it. So one that is older than
+/// that was interrupted, which doctor reports.
+pub const COMMIT_FILE: &str = "commit.json";
+
+/// An interrupted rule change that recovery would not finish, kept for the
+/// owner to read as `commit.unfinished.<when>.json`. See
+/// [`LearningStore::resume_interrupted`].
+pub const UNFINISHED_COMMIT_PREFIX: &str = "commit.unfinished.";
+
+/// The same rules, field for field — recovery's "is this what is live?".
+/// Stricter than `proposals accept`'s text-and-enabled check on purpose:
+/// here a difference in any field means someone other than this change
+/// wrote the file.
+fn same_rule_set(a: &[Rule], b: &[Rule]) -> bool {
+    match (serde_json::to_value(a), serde_json::to_value(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
 // ─── Proposals ──────────────────────────────────────────────────────────────
 
 /// A rule change waiting for the user, with the evidence that argues for it.
@@ -1993,6 +2042,121 @@ impl LearningStore {
 
     pub fn append_run(&self, run: &LeapRun) -> Result<()> {
         self.append_line("runs.jsonl", &serde_json::to_string(run)?)
+    }
+
+    /// Whether `runs.jsonl` already records a run with this id. A line this
+    /// build cannot read is not a match.
+    fn has_run(&self, id: &str) -> Result<bool> {
+        let text = match std::fs::read_to_string(self.root.join("runs.jsonl")) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(text.lines().any(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .is_ok_and(|v| v.get("id").and_then(|i| i.as_str()) == Some(id))
+        }))
+    }
+
+    /// Put a rule change live as one unit. The caller holds the store lock.
+    ///
+    /// Going live is up to four writes to four files — the rules, the
+    /// reflections' marks, the run, the proposal — and a crash between two of
+    /// them used to leave the store half-changed. Rules live but reflections
+    /// unmarked meant the next pass re-argued the batch against its own
+    /// result. A proposal already marked `accepted` whose rules never landed
+    /// meant a record that lied.
+    ///
+    /// So the whole change is written down first, in [`COMMIT_FILE`]
+    /// (fsynced), then the steps run, then the record is removed. A crash
+    /// leaves the record, and [`Self::resume_interrupted`] finishes it. Every
+    /// step is idempotent, so finishing means doing them again.
+    pub fn commit_rules(&self, change: &RuleCommit) -> Result<()> {
+        let intent = CommitIntent {
+            change: change.clone(),
+            rules_before: self.learned_rules(&change.run.domain)?,
+        };
+        let path = self.root.join(COMMIT_FILE);
+        lossless::write_replacing(&path, serde_json::to_string_pretty(&intent)?.as_bytes())?;
+        self.finish_commit(&intent.change, true)?;
+        std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        Ok(())
+    }
+
+    fn finish_commit(&self, c: &RuleCommit, write_rules: bool) -> Result<()> {
+        if write_rules {
+            self.write_learned_rules(&c.run.domain, &c.rules)?;
+        }
+        self.mark_reflexions_processed(&c.reflexion_ids, &c.run.id)?;
+        if !self.has_run(&c.run.id)? {
+            self.append_run(&c.run)?;
+        }
+        if let Some(p) = &c.proposal {
+            self.write_proposal(p)?;
+        }
+        Ok(())
+    }
+
+    /// Finish a rule change a crash interrupted, if one is on disk. The
+    /// caller holds the store lock. Returns a line saying what it did, for
+    /// the caller to print.
+    ///
+    /// The live rules decide what "finish" means:
+    /// - still the change's `rules`: the rules landed, so finish the rest;
+    /// - still its `rules_before`: nothing landed, so do it all;
+    /// - neither: someone moved the rules since (an owner verb after the
+    ///   crash). Writing over that would clobber a later decision, so the
+    ///   record is set aside as `commit.unfinished.<when>.json` for doctor to
+    ///   report. Its reflections stay unmarked, and the next pass learns
+    ///   from them again.
+    ///
+    /// A record this build cannot read is set aside the same way. An I/O
+    /// error keeps the record where it is, for the next writer to retry.
+    pub fn resume_interrupted(&self) -> Result<Option<String>> {
+        let path = self.root.join(COMMIT_FILE);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let set_aside = |why: String| -> Result<Option<String>> {
+            // Named by when, so a second set-aside never overwrites the first.
+            let aside = self.root.join(format!(
+                "{UNFINISHED_COMMIT_PREFIX}{}.json",
+                chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
+            ));
+            std::fs::rename(&path, &aside)
+                .with_context(|| format!("setting aside {}", path.display()))?;
+            Ok(Some(format!(
+                "an interrupted rule change could not be finished ({why}); set aside as {}",
+                aside.display()
+            )))
+        };
+        let intent: CommitIntent = match serde_json::from_str(&text) {
+            Ok(i) => i,
+            Err(e) => return set_aside(format!("this build cannot read it: {e}")),
+        };
+        let c = &intent.change;
+        let live = self.learned_rules(&c.run.domain)?;
+        let write_rules = if same_rule_set(&live, &c.rules) {
+            false
+        } else if same_rule_set(&live, &intent.rules_before) {
+            true
+        } else {
+            return set_aside(format!(
+                "the live `{}` rules changed after it was interrupted",
+                c.run.domain
+            ));
+        };
+        self.finish_commit(c, write_rules)?;
+        std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        Ok(Some(format!(
+            "finished an interrupted rule change to `{}` (run {}): {} rule(s), {} reflection(s)",
+            c.run.domain,
+            c.run.id,
+            c.rules.len(),
+            c.reflexion_ids.len()
+        )))
     }
 
     /// Mark reflections consumed by a pass. Rewrites the file via a temp
