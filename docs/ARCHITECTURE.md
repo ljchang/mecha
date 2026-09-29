@@ -634,14 +634,17 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   description beside the pointer 0.78 (E1). So `compile` sends each cast
   member's portrait as a reference and pastes the description verbatim
   beside it — never the description alone, never a paraphrase.
-- **One reference per person, the head count stated, `wearing` and `doing`
-  required.** Every reference slot tends to become a person (two unnamed
+- **One reference per person, each appearing exactly once, `wearing` and
+  `doing` required.** Every reference slot tends to become a person (two unnamed
   references of one character drew it twice, E2, and a bound face-and-body
   pair failed once in four, E9); a reference supplies its own outfit, pose
   and stare when the scene is silent, and stated they land (E3, E8). The
   prompt's shape — "the person in the image" for one, `<imageN>` left to
-  right with "Exactly N people" for more — is in `compile`, not asked of the
-  model.
+  right for more, each appearing exactly once and anyone else a new person —
+  is in `compile`, not asked of the model. There is no total unless `extras`
+  are given: "Exactly two people" erased a waiter the model had written into
+  the prose instead of `extras`, and the softer wording still drew four cast
+  as exactly four (E12).
 - **Portraits go at 512² (`REFERENCE_SIZE`), edits at 1024.** Four references
   at 1024² took 190 s and four at 512² 79 s, and a whole portrait at 512²
   held identity within a few hundredths of a tight crop (E2, E10). `Request`
@@ -734,6 +737,15 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   (0600, set only from the CLI) is checked, five wrong passwords in five
   minutes answer 429, and a damaged file errors — the file's presence
   decides, so damage never reads as absence.
+- **An `extra` is counted, and read by the guard.** People in the scene who
+  are no library character go in `image_generate`'s `extras`: listed as "not
+  from any image" and counted in the head count, because a count of the cast
+  alone pushed a described waiter into the background (research E11). The
+  named-character guard reads the extras as it reads the prompt.
+- **Locking does not reach back into a browser's cache.** Open portraits are
+  content-addressed and served `immutable`, so one browsed before its entry
+  was locked stays cached on that device; nothing asks for it again once the
+  list hides it, but the bytes remain until evicted or cleared.
 - **The web approves what it showed, and only it can vouch for that.** The
   list carries an HMAC of each entry's `shown_digest` under a key `serve`
   draws at start and never stores; approval checks it against the entry as
