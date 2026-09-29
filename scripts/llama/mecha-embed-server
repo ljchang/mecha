@@ -1,0 +1,38 @@
+#!/bin/bash
+# The embedding half of the local model pair. :8080 is the chat model; this is
+# :8081, because llama-server holds one model per process.
+#
+# **On demand since 2026-09-29** (owner's ruling): llama-embed.socket holds
+# 127.0.0.1:8081 from boot and costs nothing; the first connection starts
+# llama-embed-proxy.service, which starts this server on MECHA_EMBED_PORT
+# (18081) and forwards once /health says ok; ten idle minutes later the proxy
+# exits and this server, unneeded, stops. The same mechanism as the OCR server
+# (docs/DOCUMENT-EXTRACTION-DESIGN.md §6); scripts/llama/ is the source, and
+# this copy in ~/.local/bin is what runs.
+#
+# Lives in ~/.local/bin and NOT in a git checkout, deliberately. On 2026-08-20
+# llama-local.service was found pointing its ExecStart at
+# ~/Github/mecha/scripts/, which made a routine `git checkout` able to silently
+# rewrite the running configuration of a production service. A unit file should
+# reference a stable path, not a working tree someone is editing.
+#
+# harrier-oss-v1-0.6b, chosen 2026-08-20 by measurement rather than leaderboard.
+# On 80 paraphrase queries over a 5,000-episode pool of the real corpus,
+# vector-only:
+#
+#   nomic-embed-text   MRR 0.2708   r@1 0.20   r@10 0.4375   (incumbent)
+#   qwen3-emb-0.6b     MRR 0.2846   r@1 0.20   r@10 0.425
+#   harrier-0.6b       MRR 0.3595   r@1 0.28   r@10 0.562
+#   qwen3-emb-4b       MRR 0.3878   r@1 0.30   r@10 0.562
+#
+# Harrier and the 4B are not separable at n=80 (gap 0.028, SE ~0.03-0.04) and
+# have identical recall@10; harrier is 1/7 the size and a third of the re-embed
+# time. Qwen3-Embedding-0.6B — the one MTEB pointed at — ties the incumbent.
+#
+# --pooling last is REQUIRED: these are decoder-only embedders. mean pooling
+# silently produces plausible-looking, worse vectors.
+M=$(ls ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--mradermacher--harrier-oss-v1-0.6b-GGUF/snapshots/*/harrier-oss-v1-0.6b.f16.gguf | head -1)
+exec ${LLAMA_SERVER:-llama-server} -m "$M" \
+  --host 127.0.0.1 --port "${MECHA_EMBED_PORT:-18081}" -ngl 999 \
+  --embeddings --pooling last --embd-normalize 2 \
+  -c 32768 --alias harrier-oss-v1-0.6b

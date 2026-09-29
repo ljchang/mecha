@@ -16,7 +16,7 @@ llama-server holds **one model per process**. So:
 
 ```
 :8080   qwen3.6-35b-a3b   chat/agent    mecha's [providers.local], mecha-graph's extractor
-:8081   an embedding model              mecha-graph's embed + retrieval
+:8081   an embedding model              mecha-graph's embed + retrieval — on demand once installed (DOCUMENT-EXTRACTION-DESIGN.md §7)
 :8085   paddleocr-vl-1.6  document OCR  mecha's document_read — on demand (§Document OCR)
 ```
 
