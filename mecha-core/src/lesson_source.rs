@@ -308,7 +308,7 @@ pub struct RegionReport {
     pub rules_free: SourceCounts,
     /// Of the decided comparisons, the ones where exactly one lesson source
     /// passed: the appraisal's alone, or the reflector's alone. The paired
-    /// test [`RegionReport::gate`] reads — concordant pairs say nothing about
+    /// test [`Report::gate`] reads — concordant pairs say nothing about
     /// which source is better.
     pub appraisal_only: usize,
     pub reflector_only: usize,
@@ -400,7 +400,7 @@ pub enum Gate {
 impl Report {
     /// R25's gate for the whole report: [`Gate::Floors`] when any store line
     /// was unreadable ([`Report::skipped_lines`]), else the total's
-    /// [`RegionReport::gate`]. What every readout states.
+    /// `gate_over_counts`. What every readout states.
     pub fn gate(&self) -> Gate {
         if self.skipped_lines > 0 {
             return Gate::Floors {
