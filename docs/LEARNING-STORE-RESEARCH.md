@@ -25,6 +25,15 @@ weeks 32–39), one `behavior.learned.toml` with 7 rules, 10 proposals, 378
 validation rows (≈90 a week since the ledger's first row on 2026-08-29) and
 144 attempts, the mined and distilled
 ledgers (≈630 each), `runs.jsonl`, `passes.jsonl`, `harness/`, `logs/`.
+When present, two more:
+- `curation.jsonl`: the owner's verdicts on rules, written by
+  `curation::append` from outside `LearningStore`;
+- `artifact-probes/`: one receipt per artifact-task repeat, naming a session
+  and a reflection.
+
+`forget` purges neither of these by session. It names the receipts as
+residue rather than deleting them, which is a gap in "all traces", being
+fixed separately.
 Written by the `session_end` hook (`learn-live.sh`: reflect, learn;
 `distill`), the nightly `ruminate.sh`, owner verbs from the CLI, TUI and web
 (as child processes), `forget` (in-process, from the web), and — unlocked —
@@ -120,11 +129,14 @@ Each was confirmed against `c6ae2c69`; none has caused a recorded loss.
    its read and its rename — for `mail reflect`, silently and permanently,
    because the mined mark survives. *Fix:* take the lock in both (a few
    lines each); optionally make every mutating `LearningStore` method take
-   `&StoreLock` so an unlocked writer does not compile.
+   `&StoreLock` so an unlocked writer does not compile. That would not reach
+   `curation::append`, which writes into this store from a bare path and
+   states its lock discipline only in prose.
 2. **An append is two `write` calls.** `append_line` uses `writeln!`, which
    writes the line and the newline separately, so two appenders can merge
    into one corrupt line. *Fix:* one `write_all` of the line with its
-   newline.
+   newline. `curation::append` already has that shape, with its rationale
+   written down.
 3. **Rewrites drop what they cannot parse.** `rewrite_reflexions`,
    `write_learned_rules` and `write_proposal` round-trip through typed
    structs with no catch-all, and `rewrite_reflexions` rebuilds from a
@@ -187,13 +199,14 @@ adopted. **D2 stays open** — see the caveat under it.
   re-derive", and the carry-forward inherits retirement onto any reworded
   restatement; retiring a rule that was merely dropped would teach the
   learner that a lesson it may still need is harmful. Keeping history this
-  way needs a distinct mark ("superseded", shown to nobody as harmful), not
-  retirement.
+  way needs a distinct mark, shown to nobody as harmful, not retirement. It
+  cannot be called "superseded": `Proposal::status` already uses that word
+  for a pending proposal overtaken by `--apply`.
   **Recommendation (2026-09-29, awaiting the owner):** no change to storage
   or to consolidation. The history is already on disk — every
   consolidation passes through a proposal whose `rules_before`/`rules`
   snapshot the text, and `runs.jsonl` counts it — and nothing in the code
-  asks for it. A superseded mark in `learned.toml` would grow the file that
+  asks for it. Such a mark in `learned.toml` would grow the file that
   feeds every prompt and make every reader filter it, to answer a question
   only an audit asks. The cheap version answers the audit: `mecha rules show
   <id>` resolves a vanished id from the proposal snapshots ("dropped in
