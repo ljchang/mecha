@@ -78,10 +78,12 @@ the backfill's result are in HISTORY under 2026-09-29; the install is in
 - **The backfill should drop sessions that ended tainted.** That taint is on
   disk before any model call. Without the filter, the backfill spent 22
   minutes of local-model seats on 8 rows that could never enter the
-  comparison. `lesson_source::backfill_targets` sees only the learning
-  store, and the end taint lives in the transcript (`SessionEvidence`).
-  So either its caller, `distill::backfill_targets`, passes in the tainted
-  ids, or the wrapper filters on them. The case for core is its own doc
+  comparison. `lesson_source::backfill_targets` sees the reflections and
+  `Sources` (the appraisal store's clean read and the ids on record), and
+  neither carries an un-appraised session's end taint, which lives in its
+  transcript (`SessionEvidence`). So either its caller, `backfill_targets`
+  in `mecha-cli/src/commands/distill.rs`, passes in the tainted ids, or
+  that wrapper filters on them. The case for core is its own doc
   comment: it is "the same predicate the pass uses", and the end taint is
   exactly such a reason. It is a small change to a merged PR, so it waits
   for the owner.
@@ -108,8 +110,9 @@ the backfill's result are in HISTORY under 2026-09-29; the install is in
     end to end.
   - #382: `is_stale` and the appraisal store re-read the marks ledger on
     every call. `mecha reflections` does not say that a marked session's
-    reflections are withdrawn. And `distill::backfill_targets` does not
-    filter marks, which costs noise and never writes a row.
+    reflections are withdrawn. And the CLI's `backfill_targets`
+    (`commands/distill.rs`) does not filter marks, which costs noise and
+    never writes a row.
   - #401: the forecast ledger is read whole on every staging and has no
     retention. `items_newest` is newest-first, which nothing pins. A
     `SessionKind::Experiment` draft is kept out of the base rate only
