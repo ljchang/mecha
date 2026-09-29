@@ -22,6 +22,55 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-28/29 — the appraisal audit, the owner's rulings on it, and five
+appraisal PRs open, all reviewed to the bar.** An audit read the live store:
+- 7 text appraisals on 2026-09-28, every one predicting `no_act`, and 4
+  scores, all hits.
+  The readout said "hit rate 100%" over outputs that offered nothing to act
+  on.
+- Valence stood at +1.0 / −93.0.
+- 2e-1 had 0 eligible interventions in 35 regions. Every clean steer and
+  denial came from a session distilled before the appraisal leg existed,
+  and distill never revisits a session.
+
+The rulings, in `~/.claude` memory and in each PR's body:
+- **1B:** don't ask for a forced prediction.
+- **4B/4D:** probes run in incognito, and a verb marks a session an
+  experiment.
+- **2A→C:** the stamp rule applies to edits and rejects too, going forward
+  only.
+- **3D→D:** backfill-appraise the stranded sessions first.
+- **In-run prediction → (a):** before a consequential act.
+
+The PRs, none merged at this writing:
+
+| PR | What |
+|---|---|
+| #377 | `ScoreSummary::forced` / `forced_unknown`, and a hit rate only over predictions that could have missed. Merge first, **without** `--delete-branch`. |
+| #378 | 1B, stacked on #377: `withholds_expectation`, the `expected_act_withheld` stamp, and `not_asked`. Retarget it to `main` after #377. |
+| #382 | 4D: `mecha sessions mark <id> experiment` / `unmark`, over a ledger at `<sessions>/marks/marks.jsonl`. It withdraws the session from listing admission, every appraisal-store door, `learn`, `validate` and `sessions compare`. `proposals accept` refuses a proposal resting on a marked session, and the doctor and `supersede --stale` treat that proposal as unappliable. Only the owner may mark. |
+| #387 | 2A→C: `OutboxItem::drafting_verdict_signs`. |
+| #388 | D: `mecha distill --backfill-appraisals`. It chooses sessions by 2e-1's own predicate (`lesson_source::backfill_targets`), pushes and re-marks nothing, writes rows stamped `backfilled` with no prediction, and dates and ranks past appraisals by the session's end everywhere. |
+
+**Owed after merge**, in this order:
+1. Install through the `update` skill.
+2. Run `mecha distill --backfill-appraisals --dry-run` (9 sessions on
+   2026-09-28, before two probe sessions were deleted), then run it for
+   real. It takes about 15 minutes of local-model seats.
+3. Read `mecha learn --compare-sources`.
+
+**Awaiting the owner's rulings:**
+- For (a): the base-rate forecaster first, which unparks X3, with a model
+  forecaster later as a measured arm?
+- Do forecast surprises go to a readout only, or also to replay priority?
+- Is a draft still pending when outbox patience ends `no_act`?
+- What does 2e-1's "no worse" mean? The proposal on the table: at least 10
+  decided, trailing by at most 2 discordant pairs, and a pilot below 10.
+
+The scoping behind (a): none of the 85 outbox items carried an owner stamp
+on 2026-09-28, so there is no stamped history to forecast from yet.
+Tasks are deferred to v2.
+
 **2026-09-28/29 — the image library (#380, #383–#385, #390, #391, #394),
 merged and installed.** What shipped is in HISTORY under 2026-09-28 and 2026-09-29.
 Open:
@@ -173,54 +222,6 @@ a workspace dependency; `comfyui.service` lives only in
 beside `start-moe-mtp.sh`; and a race between spawning a shell and
 registering it (`shell_registry::ShellRegistry`), seen as a flaky test and
 not fixed in product code.
-
-**2026-09-28/29 — the appraisal audit, the owner's rulings on it, and five
-appraisal PRs open, all reviewed to the bar.** An audit read the live store:
-- 7 text appraisals, every one predicting `no_act`, and 4 scores, all hits.
-  The readout said "hit rate 100%" over outputs that offered nothing to act
-  on.
-- Valence stood at +1.0 / −93.0.
-- 2e-1 had 0 eligible interventions in 35 regions. Every clean steer and
-  denial came from a session distilled before the appraisal leg existed,
-  and distill never revisits a session.
-
-The rulings, in `~/.claude` memory and in each PR's body:
-- **1B:** don't ask for a forced prediction.
-- **4B/4D:** probes run in incognito, and a verb marks a session an
-  experiment.
-- **2A→C:** the stamp rule applies to edits and rejects too, going forward
-  only.
-- **3D→D:** backfill-appraise the stranded sessions first.
-- **In-run prediction → (a):** before a consequential act.
-
-The PRs, none merged at this writing:
-
-| PR | What |
-|---|---|
-| #377 | `ScoreSummary::forced` / `forced_unknown`, and a hit rate only over predictions that could have missed. Merge first, **without** `--delete-branch`. |
-| #378 | 1B, stacked on #377: `withholds_expectation`, the `expected_act_withheld` stamp, and `not_asked`. Retarget it to `main` after #377. |
-| #382 | 4D: `mecha sessions mark <id> experiment` / `unmark`, over a ledger at `<sessions>/marks/marks.jsonl`. It withdraws the session from listing admission, every appraisal-store door, `learn`, `validate` and `sessions compare`. `proposals accept` refuses a proposal resting on a marked session, and the doctor and `supersede --stale` treat that proposal as unappliable. Only the owner may mark. |
-| #387 | 2A→C: `OutboxItem::drafting_verdict_signs`. |
-| #388 | D: `mecha distill --backfill-appraisals`. It chooses sessions by 2e-1's own predicate (`lesson_source::backfill_targets`), pushes and re-marks nothing, writes rows stamped `backfilled` with no prediction, and dates and ranks past appraisals by the session's end everywhere. |
-
-**Owed after merge**, in this order:
-1. Install through the `update` skill.
-2. Run `mecha distill --backfill-appraisals --dry-run` (9 sessions on
-   2026-09-28, before two probe sessions were deleted), then run it for
-   real. It takes about 15 minutes of local-model seats.
-3. Read `mecha learn --compare-sources`.
-
-**Awaiting the owner's rulings:**
-- For (a): the base-rate forecaster first, which unparks X3, with a model
-  forecaster later as a measured arm?
-- Do forecast surprises go to a readout only, or also to replay priority?
-- Is a draft still pending when outbox patience ends `no_act`?
-- What does 2e-1's "no worse" mean? The proposal on the table: at least 10
-  decided, trailing by at most 2 discordant pairs, and a pilot below 10.
-
-The scoping behind (a): none of the 85 outbox items carried an owner stamp
-on 2026-09-28, so there is no stamped history to forecast from yet.
-Tasks are deferred to v2.
 
 **2026-09-26 — appraisal wiring: phase 1 and every phase-2 row but 2a-4,
 2e-2, 2e-4b, 2e-4c and 2e-5's appraisal-weighted half are merged and
@@ -4289,7 +4290,8 @@ the mechanism and every decision. What it left standing:
 **2026-09-26/27 — appraisal wiring: phase 1, 3a, 3a-2, 3a-3 and every
 phase-2 row but 2a-4, 2e-2, 2e-4c and 2e-5's appraisal-weighted half are
 merged and installed** (2e-4b, 3a-2 and #333 on 2026-09-27, HISTORY). The
-audit of 2026-09-28/29 and its five open PRs are at the top of this file. The authority is `APPRAISAL-WIRING-DESIGN.md`: §3 holds
+audit of 2026-09-28/29 and its five open PRs are at the top of this file.
+The authority is `APPRAISAL-WIRING-DESIGN.md`: §3 holds
 the plan as pull requests with their order, and §6 the rulings: R30–R37
 of 2026-09-25, R38 of 2026-09-25/26 and R39–R41 of 2026-09-26. What each
 row built is in HISTORY under 2026-09-24/25 and 2026-09-25/26. Every
@@ -4319,8 +4321,10 @@ What is open:
   2e-4a's exemplars to drafting runs is a lever not yet built, and when it
   lands it arms `private_data` (the L2 entry).
 - **What phase 2 has on disk so far.** On 2026-09-29 `~/.mecha/appraisals/`
-  held `appraisals.jsonl` (6 lines, after the owner deleted two probe
-  sessions) and `scores.jsonl` (3), and no `counterfactuals.jsonl` (2d-3).
+  held `appraisals.jsonl` (6 lines) and `scores.jsonl` (3), and no
+  `counterfactuals.jsonl` (2d-3). That is the audit's 7 and 4, plus the
+  morning trigger's appraisal of 09-28, less the two probe sessions the owner
+  deleted (two appraisals and one score).
   Every appraisal predicts `no_act`, which is #377's and #378's subject. Read `sessions
   appraise` and `mecha sessions successes` after a few nights before
   judging any phase-2 row on real data.
