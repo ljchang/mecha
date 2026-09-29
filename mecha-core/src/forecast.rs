@@ -24,6 +24,13 @@
 //! **Pre-registered by construction.** The forecast is written at staging,
 //! from history resolved before it, so nothing learned from the draft's own
 //! outcome can reach it.
+//!
+//! **Only a run's drafts.** A draft is forecast, and counts as history, only
+//! when it carries the session that staged it ([`forecasts`]). That keeps
+//! the owner's own typed text (`mecha mail send`) out. It also leaves out
+//! a route that stamps no session: `mecha batch` stamps none, so its drafts
+//! are neither forecast nor counted as unforecast. That is by design, not a
+//! lost write.
 
 use crate::appraisal_store::ExpectedAct;
 use crate::closure::Actor;
@@ -332,9 +339,18 @@ pub fn summarize(
         ..Summary::default()
     };
     for f in made {
-        let Some(expected) = f.expected.filter(|a| *a != ExpectedAct::Unknown) else {
-            s.no_basis += 1;
-            continue;
+        let expected = match f.expected {
+            None => {
+                s.no_basis += 1;
+                continue;
+            }
+            // An act word a newer build wrote: a basis existed, this build
+            // cannot name it — unknown, never "no basis" (review of #401).
+            Some(ExpectedAct::Unknown) => {
+                s.unknown += 1;
+                continue;
+            }
+            Some(a) => a,
         };
         let observed = match (items.iter().find(|i| i.id == f.item_id), patience) {
             (Some(item), Some(p)) => observe(item, p, now),
