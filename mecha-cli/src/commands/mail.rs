@@ -2328,6 +2328,16 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
     let learning = mecha_core::learning::LearningStore::open(
         mecha_core::learning::LearningStore::default_root()?,
     )?;
+    // The store lock, before reading the mined set — as `mecha reflect`
+    // takes it. Unlocked, a reflection appended here while a learn pass
+    // rewrote the file (marking reflections processed) could vanish in that
+    // rewrite's rename, while its mined mark survived: lost for good, and
+    // never mined again. Held across the model calls, like reflect.
+    let _lock = if dry_run {
+        None
+    } else {
+        Some(learning.lock()?)
+    };
     let mined = learning.mined_corrections()?;
 
     let mut todo: Vec<(Record, mecha_core::mail_triage::Correction)> = Vec::new();
@@ -3073,6 +3083,33 @@ fn draft_prompt(
             .unwrap_or("(no summary)"),
     ));
     p
+}
+
+#[cfg(test)]
+mod reflect_lock_tests {
+    /// Read from the source, as the served-session tests are: the path makes
+    /// model calls, and what matters is that the learning-store lock is taken
+    /// before the mined set is read. Unlocked, an append here raced a learn
+    /// pass's rewrite of `reflections.jsonl` and could be lost for good.
+    #[test]
+    fn mail_reflect_takes_the_learning_lock_before_reading_the_mined_set() {
+        let src = include_str!("mail.rs");
+        let body = src
+            .split("async fn reflect(")
+            .nth(1)
+            .and_then(|b| b.split("\nasync fn ").next())
+            .expect("mail reflect is where this test expects it");
+        let lock = body
+            .find("learning.lock()")
+            .expect("mail reflect takes no store lock");
+        let read = body
+            .find("mined_corrections()")
+            .expect("the mined set is read");
+        assert!(
+            lock < read,
+            "the lock must be taken before the mined set is read"
+        );
+    }
 }
 
 #[cfg(test)]

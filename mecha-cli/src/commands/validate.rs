@@ -760,6 +760,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
         // Write the compact outcome before the receipt: an interrupted append
         // must not suppress a measurement the retirement ledger never received.
+        //
+        // Under the store lock, and only around the writes: `forget` rewrites
+        // these ledgers under it, and an unlocked append landing between that
+        // rewrite's read and its rename would be lost. Not across the probe's
+        // model calls, which run for hours on a nightly and would hold every
+        // owner verb behind them.
+        let store_lock = store.lock()?;
         store.append_validation(&ValidationRecord {
             reflexion_id: r.id.clone(),
             trigger: r.trigger.clone(),
@@ -777,6 +784,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 .map(|s| s.scope()),
         })?;
         store.append_validation_attempt(&receipt)?;
+        drop(store_lock);
         recorded_rows += 1;
         // Both arms drove and each produced a verdict: that is a comparison,
         // inconclusive or not. A pair cut short by a provider or judge error
@@ -823,6 +831,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         println!(
             "{recorded_rows} row(s) appended to the validation ledger — `mecha rules` folds them"
         );
+        let _lock = store.lock()?;
         store.log_pass(&format!("validate: {recorded_rows} probe(s) → ledger"));
     }
     Ok(())
@@ -964,6 +973,34 @@ fn outcome_str(baseline: &ProbeVerdict, with: &ProbeVerdict) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Read from the source: the appends sit after a probe's model calls.
+    /// `forget` rewrites these ledgers under the store lock, so an unlocked
+    /// append could be lost between that rewrite's read and its rename.
+    #[test]
+    fn the_ledger_appends_are_taken_under_the_store_lock() {
+        let src = include_str!("validate.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let append = code
+            .find("store.append_validation(")
+            .expect("validate appends the ledger");
+        let lock = code[..append]
+            .rfind("store.lock()")
+            .expect("no lock before the appends");
+        assert!(
+            !code[lock..append].contains("provider") && append - lock < 600,
+            "the lock is taken right before the appends, not across the probe"
+        );
+        let pass = code
+            .find("store.log_pass(")
+            .expect("validate logs its pass");
+        assert!(
+            code[..pass]
+                .rfind("store.lock()")
+                .is_some_and(|l| pass - l < 200),
+            "the pass log is appended under the lock"
+        );
+    }
 
     fn temp_store() -> LearningStore {
         // A process-unique counter, not a timestamp. `as_nanos()` is only as
