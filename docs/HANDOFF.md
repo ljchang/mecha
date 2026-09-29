@@ -46,11 +46,13 @@ dated*. What is open:
   waits a ~4 s cold start. Rollback, if it misbehaves:
   `scripts/llama/install-embed.sh --remove` restores the always-on unit.
 - **Personas are mecha-69's lane**, building `docs/PERSONA-DESIGN.md` §17:
-  #405, #407, #409 and #415 are merged; #418 (the safety layer's model-free
-  half) is in review. The installed binary has #405 and #407 only, and the
-  web dist has no Personas tab yet — the plan is to deploy 2b and 2c
-  together after #418, on the owner's go-ahead. Next: 2c-2 (the farewell
-  check and the crisis judge), then 2d (self-portraits, file download).
+  #405, #407, #409, #415 and #418 (the safety layer's model-free half) are
+  merged, and were deployed at 23:47Z by mecha-69 — `mecha` from `97ebae9c`
+  and a rebuilt dist (`index-BvMDEpUF.js`); that install is its to record.
+  Checked here: `strings ~/.cargo/bin/mecha | grep -c 'Suicide & Crisis
+  Lifeline'` → 1, and `document_read` still registers. Next: 2c-2 (the
+  farewell check and the crisis judge), then 2d (self-portraits, file
+  download).
 
 **2026-09-29 — image edits that came back unchanged: the cause was the
 prompt (#408), merged and installed.** What shipped, and the measurement,
