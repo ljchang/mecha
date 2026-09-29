@@ -56,6 +56,7 @@ something shipped.
 | [`HARNESS-RESEARCH.md`](HARNESS-RESEARCH.md) | Where agent performance actually comes from — planning, the loop, or the tools |
 | [`IMAGE-COMPILER-RESEARCH.md`](IMAGE-COMPILER-RESEARCH.md) | How a library of characters and scenes compiles a narrative into consistent generations, and what local runs measured |
 | [`LEARNING-LOOP-RESEARCH.md`](LEARNING-LOOP-RESEARCH.md) | How the learning loop runs without the owner, what flowmail's two loops actually do, and how anyone would know it is improving |
+| [`LEARNING-STORE-RESEARCH.md`](LEARNING-STORE-RESEARCH.md) | Where the learning store should live — files, a mecha-owned database, or the graph — and when that changes |
 | `MAIL-CORPUS-RESEARCH.md` | What a year of this mailbox actually contains. **Gitignored** |
 | [`MAIL-UX-RESEARCH.md`](MAIL-UX-RESEARCH.md) | What the field has converged on for agent-driven email |
 | [`MEMORY-RESEARCH.md`](MEMORY-RESEARCH.md) | Whether agent memory should accumulate or be curated, and what the evidence says |

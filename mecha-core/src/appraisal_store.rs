@@ -310,6 +310,18 @@ pub struct Draft {
     /// The owner act expected next time, from R16's closed set — what 2b-2
     /// scores the prediction by.
     pub expected_act: Option<ExpectedAct>,
+    /// Written after the fact by `mecha distill --backfill-appraisals`, for
+    /// a session distilled before the appraisal leg existed (ruling 3D→D,
+    /// 2026-09-28). Set by the producer, never by a model; such a row
+    /// carries no `expected_act`, because the outcome was already known when
+    /// it was written — a prediction then is a postdiction. Nor any prose
+    /// `prediction`, for the same reason: the store drops both.
+    pub backfilled: bool,
+    /// The harness did not ask for `expected_act` (ruling 1B,
+    /// [`withholds_expectation`]) — set by the producer, never by a model,
+    /// so a withheld prediction and one the appraiser simply left out are
+    /// not the same `None`.
+    pub expected_act_withheld: bool,
     /// Goal words the producer could not read as a pointer at all — counted
     /// on the record with the ones that did not resolve.
     pub unreadable_goals: usize,
@@ -338,6 +350,11 @@ pub struct SessionEvidence {
     /// the session's end as appraised (R37's window opens here). `None`
     /// where the file system could not say.
     ended_at: Option<DateTime<Utc>>,
+    /// The run called a [`TASK_LINKING_TOOLS`] tool — over every message it
+    /// ever had, not the post-compaction list: a task call a summarising
+    /// compaction evicted still tied the session to the task (review of
+    /// #378). Ruling 1B's write-time test reads it.
+    touched_tasks: bool,
 }
 
 impl SessionEvidence {
@@ -403,11 +420,24 @@ impl SessionEvidence {
             situation,
             packet: packet(ever),
             ended_at: None,
+            touched_tasks: touched_tasks(ever),
         }
     }
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// When the transcript was last written, as the read happened — the
+    /// session's end as appraised. `None` where the file system could not
+    /// say.
+    pub fn ended_at(&self) -> Option<DateTime<Utc>> {
+        self.ended_at
+    }
+
+    /// Whether the run ever called a task-linking tool, compaction or not.
+    pub fn touched_tasks(&self) -> bool {
+        self.touched_tasks
     }
 
     pub fn origin(&self) -> Origin {
@@ -550,6 +580,15 @@ pub struct TextAppraisal {
         deserialize_with = "de_expected_act"
     )]
     pub expected_act: Option<ExpectedAct>,
+    /// Written after the fact ([`Draft::backfilled`]). Absent on every row
+    /// before the field — written when its session was distilled.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub backfilled: bool,
+    /// The harness withheld the question ([`Draft::expected_act_withheld`]):
+    /// counted apart from a prediction the appraiser left out. Absent on a
+    /// row from before the field — not withheld.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expected_act_withheld: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub goal_hypotheses: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -700,9 +739,12 @@ impl TextAppraisal {
             })
             .collect();
 
+        // A backfilled row predicts nothing, in prose as in the act word:
+        // both would be postdiction (review of #388).
         let prediction = draft
             .prediction
             .as_deref()
+            .filter(|_| !draft.backfilled)
             .and_then(|p| bound(p, PREDICTION_MAX_CHARS, &mut clipped));
         let goal_hypotheses = bound_list(
             &draft.goal_hypotheses,
@@ -728,7 +770,13 @@ impl TextAppraisal {
             prediction,
             // The structural half is kept even when the prose prediction is
             // empty: an expected act is a prediction on its own.
-            expected_act: draft.expected_act.filter(|a| *a != ExpectedAct::Unknown),
+            // A backfilled row predicts nothing, whatever a producer passed:
+            // the store enforces it, not only the producer.
+            expected_act: draft
+                .expected_act
+                .filter(|a| *a != ExpectedAct::Unknown && !draft.backfilled),
+            backfilled: draft.backfilled,
+            expected_act_withheld: draft.expected_act_withheld,
             goal_hypotheses,
             lessons,
             goals_unresolved,
@@ -864,6 +912,31 @@ impl CleanRead {
         )
     }
 
+    /// [`Self::same_situation_and_goal`], only of sessions that had ended
+    /// by `ended_by` — the earlier appraisals of a session appraised after
+    /// the fact (`--backfill-appraisals`). The cutoff is applied before the
+    /// newest `n` are taken, or the newest would crowd out every earlier
+    /// one (review of #388). `None` — this session's end unknown — shows
+    /// nothing.
+    pub fn same_situation_and_goal_ended_by(
+        &self,
+        evidence: &SessionEvidence,
+        ended_by: Option<DateTime<Utc>>,
+        n: usize,
+    ) -> Vec<&Clean> {
+        let Some(cutoff) = ended_by else {
+            return Vec::new();
+        };
+        newest_keyed(
+            self.appraisals
+                .iter()
+                .filter(|c| c.session_ended_at.unwrap_or(c.at) <= cutoff),
+            evidence.situation.as_ref(),
+            Some(evidence.session_id.as_str()),
+            n,
+        )
+    }
+
     fn keyed_as(&self, here: Option<&Situation>, not: Option<&str>, n: usize) -> Vec<&Clean> {
         newest_keyed(self.appraisals.iter(), here, not, n)
     }
@@ -890,7 +963,11 @@ fn newest_keyed<'a>(
         .filter(|c| not.is_none_or(|id| c.session_id != id))
         .filter(|c| region_key(c.situation.as_ref()).as_ref() == Some(&here))
         .collect();
-    out.sort_by_key(|c| std::cmp::Reverse(c.at));
+    // Newest by the session's end, not the write: a row written after the
+    // fact (`--backfill-appraisals`) is an old session's, and must not rank
+    // ahead of recent ones in either door (review of #388). A row from
+    // before the field falls back to its write.
+    out.sort_by_key(|c| std::cmp::Reverse(c.session_ended_at.unwrap_or(c.at)));
     out.truncate(n);
     out
 }
@@ -1061,6 +1138,12 @@ pub enum Recorded {
 /// The append-only text-appraisal store, `~/.mecha/appraisals/appraisals.jsonl`.
 pub struct AppraisalStore {
     root: PathBuf,
+    /// Where the owner's session marks are read from
+    /// ([`crate::session::Marks`]): the default opens set it to the session
+    /// store's, so a withdrawn session's appraisal and scores reach no
+    /// reader. `None` on [`Self::open`] — a store at an explicit root reads
+    /// no marks unless [`Self::with_marks_from`] says where.
+    marks_dir: Option<PathBuf>,
 }
 
 struct StoreLock {
@@ -1079,18 +1162,44 @@ impl AppraisalStore {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
-        Ok(AppraisalStore { root })
+        Ok(AppraisalStore {
+            root,
+            marks_dir: None,
+        })
     }
 
     pub fn open_default() -> Result<Self> {
-        Self::open(Self::default_root()?)
+        Ok(Self::open(Self::default_root()?)?
+            .with_marks_from(crate::session::Session::default_dir()?))
+    }
+
+    /// Read the owner's session marks from `sessions_dir`: a session a mark
+    /// withdraws has no appraisal and no score through this handle.
+    pub fn with_marks_from(mut self, sessions_dir: impl Into<PathBuf>) -> Self {
+        self.marks_dir = Some(sessions_dir.into());
+        self
+    }
+
+    /// The sessions the owner's marks withdraw. A marks ledger that cannot
+    /// be read is an error: every reader over this store then fails as it
+    /// would on the store itself, rather than serving a probe's appraisal
+    /// as the owner's.
+    fn withdrawn(&self) -> Result<std::collections::BTreeSet<String>> {
+        match &self.marks_dir {
+            None => Ok(Default::default()),
+            Some(dir) => Ok(crate::session::Marks::load(dir)?.withdrawn_ids()),
+        }
     }
 
     /// Open at the default location only if it already exists — a read path
     /// must not create the store it is about to report on.
     pub fn open_existing_default() -> Option<Self> {
         let root = Self::default_root().ok()?;
-        root.is_dir().then_some(AppraisalStore { root })
+        let marks_dir = crate::session::Session::default_dir().ok()?;
+        root.is_dir().then_some(AppraisalStore {
+            root,
+            marks_dir: Some(marks_dir),
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -1173,7 +1282,7 @@ impl AppraisalStore {
         if session_id.trim().is_empty() {
             return Ok(None);
         }
-        let (rows, _) = self.for_owner()?;
+        let (rows, _) = self.all_rows()?;
         Ok(rows
             .into_iter()
             .find(|r| r.session_id == session_id)
@@ -1207,6 +1316,16 @@ impl AppraisalStore {
     /// the owner's surfaces only**. A missing file is an empty store; a file
     /// that cannot be read is an `Err`.
     pub fn for_owner(&self) -> Result<(Vec<TextAppraisal>, usize)> {
+        let withdrawn = self.withdrawn()?;
+        let (mut rows, skipped) = self.all_rows()?;
+        rows.retain(|r| !withdrawn.contains(&r.session_id));
+        Ok((rows, skipped))
+    }
+
+    /// Every row, the owner's marks unapplied — what "is this session
+    /// already appraised?" asks, so a withdrawn session is never appraised
+    /// a second time.
+    fn all_rows(&self) -> Result<(Vec<TextAppraisal>, usize)> {
         let path = self.ledger();
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -1659,6 +1778,85 @@ pub fn observe(
     }
 }
 
+/// Whether `session_id`'s output left the owner an act from R16's set to
+/// take: a draft to release, edit or reject, a task to close or reopen, a
+/// workflow to close or cancel. The outputs [`observe`] opens a window on,
+/// read more widely: any closure naming the session counts, not only the
+/// owner's, and a workflow counts when it ran the session at all
+/// ([`crate::workflow::Workflow::names_session`] — its `session_id`, a
+/// `started` event, an owner disposition), not only when the owner
+/// disposed of it during that session. Both widen "actionable", which keeps
+/// a hit in the rate — the direction this errs. Read at read time, so the
+/// workflow arm can narrow later: its history is bounded, and a `started`
+/// pruned from it is forgotten. Drafts resolve in place and closures are
+/// append-only, so those two arms are stable.
+///
+/// One act found is enough for `Some(true)`, whatever else could not be
+/// read — a task anchor proves it with the outbox unread. `Some(false)`
+/// needs every store read; with one unreadable and nothing found, the
+/// answer is `None` — unknown, never "nothing to act on".
+///
+/// A chat answer or a run that staged nothing offers none of them, so
+/// `no_act` is the only answer [`observe`] can return for it: a prediction
+/// of `no_act` there is a hit by construction. [`ScoreSummary::forced`]
+/// counts those, and the hit rate leaves them out.
+pub fn output_offers_act(
+    session_id: &str,
+    anchor: Option<&GoalRef>,
+    acts: &OwnerActs<'_>,
+) -> Option<bool> {
+    let drafted = acts.drafts.iter().any(|d| {
+        d.session_id.as_deref() == Some(session_id) && d.author() != crate::outbox::Author::Harness
+    });
+    let tasked = matches!(anchor, Some(GoalRef::Task(_)))
+        || acts
+            .closures
+            .iter()
+            .any(|c| c.sessions.iter().any(|s| s == session_id));
+    let tracked = acts.workflows.iter().any(|w| w.names_session(session_id));
+    if drafted || tasked || tracked {
+        return Some(true);
+    }
+    if acts.outbox_unreadable || acts.closures_unreadable || acts.workflows_unreadable {
+        return None;
+    }
+    Some(false)
+}
+
+/// The task-board tools whose call can tie a session to a task the owner
+/// closes or reopens later — a link [`output_offers_act`] cannot see when
+/// the appraisal is written, because the closure naming the session does
+/// not exist yet.
+pub const TASK_LINKING_TOOLS: [&str; 2] = ["kg_task_create", "kg_task_update"];
+
+/// Whether the run called a [`TASK_LINKING_TOOLS`] tool, under any MCP
+/// prefix.
+pub fn touched_tasks(messages: &[crate::message::Message]) -> bool {
+    messages.iter().flat_map(|m| m.content.iter()).any(|b| {
+        matches!(b, crate::message::Block::ToolUse { name, .. }
+            if TASK_LINKING_TOOLS
+                .iter()
+                .any(|t| name == t || name.ends_with(&format!("__{t}"))))
+    })
+}
+
+/// Whether the harness withholds the appraiser's `expected_act` (ruling 1B,
+/// 2026-09-28), judged when the appraisal is written. Stricter than
+/// [`output_offers_act`], which is a read-time test: at write time the
+/// owner's closures and workflow dispositions have not happened yet, and a
+/// row is written once, so a prediction withheld wrongly can never be
+/// scored. Withheld only when the output offers no act now *and* the run did
+/// nothing that could link it to one later — it touched no task. Unknown
+/// asks.
+pub fn withholds_expectation(
+    session_id: &str,
+    anchor: Option<&GoalRef>,
+    acts: &OwnerActs<'_>,
+    touched_tasks: bool,
+) -> bool {
+    !touched_tasks && output_offers_act(session_id, anchor, acts) == Some(false)
+}
+
 /// One appraisal's prediction, scored: its expected act against the act
 /// that happened. Written once per appraisal, when the act resolves, and
 /// never rewritten — a later charter edit that moves the patience does not
@@ -1735,14 +1933,33 @@ pub enum Scored {
 }
 
 /// Coverage of the appraisals' predictions: how many are scored, how many
-/// wait, and a hit rate only over scores that exist.
+/// wait, and a hit rate only over predictions known to have been able to
+/// miss.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ScoreSummary {
     pub appraisals: usize,
     /// Appraisals carrying a readable expected act.
     pub with_expectation: usize,
+    /// Appraisals written after the fact, which predict nothing
+    /// ([`Draft::backfilled`]): counted apart, never read as the appraiser
+    /// declining to predict.
+    pub backfilled: usize,
+    /// Appraisals the harness asked for no expected act (ruling 1B): the
+    /// output offered nothing to act on. Apart from `with_expectation`, and
+    /// from an appraisal that left the field out.
+    pub not_asked: usize,
     pub scored: usize,
     pub hits: usize,
+    /// Of the hits, those that could not have missed: a `no_act` prediction
+    /// on an output that offered the owner no act to take
+    /// ([`output_offers_act`]). Out of `hit_rate`'s numerator and
+    /// denominator both.
+    pub forced: usize,
+    /// Of the hits, `no_act` predictions whose output could not be
+    /// classified — an act store unreadable and no act found in what was
+    /// read. Neither forced nor known to have risked a miss: while any is on
+    /// record, `hit_rate` is `None` — an unjudged hit gets no rate.
+    pub forced_unknown: usize,
     /// Misses — surprises.
     pub surprises: usize,
     /// Of the surprises, those on clean appraisals.
@@ -1757,13 +1974,28 @@ pub struct ScoreSummary {
     /// Task outputs this reader could not window, because it read no board
     /// — the read-only readout; `mecha distill` reads it and scores them.
     pub board_not_read: usize,
-    /// `hits / scored`; `None` over no scores.
+    /// `(hits − forced) / (scored − forced)`: the rate over predictions
+    /// known to have been able to miss ([`ScoreSummary::could_miss`]).
+    /// `None` when there are none — a rate over forced hits alone would read
+    /// 100% for a predictor that never risked a miss — and `None` while any
+    /// hit is unclassified (`forced_unknown`).
     pub hit_rate: Option<f64>,
     /// Score lines that could not be read.
     pub skipped: usize,
     /// Appraisal lines that could not be read — each may have carried an
     /// expectation, so every count above is a floor when this is not zero.
     pub appraisals_unreadable: usize,
+}
+
+impl ScoreSummary {
+    /// Scored predictions known to have been able to miss: neither forced
+    /// nor unclassified. `hit_rate`'s denominator. Never underflows — both
+    /// are counted only on hits.
+    pub fn could_miss(&self) -> usize {
+        self.scored
+            .saturating_sub(self.forced)
+            .saturating_sub(self.forced_unknown)
+    }
 }
 
 impl AppraisalStore {
@@ -1774,6 +2006,15 @@ impl AppraisalStore {
     /// Every score, oldest first, and how many lines were skipped. A
     /// missing file is no scores; one that cannot be read is an `Err`.
     pub fn scores(&self) -> Result<(Vec<Score>, usize)> {
+        let withdrawn = self.withdrawn()?;
+        let (mut scores, skipped) = self.all_scores()?;
+        scores.retain(|s| !withdrawn.contains(&s.session_id));
+        Ok((scores, skipped))
+    }
+
+    /// Every score, the owner's marks unapplied — what "already scored?"
+    /// asks.
+    fn all_scores(&self) -> Result<(Vec<Score>, usize)> {
         let path = self.scores_ledger();
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -1840,7 +2081,7 @@ impl AppraisalStore {
         };
         use std::io::Write;
         let _lock = self.lock()?;
-        let (existing, _) = self.scores()?;
+        let (existing, _) = self.all_scores()?;
         if existing.iter().any(|s| s.appraisal_id == appraisal.id) {
             return Ok(Scored::AlreadyScored);
         }
@@ -1883,6 +2124,11 @@ impl AppraisalStore {
         };
         for row in &rows {
             if !row.expected_act.is_some_and(|a| a != ExpectedAct::Unknown) {
+                if row.backfilled {
+                    s.backfilled += 1;
+                } else if row.expected_act_withheld {
+                    s.not_asked += 1;
+                }
                 continue;
             }
             s.with_expectation += 1;
@@ -1890,6 +2136,16 @@ impl AppraisalStore {
                 s.scored += 1;
                 if score.hit {
                     s.hits += 1;
+                    if score.expected == ExpectedAct::NoAct {
+                        match output_offers_act(&row.session_id, row.anchor.as_ref(), acts) {
+                            Some(false) => s.forced += 1,
+                            // The store that decides "could miss" could not be
+                            // read: not forced, and not evidence that this one
+                            // could have missed.
+                            None => s.forced_unknown += 1,
+                            Some(true) => {}
+                        }
+                    }
                 } else {
                     s.surprises += 1;
                     if score.clean {
@@ -1906,7 +2162,13 @@ impl AppraisalStore {
                 ObservedAct::Act { .. } | ObservedAct::NoAct { .. } => s.resolved_unwritten += 1,
             }
         }
-        s.hit_rate = (s.scored > 0).then(|| s.hits as f64 / s.scored as f64);
+        let could_miss = s.could_miss();
+        // An unjudged hit withholds the rate outright: surprises are never
+        // classified, so dropping only the unjudged hits would leave a ratio
+        // over the surprises and the judged hits — a rate pushed down, not a
+        // dash (found on review of #377).
+        s.hit_rate = (could_miss > 0 && s.forced_unknown == 0)
+            .then(|| (s.hits - s.forced) as f64 / could_miss as f64);
         Ok(s)
     }
 }
@@ -2265,6 +2527,9 @@ pub struct Taught {
     /// Decided comparisons whose session has no appraisal on record yet — a
     /// later pass teaches them once it has one.
     pub awaiting_appraisal: usize,
+    /// Comparisons from a session the owner marked as an experiment (ruling
+    /// 4D): never taught while the mark stands, and never pending.
+    pub withdrawn: usize,
     /// Point-wise comparisons that decided nothing: inconclusive, unposed,
     /// or a verdict this build cannot read. They write nothing.
     pub undecided: usize,
@@ -2298,6 +2563,15 @@ impl AppraisalStore {
     /// were skipped — **for the owner's surfaces**, as [`Self::for_owner`]
     /// is. A missing file is none; one that cannot be read is an `Err`.
     pub fn counterfactuals(&self) -> Result<(Vec<Counterfactual>, usize)> {
+        // A door like `for_owner`: a session the owner marked shows no
+        // reflection drawn from it either (review of #382).
+        let withdrawn = self.withdrawn()?;
+        let (mut rows, skipped) = self.all_counterfactuals()?;
+        rows.retain(|c| !withdrawn.contains(&c.session_id));
+        Ok((rows, skipped))
+    }
+
+    fn all_counterfactuals(&self) -> Result<(Vec<Counterfactual>, usize)> {
         let path = self.counterfactuals_ledger();
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -2331,7 +2605,12 @@ impl AppraisalStore {
         use std::io::Write;
         let _lock = self.lock()?;
         let (appraisals, appraisals_unreadable) = self.for_owner()?;
-        let (existing, counterfactuals_unreadable) = self.counterfactuals()?;
+        // The dedup set is every reflection on record, the marks unapplied,
+        // like `on_record` and `score`'s — and a comparison from a marked
+        // session is counted as withdrawn, never as awaiting an appraisal
+        // that will not come (review of #382).
+        let (existing, counterfactuals_unreadable) = self.all_counterfactuals()?;
+        let withdrawn = self.withdrawn()?;
         let packet = comparison_referents(comparisons);
         let mut taught: std::collections::BTreeSet<String> = existing
             .iter()
@@ -2373,6 +2652,10 @@ impl AppraisalStore {
             let session = c.pointers.session_id.trim();
             if session.is_empty() {
                 t.no_session += 1;
+                continue;
+            }
+            if withdrawn.contains(session) {
+                t.withdrawn += 1;
                 continue;
             }
             if taught.contains(&c.id) {
@@ -2453,6 +2736,12 @@ mod tests {
     /// result, a steer, the agent's answer, the run record and — when given
     /// — a taint checkpoint after the last message.
     fn session(root: &Path, taint: Option<Taint>) -> PathBuf {
+        session_on(root, taint, Some(GoalRef::Task("t-budget".into())))
+    }
+
+    /// [`session`], anchored to `goal` — or to nothing, the chat answer that
+    /// leaves the owner no act to take.
+    fn session_on(root: &Path, taint: Option<Taint>, goal: Option<GoalRef>) -> PathBuf {
         let session = Session::create(
             root,
             SessionMeta {
@@ -2471,17 +2760,11 @@ mod tests {
                 tools: vec!["mail_search".into()],
                 rules_workspace: Some(PathBuf::from("/project")),
                 rules_surface: Some(SessionKind::Task),
-                rules_goal: Some(crate::situation::GoalKey::Named(GoalRef::Task(
-                    "t-budget".into(),
-                ))),
+                rules_goal: goal.clone().map(crate::situation::GoalKey::Named),
                 ..Default::default()
             }))
             .unwrap();
-        session
-            .append(&Record::GoalAnchor {
-                goal: Some(GoalRef::Task("t-budget".into())),
-            })
-            .unwrap();
+        session.append(&Record::GoalAnchor { goal }).unwrap();
         for m in [
             Message::user("find when the budget review is"),
             Message::assistant(vec![Block::ToolUse {
@@ -2533,6 +2816,8 @@ mod tests {
     /// turn, a judgment resting on both.
     fn draft() -> Draft {
         Draft {
+            backfilled: false,
+            expected_act_withheld: false,
             interpretation: "The run found the review date in the owner's mail and was asked \
                              to pass it on; it matters because the task is the budget review."
                 .into(),
@@ -4034,6 +4319,527 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Ruling 4D: a session the owner marked as an experiment has no
+    /// appraisal and no score through any door — the owner's, the clean
+    /// one, the scores the replay priority reads — yet it is still "on
+    /// record", so it is never appraised a second time. Unmarked, it is
+    /// back.
+    #[test]
+    fn a_marked_sessions_appraisal_and_score_are_withdrawn_from_every_door() {
+        use crate::session::{Mark, MarkAction, Marks};
+        let root = temp_root("marked");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals"))
+            .unwrap()
+            .with_marks_from(&dir);
+        let probe = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        let work = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        for ev in [&probe, &work] {
+            store
+                .record(
+                    ev,
+                    Draft {
+                        expected_act: Some(ExpectedAct::NoAct),
+                        ..draft()
+                    },
+                    "m",
+                    &known(),
+                )
+                .unwrap();
+        }
+        let tasks = json!({"items": [{"id": "t-budget", "status": "next"}]});
+        let owner = OwnerActs {
+            board: BoardRead::Read(&tasks),
+            ..OwnerActs::default()
+        };
+        let later = Utc::now() + chrono::Duration::hours(72);
+        store.score_due(&owner, later).unwrap();
+        assert_eq!(store.scores().unwrap().0.len(), 2);
+
+        let mark = |action| Mark {
+            session_id: probe.session_id().into(),
+            action,
+            at: Utc::now(),
+            reason: Some("a model probe".into()),
+        };
+        Marks::append(&dir, &mark(MarkAction::Experiment)).unwrap();
+        let only_work = |ids: Vec<&str>| assert_eq!(ids, vec![work.session_id()]);
+        only_work(
+            store
+                .for_owner()
+                .unwrap()
+                .0
+                .iter()
+                .map(|r| r.session_id.as_str())
+                .collect(),
+        );
+        only_work(
+            store
+                .clean()
+                .unwrap()
+                .appraisals
+                .iter()
+                .map(|c| c.session_id.as_str())
+                .collect(),
+        );
+        only_work(
+            store
+                .scores()
+                .unwrap()
+                .0
+                .iter()
+                .map(|s| s.session_id.as_str())
+                .collect(),
+        );
+        let summary = store.score_summary(&owner, later).unwrap();
+        assert_eq!((summary.appraisals, summary.scored), (1, 1));
+        assert!(
+            store.on_record(probe.session_id()).unwrap().is_some(),
+            "still on record: never appraised twice"
+        );
+        assert_eq!(
+            store.score_due(&owner, later).unwrap().scored,
+            1,
+            "and never scored twice"
+        );
+        assert_eq!(store.all_scores().unwrap().0.len(), 2);
+
+        // The counterfactual reflections are a door too.
+        std::fs::write(
+            store.counterfactuals_ledger(),
+            format!(
+                "{}\n{}\n",
+                json!({"id": "cf-probe", "at": "2026-09-28T00:00:00Z", "session_id": probe.session_id()}),
+                json!({"id": "cf-work", "at": "2026-09-28T00:00:00Z", "session_id": work.session_id()})
+            ),
+        )
+        .unwrap();
+        only_work(
+            store
+                .counterfactuals()
+                .unwrap()
+                .0
+                .iter()
+                .map(|c| c.session_id.as_str())
+                .collect(),
+        );
+        assert_eq!(store.all_counterfactuals().unwrap().0.len(), 2);
+
+        // A store at an explicit root reads no marks unless told where.
+        let unmarked = AppraisalStore::open(root.join("appraisals")).unwrap();
+        assert_eq!(unmarked.for_owner().unwrap().0.len(), 2);
+
+        Marks::append(&dir, &mark(MarkAction::Unmark)).unwrap();
+        assert_eq!(store.for_owner().unwrap().0.len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A backfilled session's earlier appraisals are chosen with the cutoff
+    /// applied before the newest are taken: one qualifying older appraisal
+    /// behind three newer ones is still shown, where taking the newest three
+    /// first and filtering after would show nothing (review of #388).
+    #[test]
+    fn an_earlier_appraisal_is_found_behind_newer_ones_for_a_backfill() {
+        let root = temp_root("ended-by");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let aged = |days: u64| {
+            let path = session(&dir, clean_taint());
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 3600),
+                )
+                .unwrap();
+            SessionEvidence::read(&path).unwrap()
+        };
+        let older = aged(30);
+        store.record(&older, draft(), "m", &known()).unwrap();
+        for _ in 0..3 {
+            let newer = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+            store.record(&newer, draft(), "m", &known()).unwrap();
+        }
+        let target = aged(20);
+        let read = store.clean().unwrap();
+        let shown = read.same_situation_and_goal_ended_by(&target, target.ended_at(), PAST_SHOWN);
+        assert_eq!(
+            shown
+                .iter()
+                .map(|c| c.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![older.session_id()]
+        );
+        // The order it replaces: the newest three, then the cutoff — empty.
+        let mut capped_first = read.same_situation_and_goal(&target, PAST_SHOWN);
+        capped_first.retain(|c| c.session_ended_at.unwrap_or(c.at) <= target.ended_at().unwrap());
+        assert!(capped_first.is_empty());
+        // An unknown end shows nothing.
+        assert!(read
+            .same_situation_and_goal_ended_by(&target, None, PAST_SHOWN)
+            .is_empty());
+
+        // The converse: an old session's appraisal written *last* — a
+        // backfill — does not rank ahead of recent ones for a new session.
+        // Newest is by the session's end, not the write (review of #388).
+        let late = aged(40);
+        store.record(&late, draft(), "m", &known()).unwrap();
+        let fresh = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        let read = store.clean().unwrap();
+        let recent = read.same_situation_and_goal(&fresh, PAST_SHOWN);
+        assert_eq!(recent.len(), PAST_SHOWN);
+        assert!(
+            recent.iter().all(|c| c.session_id != late.session_id()),
+            "a month-old session is not the newest history"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Ruling 3D→D: a backfilled row predicts nothing — the store drops an
+    /// expected act whatever the producer passed, since the outcome was
+    /// known when it was written — and the readout counts it apart from an
+    /// appraisal that left the field out.
+    #[test]
+    fn a_backfilled_appraisal_predicts_nothing_and_is_counted_apart() {
+        let root = temp_root("backfilled");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let late = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        store
+            .record(
+                &late,
+                Draft {
+                    expected_act: Some(ExpectedAct::NoAct),
+                    prediction: Some("The owner will ask again.".into()),
+                    backfilled: true,
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let rows = store.for_owner().unwrap().0;
+        assert_eq!((rows[0].expected_act, rows[0].backfilled), (None, true));
+        assert_eq!(rows[0].prediction, None, "nor the prose half");
+        let s = store
+            .score_summary(&OwnerActs::default(), Utc::now())
+            .unwrap();
+        assert_eq!((s.appraisals, s.with_expectation, s.backfilled), (1, 0, 1));
+
+        // A backfill of an output with nothing to act on is also asked for
+        // no expected act (ruling 1B): counted once, as backfilled — never
+        // as well under not asked.
+        let quiet = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        store
+            .record(
+                &quiet,
+                Draft {
+                    backfilled: true,
+                    expected_act_withheld: true,
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let s = store
+            .score_summary(&OwnerActs::default(), Utc::now())
+            .unwrap();
+        assert_eq!((s.appraisals, s.backfilled, s.not_asked), (2, 2, 0));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A `no_act` prediction on a run that left the owner nothing to act on
+    /// cannot miss, so it is a hit that says nothing: counted as forced and
+    /// kept out of the rate, where the task-anchored one — the owner could
+    /// have closed the task — stays in. Four such hits read "hit rate 100%"
+    /// on the live store before this (2026-09-28).
+    #[test]
+    fn a_no_act_hit_on_an_output_with_nothing_to_act_on_is_forced_and_out_of_the_rate() {
+        let root = temp_root("forced");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let expect_nothing = Draft {
+            expected_act: Some(ExpectedAct::NoAct),
+            ..draft()
+        };
+        let chat = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        store
+            .record(&chat, expect_nothing.clone(), "m", &known())
+            .unwrap();
+        let tasks = json!({"items": [{"id": "t-budget", "status": "next"}]});
+        let owner = OwnerActs {
+            board: BoardRead::Read(&tasks),
+            ..OwnerActs::default()
+        };
+        let later = Utc::now() + chrono::Duration::hours(72);
+
+        // Only the forced hit on record: scored, and no rate — not 100%.
+        let alone = store.score_due(&owner, later).unwrap();
+        assert_eq!((alone.scored, alone.hits, alone.forced), (1, 1, 1));
+        assert_eq!(
+            alone.hit_rate, None,
+            "a rate over forced hits alone is no rate"
+        );
+
+        // A task-anchored no_act could have missed: it is the rate.
+        let task = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        store.record(&task, expect_nothing, "m", &known()).unwrap();
+        let both = store.score_due(&owner, later).unwrap();
+        assert_eq!((both.scored, both.hits, both.forced), (2, 2, 1));
+        assert_eq!(both.hit_rate, Some(1.0));
+
+        // What makes an output actionable, and what makes it unknown.
+        assert_eq!(
+            output_offers_act(chat.session_id(), None, &owner),
+            Some(false)
+        );
+        let drafts = [draft_of(&root, chat.session_id(), "pending", None)];
+        assert_eq!(
+            output_offers_act(chat.session_id(), None, &acts(&drafts)),
+            Some(true),
+            "a staged draft is an act to take"
+        );
+        let blind = OwnerActs {
+            outbox_unreadable: true,
+            ..owner
+        };
+        assert_eq!(output_offers_act(chat.session_id(), None, &blind), None);
+        // A workflow the session ran and handed on: `session_id` names the
+        // later session and the only disposition is the later one's, yet the
+        // owner could have closed it inside the first one's run (review of
+        // #377).
+        let now = Utc::now();
+        let mut handed_on = crate::workflow::Workflow::new(
+            "flow-grant".into(),
+            "Prepare the grant reply".into(),
+            root.clone(),
+            now,
+        );
+        handed_on.record("started", chat.session_id(), now);
+        handed_on.record("started", "s-later", now);
+        handed_on.record("owner_closed", "Owner closed after verification", now);
+        handed_on.session_id = Some("s-later".into());
+        let flows = [handed_on];
+        let with_flow = OwnerActs {
+            workflows: &flows,
+            ..owner
+        };
+        assert_eq!(
+            output_offers_act(chat.session_id(), None, &with_flow),
+            Some(true)
+        );
+
+        // One act found decides it whatever else is unread: a task anchor
+        // with the outbox blind still could have missed.
+        assert_eq!(
+            output_offers_act(task.session_id(), task.anchor(), &blind),
+            Some(true)
+        );
+        // An unreadable store cannot call a hit forced, and cannot vouch that
+        // it could have missed: unclassified, and out of the rate both ways.
+        let unsure = store.score_summary(&blind, later).unwrap();
+        assert_eq!(
+            (unsure.forced, unsure.forced_unknown, unsure.could_miss()),
+            (0, 1, 1)
+        );
+        assert_eq!(unsure.hit_rate, None, "an unjudged hit withholds the rate");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Ruling 1B at write time: withheld only when the output offers no act
+    /// now and the run touched no task — a task tool can tie the session to
+    /// a closure that does not exist yet, and a row is written once. A
+    /// withheld row is counted as not asked, apart from an omission.
+    #[test]
+    fn an_expectation_is_withheld_only_when_nothing_could_link_the_output_to_an_act() {
+        use crate::message::{Block, Message};
+        let root = temp_root("withhold");
+        let dir = root.join("sessions");
+        let chat = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        let none = OwnerActs::default();
+        assert!(withholds_expectation(chat.session_id(), None, &none, false));
+        assert!(
+            !withholds_expectation(chat.session_id(), None, &none, true),
+            "a task the run touched may be closed later, naming it"
+        );
+        let blind = OwnerActs {
+            closures_unreadable: true,
+            ..none
+        };
+        assert!(
+            !withholds_expectation(chat.session_id(), None, &blind, false),
+            "unknown asks"
+        );
+
+        let call = |name: &str| {
+            vec![Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: name.into(),
+                input: json!({}),
+            }])]
+        };
+        assert!(touched_tasks(&call("kg_task_update")));
+        assert!(touched_tasks(&call("graph__kg_task_create")));
+        assert!(
+            !touched_tasks(&call("kg_task_list")),
+            "reading the board links nothing"
+        );
+        assert!(!touched_tasks(&call("mail_search")));
+
+        // A task call a summarising compaction evicted still counts: the
+        // evidence reads every message the run ever had (review of #378).
+        let compacted = {
+            use crate::session::{Record, Session, SessionKind, SessionMeta};
+            let session = Session::create(
+                &dir,
+                SessionMeta {
+                    id: Session::new_id(),
+                    created_at: Utc::now(),
+                    provider: "scripted".into(),
+                    model: "scripted".into(),
+                    workspace: dir.clone(),
+                    title: None,
+                    kind: Some(SessionKind::Web),
+                },
+            )
+            .unwrap();
+            for m in [
+                Message::user("put the review on the board"),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "kg_task_update".into(),
+                    input: json!({"id": "t-budget"}),
+                }]),
+                Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "updated".into(),
+                    is_error: false,
+                }]),
+                Message::assistant(vec![Block::text("Done.")]),
+            ] {
+                session.append(&Record::Message(m)).unwrap();
+            }
+            session
+                .append(&Record::Rewrite {
+                    messages: vec![
+                        Message::user("[summary] the review is on the board"),
+                        Message::assistant(vec![Block::text("Done.")]),
+                    ],
+                })
+                .unwrap();
+            session.path
+        };
+        let (transcript, evidence) = SessionEvidence::read_with_transcript(&compacted).unwrap();
+        assert!(
+            !touched_tasks(&transcript.convo.messages),
+            "compaction evicted it"
+        );
+        assert!(evidence.touched_tasks(), "but the run did touch the board");
+        assert!(!withholds_expectation(
+            evidence.session_id(),
+            None,
+            &none,
+            evidence.touched_tasks()
+        ));
+
+        // Stored: a withheld row is not asked; an omitted one is neither.
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        store
+            .record(
+                &chat,
+                Draft {
+                    expected_act: None,
+                    expected_act_withheld: true,
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let omitted = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        store
+            .record(
+                &omitted,
+                Draft {
+                    expected_act: None,
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let s = store.score_summary(&none, Utc::now()).unwrap();
+        assert_eq!((s.appraisals, s.with_expectation, s.not_asked), (2, 0, 1));
+        let rows = store.for_owner().unwrap().0;
+        assert!(rows.iter().any(|r| r.expected_act_withheld));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// With a surprise on record beside an unclassified hit, the rate is
+    /// withheld, not pushed down: surprises are never classified, so a
+    /// ratio that dropped only the unjudged hit would read 0% here where
+    /// the truth is 1 of 2 or unknown (found on review of #377).
+    #[test]
+    fn an_unclassified_hit_beside_a_surprise_withholds_the_rate() {
+        let root = temp_root("forced-surprise");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let chat = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        store
+            .record(
+                &chat,
+                Draft {
+                    expected_act: Some(ExpectedAct::NoAct),
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let busy = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        store
+            .record(
+                &busy,
+                Draft {
+                    expected_act: Some(ExpectedAct::ReleasedUnchanged),
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let rejected_at = Utc::now() + chrono::Duration::hours(1);
+        let drafts = [draft_of(
+            &root,
+            busy.session_id(),
+            "rejected",
+            Some(rejected_at),
+        )];
+        let tasks = json!({"items": [{"id": "t-budget", "status": "next"}]});
+        let owner = OwnerActs {
+            board: BoardRead::Read(&tasks),
+            ..acts(&drafts)
+        };
+        let later = Utc::now() + chrono::Duration::hours(72);
+        // Scored while every store read: one forced hit, one surprise.
+        let read = store.score_due(&owner, later).unwrap();
+        assert_eq!((read.hits, read.forced, read.surprises), (1, 1, 1));
+        assert_eq!(read.hit_rate, Some(0.0), "the surprise alone could miss");
+
+        // The outbox then goes unreadable: the chat's hit can no longer be
+        // classified, and the rate is withheld rather than left at 0%.
+        let blind = OwnerActs {
+            outbox_unreadable: true,
+            ..owner
+        };
+        let s = store.score_summary(&blind, later).unwrap();
+        assert_eq!((s.forced, s.forced_unknown, s.surprises), (0, 1, 1));
+        assert_eq!(s.hit_rate, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// "The doctor's constant" (R37) is the doctor's: the named constant a
     /// reader sees and the patience the doctor applies to an outbox with no
     /// charter line cannot disagree.
@@ -4141,6 +4947,31 @@ mod tests {
     /// The acceptance: a decided comparison's loser appears on the
     /// session's appraisal, pointing at its comparison — read back through
     /// a fresh handle, in words the harness wrote from the typed record.
+    /// A decided comparison from a session the owner marked is counted as
+    /// withdrawn — never as awaiting an appraisal that will not come — and
+    /// is taught once the mark is undone (review of #382).
+    #[test]
+    fn a_marked_sessions_comparison_is_withdrawn_not_awaiting() {
+        use crate::session::{Mark, MarkAction, Marks};
+        let (root, store) = appraised("teach-marked", &[row("s-dana", true)]);
+        let sessions = root.join("sessions");
+        let store = store.with_marks_from(&sessions);
+        let cmp = rejected_draft("s-dana");
+        let mark = |action| Mark {
+            session_id: "s-dana".into(),
+            action,
+            at: Utc::now(),
+            reason: None,
+        };
+        Marks::append(&sessions, &mark(MarkAction::Experiment)).unwrap();
+        let t = store.teach(std::slice::from_ref(&cmp)).unwrap();
+        assert_eq!((t.withdrawn, t.awaiting_appraisal, t.written), (1, 0, 0));
+        Marks::append(&sessions, &mark(MarkAction::Unmark)).unwrap();
+        let t = store.teach(std::slice::from_ref(&cmp)).unwrap();
+        assert_eq!((t.withdrawn, t.written), (0, 1));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_decided_loser_appears_on_the_sessions_appraisal_pointing_at_its_comparison() {
         let (root, store) = appraised("teach", &[row("s-dana", true), row("s-idris", true)]);

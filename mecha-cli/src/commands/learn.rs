@@ -19,8 +19,8 @@ use crate::{probe, setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
 use mecha_core::learning::{
-    batches_by_region, budget_refuses, LeapRun, Learner, LearningStore, Proposal, Trigger,
-    MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
+    batches_by_region, budget_refuses, LeapRun, Learner, LearningStore, Proposal, RuleCommit,
+    Trigger, MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
 };
 use mecha_core::session::Session;
 use std::collections::{BTreeMap, BTreeSet};
@@ -265,6 +265,20 @@ fn hold_out(ids: &[String], fraction: f64) -> std::collections::BTreeSet<String>
         .collect()
 }
 
+/// Finish (or set aside) a rule change a crash interrupted, saying so. Every
+/// CLI writer of the learned rules or the proposals calls this right after
+/// taking the store lock (`LearningStore::resume_interrupted`).
+pub(crate) fn finish_interrupted(
+    store: &LearningStore,
+) -> Result<Option<mecha_core::learning::Resumed>> {
+    let resumed = store.resume_interrupted()?;
+    if let Some(r) = &resumed {
+        println!("{}", r.line());
+        store.log_pass(&format!("resume: {}", r.line()));
+    }
+    Ok(resumed)
+}
+
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Before the store is opened or locked: this mode reads the learning
     // store and never writes it (row 2e-1 is shadow).
@@ -289,6 +303,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     } else {
         Some(store.lock()?)
     };
+    // A change a crash interrupted is finished before this pass reads the
+    // rules and the pool it would otherwise re-argue.
+    if !args.dry_run {
+        finish_interrupted(&store)?;
+    }
 
     anyhow::ensure!(
         (0.0..1.0).contains(&args.holdout),
@@ -320,11 +339,19 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // nothing, so without this count the gate going inert reads exactly
     // like a gate with nothing to hold back (found on review of #332).
     let mut admitted_bases = AdmittedBases::default();
+    // The owner's session marks (ruling 4D). A ledger that cannot be read
+    // stops the pass: a lost mark would admit a probe's lesson as the
+    // owner's.
+    let withdrawn =
+        mecha_core::session::Marks::load(&mecha_core::session::Session::default_dir()?)?
+            .withdrawn_ids();
+    let mut withdrawn_by_mark = 0usize;
     for r in store.reflexions()? {
-        match admission(&r, &claimed) {
+        match admission(&r, &claimed, &withdrawn) {
             Admission::Processed => {}
             Admission::Claimed => awaiting_review += 1,
             Admission::Dropped => dropped_by_owner += 1,
+            Admission::Withdrawn => withdrawn_by_mark += 1,
             Admission::Unsupported => unsupported_observations += 1,
             Admission::Origin => excluded_by_origin += 1,
             Admission::Attribution(class) => *withheld_by_class.entry(class).or_default() += 1,
@@ -359,6 +386,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         println!(
             "{dropped_by_owner} reflection(s) dropped by you — kept as evidence, never a \
              candidate again"
+        );
+    }
+    if withdrawn_by_mark > 0 {
+        println!(
+            "{withdrawn_by_mark} reflection(s) from sessions you marked as experiments — \
+             kept, never a candidate while the mark stands"
         );
     }
     // R34: rules and waiting reflections toward a goal that has closed,
@@ -709,11 +742,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // a block no run has.
             let arms = |run: &mecha_core::situation::Situation| -> Result<probe::Arms> {
                 let domains = mecha_core::learning::run_domains_including(domain);
-                let current = store.rules_carried_for(&domains, run)?.block;
-                let candidate = store
-                    .rules_carried_with(&domains, run, Some((domain, &rules)))?
-                    .block;
-                Ok((current, candidate))
+                let current = store.rules_carried_for(&domains, run)?;
+                let candidate = store.rules_carried_with(&domains, run, Some((domain, &rules)))?;
+                // The gate measures against the block a run would carry. A
+                // sibling domain's learned file that could not be read drops
+                // out of both arms, and a verdict stored against that block
+                // would name one no run deployed. Refuse instead: the run
+                // start that skips it (D1) is a different job.
+                if let Some(s) = current.skipped.iter().chain(&candidate.skipped).next() {
+                    anyhow::bail!(
+                        "the gate cannot measure `{domain}`: learned `{}` rules could not be \
+                         read ({}), so neither arm is a block a run would carry",
+                        s.domain,
+                        s.error
+                    );
+                }
+                Ok((current.block, candidate.block))
             };
 
             let mut lines = Vec::new();
@@ -857,7 +901,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 reason: None,
                 scope: Some(region.clone()),
             };
-            store.write_proposal(&proposal)?;
+            // An applied proposal is written by the commit below, with the
+            // rules it records; written here, a crash in between would leave
+            // it `auto_applied` over rules that never went live.
+            if !applied {
+                store.write_proposal(&proposal)?;
+            }
             println!(
                 "{domain}: proposal {} [{status}] — {} rule(s) from {} reflection(s)",
                 proposal.id,
@@ -884,9 +933,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     rules_after: rules.len() as u32,
                     created_at: chrono::Utc::now().to_rfc3339(),
                 };
-                store.write_learned_rules(domain, &rules)?;
-                store.mark_reflexions_processed(&ids, &run.id)?;
-                store.append_run(&run)?;
+                store.commit_rules(&RuleCommit {
+                    run,
+                    reflexion_ids: ids.clone(),
+                    rules: rules.clone(),
+                    proposal: Some(proposal.clone()),
+                })?;
                 for (text, from, to) in &widenings {
                     println!("{domain}: widened — \"{text}\" loaded with {from}, now {to}");
                 }
@@ -926,9 +978,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             created_at: chrono::Utc::now().to_rfc3339(),
         };
 
-        store.write_learned_rules(domain, &rules)?;
-        store.mark_reflexions_processed(&ids, &run.id)?;
-        store.append_run(&run)?;
+        store.commit_rules(&RuleCommit {
+            run: run.clone(),
+            reflexion_ids: ids.clone(),
+            rules: rules.clone(),
+            proposal: None,
+        })?;
         for (text, from, to) in &widenings {
             println!("{domain}: widened — \"{text}\" loaded with {from}, now {to}");
         }
@@ -960,6 +1015,9 @@ enum Admission {
     /// Claimed by a pending proposal.
     Claimed,
     Dropped,
+    /// From a session the owner marked as an experiment (ruling 4D): not
+    /// the owner's work, so no lesson about the owner comes from it.
+    Withdrawn,
     /// A mismatch with no verified failure behind it.
     Unsupported,
     /// Held back by the provenance gate.
@@ -971,9 +1029,20 @@ enum Admission {
 
 /// The pool's gates, in order — pure, so what reaches a learner is tested
 /// without one.
-fn admission(r: &mecha_core::learning::Reflexion, claimed: &BTreeSet<String>) -> Admission {
+fn admission(
+    r: &mecha_core::learning::Reflexion,
+    claimed: &BTreeSet<String>,
+    withdrawn: &BTreeSet<String>,
+) -> Admission {
     if r.is_processed {
         return Admission::Processed;
+    }
+    // The owner's mark on the session, before a pending proposal's claim:
+    // `proposals accept` refuses a proposal holding one, so it is withheld,
+    // not awaiting review (review of #382). Not over the owner's own drop,
+    // which is the more specific act and keeps its own count.
+    if withdrawn.contains(&r.session_id) && r.dropped_at.is_none() {
+        return Admission::Withdrawn;
     }
     if claimed.contains(&r.id) {
         return Admission::Claimed;
@@ -1165,6 +1234,36 @@ fn already_argued(
             && p.reflexion_ids.len() == ids.len()
             && p.reflexion_ids.iter().all(|id| ids.contains(id.as_str()))
     })
+}
+
+#[cfg(test)]
+mod commit_order_tests {
+    /// Read from the source, as the lock tests are: the path makes model
+    /// calls. The gated path used to write an applied proposal ahead of its
+    /// rules, so a crash in between left `auto_applied` over rules that never
+    /// went live. An applied proposal now travels inside the commit, and the
+    /// only direct write is for one that was not applied.
+    #[test]
+    fn an_applied_proposal_is_written_by_the_commit_not_before_it() {
+        let src = include_str!("learn.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let direct: Vec<usize> = code
+            .match_indices("store.write_proposal(&proposal)")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(direct.len(), 1, "one direct proposal write");
+        let guard = code[..direct[0]]
+            .rfind("if !applied {")
+            .expect("no applied guard");
+        assert!(
+            direct[0] - guard < 80,
+            "the direct write is the unapplied branch"
+        );
+        assert!(
+            code.contains("proposal: Some(proposal.clone()),"),
+            "the applied proposal rides in the commit"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1622,7 +1721,7 @@ mod tests {
                 let r = refl(trigger, basis);
                 assert!(r.learnable(), "the provenance gate admits it");
                 assert_eq!(
-                    admission(&r, &none),
+                    admission(&r, &none, &none),
                     Admission::Attribution(class),
                     "{trigger} {basis:?}"
                 );
@@ -1630,7 +1729,7 @@ mod tests {
         }
         for basis in [Basis::RightGiven, Basis::NoFact] {
             assert_eq!(
-                admission(&refl("steer", Some(basis)), &none),
+                admission(&refl("steer", Some(basis)), &none, &none),
                 Admission::Admitted
             );
         }
@@ -1638,15 +1737,35 @@ mod tests {
         // the owner's voice, not the agent's behaviour.
         let mut edit = refl("edit", None);
         edit.domain = "writing".into();
-        assert_eq!(admission(&edit, &none), Admission::Admitted);
+        assert_eq!(admission(&edit, &none, &none), Admission::Admitted);
         // The owner's own words outrank the class, as they outrank origin.
         let mut owned = refl("steer", Some(Basis::WrongGiven));
         owned.edited_at = Some("2026-09-26T00:00:00Z".into());
-        assert_eq!(admission(&owned, &none), Admission::Admitted);
+        assert_eq!(admission(&owned, &none, &none), Admission::Admitted);
         // And provenance still decides first: the gate it was is unchanged.
         let mut tainted = refl("steer", Some(Basis::RightGiven));
         tainted.origin = Origin::Untrusted;
-        assert_eq!(admission(&tainted, &none), Admission::Origin);
+        assert_eq!(admission(&tainted, &none, &none), Admission::Origin);
+        // The owner's mark on its session withholds a lesson that would
+        // otherwise be admitted (ruling 4D), and a drop still reads as the
+        // owner's drop, not as the mark.
+        let marked: std::collections::BTreeSet<String> = ["s".to_string()].into();
+        let admitted = refl("steer", Some(Basis::NoFact));
+        assert_eq!(admission(&admitted, &none, &none), Admission::Admitted);
+        assert_eq!(admission(&admitted, &none, &marked), Admission::Withdrawn);
+        // Checked before a pending proposal's claim: `proposals accept`
+        // refuses a proposal holding it, so it is not awaiting review.
+        let claimed: std::collections::BTreeSet<String> = [admitted.id.clone()].into();
+        assert_eq!(admission(&admitted, &claimed, &none), Admission::Claimed);
+        assert_eq!(
+            admission(&admitted, &claimed, &marked),
+            Admission::Withdrawn
+        );
+        // The owner's own drop keeps its count under a mark: the more
+        // specific act (review of #382).
+        let mut dropped = refl("steer", Some(Basis::NoFact));
+        dropped.dropped_at = Some("2026-09-28T00:00:00Z".into());
+        assert_eq!(admission(&dropped, &none, &marked), Admission::Dropped);
     }
 
     #[test]

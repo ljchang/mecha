@@ -213,6 +213,25 @@ impl<'a> Sources<'a> {
     }
 }
 
+/// The sessions a backfilled appraisal would make eligible (ruling 3D→D,
+/// 2026-09-28): a reflection [`Sources::pair`] refuses as exactly
+/// [`Exclusion::NoAppraisal`] — every gate before it passed — and that the
+/// provenance gate admits, so an appraisal of its session is all it lacks.
+/// The same predicate the pass uses, so the backfill cannot pick a session
+/// 2e-1 would then exclude for a reason of its own.
+pub fn backfill_targets(sources: &Sources<'_>, reflections: &[Reflexion]) -> BTreeSet<String> {
+    reflections
+        .iter()
+        .filter(|r| r.learnable())
+        // `pair` refuses a reflection with no lesson of its own only after
+        // the appraisal gate; decided here, so no appraisal is paid for a
+        // pair that would be refused anyway (review of #388).
+        .filter(|r| lesson_block(&r.domain, &[r.reflexion_text.as_str()]).is_some())
+        .filter(|r| matches!(sources.pair(r), Err(Exclusion::NoAppraisal)))
+        .map(|r| r.session_id.clone())
+        .collect()
+}
+
 /// The region an intervention is reported under: its recorded situation's
 /// scope key, `None` when the reflection predates situations — unknown,
 /// never standing (an empty key is standing, and matches every run).
@@ -306,6 +325,12 @@ pub struct RegionReport {
     /// The recorded prompt with no rules: what both sources are measured
     /// against. Its `improved` and `regressed` are zero by construction.
     pub rules_free: SourceCounts,
+    /// Of the decided comparisons, the ones where exactly one lesson source
+    /// passed: the appraisal's alone, or the reflector's alone. The paired
+    /// test [`Report::gate`] reads — concordant pairs say nothing about
+    /// which source is better.
+    pub appraisal_only: usize,
+    pub reflector_only: usize,
     /// Interventions in this region not compared, by why.
     pub excluded: BTreeMap<Exclusion, usize>,
 }
@@ -356,11 +381,75 @@ impl Report {
                 mine.regressed += theirs.regressed;
                 mine.inconclusive += theirs.inconclusive;
             }
+            t.appraisal_only += r.appraisal_only;
+            t.reflector_only += r.reflector_only;
             for (why, n) in &r.excluded {
                 *t.excluded.entry(*why).or_default() += n;
             }
         }
         t
+    }
+}
+
+/// Fewer decided comparisons than this and 2e-1's result is a pilot, never
+/// a gate verdict (the owner's ruling of 2026-09-29).
+pub const GATE_MIN_DECIDED: usize = 10;
+/// How many more discordant pairs the reflector may win than the appraisal
+/// with the appraisal still "no worse" (the same ruling).
+pub const GATE_MAX_TRAIL: usize = 2;
+
+/// What row 2e-1's measurement says about R25's gate for 2a-4 and 2e-2,
+/// decided on the paired verdicts: the owner's ruling of 2026-09-29.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "gate", rename_all = "snake_case")]
+pub enum Gate {
+    /// Fewer than [`GATE_MIN_DECIDED`] decided: informative, not a verdict.
+    Pilot { decided: usize },
+    /// Lines of the stores behind it could not be read, so every count is a
+    /// floor and a dropped pair could move the trail either way: no
+    /// verdict, whatever the counts say (review of #400).
+    Floors { skipped: usize },
+    /// The appraisal trails the reflector by at most [`GATE_MAX_TRAIL`]
+    /// discordant pairs: no worse.
+    NoWorse { trail: usize },
+    /// It trails by more.
+    Worse { trail: usize },
+}
+
+impl Report {
+    /// R25's gate for the whole report: [`Gate::Floors`] when any store line
+    /// was unreadable ([`Report::skipped_lines`]), else the total's
+    /// `gate_over_counts`. What every readout states.
+    pub fn gate(&self) -> Gate {
+        if self.skipped_lines > 0 {
+            return Gate::Floors {
+                skipped: self.skipped_lines,
+            };
+        }
+        self.total().gate_over_counts()
+    }
+}
+
+impl RegionReport {
+    /// The arithmetic half of R25's gate, over this region's counts alone:
+    /// a pilot under [`GATE_MIN_DECIDED`], else no worse while the reflector
+    /// wins at most [`GATE_MAX_TRAIL`] more discordant pairs than the
+    /// appraisal. **Private:** it cannot see [`Report::skipped_lines`], so
+    /// called alone over a torn store it would give a verdict R44 forbids.
+    /// [`Report::gate`] is the one door, and checks the floors first
+    /// (review of #400).
+    fn gate_over_counts(&self) -> Gate {
+        if self.decided < GATE_MIN_DECIDED {
+            return Gate::Pilot {
+                decided: self.decided,
+            };
+        }
+        let trail = self.reflector_only.saturating_sub(self.appraisal_only);
+        if trail <= GATE_MAX_TRAIL {
+            Gate::NoWorse { trail }
+        } else {
+            Gate::Worse { trail }
+        }
     }
 }
 
@@ -411,6 +500,14 @@ fn fold(region: &mut RegionReport, c: &Comparison) {
     }
     if decided {
         region.decided += 1;
+        match (
+            outcome_of(c, Role::ReflectorLesson),
+            outcome_of(c, Role::AppraisalLesson),
+        ) {
+            (Outcome::Pass, Outcome::Fail) => region.reflector_only += 1,
+            (Outcome::Fail, Outcome::Pass) => region.appraisal_only += 1,
+            _ => {}
+        }
     } else {
         region.inconclusive += 1;
     }
@@ -565,6 +662,101 @@ mod tests {
         )
     }
 
+    /// R25's gate on the owner's ruling of 2026-09-29: a pilot below the
+    /// minimum decided, no worse while the appraisal trails by at most the
+    /// margin in discordant pairs, worse past it — and a lead is no worse.
+    #[test]
+    fn the_gate_is_a_pilot_below_ten_decided_then_no_worse_within_two() {
+        let at = |decided, reflector_only, appraisal_only| {
+            RegionReport {
+                decided,
+                reflector_only,
+                appraisal_only,
+                ..RegionReport::default()
+            }
+            .gate_over_counts()
+        };
+        assert_eq!(at(9, 9, 0), Gate::Pilot { decided: 9 });
+        assert_eq!(at(10, 2, 0), Gate::NoWorse { trail: 2 });
+        assert_eq!(at(10, 3, 0), Gate::Worse { trail: 3 });
+        assert_eq!(at(10, 4, 2), Gate::NoWorse { trail: 2 });
+        assert_eq!(
+            at(12, 0, 5),
+            Gate::NoWorse { trail: 0 },
+            "a lead is no worse"
+        );
+        assert_eq!((GATE_MIN_DECIDED, GATE_MAX_TRAIL), (10, 2));
+        // Over unreadable store lines every count is a floor: no verdict.
+        let torn = Report {
+            regions: vec![RegionReport {
+                decided: 12,
+                reflector_only: 5,
+                ..RegionReport::default()
+            }],
+            skipped_lines: 1,
+            ..Report::default()
+        };
+        assert_eq!(torn.gate(), Gate::Floors { skipped: 1 });
+    }
+
+    /// The other discordant arm: a decided pair the appraisal's lessons win
+    /// alone counts as `appraisal_only`, and a concordant pair counts in
+    /// neither (review of #400).
+    #[test]
+    fn a_pair_the_appraisal_wins_alone_is_counted_as_its_own() {
+        let read = clean_read(vec![appraisal("s1", true), appraisal("s2", true)]);
+        let sources = Sources::new(&read, ["s1", "s2"].into_iter().map(String::from).collect());
+        let a = reflection("ra", "s1", "denial", &["fs_write"]);
+        let b = reflection("rb", "s2", "denial", &["fs_write"]);
+        use Outcome::*;
+        let rows = vec![
+            comparison(&a, &sources.pair(&a).unwrap(), [Fail, Fail, Pass]),
+            comparison(&b, &sources.pair(&b).unwrap(), [Fail, Pass, Pass]),
+        ];
+        let report = report(&[a.clone(), b.clone()], &sources, &rows, None, None);
+        let t = report.total();
+        assert_eq!((t.decided, t.appraisal_only, t.reflector_only), (2, 1, 0));
+        assert_eq!(report.gate(), Gate::Pilot { decided: 2 });
+    }
+
+    /// Ruling 3D→D: the backfill appraises exactly the sessions whose
+    /// reflection the pass refuses only for want of an appraisal and whose
+    /// provenance admits it — not one already appraised, not one a gate
+    /// before the appraisal refuses, not one no appraisal could make clean.
+    #[test]
+    fn a_backfill_targets_only_what_an_appraisal_alone_would_admit() {
+        let read = clean_read(vec![appraisal("s-clean", true)]);
+        let on_record: BTreeSet<String> = ["s-clean".to_string()].into();
+        let sources = Sources::new(&read, on_record);
+        let untrusted = {
+            let mut r = reflection("r4", "s-untrusted", "denial", &["fs_write"]);
+            r.origin = Origin::Untrusted;
+            r
+        };
+        let dropped = {
+            let mut r = reflection("r5", "s-dropped", "steer", &["fs_list"]);
+            r.dropped_at = Some("2026-09-25T01:00:00Z".into());
+            r
+        };
+        let lessonless = {
+            let mut r = reflection("r6", "s-lessonless", "denial", &["fs_write"]);
+            r.reflexion_text = "   ".into();
+            r
+        };
+        let targets = backfill_targets(
+            &sources,
+            &[
+                reflection("r1", "s-waiting", "denial", &["fs_write"]),
+                reflection("r2", "s-clean", "denial", &["fs_write"]),
+                reflection("r3", "s-followup", "followup", &[]),
+                untrusted,
+                dropped,
+                lessonless,
+            ],
+        );
+        assert_eq!(targets, ["s-waiting".to_string()].into());
+    }
+
     /// Every exclusion is its own count, and the clean-for-one-side cases
     /// are told apart from each other and from "no appraisal at all".
     #[test]
@@ -717,6 +909,10 @@ mod tests {
         );
         assert_eq!(write.reflector.rate(), Some(1.0));
         assert_eq!(write.appraisal.rate(), Some(0.0));
+        // Both decided pairs went to the reflector alone; the inconclusive
+        // one is in neither. Two decided is a pilot, never a verdict.
+        assert_eq!((write.reflector_only, write.appraisal_only), (2, 0));
+        assert_eq!(write.gate_over_counts(), Gate::Pilot { decided: 2 });
         assert_eq!(write.rules_free.rate(), Some(0.5));
         assert_eq!(
             write.reflector,

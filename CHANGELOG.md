@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha sessions mark <id> experiment`** withdraws a session you ran as a
+  model probe from everything that learns from your sessions: the run
+  corpus, `reflect`, `distill`, `learn`, and its appraisal and scores. The
+  transcript is untouched, and `mecha sessions unmark` undoes it. Only you
+  can mark, from your own terminal; a run's shell is refused. The verb names
+  the session's graph episode, if it was distilled, for you to retract there.
+
+- **`mecha distill --backfill-appraisals`** appraises, after the fact, the
+  sessions distilled before appraisals existed whose clean steer or denial
+  was waiting only on an appraisal to be compared. There were 9 on the live
+  store. Nothing is pushed to the graph, and the rows written predict
+  nothing, since the outcome was already known. `--dry-run` lists them.
+
+- **The lesson-source comparison states its verdict.** `mecha learn
+  --compare-sources` and `sessions appraise` print R25's gate for folding the
+  reflector in (2a-4) and feeding appraisal lessons to `learn` (2e-2), decided
+  on the paired verdicts. Under 10 decided comparisons the result is a pilot.
+  From 10 up it is "no worse" while the appraisal trails the reflector by at
+  most 2 discordant pairs, and "worse" past that. There is no verdict at all
+  while any line of the stores behind it is unreadable, since every count is
+  then a floor. The counts behind the verdict are printed beside it, and
+  `--json` carries it as `gate`.
+
+- **`mecha rules show <id>` finds a rule that consolidation dropped.** Learning
+  rewrites its rule set and leaves some rules out; they are not retired, so the
+  learner is never told they were harmful. Their text lives on in the proposal
+  that dropped them. `show` now answers from there: which proposal dropped the
+  rule, when, its last text, and its validation record. It says "never live"
+  for a rule only ever proposed. Read-only.
+- **Draft forecasts.** When a run stages a message, mecha now predicts what
+  you will do with it: send it as written, edit it, reject it, or leave it
+  past the outbox's patience. The prediction is your most common act on
+  similar earlier drafts. It is kept out of every review surface and every
+  prompt, so it cannot sway your verdict, and `sessions appraise` reports
+  how the predictions fare. Only acts stamped as yours count.
+
 - **Add and edit characters and styles from the Library tab.** **Add
   character** takes a portrait from your device, a name and a description.
   **Add style** takes a name and its text. **Edit** changes an approved
@@ -102,6 +138,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The owner's amendment to `INCOGNITO-DESIGN.md` §6.1 (2026-09-28).
 
 ### Fixed
+
+- **A run can no longer mark a rule down by rejecting its own draft.** An
+  edited or rejected draft counted as your verdict on the drafting, in the
+  appraisal and so in rule tenure and replay priority, whoever made the edit
+  or the reject. Now it counts only when it is stamped as yours, as a
+  release already did. A stamped act that is not yours counts as neither,
+  and acts from before the stamps existed keep their sign.
+
+- **The appraisals' hit rate counts only predictions that could miss.** A
+  chat answer or a run that staged nothing leaves the owner no draft, task or
+  workflow to act on, so `no_act` is the only act that can be observed there
+  and predicting it is a hit by construction. `sessions appraise` read those
+  as "hit rate 100%" over four such scores; it now names them as forced and
+  prints no rate until a prediction risks a miss. Scoring, and the surprises
+  replay priority reads, are unchanged.
+
+- **The appraiser is not asked to predict an act where none can happen.**
+  When a run's output offers no draft, task or workflow, and the run never
+  touched a task, `mecha distill` leaves the expected act out of the
+  appraisal's question and drops one the reply carries anyway. The row
+  records that the harness withheld it, and `sessions appraise` counts
+  such rows as "not asked".
 
 - **A voice call whose browser never connects ends after 90 seconds**, not
   at the fifteen-minute idle timeout. Until now it held the speech models

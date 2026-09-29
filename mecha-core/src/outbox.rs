@@ -649,6 +649,27 @@ impl OutboxItem {
             && self.resolved_by() == Actor::Owner
     }
 
+    /// Whether this item's edit or reject signs as the owner's verdict on the
+    /// drafting — ruling 2A→C (the owner, 2026-09-28): the release's rule,
+    /// made symmetric **going forward**. A stamped act signs only when it is
+    /// the owner's ([`Self::owners_edit`], or a reject stamped
+    /// [`Actor::Owner`]); a stamped act that is not (a run's shell,
+    /// `owner-approved`, `unknown`) signs neither, so a run rejecting its own
+    /// draft is no verdict against a rule. An act from before the stamps
+    /// existed keeps the −1.0 it always had — the history is kept, not
+    /// re-read as unknown.
+    pub fn drafting_verdict_signs(&self) -> bool {
+        match self.status.as_str() {
+            "rejected" => matches!(self.resolved_by, None | Some(Actor::Owner)),
+            "sent" if self.edited() => {
+                self.owners_edit()
+                    || (self.edited_by.is_none()
+                        && matches!(self.resolved_by, None | Some(Actor::Owner)))
+            }
+            _ => false,
+        }
+    }
+
     /// What this item says about the drafting, if it says anything.
     ///
     /// **The signed half of the outbox's evidence, and the cheapest signal in
@@ -853,6 +874,13 @@ impl OutboxRoute {
 
 pub struct OutboxStore {
     root: PathBuf,
+    /// Whether staging a model-authored message forecasts the owner's act
+    /// on it, and the window it judges by (`crate::forecast`). Off unless
+    /// asked for.
+    forecasting: Option<crate::forecast::Window>,
+    /// The window, resolved once per store: the charter is read on the
+    /// first forecast, not on every draft (review of #401).
+    forecast_patience: std::sync::OnceLock<Option<chrono::Duration>>,
 }
 
 /// Holds the store's writer lock for as long as it lives.
@@ -871,14 +899,48 @@ impl OutboxStore {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
-        Ok(OutboxStore { root })
+        Ok(OutboxStore {
+            root,
+            forecasting: None,
+            forecast_patience: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// Open `root` the way `shared` is open: a surface that opens its own
+    /// store per session carries the shared route's forecasting by
+    /// construction, never by a copy each caller must remember (review of
+    /// #401).
+    pub fn open_like(shared: &OutboxStore, root: impl Into<PathBuf>) -> Result<Self> {
+        let store = OutboxStore::open(root)?;
+        Ok(match shared.forecasting {
+            Some(w) => store.with_forecasts(w),
+            None => store,
+        })
+    }
+
+    /// Forecast the owner's act on every model-authored message this store
+    /// stages, into its sealed ledger (`crate::forecast`) — the owner's
+    /// ruling (a) of 2026-09-29.
+    pub fn with_forecasts(mut self, window: crate::forecast::Window) -> Self {
+        self.forecasting = Some(window);
+        self
+    }
+
+    /// The window this store forecasts by, if it forecasts — for a surface
+    /// that opens its own store beside the agent's to carry the setting.
+    pub fn forecasting(&self) -> Option<crate::forecast::Window> {
+        self.forecasting
     }
 
     /// Open at the default location only if it already exists — for read
     /// paths that must not create state as a side effect.
     pub fn open_existing_default() -> Option<Self> {
         let root = Self::default_root().ok()?;
-        root.is_dir().then_some(OutboxStore { root })
+        root.is_dir().then_some(OutboxStore {
+            root,
+            forecasting: None,
+            forecast_patience: std::sync::OnceLock::new(),
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -959,6 +1021,48 @@ impl OutboxStore {
             filled_defaults,
         };
         self.write_item(&item)?;
+        // The forecast, sealed beside the items. It is a measurement, never
+        // a guard, so a failure to write one does not fail the staging — it
+        // is counted as an unforecast draft on the readout instead. Kept off
+        // the staging's critical path as far as it can be: a bounded read of
+        // the newest items, a window resolved once per store, and a lock
+        // that is tried rather than waited on (review of #401). A history
+        // that could not be read whole makes a forecast with no basis, never
+        // a guess from part of it. A smoke run's draft is recorded as such
+        // and never predicted from, so the instrument does not measure its
+        // own tests.
+        if let Some(window) = self.forecasting {
+            if crate::forecast::forecasts(&item) {
+                let test = crate::session::SessionKind::test_override()
+                    == Some(crate::session::SessionKind::Test);
+                let history = if test {
+                    None
+                } else {
+                    match self.items_newest(crate::forecast::HISTORY_LIMIT) {
+                        Ok((h, 0)) => Some(h),
+                        _ => None,
+                    }
+                };
+                // Only a window that was read is kept: a charter unreadable
+                // now is retried on the next draft, never cached for the
+                // life of a `tui` or `chat` session (review of #401).
+                let patience = match self.forecast_patience.get() {
+                    Some(p) => *p,
+                    None => {
+                        let p = window.patience();
+                        if p.is_some() {
+                            let _ = self.forecast_patience.set(p);
+                        }
+                        p
+                    }
+                };
+                if let Err(e) =
+                    crate::forecast::record(&self.root, &item, history.as_deref(), patience, test)
+                {
+                    tracing::warn!("no forecast recorded for draft {}: {e:#}", item.id);
+                }
+            }
+        }
         Ok(item)
     }
 
@@ -1021,6 +1125,29 @@ impl OutboxStore {
     pub fn items_strict(&self) -> Result<Vec<OutboxItem>> {
         let mut skipped = 0usize;
         self.items_impl(true, &mut skipped)
+    }
+
+    /// The newest `limit` items, by id (which sorts by staging time), and
+    /// how many of those could not be read. A bounded read for a caller on
+    /// the staging path, which must not pay for the whole store.
+    pub fn items_newest(&self, limit: usize) -> Result<(Vec<OutboxItem>, usize)> {
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(&self.root)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+            .collect();
+        paths.sort();
+        let mut out = Vec::new();
+        let mut skipped = 0usize;
+        for path in paths.iter().rev().take(limit) {
+            match std::fs::read_to_string(path)
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+            {
+                Some(item) => out.push(item),
+                None => skipped += 1,
+            }
+        }
+        Ok((out, skipped))
     }
 
     fn items_impl(&self, strict: bool, skipped: &mut usize) -> Result<Vec<OutboxItem>> {

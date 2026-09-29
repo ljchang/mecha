@@ -3379,6 +3379,58 @@ refactor from making it two values.
 
 ## The outbox
 
+**The harness forecasts the owner's act on each drafted message, sealed
+and readout only** (`forecast.rs`, the owner's ruling (a) of 2026-09-29;
+X3 unparked).
+- **What v1 forecasts:** when a store opened `with_forecasts` stages a
+  model-authored message with a body, it predicts the owner's act:
+  `released_unchanged`, `edited`, `rejected`, or `no_act`. The prediction
+  is the owner's most frequent stamped act on earlier drafts staged through
+  the same tool in the same armed state, taken from history settled before
+  the staging, so it is pre-registered by construction.
+- **What counts as the owner's act:** only acts the stamps prove the
+  owner's (`owners_unchanged_release`, `owners_edit`, a reject stamped
+  `owner`), and a draft untouched past the outbox's patience (R37 carried
+  to items). An unreadable history or charter makes a forecast with no
+  basis, never a guess.
+- **Sealed:** it is written to `<outbox>/forecasts/forecasts.jsonl`, out
+  of the item walk. No per-draft surface, staging result or prompt reads
+  it, because a forecast of the owner's approval shown to the reviewer or
+  the acting model is a way to steer the verdict.
+- **Where it is on:** the agent's route turns it on with the charter
+  window. Every surface that opens its own store per session does it with
+  `OutboxStore::open_like`, which carries the setting. This is a
+  convention checked at review, not a type: the plain `open` is still
+  public. A surface that uses it shows up as a rising count of drafts
+  staged with no forecast.
+  Tests pass a fixed window, so none reads the machine's charter.
+- **Off the staging path's critical cost:** the history is the newest
+  `HISTORY_LIMIT` items (ids sort by time), the window is resolved once per
+  store, and the ledger's lock is tried, never waited on. The ledger itself
+  is read whole on each staging, to know which history items were real
+  forecasts. That read grows with lifetime drafts and has no retention yet:
+  a few milliseconds at today's sizes, and the first thing to bound if it
+  ever shows.
+- **A torn line stops the base rate until it is repaired.** One unreadable
+  ledger or history line makes every later forecast `basis_unreadable`,
+  since which history is real can no longer be told. The readout counts it,
+  so it is fail-closed and said, but nothing heals it: the line is repaired
+  or removed by hand.
+- **History is what the ledger forecast as real.** A smoke run's draft
+  (`MECHA_SESSION_KIND=test`) is recorded `test`, predicts nothing, never
+  counts as history, and the readout sets it aside. The instrument must not
+  measure its own tests. Drafts from before forecasting began are not
+  history either.
+- **Scored only at read time**, by `sessions appraise` (`forecast::summarize`),
+  under the patience window recorded on the forecast when it was made
+  (`patience_secs`), so a later edit to the charter's outbox line cannot
+  re-score history. The ledger's append and `forget`'s rewrite share
+  `<forecasts>/.lock`.
+  A miss feeds nothing until the forecasts are calibrated. `sessions delete`
+  purges a session's forecasts with its drafts.
+- **A model forecaster comes later**, as an arm measured against this one
+  on the same drafts.
+
 **Anticipatory evidence belongs to an exact draft version.**
 `OutboxItem::predictions` stores immutable argument snapshots; editing and
 reassessment leave the old forecast changed or reassessed, never failed or
@@ -3848,11 +3900,16 @@ cards say "edited by you" only for an `owner` edit (`edited_by` rides the
 review payload). A run's `edit` that changes nothing stamps nothing. The
 page holds both note prefixes as literals (`outbox-view.js`), and a
 test in `commands/outbox.rs` reads that file. `writing_outcome` itself still
-says what happened to the draft — `SentEdited` is structural — so the
-appraisal's `edit`-channel sign stays actor-blind, like the reject's
-−1.0: **the words are gated, the sign is not**; 2b-2's observed act is
-gated on it too (above). Every edited send on the live store had been mined
-when this landed.
+says what happened to the draft — `SentEdited` is structural. The
+appraisal's `edit`-channel sign was actor-blind, like the reject's −1.0,
+until ruling 2A→C (2026-09-28) carried the release's rule to both **going
+forward** (`OutboxItem::drafting_verdict_signs`): an edit or reject stamped
+as the owner's signs −1.0; one stamped as not the owner's (a run's shell,
+`owner-approved`, `unknown`) signs nothing, so a run rejecting its own
+draft is no verdict against a rule in tenure or replay priority; one from
+before the stamps existed keeps its −1.0, the history kept rather than
+re-read as unknown. 2b-2's observed act is gated on it too (above). Every
+edited send on the live store had been mined when this landed.
 
 **The residue is the closure path's** (see "Closing a task is a recorded
 event"): a command that detaches from its shell and clears the variable, a
@@ -4260,6 +4317,35 @@ The design decisions, each of which is a bug if undone:
   a chat into a test, never a test into anything else. The incident: 46 of
   143 appraised sessions were development runs before the mark existed, and
   the instrument measured its own tests.
+- **The owner can mark a session an experiment after the fact**
+  (`mecha sessions mark <id> experiment`, ruling 4D). A model probe run as
+  ordinary chat is not the owner's work, and the appraiser read two such
+  probes on the live store as the owner's own wishes. The mark is a line
+  in `<sessions>/marks/marks.jsonl`, never an edit to the transcript.
+  `Session::list_counting` applies it, so the session lists as
+  `Experiment` and every reader that admits by kind (the corpus,
+  `reflect`, `distill`) passes it over with no change of its own. Its text
+  appraisal and scores leave every door of the appraisal store, though it
+  stays on record so it is never appraised twice, and `learn` withholds
+  its reflections (`Admission::Withdrawn`, ahead of a pending proposal's
+  claim). `proposals accept` refuses a proposal resting on one, even with
+  `--force`, because a consolidated rule cannot shed one reflection's part.
+  A rule already learned from it is named for the owner to retire, never
+  passed over in silence. The two readers that take reflections by
+  session id rather than through a listing, `sessions compare`'s lesson
+  pass and `validate`'s probe corpus, drop a marked session's too
+  (`Marks::keep_unmarked`). `sessions delete` takes the mark with every
+  other trace (`forget`).
+  - **A ledger that cannot be read stops the listing.** A lost mark would
+    hand the probe back to the learner as the owner's work, and a word a
+    newer build wrote reads as a withdrawal.
+  - **Only the owner marks, at their own terminal.** Every run's shell is
+    refused, including an interactive one with a person in the
+    conversation, because a mark hides a session's record and a run must
+    not hide its own.
+  - **Not reached: the graph episode.** mecha-graph is a separate store,
+    so the verb names the episode `(agent:mecha, <id>)` for the owner to
+    retract there.
 - **A rate over a zero denominator is `None`, never zero.** "Nothing went
   wrong" and "nothing happened" are different answers, and printing them the
   same way is how a component that stopped working reads as healthy — the
@@ -4683,7 +4769,12 @@ The decisions that carry it, each a bug if undone:
   the hash of the empty string with no ids is *recorded and empty* (the
   lever off, or no store — `RulesCarried::none`); no hash at all is a
   record from before the field and reads as *unknown*, as does `delivered:
-  None` against this build's `Some([])`. `mecha replay` prints which
+  None` against this build's `Some([])`. A fourth: no hash *with*
+  `rules_skipped` is a run whose block was rendered past a learned-rules
+  file that could not be read (D1 in `LEARNING-STORE-RESEARCH.md`: skipped
+  rather than failing the run). That is also *unknown*, for a reason the
+  record names; tenure's scan reports such sessions as a caveat rather
+  than passing over them as carrying nothing. `mecha replay` prints which
   (`RunConfig::rules_arm_note`), and "unknown" must never print as
   "nothing", the dash-is-never-zero shape one store over.
 - **A divergent episode is dropped, not scored.** Replay answers from the
@@ -5187,6 +5278,20 @@ door above (`Kind::LessonSource`). Letting either source's lessons *learn* is
   (`lesson_sources` in `--json`), for the model of the newest lesson
   comparison, counting rows under other models apart; in text, regions with
   nothing eligible fold into one line of exclusions (`--json` keeps each).
+- **The gate is decided on the paired verdicts and stated on every readout**
+  (R44, `Report::gate`). Of the decided interventions, only the discordant
+  pairs count, where exactly one lesson source passed
+  (`RegionReport::reflector_only` / `appraisal_only`, counted in `fold`).
+  - Fewer than `GATE_MIN_DECIDED` (10) decided is a **pilot**.
+  - From there it is **no worse** while the appraisal trails by at most
+    `GATE_MAX_TRAIL` (2) pairs, **worse** past that, and a lead is said as
+    a lead.
+  - While `Report::skipped_lines` is non-zero there is **no verdict**
+    (`Gate::Floors`): a torn line in any of the three stores makes every
+    count a floor, and one dropped pair could move the trail either way.
+
+  The line prints above the regions, and `--json` carries it as `gate`. The
+  rule was set before any decided case existed.
 - **Its limit, named:** the appraisal writes up to three lessons per session
   and the reflector one per intervention, so the appraisal's arm carries the
   session's whole set at each of that session's interventions. That is each
@@ -6163,7 +6268,8 @@ the store that owns it, never copied into a new one:
   resumed. `WorkflowStore::verify` — the owner's `verify` and `close` — writes
   it; `today`'s display-time re-check on an unsaved copy does not.
 - **A draft rejected with a reason** (R16a) signs nothing new — the reject
-  is already `-1.0` on the edit channel — and its reason reaches the
+  is already `-1.0` on the edit channel when the owner made it or it came
+  before the stamps (ruling 2A→C) — and its reason reaches the
   reflector as an owner correction: `reflect`'s outbox pass mines
   `OutboxItem::rejection_reason` (a model's message draft, rejected, reason
   non-empty) as `learning::Trigger::Reject`, framed for the behaviour
@@ -6777,7 +6883,54 @@ the owner's** (row 2b-2, R33, R37).
 - **Who writes and who reads.** `mecha distill` scores what has resolved
   on every writing pass — even one with nothing to distill or with the
   graph down, since windows close on quiet nights — with no model call. `sessions appraise` reads coverage
-  (`expectations` in `--json`), and `hit_rate` is `None` over no scores.
+  (`expectations` in `--json`).
+- **The hit rate is over predictions that could miss.** A chat answer or a
+  run that staged nothing leaves the owner no draft, task or workflow to act
+  on (`output_offers_act`), so `no_act` is the only answer `observe` can give
+  it and predicting `no_act` there is a hit by construction. Such hits are
+  counted as `forced` and left out of `hit_rate` on both sides; `hit_rate` is
+  `None` when no scored prediction could miss — over no scores, or over
+  forced ones alone, which read "100%" on the live store before (#377). An
+  unreadable act store never makes a hit forced, and never vouches that it
+  could miss either: with nothing found in what was read, the hit is
+  `forced_unknown`, named on the line, and while any is on record the rate
+  is withheld — an unjudged hit gets no rate. Dropping only those hits would
+  push the rate down instead, since surprises are never classified.
+  Forcing is one-sided on purpose: a prediction of some other act on an
+  output that offered none is a miss by construction and stays in the rate,
+  because predicting an impossible act is a real error where predicting the
+  only possible one is not a real success. One act found decides it whatever else is
+  unread (a task anchor, with the outbox blind). Classified at read time, so
+  `scores.jsonl` is unchanged and the surprises replay priority reads cannot
+  be forced.
+- **Where nothing could be acted on, the prediction is not asked for**
+  (ruling 1B, #378). `withholds_expectation` is the write-time test: the
+  output offers no act now (`output_offers_act` is `Some(false)`) *and* the
+  run never called a task-linking tool (`kg_task_create` / `kg_task_update`,
+  over every message it ever had, since compaction does not unlink a task).
+  It is stricter than the read-time test on purpose. The owner's closures
+  and workflow dispositions do not exist yet when the appraisal is written,
+  and a row is written once, so a prediction withheld wrongly could never be
+  scored. Unknown asks. A withheld row carries `expected_act_withheld`, set
+  by the harness and never parsed from the reply, and the readout counts it
+  as `not_asked`, apart from a prediction the appraiser left out.
+- **A session distilled before the appraisal leg can be appraised after
+  the fact** (`mecha distill --backfill-appraisals`, ruling 3D→D,
+  2026-09-28). The sessions are chosen by row 2e-1's own predicate
+  (`lesson_source::backfill_targets`): a reflection `Sources::pair` refuses
+  as exactly `NoAppraisal`, and that the provenance gate admits. Distill
+  never revisits a session it has marked, so every clean steer and denial
+  from before 2026-09-26 was waiting on this. The episode call still runs,
+  because the appraisal is a follow-up on it, but nothing is pushed and
+  nothing is re-marked.
+  - **The row predicts nothing:** `backfilled`, with no `expected_act`,
+    enforced at the store's door as well as by the producer, because the
+    outcome was already known when it was written. The readout counts these
+    rows apart as `backfilled`.
+  - **Only appraisals of sessions that had ended by this one's end are shown
+    as earlier ones.** An older session must not see what came after it as
+    its history.
+  - **Local model only (R29).**
 
 **The counts-only appraiser is retired into it** (row 2a-3, R25). Before,
 `appraise_with_model` ran a quarantined pass over `AppraiserEvidence` behind

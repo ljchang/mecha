@@ -129,7 +129,9 @@ fn past_appraisals(
             .map(|c| {
                 json!({
                     "session": c.session_id,
-                    "date": c.at.format("%Y-%m-%d").to_string(),
+                    // The session's date, not the write's: a backfilled
+                    // row is an old session's (review of #388).
+                    "date": c.session_ended_at.unwrap_or(c.at).format("%Y-%m-%d").to_string(),
                     "interpretation": crate::step::ellipsize(&c.interpretation, INTERPRETATION_CHARS),
                     "prediction": c.prediction.as_ref().map(|p| crate::step::ellipsize(p, LINE_CHARS)),
                     "lessons": c.lessons.iter().take(LESSONS_SHOWN)

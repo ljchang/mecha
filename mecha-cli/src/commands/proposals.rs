@@ -8,6 +8,8 @@
 //! - **accept** writes the rules, records the `LeapRun`, and marks the
 //!   reflections processed with the proposal's id — the same lineage a
 //!   direct `mecha learn` leaves, plus the proposal file with its evidence.
+//!   All of it as one `LearningStore::commit_rules`, so a crash part-way is
+//!   finished by the next writer rather than left half-accepted.
 //! - **reject** also marks the reflections processed. They were real
 //!   corrections, but re-arguing them nightly against a human's explicit no
 //!   is how a proposal queue becomes spam. The refusal is recorded with its
@@ -33,7 +35,7 @@
 //! this deployment, and applying it anyway needs `--force`.
 
 use anyhow::{bail, Result};
-use mecha_core::learning::{LeapRun, LearningStore, Rule};
+use mecha_core::learning::{LeapRun, LearningStore, Rule, RuleCommit};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -86,9 +88,11 @@ pub async fn execute(args: Args) -> Result<()> {
     match args.cmd.unwrap_or(Cmd::List { json: false }) {
         Cmd::List { json } => list(&store, json),
         Cmd::Show { id } => show(&store, &id),
-        Cmd::Accept { id, force } => accept(&store, &id, force),
+        Cmd::Accept { id, force } => accept(&store, &sessions_dir()?, &id, force),
         Cmd::Reject { id, reason } => reject(&store, &id, reason),
-        Cmd::Supersede { id, stale, reason } => supersede_cmd(&store, id, stale, reason),
+        Cmd::Supersede { id, stale, reason } => {
+            supersede_cmd(&store, &sessions_dir()?, id, stale, reason)
+        }
     }
 }
 
@@ -155,11 +159,65 @@ fn show(store: &LearningStore, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn accept(store: &LearningStore, id: &str, force: bool) -> Result<()> {
+/// The session store whose marks `accept` and `supersede --stale` read —
+/// named once by the command and passed down, so the reasoning never reaches
+/// past the stores it was handed (review of #382).
+fn sessions_dir() -> Result<std::path::PathBuf> {
+    mecha_core::session::Session::default_dir()
+}
+
+fn accept(store: &LearningStore, sessions: &std::path::Path, id: &str, force: bool) -> Result<()> {
     let _lock = store.lock()?;
+    // An accept a crash interrupted is finished first — which, when it is
+    // this proposal, is what makes the check below say "not pending" rather
+    // than "the live rules changed" over rules this very proposal wrote.
+    let resumed = crate::commands::learn::finish_interrupted(store)?;
     let mut p = store.proposal(id)?;
+    // The owner asked for exactly what recovery just finished: this
+    // proposal's own interrupted accept, not a set-aside and not some other
+    // change, which leave an already-accepted proposal refused as before.
+    // And only an *accept*: a gated `learn --auto` apply finished here
+    // leaves its proposal `auto_applied`, which this verb did not do.
+    if matches!(
+        &resumed,
+        Some(mecha_core::learning::Resumed::Finished { proposal: Some(done), .. }) if *done == p.id
+    ) && p.status == "accepted"
+    {
+        store.log_pass(&format!(
+            "accept[{}]: proposal {} — {} rule(s), finished after an interruption",
+            p.domain,
+            p.id,
+            p.rules.len()
+        ));
+        println!(
+            "accepted: {} rule(s) now live for `{}`",
+            p.rules.len(),
+            p.domain
+        );
+        return Ok(());
+    }
     if p.status != "pending" {
         bail!("proposal {} is {}, not pending", p.id, p.status);
+    }
+    // A reflection from a session the owner marked as an experiment (ruling
+    // 4D) is not the owner's lesson, and a proposal's rules are consolidated
+    // across its reflections, so the part it contributed cannot be cut out.
+    // Refused whatever `--force` says: the mark is the owner's, and the
+    // ledger unread is refused too (review of #382).
+    let marked = marked_in(store, sessions, &p)?;
+    if !marked.is_empty() {
+        // Supersede, never reject: `reject` marks *every* reflection it holds
+        // processed, burning the unmarked sessions' corrections with the
+        // marked one's; `supersede` releases them unconsumed, so the next
+        // learn pass does propose again from the rest (review of #382).
+        bail!(
+            "proposal {} rests on reflection(s) from a session you marked as an experiment ({}); \
+             supersede it with `mecha proposals supersede {}` — its other reflections go back \
+             to the pool unconsumed, and the next learn pass proposes again from them",
+            p.id,
+            marked.join(", "),
+            p.id
+        );
     }
     // The evidence measured the candidate against these exact rules. If the
     // live set moved, the diff on screen is not the change being applied.
@@ -172,19 +230,22 @@ fn accept(store: &LearningStore, id: &str, force: bool) -> Result<()> {
         );
     }
 
-    store.write_learned_rules(&p.domain, &p.rules)?;
-    store.append_run(&LeapRun {
+    let run = LeapRun {
         id: p.id.clone(),
         domain: p.domain.clone(),
         reflexions_processed: p.reflexion_ids.len() as u32,
         rules_before: p.rules_before.len() as u32,
         rules_after: p.rules.len() as u32,
         created_at: chrono::Utc::now().to_rfc3339(),
-    })?;
-    store.mark_reflexions_processed(&p.reflexion_ids, &p.id)?;
+    };
     p.status = "accepted".into();
     p.resolved_at = Some(chrono::Utc::now().to_rfc3339());
-    store.write_proposal(&p)?;
+    store.commit_rules(&RuleCommit {
+        run,
+        reflexion_ids: p.reflexion_ids.clone(),
+        rules: p.rules.clone(),
+        proposal: Some(p.clone()),
+    })?;
     store.log_pass(&format!(
         "accept[{}]: proposal {} — {} rule(s)",
         p.domain,
@@ -201,6 +262,7 @@ fn accept(store: &LearningStore, id: &str, force: bool) -> Result<()> {
 
 fn reject(store: &LearningStore, id: &str, reason: Option<String>) -> Result<()> {
     let _lock = store.lock()?;
+    crate::commands::learn::finish_interrupted(store)?;
     let mut p = store.proposal(id)?;
     if p.status != "pending" {
         bail!("proposal {} is {}, not pending", p.id, p.status);
@@ -288,18 +350,44 @@ fn supersede_one(p: &mut mecha_core::learning::Proposal, reason: &str) {
 /// live rules, so one that fails this is not a decision awaiting an owner —
 /// it is unappliable paper, and the reflections behind it are being held for
 /// nothing.
-fn is_stale(store: &LearningStore, p: &mecha_core::learning::Proposal) -> Result<bool> {
+///
+/// Two ways, the same two `accept` refuses on: the baseline moved, or the
+/// proposal rests on a session the owner marked as an experiment (ruling
+/// 4D; review of #382) — so `--stale` sweeps both, and neither is left
+/// holding its reflections out of `learn` for good.
+fn is_stale(
+    store: &LearningStore,
+    sessions: &std::path::Path,
+    p: &mecha_core::learning::Proposal,
+) -> Result<bool> {
     let live = store.learned_rules(&p.domain)?;
-    Ok(!same_rules(&live, &p.rules_before))
+    Ok(!same_rules(&live, &p.rules_before) || !marked_in(store, sessions, p)?.is_empty())
+}
+
+/// The proposal's reflections from a marked session. The marks ledger
+/// unread is an error: `accept` must not guess it clean.
+fn marked_in(
+    store: &LearningStore,
+    sessions: &std::path::Path,
+    p: &mecha_core::learning::Proposal,
+) -> Result<Vec<String>> {
+    let withdrawn = mecha_core::session::Marks::load(sessions)?.withdrawn_ids();
+    Ok(mecha_core::learning::rests_on_marked(
+        &p.reflexion_ids,
+        &store.reflexions()?,
+        &withdrawn,
+    ))
 }
 
 fn supersede_cmd(
     store: &LearningStore,
+    sessions: &std::path::Path,
     id: Option<String>,
     stale: bool,
     reason: Option<String>,
 ) -> Result<()> {
     let _lock = store.lock()?;
+    crate::commands::learn::finish_interrupted(store)?;
     let mut proposals = store.proposals()?;
 
     // Which ones this call is about. `--stale` is deliberately not "every
@@ -316,7 +404,7 @@ fn supersede_cmd(
         (None, true) => {
             let mut out = Vec::new();
             for p in proposals.iter().filter(|p| p.status == "pending") {
-                if is_stale(store, p)? {
+                if is_stale(store, sessions, p)? {
                     out.push(p.id.clone());
                 }
             }
@@ -433,6 +521,80 @@ mod tests {
         p
     }
 
+    /// **An accept a crash cut short is finished by accepting again.** The
+    /// rules landed and nothing after them did — reflections unmarked, the
+    /// proposal still `pending`.
+    ///
+    /// Fails on the old behaviour: the second accept compared the live rules
+    /// (now the proposal's own) against `rules_before`, called that "the
+    /// live rules changed after this proposal was measured", and refused —
+    /// stranding the proposal unless the owner reached for `--force`.
+    #[test]
+    fn accepting_again_finishes_an_accept_a_crash_cut_short() {
+        let store = temp_store();
+        store.append_reflexion(&reflexion("r-1")).unwrap();
+        let p = staged(&store, "p-crash", &["r-1"]);
+        // The crash, staged: the record written, then only the rules.
+        let mut accepted = p.clone();
+        accepted.status = "accepted".into();
+        let intent = serde_json::json!({
+            "run": {
+                "id": p.id, "domain": "behavior", "reflexions_processed": 1,
+                "rules_before": 0, "rules_after": 1, "created_at": "2026-09-29T06:00:00Z"
+            },
+            "reflexion_ids": p.reflexion_ids,
+            "rules": p.rules,
+            "proposal": accepted,
+            "rules_before": [],
+        });
+        std::fs::write(
+            store.root().join(mecha_core::learning::COMMIT_FILE),
+            intent.to_string(),
+        )
+        .unwrap();
+        store.write_learned_rules("behavior", &p.rules).unwrap();
+
+        accept(&store, &store.root().join("no-sessions"), "p-crash", false).unwrap();
+
+        assert_eq!(store.proposal("p-crash").unwrap().status, "accepted");
+        let r = store.reflexion("r-1").unwrap();
+        assert!(r.is_processed);
+        assert_eq!(r.leap_run_id.as_deref(), Some("p-crash"));
+    }
+
+    /// Recovery finishing a *different* change is not this accept: an
+    /// already-accepted proposal is still refused, not reported as a success.
+    #[test]
+    fn a_resume_of_another_change_does_not_accept_this_one() {
+        let store = temp_store();
+        store.append_reflexion(&reflexion("r-9")).unwrap();
+        let mut done = staged(&store, "p-done", &[]);
+        done.status = "accepted".into();
+        store.write_proposal(&done).unwrap();
+        // An interrupted ungated consolidation: no proposal of its own.
+        let intent = serde_json::json!({
+            "run": {
+                "id": "run-other", "domain": "behavior", "reflexions_processed": 1,
+                "rules_before": 0, "rules_after": 1, "created_at": "2026-09-29T06:00:00Z"
+            },
+            "reflexion_ids": ["r-9"],
+            "rules": [rule("from the other run")],
+            "rules_before": [],
+        });
+        std::fs::write(
+            store.root().join(mecha_core::learning::COMMIT_FILE),
+            intent.to_string(),
+        )
+        .unwrap();
+
+        let err = accept(&store, &store.root().join("no-sessions"), "p-done", false).unwrap_err();
+        assert!(err.to_string().contains("not pending"), "{err}");
+        assert!(
+            store.reflexion("r-9").unwrap().is_processed,
+            "the other change was finished"
+        );
+    }
+
     /// **Supersede releases a proposal's reflections; reject consumes them.**
     ///
     /// This is the whole reason supersede is a separate verb rather than a
@@ -453,7 +615,14 @@ mod tests {
         staged(&store, "p-super", &["r-1", "r-2"]);
         staged(&store, "p-reject", &["r-3"]);
 
-        supersede_cmd(&store, Some("p-super".into()), false, None).unwrap();
+        supersede_cmd(
+            &store,
+            &store.root().join("no-sessions"),
+            Some("p-super".into()),
+            false,
+            None,
+        )
+        .unwrap();
         reject(&store, "p-reject", Some("no".into())).unwrap();
 
         let by_id = |id: &str| {
@@ -519,7 +688,7 @@ mod tests {
 
         // Live rules still match `rules_before` (both empty), so nothing is
         // stale and the sweep must decline.
-        supersede_cmd(&store, None, true, None).unwrap();
+        supersede_cmd(&store, &store.root().join("no-sessions"), None, true, None).unwrap();
         assert_eq!(
             store.proposals().unwrap()[0].status,
             "pending",
@@ -531,7 +700,7 @@ mod tests {
         store
             .write_learned_rules("behavior", &[rule("something else")])
             .unwrap();
-        supersede_cmd(&store, None, true, None).unwrap();
+        supersede_cmd(&store, &store.root().join("no-sessions"), None, true, None).unwrap();
         assert_eq!(store.proposals().unwrap()[0].status, "superseded");
     }
 
@@ -541,8 +710,22 @@ mod tests {
     fn a_resolved_proposal_cannot_be_superseded_again() {
         let store = temp_store();
         staged(&store, "p-1", &["r-1"]);
-        supersede_cmd(&store, Some("p-1".into()), false, None).unwrap();
-        assert!(supersede_cmd(&store, Some("p-1".into()), false, None).is_err());
+        supersede_cmd(
+            &store,
+            &store.root().join("no-sessions"),
+            Some("p-1".into()),
+            false,
+            None,
+        )
+        .unwrap();
+        assert!(supersede_cmd(
+            &store,
+            &store.root().join("no-sessions"),
+            Some("p-1".into()),
+            false,
+            None
+        )
+        .is_err());
     }
 
     /// An id and `--stale` are different requests and giving both is a
@@ -550,8 +733,17 @@ mod tests {
     #[test]
     fn an_id_and_stale_together_are_refused() {
         let store = temp_store();
-        assert!(supersede_cmd(&store, Some("p-1".into()), true, None).is_err());
-        assert!(supersede_cmd(&store, None, false, None).is_err());
+        assert!(supersede_cmd(
+            &store,
+            &store.root().join("no-sessions"),
+            Some("p-1".into()),
+            true,
+            None
+        )
+        .is_err());
+        assert!(
+            supersede_cmd(&store, &store.root().join("no-sessions"), None, false, None).is_err()
+        );
     }
 
     #[test]
