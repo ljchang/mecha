@@ -27,7 +27,7 @@ export const OWNER = 'demo@example.com';
 
 export const summary = {
   owner: OWNER,
-  // All eight rows `collect_queues()` pushes, in its order, with its `opens`
+  // All nine rows `collect_queues()` pushes, in its order, with its `opens`
   // strings verbatim. The depths and details are invented; the names and the
   // commands are not, because the home page now *prints* `opens` on any queue
   // with no page behind it — a fixture that made one up would be teaching the
@@ -81,6 +81,12 @@ export const summary = {
       detail: 'nothing accepted since Tuesday',
       opens: 'mecha harness list',
     },
+    {
+      queue: 'image candidates',
+      depth: 1,
+      detail: '1 character(s), 0 style(s) proposed by a model',
+      opens: 'mecha imagelib list --all',
+    },
   ],
   // A finding rather than an empty list, because a dashboard that can only
   // ever say "fine" is a dashboard nobody believes.
@@ -97,6 +103,24 @@ export const summary = {
     },
   ],
   errors: [],
+};
+
+// --- the image library -----------------------------------------------------
+
+// The shape `/api/library` serves (`serve/library.rs`'s `list`), with the
+// invented cast and no portraits: a demo has no pictures to show, and a
+// tile without one renders its kind. `shown` is what approval sends back.
+export const library = {
+  entries: [
+    { kind: 'character', name: 'john', version: 1, status: 'approved', origin: 'owner', locked: false, text: 'a man in his early 50s with a square jaw and a short grey-streaked beard; tall and heavyset', created: '2026-09-28T21:00:00Z', portrait: null, shown: '0'.repeat(64) },
+    { kind: 'character', name: 'maya', version: 1, status: 'approved', origin: 'owner', locked: false, text: 'a woman in her mid-30s with short tightly curled black hair; slim and of average height', created: '2026-09-28T21:00:00Z', portrait: null, shown: '1'.repeat(64) },
+    { kind: 'character', name: 'sam', version: 1, status: 'candidate', origin: 'model_clean', locked: false, text: 'a 16-year-old boy with a mop of sandy hair, freckles and braces, lanky and tall for his age', created: '2026-09-28T22:03:00Z', portrait: null, shown: '2'.repeat(64) },
+    { kind: 'style', name: 'watercolour', version: 1, status: 'approved', origin: 'owner', locked: false, text: 'loose watercolour illustration, soft washes bleeding at the edges, visible paper texture', created: '2026-09-28T21:00:00Z', portrait: null, shown: '3'.repeat(64) },
+  ],
+  hidden_locked: 1,
+  unlocked: false,
+  has_password: false,
+  unreadable: 0,
 };
 
 // --- mail ----------------------------------------------------------------

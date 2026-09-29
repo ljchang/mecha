@@ -44,6 +44,7 @@ mod chat;
 mod files;
 mod frontdoor;
 pub(crate) mod incognito;
+mod library;
 mod mail;
 mod model;
 mod present;
@@ -99,6 +100,8 @@ struct WebState {
     /// Host directory of TTS cloning references (`[web] voices_dir`), or
     /// None when cloning is not configured on this box.
     voices_dir: Option<Arc<PathBuf>>,
+    /// The image library's directory and the unlocks granted to it.
+    library: Arc<library::LibraryState>,
 }
 
 pub async fn execute(args: Args) -> Result<()> {
@@ -155,6 +158,9 @@ pub async fn execute(args: Args) -> Result<()> {
         review,
         offer_target,
         voices_dir: config.web.voices_dir.clone().map(Arc::new),
+        library: Arc::new(library::LibraryState::new(
+            mecha_core::imagelib::Library::default_dir()?,
+        )),
     };
     // 127.0.0.1 by construction — the address is not configurable.
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -465,6 +471,35 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
             axum::routing::post(settings::voice_clone_delete),
         )
         .route("/api/settings/voice", get(settings::voice))
+        .route("/api/library", get(library::list))
+        .route("/api/library/portrait/{blob}", get(library::portrait))
+        .route("/api/library/unlock", axum::routing::post(library::unlock))
+        .route("/api/library/relock", axum::routing::post(library::relock))
+        .route("/api/library/source", get(library::source))
+        .route(
+            "/api/library/save",
+            axum::routing::post(library::save), // A portrait's bytes never cross this body — the handler
+                                                // reads them from the chat's jail — so the default is ample.
+        )
+        .route(
+            "/api/library/add",
+            axum::routing::post(library::add)
+                // A portrait rides this body, base64: the store's cap, not
+                // axum's 2 MB default, is the ceiling that should answer.
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    library::MAX_WRITE_BODY,
+                )),
+        )
+        .route(
+            "/api/library/edit",
+            axum::routing::post(library::edit).layer(axum::extract::DefaultBodyLimit::max(
+                library::MAX_WRITE_BODY,
+            )),
+        )
+        .route(
+            "/api/library/{kind}/{name}/{action}",
+            axum::routing::post(library::act),
+        )
         .route("/api/notes", get(board::notes).post(board::note))
         .route("/api/notes/edit", axum::routing::post(board::note_edit))
         .route("/api/frontdoor", get(frontdoor::list))
@@ -1037,6 +1072,10 @@ mod tests {
                 chat: None,
                 offer_target: None,
                 voices_dir: None,
+                library: library::state_for_tests(
+                    std::env::temp_dir()
+                        .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
+                ),
                 review: Arc::new(review::ReviewState {
                     outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
                     sessions_dir: None,
@@ -1358,6 +1397,10 @@ mod tests {
                 chat: None,
                 offer_target: None,
                 voices_dir: Some(Arc::new(dir.to_path_buf())),
+                library: library::state_for_tests(
+                    std::env::temp_dir()
+                        .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
+                ),
                 review: Arc::new(review::ReviewState {
                     outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
                     sessions_dir: None,
@@ -1384,6 +1427,10 @@ mod tests {
                 chat: None,
                 offer_target: None,
                 voices_dir: None,
+                library: library::state_for_tests(
+                    std::env::temp_dir()
+                        .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
+                ),
                 review: Arc::new(review::ReviewState {
                     outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
                     sessions_dir: None,
@@ -1858,6 +1905,10 @@ mod boundary_tests {
                 }),
                 offer_target: None,
                 voices_dir: None,
+                library: library::state_for_tests(
+                    std::env::temp_dir()
+                        .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
+                ),
             },
             None,
         )
