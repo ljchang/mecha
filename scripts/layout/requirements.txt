@@ -74,7 +74,7 @@ numpy==2.5.3 \
     --hash=sha256:fc36dc566135b5eceec4cf89758fcb719266a019ef07dae1754ae7c9f617ef3e \
     --hash=sha256:ffdc76bfcae6b255dff75202c5e7feaf95b40246bc0a17944facc1fecf9f79ab
     # via
-    #   -r /tmp/claude-1000/-home-ljchang-Github-mecha/e8a676eb-fc8f-4123-92ad-552b34bd967d/scratchpad/layout/req.in
+    #   -r req.in
     #   onnxruntime
 onnxruntime==1.30.0 \
     --hash=sha256:001ed726c9bd5e2bc92faade7d37d889e9606a350b7d5529f0227df2e3bb57fd \
@@ -101,7 +101,7 @@ onnxruntime==1.30.0 \
     --hash=sha256:f36c87ec504f4f328e968ee322e4ba9682abe66280b3425625afcbed5333fed7 \
     --hash=sha256:fa688e7891a6aa206636fe7372e27ee75fd17713289f6b4fc7b190e0a7de9328 \
     --hash=sha256:fd54b314ea385bcecac69ab431f020ba503e3878dad4ebb645fec5a24b041242
-    # via -r /tmp/claude-1000/-home-ljchang-Github-mecha/e8a676eb-fc8f-4123-92ad-552b34bd967d/scratchpad/layout/req.in
+    # via -r req.in
 packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
