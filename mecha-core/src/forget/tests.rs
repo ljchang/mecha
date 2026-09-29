@@ -149,6 +149,20 @@ fn seeded(home: &Path) -> Roots {
     write(&l.join("validation-attempts.jsonl"), &format!(
         "{{\"reflexion_id\":\"refl-gone\",\"arms\":[{{\"text\":\"{CANARY}\"}}]}}\n{{\"reflexion_id\":\"refl-kept\",\"arms\":[]}}\n"
     ));
+    // Artifact-task probe receipts (`probe.rs`): one per repeat, naming the
+    // session replayed and the reflection measured.
+    write(
+        &l.join("artifact-probes/a-gone.json"),
+        &format!(
+            r#"{{"method":"artifact_task_repeat","session_id":"{GONE}","reflection_id":"refl-gone"}}"#
+        ),
+    );
+    write(
+        &l.join("artifact-probes/a-kept.json"),
+        &format!(
+            r#"{{"method":"artifact_task_repeat","session_id":"{KEPT}","reflection_id":"refl-kept"}}"#
+        ),
+    );
     write(
         &l.join("proposals/p-only.json"),
         &format!(
@@ -298,6 +312,7 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
         ("learning/mined_outbox.jsonl", "item-kept"),
         ("learning/validations.jsonl", "refl-kept"),
         ("learning/validation-attempts.jsonl", "refl-kept"),
+        ("learning/artifact-probes/a-kept.json", "refl-kept"),
         ("learning/proposals/p-both.json", "Keep answers short."),
         ("learning/proposals/p-other.json", "refl-kept"),
         ("learning/rules/behavior.user.toml", "The owner's own."),
