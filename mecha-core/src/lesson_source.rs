@@ -407,15 +407,19 @@ impl Report {
                 skipped: self.skipped_lines,
             };
         }
-        self.total().gate()
+        self.total().gate_over_counts()
     }
 }
 
 impl RegionReport {
-    /// R25's gate, on this report's decided set: a pilot under
-    /// [`GATE_MIN_DECIDED`], else no worse while the reflector wins at most
-    /// [`GATE_MAX_TRAIL`] more discordant pairs than the appraisal.
-    pub fn gate(&self) -> Gate {
+    /// The arithmetic half of R25's gate, over this region's counts alone:
+    /// a pilot under [`GATE_MIN_DECIDED`], else no worse while the reflector
+    /// wins at most [`GATE_MAX_TRAIL`] more discordant pairs than the
+    /// appraisal. **Private:** it cannot see [`Report::skipped_lines`], so
+    /// called alone over a torn store it would give a verdict R44 forbids.
+    /// [`Report::gate`] is the one door, and checks the floors first
+    /// (review of #400).
+    fn gate_over_counts(&self) -> Gate {
         if self.decided < GATE_MIN_DECIDED {
             return Gate::Pilot {
                 decided: self.decided,
@@ -651,7 +655,7 @@ mod tests {
                 appraisal_only,
                 ..RegionReport::default()
             }
-            .gate()
+            .gate_over_counts()
         };
         assert_eq!(at(9, 9, 0), Gate::Pilot { decided: 9 });
         assert_eq!(at(10, 2, 0), Gate::NoWorse { trail: 2 });
@@ -674,6 +678,26 @@ mod tests {
             ..Report::default()
         };
         assert_eq!(torn.gate(), Gate::Floors { skipped: 1 });
+    }
+
+    /// The other discordant arm: a decided pair the appraisal's lessons win
+    /// alone counts as `appraisal_only`, and a concordant pair counts in
+    /// neither (review of #400).
+    #[test]
+    fn a_pair_the_appraisal_wins_alone_is_counted_as_its_own() {
+        let read = clean_read(vec![appraisal("s1", true), appraisal("s2", true)]);
+        let sources = Sources::new(&read, ["s1", "s2"].into_iter().map(String::from).collect());
+        let a = reflection("ra", "s1", "denial", &["fs_write"]);
+        let b = reflection("rb", "s2", "denial", &["fs_write"]);
+        use Outcome::*;
+        let rows = vec![
+            comparison(&a, &sources.pair(&a).unwrap(), [Fail, Fail, Pass]),
+            comparison(&b, &sources.pair(&b).unwrap(), [Fail, Pass, Pass]),
+        ];
+        let report = report(&[a.clone(), b.clone()], &sources, &rows, None, None);
+        let t = report.total();
+        assert_eq!((t.decided, t.appraisal_only, t.reflector_only), (2, 1, 0));
+        assert_eq!(report.gate(), Gate::Pilot { decided: 2 });
     }
 
     /// Every exclusion is its own count, and the clean-for-one-side cases
@@ -831,7 +855,7 @@ mod tests {
         // Both decided pairs went to the reflector alone; the inconclusive
         // one is in neither. Two decided is a pilot, never a verdict.
         assert_eq!((write.reflector_only, write.appraisal_only), (2, 0));
-        assert_eq!(write.gate(), Gate::Pilot { decided: 2 });
+        assert_eq!(write.gate_over_counts(), Gate::Pilot { decided: 2 });
         assert_eq!(write.rules_free.rate(), Some(0.5));
         assert_eq!(
             write.reflector,
