@@ -2361,8 +2361,9 @@ fn check_rule_commits(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
                 summary: "a rule change was interrupted part-way".to_string(),
                 detail: format!(
                     "{} records a change to the learned rules that did not finish. The \
-                     next `mecha learn` or `mecha proposals accept` finishes it before \
-                     doing anything else, and the nightly pass runs `learn`.",
+                     next writer to the rules or proposals (`mecha learn`, which the \
+                     nightly pass runs, or an owner verb) finishes it first, or sets it \
+                     aside if the live rules have moved since.",
                     pending.display()
                 ),
                 remedy: None,
