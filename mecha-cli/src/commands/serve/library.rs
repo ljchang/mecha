@@ -47,6 +47,12 @@
 //! scratch directory for the child to read. Edit is for approved entries
 //! only: a candidate is approved or rejected as the model wrote it, where it
 //! can be read, rather than rewritten into approval on the way past.
+//!
+//! `add` and `save` do not go through the lock: a new name that is taken
+//! answers "already exists" whether or not the entry holding it is locked.
+//! That names a locked entry to anyone adding one, and nothing more — no
+//! text, no portrait, no change — and is the cost of being told the name is
+//! taken rather than silently failing (review of #394).
 
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{header, StatusCode};
@@ -470,20 +476,26 @@ pub const MAX_WRITE_BODY: usize =
 
 /// A portrait as the page sends it — base64 — decoded, capped, and staged in
 /// a private scratch directory for the child to read.
-async fn stage_portrait(b64: &str) -> Result<tempdir::Dir, Response> {
+async fn stage_portrait(b64: &str) -> Result<tempdir::Dir, Box<Response>> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
-        .map_err(|_| (StatusCode::BAD_REQUEST, "the portrait is not base64\n").into_response())?;
+        .map_err(|_| {
+            Box::new((StatusCode::BAD_REQUEST, "the portrait is not base64\n").into_response())
+        })?;
     if bytes.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "the portrait is empty\n").into_response());
+        return Err(Box::new(
+            (StatusCode::BAD_REQUEST, "the portrait is empty\n").into_response(),
+        ));
     }
     if bytes.len() as u64 > imagelib::MAX_PORTRAIT_BYTES {
-        return Err((
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "the picture is over the portrait cap\n",
-        )
-            .into_response());
+        return Err(Box::new(
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "the picture is over the portrait cap\n",
+            )
+                .into_response(),
+        ));
     }
     tokio::task::spawn_blocking(move || {
         tempdir::Dir::new().and_then(|d| std::fs::write(d.file(), &bytes).map(|_| d))
@@ -492,11 +504,13 @@ async fn stage_portrait(b64: &str) -> Result<tempdir::Dir, Response> {
     .ok()
     .and_then(Result::ok)
     .ok_or_else(|| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "could not stage the picture for saving\n",
+        Box::new(
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not stage the picture for saving\n",
+            )
+                .into_response(),
         )
-            .into_response()
     })
 }
 
@@ -536,7 +550,7 @@ pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
     let staged = match (kind, body.portrait.as_deref()) {
         ("character", Some(b64)) => match stage_portrait(b64).await {
             Ok(dir) => Some(dir),
-            Err(refusal) => return refusal,
+            Err(refusal) => return *refusal,
         },
         ("character", None) => {
             return (StatusCode::BAD_REQUEST, "a character needs a portrait\n").into_response()
@@ -610,7 +624,7 @@ pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
     let staged = match body.portrait.as_deref() {
         Some(b64) => match stage_portrait(b64).await {
             Ok(dir) => Some(dir),
-            Err(refusal) => return refusal,
+            Err(refusal) => return *refusal,
         },
         None => None,
     };

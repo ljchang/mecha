@@ -120,7 +120,7 @@
   }
 
   function startEdit(entry) {
-    form = { mode: 'edit', kind: entry.kind, name: entry.name, text: entry.text, locked: entry.locked, portrait: null, preview: null };
+    form = { mode: 'edit', kind: entry.kind, name: entry.name, text: entry.text, portrait: null, preview: null };
   }
 
   // A picked file, scaled to fit PORTRAIT_EDGE and re-encoded as JPEG, as
@@ -142,6 +142,8 @@
       const bytes = new Uint8Array(await blob.arrayBuffer());
       let binary = '';
       for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      // Cancelled, or the pane changed, while this was decoding.
+      if (!form) return;
       if (form.preview) URL.revokeObjectURL(form.preview);
       form.portrait = btoa(binary);
       form.preview = URL.createObjectURL(blob);
