@@ -4293,8 +4293,9 @@ merged and installed** (2e-4b, 3a-2 and #333 on 2026-09-27, HISTORY). The
 audit of 2026-09-28/29 and its five open PRs are at the top of this file.
 The authority is `APPRAISAL-WIRING-DESIGN.md`: §3 holds
 the plan as pull requests with their order, and §6 the rulings: R30–R37
-of 2026-09-25, R38 of 2026-09-25/26 and R39–R41 of 2026-09-26. What each
-row built is in HISTORY under 2026-09-24/25 and 2026-09-25/26. Every
+of 2026-09-25, R38 of 2026-09-25/26, R39–R41 of 2026-09-26 and R42–R43 of
+2026-09-27. What each row built is in HISTORY under 2026-09-24/25,
+2026-09-25/26 and 2026-09-27. Every
 catalogue entry phase 2 built
 ends with a *built* paragraph naming what its PR left, and those are not
 repeated here. Of phase 1's, four (S5, S7, B1 and G4) do the same; S1, S8,
