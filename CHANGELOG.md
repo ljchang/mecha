@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OCR reads tables whole.** With the layout stage installed
+  (`scripts/layout/install.sh`), an OCR page is read region by region: a
+  layout model (PP-DocLayoutV3, CPU, sandboxed like the PDF parser) finds
+  its tables, formulas, headings and paragraphs, and each is read with the
+  prompt the OCR model was trained for — tables come back as Markdown tables
+  with every column, headings are marked, and each region's box is kept for
+  citations. Without it, pages are read whole and the transcript says so.
+
 - **Read PDFs: `document_read` and `mecha document extract`.** Each page
   comes back twice, labelled: the PDF's own text layer (exact — what a quote
   is checked against) and, for scanned pages or when asked, a transcript from
@@ -17,8 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read twice, and the OCR server starts when a page needs it and stops after
   ten idle minutes. Configure with a `[documents]` table in
   `~/.mecha/config.toml` (see `mecha config init`); install the server with
-  `scripts/llama/install.sh`. Tables read by OCR are not reliable yet — use the
-  text layer for numbers.
+  `scripts/llama/install.sh`. Tables read by whole-page OCR are not reliable
+  — install the layout stage (above), or use the text layer for numbers.
 - **`mecha sessions mark <id> experiment`** withdraws a session you ran as a
   model probe from everything that learns from your sessions: the run
   corpus, `reflect`, `distill`, `learn`, and its appraisal and scores. The
