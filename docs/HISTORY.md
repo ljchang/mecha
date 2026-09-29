@@ -187,7 +187,8 @@ authority is `APPRAISAL-WIRING-DESIGN.md`, rulings R42 and R43 in its §6.
   name the owner only for the owner's own act.
 
 The two 2e-4b levers' measured `mecha exp` runs are owed. The edit and
-reject signs stayed actor-blind until #387 (HANDOFF). Verified on `main` at
+reject signs stayed actor-blind; #387, open at this writing (HANDOFF),
+carries the rule to them. Verified on `main` at
 `2847fbfe`: `grep -c compare scripts/ruminate.sh` prints 9, and each symbol
 named above is present.
 
