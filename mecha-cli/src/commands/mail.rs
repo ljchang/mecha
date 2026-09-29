@@ -1150,8 +1150,8 @@ async fn classify(
                 s.pass_rules_block_for(&[mecha_core::learning::TRIAGE_DOMAIN])?;
             for k in &skipped {
                 eprintln!(
-                    "learned `{}` rules do not parse, so the classifier runs without them — \
-                     fix or remove {}: {}",
+                    "learned `{}` rules could not be read, so the classifier runs without \
+                     them — fix or remove {}: {}",
                     k.domain,
                     k.path.display(),
                     k.error
