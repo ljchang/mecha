@@ -166,7 +166,10 @@ export const ROUTES = [
   ['GET', /^\/api\/settings\/voice$/, () => fx.voice],
 
   ['GET', /^\/api\/sessions$/, () => fx.sessions],
-  ['GET', /^\/api\/history$/, () => fx.history],
+  // The drawer's archive: nothing is filed away in the demo, and saying so
+  // beats showing the earlier list a second time under another heading.
+  ['GET', /^\/api\/history$/, (url) =>
+    url.searchParams.get('archived') === 'true' ? { sessions: [] } : fx.history],
   // An incognito chat reads back as one, empty, so the demo shows its banner
   // and End rather than the fixture conversation under an incognito key.
   ['GET', /^\/api\/chat\/([^/]+)$/, (_url, [key]) =>
@@ -274,6 +277,7 @@ export const ROUTES = [
           'settings/voice/clone(/delete)?',
           'model/(use|cancel)',
           'resume',
+          'sessions/[^/]+(/(archive|unarchive))?',
           'dictate',
           'offer',
           'facts(/retract)?',

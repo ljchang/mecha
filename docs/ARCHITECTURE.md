@@ -656,6 +656,27 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   cast of one does not excuse a second character named beside it (review of
   #383); an explicit `"cast": []` says "someone else by that name". The lookup's result also says how entries are
   used, which alone was enough on the rerun (0.68 and 0.45).
+- **Every refusal before the GPU opens "Nothing was drawn."** — through one
+  helper, `imagegen::refused`, which every pre-GPU exit in `call` uses today;
+  a convention the tests check for those exits, not something the compiler
+  enforces on the next one, so a new refusal should use it. The first live run read a
+  refusal that opened with the characters' names as a finished picture,
+  never retried, and told the owner it existed; the named-character refusal
+  also spells out the *whole* cast to copy (everyone named, in the prompt's
+  order, keeping what was already given), because a skeleton of only the
+  missing names swapped who was missing each round (review of #384). Past
+  `MAX_CAST` library characters it asks for separate pictures instead, with
+  no cast to copy — a skeleton of five is one `compile` refuses — and only
+  approved characters count toward that, so an invented cast name is
+  `compile`'s "no approved character" rather than a reason to split.
+- **The lookup picks by name first.** A query word that is an approved
+  entry's name (of the kind asked) returns those entries only; otherwise
+  every word of three letters or more must match a name or description (any
+  word returned the whole library, "and" being in every description); and a
+  query with no such word — nothing of three letters or more, and no name —
+  matches as one substring, so a short fragment like `ya` finds `maya`.
+  Names resolve against what the listing can return, or a candidate's name
+  would blank a search and betray the candidate (review of #384).
 - **The owner approves; the model proposes — bounded in entries and in
   bytes, and a rejection leaves nothing.** At most `MAX_PENDING` candidates,
   each portrait at most `MAX_PROPOSED_PORTRAIT_BYTES` (4 MB; the owner's own
@@ -4123,6 +4144,61 @@ non-blocking flock, so a hand edit never contends with a fire.
   within a week; whether changed arguments are a different action is left to
   the reviewer, never asserted as equivalence. `Extra` and `Missing` are the
   replay outrunning or falling short of the recording.
+
+### Archive and forget
+
+`archive.rs` files a conversation away; `forget.rs` removes it and every
+trace of it. Owner's rulings, 2026-09-28: archive is filing (every reader
+keeps reading an archived session), delete removes all traces.
+
+- **The archive mark is a file, never a transcript record.** One file per
+  session in `sessions/.archived/`, on the `runmarker`/`permit` pattern, so
+  archive and restore are a create and a remove with nothing to race, and
+  the transcript stays a record of what was said. `/api/history` is the one
+  reader that consults it, and resuming a conversation clears it (owner's
+  ruling, 2026-09-28: opening one says it is current again).
+- **Forgetting is an enumeration, and `forget.rs` is it.** An incognito chat
+  forgets by removing one directory because nothing else was ever written; a
+  recorded session was copied from by every nightly reader. A new store that
+  holds a session id, a reflection id, or a session's text must be taught to
+  `forget`, or it is a leak — the store-wide canary test
+  (`forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else`) seeds
+  one row per store and greps every file for the id and the text.
+- **The enumeration has a backstop, and the fixture must be the stores'
+  real shape.** After the walk every purged store is grepped for the id and
+  each surviving file is named in the residue. Review found three stores the
+  walk missed (a workflow's `started` event `detail`, a message's
+  `delivered_to`, a front-door request's `triage_session`), and the canary
+  test passed through all three because its fixture rows were hand-written
+  in shapes the stores do not write.
+- **Set aside first, removed last.** The transcript becomes
+  `<id>.jsonl.forgetting` (invisible to every `.jsonl` listing) before any
+  store is touched, and is removed only when every store answered. A failure
+  anywhere keeps it, so rerunning the forget finishes — an incomplete
+  delete says so and keeps the handle, never reports done.
+- **Rows are filtered as text.** A kept line is written back byte for byte;
+  a typed round-trip would drop fields a newer binary wrote from every row
+  that survived. Each store is rewritten under its own `<root>/.lock`, the
+  file its writers flock.
+- **A rule learned only from forgotten reflections is removed, not
+  retired.** Retirement keeps the text and quotes it to the learner as
+  measured harmful, which is both a trace and a false lesson.
+- **A workspace is the session's only if no other header names it.** Web
+  keys are reused (`main`, a resumed chat keeps its workspace) and voice
+  shares one directory, so ownership is checked against every header, and a
+  workspace outside `~/.mecha/work` is never touched.
+- **The graph answers for itself.** `mecha-graph redact --source agent:mecha
+  --source-id <id> --vacuum --tombstone-absent` through `$MECHA_GRAPH_BIN`
+  — the tombstone even on no match, because a distill that read the
+  transcript before the delete lands after it; mecha never opens
+  the database. "No graph" is an answer only when neither the binary nor the
+  database exists *and* the distill ledger never listed the session — and a
+  failed graph step keeps the ledger line, so the retry still knows it owes
+  an episode.
+- **A live writer cannot resurrect a deleted transcript.** `Session::append`
+  creates the file only for the header; any later record finding it gone
+  errors. The web handlers also release the conversation from the process
+  first (`ChatState::release_recorded`) and refuse while a run is in flight.
 
 ## The run-quality corpus
 

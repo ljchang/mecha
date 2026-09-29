@@ -576,7 +576,7 @@ pub(crate) fn review_from_json(raw: &str) -> anyhow::Result<Vec<ReviewRow>> {
 /// repository, and a project that could name the binary mecha runs as a child
 /// process has been handed arbitrary execution — the same reasoning that keeps
 /// `[[trigger]]` out of the layered config.
-fn graph_bin() -> String {
+pub(crate) fn graph_bin() -> String {
     std::env::var("MECHA_GRAPH_BIN").unwrap_or_else(|_| "mecha-graph".into())
 }
 

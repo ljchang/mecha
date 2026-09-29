@@ -818,6 +818,92 @@
     loadHistory();
   }
 
+  // **Archive files a conversation away; delete forgets it.** Archived, the
+  // record stays whole — learning, appraisal and the graph still read it —
+  // and only this list stops showing it; deleted, the transcript and
+  // everything derived from it are gone (`serve/archive.rs`). Both act on
+  // the transcript's id: an earlier conversation has no key, and an open
+  // one is let go of server-side, so it leaves the rail too.
+  let menuFor = $state(null);
+  let archivedOpen = $state(false);
+  let archivedRows = $state(null);
+  /// What the last archive or delete did, said in the drawer rather than in
+  /// a conversation — the conversation it was about may be the one that
+  /// just went. `retry` is the id of a delete that did not finish.
+  let drawerNote = $state(null);
+
+  async function loadArchived() {
+    try {
+      const res = await fetch('/api/history?archived=true');
+      if (res.ok) archivedRows = (await res.json()).sessions;
+    } catch {
+      // the drawer is a convenience; the transcript is the truth
+    }
+  }
+
+  function toggleArchived() {
+    archivedOpen = !archivedOpen;
+    if (archivedOpen) loadArchived();
+  }
+
+  function refreshLists() {
+    loadRail();
+    loadHistory();
+    if (archivedOpen) loadArchived();
+  }
+
+  /// Showing the conversation that is going away: move to a fresh one, as
+  /// the new-chat button would. Read before the lists refresh, while the
+  /// rail still says which key held it.
+  function leaveIfShowing(id) {
+    if (rail.find((s) => s.id === id)?.key === key) {
+      switchTo(`chat-${Math.random().toString(36).slice(2, 8)}`);
+    }
+  }
+
+  async function archiveChat(id, archived = true) {
+    menuFor = null;
+    try {
+      // Two literal calls rather than one built path: the docs demo's
+      // check reads each `fetch` literal to prove every endpoint is answered.
+      const res = archived
+        ? await fetch(`/api/sessions/${encodeURIComponent(id)}/archive`, { method: 'POST' })
+        : await fetch(`/api/sessions/${encodeURIComponent(id)}/unarchive`, { method: 'POST' });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      if (archived) leaveIfShowing(id);
+      drawerNote = { text: archived ? 'archived — find it under “archived” below' : 'restored to the list' };
+    } catch (e) {
+      drawerNote = { text: `${archived ? 'archive' : 'restore'} failed: ${e?.message ?? e}` };
+    }
+    refreshLists();
+  }
+
+  async function deleteChat(id, label) {
+    menuFor = null;
+    const ok = confirm(
+      `Permanently delete “${label}”?\n\n` +
+        'The conversation, its files, its staged drafts and questions, anything learned from it, ' +
+        'and its memory in the knowledge graph are all removed. This cannot be undone.\n\n' +
+        'To hide it but keep the record, archive it instead.',
+    );
+    if (!ok) return;
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const report = await res.json();
+      leaveIfShowing(id);
+      drawerNote = report.complete
+        ? { text: 'deleted', left: report.residue }
+        : {
+            text: `only partly deleted — ${report.errors.join('; ')}`,
+            retry: { id, label },
+          };
+    } catch (e) {
+      drawerNote = { text: `delete failed: ${e?.message ?? e}` };
+    }
+    refreshLists();
+  }
+
   // A session id in the route (`#chat/<id>`), from the board's "open the
   // conversation". Resumed once: the endpoint returns the live key of a
   // session this process already holds rather than minting a twin, so a
@@ -843,6 +929,8 @@
       const data = await res.json();
       drawer = false;
       switchTo(data.key);
+      // Opening an archived one un-archives it server-side; the lists catch up.
+      refreshLists();
     } catch (e) {
       pushEntry({ kind: 'notice', text: `resume failed: ${e?.message ?? e}` });
     }
@@ -1536,6 +1624,36 @@
     </div>
   {/if}
 
+  {#snippet pastRow(h, archived)}
+    <div class="dline">
+      <button class="drow past" onclick={() => resumeSession(h.id)}>
+        <!-- The name it earned, and the opening line for one that has
+             not earned one yet (or was renamed past where the listing
+             scan reads). -->
+        <span class="dsnippet">{nameOf(h.title) || h.snippet}</span>
+        <span class="dmeta">
+          {#if h.kind === 'voice'}<span class="dkind">voice</span>{/if}
+          {#if h.kind === 'task'}<span class="dkind">task</span>{/if}
+          <!-- An archived row is dated by when it was put away: that is
+               what a person looking through the archive remembers. -->
+          {archived && h.archived_at ? `archived ${h.archived_at.slice(0, 10)}` : h.created_at.slice(0, 10)}
+        </span>
+      </button>
+      <button class="dmore" class:open={menuFor === h.id} aria-label="archive or delete" aria-expanded={menuFor === h.id}
+        onclick={() => (menuFor = menuFor === h.id ? null : h.id)}>⋯</button>
+    </div>
+    {#if menuFor === h.id}
+      <div class="dactions">
+        {#if archived}
+          <button onclick={() => archiveChat(h.id, false)}>restore</button>
+        {:else}
+          <button onclick={() => archiveChat(h.id)}>archive</button>
+        {/if}
+        <button class="danger" onclick={() => deleteChat(h.id, nameOf(h.title) || h.snippet)}>delete…</button>
+      </div>
+    {/if}
+  {/snippet}
+
   {#if drawer || docked}
     <!-- Docked, the panel is the same markup with the modal parts left
          off: no scrim to dismiss, no slide-in, and nothing to close —
@@ -1553,36 +1671,69 @@
         </button>
       </div>
       <div class="drawer-scroll">
+        {#if drawerNote}
+          <div class="dnote" role="status">
+            <span>{drawerNote.text}</span>
+            {#each drawerNote.left ?? [] as l}<span class="dleft">kept: {l}</span>{/each}
+            <span class="dnote-actions">
+              {#if drawerNote.retry}
+                <button onclick={() => deleteChat(drawerNote.retry.id, drawerNote.retry.label)}>delete again</button>
+              {/if}
+              <button onclick={() => (drawerNote = null)}>dismiss</button>
+            </span>
+          </div>
+        {/if}
         <div class="dsection">open</div>
         {#each rail.length ? rail : [{ key: 'main', running: false }] as s}
-          <button class="drow" class:dactive={s.key === key} onclick={() => { drawer = false; switchTo(s.key); }}>
-            <span class="raildot" class:on={s.running}></span>
-            <span class="dname">{s.incognito ? 'incognito chat' : sessionLabel(s)}</span>
-            {#if s.incognito}<span class="dkind incog">incognito</span>{/if}
-            {#if s.title?.startsWith('voice')}<span class="dkind">voice</span>{/if}
-            {#if s.title?.startsWith('task: ')}<span class="dkind">task</span>{/if}
-            {#if s.taint?.untrusted}<span class="railtaint">▲</span>{/if}
-          </button>
+          <div class="dline">
+            <button class="drow" class:dactive={s.key === key} onclick={() => { drawer = false; switchTo(s.key); }}>
+              <span class="raildot" class:on={s.running}></span>
+              <span class="dname">{s.incognito ? 'incognito chat' : sessionLabel(s)}</span>
+              {#if s.incognito}<span class="dkind incog">incognito</span>{/if}
+              {#if s.title?.startsWith('voice')}<span class="dkind">voice</span>{/if}
+              {#if s.title?.startsWith('task: ')}<span class="dkind">task</span>{/if}
+              {#if s.taint?.untrusted}<span class="railtaint">▲</span>{/if}
+            </button>
+            <!-- An incognito chat has its own End, and nothing to archive. -->
+            {#if s.id && !s.incognito}
+              <button class="dmore" class:open={menuFor === s.id} aria-label="archive or delete" aria-expanded={menuFor === s.id}
+                onclick={() => (menuFor = menuFor === s.id ? null : s.id)}>⋯</button>
+            {/if}
+          </div>
+          {#if s.id && menuFor === s.id}
+            <div class="dactions">
+              {#if s.running}
+                <span class="dwhy">stop the run to archive or delete</span>
+              {:else}
+                <button onclick={() => archiveChat(s.id)}>archive</button>
+                <button class="danger" onclick={() => deleteChat(s.id, sessionLabel(s))}>delete…</button>
+              {/if}
+            </div>
+          {/if}
         {/each}
         <div class="dsection">earlier</div>
         {#if history === null}
           <div class="dempty">reading the record…</div>
         {:else}
           {#each history.filter((h) => !h.attached_key) as h}
-            <button class="drow past" onclick={() => resumeSession(h.id)}>
-              <!-- The name it earned, and the opening line for one that has
-                   not earned one yet (or was renamed past where the listing
-                   scan reads). -->
-              <span class="dsnippet">{nameOf(h.title) || h.snippet}</span>
-              <span class="dmeta">
-                {#if h.kind === 'voice'}<span class="dkind">voice</span>{/if}
-                {#if h.kind === 'task'}<span class="dkind">task</span>{/if}
-                {h.created_at.slice(0, 10)}
-              </span>
-            </button>
+            {@render pastRow(h, false)}
           {:else}
             <div class="dempty">nothing recorded yet</div>
           {/each}
+        {/if}
+        <button class="dsection dtoggle" onclick={toggleArchived} aria-expanded={archivedOpen}>
+          archived {archivedOpen ? '▾' : '▸'}
+        </button>
+        {#if archivedOpen}
+          {#if archivedRows === null}
+            <div class="dempty">reading the archive…</div>
+          {:else}
+            {#each archivedRows.filter((h) => !h.attached_key) as h}
+              {@render pastRow(h, true)}
+            {:else}
+              <div class="dempty">nothing archived</div>
+            {/each}
+          {/if}
         {/if}
       </div>
     </aside>
@@ -2442,6 +2593,106 @@
   .railtaint {
     color: var(--hazard);
     font-size: 9px;
+  }
+  .dline {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+  }
+  .dline .drow {
+    flex: 1;
+    min-width: 0;
+  }
+  .dmore {
+    flex: 0 0 36px;
+    background: none;
+    border: none;
+    border-radius: var(--radius);
+    color: var(--text-muted);
+    font-size: 16px;
+    cursor: pointer;
+  }
+  .dmore:hover,
+  .dmore.open {
+    color: var(--text);
+    background: var(--accent-900);
+  }
+  /* A pointer that can hover gets the row's own quiet: the control appears
+     under it. A finger cannot hover, so on touch it simply stays. */
+  @media (hover: hover) {
+    .dline .dmore {
+      opacity: 0;
+    }
+    .dline:hover .dmore,
+    .dmore:focus-visible,
+    .dmore.open {
+      opacity: 1;
+    }
+  }
+  .dactions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px 10px;
+  }
+  .dactions button,
+  .dnote button {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+    background: none;
+    border: 1px solid var(--accent-700);
+    border-radius: var(--radius-chip);
+    padding: 6px 10px;
+    min-height: 32px;
+    cursor: pointer;
+  }
+  .dactions button.danger {
+    color: var(--hazard);
+    border-color: var(--hazard);
+  }
+  .dwhy {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  /* Spelled out rather than inherited from `.dsection`: the global button
+     reset outranks a lone class, and a toggle that sits 10px off its
+     neighbours in another colour reads as a different kind of thing. */
+  .drawer-scroll .dtoggle {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    cursor: pointer;
+    margin-top: 8px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--accent-700);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 12px 10px 6px;
+  }
+  .dnote {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text);
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 10px;
+    margin: 4px 2px 8px;
+    overflow-wrap: anywhere;
+  }
+  .dleft {
+    color: var(--text-muted);
+  }
+  .dnote-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
   }
   .taskhead {
     padding: 0.6rem 0.8rem;
