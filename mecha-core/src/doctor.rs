@@ -311,6 +311,7 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_unfinished_forgets(&home.join("sessions")));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
     findings.extend(check_learning(&home.join("learning"), now));
+    findings.extend(check_rule_commits(&home.join("learning"), now));
     findings.extend(check_rule_files(&home.join("learning")));
     findings.extend(check_proposal_review(&home.join("learning"), now));
     // The graph store is `~/.mecha-graph`, a hidden sibling of the mecha home
@@ -2345,6 +2346,69 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     out
 }
 
+/// A rule change a crash interrupted, and one recovery set aside
+/// (`LearningStore::commit_rules`, `resume_interrupted`). A commit in flight
+/// lasts milliseconds with no model call in it, so one older than a minute
+/// was interrupted.
+fn check_rule_commits(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let pending = root.join(crate::learning::COMMIT_FILE);
+    if let Ok(meta) = std::fs::metadata(&pending) {
+        let written = meta.modified().ok().map(DateTime::<Utc>::from);
+        if written.is_none_or(|t| now - t > chrono::Duration::minutes(1)) {
+            out.push(Finding {
+                component: "learning".to_string(),
+                severity: Severity::Attention,
+                summary: "a rule change was interrupted part-way".to_string(),
+                detail: format!(
+                    "{} records a change to the learned rules that did not finish. The \
+                     next writer to the rules or proposals (`mecha learn`, which the \
+                     nightly pass runs, or an owner verb) finishes it first, or sets it \
+                     aside if the live rules have moved since.",
+                    pending.display()
+                ),
+                remedy: None,
+            });
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
+    let mut aside: Vec<String> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| {
+            n.starts_with(crate::learning::UNFINISHED_COMMIT_PREFIX) && n.ends_with(".json")
+        })
+        .collect();
+    aside.sort();
+    if !aside.is_empty() {
+        out.push(Finding {
+            component: "learning".to_string(),
+            severity: Severity::Attention,
+            summary: format!(
+                "{} interrupted rule change(s) were set aside rather than finished",
+                aside.len()
+            ),
+            detail: format!(
+                "Either the live rules matched neither state the record names when \
+                 recovery ran, or the record could not be read. So what landed cannot be \
+                 told from here. The change's rules may be live underneath a later edit, and \
+                 its reflections, left unmarked, may be argued again against their own \
+                 result. Compare each record with `rules/<domain>.learned.toml`, then delete \
+                 it: {}.",
+                aside
+                    .iter()
+                    .map(|n| root.join(n).display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            remedy: None,
+        });
+    }
+    out
+}
+
 /// A rules file that does not parse (D1, `docs/LEARNING-STORE-RESEARCH.md`
 /// §7). The consequence differs by author, and so does the finding:
 /// - the owner's `*.user.toml` stops every run start, so it is broken;
@@ -2773,6 +2837,36 @@ mod tests {
     use crate::outbox::{OutboxItem, OutboxKind};
     use serde_json::json;
     use std::path::PathBuf;
+
+    /// A commit record older than any commit takes is an interrupted one; a
+    /// fresh one is a pass in flight and says nothing.
+    #[test]
+    fn an_interrupted_rule_change_is_reported_and_one_in_flight_is_not() {
+        let root = std::env::temp_dir()
+            .join("mecha-doctor-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(crate::learning::COMMIT_FILE), "{}").unwrap();
+        let now = Utc::now();
+        assert!(check_rule_commits(&root, now).is_empty());
+        let later = check_rule_commits(&root, now + chrono::Duration::minutes(5));
+        assert_eq!(later.len(), 1, "{later:#?}");
+        assert!(later[0].summary.contains("interrupted"));
+
+        std::fs::remove_file(root.join(crate::learning::COMMIT_FILE)).unwrap();
+        std::fs::write(
+            root.join(format!(
+                "{}20260929T060000.000Z.json",
+                crate::learning::UNFINISHED_COMMIT_PREFIX
+            )),
+            "{}",
+        )
+        .unwrap();
+        let aside = check_rule_commits(&root, now);
+        assert_eq!(aside.len(), 1, "{aside:#?}");
+        assert!(aside[0].summary.contains("set aside"));
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     /// D1's two consequences, reported apart: the owner's file stops every
     /// run (broken, with the verb that fixes it); a learned one is skipped

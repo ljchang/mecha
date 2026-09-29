@@ -63,3 +63,55 @@ export function tameName(typed) {
     .replace(/\s+/g, '-')
     .replace(/[^a-z0-9-]/g, '');
 }
+
+// The store's caps on an entry's text (imagelib.rs MAX_DESCRIPTION,
+// MAX_STYLE_TEXT): the form says so before the server has to.
+export const TEXT_MAX = { character: 400, style: 1000 };
+
+// A portrait's longest edge as the page sends it. Generation sends every
+// portrait at 512² (research E10), so a phone's 4000-pixel photo buys
+// nothing but upload time; re-encoding also drops the photo's metadata,
+// location included, before it leaves the device.
+export const PORTRAIT_EDGE = 1536;
+
+// Scale (w, h) down to fit `max` on its longest edge; never up.
+export function fitWithin(w, h, max) {
+  const scale = Math.min(1, max / Math.max(w, h));
+  return { w: Math.max(1, Math.round(w * scale)), h: Math.max(1, Math.round(h * scale)) };
+}
+
+// Why the add/edit form cannot be saved yet, or null when it can. `form` is
+// { mode: 'add' | 'edit', kind, name, text, portrait } with `portrait` the
+// prepared base64 (or null), and `entry` the entry being edited.
+export function formProblem(form, entry = null) {
+  const text = (form.text ?? '').trim();
+  if (form.mode === 'add' && !validName(form.name)) return 'a name: lowercase letters, digits and hyphens';
+  if (!text) return form.kind === 'style' ? 'the style’s text' : 'a description';
+  if (text.length > TEXT_MAX[form.kind]) return `at most ${TEXT_MAX[form.kind]} characters`;
+  if (form.mode === 'add' && form.kind === 'character' && !form.portrait) return 'a portrait';
+  if (form.mode === 'edit' && entry && text === entry.text.trim() && !form.portrait) return 'nothing changed yet';
+  return null;
+}
+
+// The JSON body the form posts: to /api/library/add, everything; to
+// /api/library/edit, only what changed — an unchanged description is not
+// sent, so replacing a portrait never rewrites the text's version history.
+export function formBody(form, entry = null, token = null) {
+  if (form.mode === 'add') {
+    return {
+      kind: form.kind,
+      name: form.name,
+      text: form.text.trim(),
+      locked: !!form.locked,
+      ...(form.kind === 'character' ? { portrait: form.portrait } : {}),
+    };
+  }
+  const text = form.text.trim();
+  return {
+    kind: entry.kind,
+    name: entry.name,
+    ...(text !== entry.text.trim() ? { text } : {}),
+    ...(form.portrait ? { portrait: form.portrait } : {}),
+    ...(token ? { unlock: token } : {}),
+  };
+}

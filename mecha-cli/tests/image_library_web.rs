@@ -246,5 +246,86 @@ kind = "none"
     );
     assert!(shown.contains("origin:  yours"), "{shown}");
 
+    // Add a character from an uploaded portrait, and a style from its text —
+    // each opening with a dash, which is text, not a flag.
+    let b64 = |bytes: Vec<u8>| {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    };
+    let r = post(
+        "/api/library/add",
+        serde_json::json!({"kind": "character", "name": "ada", "portrait": b64(png(120)),
+                           "text": "- a tall woman with a silver bob", "locked": true}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let shown = mecha(&home, &["imagelib", "show", "ada"]);
+    let shown = String::from_utf8_lossy(&shown.stdout);
+    assert!(
+        shown.contains("text:    - a tall woman with a silver bob"),
+        "{shown}"
+    );
+    assert!(shown.contains("status:  approved, locked"), "{shown}");
+    let r = post(
+        "/api/library/add",
+        serde_json::json!({"kind": "style", "name": "ink", "text": "--dramatic ink wash"}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let shown = mecha(&home, &["imagelib", "show", "ink", "--kind", "style"]);
+    assert!(String::from_utf8_lossy(&shown.stdout).contains("text:    --dramatic ink wash"));
+
+    // Edit: a new description is a new version, the old one kept; a new
+    // portrait alone leaves the text as it was.
+    let r = post(
+        "/api/library/edit",
+        serde_json::json!({"kind": "character", "name": "maya", "text": "maya, now with a scar"}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let r = post(
+        "/api/library/edit",
+        serde_json::json!({"kind": "character", "name": "maya", "portrait": b64(png(200))}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let shown = mecha(&home, &["imagelib", "show", "maya"]);
+    let shown = String::from_utf8_lossy(&shown.stdout);
+    assert!(shown.contains("character maya (v3)"), "{shown}");
+    assert!(shown.contains("text:    maya, now with a scar"), "{shown}");
+    for v in ["v1", "v2"] {
+        assert!(home
+            .join(format!("imagelib/characters/maya/history/{v}.toml"))
+            .is_file());
+    }
+    // A style's text through the same door.
+    let r = post(
+        "/api/library/edit",
+        serde_json::json!({"kind": "style", "name": "ink", "text": "soft ink wash, grey paper"}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let shown = mecha(&home, &["imagelib", "show", "ink", "--kind", "style"]);
+    let shown = String::from_utf8_lossy(&shown.stdout);
+    assert!(shown.contains("style ink (v2)"), "{shown}");
+    assert!(
+        shown.contains("text:    soft ink wash, grey paper"),
+        "{shown}"
+    );
+
+    // A locked entry is edited only while unlocked.
+    let r = post(
+        "/api/library/edit",
+        serde_json::json!({"kind": "character", "name": "ada", "text": "changed"}),
+    )
+    .await;
+    assert_eq!(r.status(), 404);
+    let r = post(
+        "/api/library/edit",
+        serde_json::json!({"kind": "character", "name": "ada", "text": "changed", "unlock": token}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+
     let _ = child.kill().await;
 }
