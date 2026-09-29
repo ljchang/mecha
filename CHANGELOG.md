@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha rules show <id>` finds a rule that consolidation dropped.** Learning
+  rewrites its rule set and leaves some rules out; they are not retired, so the
+  learner is never told they were harmful. Their text lives on in the proposal
+  that dropped them. `show` now answers from there: which proposal dropped the
+  rule, when, its last text, and its validation record. It says "never live"
+  for a rule only ever proposed. Read-only.
 - **Add and edit characters and styles from the Library tab.** **Add
   character** takes a portrait from your device, a name and a description.
   **Add style** takes a name and its text. **Edit** changes an approved
