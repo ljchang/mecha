@@ -1,5 +1,5 @@
 <script>
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent,
@@ -55,8 +55,12 @@
     }
   }
 
+  // Once, on mount. `load` reads `token` and `chosen` before its first
+  // await, so called bare here it made them this effect's dependencies: every
+  // lock toggle re-ran it, and the teardown closed the open chat's stream
+  // while `key` stayed set — a chat frozen without a word (review of #415).
   $effect(() => {
-    load();
+    untrack(() => load());
     return () => close();
   });
 
@@ -339,7 +343,9 @@
         {/if}
         {#each run.entries as entry, i (i)}
           {#if entry.kind === 'user'}
-            <div class="bubble" class:queued={entry.queued}>{entry.text}</div>
+            <div class="bubble" class:queued={entry.queued}>
+              {entry.text}{#if entry.queued}<span class="queued-tag">{entry.delivery === 'discarded' ? 'not delivered — send again' : entry.delivery === 'delivered' ? 'steered' : 'queued'}</span>{/if}
+            </div>
           {:else if entry.kind === 'assistant'}
             <div class="answer">{entry.text}</div>
           {:else if entry.kind === 'tool'}
@@ -422,6 +428,7 @@
   .abtn:disabled { opacity: 0.5; }
   .bubble { align-self: flex-end; max-width: 82%; background: var(--surface); border-radius: var(--radius); padding: 11px 14px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; }
   .bubble.queued { border: 1px solid var(--accent-700); background: var(--bg); }
+  .queued-tag { display: block; margin-top: 4px; font-family: var(--mono); font-size: 9px; color: var(--text-muted); }
   .answer { max-width: 92%; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
   .tool { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
   .tool.err { color: var(--hazard); }

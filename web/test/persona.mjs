@@ -47,6 +47,15 @@ assert.deepEqual(
   ],
 );
 
+// A steer resolves: delivered into the run, or discarded as too late —
+// never left reading "queued" (review of #415).
+s = emptyRun();
+s = applyEvent(s, { type: 'queued', text: 'also this', request_id: 'r-1' });
+s = applyEvent(s, { type: 'queued', text: 'and this', request_id: 'r-2' });
+s = applyEvent(s, { type: 'queued_delivered', request_id: 'r-1' });
+s = applyEvent(s, { type: 'queued_discarded', request_ids: ['r-2'] });
+assert.deepEqual(s.entries.map((e) => e.delivery), ['delivered', 'discarded']);
+
 // A failed turn says so rather than ending silently.
 s = applyEvent(emptyRun(), { type: 'done', ok: false, error: 'model unavailable' });
 assert.deepEqual(s.entries, [{ kind: 'notice', text: 'model unavailable' }]);

@@ -58,6 +58,14 @@ function flush(state) {
   };
 }
 
+function markDelivery(state, ids, delivery) {
+  const wanted = new Set(ids);
+  return {
+    ...state,
+    entries: state.entries.map((e) => (e.queued && wanted.has(e.request_id) ? { ...e, delivery } : e)),
+  };
+}
+
 // Fold one server-sent event into the run. Unknown events change nothing:
 // the server may grow a kind this page does not draw yet.
 export function applyEvent(state, ev) {
@@ -65,7 +73,16 @@ export function applyEvent(state, ev) {
     case 'user':
       return { ...flush(state), running: true, entries: [...flush(state).entries, { kind: 'user', text: ev.text }] };
     case 'queued':
-      return { ...state, entries: [...state.entries, { kind: 'user', text: ev.text, queued: true }] };
+      return {
+        ...state,
+        entries: [...state.entries, { kind: 'user', text: ev.text, queued: true, request_id: ev.request_id ?? null, delivery: null }],
+      };
+    // A steer's receipt: taken into the run, or arrived too late for it.
+    // Without these a steered bubble reads "queued" forever (review of #415).
+    case 'queued_delivered':
+      return markDelivery(state, [ev.request_id], 'delivered');
+    case 'queued_discarded':
+      return markDelivery(state, ev.request_ids ?? [], 'discarded');
     case 'delta':
       return { ...state, running: true, streaming: (state.streaming ?? '') + ev.text };
     case 'tool': {
