@@ -37,16 +37,15 @@ Open:
     else comes back as four right faces.
   #390 changes the default head-count wording from "Exactly N people" to
   "each of the N appears exactly once", with a total only when `extras` are
-  given.
-- **#385's last-pass minors:** `imagelib::write_atomic_mode` leaks a temp file
-  on a rename error; the docs should say that locking does not reach
-  portraits already cached `immutable`; and the route tests for the CLI-child
-  actions (reject, lock, unlock, remove, save) should run under
-  `testenv::HomeGuard`.
-- **Library search misses on stopwords:** "picnic in the park" misses
-  `picnic-park`, because "the" must match.
-- **CLAUDE.md's module map has no `imagelib.rs` line.** Adding it is the
-  owner's call (the CLAUDE.md rule).
+  given. The same PR closed three items this block used to list: the temp
+  file `imagelib::write_atomic_mode` leaked on a rename error, the stopword
+  miss in library search (`tool::image_library`'s `STOPWORDS`: "picnic in
+  the park" had missed `picnic-park`), and the `imagelib.rs` line in
+  CLAUDE.md's module map. All three are merged and not deployed.
+- **#385's remaining last-pass minors:** the docs should say that locking
+  does not reach portraits already cached `immutable`, and the route tests
+  for the CLI-child actions (reject, lock, unlock, remove, save) should run
+  under `testenv::HomeGuard`.
 - **The live library holds test entries** `maya`, `john` and `watercolour`,
   plus a model-proposed candidate, `sam`, awaiting the owner's approve or
   reject. Whether to keep them is the owner's call.
