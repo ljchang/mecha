@@ -14,8 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reflector in (2a-4) and feeding appraisal lessons to `learn` (2e-2), decided
   on the paired verdicts. Under 10 decided comparisons the result is a pilot.
   From 10 up it is "no worse" while the appraisal trails the reflector by at
-  most 2 discordant pairs, and "worse" past that. The counts behind the
-  verdict are printed beside it, and `--json` carries it as `gate`.
+  most 2 discordant pairs, and "worse" past that. There is no verdict at all
+  while any line of the stores behind it is unreadable, since every count is
+  then a floor. The counts behind the verdict are printed beside it, and
+  `--json` carries it as `gate`.
 
 - **Add and edit characters and styles from the Library tab.** **Add
   character** takes a portrait from your device, a name and a description.

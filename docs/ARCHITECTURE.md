@@ -5187,6 +5187,20 @@ door above (`Kind::LessonSource`). Letting either source's lessons *learn* is
   (`lesson_sources` in `--json`), for the model of the newest lesson
   comparison, counting rows under other models apart; in text, regions with
   nothing eligible fold into one line of exclusions (`--json` keeps each).
+- **The gate is decided on the paired verdicts and stated on every readout**
+  (R44, `Report::gate`). Of the decided interventions, only the discordant
+  pairs count, where exactly one lesson source passed
+  (`RegionReport::reflector_only` / `appraisal_only`, counted in `fold`).
+  - Fewer than `GATE_MIN_DECIDED` (10) decided is a **pilot**.
+  - From there it is **no worse** while the appraisal trails by at most
+    `GATE_MAX_TRAIL` (2) pairs, **worse** past that, and a lead is said as
+    a lead.
+  - While `Report::skipped_lines` is non-zero there is **no verdict**
+    (`Gate::Floors`): a torn line in any of the three stores makes every
+    count a floor, and one dropped pair could move the trail either way.
+
+  The line prints above the regions, and `--json` carries it as `gate`. The
+  rule was set before any decided case existed.
 - **Its limit, named:** the appraisal writes up to three lessons per session
   and the reflector one per intervention, so the appraisal's arm carries the
   session's whole set at each of that session's interventions. That is each

@@ -434,10 +434,15 @@ pub(crate) fn gate_line(report: &Report) -> String {
              needs; {pairs}"
         ),
         Gate::NoWorse { trail } => format!(
-            "gate (2a-4, 2e-2): NO WORSE — over {} decided, {} (at most {GATE_MAX_TRAIL} \
-             behind); {pairs}",
+            "gate (2a-4, 2e-2): NO WORSE — over {} decided, {}{}; {pairs}",
             total.decided,
-            standing(trail)
+            standing(trail),
+            // The criterion beside a trail, never beside a lead.
+            if total.appraisal_only > total.reflector_only {
+                String::new()
+            } else {
+                format!(" (at most {GATE_MAX_TRAIL} behind)")
+            }
         ),
         Gate::Worse { trail } => format!(
             "gate (2a-4, 2e-2): WORSE — over {} decided, {} (more than {GATE_MAX_TRAIL}); \
