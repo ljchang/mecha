@@ -99,6 +99,7 @@ pub mod onboarding;
 pub mod outbox;
 pub mod outbox_source;
 pub mod permit;
+pub mod persona;
 pub mod policy;
 pub mod pressure;
 pub mod provider;
