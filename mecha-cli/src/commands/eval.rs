@@ -564,13 +564,14 @@ async fn ab_rules(
     cases: &[EvalCase],
     fixture: &Path,
 ) -> Result<()> {
-    let has_rules = mecha_core::learning::LearningStore::open_existing_default()
-        .and_then(|s| {
-            s.rules_prompt_block_for(mecha_core::learning::RUN_DOMAINS)
-                .ok()
-                .flatten()
-        })
-        .is_some();
+    // Not `.ok()`: an unreadable rules file is not "no rules to measure",
+    // and the error says which file and why.
+    let has_rules = match mecha_core::learning::LearningStore::open_existing_default() {
+        Some(s) => s
+            .rules_prompt_block_for(mecha_core::learning::RUN_DOMAINS)?
+            .is_some(),
+        None => false,
+    };
     anyhow::ensure!(
         has_rules,
         "--ab-rules: the learning store has no rules to measure"

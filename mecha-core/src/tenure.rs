@@ -353,6 +353,11 @@ impl Tally {
         }
         let admission = crate::runlog::Scan::default();
         let mut unscanned = torn;
+        // Sessions with a run that skipped an unreadable learned-rules file
+        // (D1): that run records no rule ids, so the check below would skip
+        // it as carrying nothing, which is a claim, not a reading. Which rules
+        // it carried is unknown, so it is said as such.
+        let mut skipped_runs = 0usize;
         for (meta, path) in listed.iter().filter(|(m, _)| admission.admits(m)) {
             let configs = match Session::run_configs_streaming(path) {
                 Ok(configs) => configs,
@@ -369,6 +374,9 @@ impl Tally {
                 .iter()
                 .flat_map(|c| c.rule_ids.iter().cloned())
                 .collect();
+            if configs.iter().any(|c| !c.rules_skipped.is_empty()) {
+                skipped_runs += 1;
+            }
             if named.is_disjoint(wanted) {
                 continue;
             }
@@ -400,6 +408,13 @@ impl Tally {
             out.caveats.push(format!(
                 "{unscanned} transcript(s) whose header or run records could not be read: \
                  whether they carried a rule is unknown"
+            ));
+        }
+        if skipped_runs > 0 {
+            out.caveats.push(format!(
+                "{skipped_runs} session(s) ran with a learned-rules file that could not be \
+                 read, so which rules they carried was not recorded: their owner verdicts \
+                 are uncounted"
             ));
         }
         out
@@ -850,6 +865,28 @@ mod tests {
         assert_eq!(tally.record("r9"), OwnerRecord::default(), "not asked for");
         assert!(tally.caveats.is_empty(), "{:?}", tally.caveats);
         assert_eq!(tally.tenure("r1"), Tenure::TooFewVerdicts);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session whose run skipped an unreadable learned file records no
+    /// rule ids. The scan used to pass over it as carrying nothing, so the
+    /// verdict count stopped growing with nothing said. It is now said.
+    #[test]
+    fn a_session_that_skipped_a_learned_file_is_a_caveat_not_a_silence() {
+        let dir = scratch("skipped");
+        session(&dir, SessionKind::Web, &[carrying(&["r1"])]);
+        session(
+            &dir,
+            SessionKind::Web,
+            &[RunConfig {
+                rules_skipped: vec!["behavior: expected `=`".into()],
+                ..Default::default()
+            }],
+        );
+        let tally = Tally::scan(&dir, &Stores::default(), &ids(&["r1"]));
+        assert_eq!(tally.record("r1"), rec(0, 1, 0));
+        assert_eq!(tally.caveats.len(), 1, "{:?}", tally.caveats);
+        assert!(tally.caveats[0].starts_with("1 session(s) ran with a learned-rules file"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
