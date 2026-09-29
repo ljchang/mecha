@@ -373,6 +373,11 @@ async fn lessons_from_both_sources_are_measured_per_region_and_nothing_is_learne
     assert_eq!(write["reflector"]["rate"], 1.0, "{report:#}");
     assert_eq!(write["reflector"]["pass"], 1);
     assert_eq!(write["reflector"]["improved"], 1);
+    // R44's gate rides the report: one decided pair is a pilot, and the
+    // pair the reflector won alone is counted (review of #400).
+    assert_eq!(report["gate"]["gate"], "pilot", "{report:#}");
+    assert_eq!(report["gate"]["decided"], 1, "{report:#}");
+    assert_eq!(report["total"]["reflector_only"], 1, "{report:#}");
     assert_eq!(write["appraisal"]["rate"], 0.0, "{report:#}");
     assert_eq!(write["appraisal"]["fail"], 1);
     assert_eq!(write["rules_free"]["rate"], 0.0);
@@ -438,6 +443,7 @@ async fn lessons_from_both_sources_are_measured_per_region_and_nothing_is_learne
     let again = region(readout, "fs_list,fs_write on tui");
     assert_eq!(again["reflector"]["rate"], 1.0, "{readout:#}");
     assert_eq!(again["appraisal"]["rate"], 0.0);
+    assert_eq!(readout["gate"]["gate"], "pilot", "{readout:#}");
     assert!(
         again["unavailable"].is_null(),
         "outside a pass, unavailable is unknown: {readout:#}"
@@ -457,6 +463,10 @@ async fn lessons_from_both_sources_are_measured_per_region_and_nothing_is_learne
         .unwrap();
     let text = String::from_utf8_lossy(&text.stdout);
     assert!(text.contains("lessons by source"), "{text}");
+    assert!(
+        text.contains("gate (2a-4, 2e-2): pilot — 1 decided of the 10 a verdict needs"),
+        "{text}"
+    );
     assert!(text.contains("reflector   100% (1 of 1 decided)"), "{text}");
     assert!(text.contains("appraisal   0% (0 of 1 decided)"), "{text}");
     assert!(
@@ -510,4 +520,30 @@ async fn a_provider_off_this_machine_refuses_the_pass() {
     );
     assert!(!home.join("comparisons").exists());
     assert!(!home.join("learning").exists());
+}
+
+/// R44's floors clause end to end: a torn appraisal line with nothing else
+/// on record is floors, never "nothing on record" read as a pilot with
+/// every line read (review of #400).
+#[tokio::test]
+async fn a_torn_store_with_nothing_readable_states_no_verdict() {
+    let root = Root(std::env::temp_dir().join(format!("mecha-lessons-torn-{}", Session::new_id())));
+    let home = root.0.join("home");
+    let work = root.0.join("work");
+    std::fs::create_dir_all(home.join("appraisals")).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(
+        home.join("appraisals").join("appraisals.jsonl"),
+        "{\"id\":\"apr-torn\",\"session_i\n",
+    )
+    .unwrap();
+    let appraise = mecha(
+        &home,
+        &work,
+        &["sessions", "appraise", "--json", "--include-tests"],
+    )
+    .await;
+    let readout = &appraise["lesson_sources"];
+    assert_eq!(readout["read"], false, "{appraise:#}");
+    assert_eq!(readout["gate"]["gate"], "floors", "{appraise:#}");
 }
