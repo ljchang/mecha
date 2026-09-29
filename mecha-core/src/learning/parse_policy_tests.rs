@@ -102,18 +102,36 @@ fn a_domain_is_a_name_never_a_path() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Run start reads the learned files twice (`setup::build`): `goal_lessons`
-/// first, then `rules_carried_for`. The skip has to hold for both. The first
-/// version made only the second lenient, so a bad file still stopped the
-/// run through the first; the review of #397 found it. This runs them in
-/// setup's order.
+/// Run start reads the learned files five times (`setup::build`): three
+/// warnings (`over_budget_domains`, `unloadable_rules`, `unrouted_domains`),
+/// then `goal_lessons`, then `rules_carried_for`. The skip has to hold for
+/// all five. The first version made only the last lenient, so a bad file
+/// still stopped the run through `goal_lessons`; and the warnings, which
+/// setup reads with `unwrap_or_default`, went silent for every domain. Both
+/// were found on review of #397. This runs all five in setup's order.
 #[test]
 fn every_run_start_read_skips_a_bad_learned_file() {
     let (store, dir) = store();
     write(&dir, "behavior.user.toml", USER);
     write(&dir, "behavior.learned.toml", BROKEN);
+    // A second, healthy domain whose warning must survive the broken one.
+    write(&dir, "writting.user.toml", USER);
     let situation = run();
 
+    store
+        .over_budget_domains()
+        .expect("the budget warning stops on the broken file");
+    store
+        .unloadable_rules(RUN_DOMAINS)
+        .expect("the unloadable warning stops on the broken file");
+    let unrouted = store
+        .unrouted_domains(&routed_domains())
+        .expect("the unrouted warning stops on the broken file");
+    assert_eq!(
+        unrouted,
+        vec!["writting".to_string()],
+        "the typo is still said"
+    );
     let lessons = goal_lessons(&store, &situation).expect("goal_lessons stops the run");
     assert!(lessons.is_empty());
     let carried = store

@@ -709,11 +709,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // a block no run has.
             let arms = |run: &mecha_core::situation::Situation| -> Result<probe::Arms> {
                 let domains = mecha_core::learning::run_domains_including(domain);
-                let current = store.rules_carried_for(&domains, run)?.block;
-                let candidate = store
-                    .rules_carried_with(&domains, run, Some((domain, &rules)))?
-                    .block;
-                Ok((current, candidate))
+                let current = store.rules_carried_for(&domains, run)?;
+                let candidate = store.rules_carried_with(&domains, run, Some((domain, &rules)))?;
+                // The gate measures against the block a run would carry. A
+                // sibling domain's learned file that could not be read drops
+                // out of both arms, and a verdict stored against that block
+                // would name one no run deployed. Refuse instead: the run
+                // start that skips it (D1) is a different job.
+                if let Some(s) = current.skipped.iter().chain(&candidate.skipped).next() {
+                    anyhow::bail!(
+                        "the gate cannot measure `{domain}`: learned `{}` rules could not be \
+                         read ({}), so neither arm is a block a run would carry",
+                        s.domain,
+                        s.error
+                    );
+                }
+                Ok((current.block, candidate.block))
             };
 
             let mut lines = Vec::new();
