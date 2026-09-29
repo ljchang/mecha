@@ -1303,9 +1303,12 @@ written.
   - nothing reads an appraisal but the owner and the next appraiser (2c-2,
     2e, 2f);
   - the web session view shows no appraisal;
-  - sessions distilled before this build are never appraised (no backfill);
+  - sessions distilled before this build are never appraised (no backfill;
+    since built as `mecha distill --backfill-appraisals`, #388, 2026-09-29);
   - an appraisal whose follow-up failed is not retried once the session is
-    in the distill ledger.
+    in the distill ledger. Since #388, the backfill retries one whose
+    session 2e-1 still waits on. Any other failed follow-up is still never
+    retried.
 
 *2a-3 built — the counts-only appraiser retired into it* (R25).
 `appraise_with_model`, `AppraiserEvidence` and its brief, the verdict parser,
