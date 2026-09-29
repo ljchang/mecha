@@ -3406,7 +3406,16 @@ X3 unparked).
   Tests pass a fixed window, so none reads the machine's charter.
 - **Off the staging path's critical cost:** the history is the newest
   `HISTORY_LIMIT` items (ids sort by time), the window is resolved once per
-  store, and the ledger's lock is tried, never waited on.
+  store, and the ledger's lock is tried, never waited on. The ledger itself
+  is read whole on each staging, to know which history items were real
+  forecasts. That read grows with lifetime drafts and has no retention yet:
+  a few milliseconds at today's sizes, and the first thing to bound if it
+  ever shows.
+- **A torn line stops the base rate until it is repaired.** One unreadable
+  ledger or history line makes every later forecast `basis_unreadable`,
+  since which history is real can no longer be told. The readout counts it,
+  so it is fail-closed and said, but nothing heals it: the line is repaired
+  or removed by hand.
 - **History is what the ledger forecast as real.** A smoke run's draft
   (`MECHA_SESSION_KIND=test`) is recorded `test`, predicts nothing, never
   counts as history, and the readout sets it aside. The instrument must not
