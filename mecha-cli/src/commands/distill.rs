@@ -180,21 +180,37 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
     // situation (row 2a-2), so an earlier session must be on record before
     // a later one is appraised — in one night's batch as across nights.
     todo.reverse();
-    if todo.is_empty() {
-        if let Some(targets) = &backfill {
-            // Say what the empty list is made of, never read it as zero: a
-            // target not yet distilled waits on the ordinary pass, and one
-            // whose transcript is gone cannot be appraised (review of #388).
+    // What a backfill's targets are made of beyond what it will appraise: a
+    // target not yet distilled waits on the ordinary pass, and one whose
+    // transcript is gone cannot be appraised. Said whenever either is not
+    // zero, never read as zero (review of #388).
+    let (undistilled, missing) = match &backfill {
+        Some(targets) => {
             let listed: std::collections::HashSet<&str> =
                 listed_ids.iter().map(String::as_str).collect();
-            let undistilled = targets
-                .iter()
-                .filter(|t| listed.contains(t.as_str()) && !done.contains(*t))
-                .count();
-            let missing = targets
-                .iter()
-                .filter(|t| !listed.contains(t.as_str()))
-                .count();
+            (
+                targets
+                    .iter()
+                    .filter(|t| listed.contains(t.as_str()) && !done.contains(*t))
+                    .count(),
+                targets
+                    .iter()
+                    .filter(|t| !listed.contains(t.as_str()))
+                    .count(),
+            )
+        }
+        None => (0, 0),
+    };
+    if backfill.is_some() && !todo.is_empty() && (undistilled > 0 || missing > 0) {
+        println!(
+            "backfill: {} session(s) to appraise; also {undistilled} waiting on the ordinary \
+             pass (not distilled yet) and {missing} whose transcript is no longer in the \
+             session store",
+            todo.len()
+        );
+    }
+    if todo.is_empty() {
+        if let Some(targets) = &backfill {
             if targets.is_empty() {
                 println!(
                     "nothing to backfill: no session's steer or denial waits only on an appraisal"
@@ -414,7 +430,16 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
     // from each session. Best-effort, and an unreadable one is said to the
     // appraiser rather than read as empty.
     let appraiser = if local {
-        Some(Appraiser::open())
+        let a = Appraiser::open();
+        // A backfill has no other leg: with no store to write to, every
+        // target would pay the episode call and keep nothing (review of
+        // #388).
+        if backfill.is_some() {
+            if let Err(e) = &a.store {
+                bail!("the appraisal store could not be opened ({e}); nothing to backfill into");
+            }
+        }
+        Some(a)
     } else {
         eprintln!(
             "mecha: {provider_name} is not a local provider — sessions are distilled but not \
@@ -977,7 +1002,8 @@ struct AppraisalTally {
     /// Replies that stored nothing, by why.
     malformed: std::collections::BTreeMap<String, usize>,
     /// The provider failed on the follow-up, or the store could not be
-    /// read or written.
+    /// read or written — or, in a backfill, the episode call it rides on
+    /// failed, which leaves no appraisal to write.
     failed: usize,
     /// Wall-clock seconds of a seat the follow-up calls added, and the
     /// prompt tokens they sent and read from the server's cache.
