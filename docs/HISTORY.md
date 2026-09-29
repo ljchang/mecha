@@ -47,8 +47,10 @@ each refusing by default:
    forwards an offer naming an incognito chat, and answers 409 otherwise.
    The page (`voice-core.js`'s `refusesAnswer`) lets no media flow without
    the `unlogged` flag serve adds to the answer.
-4. `spoken_turn_may_enter` refuses an unvouched spoken turn, in `begin_turn`
-   and ahead of `VoiceHost::speak`'s barge-in.
+4. An unvouched spoken turn is refused twice: in `begin_turn` by
+   `spoken_turn_may_enter`, and earlier, on the key alone, in
+   `VoiceHost::speak`, ahead of the barge-in, so the refusal cannot cancel
+   the chat's run in flight.
 
 No line says an incognito chat was spoken into, not even redacted
 (`session_line`, the affect latch, the facade's refusal path), and
@@ -7188,11 +7190,12 @@ every test exercised the scanner; and a back-navigation test that printed the
 symptom in plain text (`chevron #settings -> Back #settings`, a Back that
 moved between two identical entries and did nothing) while being scored a
 pass. Each one looked like evidence. Two of them printed the failure and were
-read past. (The `gh pr checks --json` failure recurred on 2026-09-28: a PR watcher
-across #376's seven passes used it with `2>/dev/null`, so its failing-check
-branch never ran. Every check passed, so nothing was missed; the plain
-tab-separated output is the form that works.) The general lesson: **a check that cannot go red is not a check,
-and the only way to tell which kind you have is to break the thing and watch
+read past. (The `gh pr checks --json` failure recurred on 2026-09-28: a PR
+watcher across #376's seven passes used it with `2>/dev/null`, so its
+failing-check branch never ran. Every check passed, so nothing was missed; the
+plain tab-separated output is the form that works.) The general lesson: **a
+check that cannot go red is not a check, and the only way to tell which kind
+you have is to break the thing and watch
 it fail.** Reverting the fix before trusting the test is seconds of work; not
 one of these survived that step, and every one of them survived until
 something forced it. The corollary for review: when a reviewer's finding
@@ -8765,11 +8768,11 @@ and is what finally exercised the path.)
 
 ### Review process
 
-- **A source-scan test must slice the function it guards, not cut at the
-  first marker.** #376's `an_incognito_key_never_reaches_the_journal` cut
-  `voice/mod.rs` at the first `#[cfg(test)]` (line 264), read none of the
-  lines it existed to pin, and passed with the key logged raw. It was that
-  file's fourth source test to match the wrong region. It now slices
+- **A source-scan test must slice the function it guards, not cut at the first
+  marker.** #376's `an_incognito_key_never_reaches_the_journal` cut
+  `voice/mod.rs` at its first `#[cfg(test)]`, above `echo_span_tests`, read
+  none of the lines it existed to pin, and passed with the key logged raw. It
+  was that file's fourth source test to match the wrong region. It now slices
   `completion`'s body and requires the two refusal paths to be found, so it
   cannot pass on nothing.
 - **Merging a sibling PR can leave the other DIRTY, and a DIRTY PR gets no
