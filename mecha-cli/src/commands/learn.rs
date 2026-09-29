@@ -998,8 +998,9 @@ fn admission(
     }
     // The owner's mark on the session, before a pending proposal's claim:
     // `proposals accept` refuses a proposal holding one, so it is withheld,
-    // not awaiting review (review of #382).
-    if withdrawn.contains(&r.session_id) {
+    // not awaiting review (review of #382). Not over the owner's own drop,
+    // which is the more specific act and keeps its own count.
+    if withdrawn.contains(&r.session_id) && r.dropped_at.is_none() {
         return Admission::Withdrawn;
     }
     if claimed.contains(&r.id) {
