@@ -26,12 +26,16 @@ maps which document holds what.
 installed.** What shipped is in HISTORY under 2026-09-28 and 2026-09-29.
 Open:
 
-- **`extras` on `image_generate` for people not in the library.** mecha-d7
-  reports a 4-image run it labels E11: the compiled "Exactly N people"
-  pushes a described waiter into the background, while counted wording puts
-  him in the scene. That run is **not yet written up** in
-  `IMAGE-COMPILER-RESEARCH.md`, which ends at E10. Writing it up there comes
-  first, so the item has evidence to read.
+- **`extras` on `image_generate` for people not in the library: open as
+  PR #390** (`feat/image-extras`). The evidence is
+  `IMAGE-COMPILER-RESEARCH.md` §E11 and §E12, which exist on that branch and
+  not yet on main:
+  - E11 (4 images): the compiled "Exactly N people" pushes a described
+    waiter into the background, while counted wording puts him in the scene.
+  - E12 (8 images, 4 arms × 2 seeds) tests the softer wording.
+  #390 changes the default head-count wording from "Exactly N people" to
+  "each of the N appears exactly once", with a total only when `extras` are
+  given.
 - **#385's last-pass minors:** `imagelib::write_atomic_mode` leaks a temp file
   on a rename error; the docs should say that locking does not reach
   portraits already cached `immutable`; and the route tests for the CLI-child
