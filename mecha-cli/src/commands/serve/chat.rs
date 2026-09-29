@@ -3220,25 +3220,42 @@ pub(super) fn sse(
     rx: broadcast::Receiver<WireEvent>,
     stop: tokio_util::sync::CancellationToken,
 ) -> axum::response::Response {
-    let stream = futures::stream::unfold((rx, stop), |(mut rx, stop)| async move {
-        let received = tokio::select! {
-            biased;
-            _ = stop.cancelled() => return None,
-            received = rx.recv() => received,
-        };
-        match received {
-            Ok(wire) => {
-                let event = SseEvent::default().json_data(&wire).ok()?;
-                Some((Ok::<_, std::convert::Infallible>(event), (rx, stop)))
+    sse_while(rx, stop, || true)
+}
+
+/// [`sse`], ending at the first event after `allowed` stops holding — for a
+/// stream a token let in, which must not outlive the token (`persona_chat`).
+pub(super) fn sse_while(
+    rx: broadcast::Receiver<WireEvent>,
+    stop: tokio_util::sync::CancellationToken,
+    allowed: impl Fn() -> bool + Send + Sync + 'static,
+) -> axum::response::Response {
+    let allowed = std::sync::Arc::new(allowed);
+    let stream = futures::stream::unfold((rx, stop), move |(mut rx, stop)| {
+        let allowed = std::sync::Arc::clone(&allowed);
+        async move {
+            let received = tokio::select! {
+                biased;
+                _ = stop.cancelled() => return None,
+                received = rx.recv() => received,
+            };
+            if !allowed() {
+                return None;
             }
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                let notice = WireEvent::Notice {
-                    text: format!("{n} events missed — reload for the full transcript"),
-                };
-                let event = SseEvent::default().json_data(&notice).ok()?;
-                Some((Ok(event), (rx, stop)))
+            match received {
+                Ok(wire) => {
+                    let event = SseEvent::default().json_data(&wire).ok()?;
+                    Some((Ok::<_, std::convert::Infallible>(event), (rx, stop)))
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    let notice = WireEvent::Notice {
+                        text: format!("{n} events missed — reload for the full transcript"),
+                    };
+                    let event = SseEvent::default().json_data(&notice).ok()?;
+                    Some((Ok(event), (rx, stop)))
+                }
+                Err(broadcast::error::RecvError::Closed) => None,
             }
-            Err(broadcast::error::RecvError::Closed) => None,
         }
     });
     Sse::new(stream)

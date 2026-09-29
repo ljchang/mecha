@@ -866,6 +866,13 @@ module.
     rebuilt when the binding moves.
   - A locked persona and its chats answer 404 without the library's unlock
     token. All `/api/persona*` responses are `no-store`.
+  - **A persona agent gets no hooks, by design.** `build_subagent` attaches the
+    parent's hooks, because otherwise delegating would be the way around a
+    `pre_tool` policy. A persona chat is not a delegation out of the assistant.
+    It is a separate door with its own registry, and a hook would receive a
+    persona's tool input and output. Do not "fix" the asymmetry.
+  - A locked persona's event stream ends with the unlock (`chat::sse_while`).
+    A relock from any page, or the idle expiry, ends it at the next event.
   - `a_persona_turn_runs_on_its_own_prompt_and_tools_and_is_recorded_apart`
     checks the captured request. It must carry the persona's prompt, not the
     assistant's, and only the tools that passed `registry_for`.
