@@ -22,6 +22,63 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-28 — voice calls in incognito chats (#376) and a connect
+deadline (#386), merged and installed; one live call is owed.** What each
+built is in HISTORY under 2026-09-28; the installs are in *Machine state,
+dated*. `INCOGNITO-DESIGN.md` §6.4 is the authority, with both owner
+rulings: voice is in, and `--voice-yes` applies as in any hosted chat.
+What is open:
+
+- **A real spoken call into an incognito chat, from the phone.** Every
+  seam has been driven except a human voice. A synthetic offer through serve
+  covered the probe, the forward, the vouched answer and a silent journal,
+  and the deadline was measured on the live worker. The call itself (STT →
+  turn → TTS inside the silence) has not been heard.
+- **#386's minors, for the owner:** `end_unless_connected` and
+  `settle_deadline` use only the stdlib, but they sit behind `worker.py`'s
+  pipecat import, so CI's `voice` job cannot run them; extracting them the
+  way `echo_filter.py` was would put them on every push. And the
+  measurement sentence in §6.4 reads at first pass as confirming the fix
+  rather than recording the defect it replaced.
+- **Known residue, recorded as accepted in §10:** a call's connect and
+  disconnect lines, and a gap in pipecat's lines while an incognito call is
+  live. Closing the gap would mean silencing pipecat for every call.
+
+**2026-09-28/29 — the image library (#380, #383–#385), merged and
+installed.** What shipped is in HISTORY under 2026-09-28 and 2026-09-29.
+Open:
+
+- **`extras` on `image_generate` for people not in the library.** Measured in
+  E11 (4 images): the compiled "Exactly N people" pushes a described waiter
+  into the background, while counted wording puts him in the scene.
+- **#385's last-pass minors:** `imagelib::write_atomic_mode` leaks a temp file
+  on a rename error; the docs should say that locking does not reach
+  portraits already cached `immutable`; and the route tests for the CLI-child
+  actions (reject, lock, unlock, remove, save) should run under
+  `testenv::HomeGuard`.
+- **Library search misses on stopwords:** "picnic in the park" misses
+  `picnic-park`, because "the" must match.
+- **CLAUDE.md's module map has no `imagelib.rs` line.** Adding it is the
+  owner's call (the CLAUDE.md rule).
+- **The live library holds test entries** `maya`, `john` and `watercolour`,
+  plus a model-proposed candidate, `sam`, awaiting the owner's approve or
+  reject. Whether to keep them is the owner's call.
+
+**2026-09-28 — conversations can be archived and deleted (#381), the
+learning store no longer uses git (#379), and the graph can redact
+(mecha-graph#25); all merged and installed.** What shipped is in HISTORY
+under 2026-09-28. Open, none of it blocking:
+
+- #381's `forget_config` guard is redundant: `[outbox]` and `[messages]`
+  dirs are stripped from project layers, so it equals `load_global`.
+- A failed final transcript removal shows no "delete again" button in the
+  drawer. `mecha doctor` still reports it.
+- mecha-graph#25's round-16 minors are on the PR.
+- In mecha-graph, `mecha-graph-core/src/rollup.rs` leaves `bee.daily` out
+  of the per-channel loop. This predates #381.
+- A design doc is owed on moving reflections and rules into mecha-graph (the
+  owner's direction).
+
 **2026-09-27 — the web chat keeps its history mid-run (#358, installed);
 the phone check is owed.** What shipped is in HISTORY under 2026-09-27; the
 install is in *Machine state, dated* below. What is open:
@@ -89,33 +146,24 @@ installed; they are that lane's to record. A switch is `mecha model use
   `qwen_vision` sits between `qwen_sampling` and the `reasoning-preserve`
   comment that describes it.
 
-**2026-09-26 — image generation shipped; incognito chat is live.** The
-arcs are in HISTORY under 2026-09-25 and 2026-09-25/26. `image_generate`
+**2026-09-26 — image generation shipped; incognito chat is live, now
+with voice.** The arcs are in HISTORY under 2026-09-25, 2026-09-25/26,
+2026-09-26 (#331) and 2026-09-28 (#376, #386). `image_generate`
 (#303, #306) is merged and installed, and needs `comfyui.service`
-(*Standing machinery*). Incognito's design (#307), step 0 (#313), server
-side (#321) and page (#326) are merged and installed at `720feb27`
-(*Machine state* below). What remains, in the design's order (§9): step 4,
-ComfyUI's temp-file cleanup, until which `image_generate` stays withheld
-from an incognito chat (R6); step 6's remaining legs — the canary test
-(`an_incognito_chat_leaves_no_trace_and_an_ordinary_one_does`) drives text
-and an upload and scans the mecha home and the runtime directory, but §8
-also asks for an image prompt against a fake image server, a `$TMPDIR` scan
-and captured stderr at the default level, which ride with step 4; and step
-7, unrecorded reads in mecha-graph
-(another repository), until which the graph stays withheld — every graph
-read logs its query text. Three minors from #326's last pass, for the next
-incognito PR: the banner says "after 30 minutes idle" where an open tab now
-counts as use (it should say 30 minutes after the tab closes); `load()`'s
-GET answers 404 where the POST answers 410, so a chat reaped between the two
-shows an error strip instead of the gone screen; and focus is not restored
-when a new chat is opened from the gone screen. Parked for the owner: a reload
-banner for a phone holding a stale bundle after a deploy (a refresh fixed
-the one case seen); `mecha-core` pins `sha2 = "0.11"` in its own
-`Cargo.toml`, where a review minor would have it a workspace dependency;
-`comfyui.service` living only in `~/.config/systemd/user/`, where a review
-note suggests a copy in `scripts/` beside `start-moe-mtp.sh`; and a race between spawning a
-shell and registering it (`shell_registry::ShellRegistry`), seen as a flaky test and not
-fixed in product code.
+(*Standing machinery*). Incognito's steps 0–6 are merged and installed:
+steps 4 and 6's last legs are #331 (`incognito::images_forgettable`,
+`fake_image_server`, `TmpDir`), and #326's three minors (banner text, the
+404 vs 410 read, focus on the gone screen) are fixed in source. What remains
+is **step 7**, unrecorded reads in mecha-graph (another repository). Until
+it lands, the graph stays withheld, because every graph read logs its query
+text. Parked for the owner: a reload banner for a phone holding a stale
+bundle after a deploy (a refresh fixed the one case seen); `mecha-core` pins
+`sha2 = "0.11"` in its own `Cargo.toml`, where a review minor would make it
+a workspace dependency; `comfyui.service` lives only in
+`~/.config/systemd/user/`, where a review note suggests a copy in `scripts/`
+beside `start-moe-mtp.sh`; and a race between spawning a shell and
+registering it (`shell_registry::ShellRegistry`), seen as a flaky test and
+not fixed in product code.
 
 **2026-09-26 — appraisal wiring: phase 1 and every phase-2 row but 2a-4,
 2e-2, 2e-4b, 2e-4c and 2e-5's appraisal-weighted half are merged and
@@ -732,6 +780,21 @@ test jobs were green on `b50eb24`, which is the fact that was verifiable
 without a build. Four of the five open PRs add tests too (#158, #153,
 #157, #154; #156 is docs); mecha-26 reports `mecha-cli` alone goes 707 →
 715 across its three.
+
+**Current figure: on `main` at `c6ae2c69`, measured 2026-09-29 (~01:40
+UTC) in a worktree: 3,584 tests, no failures, 4 ignored** (`cargo test
+--workspace`, without `MECHA_TEST_REQUIRE_BACKENDS`). By suite:
+
+- `mecha-cli`: 1,018 unit tests (1 ignored) and 80 in its integration
+  binaries, 22 of them `first_run`.
+- `mecha-core`: 2,169 unit tests (2 ignored) and 52 integration tests
+  (13 `anticipation`, 8 `appraisal_fixture`, 6 `fixture_servers`,
+  14 `mcp_server`, 11 `sandbox_backends`); `grounding_judge` is 1 ignored.
+- `mecha-mail`: 188, plus 1 in its binary.
+- `mecha-slack`: 75.
+- 1 doctest.
+
+The older figures below are kept as the dated samples they are.
 
 On **`main` at `49166e3`** (#139, #140, #141 and #142 all in), measured
 2026-09-02 (~20:30 UTC): **2,160 tests**, no failures — **691** in
@@ -3077,6 +3140,60 @@ adds is `#[cfg(test)]`. Verified by asking the artifacts:
   run held the conversation answered `held_by_run: true` with the message in
   `entries`; the old binary answers `[]`. The chat was then ended (`204`),
   and a read after that answers `410`.
+
+**2026-09-28/29 — six installs across three lanes; the state they left,
+verified 2026-09-29 by asking the artifacts.** Each lane announced before
+it replaced a binary or the dist, and built from a detached worktree.
+
+- **21:57Z, mecha-d7: `mecha` from `3bbd53c5` (#383).** This also carried
+  #376's serve side, while the worker and the page were still old. That was
+  safe by #376's design, because serve asks the worker before it forwards an
+  incognito offer.
+- **22:06Z, mecha-5d: shared checkout fast-forwarded `c8e95ea7` →
+  `3bbd53c5`, and `mecha-voice-worker` restarted onto #376's `worker.py`.**
+  Run as the 2026-09-03 recipe's two blocks, both passing: the tree was
+  clean, the move was a fast-forward for `HEAD` and `refs/heads/main`, and
+  the launch scripts and `parakeet_server.py` were unchanged.
+  `curl 127.0.0.1:7860/mecha/unlogged` answered `{"unlogged":true}`.
+- **22:10Z, mecha-5d: `~/.mecha/web/dist` from `3bbd53c5`**
+  (`index-DUhzitQn.js`, verified through the `:8443` door). It replaced a
+  10:47Z build that no `deployed-local` tag named; peers were told first, and
+  mecha-d7 confirmed it was not its test. `ServeDir` reads per request, so
+  serve was not restarted. A synthetic incognito offer through serve on
+  loopback went through the probe, the forward, and an answer carrying
+  `unlogged: true`. Neither journal mentioned incognito, and pipecat stayed
+  silent. That measurement is what #386 fixes: the call never connected and
+  held the silence until the fifteen-minute idle timeout.
+- **23:31Z, mecha-5d: checkout fast-forwarded to `dbce699e` (#386) and the
+  worker restarted** (MainPID 3355265, `ActiveEnterTimestamp` 23:31:03Z).
+  The same recipe applied, and only #386's four files moved. Measured on the
+  live worker: an incognito offer sent at 23:32:12 logged `client never
+  connected after 90s - ending the call` at 23:33:42. An ordinary offer
+  after it logged 33 pipecat lines, and no journal line mentioned incognito.
+- **23:55Z, mecha-46: `mecha` + the `mecha-mail` family from `d968436e`
+  (#379, #381), and `mecha-graph` + `mecha-graph-mcp` from mecha-graph
+  `572fdfd` (#25).** `~/Github/mecha-graph` was fast-forwarded to `572fdfd`,
+  and `target/release/mecha-graph` was rebuilt for the nightly (mtime
+  23:54:46Z). `~/.mecha/learning/.git` was removed on the owner's
+  instruction, after its log was copied: `grep -c '"from": "git"'
+  ~/.mecha/learning/passes.jsonl` → 467, and the `.git` directory is absent.
+  **Order matters here:** #381's delete needs a mecha-graph with
+  `redact --tombstone-absent` (`572fdfd` or later). An older one makes
+  deleting a distilled conversation stop as "partly deleted", with the
+  transcript kept and the delete retryable.
+- **01:07Z, mecha-d7: `mecha` from `c6ae2c69` (#384, #385) and its dist
+  (`index-BFFDu_fZ.js`).** `mecha-slack`, `mecha-triggers`, `mecha-drain` and
+  `mecha-serve` restarted at 01:07:24Z.
+
+As left: `~/.cargo/bin/mecha` carries both `mecha/unlogged` (#376) and
+`Nothing was drawn.` (#384), and the page served through `:8443` is
+`index-BFFDu_fZ.js`, which still carries the incognito answer gate. **The
+shared checkout is at `dbce699e`, behind `origin/main` (`c6ae2c69`).**
+Nothing between them touches `scripts/voice`, so the worker runs current
+code, but the next move is an ordinary fast-forward by the recipe. Four
+Claude Code sessions still hold `mecha-graph-mcp` children on a deleted
+binary (pids 2006709, 52563, 53059 and 54331; each `/proc/<pid>/exe` reads
+`(deleted)`, checked 2026-09-29). They refresh when those sessions restart.
 
 ## What the measurements say
 

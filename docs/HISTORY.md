@@ -14,6 +14,109 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-29 — the image library reaches the page (#384, #385).** #384
+(`1139ac79`) makes every pre-GPU `image_generate` refusal lead with
+"Nothing was drawn." (`imagegen::refused`). The first live run had read a
+refusal that opened with the characters' names as a finished picture,
+never retried, and told the owner the image existed. The retry skeleton is
+the whole cast in prompt order, with a split refusal past `MAX_CAST`, and
+library search is name-first, then every word of three or more letters.
+#385 (`c6ae2c69`) is the web Library tab, Save to library on the image
+card, and a browse lock whose password is optional (the owner's ruling:
+with none set, it is a plain toggle). Approval of a model's proposal is an
+HMAC of the shown text under a key `serve` holds only in memory, checked in
+process (`serve::library`). It replaced a CLI `approve --shown <sha256>`,
+which any shell could compute and use to approve a proposal nobody had
+read. Installed 2026-09-29 01:07Z (HANDOFF, *Machine state*).
+
+**2026-09-28 — voice calls in incognito chats (#376), and a voice call that
+never connects ends after 90 seconds (#386).** `INCOGNITO-DESIGN.md` §6.4
+is the authority. The v1 exclusion was the voice worker's logging, and
+measured, the larger trace was pipecat's own: the runner re-adds a `DEBUG`
+sink on start, and `Transcription: …` plus every sentence handed to the TTS
+had reached the on-disk journal (235 such lines in the fourteen days
+before). #376 (`d6e8f161`, seven review passes) closes it in four layers,
+each refusing by default:
+
+1. The worker's `Unlogged` disables loguru's `pipecat` namespace at the core
+   while any incognito call is live. It is counted, so overlapping calls
+   cannot lift each other's silence.
+2. `OfferSilence` and `bot()` hold the silence from the moment the offer
+   arrives, keyed on the raw name prefix.
+3. `serve::forward_offer` asks the runner `GET /mecha/unlogged` before it
+   forwards an offer naming an incognito chat, and answers 409 otherwise.
+   The page (`voice-core.js`'s `refusesAnswer`) lets no media flow without
+   the `unlogged` flag serve adds to the answer.
+4. `spoken_turn_may_enter` refuses an unvouched spoken turn, in `begin_turn`
+   and ahead of `VoiceHost::speak`'s barge-in.
+
+No line says an incognito chat was spoken into, not even redacted
+(`session_line`, the affect latch, the facade's refusal path), and
+`stamp_presence` skips `~/.mecha/runs/voice.json`, which ordinary runs
+record in their situation briefs. Review found the seams one pass at a time:
+
+- the presence stamp (pass 3);
+- the gate sitting downstream of an old worker's logging (pass 4, the one
+  that changed the design);
+- serve and the worker classifying a malformed prefixed name differently,
+  in the direction that logs (pass 5);
+- an unparseable offer relayed unexamined (pass 6).
+
+The owner's rulings: voice is in, and `--voice-yes` applies as in any
+hosted chat. #386 (`dbce699e`, two passes) came from the deploy's own
+measurement. A synthetic incognito offer that never connected held the
+silence for the full fifteen minutes to the idle timeout, because pipecat's
+60 s connection timeout closes the peer and not the bot. `run_bot` now ends
+such a call at `CONNECT_DEADLINE_SECS` (90 s), and `settle_deadline` lets a
+deadline that fired finish the `runner.cancel()` it started. Both are
+installed (HANDOFF, *Machine state*, 2026-09-28/29); a real spoken call is
+owed.
+
+**2026-09-28 — the image library, and what a reference is worth (#380,
+#383).** #380 (`b21d8e8a`) is `IMAGE-COMPILER-RESEARCH.md`: 59 local
+Qwen-Image 2.1 generations across E1–E3, E8 and E9. Identity lives in the
+reference, not the words. By ArcFace, a description alone scored 0.33
+(0.10–0.34 is the different-person band), the reference pointer 0.74, and
+pointer plus description 0.78. Four full-size references double generation
+time, while 512² ones stay cheap. #383 (`3bbd53c5`) builds on that:
+`mecha-core`'s `imagelib` (the store at `~/.mecha/imagelib`, and the
+compile step), `image_generate`'s `cast` and `style` with a manifest beside
+every PNG, the `image_library` and `image_library_propose` tools, and
+`mecha imagelib`.
+
+**2026-09-28 — deleting a conversation means every trace (#381); the
+learning store without git (#379); the graph can redact (mecha-graph#25).**
+#379 (`55e4a335`) is the owner's ruling that the learning system must not
+use git. `LearningStore::commit` became `log_pass`, which appends `{at,
+message}` to `~/.mecha/learning/passes.jsonl`. A legacy `.git` is a
+`mecha doctor` note, never a finding and never a runnable remedy, and the
+live one's 467 commit messages were copied into `passes.jsonl` before it
+was removed. mecha-graph#25 (`572fdfd`) is `mecha-graph redact --source S
+--source-id ID [--vacuum] [--tombstone-absent]`. It reaches every table,
+pinned by a schema-driven sweep test, and runs `secure_delete`, an FTS
+optimize and `VACUUM`. Undo is all-or-nothing, refuses to restore onto a
+reused episode or fact id, and `undo --discard` purges what an entry left
+behind. A derived (npmi) belief the redacted episode anchored is
+re-derived from its surviving contributors: re-rendered, or closed below
+`NPMI_MIN_COOCCUR` unless user-verified (the owner's ruling; privacy path
+only). #381 (`d968436e`) archives and deletes conversations: the web
+drawer's menu and archived section, `mecha sessions
+archive|unarchive|delete`, and `/api/sessions/{id}`.
+
+- **Archive is filing.** It is a marker in `sessions/.archived/`, every
+  reader keeps reading, and opening an archived conversation un-archives
+  it.
+- **Delete is every trace** (`mecha_core::forget`). The transcript is set
+  aside, and every store is purged under its own lock: the outbox,
+  questions, messages at both ends, and learning (a rule sourced only by
+  forgotten reflections is removed, not retired), plus the rest the forget
+  module lists. The graph is redacted with `--tombstone-absent`, and a
+  backstop grep names anything that survives. The transcript goes last, and
+  only if every store answered; otherwise `mecha doctor` reports it
+  `Broken`.
+
+Deploy order: #381 needs a mecha-graph that has `--tombstone-absent`.
+
 **2026-09-27 — a web chat opened or reconnected mid-run keeps its history
 (#358).** Reported from the phone with a screenshot: an incognito chat showed
 no history and no pictures, and its transcript began at whatever tool call
@@ -136,6 +239,16 @@ by the change — and, by the owner's ruling, makes a retirement count only
 the convictions measured on the model in use, while whether a rule was ever
 measured (probation, and what the learner consolidates from) is still read
 off the whole ledger.
+
+**2026-09-26 — incognito step 4: images leave nothing on the image server
+(#331).** Merged at `39c9f359` and installed about 03:50Z. It keeps a
+per-job trail in the room, discards the image server's temp previews and
+uploads, forgets the job history, and sweeps the rooms a dead `serve` left.
+`image_generate` is offered in an incognito chat only where the server's
+temp directory is named and on tmpfs (`incognito::images_forgettable`,
+`[image] server_temp_dir`). The canary's remaining legs rode with it: an
+image prompt against `fake_image_server`, a `$TMPDIR` scan (`TmpDir`), and
+the default log level.
 
 **2026-09-25/26 — appraisal wiring, phase 2 continued: the gate's
 acceptance rule completed, the appraisal's prediction scored, and learning
@@ -7074,7 +7187,10 @@ every test exercised the scanner; and a back-navigation test that printed the
 symptom in plain text (`chevron #settings -> Back #settings`, a Back that
 moved between two identical entries and did nothing) while being scored a
 pass. Each one looked like evidence. Two of them printed the failure and were
-read past. The general lesson: **a check that cannot go red is not a check,
+read past. (The `gh pr checks --json` failure recurred on 2026-09-28: a PR watcher
+across #376's seven passes used it with `2>/dev/null`, so its failing-check
+branch never ran. Every check passed, so nothing was missed; the plain
+tab-separated output is the form that works.) The general lesson: **a check that cannot go red is not a check,
 and the only way to tell which kind you have is to break the thing and watch
 it fail.** Reverting the fix before trusting the test is seconds of work; not
 one of these survived that step, and every one of them survived until
@@ -8089,6 +8205,44 @@ before retrying it.
 
 ### Containment and state
 
+**A vouch checked after the untrusted side already holds the data is not a
+gate.** #376 first refused an unvouched spoken turn at the voice facade, but
+a worker that predated the log silence had already written the chat's key
+and the caller's words to the journal before any turn reached the facade.
+The check moved to the door: `serve::forward_offer` asks the worker before
+it hands over the offer, and the page lets no media flow without the vouch.
+**Find where the data first lands, and put the check ahead of that point,
+not ahead of the first place that is convenient to check.**
+
+**Redacting a trace still records the fact.** #376's passes 2 and 3 found
+three places that kept no words but still said an incognito chat had been
+spoken into: a log line with the key replaced by `chat:<incognito>`, a
+refusal message that names the kind of chat, and a presence stamp that
+other runs copy into their own transcripts. For a promise of "no trace", the
+fact that it happened is the trace. **Drop the line; do not redact it.**
+
+**A refusal must lead with its outcome.** The first live run of the image
+library read a refusal that opened with the characters' names as a finished
+picture, never retried, and told the owner the image existed (#384).
+Anything a model reads as a result must say what did not happen before it
+says anything else.
+
+**A digest proves the text did not move, not that a person read it.**
+`approve --shown <sha256>` let any shell compute the hash of a model's
+proposal and approve it unread. #385 replaced it with an HMAC under a key
+only the serving process holds, so approval needs the page that showed the
+text. **Evidence of reading has to come from the surface that did the
+showing.**
+
+**A lock enforced on reads must be enforced on writes.** `POST …/unlock`
+revealed a hidden library entry with no password, and its 200/409 split
+said which entries exist (#385). A write route that can change what a read
+shows is itself a read.
+
+**A fixed `.tmp` name opened with `create(true)` keeps an existing file's
+mode and writes through a planted symlink.** #258's lesson, re-learned in
+`imagelib`. Temp files are `create_new`, `O_NOFOLLOW`, and randomly named.
+
 **A read that answers "unavailable" with an empty list is read as "empty"
 by any caller that replaces its state with the answer.** While a run held a
 web conversation, the transcript read returned `entries: []` and relied on
@@ -8610,6 +8764,17 @@ and is what finally exercised the path.)
 
 ### Review process
 
+- **A source-scan test must slice the function it guards, not cut at the
+  first marker.** #376's `an_incognito_key_never_reaches_the_journal` cut
+  `voice/mod.rs` at the first `#[cfg(test)]` (line 264), read none of the
+  lines it existed to pin, and passed with the key logged raw. It was that
+  file's fourth source test to match the wrong region. It now slices
+  `completion`'s body and requires the two refusal paths to be found, so it
+  cannot pass on nothing.
+- **Merging a sibling PR can leave the other DIRTY, and a DIRTY PR gets no
+  review runs.** #385 sat unreviewed until main was merged into it. After
+  merging one of a pair, check the other's `mergeStateStatus`.
+
 - **Twelve defects in six review passes, all but the last two in readers
   rather than in the change itself.** #238 moved the date out of the system
   prompt, and almost every finding was a *reader* that had silently come to
@@ -8952,6 +9117,21 @@ check the timestamp before re-running anything.**
   skips, which is how they were caught rather than written into the docs.
 
 ### Environment
+
+**A filter on a sink someone else owns is thrown away with the sink.**
+pipecat's runner calls `logger.remove()` and adds its own `DEBUG` sink after
+the voice worker is imported, so a filter on the worker's sink would have
+vanished without a word, and the incognito silence with it (#376). The
+silence is `logger.disable("pipecat")`, which lives on loguru's core and
+survives any sink swap; a test replays the runner's own swap. **Attach a
+protection to what you own, not to an object the framework rebuilds.**
+
+**A cleanup that cancels the task which caused it can interrupt the work
+that task started.** #386's deadline called `runner.cancel()`, which made
+`runner.run()` return, and the `finally` then cancelled the deadline task
+while it was still inside that cancel. The fix sets a `fired` flag before
+ending the call, and `settle_deadline` awaits a fired task to completion,
+raising anything it raised. It cancels only a task that has not fired.
 
 **Two verification tracks behind one word, and clearing the cheap one routes
 you onto the expensive one.** Google's console calls both "verification".
