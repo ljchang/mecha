@@ -9,8 +9,10 @@ server is installed on this machine, and the `[documents]` config goes live
 only with an install, which is the owner's call.
 
 The code is `mecha-core/src/document.rs` (the library),
-`mecha-core/src/tool/document.rs` (the tool), `mecha-cli/src/commands/document.rs`
-(the CLI), and `scripts/llama/` (the server's units and launcher).
+`mecha-core/src/layout.rs` (the layout stage, §5), `mecha-core/src/tool/document.rs`
+(the tool), `mecha-cli/src/commands/document.rs` (the CLI), `scripts/llama/`
+(the server's units and launcher) and `scripts/layout/` (the layout model's
+installer).
 
 ## 1. Two outputs per page, never merged
 
@@ -30,8 +32,9 @@ for the other silently:
   what the file says; the tool's own label says so on every page.
 - **Regions** — `pdftotext -bbox-layout` blocks with their boxes in PDF
   points, cached beside the text and returned by `--json`, so a citation can
-  later point at a region of a page. The model returns no boxes on the
-  whole-page prompt (§5), so regions come from the text layer only.
+  later point at a region of a page. A transcript read through the layout
+  stage (§5) carries its own regions — the layout model's boxes, in the same
+  frame, each with what was read there; a whole-page reading has none.
 
 **Reading order, not `-layout`.** The brief suggested `pdftotext -layout`;
 measured, it breaks exactly the property the text layer is for. `-layout`
@@ -134,9 +137,13 @@ one file's text under another's key):
 ~/.mecha/documents/<sha256>/ocr/<model>-<pipeline>/<page>.json   one transcript each
 ```
 
-`<pipeline>` (`document::OCR_PIPELINE`, `wp1`) is bumped when the prompt,
-the render size or the post-processing change, and `<model>` is the
-configured model name, so a model change never serves a stale reading. A
+`<pipeline>` is `document::OCR_PIPELINE` (`wp1`) for a whole-page reading and
+`LAYOUT_PIPELINE` plus the first 16 hex of the layout model file's sha256
+(`ly1-45bf71750b00739a`) for a layout reading; each is bumped when its
+prompt, render size or post-processing changes, and `<model>` is the
+configured model name, so a model change never serves a stale reading and a
+whole-page reading is never served as a layout one. A layout page with a
+region that failed is not cached. A
 failed page is never cached. Writes are atomic (temp file, rename), the
 directories are 0700, and `$MECHA_DOCUMENTS_DIR` moves it.
 
@@ -157,46 +164,116 @@ the fix and is not built.
 **Incognito chats never offer the tool**: it is not in
 `incognito::ALLOWED_BUILTINS`, because its cache writes outside the room.
 
-## 5. Whole-page OCR, and the missing layout stage
+## 5. The layout stage: region by region
 
 **PaddleOCR-VL is an element recogniser, and its full pipeline is a layout
 model plus the VLM.** The card's six prompts (`OCR:`, `Table Recognition:`,
 `Formula Recognition:`, `Chart Recognition:`, `Seal Recognition:`,
 `Spotting:`) are meant for regions that PP-DocLayoutV3 has cropped and
-classified; llama.cpp serves the VLM only. This build sends the whole page
-with `OCR:`.
+classified; llama.cpp serves the VLM only. The first build sent the whole
+page with `OCR:`, and measured (§8) that was good for prose and equations and
+**not for tables — the failure the dangerous kind**: the Transformer paper's
+Table 2 came back once with its EN-FR column dropped and once as one cell per
+line, and BERT's Table 5 came back with its first row labelled "No NSP" where
+the source says BERT-base — plausible, and wrong. The same Table 2 cropped by
+hand and sent with `Table Recognition:` came back whole. Headings were not
+marked at all. **Owner's ruling, 2026-09-29: "tables: your rec"** — option
+(a) of the three this section listed: PP-DocLayoutV3 as ONNX, ahead of the
+VLM. Built on `feat/document-layout` (`mecha-core/src/layout.rs`).
 
-**Verdict, measured (§8): good enough for prose and equations, not for
-tables or headings.**
+**The pipeline, per OCR page** (`Extractor::read_by_layout`):
 
-- **Prose**: median word recall 0.944 against the text layer over 48 pages,
-  page-1 median CER 0.059. What remains is mostly reading order on two-column
-  and figure-heavy pages and LaTeX against Unicode math, not misread words.
-- **Equations**: inline and display math come back as LaTeX, correctly on the
-  pages checked by eye (the Transformer paper's Eq. 1 and its
-  `\frac{1}{\sqrt{d_k}}`).
-- **Tables: not reliable, and the failure is the dangerous kind.** The
-  Transformer paper's Table 2 came back once with its EN-FR column dropped
-  (whole-page, 120 dpi probe) and once as one cell per line (the built
-  pipeline, 103 dpi); BERT's Table 5 came back with its first row's label
-  replaced by the next row's ("No NSP" where the source says BERT-base) —
-  plausible, and wrong. The same Table 2 **cropped by hand and sent with
-  `Table Recognition:`** came back complete, as OTSL, with one misplaced
-  cell. `document::otsl_to_markdown` turns OTSL into a Markdown table
-  whenever the model emits it.
-- **Headings** are not marked (`#`); the transcript is structured text, not
-  Markdown structure.
+1. poppler renders the page at 144 dpi (PaddleX's zoom 2; lower for a page
+   over 4 Mpx), confined as always, and this process decodes it under limits.
+2. The decode is resized to 800 × 800 (bicubic, aspect not kept — the
+   model's `inference.yml`) and written to the layout worker as a float
+   tensor. The worker answers with boxes, classes, scores and a
+   reading-order score.
+3. PaddleX's own post-processing for this model, ported
+   (`layout::postprocess`): threshold 0.3, NMS (IoU 0.6 within a class, 0.98
+   across), a whole-page `image` dropped, anything ≥ 90% inside a title,
+   formula or chart swallowed by it, sorted by the model's reading order,
+   then the VL pipeline's `filter_overlap_boxes` (an inline formula half
+   inside a paragraph is read as part of it; of two mostly overlapping boxes
+   the larger stays, unless a table overlaps a figure). Its `merge_blocks`,
+   which stitches neighbouring text regions into one image to batch them, is
+   a throughput trick and is not ported.
+4. Each region is cropped from the same decode, re-encoded (downscaled past
+   the projector's budget), and sent with its task's prompt — `Table
+   Recognition:` for tables (OTSL → a Markdown table), `Formula Recognition:`
+   for display and standalone inline formulas, `OCR:` for everything else.
+   Images, charts and seals are **not sent** and are marked `*[image]*` in
+   place: PaddleOCR-VL 1.6's defaults leave chart and seal recognition off,
+   and so text inside a figure is not transcribed (§8). Two regions are in
+   flight at once — the server's two slots.
+5. The page is assembled in reading order: `doc_title` as `#`, a
+   `paragraph_title` as `##` plus one `#` per level of its numbering (`3.2.1`
+   → `####`, PaddleX's rule), display maths as `$$ … $$`.
 
-So the text layer stays the default, and the transcript's label says it is a
-reading. **Options for the layout stage, none built:** (a) PP-DocLayoutV3 as
-ONNX through the `ort` crate — one more native model, CPU is enough for a
-layout pass, and region crops then go to the right element prompt; (b) a
-Python sidecar running the official PaddleOCR pipeline against this same
-llama-server (the card's documented path, a PyTorch/Paddle stack like
-Chatterbox's); (c) crop from the text layer's own blocks (`Table N:`
-captions) — only for born-digital files, which are the ones that need OCR
-least. (a) is the recommendation if tables matter; it is the owner's call,
-because it is a second model stack.
+The regions are stored with the transcript (`OcrPage::regions`: label,
+score, box in PDF points from the top-left — the frame the text layer's
+`Region` uses — and what was read there), so a citation can later open the
+region it came from. `--json` returns them.
+
+**The runtime: a confined Python child running ONNX Runtime, not the `ort`
+crate.** §3's rule for the parser holds for anything else that reads what a
+document's author chose: it runs confined and fails closed. That rules out
+running the model inside mecha: `ort` in-process would put ONNX Runtime's C++ kernels — including
+data-dependent ones this graph uses (`GridSample`, `TopK`, `GatherND`,
+`ScatterND`) — in the process that holds the owner's keys and transcripts.
+Confining `ort` means a second binary, and `ort`'s default build downloads a
+prebuilt ONNX Runtime from its maintainers' CDN at compile time (a
+supply-chain step inside `cargo build`, and no offline build); its
+`load-dynamic` mode still needs a `libonnxruntime.so` from somewhere at run
+time. The child is instead the publisher's own runtime: Microsoft's
+`onnxruntime` 1.30.0 wheel (MIT) and numpy 2.5.3 (BSD-3-Clause), every file
+pinned by hash (`scripts/layout/requirements.txt`), in a venv
+`scripts/layout/install.sh` creates under `~/.mecha/layout/` (111 MB). The
+Cargo dependency graph does not change. The worker script
+(`layout_worker.py`) is compiled into the binary and run with `python -I -B
+-c`, so nothing on disk stands in for it.
+
+**Confined like poppler, and it never sees an image file.** The child runs
+under the `[documents] confine` backend (bwrap by default: no network, a
+private `/tmp`, the system read-only, a fresh 0700 scratch as its only
+writable path and `$HOME`, the environment cleared) with exactly three more
+read-only paths — the venv, the interpreter's real prefix, and the model
+file's canonical path — plus `RLIMIT_AS` (`layout_memory_mb`, 4096; measured
+peak RSS 1.1 GB), `RLIMIT_CPU` and a 16 MB `RLIMIT_FSIZE`. Its input is a
+fixed-size float tensor this process built from its own decode, so the only
+thing a hostile page controls in there is pixel values; its answer is parsed
+as untrusted (row count capped at 1,000, unknown classes and non-finite
+values dropped, boxes clipped). Tested, not asserted
+(`the_layout_worker_cannot_reach_outside_its_confinement`): a fake
+interpreter that reports ready only if it can read a file outside its paths
+starts unconfined and is refused under bwrap. **The GPU is not used**: the
+confinement exposes no `/dev/nvidia*`, the GPU is shared with a 42 GB chat
+model and ComfyUI, and CPU costs 0.6 s a page.
+
+**Nothing stays resident.** One worker per extraction call, started on the
+first page that needs it (0.85 s: interpreter, imports, model load), fed
+every page of the call, killed when the call ends; a worker that fails mid-
+page is dropped and the next page starts a fresh one.
+
+**Unavailable is said, never passed off.** `layout = true` (the default) and
+the model or interpreter missing, or the worker unable to start under the
+confinement: every OCR page of the call is read whole, the transcript carries
+`fallback` ("the layout stage is unavailable"), the page label reads `read
+whole — …` where a layout reading reads `read by region: N`, and
+`Extraction::layout_unavailable` names the cause once, at the top of the
+render and on stderr from the CLI. `layout = false` reads whole with no
+fallback note. A page where the model finds nothing to read is read whole,
+with that reason. A region that fails (cut off, empty, past the per-page cap
+of 120 regions) is named in place (`*[table not transcribed: …]*`), keeps its
+page out of the cache, and makes `mecha document extract` exit non-zero.
+
+**The model** is the publisher's own ONNX export,
+`PaddlePaddle/PP-DocLayoutV3_onnx` at `46bbdf18`, Apache-2.0, one 130.5 MB
+file (`inference.onnx`, sha256 `45bf7175…28ba`, checked by the installer),
+opset 17, inputs `image` (N × 3 × 800 × 800), `im_shape`, `scale_factor`,
+outputs boxes (N × 7: class, score, box, reading order), a count and masks
+(not requested). 25 classes. It is the layout stage of PaddleOCR-VL 1.5 and
+1.6 (`PaddleOCR-VL-1.6.yaml`), so no nearer alternative was needed.
 
 ## 6. On demand: a socket that holds no memory
 
@@ -319,13 +396,142 @@ bwrap confinement, a scratch `MECHA_HOME`): Transformer page 1 text layer in
 0.30 s; page 8 OCR in 21.9 s under the same contention; the same page again
 from the cache in 0.06 s.
 
+### The layout stage, before and after
+
+**Commands.** Built code only: `target/release/mecha` at `feat/document-layout`
+code commit `99d132d6` (then on `feat/document-ocr` `240e52ec`). The
+branch was rebased twice after measuring — to `bfb46a4a` on `16169afa`, then
+to `cb10e8cf` on `5b662129` — and neither rebase touched the layout
+pipeline: the second changed only the per-page error arm (a thin text layer
+is now shown beside a failed OCR) and added `ParserSaid`. The numbers below
+are `99d132d6`'s; re-measure before quoting them against a later commit. The
+layout stage installed by `scripts/layout/install.sh` into a scratch
+`MECHA_HOME`, bwrap confinement, the same server as above. Both recipes go
+through mecha, uncached (`--no-cache`), one CLI call per page — "before" is
+the same binary with `layout = false`:
+
+```
+MECHA=target/release/mecha MECHA_HOME=$H_WHOLE  OUT=rel-whole  uv run --with rapidfuzz python scripts/ocr-measure.py
+MECHA=target/release/mecha MECHA_HOME=$H_LAYOUT OUT=rel-layout uv run --with rapidfuzz python scripts/ocr-measure.py
+python3 scripts/ocr-compare.py rel-whole rel-layout
+
+# tables: the table pages through both recipes, then the comparison
+P=1706.03762.pdf:8,1512.03385.pdf:6,1609.02907.pdf:7,1810.04805.pdf:8,2106.09685.pdf:4,2005.14165.pdf:37
+PAGES=$P MECHA=target/debug/mecha MECHA_HOME=$H_WHOLE OUT=tab-whole uv run --with rapidfuzz python scripts/ocr-measure.py
+MECHA=target/debug/mecha MECHA_HOME=$H_LAYOUT python3 scripts/table-measure.py \
+  pdfs/1706.03762.pdf:8 pdfs/1512.03385.pdf:6 pdfs/1609.02907.pdf:7 \
+  pdfs/1810.04805.pdf:8 pdfs/2106.09685.pdf:4 pdfs/2005.14165.pdf:37 --before tab-whole
+```
+
+The table runs used the debug build of the same code, earlier the same
+afternoon while ComfyUI was generating — accuracy only; no table timing is
+quoted.
+
+**Conditions**, 2026-09-29 18:38–18:47Z: ComfyUI loaded but idle for the
+whole run (377 MiB of GPU memory throughout, sampled every 5 s), the chat
+model resident and idle; GPU utilisation peaked at 96% — the OCR server's
+own. All 96 pages finished `stop`; no region failed; every layout page was
+read by region (none fell back).
+
+**Tables** — every table on the measured pages, plus the Transformer's
+Table 2 (page 8) that failed before: nine tables, 89 rows.
+`scripts/table-measure.py` takes the text layer's words inside each table's
+box as the truth, groups them into rows by baseline (a raised exponent or
+superscript folded into its row), and counts a row **held** when all its
+tokens appear on one line of the reading — a Markdown table row after, any
+line before — with LaTeX reduced to glyphs (`10^{20}` → `10 20`, `\pm` →
+`±`).
+
+| table | rows | held, before | held, after |
+|---|---|---|---|
+| Transformer Table 2 (p8) | 13 | 1 | **13** |
+| ResNet Table 3 (p6) | 11 | 0 | **11** |
+| ResNet Table 4 (p6) | 11 | 0 | **11** |
+| ResNet Table 5 (p6) | 7 | 0 | **7** |
+| GCN Table 2 (p7) | 8 | 8 | 8 |
+| GCN Table 3 (p7) | 12 | 2 | 6 |
+| BERT Table 5 (p8) | 7 | 5 | 6 |
+| LoRA Table 1 (p4) | 6 | 6 | 6 |
+| GPT-3 Table 6.1 (p37) | 14 | 2 | **14** |
+| **all** | **89** | **24 (0.27)** | **82 (0.92)** |
+
+Tokens found anywhere in the reading: 458/511 (0.90) before, 504/511 (0.99)
+after. Checked by eye against the PDF:
+
+- **Transformer Table 2**: before, one cell per line with values out of
+  order and one misread (`23.3`); after, all eleven rows and five columns,
+  both EN-DE and EN-FR, the spanning training cost of the two Transformer
+  rows as a merged (empty) cell. The model doubles braces in exponents
+  (`10^{{20}}`).
+- **BERT Table 5**: before, the first row labelled "No NSP" (the wrong
+  label, twice over); after, `BERT_{BASE}` with its own numbers, every row
+  right. The one row "not held" is the two-line header, which the model
+  splits into two Markdown rows — the cells are right.
+- **ResNet Tables 3–5**: before, flattened; after, every row and value.
+- **GCN Table 3** (propagation models): the numbers are right in every row;
+  after, the Chebyshev rows' `K = 3` / `K = 2` sub-labels are **dropped**
+  (a real loss), and the formula cells are LaTeX the metric cannot match to
+  the text layer's glyphs — the rest of the "not held" rows.
+- **LoRA Table 1** and **GCN Table 2**: right both ways.
+
+**Prose and latency, 48 pages:**
+
+| | before (whole page) | after (layout) |
+|---|---|---|
+| word recall vs text layer | median 0.944 (p25 0.874, p75 0.971) | median **0.951** (p25 0.851, p75 0.977) — better on 28, worse on 13 |
+| prose word recall (outside formula boxes) | median 0.928 (p25 0.897, p75 0.959) | median **0.928** (p25 0.896, p75 0.976) — better on 25, worse on 12 |
+| CER vs text layer | median 0.096; page 1 0.059 | median 0.105; page 1 0.077 — worse on 34 |
+| per page, wall clock (one CLI call each) | median 5.01 s (p90 6.4, max 7.6) | median 5.30 s (p75 6.45, max 8.55) |
+| OCR time inside mecha | median 4.53 s | median 4.07 s |
+| layout model, per page (CPU, 4 threads) | — | median 0.62 s (0.58–2.11) |
+| prompt / output tokens per page | 1,253 / 1,010 | 2,579 / 988 |
+| regions per page | — | median 14 (3–26) |
+
+The whole-page numbers reproduce the direct measurement above to the third
+decimal (recall median 0.944, p25 0.874), so the two recipes are compared
+under one harness.
+
+- **Recall held; CER rose, and it is order, not misreading.** Of the 34
+  pages whose CER rose, 24 have prose recall equal or better. The layout
+  reading includes what the whole-page one skipped — the arXiv margin stamp,
+  page numbers, headers — in the layout model's reading order, which is not
+  `pdftotext`'s (DDPM page 1: recall 0.944 → 1.000, CER 0.029 → 0.054).
+- **The largest prose losses are by design.** BERT page 3 (0.833 → 0.812):
+  Figure 1's labels ("Mask LM", "NSP", "Question Answer Pair") were read by
+  the whole-page prompt and are not now — figures are marked, not sent
+  (PaddleOCR-VL 1.6's default). GAN page 4 (0.945 → 0.914): the missing
+  "words" are the variables `x`, `z` of display maths now written as
+  `\pmb{x}`.
+- **Latency.** One page per call, the layout recipe costs +0.3 s at the
+  median: the worker's start (≈0.85 s: interpreter, imports, model load) is
+  paid per call and the layout model 0.6 s per page, against OCR that is
+  faster because regions go two at a time to the server's two slots. **Over
+  a multi-page call the layout recipe is faster**: BERT pages 1–10 in one
+  call took 48.3 s and 47.9 s by layout against 81.9 s and 84.4 s whole
+  (release build, ComfyUI idle, two runs each).
+- **The layout model on CPU and GPU**, in isolation (ONNX Runtime 1.30, one
+  800 × 800 page, steady state after one warm-up): CPU 0.47 s with 4 threads
+  (the default), 0.41 s with the default thread count, 0.31 s with 8; load
+  0.3 s. **GPU** (`onnxruntime-gpu` 1.30 CUDA provider, measured once for the
+  record, not shipped): 0.058 s steady, 0.69 s first run, 0.74 s load. The
+  in-pipeline 0.62 s includes the bicubic resize and the 7.7 MB tensor
+  through the pipe.
+- **Memory**: the worker's peak RSS is 1.1 GB for the ~1–3 s it lives; mecha
+  itself peaked at 54 MB on the 10-page call (30 MB whole-page).
+
 ## 9. Deliberately out of scope
 
-- **The layout stage** (§5): no second model stack without the owner's ruling.
-- **Region re-reads** — a `region` + element prompt on the tool, to send a
-  cropped table to `Table Recognition:`. Cheap to add once something decides
-  where the table is; without a layout model that something is the model
-  guessing coordinates it cannot see.
+- **Text inside figures and charts** is not transcribed (§5, §8: BERT's
+  Figure 1). PaddleOCR-VL can be asked (`Chart Recognition:`, or `OCR:` on a
+  figure — PaddleX's `use_ocr_for_image_block`); whether to spend the
+  requests is the owner's call.
+- **Region re-reads** — a `region` + element prompt on the tool, to re-read
+  one stored region (e.g. a table with a different prompt). The regions and
+  their boxes are now stored (§5), so this is a small addition when a
+  surface wants it.
+- **The GPU for the layout model**: 10× faster (§8) but it needs
+  `/dev/nvidia*` inside the confinement and the CUDA wheels, on a GPU that is
+  already the box's bottleneck.
 - **An MCP server for other hosts** — a thin wrapper over `Extractor` when a
   host needs it.
 - **Formats other than PDF**, and images as documents (`image_view` covers a
