@@ -2378,6 +2378,9 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
     eprintln!("reflecting with {model} ({provider_name})");
 
     let (mut learned, mut declined, mut failed) = (0u32, 0u32, 0u32);
+    // Mined by another pass between the unlocked read and this one's write:
+    // dropped rather than doubled, and counted so the summary adds up.
+    let mut raced = 0u32;
     for (r, c) in todo {
         let prompt = mecha_core::mail_triage::correction_reflector_prompt(
             &r,
@@ -2404,6 +2407,8 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
                 Ok(None) => {
                     if record_correction(&learning, &key, None)? {
                         declined += 1;
+                    } else {
+                        raced += 1;
                     }
                 }
                 Ok(Some(lesson)) => {
@@ -2452,12 +2457,18 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
                     if record_correction(&learning, &key, Some(&refl))? {
                         learned += 1;
                         println!("  + {lesson}");
+                    } else {
+                        raced += 1;
                     }
                 }
             },
         }
     }
-    println!("\n{learned} lesson(s), {declined} declined, {failed} failed");
+    print!("\n{learned} lesson(s), {declined} declined, {failed} failed");
+    if raced > 0 {
+        print!(", {raced} already mined by another pass");
+    }
+    println!();
     if learned > 0 {
         println!("`mecha learn --domain triage` consolidates them into rules.");
     }

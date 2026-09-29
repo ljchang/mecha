@@ -831,7 +831,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         println!(
             "{recorded_rows} row(s) appended to the validation ledger — `mecha rules` folds them"
         );
-        let _lock = store.lock()?;
+        // No lock: `passes.jsonl` is append-only and nothing rewrites it
+        // (`forget` does not touch it), so this append races no rename, and
+        // `log_pass` is best-effort by design. A lock taken with `?` here
+        // would fail a run whose ledger rows had all landed.
         store.log_pass(&format!("validate: {recorded_rows} probe(s) → ledger"));
     }
     Ok(())
@@ -990,15 +993,6 @@ mod tests {
         assert!(
             !code[lock..append].contains("provider") && append - lock < 600,
             "the lock is taken right before the appends, not across the probe"
-        );
-        let pass = code
-            .find("store.log_pass(")
-            .expect("validate logs its pass");
-        assert!(
-            code[..pass]
-                .rfind("store.lock()")
-                .is_some_and(|l| pass - l < 200),
-            "the pass log is appended under the lock"
         );
     }
 
