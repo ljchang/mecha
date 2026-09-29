@@ -67,9 +67,9 @@ the backfill's result are in HISTORY under 2026-09-29; the install is in
   came out not clean: an appraisal's origin is the session-end taint
   (`SessionEvidence::of`), a reflection's is the owner's correction, and 7
   of the 8 were tainted from their first checkpoint. `mecha sessions
-  appraise` now reads 0 eligible, with 16 sessions clean for the reflector
-  only, 3 clean for neither and 1 with no appraisal, so the R44 gate is
-  "pilot, 0 of 10". Loosening the origin rule is not an option: appraisal
+  appraise` now reads 0 eligible, with 16 interventions clean for the
+  reflector only, 3 clean for neither and 1 whose session still has no
+  appraisal, so the R44 gate is "pilot, 0 of 10". Loosening the origin rule is not an option: appraisal
   prose built from untrusted content is a paraphrase of it. The two options
   on the table are C, the fixture denial pilot (with the open question of
   whether synthetic evidence counts), or waiting for sessions that stay clean

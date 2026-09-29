@@ -1750,9 +1750,16 @@ same decided interventions.
   was excluded as `NoAppraisal`: an ordering gap, not only the clean rate.
   `mecha distill --backfill-appraisals` appraises exactly those sessions,
   chosen by the pass's own predicate, and writes rows that predict nothing
-  (ARCHITECTURE.md, the appraisal section). What "no worse" requires (N,
-  margin, paired or not) is still unruled; the fixture-denial pilot (C) comes
-  after.
+  (ARCHITECTURE.md, the appraisal section). What "no worse" requires was
+  ruled on 2026-09-29 (R44).
+- **The backfill ran, and it did not unstarve 2e-1 (2026-09-29):** 8 of its
+  9 sessions were appraised and every one came out not clean, because an
+  appraisal takes the session-end taint (`SessionEvidence::of`), a
+  reflection takes the owner's correction, and these sessions had read mail
+  or the web. 2e-1 still has 0 eligible (16 interventions clean for the
+  reflector only). What is left is the fixture-denial pilot (C), with the
+  open question of whether synthetic evidence counts, or waiting for
+  sessions that stay clean end to end: the owner's call (HANDOFF).
 
 #### L7. Attribute a correction by what the run was given
 
