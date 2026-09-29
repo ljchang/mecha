@@ -172,6 +172,10 @@ mark_untrusted_output = true
 # max_pages = 2000
 # max_ocr_pages = 30                    # per call; the rest are named, not lost
 # cache_days = 30                       # ~/.mecha/documents, by content hash
+# layout = true                         # read OCR pages region by region (tables);
+#                                       # scripts/layout/install.sh installs it
+# layout_python = "~/.mecha/layout/venv/bin/python"
+# layout_model = "~/.mecha/layout/PP-DocLayoutV3.onnx"
 
 # Search backends, in preference order; the chain falls through on failure.
 # A conversation holding private data and third-party content is served only
