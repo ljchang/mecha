@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can mark, from your own terminal; a run's shell is refused. The verb names
   the session's graph episode, if it was distilled, for you to retract there.
 
+- **Add and edit characters and styles from the Library tab.** **Add
+  character** takes a portrait from your device, a name and a description.
+  **Add style** takes a name and its text. **Edit** changes an approved
+  entry's description or portrait, keeping the earlier version for pictures
+  already made from it. A portrait is resized and stripped of its photo
+  metadata before it leaves the device.
+
+- **People who aren't in your image library can share a scene with those who
+  are.** Ask for "Maya and John at a diner, with a waiter pouring coffee" and
+  the waiter is drawn as a new person, counted with your characters, so he
+  takes part in the scene instead of being pushed to the background. A
+  person the scene only mentions in passing is no longer erased either:
+  your characters are each drawn exactly once, without a fixed total that
+  left no room for anyone else.
+
 - **Archive or delete a conversation from the web chat's drawer.** Each row
   has a ⋯ control. **Archive** hides a conversation and keeps the record
   whole — learning, appraisal and the graph still read it — under a new
@@ -27,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the command line: `mecha sessions archive|unarchive|delete <id>`.
   Deleting a distilled conversation needs the mecha-graph release with
   `redact --source`.
+- **The image library in the web app.** A **Library** tab shows your
+  characters and styles, with a **Waiting** pane for ones the model proposed:
+  read the text, then approve or reject. **Save to library** under any picture
+  in chat makes it a recurring character. Locking hides a character while
+  browsing (it stays usable in chats); the lock button shows locked entries
+  again — a plain toggle, or password-protected once you run
+  `mecha imagelib set-lock-password`. Waiting candidates also appear among
+  Home's review cards. Rebuild the page and restart `mecha serve` to use it.
 
 - **An image library of recurring characters and styles.** Add a character
   once — a portrait and a short description — and name it in
