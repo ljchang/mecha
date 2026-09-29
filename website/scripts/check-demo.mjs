@@ -49,6 +49,13 @@ for (const file of files) {
   }
 }
 
+// Endpoints a module builds rather than names after `fetch(` — which the scan
+// above cannot see — declared by the module itself. `persona.js` refuses to
+// build a URL that is not in its list, so the list is the whole of what the
+// Personas tab reaches.
+const {ENDPOINTS: personaEndpoints} = await import(join(web, 'src/lib/persona.js'));
+for (const path of personaEndpoints) paths.add(path);
+
 const answered = (path) => ROUTES.some(([, pattern]) => pattern.test(path));
 const missing = [...paths].filter((p) => !answered(p)).sort();
 

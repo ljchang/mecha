@@ -52,6 +52,12 @@ fn new_key() -> String {
     )
 }
 
+/// A transcript id as `Session::new_id` mints one — letters, digits and `-`,
+/// never a separator or a dot — checked before it becomes a file name.
+fn valid_session_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
 /// How a persona agent's provider is made — the router's, in `serve`; a
 /// scripted one in tests.
 type ProviderFactory = Arc<
@@ -256,11 +262,22 @@ impl PersonaChats {
         let rows: Vec<serde_json::Value> = store
             .visible(unlocked)
             .map(|p| {
+                // The linked character's portrait, by the library's own rule:
+                // approved only, and a locked one only with the live token.
+                let portrait = p
+                    .settings
+                    .character
+                    .as_deref()
+                    .and_then(|c| lib.get(mecha_core::imagelib::Kind::Character, c))
+                    .filter(|e| e.status == mecha_core::persona::Status::Approved)
+                    .filter(|e| !e.locked || unlocked)
+                    .and_then(|e| super::library::portrait_url(e, token.filter(|_| unlocked)));
                 serde_json::json!({
                     "name": p.name,
                     "display": p.display(),
                     "relationship": p.settings.relationship.0,
                     "character": p.settings.character,
+                    "portrait": portrait,
                     "version": p.state.version,
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     "locked": p.state.locked,
@@ -269,7 +286,12 @@ impl PersonaChats {
             })
             .collect();
         let hidden = store.all().len() - rows.len();
-        serde_json::json!({ "personas": rows, "hidden_locked": hidden })
+        serde_json::json!({
+            "personas": rows,
+            "hidden_locked": hidden,
+            "unlocked": unlocked,
+            "has_password": mecha_core::imagelib::has_lock_password(&library.dir),
+        })
     }
 
     /// Open a new chat with `name`, pinned to its current version: a
@@ -415,7 +437,13 @@ impl PersonaChats {
             return Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }));
         }
         let dir = Store::load(&self.store).sessions_dir(&p.name);
-        let path = Session::find(&dir, id).map_err(|_| Refusal::NotFound)?;
+        // An exact id, not `Session::find`'s prefix: an empty or partial id
+        // from a page bug must miss rather than resume whichever chat it
+        // happens to match (review of #409).
+        let path = dir.join(format!("{id}.jsonl"));
+        if !valid_session_id(id) || !path.is_file() {
+            return Err(Refusal::NotFound);
+        }
         let (meta, conversation) = Session::load(&path).map_err(failed)?;
         let pin: PinRecord = std::fs::read(pin_path(&dir, &meta.id))
             .map_err(anyhow::Error::from)
@@ -731,8 +759,10 @@ impl PersonaChats {
         let context_window = bound.context_window;
         let chats = Arc::clone(self);
         let key = key.to_string();
-        drop(sessions);
-
+        // Spawned under the sessions lock, as the assistant's `begin_turn`
+        // spawns under its map: `stop` takes this lock before it closes
+        // `runs`, so the run is on the tracker before `drain` can report
+        // quiescence (found on review of #409).
         chat.runs.spawn(async move {
             let _held = held;
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -826,6 +856,7 @@ impl PersonaChats {
             drop(sessions);
             let _ = bcast.send(done);
         });
+        drop(sessions);
         Ok(serde_json::json!({ "started": true }))
     }
 }
@@ -905,7 +936,13 @@ pub async fn list(State(state): Web, Query(q): Query<UnlockQuery>) -> axum::resp
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    Json(chat.personas.list(&state.library, q.unlock.as_deref())).into_response()
+    // Off the async threads, as `library::list` is: it walks two stores.
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    match tokio::task::spawn_blocking(move || personas.list(&library, q.unlock.as_deref())).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => Refusal::Failed(format!("listing personas: {e}")).into_response(),
+    }
 }
 
 /// POST /api/personas/{name}/chats
@@ -941,10 +978,17 @@ pub async fn history(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    respond(
-        chat.personas
-            .history(&state.library, &name, q.unlock.as_deref()),
-    )
+    // Off the async threads, as `list` is: it walks the transcripts.
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    match tokio::task::spawn_blocking(move || {
+        personas.history(&library, &name, q.unlock.as_deref())
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("listing chats: {e}")).into_response(),
+    }
 }
 
 /// POST /api/personas/{name}/resume
@@ -1691,6 +1735,85 @@ mod tests {
             .await
             .unwrap();
         assert!(after.is_none(), "the stream outlived the unlock: {after:?}");
+    }
+
+    /// Resume takes an exact id: an empty, partial or path-shaped one misses
+    /// rather than resuming whichever chat it happens to match.
+    #[tokio::test]
+    async fn resume_needs_the_exact_id() {
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let id = opened["session"].as_str().unwrap().to_string();
+        w.personas().sessions.lock().await.clear();
+        for bad in ["", &id[..8], "../x", &format!("{id}.persona")] {
+            let r = w
+                .personas()
+                .resume(&w.chat, &w.library, "mara", bad, None)
+                .await;
+            assert!(matches!(r, Err(Refusal::NotFound)), "{bad:?}: {r:?}");
+        }
+        assert!(w
+            .personas()
+            .resume(&w.chat, &w.library, "mara", &id, None)
+            .await
+            .is_ok());
+    }
+
+    /// A persona's card shows its character's portrait only by the library's
+    /// rule: approved, and a locked one only with the live token — a locked
+    /// character's blob name must not reach a page that is not unlocked.
+    #[tokio::test]
+    async fn a_portrait_is_shown_by_the_librarys_rule() {
+        let w = world();
+        let lib_dir = w.root.join("imagelib");
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 4)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        for (name, origin, locked) in [
+            ("maya", mecha_core::imagelib::Origin::Owner, true),
+            ("sam", mecha_core::imagelib::Origin::ModelClean, false),
+        ] {
+            mecha_core::imagelib::create(
+                &lib_dir,
+                mecha_core::imagelib::NewEntry {
+                    kind: mecha_core::imagelib::Kind::Character,
+                    name: name.into(),
+                    text: "tall".into(),
+                    portrait: Some(png.clone()),
+                    source_seed: None,
+                    origin,
+                    locked,
+                },
+            )
+            .unwrap();
+        }
+        let portrait_of = |links: &str, token: Option<&str>| {
+            let toml = w.store().join("mara/persona.toml");
+            let text = std::fs::read_to_string(&toml).unwrap();
+            let text = text
+                .lines()
+                .filter(|l| !l.starts_with("character"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(&toml, format!("character = \"{links}\"\n{text}\n")).unwrap();
+            w.personas().list(&w.library, token)["personas"][0]["portrait"].clone()
+        };
+        // Locked character: no portrait, not even its blob name, until unlocked.
+        assert!(portrait_of("maya", None).is_null());
+        let token = w.library.grant_for_tests();
+        let shown = portrait_of("maya", Some(&token));
+        let url = shown.as_str().expect("unlocked: the portrait is shown");
+        assert!(
+            url.starts_with("/api/library/portrait/") && url.contains("unlock="),
+            "{url}"
+        );
+        // A candidate character never shows, unlocked or not.
+        assert!(portrait_of("sam", Some(&token)).is_null());
     }
 
     #[tokio::test]
