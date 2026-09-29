@@ -1034,7 +1034,9 @@ impl State {
         // on it would race between concurrent runs — and it is the stamp that
         // lets a draft be attributed to the run that wrote it.
         if let Some(shared) = &bound.agent.context().outbox {
-            let Ok(store) = mecha_core::outbox::OutboxStore::open(&self.outbox_root) else {
+            let Ok(store) =
+                mecha_core::outbox::OutboxStore::open_like(&shared.store, &self.outbox_root)
+            else {
                 return;
             };
             let mine = OutboxRoute::new(

@@ -140,6 +140,8 @@ imagegen.rs  image_generate: typed values to a loopback image server, PNG into t
              run's workspace; the graph is fixed in code, never the model's
 imagelib.rs  the character and style library, and the compiler a scene runs
              through: names in, portraits and verbatim descriptions out
+persona.rs   characters the owner writes and talks to, apart from the assistant:
+             the store, owner files never rewritten, versions, links by name
 provider/    Provider trait + anthropic.rs (raw HTTP) + openai.rs (compatible)
 quarantine.rs a one-shot with no tools and no history: the property in the type
 mail_triage.rs the front door's shape one directory over: a typed verdict per
@@ -156,6 +158,7 @@ policy.rs    per-command approval rules: `allow | prompt | forbid` by prefix,
              narrowing only; an allowlisted interpreter is not an allowlisted command
 outbox.rs    the store behind staged sends and publishes
 outbox_source.rs  what a staged draft answers, joined out of the staging session
+forecast.rs  the harness's sealed forecast of the owner's act on a staged draft
 questions.rs the outbox's inbound twin: a delegated run's question, and the resume
 mailbox.rs   inter-agent messages between sessions; taint travels with them
 sandbox.rs   bwrap/docker confinement for shell and MCP servers

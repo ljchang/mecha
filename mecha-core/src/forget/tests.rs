@@ -98,6 +98,19 @@ fn seeded(home: &Path) -> Roots {
     let kept_ws = home.join("work/web/chat-kept");
     session(&roots, GONE, &gone_ws, CANARY);
     session(&roots, KEPT, &kept_ws, "an ordinary afternoon");
+    // Both marked as experiments by the owner (ruling 4D).
+    for id in [GONE, KEPT] {
+        crate::session::Marks::append(
+            &roots.sessions,
+            &crate::session::Mark {
+                session_id: id.into(),
+                action: crate::session::MarkAction::Experiment,
+                at: chrono::Utc::now(),
+                reason: None,
+            },
+        )
+        .unwrap();
+    }
     write(&gone_ws.join("inbox/photo.txt"), CANARY);
     let spill = crate::tool::session_spill_dir_under(home, &gone_ws);
     write(&spill.join("out-1.txt"), CANARY);
@@ -106,6 +119,15 @@ fn seeded(home: &Path) -> Roots {
     write(
         &o.join("item-gone.json"),
         &format!(r#"{{"id":"item-gone","session_id":"{GONE}","args":{{"body":"{CANARY}"}}}}"#),
+    );
+    // The harness's forecasts of the owner's act on each session's draft.
+    write(
+        &crate::forecast::ledger(o),
+        &format!(
+            "{}\n{}\n",
+            serde_json::json!({"item_id": "item-gone", "session_id": GONE, "at": "2026-09-28T00:00:00Z", "tool": "mail_send", "armed": false, "basis": 0}),
+            serde_json::json!({"item_id": "item-kept", "session_id": KEPT, "at": "2026-09-28T00:00:00Z", "tool": "mail_send", "armed": false, "basis": 0}),
+        ),
     );
     write(
         &o.join("item-kept.json"),
@@ -300,6 +322,15 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert!(report.complete);
     assert_eq!(*graph.asked.borrow(), vec![GONE.to_string()]);
+    // The deleted session's forecast goes; the other's stays.
+    let (left, _) = crate::forecast::load(&roots.outbox).unwrap();
+    assert_eq!(
+        left.iter().map(|f| f.item_id.as_str()).collect::<Vec<_>>(),
+        vec!["item-kept"]
+    );
+    // The owner's mark goes with it; the other session's stays.
+    let marks = crate::session::Marks::load(&roots.sessions).unwrap();
+    assert!(!marks.withdrawn(GONE) && marks.withdrawn(KEPT));
     // The whole claim, asked of the bytes: nothing under the home names the
     // session or says what it said.
     assert_eq!(holding(&home.0, GONE), Vec::<PathBuf>::new());

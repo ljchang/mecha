@@ -224,7 +224,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 /// promised 0600 could arrive with any mode — and wrote through a symlink
 /// planted there, which the rename then installed as the file itself (review
 /// of #385; `serve`'s `write_private_temp` is the same fix, #258).
-fn write_atomic_mode(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<()> {
+pub(crate) fn write_atomic_mode(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<()> {
     use std::io::Write;
     let name = path
         .file_name()

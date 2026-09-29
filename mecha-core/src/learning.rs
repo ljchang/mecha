@@ -2093,6 +2093,24 @@ fn same_rule_set(a: &[Rule], b: &[Rule]) -> bool {
 
 // ─── Proposals ──────────────────────────────────────────────────────────────
 
+/// The reflections a proposal rests on that come from a session the owner
+/// marked as an experiment (ruling 4D), by id. Such a proposal can never be
+/// accepted — its rules are consolidated across its reflections, so one's
+/// part cannot be cut out — and `proposals accept`, `supersede --stale` and
+/// the doctor's proposal check must all read it the same way (review of
+/// #382).
+pub fn rests_on_marked(
+    proposal_reflexions: &[String],
+    reflexions: &[Reflexion],
+    withdrawn: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    reflexions
+        .iter()
+        .filter(|r| proposal_reflexions.contains(&r.id) && withdrawn.contains(&r.session_id))
+        .map(|r| r.id.clone())
+        .collect()
+}
+
 /// A rule change waiting for the user, with the evidence that argues for it.
 ///
 /// The hyperagent gate, made concrete: unattended learning may *propose* a
