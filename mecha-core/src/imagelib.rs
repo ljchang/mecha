@@ -210,8 +210,46 @@ fn now() -> String {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
+    write_atomic_mode(path, bytes, None)
+}
+
+/// Write-then-rename through a temp file that is new or not at all: a fresh
+/// random name, `create_new`, and no symlink followed. A fixed `.tmp` name
+/// opened with `create(true)` kept an existing file's mode — so a lock file
+/// promised 0600 could arrive with any mode — and wrote through a symlink
+/// planted there, which the rename then installed as the file itself (review
+/// of #385; `serve`'s `write_private_temp` is the same fix, #258).
+fn write_atomic_mode(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<()> {
+    use std::io::Write;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow!("{} has no file name", path.display()))?;
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+        if let Some(mode) = mode {
+            options.mode(mode);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    let written = (|| -> Result<()> {
+        let mut f = options
+            .open(&tmp)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
     std::fs::rename(&tmp, path).with_context(|| format!("installing {}", path.display()))?;
     Ok(())
 }
@@ -508,6 +546,17 @@ pub fn approve(dir: &Path, kind: Kind, name: &str) -> Result<Entry> {
     Ok(entry)
 }
 
+/// Approve a candidate as it was *shown*: re-read at the moment of writing,
+/// and refused unless its [`shown_digest`] still matches what the approval
+/// surface displayed. The web door's form of `approve`'s "read it first".
+pub fn approve_as_shown(dir: &Path, kind: Kind, name: &str, shown: &str) -> Result<Entry> {
+    let entry = current(dir, kind, name)?;
+    if shown_digest(&entry) != shown {
+        bail!("`{name}` changed since it was shown; look at it again before approving");
+    }
+    approve(dir, kind, name)
+}
+
 /// The browse filter, per item.
 pub fn set_locked(dir: &Path, kind: Kind, name: &str, locked: bool) -> Result<Entry> {
     let mut entry = current(dir, kind, name)?;
@@ -630,6 +679,105 @@ pub fn remove(dir: &Path, kind: Kind, name: &str) -> Result<()> {
         removed.join(format!("{}-{name}-{stamp}", kind.label())),
     )?;
     Ok(())
+}
+
+// ─── The browse lock and approval binding ──────────────────────────────────
+
+/// The lock password's file: an argon2id hash, mode 0600, beside the entries.
+const LOCK_FILE: &str = "lock.toml";
+/// Shorter than this is refused when the password is set.
+pub const MIN_LOCK_PASSWORD: usize = 6;
+
+#[derive(Serialize, Deserialize)]
+struct LockFile {
+    /// A PHC-format argon2id string.
+    hash: String,
+}
+
+/// Whether a lock password has been set. Until one is, locked entries stay
+/// hidden while browsing and nothing can show them — the owner's ruling makes
+/// the lock a browse filter, and a filter with no key is still a filter.
+pub fn has_lock_password(dir: &Path) -> bool {
+    dir.join(LOCK_FILE).is_file()
+}
+
+/// Set (or replace) the lock password. The owner's act from the CLI only:
+/// the password is never typed into a chat, where it would land in a
+/// transcript, and never set from the page.
+pub fn set_lock_password(dir: &Path, password: &str) -> Result<()> {
+    use argon2::password_hash::{PasswordHasher, SaltString};
+    if password.chars().count() < MIN_LOCK_PASSWORD {
+        bail!("the lock password needs at least {MIN_LOCK_PASSWORD} characters");
+    }
+    // A v4 UUID's bytes from the OS generator — 122 random bits, six being
+    // the UUID's version and variant: no second RNG crate for one salt.
+    let salt = SaltString::encode_b64(uuid::Uuid::new_v4().as_bytes())
+        .map_err(|e| anyhow!("making a salt: {e}"))?;
+    let hash = argon2::Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| anyhow!("hashing the lock password: {e}"))?
+        .to_string();
+    std::fs::create_dir_all(dir)?;
+    let text = toml::to_string_pretty(&LockFile { hash })?;
+    write_atomic_mode(&dir.join(LOCK_FILE), text.as_bytes(), Some(0o600))
+        .context("writing the lock file")
+}
+
+/// Whether `password` is the lock password. `Ok(false)` when none is set;
+/// `Err` when the file cannot be read or parsed — an unreadable lock is a
+/// finding, never an open one.
+pub fn verify_lock_password(dir: &Path, password: &str) -> Result<bool> {
+    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+    let path = dir.join(LOCK_FILE);
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let file: LockFile =
+        toml::from_str(&std::fs::read_to_string(&path)?).context("reading the lock file")?;
+    let parsed =
+        PasswordHash::new(&file.hash).map_err(|e| anyhow!("the lock file is damaged: {e}"))?;
+    Ok(argon2::Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok())
+}
+
+/// What an approval surface showed the owner: a digest over the entry's kind,
+/// name, version and text. The web page sends back the digest of the text it
+/// displayed; approval proceeds only if it still matches, so an untrusted
+/// candidate is approved as *read*, not as whatever it says by the time the
+/// click lands.
+pub fn shown_digest(entry: &Entry) -> String {
+    let digest = sha2::Sha256::digest(
+        format!(
+            "{}/{}/v{}\n{}",
+            entry.kind.label(),
+            entry.name,
+            entry.version,
+            entry.text
+        )
+        .as_bytes(),
+    );
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// HMAC-SHA256 (RFC 2104) of a [`shown_digest`] under `key`, hex. The web
+/// door signs what it displays with a key only its process holds, so an
+/// approval can prove a page showed the text — a bare digest proves only
+/// that the text did not move, and anyone who can read the store can
+/// compute one (review of #385).
+pub fn sign_shown(key: &[u8; 32], digest: &str) -> String {
+    let mut block = [0u8; 64];
+    block[..32].copy_from_slice(key);
+    let pad = |b: u8| block.iter().map(|x| x ^ b).collect::<Vec<u8>>();
+    let inner = sha2::Sha256::new()
+        .chain_update(pad(0x36))
+        .chain_update(digest.as_bytes())
+        .finalize();
+    let outer = sha2::Sha256::new()
+        .chain_update(pad(0x5c))
+        .chain_update(inner)
+        .finalize();
+    outer.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ─── Compiling a scene ─────────────────────────────────────────────────────
@@ -1163,6 +1311,92 @@ mod tests {
         let mut owned = character("big", Origin::Owner);
         owned.portrait = Some(big);
         create(dir.path(), owned).unwrap();
+    }
+
+    #[test]
+    fn the_lock_password_verifies_and_is_private_on_disk() {
+        let dir = scratch();
+        assert!(!has_lock_password(dir.path()));
+        assert!(!verify_lock_password(dir.path(), "anything").unwrap());
+        assert!(set_lock_password(dir.path(), "short").is_err());
+        set_lock_password(dir.path(), "correct horse").unwrap();
+        assert!(has_lock_password(dir.path()));
+        assert!(verify_lock_password(dir.path(), "correct horse").unwrap());
+        assert!(!verify_lock_password(dir.path(), "correct hors").unwrap());
+        let raw = std::fs::read_to_string(dir.path().join("lock.toml")).unwrap();
+        assert!(raw.contains("$argon2id$") && !raw.contains("correct horse"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join("lock.toml"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // A planted `lock.tmp` — a symlink to a file the planter owns — is
+        // neither written through nor installed as the lock.
+        #[cfg(unix)]
+        {
+            let decoy = dir.path().join("decoy");
+            std::fs::write(&decoy, "untouched").unwrap();
+            let _ = std::fs::remove_file(dir.path().join("lock.tmp"));
+            std::os::unix::fs::symlink(&decoy, dir.path().join("lock.tmp")).unwrap();
+            set_lock_password(dir.path(), "another horse").unwrap();
+            assert_eq!(std::fs::read_to_string(&decoy).unwrap(), "untouched");
+            assert!(!std::fs::symlink_metadata(dir.path().join("lock.toml"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert!(verify_lock_password(dir.path(), "another horse").unwrap());
+        }
+        // A damaged lock is a finding, never an open door.
+        std::fs::write(dir.path().join("lock.toml"), "hash = \"nonsense\"").unwrap();
+        assert!(verify_lock_password(dir.path(), "correct horse").is_err());
+    }
+
+    #[test]
+    fn the_shown_signature_is_rfc_2104_hmac_sha256() {
+        // Known answer from Python's `hmac` (key 0..31, message "abc").
+        let key: [u8; 32] = std::array::from_fn(|i| i as u8);
+        assert_eq!(
+            sign_shown(&key, "abc"),
+            "f0133729c4163dede81e21cd47839256da58171238c8a0d874397c73b14e1e47"
+        );
+        let other: [u8; 32] = std::array::from_fn(|i| 31 - i as u8);
+        assert_ne!(sign_shown(&key, "abc"), sign_shown(&other, "abc"));
+    }
+
+    #[test]
+    fn the_shown_digest_changes_with_the_text_and_the_version() {
+        let dir = scratch();
+        let e = create(dir.path(), character("theo", Origin::ModelUntrusted)).unwrap();
+        let before = shown_digest(&e);
+        let mut edited = e.clone();
+        edited.text.push_str(" and something else");
+        assert_ne!(before, shown_digest(&edited));
+        let mut bumped = e.clone();
+        bumped.version += 1;
+        assert_ne!(before, shown_digest(&bumped));
+        assert_eq!(before, shown_digest(&e));
+    }
+
+    #[test]
+    fn approval_as_shown_refuses_a_text_that_moved() {
+        let dir = scratch();
+        let e = create(dir.path(), character("theo", Origin::ModelUntrusted)).unwrap();
+        let shown = shown_digest(&e);
+        assert!(approve_as_shown(dir.path(), Kind::Character, "theo", "0000").is_err());
+        update(dir.path(), Kind::Character, "theo", None, None, Some(9)).unwrap();
+        // The seed moved, the version bumped: what was shown is not current.
+        assert!(approve_as_shown(dir.path(), Kind::Character, "theo", &shown).is_err());
+        let now = Library::load(dir.path())
+            .0
+            .get(Kind::Character, "theo")
+            .unwrap()
+            .clone();
+        let e = approve_as_shown(dir.path(), Kind::Character, "theo", &shown_digest(&now)).unwrap();
+        assert_eq!(e.status, Status::Approved);
     }
 
     #[test]

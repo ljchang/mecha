@@ -77,6 +77,50 @@ picture's shape unless you ask for a size.
 Your photo is handed to the image server on this machine only, into a
 temporary folder it clears when it restarts.
 
+## Recurring characters: the image library
+
+Describe a person in words and the image model draws *someone* who fits the
+words — a different someone every time. To draw the same people across many
+pictures, keep them in the **image library**: a portrait and a short
+description per character, plus any styles you reuse.
+
+**Adding a character.** Generate or attach a front-facing portrait, then tap
+**Save to library** under it in web chat. Give it a name (`maya`) and a short
+description that includes build and height. From a terminal:
+
+```bash
+mecha imagelib add-character maya --portrait maya.png \
+  --description "a woman in her mid-30s with short curly black hair; slim, average height"
+mecha imagelib add-style watercolour --text "loose watercolour, soft washes, paper texture"
+```
+
+**Using them.** Name them in a chat, and say what each is wearing and doing:
+"Maya and John sharing a picnic by a lake, in the watercolour style — Maya in
+a straw hat pouring lemonade, John in a linen shirt, laughing." The model
+passes them to the tool by name; their portraits keep their faces. Up to four
+people fit in one picture. If the model forgets and describes a library
+character in words, the tool refuses before drawing and tells it how to ask.
+
+**The model can propose characters.** Ask it to invent one — "create a
+recurring character called Sam, make his portrait, and add him to my
+library" — and it stages him as a candidate. Nothing uses a candidate until
+you approve it: in the **Library** tab under **Waiting**, or with
+`mecha imagelib list --all` and `mecha imagelib approve sam`. You approve
+exactly the text you were shown.
+
+**Locking.** Locking a character hides the whole entry — card, portrait and
+description — while you browse the Library tab; it still works in any chat,
+and pictures already in your chats are untouched. The lock button at the top
+of the Library tab shows locked entries until you reload or leave it idle for
+half an hour. With no password it is a plain toggle; to require one, set it
+once with `mecha imagelib set-lock-password`. A character saved from a
+picture made with a locked character starts locked; untick the box to save
+it unlocked.
+
+Every generated picture also gets a small `.json` file beside it recording
+how it was made — the prompt, the seed, and which library entries (and which
+versions of them) it used.
+
 ## What it will refuse, and why
 
 - **A server that is not on this machine.** `url` must be `127.0.0.1`, `::1`

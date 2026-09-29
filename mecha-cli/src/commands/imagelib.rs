@@ -88,6 +88,9 @@ pub enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Set the password that shows locked entries while browsing the web
+    /// library. Read from the terminal without echo, or from stdin.
+    SetLockPassword,
     /// Remove a candidate.
     Reject {
         name: String,
@@ -142,6 +145,53 @@ fn confirm(question: &str) -> Result<bool> {
         return Ok(false);
     }
     Ok(line.trim().eq_ignore_ascii_case("y"))
+}
+
+fn atty_stdin() -> bool {
+    // SAFETY: isatty reads no memory of ours.
+    unsafe { libc::isatty(libc::STDIN_FILENO) == 1 }
+}
+
+/// One line from stdin, without echo when stdin is a terminal. The password
+/// is never an argument: arguments land in shell history and `ps`.
+fn read_secret(prompt: &str) -> Result<String> {
+    use std::io::Write;
+    let tty = atty_stdin();
+    let mut saved: Option<libc::termios> = None;
+    if tty {
+        eprint!("{prompt}");
+        std::io::stderr().flush()?;
+        // SAFETY: tcgetattr fills a zeroed termios for a descriptor we hold.
+        unsafe {
+            let mut t: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(libc::STDIN_FILENO, &mut t) == 0 {
+                let mut off = t;
+                off.c_lflag &= !libc::ECHO;
+                // Gated on the call that turns echo off, not the one that
+                // reads it (review of #385).
+                if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &off) == 0 {
+                    saved = Some(t);
+                }
+            }
+        }
+        // A terminal whose echo cannot be turned off would show the password
+        // as it is typed; refuse rather than do that silently.
+        if saved.is_none() {
+            eprintln!();
+            bail!("cannot turn off echo on this terminal; pipe the password on stdin instead");
+        }
+    }
+    let mut line = String::new();
+    let read = std::io::stdin().read_line(&mut line);
+    if let Some(t) = saved {
+        // SAFETY: restoring the settings read above.
+        unsafe {
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+        }
+        eprintln!();
+    }
+    read?;
+    Ok(line.trim_end_matches(['\n', '\r']).to_string())
 }
 
 /// The one entry a typed name means. Names are unique per kind, so a name
@@ -325,6 +375,17 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             }
             imagelib::approve(dir, e.kind, &e.name)?;
             println!("Approved `{}`.", e.name);
+        }
+        Cmd::SetLockPassword => {
+            let first = read_secret("New lock password: ")?;
+            if atty_stdin() {
+                let again = read_secret("Again: ")?;
+                if again != first {
+                    bail!("the two entries differ; nothing was changed");
+                }
+            }
+            imagelib::set_lock_password(dir, &first)?;
+            println!("Lock password set. Locked entries show in the web library once unlocked.");
         }
         Cmd::Reject { name, kind } => {
             let e = resolve(&lib, &name, kind)?;

@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the command line: `mecha sessions archive|unarchive|delete <id>`.
   Deleting a distilled conversation needs the mecha-graph release with
   `redact --source`.
+- **The image library in the web app.** A **Library** tab shows your
+  characters and styles, with a **Waiting** pane for ones the model proposed:
+  read the text, then approve or reject. **Save to library** under any picture
+  in chat makes it a recurring character. Locking hides a character while
+  browsing (it stays usable in chats); the lock button shows locked entries
+  again — a plain toggle, or password-protected once you run
+  `mecha imagelib set-lock-password`. Waiting candidates also appear among
+  Home's review cards. Rebuild the page and restart `mecha serve` to use it.
 
 - **An image library of recurring characters and styles.** Add a character
   once — a portrait and a short description — and name it in
