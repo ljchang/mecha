@@ -411,7 +411,12 @@ impl AppraisalNote {
         }
         AppraisalNote {
             session_id,
-            date: a.at.format("%Y-%m-%d").to_string(),
+            // The session's date, not the write's (review of #388).
+            date: a
+                .session_ended_at
+                .unwrap_or(a.at)
+                .format("%Y-%m-%d")
+                .to_string(),
             interpretation,
             judged,
             lessons,
@@ -459,7 +464,9 @@ pub fn appraisals_of(read: &CleanRead, episodes: &[String]) -> (Vec<AppraisalNot
         .filter(|c| wanted.contains(c.session_id.as_str()))
         .collect();
     rows.sort_by(|a, b| {
-        b.at.cmp(&a.at)
+        b.session_ended_at
+            .unwrap_or(b.at)
+            .cmp(&a.session_ended_at.unwrap_or(a.at))
             .then_with(|| a.session_id.cmp(&b.session_id))
     });
     let mut seen = std::collections::BTreeSet::new();
