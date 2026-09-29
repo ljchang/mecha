@@ -135,7 +135,7 @@ pub enum Cmd {
 
 /// One y/N question, where EOF is "no" — the outbox's rule: a review surface
 /// reached by a script with no stdin must not release anything.
-fn confirm(question: &str) -> Result<bool> {
+pub(crate) fn confirm(question: &str) -> Result<bool> {
     use std::io::Write;
     print!("{question} [y/N] ");
     std::io::stdout().flush()?;
