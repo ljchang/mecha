@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store. Nothing is pushed to the graph, and the rows written predict
   nothing, since the outcome was already known. `--dry-run` lists them.
 
+- **The lesson-source comparison states its verdict.** `mecha learn
+  --compare-sources` and `sessions appraise` print R25's gate for folding the
+  reflector in (2a-4) and feeding appraisal lessons to `learn` (2e-2), decided
+  on the paired verdicts. Under 10 decided comparisons the result is a pilot.
+  From 10 up it is "no worse" while the appraisal trails the reflector by at
+  most 2 discordant pairs, and "worse" past that. There is no verdict at all
+  while any line of the stores behind it is unreadable, since every count is
+  then a floor. The counts behind the verdict are printed beside it, and
+  `--json` carries it as `gate`.
+
 - **`mecha rules show <id>` finds a rule that consolidation dropped.** Learning
   rewrites its rule set and leaves some rules out; they are not retired, so the
   learner is never told they were harmful. Their text lives on in the proposal
