@@ -227,10 +227,14 @@ pub fn parse_rows(n: u32, bytes: &[u8]) -> Result<Vec<Detection>> {
         );
     }
     let mut out = Vec::with_capacity(n as usize);
-    for row in bytes.chunks_exact(28) {
+    // The length check above makes the remainder empty.
+    let (rows, _) = bytes.as_chunks::<28>();
+    for row in rows {
         let v: Vec<f32> = row
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect();
         if v.iter().any(|x| !x.is_finite()) {
             continue;
