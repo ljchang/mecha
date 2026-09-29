@@ -1479,8 +1479,12 @@ fn forecasts_line(
     for (n, what) in [
         (s.pending, "waiting for the owner or the window"),
         (
+            s.window_unreadable,
+            "unscored: the outbox's patience window could not be read (check the charter)",
+        ),
+        (
             s.unknown,
-            "unknown (not the owner's by the stamps, gone, or the window unreadable)",
+            "unknown (not the owner's by the stamps, or gone)",
         ),
         (
             s.basis_unreadable,

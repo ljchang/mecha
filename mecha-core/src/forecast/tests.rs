@@ -289,8 +289,17 @@ fn the_summary_scores_what_resolved_and_names_the_rest() {
         (1, 1, 1, 1)
     );
     assert_eq!(s.hit_rate, Some(0.5));
-    // An unreadable charter scores nothing, and says so.
+    // An unreadable charter scores nothing, and says it was the window —
+    // never "not the owner's by the stamps".
     let blind = summarize(&made, 0, &items, None, now);
-    assert_eq!((blind.scored, blind.unknown, blind.hit_rate), (0, 4, None));
+    assert_eq!(
+        (
+            blind.scored,
+            blind.window_unreadable,
+            blind.unknown,
+            blind.hit_rate
+        ),
+        (0, 4, 0, None)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

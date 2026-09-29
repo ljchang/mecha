@@ -327,6 +327,10 @@ pub struct Summary {
     /// Resolved by someone the stamps do not show to be the owner, or the
     /// draft is gone or unreadable: not scored, and not "no act".
     pub unknown: usize,
+    /// Forecasts left unscored because the outbox's patience window could
+    /// not be read now (the charter): a finding about the charter, never
+    /// "not the owner's by the stamps" (review of #401).
+    pub window_unreadable: usize,
     /// Drafts this should have forecast, staged since the first forecast,
     /// with none on record — a write that failed, said rather than hidden.
     pub unforecast: usize,
@@ -367,9 +371,13 @@ pub fn summarize(
             }
             Some(a) => a,
         };
-        let observed = match (items.iter().find(|i| i.id == f.item_id), patience) {
-            (Some(item), Some(p)) => observe(item, p, now),
-            _ => Observed::Unknown,
+        let Some(p) = patience else {
+            s.window_unreadable += 1;
+            continue;
+        };
+        let observed = match items.iter().find(|i| i.id == f.item_id) {
+            Some(item) => observe(item, p, now),
+            None => Observed::Unknown,
         };
         let actual = match observed {
             Observed::Act(a) => a,
