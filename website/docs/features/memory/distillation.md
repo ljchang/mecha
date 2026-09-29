@@ -245,7 +245,8 @@ Two independent guarantees, because either alone would eventually duplicate:
 - **`distilled.jsonl`** in the learning store records session ids already pushed.
   It lives there rather than beside the sessions for the same reason the mining
   ledgers do: the store's writer lock covers the read-then-mark race between two
-  detached `session_end` hooks, and git history says when each push happened.
+  detached `session_end` hooks, and the store's `passes.jsonl` says when each
+  push happened.
 - **The graph's `(source, source_id)` key** makes a re-push an update, not a
   duplicate. `kg_upsert` reports back `inserted`, `updated` or `unchanged`.
 
