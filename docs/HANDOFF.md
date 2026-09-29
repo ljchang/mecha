@@ -22,6 +22,26 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-28/29 — the image library (#380, #383–#385), merged and
+installed.** What shipped is in HISTORY under 2026-09-28 and 2026-09-29.
+Open:
+
+- **`extras` on `image_generate` for people not in the library.** Measured in
+  E11 (4 images): the compiled "Exactly N people" pushes a described waiter
+  into the background, while counted wording puts him in the scene.
+- **#385's last-pass minors:** `imagelib::write_atomic_mode` leaks a temp file
+  on a rename error; the docs should say that locking does not reach
+  portraits already cached `immutable`; and the route tests for the CLI-child
+  actions (reject, lock, unlock, remove, save) should run under
+  `testenv::HomeGuard`.
+- **Library search misses on stopwords:** "picnic in the park" misses
+  `picnic-park`, because "the" must match.
+- **CLAUDE.md's module map has no `imagelib.rs` line.** Adding it is the
+  owner's call (the CLAUDE.md rule).
+- **The live library holds test entries** `maya`, `john` and `watercolour`,
+  plus a model-proposed candidate, `sam`, awaiting the owner's approve or
+  reject. Whether to keep them is the owner's call.
+
 **2026-09-28 — voice calls in incognito chats (#376) and a connect
 deadline (#386), merged and installed; one live call is owed.** What each
 built is in HISTORY under 2026-09-28; the installs are in *Machine state,
@@ -43,26 +63,6 @@ What is open:
 - **Known residue, recorded as accepted in §10:** a call's connect and
   disconnect lines, and a gap in pipecat's lines while an incognito call is
   live. Closing the gap would mean silencing pipecat for every call.
-
-**2026-09-28/29 — the image library (#380, #383–#385), merged and
-installed.** What shipped is in HISTORY under 2026-09-28 and 2026-09-29.
-Open:
-
-- **`extras` on `image_generate` for people not in the library.** Measured in
-  E11 (4 images): the compiled "Exactly N people" pushes a described waiter
-  into the background, while counted wording puts him in the scene.
-- **#385's last-pass minors:** `imagelib::write_atomic_mode` leaks a temp file
-  on a rename error; the docs should say that locking does not reach
-  portraits already cached `immutable`; and the route tests for the CLI-child
-  actions (reject, lock, unlock, remove, save) should run under
-  `testenv::HomeGuard`.
-- **Library search misses on stopwords:** "picnic in the park" misses
-  `picnic-park`, because "the" must match.
-- **CLAUDE.md's module map has no `imagelib.rs` line.** Adding it is the
-  owner's call (the CLAUDE.md rule).
-- **The live library holds test entries** `maya`, `john` and `watercolour`,
-  plus a model-proposed candidate, `sam`, awaiting the owner's approve or
-  reject. Whether to keep them is the owner's call.
 
 **2026-09-28 — conversations can be archived and deleted (#381), the
 learning store no longer uses git (#379), and the graph can redact
