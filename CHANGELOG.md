@@ -125,6 +125,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Image edits that move someone or change a pose no longer come back
+  unchanged.** The cause was the prompt, not chance: the edit model returns
+  the same picture when the prompt describes the whole scene or asks to keep
+  the picture unchanged, and the tool's own wording asked for both. On the
+  same 12 seeds, a caption stood someone up 0 times, "Have Maya stand up"
+  alone 8 times, and the same after naming what to keep ("Keep the style,
+  the lake and the blanket unchanged.") 12 times. The tool now asks for that
+  last form. As a
+  safety net, it also compares each edit's layout with the picture it edited.
+  When they match, the result says so and tells the model to retry once with
+  an instruction, or to redraw from the library when the picture came from
+  it. A second match in a row says stop and tell you.
+
 - **A run can no longer mark a rule down by rejecting its own draft.** An
   edited or rejected draft counted as your verdict on the drafting, in the
   appraisal and so in rule tenure and replay priority, whoever made the edit
