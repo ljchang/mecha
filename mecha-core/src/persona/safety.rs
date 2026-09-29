@@ -231,17 +231,35 @@ pub fn dose(
     now: chrono::DateTime<chrono::Utc>,
     tz: chrono_tz::Tz,
 ) -> Dose {
+    let all = doses(dir, now, tz);
+    match persona {
+        Some(p) => all.get(p).copied().unwrap_or_default(),
+        None => all.values().fold(Dose::default(), |a, d| Dose {
+            turns_today: a.turns_today + d.turns_today,
+            turns_7d: a.turns_7d + d.turns_7d,
+            late_night_7d: a.late_night_7d + d.late_night_7d,
+        }),
+    }
+}
+
+/// Every persona's meters in one walk of the file — what a list of
+/// personas reads, rather than one parse per row (review of #418).
+pub fn doses(
+    dir: &Path,
+    now: chrono::DateTime<chrono::Utc>,
+    tz: chrono_tz::Tz,
+) -> std::collections::HashMap<String, Dose> {
+    let mut out: std::collections::HashMap<String, Dose> = Default::default();
     let Ok(text) = std::fs::read_to_string(dir.join("dose.jsonl")) else {
-        return Dose::default();
+        return out;
     };
     let today = now.with_timezone(&tz).date_naive();
     let week_ago = now - chrono::Duration::days(7);
-    let mut out = Dose::default();
     for r in text
         .lines()
         .filter_map(|l| serde_json::from_str::<DoseRecord>(l).ok())
-        .filter(|r| persona.is_none_or(|p| r.persona == p))
     {
+        let out = out.entry(r.persona.clone()).or_default();
         let local = r.at.with_timezone(&tz);
         if local.date_naive() == today {
             out.turns_today += 1;

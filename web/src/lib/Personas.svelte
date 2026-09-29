@@ -177,6 +177,9 @@
     close();
     key = k;
     run = emptyRun();
+    // Or the previous chat's disclosure line and resources show for a round
+    // trip (review of #418).
+    safety = null;
     dismissed = new Set();
     showResources = false;
     partial = false;
