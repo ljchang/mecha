@@ -1362,7 +1362,7 @@ impl LearningStore {
             .create(true)
             .append(true)
             .open(self.root.join(file))?;
-        writeln!(f, "{line}")?;
+        append_record(&mut f, line)?;
         Ok(())
     }
 
@@ -2286,6 +2286,20 @@ impl LearningStore {
 /// because the std hasher is deliberately unstable across Rust releases, and
 /// a ledger key that drifts with the toolchain would silently split every
 /// tally.
+/// One record, one `write`. `writeln!` writes the line and its newline in
+/// separate calls, so two processes appending at once could interleave into
+/// `AB\n\n` — one corrupt line that readers skip and the next rewrite
+/// deletes. A single `write_all` of the whole record keeps each append whole
+/// on an `O_APPEND` descriptor (in practice, for records this size, on a
+/// local filesystem); the store lock is what serialises appends with
+/// rewrites.
+fn append_record(w: &mut impl Write, line: &str) -> std::io::Result<()> {
+    let mut record = String::with_capacity(line.len() + 1);
+    record.push_str(line);
+    record.push('\n');
+    w.write_all(record.as_bytes())
+}
+
 pub fn rules_hash(block: &str) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in block.bytes() {
@@ -4800,6 +4814,29 @@ mod tests {
             "ref: refs/heads/main\n"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_appended_record_is_one_write_with_its_newline() {
+        // `writeln!` issued the line and the newline as two writes, which two
+        // concurrent appenders can interleave into one corrupt line.
+        struct Counting(Vec<Vec<u8>>);
+        impl std::io::Write for Counting {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut w = Counting(Vec::new());
+        append_record(&mut w, r#"{"id":"r1"}"#).unwrap();
+        assert_eq!(
+            w.0,
+            vec![b"{\"id\":\"r1\"}\n".to_vec()],
+            "not one whole record per write"
+        );
     }
 
     /// A pass leaves one `{"at", "message"}` line in `passes.jsonl`, in order,
