@@ -399,9 +399,12 @@ from the cache in 0.06 s.
 ### The layout stage, before and after
 
 **Commands.** Built code only: `target/release/mecha` at `feat/document-layout`
-code commit `99d132d6` (then on `feat/document-ocr` `240e52ec`; its
-extraction code is unchanged in `bfb46a4a`, the same commit rebased onto
-`16169afa`), the
+code commit `99d132d6` (then on `feat/document-ocr` `240e52ec`). The
+branch was rebased twice after measuring — to `bfb46a4a` on `16169afa`, then
+to `cb10e8cf` on `5b662129` — and neither rebase touched the layout
+pipeline: the second changed only the per-page error arm (a thin text layer
+is now shown beside a failed OCR) and added `ParserSaid`. The numbers below
+are `99d132d6`'s; re-measure before quoting them against a later commit. The
 layout stage installed by `scripts/layout/install.sh` into a scratch
 `MECHA_HOME`, bwrap confinement, the same server as above. Both recipes go
 through mecha, uncached (`--no-cache`), one CLI call per page — "before" is
