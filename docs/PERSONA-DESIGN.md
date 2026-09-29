@@ -176,11 +176,12 @@ and taint into the persona's voice, and (§2.2–2.3) puts the model in the
 region where refusals loosen *while it holds mail, calendar and a way to
 send*.
 
-### 3.2 A persona chat is its own kind of session
+### 3.2 A persona chat lives where no other reader looks
 
-A new `SessionKind::Persona`. Every reader that already drops `Test` drops it
-by default — `runlog::Scan::admits`, `session::split_admitted`,
-`SessionMeta::admitted_by_default` — so, without any new flag:
+**Separation is by location, not by label** (found on review of this
+document). A persona chat's transcript is written under
+`~/.mecha/personas/<persona>/sessions/`, never `~/.mecha/sessions/`. Nothing
+that reads the session store today scans that directory, so:
 
 - **Learning never mines a persona chat.** A "no, that's not what I meant"
   said to a devil's advocate in a role-play is not a correction to the
@@ -193,10 +194,20 @@ by default — `runlog::Scan::admits`, `session::split_admitted`,
   against the owner's productivity lines is noise that distorts the corpus;
   scripted scenarios get their own grading (§7.4).
 
-`SessionKind` is a closed enum written to an append-only store — a wire
-format. An older binary reading a `persona` session must not treat it as
-assistant work: the variant's load path degrades unknown kinds toward
-*excluded*, and this is checked before the first persona session is written.
+**Why not a `SessionKind`.** A label only excludes what every reader honours,
+and today's readers do not: `runlog::Scan::admits` drops `Test` and
+`Experiment` by name and admits every other kind, and `de_lenient_kind` reads
+an unknown kind as `None`, which `admits` also treats as in the population. A
+`Persona` variant would therefore be *admitted* to `reflect`, `distill` and the
+corpus — and a binary built before the variant existed (an older install,
+`mecha-mail`, the graph's MCP server) cannot be taught otherwise by any code
+this design adds. A directory no reader scans excludes them all, old and new,
+the way `Recording::Incognito` excludes a chat by giving it nowhere to be
+written rather than a flag writers must honour. The transcript keeps the
+session store's format, so replay, archive and `forget` work on it once
+pointed at the persona's directory, and it may still record
+`SessionKind::Persona` — for the persona system's own readers, never as the
+thing exclusion rests on.
 
 ### 3.3 What a persona may be given
 
@@ -204,10 +215,19 @@ A persona's registry is built from an allowlist, the way `SubagentProfile`
 rebuilds a child's registry today — but the allowlist is intersected with an
 **eligibility rule fixed in code**, so no persona file can widen it:
 
-- **Eligible:** tools whose egress class is `None` or `Blind`, and that read
-  no owner store. Today that is `web_search` (`Blind`), `image_generate`,
-  `image_view`, read access to the image library, file tools inside the
-  chat's own workspace, and the persona's own memory tools (§9).
+- **Eligible means declared eligible.** Each tool states, beside its
+  `Capabilities`, whether a persona may be given it, and **the default is
+  no** — `Capabilities` has no "reads an owner store" axis to compute it from
+  (`private_data` cannot be it, since persona memory arms that), and
+  `Capabilities::default()` is all-false with `Egress::None`, so a rule
+  derived from them would make the next tool added eligible by omission. A
+  fixture test walks the whole registry and fails on any tool whose
+  declaration is missing or disagrees with its egress class (found on
+  review). The intended set: tools whose egress class is `None` or `Blind`
+  and that read no owner store. Today that is `web_search` (`Blind`),
+  `image_generate`, `image_view`, read access to the image library, file
+  tools inside the chat's own workspace, and the persona's own memory tools
+  (§9).
 - **Never eligible:** mail and calendar, the graph (`kg_*`), the outbox and
   anything routed through it, the session store, `http_fetch` and any other
   `Egress::Chosen` tool, and `shell` (confined `shell` keeps `private_data`
@@ -222,7 +242,9 @@ then stop `web_search` after every recall. **The owner ruled that annoying
 stated so it is chosen rather than discovered: a search query can carry
 something the persona remembers about the owner to the configured search
 backends — `Blind` means the query reaches the `[[search]]` chain and nobody
-else, not that it reaches no one.
+else, not that it reaches no one. (`block_sends_after_private` is off by
+default in config, so D11 mostly keeps the default rather than loosening a
+guard that was on.)
 
 ### 3.4 One agent per persona
 
@@ -289,19 +311,22 @@ ruling already names what kind: a mecha-owned SQLite, never `graph.db`
     files/                       material only this persona reads; saved study material (§10)
     memory.db                    this persona's memory, and no one else's:
                                  episodes, its facts, what it learned about you (§9)
+    sessions/                    its chat transcripts — here, never in
+                                 ~/.mecha/sessions/, so no other reader mines them (§3.2)
   scenarios/<scenario>/
     scenario.toml, premise.md    what the persona sees (§7)
     key.md                       the evaluator's only; never in a persona prompt (§7.3)
 ```
 
-Two things stay where they are. **Characters** stay in `~/.mecha/imagelib/`,
+**Characters** stay in `~/.mecha/imagelib/`,
 because the image compiler reads them, and a persona names one. A persona is
 not a character with more text: a character's `text` is at most 400
 characters (`MAX_DESCRIPTION`) pasted verbatim into every image prompt, and a
 personality growing there would change how the character is drawn — so the
-image compiler never reads a persona. **Transcripts** stay in
-`~/.mecha/sessions/` as `persona` sessions (§3.2), because archive, delete and
-`forget` already work there; memory points into them.
+image compiler never reads a persona. **Transcripts** are written under the
+persona, in `<persona>/sessions/`, in the session store's own format — never
+in `~/.mecha/sessions/`, because that directory is what every learning,
+distilling and appraising reader scans (§3.2). Memory points into them.
 
 The library's lock (`lock.toml`, the unlock token) covers this store too, so
 one unlock shows locked characters and locked personas together (§8.3).
@@ -326,8 +351,9 @@ one unlock shows locked characters and locked personas together (§8.3).
   the web page render it (§9.8). (Letta's 2026 memory is a git repository of
   Markdown files per agent — and it is the model that edits them, the
   opposite of §4.4.)
-- **Transcripts stay JSON lines**, in `~/.mecha/sessions/`, exactly as every
-  other session is kept. They are the ground truth memory points back into.
+- **Transcripts stay JSON lines**, in the session store's format — but in
+  the persona's `sessions/`, not `~/.mecha/sessions/` (§3.2). They are the
+  ground truth memory points back into.
 
 ```toml
 # ~/.mecha/personas/mara/persona.toml   (sketch, not a schema)
@@ -562,8 +588,9 @@ persona chats carry no goal and are not appraised (§3.2).
 
 ### 8.1 Independent chats (R1)
 
-Every chat is its own `Conversation` and its own session file, as web chats
-are now (`ensure_session`, `Session::create`). Two chats with the same
+Every chat is its own `Conversation` and its own session file, created the
+way web chats are now (`ensure_session`, `Session::create`) but rooted in the
+persona's `sessions/` (§3.2). Two chats with the same
 persona share **nothing but the persona's memory**, and only what the memory
 writer admitted (§9). Personas do not share memory with each other and do
 not know about each other; group chats are §18.
@@ -834,7 +861,10 @@ which is ample at this scale.
 **One database per persona, not one for all**, because it turns the
 separation into a property of the filesystem rather than of every query
 being written correctly: a chat opens one `memory.db`, so there is no
-`WHERE persona = …` to forget. It also makes deleting a persona deleting a
+`WHERE persona = …` to forget. `shared.db` is the exception, and the one
+place such a filter lives: a persona reads it only through a query the
+harness scopes to its groups (§4.5), so that query gets its own test — a
+persona outside a group sees none of that group's rows. It also makes deleting a persona deleting a
 folder, lets an experiment trial carry one persona's memory by copying one
 file, and grows the way the owner will use it — many small files, each
 growing only with its own persona. What it costs is a view across personas
@@ -1078,11 +1108,11 @@ owner's action, and the model never names the file it reads.
 ### 10.4 Answering from files, with checked citations
 
 - **Small collections go whole into context; large ones are searched.**
-  Files whose text fits comfortably inside `context_window` ride in the first
-  turn, where the cache keeps them for the chat. Past that, they are chunked
-  and embedded on the `:8081` embeddings server, and two tools serve them:
-  `file_search` (passages by relevance) and `file_read` (a page range). The
-  threshold is §16 D15.
+  Files whose text fits in about a quarter of `context_window` ride in the
+  first turn, where the cache keeps them for the chat. Past that, they are
+  chunked and embedded on the `:8081` embeddings server, and two tools serve
+  them: `file_search` (passages by relevance) and `file_read` (a page range).
+  The threshold is §16 D15, set by measurement.
 - **Every factual answer cites** file, page and a short quote; clicking it
   opens the page, with the passage marked where the layout boxes allow.
 - **The harness checks every quote.** `grounding::admit` already establishes
@@ -1114,10 +1144,19 @@ the template too.
 ### 10.6 Trust
 
 - **A file is third-party content.** A paper can carry an injection like any
-  web page. In a persona chat that is bounded by construction: there is no
-  `Chosen` sender to exfiltrate through (§3.3), so the worst a hostile file
-  can do is corrupt that chat's answers — which checked citations make
-  visible.
+  web page. With `answers = "files"` (§10.4) the web tools are withheld and
+  there is no sender at all, so the worst a hostile file can do is corrupt
+  that chat's answers — which checked citations make visible. **With
+  `answers = "open"` and `web_search`, it is more** (found on review): the
+  search query is itself an exfiltration channel (`search.rs`'s own header —
+  the payload fits in `?q=`), a hostile file can instruct the persona to
+  search for something it remembers about the owner, and D11 keeps the guard
+  that would refuse it off. That is the three legs in one chat — private
+  (memory), untrusted (the file), a way out (the query, `Blind`: it reaches
+  the configured search chain, not an attacker-chosen host, but a search
+  engine is not nobody). The owner's choices that close it: `answers =
+  "files"` for a persona whose files are not the owner's own, or no
+  `web_search`, or `block_sends_after_private` on.
 - **Files never write a persona.** Material from a file reaching the memory
   writer (§9) is classified untrusted, and nothing in a file ever becomes
   persona definition text.
@@ -1359,7 +1398,7 @@ not care, and says so.
 
 ## 16. Decisions
 
-Each has a recommendation; none is ruled.
+Every row is ruled; the ruling is the owner's, in §1 where it was said in words.
 
 | # | Decision | Recommendation |
 |---|---|---|
@@ -1418,7 +1457,9 @@ Each phase is usable on its own, and each unlocks the next.
    cascading by `source` across both databases; the writer after each
    session and nightly; consolidation candidates; `self_update` with
    section priority, write-time checks, the dated-comment history, comment
-   stripping at render, the blame view and revert (§9).
+   stripping at render, the blame view and revert (§9). Self-update is a lane
+   promoting its own changes (§9.12), so it ships with its brake: off by
+   default, the drift reading recorded per version, and revert.
 6. **Scenarios and evaluators.** `GoalRef::Scenario`; the simulated patient
    end to end (§7).
 7. **Voice.** Binding a call to a persona's profile; refusal on an unknown
