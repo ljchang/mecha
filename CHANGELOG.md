@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **People who aren't in your image library can share a scene with those who
+  are.** Ask for "Maya and John at a diner, with a waiter pouring coffee" and
+  the waiter is drawn as a new person, counted with your characters, so he
+  takes part in the scene instead of being pushed to the background. A
+  person the scene only mentions in passing is no longer erased either:
+  your characters are each drawn exactly once, without a fixed total that
+  left no room for anyone else.
+
 - **Archive or delete a conversation from the web chat's drawer.** Each row
   has a ⋯ control. **Archive** hides a conversation and keeps the record
   whole — learning, appraisal and the graph still read it — under a new

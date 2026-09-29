@@ -108,21 +108,36 @@ The rules, each a measurement:
 - **Identity is the reference plus the description** (E1: description alone
   0.33, pointer 0.74, both 0.78). Each cast member's portrait becomes a
   reference, and their description rides beside the pointer.
-- **One reference per character, left to right, and the head count stated**
+- **One reference per character, left to right, each appearing exactly once**
   (E2, E9: every slot tends to become a person). One person is "the person in
   the image"; two or more are `<image1>…<imageN>` in `cast` order, "from left
-  to right", with "Exactly N people in the image."
+  to right", and "each of the N people from the images appears exactly once;
+  anyone else the scene describes is a new person". No total: a total with
+  no extras erased a waiter the prose described, and without it four cast
+  still drew exactly four (E12). With `extras`, a total that counts them.
 - **`wearing` and `doing` are required** (E3, E8: a reference supplies its own
   outfit, pose and stare when the scene is silent; stated, they land).
 - **References are sent at 512²** (E2: four at 1024² cost 190 s, four at 512²
   79 s; E10: a whole portrait at 512² holds identity). `Request` gains a
   backend-neutral `reference_size`; plain edits keep 1024.
 - **At most four cast members** (E3 held four in one pass).
+- **Anyone else is an `extra`, and is counted** (E11). A waiter described in
+  the scene beside a cast of three, with "Exactly three people" compiled in,
+  was kept in the picture but pushed into the background; listed as
+  "Also in the scene, not from any image: …" with a head count of four — "the
+  three from the images, each exactly once, and one new person" — he stood
+  where the scene put him. Extras carry no reference, so the four-reference
+  ceiling does not bound them; `MAX_EXTRAS` is four, unmeasured beyond. They
+  are read by the named-character guard too: "John waving" as an extra is
+  John drawn from words.
 - **The style's text is appended verbatim**, never paraphrased.
 - **`cast` and `reference_images` are exclusive in v1.** ComfyUI's encoder
   takes one reference resolution per call, so an edit canvas at 1024² and
   portraits at 512² cannot share one; editing a cast image works already by
-  passing the image, whose people carry their own identity.
+  passing the image, whose people carry their own identity. `extras` are
+  words, not references, so an edit may take them: they are appended as
+  "Also in the scene: …", and the named-character guard, which an edit
+  skips, does not read them there.
 - **A cast generation defaults to square**, not to its first reference's
   shape — a portrait is not a canvas.
 - **The same-seed rule, narrowed and kept.** An edit still always samples at
