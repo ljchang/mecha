@@ -1642,3 +1642,49 @@ export const learningReport = {
   caveat:
     'Observational, over one owner’s real work: the task mix moves under the metric, so a falling correction rate may mean better rules or an easier week. Use `mecha eval --ab-rules` for a controlled comparison.',
 };
+
+// --- personas ------------------------------------------------------------
+//
+// Characters the owner writes and talks to, apart from the assistant
+// (`persona_chat.rs`). Fiction twice over: invented people, playing parts.
+
+export const personas = {
+  personas: [
+    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, problems: [] },
+    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, problems: [] },
+    { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, problems: ['identity.md\'s `## Core` section is empty'] },
+  ],
+  hidden_locked: 1,
+  unlocked: false,
+  has_password: false,
+};
+
+export const personaHistory = {
+  persona: 'mara',
+  chats: [
+    { id: '20260928T161200-a1b2c3d4', created: '2026-09-28T16:12:00Z', title: 'persona: Mara' },
+    { id: '20260926T093000-e5f6a7b8', created: '2026-09-26T09:30:00Z', title: 'persona: Mara' },
+  ],
+};
+
+export const personaTranscript = {
+  session: '20260928T161200-a1b2c3d4',
+  persona: 'mara',
+  version: 3,
+  model: 'local',
+  running: false,
+  goal: null,
+  entries: [
+    { kind: 'user', text: 'I think the kelp survey can skip the winter transects this year.' },
+    { kind: 'assistant', text: 'Before I agree — what would we lose? The winter transects are the only ones that catch the die-back before spring recruitment. Skipping them saves two field weeks, but it also means next year\'s comparison starts from a guess.' },
+  ],
+  taint: { private: false, untrusted: false },
+  usage: null,
+};
+
+// What a persona says back, whatever is typed — the demo has no model.
+export const personaScript = [
+  [140, { type: 'delta', text: 'Fair. Then let\'s say what would change your mind: ' }],
+  [260, { type: 'delta', text: 'if the autumn counts come in below last year\'s, we keep the winter transects.' }],
+  [120, { type: 'done', ok: true, stop: 'EndTurn', taint_private: false, taint_untrusted: false, error: null }],
+];
