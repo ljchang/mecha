@@ -224,17 +224,32 @@ rebuilds a child's registry today — but the allowlist is intersected with an
   fixture test walks the whole registry and fails on any tool whose
   declaration is missing or disagrees with its egress class (found on
   review). The intended set: tools whose egress class is `None` or `Blind`
-  and that read no owner store. **The class is the tool's actual one on
-  this install, read when the persona's registry is built** — not its usual
-  one: `web_search` is `Blind` only when the configured `[[search]]` chain has
-  a blind backend, and `Chosen` otherwise (`WebSearch::capabilities`,
+  and that read none of the owner's private stores (mail, calendar, the
+  graph, sessions, the outbox). **The class is the tool's actual one on this
+  install, read when the persona's registry is built** — not its usual one:
+  `web_search` is `Blind` only when the configured `[[search]]` chain has a
+  blind backend, and `Chosen` otherwise (`WebSearch::capabilities`,
   `Backend::egress`'s default), so on an install without one it is not
-  eligible, and "no `Chosen` sender" holds per registry rather than by
-  assumption (found on review). The fixture test covers both a blind and a
-  chosen chain. Today the set is `web_search` (where `Blind`),
-  `image_generate`, `image_view`, read access to the image library, file
-  tools inside the chat's own workspace, and the persona's own memory tools
-  (§9).
+  eligible (found on review). The fixture test checks the egress half against
+  each tool's capabilities, including a blind, a chosen and a *mixed* chain;
+  the owner-store half is the declaration itself, which the test checks
+  against an explicit list, because `Capabilities` has no axis to derive it
+  from (`ImageGenerate::capabilities` is a bare default). Today the set is
+  `web_search` (always through the blind path — below), `image_generate`,
+  `image_view`, read access to the image library (the owner's approved
+  characters, shared on purpose — §8.6), the file tools over the persona's
+  `files/` roots (§10.2), and the persona's own memory tools (§9).
+- **`web_search` in a persona chat is always the blind path**
+  (`SearchChain::search_blind`: blind backends only, at quick depth),
+  whatever the conversation's taint (found on review). Egress is declared
+  *per depth* and depth is the model's choice — a backend `Blind` at quick is
+  `Chosen` at deep (`Exa::egress`) — and the narrowing that forces the blind
+  path fires only when a conversation is *armed* (private **and**
+  untrusted). A persona chat after a recall is private-only, and D11 lifts
+  the leak guard that would otherwise cover that state, so without this a
+  model could reach a deep, destination-choosing search. Forcing the blind
+  path is what lets D11 keep web search on without reopening a `Chosen`
+  sender: "no `Chosen` sender" then holds for every depth and every taint.
 - **Never eligible:** mail and calendar, the graph (`kg_*`), the outbox and
   anything routed through it, the session store, `http_fetch` and any other
   `Egress::Chosen` tool, and `shell` (confined `shell` keeps `private_data`
@@ -248,7 +263,8 @@ then stop `web_search` after every recall. **The owner ruled that annoying
 (D11): a persona with `web_search` enabled keeps it after a recall** — so
 in a persona chat the leak guard never stops `web_search`, whatever the
 config says; the persona's `web_search` setting and `answers` (§10.4) are the
-switches. The cost,
+switches. And because a persona's `web_search` is always the blind path
+(below), keeping it on never admits a destination the model chose. The cost,
 stated so it is chosen rather than discovered: a search query can carry
 something the persona remembers about the owner to the configured search
 backends — `Blind` means the query reaches the `[[search]]` chain and nobody
@@ -866,7 +882,11 @@ an owner-origin one; only forgetting deletes.
   pages. This is why `source` is mandatory.
 - **Deleting a persona** deletes its folder, `memory.db` with it. What it
   learned that the owner had shared is listed, and the owner decides whether
-  those copies stay.
+  those copies stay. A copy that stays is re-stamped as the owner's: its
+  `source` becomes the owner's decision to keep it, with the original
+  provenance recorded beside it as history — because `source` is also the
+  deletion key, and one pointing at a transcript that no longer exists would
+  be a key nothing can ever match (found on review).
 - **Locking hides**; the writer still reads locked chats (§8.3).
 - **Incognito writes nothing** (§8.4).
 
