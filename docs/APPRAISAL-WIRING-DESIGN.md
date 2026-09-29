@@ -1395,7 +1395,14 @@ the stores that record it.
   points to read; nothing ranks on it yet.
 - **`mecha distill` scores what has resolved each pass**, with no model call.
   `sessions appraise` shows coverage — scored, hits, surprises, waiting,
-  unknown — and `hit_rate` is `None` over no scores.
+  unknown — and `hit_rate` is `None` over no scores. Since #377 the rate
+  also leaves out **forced** hits, a `no_act` prediction on an output that
+  offered the owner no act to take, and is `None` when nothing scored could
+  miss: the four scores then on record were all forced, and the readout
+  called them 100% (ARCHITECTURE.md, the appraisal section). Since #378
+  (ruling 1B) the harness does not ask for an expected act where the
+  output offers none and the run touched no task; such rows are counted
+  as not asked.
 - **Confirmed by the owner:** "the doctor's constant" for an output with no
   store is the outbox's 48h.
 - **Refined by the owner (R37, 2026-09-25): a task's output uses the task's
