@@ -25,7 +25,7 @@ codebase, and what the thirteen features listed after it need.
 | Question | Answer | Section |
 |---|---|---|
 | Where does a persona live? | A folder per persona under `~/.mecha/personas/`: Markdown and TOML for what the owner writes, a SQLite `memory.db` per persona plus a `shared.db`; three levels — everyone, a group, one persona; linked by name to its portrait and voice; a `files/` folder at each level. No graph database | §4 |
-| Is it part of the assistant? | No. A persona chat is its own session kind, runs on its own agent, and can never be given a tool that reads the owner's stores or names a destination | §3 |
+| Is it part of the assistant? | No. A persona chat's transcript lives in the persona's own folder, where no learning, distilling or appraising reader looks; it runs on its own agent, and can never be given a tool that reads the owner's stores or names a destination | §3 |
 | What can it do? | What the owner gives it, from a set fixed in code only to keep it apart from the assistant: web search, images, its own workspace, its own memory, its files | §3.3 |
 | Is the list of relationships fixed? | No. Friend, colleague, teacher, romantic and the rest are starter templates — Markdown the owner edits, copies or replaces. Flexibility comes first | §5 |
 | Does it remember? | Yes, in three stores kept apart: episodes (what was discussed, pointing at the turns), persona facts, and facts about the owner — which stay with the persona that learned them unless the owner shares them. Written nightly, recalled per turn, never the owner's graph | §9 |
@@ -224,7 +224,14 @@ rebuilds a child's registry today — but the allowlist is intersected with an
   fixture test walks the whole registry and fails on any tool whose
   declaration is missing or disagrees with its egress class (found on
   review). The intended set: tools whose egress class is `None` or `Blind`
-  and that read no owner store. Today that is `web_search` (`Blind`),
+  and that read no owner store. **The class is the tool's actual one on
+  this install, read when the persona's registry is built** — not its usual
+  one: `web_search` is `Blind` only when the configured `[[search]]` chain has
+  a blind backend, and `Chosen` otherwise (`WebSearch::capabilities`,
+  `Backend::egress`'s default), so on an install without one it is not
+  eligible, and "no `Chosen` sender" holds per registry rather than by
+  assumption (found on review). The fixture test covers both a blind and a
+  chosen chain. Today the set is `web_search` (where `Blind`),
   `image_generate`, `image_view`, read access to the image library, file
   tools inside the chat's own workspace, and the persona's own memory tools
   (§9).
@@ -827,7 +834,11 @@ All of it rides in the message stream; nothing touches the system prompt
 - **On every turn**, the harness searches by the owner's latest message —
   episodes and facts, keyword and vector together, weighted toward recent —
   and folds the best few into that turn. The owner's words key the search,
-  Kindroid's rule, so a persona does not steer what it is reminded of.
+  Kindroid's rule, so a persona does not steer what it is reminded of. Text
+  folded this way arrives in no tool result, so it arms taint the way other
+  harness-supplied content does — `Taint::arm_for_content`, with each
+  record's recorded origin — or recall would be exactly the laundering path
+  §9.6 rules out (found on review).
 - **On demand**, two tools over this persona's stores only: `recall`
   (search episodes and facts) and `recall_open` (the transcript turns an
   episode points at).
@@ -1131,9 +1142,14 @@ owner's action, and the model never names the file it reads.
 - **Files only, or open — a per-persona setting** (D16, ruled). `answers =
   "files"` limits answers to the persona's files: an answer they do not
   support says so, rather than filling in from general knowledge, and the
-  tools that reach further — `web_search` and the like — are **withheld from
-  the chat** (`RunContext.withheld`), so the limit is structural rather than
-  a request the model may ignore. `answers = "open"` lets it draw on the web
+  tools that reach further — `web_search` and the like — are **left out of
+  the persona's registry** (§3.4), so the model is never offered them and the
+  limit is structural rather than a request it may ignore. (Not
+  `RunContext.withheld`: that refuses a call but the tool list sent with the
+  request comes from the registry, so the model would be offered a tool it
+  could never use — found on review.) Since `answers` is per persona, it is
+  part of what the persona's agent is built from, and changing it is a new
+  version like any other edit. `answers = "open"` lets it draw on the web
   and its other tools as well, with anything not from the files labelled as
   such. The persona's page shows the setting as a toggle; the `teacher`
   starter suggests `"files"`, every other starter `"open"`.
@@ -1157,8 +1173,10 @@ the template too.
   `answers = "open"` and `web_search`, it is more** (found on review): the
   search query is itself an exfiltration channel (`search.rs`'s own header —
   the payload fits in `?q=`), a hostile file can instruct the persona to
-  search for something it remembers about the owner, and D11 keeps the guard
-  that would refuse it off. That is the three legs in one chat — private
+  search for something it remembers about the owner, and the guard that
+  would refuse it — `block_sends_after_private` — is off by default and D11
+  does not force it on for personas (a persona chat takes whatever the
+  config says). That is the three legs in one chat — private
   (memory), untrusted (the file), a way out (the query, `Blind`: it reaches
   the configured search chain, not an attacker-chosen host, but a search
   engine is not nobody). The owner's choices that close it: `answers =
@@ -1237,6 +1255,23 @@ turned off is recorded in the persona's version history, so an experiment
 knows which conditions a chat ran under (§13). And when serving is designed
 (§14), a persona offered to anyone else cannot run with `disclosure` or
 `crisis` off — those are the two duties every companion law shares (§15).
+
+**A check that cannot run is never silent** (found on review). The crisis
+judge, the farewell check and §9.12's Core judge each need a model, and a
+model can be absent — no seat on the server (`permit.rs`), a router preset
+not loaded, an HTTP 200 with empty `content`. Each then fails in a stated
+direction, and the record distinguishes *couldn't check* from *switched
+off*, so neither can pass for the other:
+
+- **Crisis:** its first tier is keywords and needs no model, so it always
+  runs; when the model tiers cannot, the page shows that crisis detection is
+  degraded, and the dose record says so for that chat.
+- **Farewell:** the reply is shown, marked *unchecked* in the record, and
+  the persona's page counts unchecked goodbyes.
+- **Core judge:** fails closed — a self-update that cannot be judged is not
+  applied, and is recorded as refused for that reason (§9.12).
+- **Envelope first:** an empty or refused judge response is *couldn't
+  check*, never *passed* — the llama-server trap `CLAUDE.md` names.
 
 ### 12.1 Disclosure
 
@@ -1444,7 +1479,7 @@ Each phase is usable on its own, and each unlocks the next.
    profiles; the schema
    of §4.3; the shipped starters; link resolution with broken links named; CLI create, edit, list,
    lock; the web library tab shows personas beside their characters.
-2. **Working personas.** `SessionKind::Persona` and its exclusions (§3.2);
+2. **Working personas.** Transcripts under `<persona>/sessions/` (§3.2);
    the eligibility rule (§3.3); one agent per persona (§3.4); chats pinned to
    a persona version; session goals (§6); locked chats hidden (§8.3); and
    the safety layer's first cut, since it runs in every persona chat —
