@@ -166,7 +166,8 @@ pub fn record_crisis(dir: &Path, surface: &str, paused: bool) -> Result<()> {
     append_line(&dir.join("safety.jsonl"), &serde_json::to_string(&record)?)
 }
 
-/// One owner turn with a persona, for the dose meters (§12.3). The time and
+/// One owner message to a persona, for the dose meters (§12.3) — a steer
+/// sent mid-answer counts as one too, so the meters count messages. The time and
 /// the persona, and whether the chat's crisis sensor was degraded when it was
 /// taken — §12's "the dose record says so for that chat". Never the words.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -210,7 +211,9 @@ pub fn record_dose(dir: &Path, persona: &str, chat: &str, crisis: CrisisState) -
 }
 
 /// What the dose meters say about one persona, as of `now`, in the owner's
-/// zone. Late night is 23:00–05:00 local.
+/// zone. "Today" is the local date; "the week" is the last 7×24 hours — a
+/// span of time, not seven calendar days, so it does not slide an hour
+/// against itself across a clock change. Late night is 23:00–05:00 local.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 pub struct Dose {
     pub turns_today: u32,
@@ -222,16 +225,28 @@ pub fn is_late_night(hour: u32) -> bool {
     !(5..23).contains(&hour)
 }
 
-/// Read the meters for `persona` (or every persona, with `None`). An
-/// unreadable line is skipped rather than failing the read; a missing file
-/// is no turns.
+/// Every persona's meters, and how far they can be believed. A zero is only
+/// "no turns" when the store was read: an unreadable file and lines that do
+/// not parse are said, never folded into zeros that read exactly like a
+/// persona never talked to (review of #418).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Doses {
+    pub by_persona: std::collections::HashMap<String, Dose>,
+    /// Why `dose.jsonl` could not be read, when it exists and could not.
+    pub unreadable: Option<String>,
+    /// Lines that did not parse, and so are in no count.
+    pub skipped: u32,
+}
+
+/// Read the meters for `persona` (or every persona, with `None`). A missing
+/// file is no turns; an unreadable one is not — see [`doses`].
 pub fn dose(
     dir: &Path,
     persona: Option<&str>,
     now: chrono::DateTime<chrono::Utc>,
     tz: chrono_tz::Tz,
 ) -> Dose {
-    let all = doses(dir, now, tz);
+    let all = doses(dir, now, tz).by_persona;
     match persona {
         Some(p) => all.get(p).copied().unwrap_or_default(),
         None => all.values().fold(Dose::default(), |a, d| Dose {
@@ -244,22 +259,25 @@ pub fn dose(
 
 /// Every persona's meters in one walk of the file — what a list of
 /// personas reads, rather than one parse per row (review of #418).
-pub fn doses(
-    dir: &Path,
-    now: chrono::DateTime<chrono::Utc>,
-    tz: chrono_tz::Tz,
-) -> std::collections::HashMap<String, Dose> {
-    let mut out: std::collections::HashMap<String, Dose> = Default::default();
-    let Ok(text) = std::fs::read_to_string(dir.join("dose.jsonl")) else {
-        return out;
+pub fn doses(dir: &Path, now: chrono::DateTime<chrono::Utc>, tz: chrono_tz::Tz) -> Doses {
+    let mut read = Doses::default();
+    let text = match std::fs::read_to_string(dir.join("dose.jsonl")) {
+        Ok(text) => text,
+        // Never written: no turns yet, which is a true zero.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return read,
+        Err(e) => {
+            read.unreadable = Some(e.to_string());
+            return read;
+        }
     };
     let today = now.with_timezone(&tz).date_naive();
     let week_ago = now - chrono::Duration::days(7);
-    for r in text
-        .lines()
-        .filter_map(|l| serde_json::from_str::<DoseRecord>(l).ok())
-    {
-        let out = out.entry(r.persona.clone()).or_default();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(r) = serde_json::from_str::<DoseRecord>(line) else {
+            read.skipped += 1;
+            continue;
+        };
+        let out = read.by_persona.entry(r.persona.clone()).or_default();
         let local = r.at.with_timezone(&tz);
         if local.date_naive() == today {
             out.turns_today += 1;
@@ -272,7 +290,7 @@ pub fn doses(
             }
         }
     }
-    out
+    read
 }
 
 /// How the re-anchor begins — registered in `agent::is_harness_voice`, so no
@@ -397,6 +415,19 @@ mod tests {
         );
         assert_eq!(dose(&dir, None, now, tz).turns_today, 3);
         assert_eq!(dose(&dir, Some("nobody"), now, tz), Dose::default());
+        // The line that did not parse is counted, not silently dropped.
+        assert_eq!(doses(&dir, now, tz).skipped, 1);
+        std::fs::remove_dir_all(&dir).ok();
+        // A store never written is a true zero; one that cannot be read is
+        // said, not reported as zero turns.
+        std::fs::create_dir_all(&dir).unwrap();
+        let none = doses(&dir, now, tz);
+        assert!(none.unreadable.is_none() && none.by_persona.is_empty());
+        std::fs::create_dir_all(dir.join("dose.jsonl")).unwrap();
+        assert!(
+            doses(&dir, now, tz).unreadable.is_some(),
+            "a directory cannot be read as the file"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 

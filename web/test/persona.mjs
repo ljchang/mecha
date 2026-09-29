@@ -107,6 +107,8 @@ assert.equal(safetyLine({ crisis: 'degraded', disclosure: true, reanchor: true, 
 assert.equal(doseLine({ turns_today: 3, turns_7d: 12, late_night_7d: 2 }), '3 today · 12 this week · 2 late at night');
 assert.equal(doseLine({ turns_today: 0, turns_7d: 0, late_night_7d: 0 }), '0 today · 0 this week');
 assert.equal(doseLine(null), '');
+assert.equal(doseLine({ unread: 'Permission denied' }), 'usage meters unreadable');
+assert.equal(doseLine({ turns_today: 1, turns_7d: 2, late_night_7d: 0, skipped: 3 }), '1 today · 2 this week · 3 unreadable records not counted');
 
 // A failed turn says so rather than ending silently.
 s = applyEvent(emptyRun(), { type: 'done', ok: false, error: 'model unavailable' });
