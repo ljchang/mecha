@@ -227,6 +227,22 @@ impl PersonaChats {
         Ok((agent, refused))
     }
 
+    /// Cancel every persona run in flight, at shutdown. `ChatState::stop`
+    /// calls this after `stopping` is set and before it closes the tracker
+    /// these runs share, so `drain` waits only for runs that were asked to
+    /// stop — never for a persona turn nothing could see (found on review of
+    /// #409). A `send` either set its run live before this took the lock, and
+    /// is cancelled here, or checks `stopping` under the lock and refuses.
+    pub async fn stop(&self) {
+        let sessions = self.sessions.lock().await;
+        for ps in sessions.values() {
+            if let Some(live) = &ps.live {
+                live.cancel
+                    .cancel(mecha_core::agent::CancelReason::Shutdown);
+            }
+        }
+    }
+
     /// The personas a browsing surface may list, with what is wrong with each.
     pub fn list(&self, library: &LibraryState, token: Option<&str>) -> serde_json::Value {
         let store = Store::load(&self.store);
@@ -310,7 +326,7 @@ impl PersonaChats {
             .map_err(|e| failed(e.into()))?;
         let id = session.meta.id.clone();
         let version = pinned.version;
-        let (events, _) = broadcast::channel(256);
+        let (events, _) = broadcast::channel(512);
         self.sessions.lock().await.insert(
             key.clone(),
             PersonaSession {
@@ -404,7 +420,7 @@ impl PersonaChats {
         // A goal set at open and never sent — the chat was opened and left.
         let goal = pin.goal.filter(|_| conversation.messages.is_empty());
         let session = Session { meta, path };
-        let (events, _) = broadcast::channel(256);
+        let (events, _) = broadcast::channel(512);
         self.sessions.lock().await.insert(
             key.clone(),
             PersonaSession {
@@ -557,6 +573,11 @@ impl PersonaChats {
         let (agent, _) = self.agent_for(&bound, &pinned).map_err(failed)?;
 
         let mut sessions = self.sessions.lock().await;
+        // Under the lock `stop` takes, so a turn is either cancelled by it or
+        // refused here.
+        if chat.stopping.is_cancelled() {
+            return Err(Refusal::Failed("server is shutting down".into()));
+        }
         let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
         if ps.live.is_some() {
             return steer(ps, text, request_id);
@@ -566,22 +587,25 @@ impl PersonaChats {
         };
         // The session goal rides in the first turn, never the system prompt,
         // so setting one costs the persona's cached prefix nothing (§6).
-        let said = match ps.goal.take() {
+        let goal = ps.goal.take();
+        let said = match &goal {
             Some(goal) if conversation.messages.is_empty() => {
                 format!("(What I want from this conversation: {goal})\n\n{text}")
             }
-            Some(goal) => {
-                ps.goal = Some(goal);
-                text.clone()
-            }
-            None => text.clone(),
+            _ => text.clone(),
         };
+        // Spent only once the first turn carries it.
+        if !conversation.messages.is_empty() {
+            ps.goal = goal.clone();
+        }
         let user = Message::user(&said);
         conversation.push(user.clone());
-        // Refuse a turn the record did not accept, as the assistant's do.
+        // Refuse a turn the record did not accept, as the assistant's do —
+        // and give the goal back with it, so the retry still carries it.
         if let Err(e) = ps.session.append(&Record::Message(user)) {
             conversation.messages.pop();
             ps.conversation = Some(conversation);
+            ps.goal = goal;
             return Err(Refusal::Failed(format!("recording: {e:#}")));
         }
         let before: Arc<[Message]> = conversation.messages.clone().into();
@@ -924,8 +948,9 @@ mod tests {
     use mecha_core::message::{Block, CompletionRequest, CompletionResponse, StopReason};
     use mecha_core::persona::{self as store, NewPersona, Origin};
 
-    /// A provider that answers every request and keeps a copy of it.
-    struct Capture(Arc<StdMutex<Vec<CompletionRequest>>>);
+    /// A provider that answers every request and keeps a copy of it — or,
+    /// gated, never answers, as a model mid-generation.
+    struct Capture(Arc<StdMutex<Vec<CompletionRequest>>>, bool);
 
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for Capture {
@@ -941,6 +966,9 @@ mod tests {
             _: Option<&mecha_core::provider::StreamSink>,
         ) -> Result<CompletionResponse> {
             self.0.lock().unwrap().push(req.clone());
+            if self.1 {
+                std::future::pending::<()>().await;
+            }
             Ok(CompletionResponse {
                 message: Message::assistant(vec![Block::Text {
                     text: "Hello from Mara.".into(),
@@ -981,6 +1009,10 @@ mod tests {
     /// (`web_search`), beside an assistant whose prompt and tools are
     /// marked so a leak into her chat is visible.
     fn world() -> World {
+        world_gated(false)
+    }
+
+    fn world_gated(gated: bool) -> World {
         let root = std::env::temp_dir().join(format!("mecha-pchat-{}", uuid::Uuid::new_v4()));
         let dir = root.join("personas");
         let lib = mecha_core::imagelib::Library::load(&root.join("imagelib")).0;
@@ -1015,7 +1047,7 @@ mod tests {
             dir,
             root.join("work"),
             Arc::new(move |_| {
-                Ok(Box::new(Capture(Arc::clone(&for_persona)))
+                Ok(Box::new(Capture(Arc::clone(&for_persona), gated))
                     as Box<dyn mecha_core::provider::Provider>)
             }),
         );
@@ -1025,7 +1057,7 @@ mod tests {
         let mut config = mecha_core::config::Config::default();
         config.agent.system_prompt = Some("ASSISTANT-ONLY: the owner's charter".into());
         let chat = chat::test_chat_built(
-            Box::new(Capture(Arc::new(StdMutex::new(Vec::new())))),
+            Box::new(Capture(Arc::new(StdMutex::new(Vec::new())), false)),
             pool,
             config,
             None,
@@ -1232,6 +1264,45 @@ mod tests {
         );
         // The resumed turn carried the earlier conversation.
         assert!(seen[1].messages.len() >= 3);
+    }
+
+    /// A persona turn mid-generation is cancelled at shutdown, so the drain
+    /// finishes instead of waiting on work nothing asked to stop.
+    #[tokio::test]
+    async fn shutdown_cancels_a_persona_run_and_the_drain_finishes() {
+        let w = world_gated(true);
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        // The request is in flight and will never be answered.
+        for _ in 0..200 {
+            if !w.seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(w.seen.lock().unwrap().len(), 1);
+        w.chat.stop().await;
+        tokio::time::timeout(std::time::Duration::from_secs(10), w.chat.drain())
+            .await
+            .expect("the drain waited on a persona run nothing cancelled");
+        // And a turn after the stop is refused rather than started.
+        let refused = w
+            .personas()
+            .send(&w.chat, &w.library, &key, "Again", None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(refused, Refusal::Failed(ref m) if m.contains("shutting down")),
+            "{refused:?}"
+        );
     }
 
     #[tokio::test]
