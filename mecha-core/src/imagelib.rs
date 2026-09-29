@@ -888,7 +888,9 @@ pub fn compile(
             .filter(|e| e.status == Status::Approved)
             .ok_or_else(|| missing(lib, Kind::Character, &name))?;
         let (wearing, doing) = (member.wearing.trim(), member.doing.trim());
-        if wearing.is_empty() || doing.is_empty() {
+        // A placeholder copied from a refusal's example is no answer.
+        let blank = |s: &str| s.is_empty() || s.chars().all(|c| c == '…' || c == '.');
+        if blank(wearing) || blank(doing) {
             return Err(format!(
                 "`{name}` needs `wearing` and `doing`: a reference supplies its own outfit and \
                  pose when the scene does not say."
@@ -980,16 +982,29 @@ pub fn compile(
 /// characters up, then wrote their descriptions into the prompt and left
 /// `cast` out — and from words alone they came out as two strangers (ArcFace
 /// 0.02–0.17 against their portraits; E1 measured the same, 0.33).
+///
+/// **In order of first mention**, because the refusal hands these back as a
+/// `cast` to copy and cast order is left to right: sorted, "Maya and John"
+/// came back as `[john, maya]` and a copied retry swapped them (review of
+/// #384).
 pub fn named_in(lib: &Library, prompt: &str) -> Vec<String> {
-    let words: std::collections::BTreeSet<String> = prompt
+    let mut out: Vec<String> = Vec::new();
+    for word in prompt
         .split(|c: char| !(c.is_alphanumeric() || c == '-'))
         .filter(|w| !w.is_empty())
         .map(str::to_lowercase)
-        .collect();
-    lib.approved()
-        .filter(|e| e.kind == Kind::Character && words.contains(&e.name))
-        .map(|e| e.name.clone())
-        .collect()
+    {
+        if out.contains(&word) {
+            continue;
+        }
+        if lib
+            .get(Kind::Character, &word)
+            .is_some_and(|e| e.status == Status::Approved)
+        {
+            out.push(word);
+        }
+    }
+    out
 }
 
 /// Characters whose entries did not load, named as whole words in a prompt.
@@ -1464,6 +1479,12 @@ mod tests {
         m.wearing = " ".into();
         let why = compile(&lib, "x", &[m], None).unwrap_err();
         assert!(why.contains("wearing"), "{why}");
+        // The refusal's own placeholder, copied literally, is no answer.
+        let mut m = member("maya");
+        m.doing = "…".into();
+        assert!(compile(&lib, "x", &[m], None)
+            .unwrap_err()
+            .contains("doing"));
     }
 
     #[test]
@@ -1493,6 +1514,14 @@ mod tests {
         create(dir.path(), character("theo", Origin::ModelClean)).unwrap();
         let (lib, _) = Library::load(dir.path());
         assert_eq!(named_in(&lib, "Maya and John on a bench"), ["maya"]);
+        create(dir.path(), character("john", Origin::Owner)).unwrap();
+        let (lib, _) = Library::load(dir.path());
+        // First mention first, whatever the library's order; once each.
+        assert_eq!(
+            named_in(&lib, "Maya and John, then Maya again"),
+            ["maya", "john"]
+        );
+        assert_eq!(named_in(&lib, "John beside Maya"), ["john", "maya"]);
         // Whole words only; a candidate is not a character yet.
         assert!(named_in(&lib, "a mayan temple, joyful, theo").is_empty());
     }

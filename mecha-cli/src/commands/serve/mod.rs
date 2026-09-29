@@ -38,6 +38,7 @@ use axum::{Json, Router};
 
 use mecha_core::config::Config;
 
+mod archive;
 mod board;
 mod chat;
 mod files;
@@ -311,6 +312,15 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         )
         .route("/api/sessions", get(chat::sessions))
         .route("/api/history", get(chat::history))
+        .route("/api/sessions/{id}", axum::routing::delete(archive::delete))
+        .route(
+            "/api/sessions/{id}/archive",
+            axum::routing::post(archive::archive),
+        )
+        .route(
+            "/api/sessions/{id}/unarchive",
+            axum::routing::post(archive::unarchive),
+        )
         .route("/api/resume", axum::routing::post(chat::resume))
         .route("/api/incognito", axum::routing::post(chat::open_incognito))
         .route(
@@ -1917,9 +1927,13 @@ mod boundary_tests {
                 if meta.is_dir() {
                     stack.push(path);
                 } else if meta.is_file()
-                    && std::fs::read(&path)
-                        .is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes()))
+                    && (path
+                        .file_name()
+                        .is_some_and(|n| n.to_string_lossy().contains(needle))
+                        || std::fs::read(&path)
+                            .is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes())))
                 {
+                    // A name is a copy too.
                     hits.push(path);
                 }
             }
@@ -3410,6 +3424,206 @@ mod boundary_tests {
                 .count(),
             1
         );
+    }
+
+    /// Point the graph redactor at nothing for the guard's lifetime: a test
+    /// that deletes a conversation must never reach the owner's live graph,
+    /// which `mecha-graph` on `PATH` and `~/.mecha-graph` would. Under the
+    /// `HomeGuard` lock, which serialises every test that moves environment.
+    struct NoGraph(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl NoGraph {
+        fn under(home: &std::path::Path) -> Self {
+            let saved = ["MECHA_GRAPH_BIN", "MECHA_GRAPH_DB"]
+                .into_iter()
+                .map(|k| (k, std::env::var_os(k)))
+                .collect();
+            std::env::set_var("MECHA_GRAPH_BIN", home.join("no-such-mecha-graph"));
+            std::env::set_var("MECHA_GRAPH_DB", home.join("no-such-graph.db"));
+            NoGraph(saved)
+        }
+    }
+    impl Drop for NoGraph {
+        fn drop(&mut self) {
+            for (k, v) in &self.0 {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_archived_chat_leaves_the_lists_and_a_deleted_one_leaves_no_trace() {
+        const CANARY: &str = "the cartographer's lemon-yellow kayak";
+        let home = crate::testenv::HomeGuard::new("web-archive-delete");
+        let _graph = NoGraph::under(&home.dir);
+        let app = app(chat::test_chat_answering("noted", false));
+        converse(&app, "chat-arch", CANARY).await;
+        let rail = body(app.clone().oneshot(get("/api/sessions")).await.unwrap()).await;
+        let id = rail["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["key"] == "chat-arch")
+            .and_then(|r| r["id"].as_str())
+            .unwrap()
+            .to_string();
+        let listed = |v: &serde_json::Value, id: &str| {
+            v["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["id"] == id)
+        };
+
+        // Archive: out of the rail and the list, into the archive, and the
+        // record untouched.
+        let transcript = home.dir.join("sessions").join(format!("{id}.jsonl"));
+        let before = std::fs::read(&transcript).unwrap();
+        let r = app
+            .clone()
+            .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        assert!(!listed(
+            &body(app.clone().oneshot(get("/api/sessions")).await.unwrap()).await,
+            &id
+        ));
+        assert!(!listed(
+            &body(app.clone().oneshot(get("/api/history")).await.unwrap()).await,
+            &id
+        ));
+        let archived = body(
+            app.clone()
+                .oneshot(get("/api/history?archived=true"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(listed(&archived, &id), "{archived}");
+        assert_eq!(std::fs::read(&transcript).unwrap(), before);
+
+        let r = app
+            .clone()
+            .oneshot(post(&format!("/api/sessions/{id}/unarchive"), ""))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        assert!(listed(
+            &body(app.clone().oneshot(get("/api/history")).await.unwrap()).await,
+            &id
+        ));
+
+        // Opening an archived conversation un-archives it (owner's ruling).
+        let r = app
+            .clone()
+            .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        let r = app
+            .clone()
+            .oneshot(json_post(
+                "/api/resume",
+                serde_json::json!({ "id": id }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(
+            !mecha_core::archive::is_archived(&home.dir.join("sessions"), &id),
+            "opening an archived conversation left it archived"
+        );
+        // Resumed under a new key; let it go again so the delete below can run.
+        let r = app
+            .clone()
+            .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+
+        // A detached task run writing this conversation from another process:
+        // delete refuses rather than remove its workspace mid-call.
+        let markers = crate::commands::tasks::markers().unwrap();
+        markers
+            .mark_running_for("task-live", None, Some(&id))
+            .unwrap();
+        let busy = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/sessions/{id}"))
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .header("x-mecha-request", "1")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(busy).await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
+        assert!(
+            transcript.exists(),
+            "a refused delete touched the transcript"
+        );
+        markers.clear("task-live");
+
+        // A marker store that cannot be read is not "no run": the delete
+        // refuses rather than remove a workspace a run may be using.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = markers.dir().to_path_buf();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let blind = Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/sessions/{id}"))
+                .header(TAILSCALE_LOGIN, "owner@example.com")
+                .header("x-mecha-request", "1")
+                .body(Body::empty())
+                .unwrap();
+            let status = app.clone().oneshot(blind).await.unwrap().status();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            // Root reads a 000 directory anyway; only then is this vacuous.
+            if std::fs::read_dir("/root").is_err() {
+                assert_eq!(status, StatusCode::CONFLICT);
+                assert!(transcript.exists());
+            }
+        }
+
+        // Delete: a mutation like any other, so the intent header is required.
+        let bare = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/sessions/{id}"))
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(bare).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        assert!(transcript.exists());
+
+        assert!(
+            !files_containing(&home.dir, CANARY).is_empty(),
+            "the canary was never recorded"
+        );
+        let del = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/sessions/{id}"))
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .header("x-mecha-request", "1")
+            .body(Body::empty())
+            .unwrap();
+        let r = app.clone().oneshot(del).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let report = body(r).await;
+        assert_eq!(report["complete"], true, "{report}");
+        assert_eq!(files_containing(&home.dir, CANARY), Vec::<PathBuf>::new());
+        assert_eq!(files_containing(&home.dir, &id), Vec::<PathBuf>::new());
+        assert!(!listed(
+            &body(app.clone().oneshot(get("/api/history")).await.unwrap()).await,
+            &id
+        ));
+        assert!(!home.dir.join("work/web/chat-arch").exists());
     }
 
     #[tokio::test]

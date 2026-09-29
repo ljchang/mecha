@@ -219,6 +219,26 @@ it: the messages come back and so does the
 last Tuesday still remembers on Thursday, because resuming must not launder
 what a session touched.
 
+Every row but an incognito one has a **⋯** control with two ways to put a
+conversation away, and they are deliberately different acts:
+
+- **Archive** takes it out of the list and keeps the record whole. Learning,
+  appraisal and the knowledge graph still read it; it waits under
+  **archived** at the foot of the drawer. Opening one resumes it and takes it
+  out of the archive — picking it back up says it is current again — and
+  **restore** does the same without opening it.
+- **Delete** forgets it. The transcript goes, and so does everything derived
+  from it: its workspace, any draft it staged in the outbox and any question
+  it left waiting, the lessons and learned rules drawn from it, its
+  appraisals, and its episode in the knowledge graph. It asks first and cannot
+  be undone. The drawer then says what was knowingly kept — a workspace
+  another conversation shares, the graph's backups — and if a store could not
+  be reached, it says the delete is incomplete and offers **delete again** to
+  finish it. See
+  [deleting a conversation](/docs/features/memory/sessions-and-replay#deleting-a-conversation).
+
+Neither works on a conversation with a run in flight: stop it first.
+
 An **incognito chat** is the exception: the second new-chat button opens one
 that writes no transcript, keeps its files in RAM, and is gone for good when
 you tap End or leave it for 30 minutes. It can reach less than an ordinary

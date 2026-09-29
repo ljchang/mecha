@@ -81,7 +81,7 @@ impl Tool for ImageLibrary {
             "type": "object",
             "properties": {
                 "kind": {"type": "string", "enum": ["character", "style", "all"]},
-                "query": {"type": "string", "description": "A word to match in names and descriptions."}
+                "query": {"type": "string", "description": "Names or words: a name picks that entry; otherwise every word must appear in an entry's name or description."}
             }
         })
     }
@@ -107,14 +107,11 @@ impl Tool for ImageLibrary {
             .map(|q| q.trim().to_lowercase())
             .filter(|q| !q.is_empty());
         let (lib, errors) = Library::load(&self.dir);
+        let search = Search::new(&lib, query.as_deref(), kind);
         let lines: Vec<String> = lib
             .approved()
             .filter(|e| kind.is_none_or(|k| e.kind == k))
-            .filter(|e| {
-                query
-                    .as_deref()
-                    .is_none_or(|q| e.name.contains(q) || e.text.to_lowercase().contains(q))
-            })
+            .filter(|e| query.as_deref().is_none_or(|q| search.matches(e, q)))
             .map(|e| format!("{} {} (v{}): {}", e.kind.label(), e.name, e.version, e.text))
             .collect();
         if lines.is_empty() {
@@ -147,6 +144,63 @@ impl Tool for ImageLibrary {
             lines.join("\n")
         )))
     }
+}
+
+/// How a query picks entries (review of #384, twice).
+///
+/// - **A word that *is* an entry's name picks by name only.** The first live
+///   run searched "Maya John"; matching that as one phrase found nothing, and
+///   matching any word against descriptions returned the whole library on any
+///   phrase ("and" is in "tall and lean") — every character's physical
+///   description into context, on a tool declared private.
+/// - **Otherwise every word of three letters or more**, against names and
+///   descriptions — all of them, since "and" survives the floor; words under
+///   three are dropped ("a" is in "priya") —
+/// - **unless none is left**, when the whole query matches as one substring,
+///   so a character named `jo` can still be found by its own name.
+struct Search {
+    by_name: Option<std::collections::BTreeSet<String>>,
+}
+
+impl Search {
+    /// Names resolve against what the listing can return — approved entries
+    /// of the kind asked for. Against every entry, a candidate's name
+    /// collapsed a search to name-only mode and then was filtered out,
+    /// returning nothing, and the emptiness told the model a candidate by
+    /// that name existed (review of #384).
+    fn new(lib: &Library, query: Option<&str>, kind: Option<Kind>) -> Search {
+        let by_name = query.and_then(|q| {
+            let names: std::collections::BTreeSet<String> = words(q)
+                .filter(|w| {
+                    lib.approved()
+                        .any(|e| &e.name == w && kind.is_none_or(|k| e.kind == k))
+                })
+                .collect();
+            (!names.is_empty()).then_some(names)
+        });
+        Search { by_name }
+    }
+
+    fn matches(&self, e: &crate::imagelib::Entry, q: &str) -> bool {
+        if let Some(names) = &self.by_name {
+            return names.contains(&e.name);
+        }
+        let text = e.text.to_lowercase();
+        let mut long = words(q).filter(|w| w.chars().count() >= 3).peekable();
+        if long.peek().is_none() {
+            return e.name.contains(q) || text.contains(q);
+        }
+        // Every long word, not any: "and" is three letters and sits in "tall
+        // and lean", so any-word returned the whole library on a phrase with
+        // no name in it — the query a search is for (review of #384).
+        long.all(|w| e.name.contains(&w) || text.contains(&w))
+    }
+}
+
+fn words(q: &str) -> impl Iterator<Item = String> + '_ {
+    q.split(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
 }
 
 /// Stages a candidate character or style for the owner to approve.
@@ -327,6 +381,133 @@ mod tests {
         assert!(
             !list.external,
             "the owner's own text is not third-party content"
+        );
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn a_search_of_several_names_finds_each() {
+        let lib = scratch();
+        let ws = scratch();
+        for name in ["maya", "john", "priya", "jo"] {
+            imagelib::create(
+                &lib,
+                NewEntry {
+                    kind: Kind::Character,
+                    name: name.into(),
+                    portrait: Some(png()),
+                    // Descriptions that read like real ones: every one
+                    // carries "and", which the phrase below also does.
+                    text: format!("{name}, tall and lean, with dark hair"),
+                    source_seed: None,
+                    origin: Origin::Owner,
+                    locked: false,
+                },
+            )
+            .unwrap();
+        }
+        let out = ImageLibrary::new(lib.clone())
+            .call(
+                json!({"query": "a picture of Maya and John"}),
+                &ctx(&ws, None),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("maya") && out.content.contains("john"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("priya"), "{}", out.content);
+        // A short name is found by name.
+        let out = ImageLibrary::new(lib.clone())
+            .call(json!({"query": "jo"}), &ctx(&ws, None))
+            .await
+            .unwrap();
+        assert!(out.content.contains("character jo (v1)"), "{}", out.content);
+        // A short word that is no one's name falls back to one substring —
+        // the branch the name above never reaches: "ya" is in maya and priya.
+        let out = ImageLibrary::new(lib.clone())
+            .call(json!({"query": "ya"}), &ctx(&ws, None))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("character maya (v1)")
+                && out.content.contains("character priya (v1)")
+                && !out.content.contains("character john"),
+            "{}",
+            out.content
+        );
+        // With no name in it, a query searches descriptions.
+        let out = ImageLibrary::new(lib.clone())
+            .call(json!({"query": "dark hair"}), &ctx(&ws, None))
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("priya") && out.content.contains("maya"),
+            "{}",
+            out.content
+        );
+        // A phrase with no name in it matches on every long word, not any —
+        // "and" is in every description here, and matched them all.
+        let out = ImageLibrary::new(lib.clone())
+            .call(
+                json!({"query": "a dog and a cat on a sofa"}),
+                &ctx(&ws, None),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content
+                .starts_with("Nothing in the image library matches."),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn a_candidates_name_does_not_empty_a_search() {
+        let lib = scratch();
+        let ws = scratch();
+        imagelib::create(
+            &lib,
+            NewEntry {
+                kind: Kind::Style,
+                name: "picnic-park".into(),
+                text: "a sunny park with checked blankets".into(),
+                portrait: None,
+                source_seed: None,
+                origin: Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        // A candidate the model staged, named like the word searched for.
+        imagelib::create(
+            &lib,
+            NewEntry {
+                kind: Kind::Style,
+                name: "picnic".into(),
+                text: "proposed".into(),
+                portrait: None,
+                source_seed: None,
+                origin: Origin::ModelClean,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let out = ImageLibrary::new(lib.clone())
+            .call(json!({"query": "picnic"}), &ctx(&ws, None))
+            .await
+            .unwrap();
+        assert!(out.content.contains("style picnic-park"), "{}", out.content);
+        assert!(
+            !out.content.contains("style picnic (v1)"),
+            "{}",
+            out.content
         );
         std::fs::remove_dir_all(lib).ok();
         std::fs::remove_dir_all(ws).ok();
