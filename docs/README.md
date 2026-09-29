@@ -93,7 +93,7 @@ something shipped.
 | [`MAIL-UX-DESIGN.md`](MAIL-UX-DESIGN.md) | Mail as a surface you work: the phases, and what each settled |
 | [`NOTES-GRAPH-DESIGN.md`](NOTES-GRAPH-DESIGN.md) | One web surface over the graph: capture, find, edit — the consolidation of the notes and graph tabs |
 | [`MEETING-POLL-UX-DESIGN.md`](MEETING-POLL-UX-DESIGN.md) | The meeting poll from the owner's chair: one call, one card, a deterministic sweep, and the stated decision policy. §6 holds the rulings the build waits on |
-| [`PERSONA-DESIGN.md`](PERSONA-DESIGN.md) | Characters the owner authors and talks to — relationship modes, scenarios, notebooks of sources, memory, voice — kept in their own sessions, apart from the assistant's reach. §3 is the boundary; §15 holds the open decisions |
+| [`PERSONA-DESIGN.md`](PERSONA-DESIGN.md) | Characters the owner authors and talks to — relationship templates, memory, files they can read and cite, voice, self-portraits — kept in their own sessions, apart from the assistant's reach. §3 is the boundary; §16 holds every ruling |
 | [`POLL-DESIGN.md`](POLL-DESIGN.md) | Polls as a general-purpose instrument — the six kinds and the lecture mode |
 | [`PROVENANCE-DESIGN.md`](PROVENANCE-DESIGN.md) | Why nearly every conversation arms, and four ways to label by provenance instead of by server — self-writes, field labels, grounded destinations, re-derivation — without any classifier lowering a label |
 | [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) | The public surface: what mecha may publish, and under what review |
