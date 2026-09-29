@@ -1830,6 +1830,59 @@ fn build_subagent(
     Subagent::new(profile.clone(), Arc::new(child))
 }
 
+/// The provider a persona agent speaks through: the one `bound` resolved, so
+/// a persona chat follows the router's loaded model exactly as the
+/// assistant's chats do. No fallbacks — a persona answering on a different
+/// model than the one named is the silent swap §12.6 exists to prevent.
+pub fn persona_provider(
+    bound: &crate::follow::Bound,
+) -> Result<Box<dyn mecha_core::provider::Provider>> {
+    let (_, provider_cfg) = bound.config.provider(Some(&bound.provider_name))?;
+    mecha_core::provider::build(provider_cfg)
+}
+
+/// A persona chat's agent (`docs/PERSONA-DESIGN.md` §3.4): one per persona
+/// version and binding, beside the assistant's rather than derived from it.
+///
+/// What it takes from `bound` is the run's mechanics — the provider, the
+/// model, the window, the tool context's limits. What it never takes is
+/// anything of the owner's: its registry is `persona::agent::registry_for`
+/// over the assistant's pool (declared tools only, none that can aim), its
+/// system prompt replaces the assistant's (no charter, skills or learned
+/// rules), its config switches off every lever that reads an owner store,
+/// and it gets no hooks, approval policy, outbox or mailbox. Its approver is
+/// read-only: every persona tool today is read-only and never reaches it,
+/// and one that stopped being so is refused rather than approved.
+pub fn persona_agent(
+    bound: &crate::follow::Bound,
+    pinned: &mecha_core::persona::agent::Pinned,
+    provider: Box<dyn mecha_core::provider::Provider>,
+) -> Result<(Agent, Vec<mecha_core::persona::agent::Refused>)> {
+    use mecha_core::persona::agent as persona;
+    let tools = persona::registry_for(bound.agent.registry(), &pinned.settings);
+    let system = persona::system_prompt(pinned)?;
+    let ctx = bound.agent.ctx();
+    let agent = Agent::new(
+        provider,
+        tools.registry,
+        Arc::new(ModeApprover {
+            mode: PermissionMode::ReadOnly,
+        }),
+        ToolCtx {
+            workspace: ctx.workspace.clone(),
+            shell_timeout: ctx.shell_timeout,
+            security: persona::security(&ctx.security),
+            output_budget_bytes: ctx.output_budget_bytes,
+            ..ToolCtx::default()
+        },
+        persona::agent_config(&bound.config.agent, system),
+        Some(bound.model.clone()),
+    )?
+    .with_context_window(bound.context_window)
+    .with_clock(run_clock()?);
+    Ok((agent, tools.refused))
+}
+
 /// Register the recall tool over this session's transcript, so the run can
 /// search its own recorded history — including what a compaction summarised
 /// away — instead of re-running tools or re-living the dropped stretch.
