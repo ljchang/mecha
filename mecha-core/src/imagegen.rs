@@ -1255,12 +1255,15 @@ pub(crate) async fn read_references(
 
 /// An edit whose result's layout is at least this alike its first
 /// reference's came back a near-copy. Measured on 2026-09-29 with
-/// [`layout_similarity`] over 23 edits of one scene: the two near-copies of a
-/// move or pose change scored 0.80 and 0.90, every edit that moved someone
-/// 0.67 or less, and three edits of colour or a small detail — which keep the
-/// layout on purpose — 0.78 to 1.00. So the notice says "the layout did not
-/// change", never "the edit failed": only the model knows which it asked for.
-pub const NEAR_COPY_LAYOUT: f64 = 0.75;
+/// [`layout_similarity`] over some 70 edits of one scene, each also judged by
+/// eye: every copy, and every edit that left her sitting, scored 0.80 or
+/// more but one kneeling partial (0.754); every edit that stood her up, 0.761
+/// or less — the top of that range a small standing figure beside a man who
+/// fills the frame, which 0.75 flagged and a live run then retried for
+/// nothing. Edits of colour or a small detail keep the layout on purpose and
+/// scored 0.78 to 1.00, so the notice says "the layout did not change",
+/// never "the edit failed": only the model knows which it asked for.
+pub const NEAR_COPY_LAYOUT: f64 = 0.78;
 
 /// How long a near-copy of a picture counts against the next edit of it. A
 /// retry lands within a couple of minutes; a new request later starts over.

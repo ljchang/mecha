@@ -612,13 +612,13 @@ conversation, so the capabilities do not change. Three rules:
   The model never sees the result, and reported a near-copy as the change
   made, so a retry in the same chat repeated the edit. Each edit's
   `layout_similarity` to its first reference (grayscale 32² thumbnails,
-  correlated) goes in the manifest; at `NEAR_COPY_LAYOUT` (0.75) the result
+  correlated) goes in the manifest; at `NEAR_COPY_LAYOUT` (0.78) the result
   says the layout did not change and how to retry: edit the original with the
   prompt rewritten as an instruction, or redraw from the library by the names
   in the original's manifest. It
   gives the names only, each checked against the library, since the manifest
   is a workspace file. A recolour also keeps the layout (it scored 0.78–1.00
-  where moves scored ≤ 0.67), which is why the tool reports rather than
+  where edits that stood someone up scored ≤ 0.76), which is why the tool reports rather than
   retries: only the model knows which it asked for, and a blind retry would
   cost every recolour a minute. For the same reason neither notice says the
   edit failed: each leads with "expected after a colour or detail change",
