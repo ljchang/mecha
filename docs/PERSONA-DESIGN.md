@@ -1,10 +1,8 @@
 # Personas — design
 
-> **Addendum (2026-09-29, later):** the build has started — §17 steps 1–2b
-> are merged (#405, #407, #409, #415) and 2c-1 is in review (#418); HANDOFF
-> tracks what is deployed.
->
-> **Status (2026-09-29):** designed, not built; **every decision in §16 is
+> **Status (2026-09-29):** designed, and **the build has started** — §17
+> steps 1–2b are merged (#405, #407, #409, #415) and 2c-1 is in review
+> (#418); HANDOFF tracks what is deployed. **Every decision in §16 is
 > ruled.** §1 is the owner's requirements and rulings, in their words. The
 > evidence behind §2 was researched the same day in three reports kept
 > outside the repo (the owner's `~/research/reports/`: *Character
