@@ -89,7 +89,7 @@ pub async fn execute(args: Args) -> Result<()> {
                     "mecha: the PDF renderer is NOT confined ([documents] confine = \"none\")"
                 );
             }
-            let out = ex.extract(&bytes, &pages, mode, json).await?;
+            let out = ex.extract(&bytes, &pages, mode, json, None).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {

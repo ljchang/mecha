@@ -45,6 +45,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 /// Bumped whenever the whole-page OCR recipe changes (prompt, render size,
 /// post-processing), so a cached transcript from an older recipe is not
@@ -146,6 +147,12 @@ impl DocumentsConfig {
             ocr_url(&self.ocr_url)?;
             if self.ocr_model.trim().is_empty() {
                 bail!("[documents] ocr_model is empty");
+            }
+            if self.max_ocr_pages == 0 {
+                bail!(
+                    "[documents] max_ocr_pages is 0 with ocr = true — every page would be \
+                     deferred; set it above zero, or ocr = false"
+                );
             }
         }
         if self.confine == Backend::Docker {
@@ -741,6 +748,14 @@ impl OcrClient {
             base: ocr_url(&cfg.ocr_url)?,
             model: cfg.ocr_model.clone(),
             http: reqwest::Client::builder()
+                // The vetted address is the only one this client may reach —
+                // `ComfyUi::new`'s rule, with a page image of the owner's
+                // document in place of a prompt: a 307/308 would re-send the
+                // body elsewhere while the tool goes on declaring no egress,
+                // and an inherited proxy setting would route the loopback
+                // call through someone else (found on review).
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
                 // Short: pooled connections to the socket proxy count as
                 // activity and would hold the model up past its idle stop.
                 .pool_idle_timeout(Duration::from_secs(5))
@@ -1122,8 +1137,12 @@ pub struct Extraction {
     pub pages_total: u32,
     pub mode: Mode,
     pub pages: Vec<Page>,
-    /// Pages this call needed OCR for and did not reach (`max_ocr_pages`).
+    /// Pages this call needed OCR for and did not reach (`max_ocr_pages`,
+    /// or a cancelled run).
     pub ocr_deferred: Vec<u32>,
+    /// The run was cancelled mid-extraction; `pages` holds what was done.
+    #[serde(default)]
+    pub cancelled: bool,
     /// How poppler was confined, for the record.
     pub confinement: String,
     pub layer_cached: bool,
@@ -1167,8 +1186,13 @@ impl Extraction {
             }
         }
         if !self.ocr_deferred.is_empty() {
+            let why = if self.cancelled {
+                "the run was cancelled"
+            } else {
+                "OCR stopped at the per-call limit"
+            };
             out.push_str(&format!(
-                "\n(OCR stopped at the per-call limit; pages not yet transcribed: {} — ask for them next)\n",
+                "\n({why}; pages not yet transcribed: {} — ask for them next)\n",
                 compact_ranges(&self.ocr_deferred)
             ));
         }
@@ -1230,12 +1254,18 @@ impl Extractor {
 
     /// Extract `pages` (a [`parse_pages`] spec) of the PDF in `bytes`.
     /// `with_regions` keeps poppler's blocks on each page (the CLI's `--json`).
+    ///
+    /// `cancel` is the run's token: `run_tools` awaits a tool to completion,
+    /// so a tool that waits on a model must watch it itself, as
+    /// `image_generate` does (found on review). A cancelled extraction
+    /// returns the pages already done, the rest listed as not transcribed.
     pub async fn extract(
         &self,
         bytes: &[u8],
         pages: &str,
         mode: Mode,
         with_regions: bool,
+        cancel: Option<&CancellationToken>,
     ) -> Result<Extraction> {
         if bytes.len() as u64 > self.cfg.max_file_bytes() {
             bail!(
@@ -1274,7 +1304,11 @@ impl Extractor {
                     regions,
                 };
                 if let Some(cache) = &self.cache {
-                    cache.store_layer(&layer)?;
+                    // A cache is a saving, not a precondition: a full disk
+                    // must not turn a good extraction into an error.
+                    if let Err(e) = cache.store_layer(&layer) {
+                        tracing::warn!("document cache: text layer not stored: {e:#}");
+                    }
                     if self.cfg.cache_days > 0 {
                         let _ = cache
                             .prune(Duration::from_secs(u64::from(self.cfg.cache_days) * 86_400));
@@ -1289,7 +1323,13 @@ impl Extractor {
         let mut deferred = Vec::new();
         let mut ocr_budget = self.cfg.max_ocr_pages;
         let mut ready = false;
+        let mut cancelled = false;
         for n in wanted {
+            if cancelled || cancel.is_some_and(|c| c.is_cancelled()) {
+                cancelled = true;
+                deferred.push(n);
+                continue;
+            }
             let has_text = layer.has_text(n);
             let want_text =
                 matches!(mode, Mode::Text | Mode::Both) || (mode == Mode::Auto && has_text);
@@ -1337,7 +1377,15 @@ impl Extractor {
                             if !ready {
                                 // Unreachable is the whole call's error, not a
                                 // page's: nothing after it would succeed.
-                                client.ready().await?;
+                                match until_cancelled(cancel, client.ready()).await {
+                                    Some(r) => r?,
+                                    None => {
+                                        cancelled = true;
+                                        deferred.push(n);
+                                        out.push(page);
+                                        continue;
+                                    }
+                                }
                                 ready = true;
                             }
                             let s = match scratch.as_mut() {
@@ -1352,14 +1400,28 @@ impl Extractor {
                                 .get(n as usize - 1)
                                 .copied()
                                 .unwrap_or((612.0, 792.0));
-                            let result = match self.renderer.page_png(s, n, size).await {
-                                Ok(png) => client.page(&png).await,
-                                Err(e) => Err(e),
+                            let work = async {
+                                match self.renderer.page_png(s, n, size).await {
+                                    Ok(png) => client.page(&png).await,
+                                    Err(e) => Err(e),
+                                }
+                            };
+                            let Some(result) = until_cancelled(cancel, work).await else {
+                                cancelled = true;
+                                deferred.push(n);
+                                out.push(page);
+                                continue;
                             };
                             match result {
                                 Ok(ocr) => {
                                     if let Some(cache) = &self.cache {
-                                        cache.store_ocr(&sha, client.model(), n, &ocr)?;
+                                        if let Err(e) =
+                                            cache.store_ocr(&sha, client.model(), n, &ocr)
+                                        {
+                                            tracing::warn!(
+                                                "document cache: page {n} not stored: {e:#}"
+                                            );
+                                        }
                                     }
                                     page.ocr = Some(ocr);
                                 }
@@ -1377,15 +1439,95 @@ impl Extractor {
             mode,
             pages: out,
             ocr_deferred: deferred,
+            cancelled,
             confinement,
             layer_cached,
         })
     }
 }
 
+/// `fut`, or `None` if `cancel` fires first. With no token it is just `fut`.
+async fn until_cancelled<F: std::future::Future>(
+    cancel: Option<&CancellationToken>,
+    fut: F,
+) -> Option<F::Output> {
+    match cancel {
+        Some(token) => tokio::select! {
+            out = fut => Some(out),
+            _ = token.cancelled() => None,
+        },
+        None => Some(fut.await),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tiny HTTP server answering each connection with the next canned
+    /// response, for the OCR client's transport tests.
+    fn canned_server(responses: Vec<String>) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for r in responses {
+                let Ok((mut conn, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buf = [0u8; 2048];
+                let _ = conn.read(&mut buf);
+                let _ = conn.write_all(r.as_bytes());
+            }
+        });
+        port
+    }
+
+    fn http(status: &str, extra: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\n{extra}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// The vetted loopback address is the only one the OCR client may reach:
+    /// a redirect is an answer, not a hop, or a 307 would re-send a page
+    /// image elsewhere while the tool declares no egress.
+    #[test]
+    fn the_ocr_client_does_not_follow_a_redirect() {
+        let healthy = canned_server(vec![http("200 OK", "", r#"{"status":"ok"}"#)]);
+        let redirector = canned_server(vec![http(
+            "307 Temporary Redirect",
+            &format!("Location: http://127.0.0.1:{healthy}/health\r\n"),
+            "",
+        )]);
+        let cfg = DocumentsConfig {
+            ocr_url: format!("http://127.0.0.1:{redirector}"),
+            ..DocumentsConfig::default()
+        };
+        let client = OcrClient::new(&cfg).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let err = rt.block_on(client.ready()).unwrap_err();
+        assert!(err.to_string().contains("307"), "{err:#}");
+    }
+
+    /// A cancelled run stops at the next page and says so, rather than
+    /// holding the run until every page is transcribed.
+    #[test]
+    fn until_cancelled_yields_to_the_token() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let token = CancellationToken::new();
+        token.cancel();
+        let never = std::future::pending::<()>();
+        assert!(rt.block_on(until_cancelled(Some(&token), never)).is_none());
+        assert_eq!(rt.block_on(until_cancelled(None, async { 7 })), Some(7));
+    }
 
     #[test]
     fn page_specs_are_one_based_inclusive_and_bounded() {
@@ -1521,15 +1663,15 @@ mod tests {
             .unwrap();
         let big = vec![b' '; 2 * 1024 * 1024];
         let e = rt
-            .block_on(ex.extract(&big, "all", Mode::Text, false))
+            .block_on(ex.extract(&big, "all", Mode::Text, false, None))
             .unwrap_err();
         assert!(e.to_string().contains("max_file_mb"), "{e}");
         let e = rt
-            .block_on(ex.extract(b"GIF89a not a pdf", "all", Mode::Text, false))
+            .block_on(ex.extract(b"GIF89a not a pdf", "all", Mode::Text, false, None))
             .unwrap_err();
         assert!(e.to_string().contains("not a PDF"), "{e}");
         let e = rt
-            .block_on(ex.extract(b"%PDF-1.4", "all", Mode::Ocr, false))
+            .block_on(ex.extract(b"%PDF-1.4", "all", Mode::Ocr, false, None))
             .unwrap_err();
         assert!(e.to_string().contains("OCR is off"), "{e}");
     }
@@ -1668,6 +1810,7 @@ mod tests {
                 },
             ],
             ocr_deferred: vec![3],
+            cancelled: false,
             confinement: "bwrap".into(),
             layer_cached: false,
         };
