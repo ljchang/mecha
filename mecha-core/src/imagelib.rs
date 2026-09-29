@@ -1178,6 +1178,27 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn a_failed_install_leaves_no_temp_file_behind() {
+        let dir = scratch();
+        // A directory where the file should go: the write succeeds, the
+        // rename over it fails.
+        let path = dir.path().join("entry.toml");
+        std::fs::create_dir_all(path.join("occupied")).unwrap();
+        for _ in 0..2 {
+            assert!(write_atomic_mode(&path, b"x", Some(0o600)).is_err());
+        }
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            left,
+            ["entry.toml"],
+            "a temp file survived the failed rename"
+        );
+    }
+
     fn scratch() -> Scratch {
         let dir = std::env::temp_dir().join(format!("mecha-imagelib-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();

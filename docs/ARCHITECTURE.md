@@ -740,8 +740,13 @@ doing; this code writes how they look. Decisions, each a bug if undone:
 - **An `extra` is counted, and read by the guard.** People in the scene who
   are no library character go in `image_generate`'s `extras`: listed as "not
   from any image" and counted in the head count, because a count of the cast
-  alone pushed a described waiter into the background (research E11). The
-  named-character guard reads the extras as it reads the prompt.
+  alone pushed a described waiter into the background (research E11). With
+  no cast there is no head count — the extras are scene text, "Also in the
+  scene: …". The named-character guard reads the extras as it reads the
+  prompt, except on an edit, where it reads neither: an edit's people carry
+  their own identity. A name in both `cast` and `extras` is refused in
+  `compile` — one face in two slots. Extras need no library, so a scene with
+  only extras draws where the mecha home cannot be resolved.
 - **Locking does not reach back into a browser's cache.** Open portraits are
   content-addressed and served `immutable`, so one browsed before its entry
   was locked stays cached on that device; nothing asks for it again once the
