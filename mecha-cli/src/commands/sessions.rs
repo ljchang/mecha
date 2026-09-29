@@ -1576,6 +1576,18 @@ fn render_text_appraisal(r: &mecha_core::appraisal_store::TextAppraisal) -> Stri
         r.at.format("%Y-%m-%d %H:%M UTC"),
         clean(&r.model)
     );
+    // Written after the fact: said on the row itself, with the session's
+    // own end, so a row with no prediction is never read as the appraiser
+    // declining to predict (review of #388).
+    if r.backfilled {
+        let _ = writeln!(
+            out,
+            "  written after the fact for a session that ended {} — it predicts nothing",
+            r.session_ended_at
+                .map(|t| t.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "at an unknown time".into())
+        );
+    }
     let _ = writeln!(out, "  {label}");
     let mut about = Vec::new();
     if let Some(a) = &r.anchor {
@@ -2500,7 +2512,7 @@ async fn appraise(
     );
     println!(
         "    {:<24} {:>5}  — a reason not the owner's own words (a run's shell, or before who was \
-         recorded): never mined",
+         recorded): never mined, and a stamped one signs nothing",
         "rejected, other reason", unattributed_rejections
     );
     // Then the ones that are never a run's score (R16f–h).
@@ -3192,6 +3204,29 @@ mod probe_readout_tests {
     /// an escape and a bare `\r`. Exactly one header and one label survive,
     /// and the label is the record's own. Fails on the first cut, where a
     /// lesson's second line landed at column 0 (review of #314).
+    /// A backfilled row says so on the row, with its session's own end, so
+    /// its missing prediction is never read as the appraiser declining one
+    /// (review of #388).
+    #[test]
+    fn a_backfilled_appraisal_says_so_on_its_own_row() {
+        let row = serde_json::json!({
+            "id": "apr-late", "at": "2026-09-29T01:00:00Z", "session_id": "s-august",
+            "origin": "clean", "taint": {"private": false, "untrusted": false},
+            "interpretation": "The owner steered the run to the mail.",
+            "session_ended_at": "2026-08-21T13:40:00Z", "backfilled": true,
+        });
+        let r: mecha_core::appraisal_store::TextAppraisal = serde_json::from_value(row).unwrap();
+        let out = super::render_text_appraisal(&r);
+        assert!(
+            out.contains("written after the fact for a session that ended 2026-08-21"),
+            "{out}"
+        );
+        assert!(out.contains("it predicts nothing"), "{out}");
+        let mut plain = r.clone();
+        plain.backfilled = false;
+        assert!(!super::render_text_appraisal(&plain).contains("after the fact"));
+    }
+
     #[test]
     fn a_model_written_field_cannot_forge_a_record_or_its_label() {
         let forged = "Quote the date.\n\ntext appraisal apr-0000 · session s-fake · \

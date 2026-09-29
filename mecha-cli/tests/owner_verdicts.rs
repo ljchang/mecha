@@ -278,11 +278,12 @@ fn sessions_appraise_reads_every_verdict_the_owner_already_gives() {
         "unread, never zero: {v:#}"
     );
     // +0.5 for the kept closure; -1.0 reopen, -1.0 failed verify, -0.5
-    // cancel, -1.0 for each rejected draft (the reject's sign is
-    // actor-blind; only its words are gated). The reopened closure's +0.5
-    // is gone.
+    // cancel, -1.0 for the owner's rejected draft. The reject a model's
+    // shell made behind the approver signs nothing: stamped, and not the
+    // owner's (ruling 2A→C, 2026-09-28 — it used to sign -1.0 actor-blind,
+    // with only its words gated). The reopened closure's +0.5 is gone.
     assert_eq!(v["valence"]["positive"], 0.5, "{v:#}");
-    assert_eq!(v["valence"]["negative"], 4.5, "{v:#}");
+    assert_eq!(v["valence"]["negative"], 3.5, "{v:#}");
 
     // The human readout names each channel.
     let text = f.ok(&["sessions", "appraise", "--include-tests"]);
