@@ -265,6 +265,20 @@ fn hold_out(ids: &[String], fraction: f64) -> std::collections::BTreeSet<String>
         .collect()
 }
 
+/// Finish (or set aside) a rule change a crash interrupted, saying so. Every
+/// CLI writer of the learned rules or the proposals calls this right after
+/// taking the store lock (`LearningStore::resume_interrupted`).
+pub(crate) fn finish_interrupted(
+    store: &LearningStore,
+) -> Result<Option<mecha_core::learning::Resumed>> {
+    let resumed = store.resume_interrupted()?;
+    if let Some(r) = &resumed {
+        println!("{}", r.line());
+        store.log_pass(&format!("resume: {}", r.line()));
+    }
+    Ok(resumed)
+}
+
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Before the store is opened or locked: this mode reads the learning
     // store and never writes it (row 2e-1 is shadow).
@@ -292,10 +306,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // A change a crash interrupted is finished before this pass reads the
     // rules and the pool it would otherwise re-argue.
     if !args.dry_run {
-        if let Some(line) = store.resume_interrupted()? {
-            println!("{line}");
-            store.log_pass(&format!("resume: {line}"));
-        }
+        finish_interrupted(&store)?;
     }
 
     anyhow::ensure!(

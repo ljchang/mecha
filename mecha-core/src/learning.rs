@@ -1920,10 +1920,34 @@ pub const COMMIT_FILE: &str = "commit.json";
 /// [`LearningStore::resume_interrupted`].
 pub const UNFINISHED_COMMIT_PREFIX: &str = "commit.unfinished.";
 
+/// What [`LearningStore::resume_interrupted`] did with a record it found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resumed {
+    /// Every step is done now. `proposal` is the one the change recorded,
+    /// if it had one.
+    Finished {
+        proposal: Option<String>,
+        line: String,
+    },
+    /// Not finished: kept as `commit.unfinished.<when>.json` for the owner.
+    SetAside(String),
+}
+
+impl Resumed {
+    /// One line for the caller to print and log.
+    pub fn line(&self) -> &str {
+        match self {
+            Resumed::Finished { line, .. } | Resumed::SetAside(line) => line,
+        }
+    }
+}
+
 /// The same rules, field for field — recovery's "is this what is live?".
 /// Stricter than `proposals accept`'s text-and-enabled check on purpose:
 /// here a difference in any field means someone other than this change
-/// wrote the file.
+/// wrote the file. Both sides are typed `Rule`s, so a field the lossless
+/// rewrite carried through for a newer build (present on disk, not in the
+/// struct) does not read as a move.
 fn same_rule_set(a: &[Rule], b: &[Rule]) -> bool {
     match (serde_json::to_value(a), serde_json::to_value(b)) {
         (Ok(x), Ok(y)) => x == y,
@@ -2098,8 +2122,10 @@ impl LearningStore {
     }
 
     /// Finish a rule change a crash interrupted, if one is on disk. The
-    /// caller holds the store lock. Returns a line saying what it did, for
-    /// the caller to print.
+    /// caller holds the store lock, and every writer of the rules or the
+    /// proposals calls this right after taking it. A writer that moved the
+    /// rules first would turn an ordinary crash into a set-aside. Returns
+    /// what it did, for the caller to print.
     ///
     /// The live rules decide what "finish" means:
     /// - still the change's `rules`: the rules landed, so finish the rest;
@@ -2112,14 +2138,14 @@ impl LearningStore {
     ///
     /// A record this build cannot read is set aside the same way. An I/O
     /// error keeps the record where it is, for the next writer to retry.
-    pub fn resume_interrupted(&self) -> Result<Option<String>> {
+    pub fn resume_interrupted(&self) -> Result<Option<Resumed>> {
         let path = self.root.join(COMMIT_FILE);
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
-        let set_aside = |why: String| -> Result<Option<String>> {
+        let set_aside = |why: String| -> Result<Option<Resumed>> {
             // Named by when, so a second set-aside never overwrites the first.
             let aside = self.root.join(format!(
                 "{UNFINISHED_COMMIT_PREFIX}{}.json",
@@ -2127,10 +2153,10 @@ impl LearningStore {
             ));
             std::fs::rename(&path, &aside)
                 .with_context(|| format!("setting aside {}", path.display()))?;
-            Ok(Some(format!(
+            Ok(Some(Resumed::SetAside(format!(
                 "an interrupted rule change could not be finished ({why}); set aside as {}",
                 aside.display()
-            )))
+            ))))
         };
         let intent: CommitIntent = match serde_json::from_str(&text) {
             Ok(i) => i,
@@ -2150,13 +2176,17 @@ impl LearningStore {
         };
         self.finish_commit(c, write_rules)?;
         std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
-        Ok(Some(format!(
-            "finished an interrupted rule change to `{}` (run {}): {} rule(s), {} reflection(s)",
-            c.run.domain,
-            c.run.id,
-            c.rules.len(),
-            c.reflexion_ids.len()
-        )))
+        Ok(Some(Resumed::Finished {
+            proposal: c.proposal.as_ref().map(|p| p.id.clone()),
+            line: format!(
+                "finished an interrupted rule change to `{}` (run {}): {} rule(s), {} \
+                 reflection(s)",
+                c.run.domain,
+                c.run.id,
+                c.rules.len(),
+                c.reflexion_ids.len()
+            ),
+        }))
     }
 
     /// Mark reflections consumed by a pass. Rewrites the file via a temp

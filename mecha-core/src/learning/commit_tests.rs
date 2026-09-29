@@ -118,9 +118,12 @@ fn rules_that_landed_get_their_marks_run_and_proposal() {
 
     let said = store.resume_interrupted().unwrap().unwrap();
     assert!(
-        said.starts_with("finished an interrupted rule change"),
-        "{said}"
+        matches!(&said, Resumed::Finished { proposal: Some(p), .. } if p == "run-1"),
+        "{said:?}"
     );
+    assert!(said
+        .line()
+        .starts_with("finished an interrupted rule change"));
     assert_eq!(marked(&store), 2);
     assert_eq!(runs(&dir), 1);
     assert_eq!(store.proposal("run-1").unwrap().status, "accepted");
@@ -176,7 +179,7 @@ fn rules_moved_since_set_the_change_aside() {
     interrupted(&dir, &change(true), vec![rule("Old.", "r-a")]);
 
     let said = store.resume_interrupted().unwrap().unwrap();
-    assert!(said.contains("set aside"), "{said}");
+    assert!(matches!(said, Resumed::SetAside(_)), "{said:?}");
     let live = store.learned_rules("behavior").unwrap();
     assert_eq!(live[1].text, "The owner's edit.");
     assert_eq!(marked(&store), 0);
@@ -200,7 +203,8 @@ fn an_unreadable_record_is_set_aside_not_fatal() {
     let (store, dir) = store();
     std::fs::write(dir.join(COMMIT_FILE), "{\"half").unwrap();
     let said = store.resume_interrupted().unwrap().unwrap();
-    assert!(said.contains("cannot read"), "{said}");
+    assert!(said.line().contains("cannot read"), "{said:?}");
+    assert!(matches!(said, Resumed::SetAside(_)));
     assert!(!dir.join(COMMIT_FILE).exists());
     std::fs::remove_dir_all(&dir).ok();
 }
