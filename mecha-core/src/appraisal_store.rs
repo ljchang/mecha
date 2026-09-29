@@ -314,7 +314,8 @@ pub struct Draft {
     /// a session distilled before the appraisal leg existed (ruling 3D→D,
     /// 2026-09-28). Set by the producer, never by a model; such a row
     /// carries no `expected_act`, because the outcome was already known when
-    /// it was written — a prediction then is a postdiction.
+    /// it was written — a prediction then is a postdiction. Nor any prose
+    /// `prediction`, for the same reason: the store drops both.
     pub backfilled: bool,
     /// Goal words the producer could not read as a pointer at all — counted
     /// on the record with the ones that did not resolve.
@@ -717,9 +718,12 @@ impl TextAppraisal {
             })
             .collect();
 
+        // A backfilled row predicts nothing, in prose as in the act word:
+        // both would be postdiction (review of #388).
         let prediction = draft
             .prediction
             .as_deref()
+            .filter(|_| !draft.backfilled)
             .and_then(|p| bound(p, PREDICTION_MAX_CHARS, &mut clipped));
         let goal_hypotheses = bound_list(
             &draft.goal_hypotheses,
@@ -937,7 +941,11 @@ fn newest_keyed<'a>(
         .filter(|c| not.is_none_or(|id| c.session_id != id))
         .filter(|c| region_key(c.situation.as_ref()).as_ref() == Some(&here))
         .collect();
-    out.sort_by_key(|c| std::cmp::Reverse(c.at));
+    // Newest by the session's end, not the write: a row written after the
+    // fact (`--backfill-appraisals`) is an old session's, and must not rank
+    // ahead of recent ones in either door (review of #388). A row from
+    // before the field falls back to its write.
+    out.sort_by_key(|c| std::cmp::Reverse(c.session_ended_at.unwrap_or(c.at)));
     out.truncate(n);
     out
 }
@@ -4134,6 +4142,20 @@ mod tests {
         assert!(read
             .same_situation_and_goal_ended_by(&target, None, PAST_SHOWN)
             .is_empty());
+
+        // The converse: an old session's appraisal written *last* — a
+        // backfill — does not rank ahead of recent ones for a new session.
+        // Newest is by the session's end, not the write (review of #388).
+        let late = aged(40);
+        store.record(&late, draft(), "m", &known()).unwrap();
+        let fresh = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        let read = store.clean().unwrap();
+        let recent = read.same_situation_and_goal(&fresh, PAST_SHOWN);
+        assert_eq!(recent.len(), PAST_SHOWN);
+        assert!(
+            recent.iter().all(|c| c.session_id != late.session_id()),
+            "a month-old session is not the newest history"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -4152,6 +4174,7 @@ mod tests {
                 &late,
                 Draft {
                     expected_act: Some(ExpectedAct::NoAct),
+                    prediction: Some("The owner will ask again.".into()),
                     backfilled: true,
                     ..draft()
                 },
@@ -4161,6 +4184,7 @@ mod tests {
             .unwrap();
         let rows = store.for_owner().unwrap().0;
         assert_eq!((rows[0].expected_act, rows[0].backfilled), (None, true));
+        assert_eq!(rows[0].prediction, None, "nor the prose half");
         let s = store
             .score_summary(&OwnerActs::default(), Utc::now())
             .unwrap();

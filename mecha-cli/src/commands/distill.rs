@@ -1169,6 +1169,7 @@ impl Appraiser {
             Ok(mut d) => {
                 if cx.backfill {
                     d.expected_act = None;
+                    d.prediction = None;
                     d.backfilled = true;
                 }
                 d
