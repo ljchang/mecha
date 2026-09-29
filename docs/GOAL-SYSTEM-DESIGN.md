@@ -1,7 +1,8 @@
 # The goal system — design
 
 > **Implementation addendum, 2026-09-09:** the first behavioral slice of §7.4
-> is implemented locally on `feat/anticipatory-appraisal`: owner-bound evidence
+> is implemented (merged to `main` as PR #221, `fa77852c`, the same day; the
+> `feat/anticipatory-appraisal` branch is a stale duplicate): owner-bound evidence
 > reaches confirmed-goal planning and inline outbox messages, with optional
 > fixed guidance and exact-draft delivery checks. Linked post-delivery owner
 > outcomes supply retrospective embarrassment and guilt. The aggregate
