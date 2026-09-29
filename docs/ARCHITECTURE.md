@@ -3379,6 +3379,34 @@ refactor from making it two values.
 
 ## The outbox
 
+**The harness forecasts the owner's act on each drafted message, sealed
+and readout only** (`forecast.rs`, the owner's ruling (a) of 2026-09-29;
+X3 unparked).
+- **What v1 forecasts:** when a store opened `with_forecasts` stages a
+  model-authored message with a body, it predicts the owner's act:
+  `released_unchanged`, `edited`, `rejected`, or `no_act`. The prediction
+  is the owner's most frequent stamped act on earlier drafts staged through
+  the same tool in the same armed state, taken from history settled before
+  the staging, so it is pre-registered by construction.
+- **What counts as the owner's act:** only acts the stamps prove the
+  owner's (`owners_unchanged_release`, `owners_edit`, a reject stamped
+  `owner`), and a draft untouched past the outbox's patience (R37 carried
+  to items). An unreadable history or charter makes a forecast with no
+  basis, never a guess.
+- **Sealed:** it is written to `<outbox>/forecasts/forecasts.jsonl`, out
+  of the item walk. No per-draft surface, staging result or prompt reads
+  it, because a forecast of the owner's approval shown to the reviewer or
+  the acting model is a way to steer the verdict.
+- **Where it is on:** the agent's route turns it on with the charter
+  window, and every surface's own route copies the setting
+  (`OutboxStore::forecasting`). Tests pass a fixed window, so none reads
+  the machine's charter.
+- **Scored only at read time**, by `sessions appraise` (`forecast::summarize`).
+  A miss feeds nothing until the forecasts are calibrated. `sessions delete`
+  purges a session's forecasts with its drafts.
+- **A model forecaster comes later**, as an arm measured against this one
+  on the same drafts.
+
 **Anticipatory evidence belongs to an exact draft version.**
 `OutboxItem::predictions` stores immutable argument snapshots; editing and
 reassessment leave the old forecast changed or reassessed, never failed or

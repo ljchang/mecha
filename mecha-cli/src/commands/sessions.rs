@@ -1449,6 +1449,49 @@ fn predictions_json(
     o
 }
 
+/// The harness's draft forecasts in one line: what was made, what scored,
+/// and everything that did not score named by why — a rate only over
+/// scores, and never a zero for "none yet".
+fn forecasts_line(
+    forecasts: &std::result::Result<Option<mecha_core::forecast::Summary>, String>,
+) -> String {
+    let s = match forecasts {
+        Err(e) => return format!("draft forecasts: could not be read ({e})"),
+        Ok(None) => return "draft forecasts (base rate, readout only): none on record".into(),
+        Ok(Some(s)) if s.forecasts == 0 && s.skipped == 0 => {
+            return "draft forecasts (base rate, readout only): none on record".into()
+        }
+        Ok(Some(s)) => s,
+    };
+    let mut out = format!(
+        "draft forecasts (base rate, readout only): {} made ({} with no basis yet) · {} scored \
+         — {} hit, {} surprise(s); {}",
+        s.forecasts,
+        s.no_basis,
+        s.scored,
+        s.hits,
+        s.surprises,
+        match s.hit_rate {
+            Some(r) => format!("hit rate {:.0}%", r * 100.0),
+            None => "no rate".into(),
+        }
+    );
+    for (n, what) in [
+        (s.pending, "waiting for the owner or the window"),
+        (
+            s.unknown,
+            "unknown (not the owner's by the stamps, gone, or the window unreadable)",
+        ),
+        (s.unforecast, "draft(s) staged with no forecast"),
+        (s.skipped, "unreadable forecast line(s)"),
+    ] {
+        if n > 0 {
+            out.push_str(&format!(" · {n} {what}"));
+        }
+    }
+    out
+}
+
 /// One line for the table: coverage first, and a rate only where there are
 /// points — "no outcome recorded yet" is coverage, never a calibration of
 /// zero.
@@ -1610,6 +1653,23 @@ async fn appraise(
 
     // Anticipation's calibration (row 2b-1), over every draft read.
     let calibration = mecha_core::anticipation::Calibration::of(&drafts);
+    // The harness's draft forecasts (ruling (a) of 2026-09-29): scored here,
+    // at read time, and nowhere else — readout only.
+    let forecasts: std::result::Result<Option<mecha_core::forecast::Summary>, String> =
+        match mecha_core::outbox::OutboxStore::open_existing_default() {
+            None => Ok(None),
+            Some(store) => mecha_core::forecast::load(store.root())
+                .map(|(made, skipped)| {
+                    Some(mecha_core::forecast::summarize(
+                        &made,
+                        skipped,
+                        &drafts,
+                        mecha_core::forecast::outbox_patience(),
+                        chrono::Utc::now(),
+                    ))
+                })
+                .map_err(|e| format!("{e:#}")),
+        };
 
     // The three commitment stores (`docs/APPRAISAL-RESEARCH.md` §3.4, §3.6),
     // read once for the whole walk and filtered per session inside
@@ -2087,6 +2147,10 @@ async fn appraise(
                 // outcome can arrive long after its session. Coverage
                 // always; a rate is `null` over no points.
                 "predictions": predictions_json(&calibration, outbox_unreadable),
+                "draft_forecasts": match &forecasts {
+                    Ok(s) => serde_json::to_value(s).unwrap_or_default(),
+                    Err(e) => serde_json::json!({"unreadable": e}),
+                },
                 // Row 2b-2: `null` rate over no scores; `read: false` when
                 // the store could not be read, never an empty summary.
                 "expectations": match &expectations {
@@ -2178,6 +2242,7 @@ async fn appraise(
     println!();
     println!("  {}\n", crate::success_readout::line(&successes));
     println!("  {}\n", predictions_line(&calibration, outbox_unreadable));
+    println!("  {}\n", forecasts_line(&forecasts));
     println!(
         "  {}\n",
         match &expectations {
@@ -3031,6 +3096,35 @@ mod probe_readout_tests {
             "anticipation's predictions: none on record"
         );
         assert!(predictions_line(&empty, true).contains("floor"));
+        // The draft forecasts' line: none is none, and what did not score
+        // is named, never a zero (ruling (a) of 2026-09-29).
+        assert_eq!(
+            super::forecasts_line(&Ok(None)),
+            "draft forecasts (base rate, readout only): none on record"
+        );
+        let some = mecha_core::forecast::Summary {
+            forecasts: 5,
+            no_basis: 1,
+            scored: 2,
+            hits: 1,
+            surprises: 1,
+            pending: 1,
+            unknown: 1,
+            hit_rate: Some(0.5),
+            ..Default::default()
+        };
+        let line = super::forecasts_line(&Ok(Some(some)));
+        assert!(
+            line.contains(
+                "5 made (1 with no basis yet) · 2 scored — 1 hit, 1 surprise(s); hit rate 50%"
+            ),
+            "{line}"
+        );
+        assert!(
+            line.contains("1 waiting") && line.contains("1 unknown"),
+            "{line}"
+        );
+        assert!(super::forecasts_line(&Err("torn".into())).contains("could not be read (torn)"));
         let mut some = Calibration::of(&[]);
         some.total.predictions = 3;
         if let Some(c) = some.by_response.get_mut("verify") {
