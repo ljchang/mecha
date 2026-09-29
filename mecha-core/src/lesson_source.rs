@@ -386,11 +386,29 @@ pub const GATE_MAX_TRAIL: usize = 2;
 pub enum Gate {
     /// Fewer than [`GATE_MIN_DECIDED`] decided: informative, not a verdict.
     Pilot { decided: usize },
+    /// Lines of the stores behind it could not be read, so every count is a
+    /// floor and a dropped pair could move the trail either way: no
+    /// verdict, whatever the counts say (review of #400).
+    Floors { skipped: usize },
     /// The appraisal trails the reflector by at most [`GATE_MAX_TRAIL`]
     /// discordant pairs: no worse.
     NoWorse { trail: usize },
     /// It trails by more.
     Worse { trail: usize },
+}
+
+impl Report {
+    /// R25's gate for the whole report: [`Gate::Floors`] when any store line
+    /// was unreadable ([`Report::skipped_lines`]), else the total's
+    /// [`RegionReport::gate`]. What every readout states.
+    pub fn gate(&self) -> Gate {
+        if self.skipped_lines > 0 {
+            return Gate::Floors {
+                skipped: self.skipped_lines,
+            };
+        }
+        self.total().gate()
+    }
 }
 
 impl RegionReport {
@@ -645,6 +663,17 @@ mod tests {
             "a lead is no worse"
         );
         assert_eq!((GATE_MIN_DECIDED, GATE_MAX_TRAIL), (10, 2));
+        // Over unreadable store lines every count is a floor: no verdict.
+        let torn = Report {
+            regions: vec![RegionReport {
+                decided: 12,
+                reflector_only: 5,
+                ..RegionReport::default()
+            }],
+            skipped_lines: 1,
+            ..Report::default()
+        };
+        assert_eq!(torn.gate(), Gate::Floors { skipped: 1 });
     }
 
     /// Every exclusion is its own count, and the clean-for-one-side cases
