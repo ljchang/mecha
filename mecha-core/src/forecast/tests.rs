@@ -266,6 +266,14 @@ fn the_summary_scores_what_resolved_and_names_the_rest() {
         f(&basisless, None),
     ];
     let items = vec![hit, miss, waiting, unowned, basisless, unforecast];
+    let mut skewed = made.clone();
+    skewed.push(Forecast {
+        expected: Some(ExpectedAct::Unknown),
+        ..made[0].clone()
+    });
+    // A newer build's act word is unknown, never "no basis".
+    let k = summarize(&skewed, 0, &items, Some(window), now);
+    assert_eq!((k.no_basis, k.unknown), (1, 2));
     let s = summarize(&made, 0, &items, Some(window), now);
     assert_eq!((s.forecasts, s.scored, s.hits, s.surprises), (5, 2, 1, 1));
     assert_eq!(
