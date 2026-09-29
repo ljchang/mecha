@@ -96,6 +96,11 @@ struct Live {
     queue: Arc<StdMutex<VecDeque<String>>>,
     queued_ids: Arc<StdMutex<VecDeque<String>>>,
     history: Arc<[Message]>,
+    /// The taint of `history`, beside it: a transcript read mid-run without
+    /// its chip reads as clean, and with the leak guard lifted (D11) the chip
+    /// is what is left to say it (found on review of #409; the assistant's
+    /// `Live` carries it for the same reason).
+    taint: mecha_core::agent::Taint,
 }
 
 /// Beside each transcript: which persona version the chat is pinned to, so
@@ -396,14 +401,18 @@ impl PersonaChats {
         let p = self
             .visible(library, name, token)
             .ok_or(Refusal::NotFound)?;
-        {
+        let open = {
             let sessions = self.sessions.lock().await;
-            if let Some((key, _)) = sessions
+            sessions
                 .iter()
                 .find(|(_, ps)| ps.session.meta.id == id && ps.pinned.name == p.name)
-            {
-                return Ok(serde_json::json!({ "key": key }));
-            }
+                .map(|(key, ps)| (key.clone(), Arc::clone(&ps.pinned)))
+        };
+        if let Some((key, pinned)) = open {
+            let (_, refused) = self
+                .agent_for(&chat.follower.current(), &pinned)
+                .map_err(failed)?;
+            return Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }));
         }
         let dir = Store::load(&self.store).sessions_dir(&p.name);
         let path = Session::find(&dir, id).map_err(|_| Refusal::NotFound)?;
@@ -440,7 +449,7 @@ impl PersonaChats {
             .iter()
             .find(|(_, ps)| ps.session.meta.id == id && ps.pinned.name == p.name)
         {
-            return Ok(serde_json::json!({ "key": key }));
+            return Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }));
         }
         let key = new_key();
         let workspace = self.work.join(&key);
@@ -496,7 +505,7 @@ impl PersonaChats {
         let ps = sessions.get(key).ok_or(Refusal::NotFound)?;
         let (entries, taint) = match (&ps.conversation, &ps.live) {
             (Some(c), _) => (chat::transcript_entries(&c.messages), Some(c.taint)),
-            (None, Some(live)) => (chat::transcript_entries(&live.history), None),
+            (None, Some(live)) => (chat::transcript_entries(&live.history), Some(live.taint)),
             (None, None) => (Vec::new(), None),
         };
         let usage = ps.last_usage.lock().ok().and_then(|u| u.clone());
@@ -519,17 +528,22 @@ impl PersonaChats {
         }))
     }
 
+    /// The chat's events, and whether its persona is locked — in which case
+    /// the stream must end when the unlock does (`events`).
     pub async fn subscribe(
         &self,
         library: &LibraryState,
         key: &str,
         token: Option<&str>,
-    ) -> Result<broadcast::Receiver<WireEvent>, Refusal> {
-        self.persona_of(library, key, token).await?;
+    ) -> Result<(broadcast::Receiver<WireEvent>, bool), Refusal> {
+        let name = self.persona_of(library, key, token).await?;
+        let locked = Store::load(&self.store)
+            .get(&name)
+            .is_none_or(|p| p.state.locked);
         let sessions = self.sessions.lock().await;
         sessions
             .get(key)
-            .map(|ps| ps.events.subscribe())
+            .map(|ps| (ps.events.subscribe(), locked))
             .ok_or(Refusal::NotFound)
     }
 
@@ -686,11 +700,14 @@ impl PersonaChats {
         let cancel = mecha_core::agent::CancelHandle::new();
         let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
         let queued_ids: Arc<StdMutex<VecDeque<String>>> = Arc::default();
+        let mut history_taint = conversation.taint;
+        history_taint.arm_for_content(&before);
         ps.live = Some(Live {
             cancel: cancel.clone(),
             queue: Arc::clone(&queue),
             queued_ids: Arc::clone(&queued_ids),
             history: Arc::clone(&before),
+            taint: history_taint,
         });
         if let Some(h) = &held {
             let c = cancel.clone();
@@ -985,7 +1002,20 @@ pub async fn events(
         .subscribe(&state.library, &key, q.unlock.as_deref())
         .await
     {
-        Ok(rx) => chat::sse(rx, chat.stopping.clone()),
+        // A locked persona's stream is let through by the token, so it ends
+        // with the token — a relock from any page, or the idle expiry — at
+        // the next event, rather than outliving the lock that let it in
+        // (found on review of #409). An in-memory check, so it costs nothing
+        // per streamed delta; checking refreshes the idle clock, which a chat
+        // being watched is fairly said to be using.
+        Ok((rx, true)) => {
+            let library = Arc::clone(&state.library);
+            let token = q.unlock.clone();
+            chat::sse_while(rx, chat.stopping.clone(), move || {
+                library.unlocked(token.as_deref())
+            })
+        }
+        Ok((rx, false)) => chat::sse(rx, chat.stopping.clone()),
         Err(r) => r.into_response(),
     }
 }
@@ -1181,7 +1211,7 @@ mod tests {
 
     /// Run one turn and wait for it to finish.
     async fn turn(w: &World, key: &str, text: &str) {
-        let mut rx = w.personas().subscribe(&w.library, key, None).await.unwrap();
+        let (mut rx, _) = w.personas().subscribe(&w.library, key, None).await.unwrap();
         w.personas()
             .send(&w.chat, &w.library, key, text, None, None)
             .await
@@ -1442,7 +1472,7 @@ mod tests {
             .await
             .unwrap();
         let key = opened["key"].as_str().unwrap().to_string();
-        let mut rx = w
+        let (mut rx, _) = w
             .personas()
             .subscribe(&w.library, &key, None)
             .await
@@ -1511,7 +1541,7 @@ mod tests {
             .await
             .unwrap();
         let key = opened["key"].as_str().unwrap().to_string();
-        let mut rx = w
+        let (mut rx, _) = w
             .personas()
             .subscribe(&w.library, &key, None)
             .await
@@ -1596,6 +1626,71 @@ mod tests {
             "{refused:?}"
         );
         assert!(w.seen.lock().unwrap().is_empty());
+    }
+
+    /// A transcript read while a run holds the conversation still carries its
+    /// taint — no chip would read as clean (review of #409).
+    #[tokio::test]
+    async fn a_transcript_read_mid_run_keeps_its_taint() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_with(Mode::Gate(Arc::clone(&gate)));
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        {
+            let personas = w.personas();
+            let mut sessions = personas.sessions.lock().await;
+            let convo = sessions
+                .get_mut(&key)
+                .unwrap()
+                .conversation
+                .as_mut()
+                .unwrap();
+            convo.taint.untrusted = true;
+        }
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(t["running"], true);
+        assert_eq!(t["taint"]["untrusted"], true, "{t}");
+        gate.notify_one();
+    }
+
+    /// A stream a token let in ends with the token: the next event after the
+    /// allowance goes is not delivered (review of #409).
+    #[tokio::test]
+    async fn a_locked_stream_ends_when_the_unlock_does() {
+        use futures::StreamExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (tx, rx) = broadcast::channel(8);
+        let open = Arc::new(AtomicBool::new(true));
+        let allowed = Arc::clone(&open);
+        let response = chat::sse_while(rx, Default::default(), move || {
+            allowed.load(Ordering::SeqCst)
+        });
+        let mut body = response.into_body().into_data_stream();
+        tx.send(WireEvent::Notice { text: "one".into() }).unwrap();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&first).contains("one"));
+        open.store(false, Ordering::SeqCst);
+        tx.send(WireEvent::Notice { text: "two".into() }).unwrap();
+        let after = tokio::time::timeout(std::time::Duration::from_secs(5), body.next())
+            .await
+            .unwrap();
+        assert!(after.is_none(), "the stream outlived the unlock: {after:?}");
     }
 
     #[tokio::test]
