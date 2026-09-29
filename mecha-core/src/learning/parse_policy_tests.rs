@@ -101,3 +101,24 @@ fn a_domain_is_a_name_never_a_path() {
     assert!(!dir.join("escape.user.toml").exists());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Run start reads the learned files twice (`setup::build`): `goal_lessons`
+/// first, then `rules_carried_for`. The skip has to hold for both. The first
+/// version made only the second lenient, so a bad file still stopped the
+/// run through the first; the review of #397 found it. This runs them in
+/// setup's order.
+#[test]
+fn every_run_start_read_skips_a_bad_learned_file() {
+    let (store, dir) = store();
+    write(&dir, "behavior.user.toml", USER);
+    write(&dir, "behavior.learned.toml", BROKEN);
+    let situation = run();
+
+    let lessons = goal_lessons(&store, &situation).expect("goal_lessons stops the run");
+    assert!(lessons.is_empty());
+    let carried = store
+        .rules_carried_for(RUN_DOMAINS, &situation)
+        .expect("rules_carried_for stops the run");
+    assert!(carried.skipped.iter().any(|s| s.domain == "behavior"));
+    std::fs::remove_dir_all(&dir).ok();
+}

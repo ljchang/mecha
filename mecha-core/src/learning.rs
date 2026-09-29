@@ -1550,8 +1550,9 @@ impl LearningStore {
         self.load_rules(&self.rules_path(domain, "user"))
             .with_context(|| {
                 format!(
-                    "your `{domain}` rules do not parse, and every run stops until they do — \
-                 `mecha rules edit --user --domain {domain}` checks an edit before saving it"
+                    "your `{domain}` rules cannot be read, and every run stops until they \
+                     can — if they do not parse, `mecha rules edit --user --domain {domain}` \
+                     checks an edit before saving it"
                 )
             })
     }
@@ -8017,8 +8018,14 @@ pub fn goal_lessons(
 ) -> anyhow::Result<Vec<crate::planning::Lesson>> {
     let sources = store.reflexions()?;
     let mut lessons = Vec::new();
+    // Read the way the rules block is (D1): a learned file that does not
+    // parse contributes nothing here rather than stopping the run. Run start
+    // reads these files twice, here and in `rules_carried_for`, and the
+    // policy has to be the same in both places or the stricter read wins.
+    // `rules_carried_for` records the skip; this read drops its copy.
+    let mut skipped: Vec<SkippedRules> = Vec::new();
     for domain in RUN_DOMAINS {
-        for rule in store.learned_rules(domain)? {
+        for rule in store.learned_or_skip(domain, &mut skipped) {
             if !rule.active() || !rule.scope.as_ref().is_none_or(|s| s.matches(situation)) {
                 continue;
             }
