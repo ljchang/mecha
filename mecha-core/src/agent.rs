@@ -13440,6 +13440,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// D1: a block rendered past a skipped learned file is not a measurement
+    /// of the rule set. The record says unknown (`rules_hash: None`, no ids),
+    /// never the hash of what was left. Fails on the old `RunConfig::of`,
+    /// which recorded any `RulesCarried` it was handed.
+    #[tokio::test]
+    async fn a_run_that_skipped_a_learned_file_records_its_rules_as_unknown() {
+        let (agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
+        let carried = crate::learning::RulesCarried {
+            rule_ids: vec!["r-user-domain".into()],
+            ..crate::learning::RulesCarried::none()
+        };
+        let of = |r: &crate::learning::RulesCarried| {
+            crate::session::RunConfig::of(
+                &agent,
+                &crate::config::Config::default(),
+                "scripted",
+                &[],
+                Some(r),
+            )
+        };
+        let whole = of(&carried);
+        assert_eq!(whole.rules_hash, Some(carried.hash.clone()));
+        assert_eq!(whole.rule_ids, vec!["r-user-domain".to_string()]);
+
+        let skipped = crate::learning::RulesCarried {
+            skipped: vec![crate::learning::SkippedRules {
+                domain: "behavior".into(),
+                path: "rules/behavior.learned.toml".into(),
+                error: "expected `=`".into(),
+            }],
+            ..carried.clone()
+        };
+        let partial = of(&skipped);
+        assert_eq!(partial.rules_hash, None);
+        assert!(partial.rule_ids.is_empty());
+        // Why it is unknown travels with the record, and replay says so
+        // rather than calling a run recorded today one from before the field.
+        assert_eq!(
+            partial.rules_skipped,
+            vec!["behavior: expected `=`".to_string()]
+        );
+        let back: crate::session::RunConfig =
+            serde_json::from_value(serde_json::to_value(&partial).unwrap()).unwrap();
+        let note = back.rules_arm_note(None);
+        assert!(
+            note.contains("did not parse") && note.contains("behavior"),
+            "{note}"
+        );
+        assert!(!note.contains("recorded before"), "{note}");
+        assert!(whole.rules_skipped.is_empty());
+    }
+
     #[tokio::test]
     async fn bound_commitment_reaches_the_draft_but_prior_verification_does_not() {
         use crate::anticipation::{Commitment, Evidence, Kind, Source, Verification};

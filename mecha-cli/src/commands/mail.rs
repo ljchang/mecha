@@ -1138,11 +1138,28 @@ async fn classify(
     // and `Reflexion::learnable`'s exemption rests on it — triage rules are
     // safe to learn from mail precisely because they arrive *here*, in a
     // tool-less pass, and nowhere else.
-    let learned = mecha_core::learning::LearningStore::open_existing_default().and_then(|s| {
-        s.rules_prompt_block_for(&[mecha_core::learning::TRIAGE_DOMAIN])
-            .ok()
-            .flatten()
-    });
+    //
+    // Not `.ok()`: that read a bad file of either kind as "no rules", and
+    // the owner's own triage rules vanished silently (D1). The owner's file
+    // now stops the sweep, and a learned one that does not parse is skipped
+    // aloud.
+    let learned = match mecha_core::learning::LearningStore::open_existing_default() {
+        None => None,
+        Some(s) => {
+            let (block, skipped) =
+                s.pass_rules_block_for(&[mecha_core::learning::TRIAGE_DOMAIN])?;
+            for k in &skipped {
+                eprintln!(
+                    "learned `{}` rules could not be read, so the classifier runs without \
+                     them — fix or remove {}: {}",
+                    k.domain,
+                    k.path.display(),
+                    k.error
+                );
+            }
+            block
+        }
+    };
     if learned.is_some() {
         eprintln!("triage rules in the classifier's prompt");
     }
