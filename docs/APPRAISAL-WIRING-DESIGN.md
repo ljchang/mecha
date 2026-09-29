@@ -1740,6 +1740,16 @@ same decided interventions.
   appraisal's arm carries the session's whole lesson set (up to three) where the
   reflector's carries one, which is each source as it would be learned
   from, not a per-lesson attribution.
+- **Why it read zero, and the backfill (2026-09-28, ruling 3D→D):** the
+  live store's clean, undropped steer and denial reflections (17, over 9
+  sessions) all came from sessions distilled before the appraisal leg
+  shipped on 2026-09-26, and distill never revisits a session. So every one
+  was excluded as `NoAppraisal`: an ordering gap, not only the clean rate.
+  `mecha distill --backfill-appraisals` appraises exactly those sessions,
+  chosen by the pass's own predicate, and writes rows that predict nothing
+  (ARCHITECTURE.md, the appraisal section). What "no worse" requires (N,
+  margin, paired or not) is still unruled; the fixture-denial pilot (C) comes
+  after.
 
 #### L7. Attribute a correction by what the run was given
 

@@ -213,6 +213,25 @@ impl<'a> Sources<'a> {
     }
 }
 
+/// The sessions a backfilled appraisal would make eligible (ruling 3D→D,
+/// 2026-09-28): a reflection [`Sources::pair`] refuses as exactly
+/// [`Exclusion::NoAppraisal`] — every gate before it passed — and that the
+/// provenance gate admits, so an appraisal of its session is all it lacks.
+/// The same predicate the pass uses, so the backfill cannot pick a session
+/// 2e-1 would then exclude for a reason of its own.
+pub fn backfill_targets(sources: &Sources<'_>, reflections: &[Reflexion]) -> BTreeSet<String> {
+    reflections
+        .iter()
+        .filter(|r| r.learnable())
+        // `pair` refuses a reflection with no lesson of its own only after
+        // the appraisal gate; decided here, so no appraisal is paid for a
+        // pair that would be refused anyway (review of #388).
+        .filter(|r| lesson_block(&r.domain, &[r.reflexion_text.as_str()]).is_some())
+        .filter(|r| matches!(sources.pair(r), Err(Exclusion::NoAppraisal)))
+        .map(|r| r.session_id.clone())
+        .collect()
+}
+
 /// The region an intervention is reported under: its recorded situation's
 /// scope key, `None` when the reflection predates situations — unknown,
 /// never standing (an empty key is standing, and matches every run).
@@ -698,6 +717,44 @@ mod tests {
         let t = report.total();
         assert_eq!((t.decided, t.appraisal_only, t.reflector_only), (2, 1, 0));
         assert_eq!(report.gate(), Gate::Pilot { decided: 2 });
+    }
+
+    /// Ruling 3D→D: the backfill appraises exactly the sessions whose
+    /// reflection the pass refuses only for want of an appraisal and whose
+    /// provenance admits it — not one already appraised, not one a gate
+    /// before the appraisal refuses, not one no appraisal could make clean.
+    #[test]
+    fn a_backfill_targets_only_what_an_appraisal_alone_would_admit() {
+        let read = clean_read(vec![appraisal("s-clean", true)]);
+        let on_record: BTreeSet<String> = ["s-clean".to_string()].into();
+        let sources = Sources::new(&read, on_record);
+        let untrusted = {
+            let mut r = reflection("r4", "s-untrusted", "denial", &["fs_write"]);
+            r.origin = Origin::Untrusted;
+            r
+        };
+        let dropped = {
+            let mut r = reflection("r5", "s-dropped", "steer", &["fs_list"]);
+            r.dropped_at = Some("2026-09-25T01:00:00Z".into());
+            r
+        };
+        let lessonless = {
+            let mut r = reflection("r6", "s-lessonless", "denial", &["fs_write"]);
+            r.reflexion_text = "   ".into();
+            r
+        };
+        let targets = backfill_targets(
+            &sources,
+            &[
+                reflection("r1", "s-waiting", "denial", &["fs_write"]),
+                reflection("r2", "s-clean", "denial", &["fs_write"]),
+                reflection("r3", "s-followup", "followup", &[]),
+                untrusted,
+                dropped,
+                lessonless,
+            ],
+        );
+        assert_eq!(targets, ["s-waiting".to_string()].into());
     }
 
     /// Every exclusion is its own count, and the clean-for-one-side cases
