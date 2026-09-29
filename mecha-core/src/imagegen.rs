@@ -1696,12 +1696,22 @@ impl Tool for ImageGenerate {
         let mut used = Vec::new();
         let mut source_seeds = Vec::new();
         if let Some(ask) = &ask {
-            let Some(dir) = &self.library_dir else {
-                return Ok(refused(
-                    "The image library is not available: the mecha home could not be resolved.",
-                ));
+            let lib = match &self.library_dir {
+                Some(dir) => crate::imagelib::Library::load(dir).0,
+                // Extras need nothing stored — no portrait, no description,
+                // no cast to cross-check — so a scene with only extras draws
+                // without a library, as it did before extras existed (review
+                // of #390).
+                None if ask.cast.is_empty() && ask.style.is_none() => {
+                    crate::imagelib::Library::default()
+                }
+                None => {
+                    return Ok(refused(
+                        "The image library is not available: the mecha home could not be \
+                         resolved.",
+                    ))
+                }
             };
-            let (lib, _) = crate::imagelib::Library::load(dir);
             let compiled = match crate::imagelib::compile(
                 &lib,
                 &req.prompt,
@@ -3877,6 +3887,47 @@ mod tests {
         );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
+    }
+
+    #[tokio::test]
+    async fn extras_alone_draw_without_a_library_and_a_cast_does_not() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let mut t = tool(&url);
+        t.library_dir = None;
+        let out = t
+            .call(
+                json!({"prompt": "a diner booth at night", "extras": ["a waiter pouring coffee"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let submitted = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|l| l.starts_with("POST /prompt"))
+            .cloned()
+            .unwrap();
+        assert!(
+            submitted.contains("Also in the scene: a waiter pouring coffee."),
+            "{submitted}"
+        );
+        let out = t
+            .call(
+                json!({"prompt": "a diner", "cast": two_people()}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("image library is not available"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]
