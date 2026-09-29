@@ -3399,7 +3399,10 @@ X3 unparked).
   the acting model is a way to steer the verdict.
 - **Where it is on:** the agent's route turns it on with the charter
   window. Every surface that opens its own store per session does it with
-  `OutboxStore::open_like`, so the setting cannot be dropped by omission.
+  `OutboxStore::open_like`, which carries the setting. This is a
+  convention checked at review, not a type: the plain `open` is still
+  public. A surface that uses it shows up as a rising count of drafts
+  staged with no forecast.
   Tests pass a fixed window, so none reads the machine's charter.
 - **Off the staging path's critical cost:** the history is the newest
   `HISTORY_LIMIT` items (ids sort by time), the window is resolved once per

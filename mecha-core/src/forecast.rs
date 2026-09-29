@@ -28,9 +28,9 @@
 //! **Only a run's drafts.** A draft is forecast, and counts as history, only
 //! when it carries the session that staged it ([`forecasts`]). That keeps
 //! the owner's own typed text (`mecha mail send`) out. It also leaves out
-//! a route that stamps no session: `mecha batch` stamps none, so its drafts
-//! are neither forecast nor counted as unforecast. That is by design, not a
-//! lost write.
+//! a route that stamps no session: `mecha batch` stamps none, and neither
+//! does an incognito chat, so their drafts are neither forecast nor counted
+//! as unforecast. That is by design, not a lost write.
 
 use crate::appraisal_store::ExpectedAct;
 use crate::closure::Actor;

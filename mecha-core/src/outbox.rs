@@ -1022,7 +1022,19 @@ impl OutboxStore {
                         _ => None,
                     }
                 };
-                let patience = *self.forecast_patience.get_or_init(|| window.patience());
+                // Only a window that was read is kept: a charter unreadable
+                // now is retried on the next draft, never cached for the
+                // life of a `tui` or `chat` session (review of #401).
+                let patience = match self.forecast_patience.get() {
+                    Some(p) => *p,
+                    None => {
+                        let p = window.patience();
+                        if p.is_some() {
+                            let _ = self.forecast_patience.set(p);
+                        }
+                        p
+                    }
+                };
                 if let Err(e) =
                     crate::forecast::record(&self.root, &item, history.as_deref(), patience, test)
                 {
