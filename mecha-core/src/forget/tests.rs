@@ -98,6 +98,19 @@ fn seeded(home: &Path) -> Roots {
     let kept_ws = home.join("work/web/chat-kept");
     session(&roots, GONE, &gone_ws, CANARY);
     session(&roots, KEPT, &kept_ws, "an ordinary afternoon");
+    // Both marked as experiments by the owner (ruling 4D).
+    for id in [GONE, KEPT] {
+        crate::session::Marks::append(
+            &roots.sessions,
+            &crate::session::Mark {
+                session_id: id.into(),
+                action: crate::session::MarkAction::Experiment,
+                at: chrono::Utc::now(),
+                reason: None,
+            },
+        )
+        .unwrap();
+    }
     write(&gone_ws.join("inbox/photo.txt"), CANARY);
     let spill = crate::tool::session_spill_dir_under(home, &gone_ws);
     write(&spill.join("out-1.txt"), CANARY);
@@ -300,6 +313,9 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert!(report.complete);
     assert_eq!(*graph.asked.borrow(), vec![GONE.to_string()]);
+    // The owner's mark goes with it; the other session's stays.
+    let marks = crate::session::Marks::load(&roots.sessions).unwrap();
+    assert!(!marks.withdrawn(GONE) && marks.withdrawn(KEPT));
     // The whole claim, asked of the bytes: nothing under the home names the
     // session or says what it said.
     assert_eq!(holding(&home.0, GONE), Vec::<PathBuf>::new());
