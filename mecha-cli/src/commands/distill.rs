@@ -768,9 +768,19 @@ pub(crate) fn owner_acts(
 /// unknown — and a hit rate only over predictions known to have been able
 /// to miss.
 pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -> String {
+    // Ruling 1B: the appraisals the harness asked for no expected act, apart
+    // from any the appraiser left it out of.
+    let not_asked = if s.not_asked > 0 {
+        format!(
+            " · {} not asked: the output offered nothing to act on",
+            s.not_asked
+        )
+    } else {
+        String::new()
+    };
     if s.with_expectation == 0 {
         return format!(
-            "appraisals' predictions: none carries an expected act ({} appraisal(s) on record{})",
+            "appraisals' predictions: none carries an expected act ({} appraisal(s) on record{}){not_asked}",
             s.appraisals,
             if s.appraisals_unreadable > 0 {
                 format!(", {} unreadable", s.appraisals_unreadable)
@@ -832,7 +842,7 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
             )
         } else {
             String::new()
-        }
+        } + &not_asked
     )
 }
 
@@ -1046,7 +1056,19 @@ impl Appraiser {
             past_unreadable: clean.is_err(),
             known: cx.known,
         });
-        let answered = match distiller.appraise(turn, &inputs).await {
+        // Ruling 1B: an output with nothing for the owner to act on, now or
+        // through a task the run touched, is asked for no expected act. The
+        // stores the scorer reads, read the same way, so an unreadable one
+        // leaves the question asked.
+        let withhold = mecha_core::appraisal_store::withholds_expectation(
+            id,
+            evidence.anchor(),
+            &owner_acts(&self.stores),
+            // Every message the run ever had, from the evidence's one read:
+            // a task call compaction evicted still linked the session.
+            evidence.touched_tasks(),
+        );
+        let answered = match distiller.appraise(turn, &inputs, withhold).await {
             Ok(a) => a,
             Err(e) => {
                 eprintln!("· {id} — appraisal failed: {e:#}");
@@ -1173,6 +1195,24 @@ mod tests {
         );
         assert!(!blind.contains("none"), "{blind}");
         assert!(!blind.contains("could miss)"), "{blind}");
+
+        // Ruling 1B: appraisals the harness asked for no expected act are
+        // named, on either branch, never folded into "none carries one".
+        let withheld = expectations_line(&ScoreSummary {
+            appraisals: 3,
+            with_expectation: 0,
+            not_asked: 3,
+            ..ScoreSummary::default()
+        });
+        assert!(
+            withheld.contains("3 not asked: the output offered nothing to act on"),
+            "{withheld}"
+        );
+        let beside = expectations_line(&ScoreSummary {
+            not_asked: 2,
+            ..base.clone()
+        });
+        assert!(beside.contains("2 not asked"), "{beside}");
 
         let none = expectations_line(&base);
         assert!(none.contains("0 scored of 7"), "{none}");

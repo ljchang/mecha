@@ -310,6 +310,11 @@ pub struct Draft {
     /// The owner act expected next time, from R16's closed set — what 2b-2
     /// scores the prediction by.
     pub expected_act: Option<ExpectedAct>,
+    /// The harness did not ask for `expected_act` (ruling 1B,
+    /// [`withholds_expectation`]) — set by the producer, never by a model,
+    /// so a withheld prediction and one the appraiser simply left out are
+    /// not the same `None`.
+    pub expected_act_withheld: bool,
     /// Goal words the producer could not read as a pointer at all — counted
     /// on the record with the ones that did not resolve.
     pub unreadable_goals: usize,
@@ -338,6 +343,11 @@ pub struct SessionEvidence {
     /// the session's end as appraised (R37's window opens here). `None`
     /// where the file system could not say.
     ended_at: Option<DateTime<Utc>>,
+    /// The run called a [`TASK_LINKING_TOOLS`] tool — over every message it
+    /// ever had, not the post-compaction list: a task call a summarising
+    /// compaction evicted still tied the session to the task (review of
+    /// #378). Ruling 1B's write-time test reads it.
+    touched_tasks: bool,
 }
 
 impl SessionEvidence {
@@ -403,11 +413,17 @@ impl SessionEvidence {
             situation,
             packet: packet(ever),
             ended_at: None,
+            touched_tasks: touched_tasks(ever),
         }
     }
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Whether the run ever called a task-linking tool, compaction or not.
+    pub fn touched_tasks(&self) -> bool {
+        self.touched_tasks
     }
 
     pub fn origin(&self) -> Origin {
@@ -550,6 +566,11 @@ pub struct TextAppraisal {
         deserialize_with = "de_expected_act"
     )]
     pub expected_act: Option<ExpectedAct>,
+    /// The harness withheld the question ([`Draft::expected_act_withheld`]):
+    /// counted apart from a prediction the appraiser left out. Absent on a
+    /// row from before the field — not withheld.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expected_act_withheld: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub goal_hypotheses: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -729,6 +750,7 @@ impl TextAppraisal {
             // The structural half is kept even when the prose prediction is
             // empty: an expected act is a prediction on its own.
             expected_act: draft.expected_act.filter(|a| *a != ExpectedAct::Unknown),
+            expected_act_withheld: draft.expected_act_withheld,
             goal_hypotheses,
             lessons,
             goals_unresolved,
@@ -1704,6 +1726,40 @@ pub fn output_offers_act(
     Some(false)
 }
 
+/// The task-board tools whose call can tie a session to a task the owner
+/// closes or reopens later — a link [`output_offers_act`] cannot see when
+/// the appraisal is written, because the closure naming the session does
+/// not exist yet.
+pub const TASK_LINKING_TOOLS: [&str; 2] = ["kg_task_create", "kg_task_update"];
+
+/// Whether the run called a [`TASK_LINKING_TOOLS`] tool, under any MCP
+/// prefix.
+pub fn touched_tasks(messages: &[crate::message::Message]) -> bool {
+    messages.iter().flat_map(|m| m.content.iter()).any(|b| {
+        matches!(b, crate::message::Block::ToolUse { name, .. }
+            if TASK_LINKING_TOOLS
+                .iter()
+                .any(|t| name == t || name.ends_with(&format!("__{t}"))))
+    })
+}
+
+/// Whether the harness withholds the appraiser's `expected_act` (ruling 1B,
+/// 2026-09-28), judged when the appraisal is written. Stricter than
+/// [`output_offers_act`], which is a read-time test: at write time the
+/// owner's closures and workflow dispositions have not happened yet, and a
+/// row is written once, so a prediction withheld wrongly can never be
+/// scored. Withheld only when the output offers no act now *and* the run did
+/// nothing that could link it to one later — it touched no task. Unknown
+/// asks.
+pub fn withholds_expectation(
+    session_id: &str,
+    anchor: Option<&GoalRef>,
+    acts: &OwnerActs<'_>,
+    touched_tasks: bool,
+) -> bool {
+    !touched_tasks && output_offers_act(session_id, anchor, acts) == Some(false)
+}
+
 /// One appraisal's prediction, scored: its expected act against the act
 /// that happened. Written once per appraisal, when the act resolves, and
 /// never rewritten — a later charter edit that moves the patience does not
@@ -1787,6 +1843,10 @@ pub struct ScoreSummary {
     pub appraisals: usize,
     /// Appraisals carrying a readable expected act.
     pub with_expectation: usize,
+    /// Appraisals the harness asked for no expected act (ruling 1B): the
+    /// output offered nothing to act on. Apart from `with_expectation`, and
+    /// from an appraisal that left the field out.
+    pub not_asked: usize,
     pub scored: usize,
     pub hits: usize,
     /// Of the hits, those that could not have missed: a `no_act` prediction
@@ -1954,6 +2014,9 @@ impl AppraisalStore {
         };
         for row in &rows {
             if !row.expected_act.is_some_and(|a| a != ExpectedAct::Unknown) {
+                if row.expected_act_withheld {
+                    s.not_asked += 1;
+                }
                 continue;
             }
             s.with_expectation += 1;
@@ -2620,6 +2683,7 @@ mod tests {
     /// turn, a judgment resting on both.
     fn draft() -> Draft {
         Draft {
+            expected_act_withheld: false,
             interpretation: "The run found the review date in the owner's mail and was asked \
                              to pass it on; it matters because the task is the budget review."
                 .into(),
@@ -4216,6 +4280,135 @@ mod tests {
             (0, 1, 1)
         );
         assert_eq!(unsure.hit_rate, None, "an unjudged hit withholds the rate");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Ruling 1B at write time: withheld only when the output offers no act
+    /// now and the run touched no task — a task tool can tie the session to
+    /// a closure that does not exist yet, and a row is written once. A
+    /// withheld row is counted as not asked, apart from an omission.
+    #[test]
+    fn an_expectation_is_withheld_only_when_nothing_could_link_the_output_to_an_act() {
+        use crate::message::{Block, Message};
+        let root = temp_root("withhold");
+        let dir = root.join("sessions");
+        let chat = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        let none = OwnerActs::default();
+        assert!(withholds_expectation(chat.session_id(), None, &none, false));
+        assert!(
+            !withholds_expectation(chat.session_id(), None, &none, true),
+            "a task the run touched may be closed later, naming it"
+        );
+        let blind = OwnerActs {
+            closures_unreadable: true,
+            ..none
+        };
+        assert!(
+            !withholds_expectation(chat.session_id(), None, &blind, false),
+            "unknown asks"
+        );
+
+        let call = |name: &str| {
+            vec![Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: name.into(),
+                input: json!({}),
+            }])]
+        };
+        assert!(touched_tasks(&call("kg_task_update")));
+        assert!(touched_tasks(&call("graph__kg_task_create")));
+        assert!(
+            !touched_tasks(&call("kg_task_list")),
+            "reading the board links nothing"
+        );
+        assert!(!touched_tasks(&call("mail_search")));
+
+        // A task call a summarising compaction evicted still counts: the
+        // evidence reads every message the run ever had (review of #378).
+        let compacted = {
+            use crate::session::{Record, Session, SessionKind, SessionMeta};
+            let session = Session::create(
+                &dir,
+                SessionMeta {
+                    id: Session::new_id(),
+                    created_at: Utc::now(),
+                    provider: "scripted".into(),
+                    model: "scripted".into(),
+                    workspace: dir.clone(),
+                    title: None,
+                    kind: Some(SessionKind::Web),
+                },
+            )
+            .unwrap();
+            for m in [
+                Message::user("put the review on the board"),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "kg_task_update".into(),
+                    input: json!({"id": "t-budget"}),
+                }]),
+                Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "updated".into(),
+                    is_error: false,
+                }]),
+                Message::assistant(vec![Block::text("Done.")]),
+            ] {
+                session.append(&Record::Message(m)).unwrap();
+            }
+            session
+                .append(&Record::Rewrite {
+                    messages: vec![
+                        Message::user("[summary] the review is on the board"),
+                        Message::assistant(vec![Block::text("Done.")]),
+                    ],
+                })
+                .unwrap();
+            session.path
+        };
+        let (transcript, evidence) = SessionEvidence::read_with_transcript(&compacted).unwrap();
+        assert!(
+            !touched_tasks(&transcript.convo.messages),
+            "compaction evicted it"
+        );
+        assert!(evidence.touched_tasks(), "but the run did touch the board");
+        assert!(!withholds_expectation(
+            evidence.session_id(),
+            None,
+            &none,
+            evidence.touched_tasks()
+        ));
+
+        // Stored: a withheld row is not asked; an omitted one is neither.
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        store
+            .record(
+                &chat,
+                Draft {
+                    expected_act: None,
+                    expected_act_withheld: true,
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let omitted = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        store
+            .record(
+                &omitted,
+                Draft {
+                    expected_act: None,
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let s = store.score_summary(&none, Utc::now()).unwrap();
+        assert_eq!((s.appraisals, s.with_expectation, s.not_asked), (2, 0, 1));
+        let rows = store.for_owner().unwrap().0;
+        assert!(rows.iter().any(|r| r.expected_act_withheld));
         let _ = std::fs::remove_dir_all(&root);
     }
 
