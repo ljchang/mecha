@@ -26,9 +26,12 @@ maps which document holds what.
 installed.** What shipped is in HISTORY under 2026-09-28 and 2026-09-29.
 Open:
 
-- **`extras` on `image_generate` for people not in the library.** Measured in
-  E11 (4 images): the compiled "Exactly N people" pushes a described waiter
-  into the background, while counted wording puts him in the scene.
+- **`extras` on `image_generate` for people not in the library.** mecha-d7
+  reports a 4-image run it labels E11: the compiled "Exactly N people"
+  pushes a described waiter into the background, while counted wording puts
+  him in the scene. That run is **not yet written up** in
+  `IMAGE-COMPILER-RESEARCH.md`, which ends at E10. Writing it up there comes
+  first, so the item has evidence to read.
 - **#385's last-pass minors:** `imagelib::write_atomic_mode` leaks a temp file
   on a rename error; the docs should say that locking does not reach
   portraits already cached `immutable`; and the route tests for the CLI-child
@@ -766,21 +769,6 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-**Not re-measured at session close (2026-09-03, `main` at `b50eb24`).**
-When the close pass began (~17:40 UTC) a peer's 169-call appraisal run held
-llama-server and this box's rule is no build during inference; when the run
-released it (17:56) the deploy's `cargo install` ran (18:04) but `cargo
-test --workspace` did not — the owner was closing the session, and the
-verifiable fact without the run was CI's green test jobs on `b50eb24`. So
-the count below stands as measured at `49166e3` — eleven merges ago
-(`git log --first-parent --merges --reverse 49166e3..b50eb24`: #146, #147,
-#143, #149, #148, #150, #151, #145, #144, #152, #155), of which #143's
-`policy` suite, #144, #148, #150 and #155 added cargo tests — and CI's
-test jobs were green on `b50eb24`, which is the fact that was verifiable
-without a build. Four of the five open PRs add tests too (#158, #153,
-#157, #154; #156 is docs); mecha-26 reports `mecha-cli` alone goes 707 →
-715 across its three.
-
 **Current figure: on `main` at `c6ae2c69`, measured 2026-09-29 (~01:40
 UTC) in a worktree: 3,584 tests, no failures, 4 ignored** (`cargo test
 --workspace`, without `MECHA_TEST_REQUIRE_BACKENDS`). By suite:
@@ -795,6 +783,21 @@ UTC) in a worktree: 3,584 tests, no failures, 4 ignored** (`cargo test
 - 1 doctest.
 
 The older figures below are kept as the dated samples they are.
+
+**Not re-measured at session close (2026-09-03, `main` at `b50eb24`).**
+When the close pass began (~17:40 UTC) a peer's 169-call appraisal run held
+llama-server and this box's rule is no build during inference; when the run
+released it (17:56) the deploy's `cargo install` ran (18:04) but `cargo
+test --workspace` did not — the owner was closing the session, and the
+verifiable fact without the run was CI's green test jobs on `b50eb24`. So
+the count below stands as measured at `49166e3` — eleven merges ago
+(`git log --first-parent --merges --reverse 49166e3..b50eb24`: #146, #147,
+#143, #149, #148, #150, #151, #145, #144, #152, #155), of which #143's
+`policy` suite, #144, #148, #150 and #155 added cargo tests — and CI's
+test jobs were green on `b50eb24`, which is the fact that was verifiable
+without a build. Four of the five open PRs add tests too (#158, #153,
+#157, #154; #156 is docs); mecha-26 reports `mecha-cli` alone goes 707 →
+715 across its three.
 
 On **`main` at `49166e3`** (#139, #140, #141 and #142 all in), measured
 2026-09-02 (~20:30 UTC): **2,160 tests**, no failures — **691** in
