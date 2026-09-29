@@ -2085,7 +2085,11 @@ async fn completion(
     // would stage drafts without attribution must not run at all.
     if let Some(shared_route) = &bound.agent.context().outbox {
         match OutboxStore::open(&shared.outbox_root) {
-            Ok(store) => {
+            Ok(mut store) => {
+                // The shared route's forecasting travels with this session's.
+                if let Some(w) = shared_route.store.forecasting() {
+                    store = store.with_forecasts(w);
+                }
                 let mine = OutboxRoute::new(
                     store,
                     shared_route.routed().map(String::from).collect::<Vec<_>>(),

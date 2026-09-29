@@ -397,7 +397,10 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
             Some(dir) => dir.clone(),
             None => mecha_core::outbox::OutboxStore::default_root()?,
         };
-        let store = mecha_core::outbox::OutboxStore::open(root)?;
+        // Forecast the owner's act on each drafted message (ruling (a) of
+        // 2026-09-29): a sealed ledger beside the items, readout only.
+        let store = mecha_core::outbox::OutboxStore::open(root)?
+            .with_forecasts(mecha_core::forecast::Window::Charter);
         Some(Arc::new(mecha_core::outbox::OutboxRoute::new(
             store,
             cfg.outbox.tools.iter().cloned(),

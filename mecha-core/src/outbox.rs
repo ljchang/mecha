@@ -853,6 +853,10 @@ impl OutboxRoute {
 
 pub struct OutboxStore {
     root: PathBuf,
+    /// Whether staging a model-authored message forecasts the owner's act
+    /// on it, and the window it judges by (`crate::forecast`). Off unless
+    /// asked for.
+    forecasting: Option<crate::forecast::Window>,
 }
 
 /// Holds the store's writer lock for as long as it lives.
@@ -871,14 +875,34 @@ impl OutboxStore {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         crate::create_private_dir(&root).with_context(|| format!("creating {}", root.display()))?;
-        Ok(OutboxStore { root })
+        Ok(OutboxStore {
+            root,
+            forecasting: None,
+        })
+    }
+
+    /// Forecast the owner's act on every model-authored message this store
+    /// stages, into its sealed ledger (`crate::forecast`) — the owner's
+    /// ruling (a) of 2026-09-29.
+    pub fn with_forecasts(mut self, window: crate::forecast::Window) -> Self {
+        self.forecasting = Some(window);
+        self
+    }
+
+    /// The window this store forecasts by, if it forecasts — for a surface
+    /// that opens its own store beside the agent's to carry the setting.
+    pub fn forecasting(&self) -> Option<crate::forecast::Window> {
+        self.forecasting
     }
 
     /// Open at the default location only if it already exists — for read
     /// paths that must not create state as a side effect.
     pub fn open_existing_default() -> Option<Self> {
         let root = Self::default_root().ok()?;
-        root.is_dir().then_some(OutboxStore { root })
+        root.is_dir().then_some(OutboxStore {
+            root,
+            forecasting: None,
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -959,6 +983,22 @@ impl OutboxStore {
             filled_defaults,
         };
         self.write_item(&item)?;
+        // The forecast, sealed beside the items. It is a measurement, never
+        // a guard, so a failure to write one does not fail the staging — it
+        // is counted as an unforecast draft on the readout instead. A
+        // history that could not be read whole makes a forecast with no
+        // basis, never a guess from part of it.
+        if let Some(window) = self.forecasting {
+            if crate::forecast::forecasts(&item) {
+                let (history, patience) = match self.items_counting() {
+                    Ok((h, 0)) => (h, window.patience()),
+                    _ => (Vec::new(), None),
+                };
+                if let Err(e) = crate::forecast::record(&self.root, &item, &history, patience) {
+                    tracing::warn!("no forecast recorded for draft {}: {e:#}", item.id);
+                }
+            }
+        }
         Ok(item)
     }
 

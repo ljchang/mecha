@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Draft forecasts.** When a run stages a message, mecha now predicts what
+  you will do with it: send it as written, edit it, reject it, or leave it
+  past the outbox's patience. The prediction is your most common act on
+  similar earlier drafts. It is kept out of every review surface and every
+  prompt, so it cannot sway your verdict, and `sessions appraise` reports
+  how the predictions fare. Only acts stamped as yours count.
+
 - **Add and edit characters and styles from the Library tab.** **Add
   character** takes a portrait from your device, a name and a description.
   **Add style** takes a name and its text. **Edit** changes an approved
