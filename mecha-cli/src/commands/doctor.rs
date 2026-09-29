@@ -64,6 +64,7 @@ pub async fn execute(args: Args) -> Result<()> {
     } else {
         render(&findings);
         vouched_note();
+        legacy_learning_git_note();
         if interactive() {
             offer_remedies(&findings)?;
         }
@@ -347,6 +348,26 @@ fn vouched_note() {
             "\nnote: believed when they say a failed send dispatched nothing \
              (trust_result_claims): {}",
             names.join(", ")
+        );
+    }
+}
+
+/// Name a learning store's leftover `.git` and what it holds. Not a finding,
+/// on `vouched_note`'s rule: keeping that history is the owner's decision,
+/// and a finding would keep every run red on an install that simply learned
+/// something before 2026-09-28 (`doctor::legacy_learning_git`).
+fn legacy_learning_git_note() {
+    let Ok(root) = mecha_core::learning::LearningStore::default_root() else {
+        return; // doctor never fails on its own examination
+    };
+    if let Some(git) = doctor::legacy_learning_git(&root) {
+        println!(
+            "\nnote: {} is left from before the learning store stopped using git. \
+             Nothing writes to it, but its history keeps every reflection and rule \
+             wording ever recorded, including deleted ones; nothing reads it. \
+             Remove it with `rm -rf {}` once you have decided to.",
+            git.display(),
+            git.display()
         );
     }
 }

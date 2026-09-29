@@ -475,7 +475,7 @@ impl Backlog {
     fn read_proposals() -> Option<Counted> {
         // The same rule as the three owner-facing readers: a store that
         // has never existed is empty, and a read creates nothing —
-        // `LearningStore::open` runs `git init` (found on review, after
+        // `LearningStore::open` creates the layout (found on review, after
         // the test below asserted the rule for three of five readers).
         let Some(store) = LearningStore::open_existing_default() else {
             return Some(Counted::default());
@@ -1104,8 +1104,8 @@ mod tests {
         assert_eq!(b.proposals, Some(Depth::default()));
         assert_eq!(b.candidates, Some(Depth::default()));
         // All five, not the three owner-facing ones: the first cut of this
-        // test asserted three while `LearningStore::open` (which also runs
-        // `git init`) and `HarnessStore::open` still created `learning/`
+        // test asserted three while `LearningStore::open` and
+        // `HarnessStore::open` still created `learning/`
         // and `learning/harness/candidates` twice per run (found on
         // review). The empty-home assertion below is the strong form, and
         // it is what makes this test sensitive to any test in this binary
