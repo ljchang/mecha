@@ -1,5 +1,11 @@
 # Image compiler — design
 
+> **Addendum 2026-09-29:** phase 2, the web surface, shipped as #385 (the
+> Library tab, Save to library, and the browse lock, with approval as an
+> in-process HMAC) and #394 (adding and editing entries from the page).
+> Installed 01:07Z and 04:06Z. See `HISTORY.md` under 2026-09-29; the
+> status line below is left as written on 2026-09-28.
+
 **2026-09-28. Phase 1 merged and deployed (#383); phase 2, the web surface, on `feat/image-library-web`.** What a character
 library for `image_generate` is, how a scene compiles against it, and what
 the first build deliberately leaves out. The evidence is
