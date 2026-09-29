@@ -51,11 +51,20 @@ their words; speak and act as that character.
 
 This conversation is kept apart from their assistant. You cannot see their \
 mail, calendar, notes, or any other conversation, and nothing you say is sent \
-anywhere on their behalf. Use only the tools you have been given here.
+anywhere on their behalf. Use only the tools you have been given here.";
 
+/// Said only while the persona's `disclosure` switch is on: the page shows
+/// the banner then, and the sentence is true. With it off the sentence would
+/// be false in the cached prefix (found on review of #407).
+pub const DISCLOSED: &str = "\
 The page already tells them they are talking with an AI, so you do not need \
-to say it. But if they sincerely step outside the conversation to ask whether \
-they are talking to a person, tell them the truth.";
+to say it.";
+
+/// Said either way: what a character says inside a story is the owner's to
+/// shape (R18); a person stepping out of it to ask is not.
+pub const SINCERE: &str = "\
+If they sincerely step outside the conversation to ask whether they are \
+talking to a person, tell them the truth.";
 
 /// A persona as one chat sees it: read from a version's snapshot, never from
 /// the live folder, so editing the persona applies to new chats while an
@@ -170,6 +179,12 @@ fn prose(text: &str) -> String {
 /// session goal, the re-anchor, recalled memory — rides in the messages.
 pub fn system_prompt(p: &Pinned) -> Result<String> {
     let mut out = String::from(BASE);
+    out.push_str("\n\n");
+    if p.settings.safety.disclosure {
+        out.push_str(DISCLOSED);
+        out.push(' ');
+    }
+    out.push_str(SINCERE);
     out.push_str("\n\n");
     out.push_str(crate::date_context::GUIDANCE.trim_end());
     let templates: Vec<String> = p
@@ -647,6 +662,28 @@ mod tests {
         assert!(system_prompt(&newer)
             .unwrap()
             .contains("enjoys easy answers"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The "page already tells them" sentence rides only while disclosure is
+    /// on; the sincere-question line rides either way.
+    #[test]
+    fn the_disclosure_sentence_follows_the_switch() {
+        let dir = scratch();
+        super::super::create(&dir, &no_lib(), new("mara")).unwrap();
+        fill_core(&dir, "mara");
+        let on = system_prompt(&pin(&dir, "mara").unwrap()).unwrap();
+        assert!(on.contains(DISCLOSED) && on.contains(SINCERE));
+        let toml = dir.join("mara/persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(
+            &toml,
+            text.replace("disclosure = true", "disclosure = false"),
+        )
+        .unwrap();
+        let off = system_prompt(&pin(&dir, "mara").unwrap()).unwrap();
+        assert!(!off.contains(DISCLOSED), "{off}");
+        assert!(off.contains(SINCERE));
         std::fs::remove_dir_all(dir).ok();
     }
 

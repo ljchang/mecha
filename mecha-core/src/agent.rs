@@ -1053,6 +1053,10 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // The eighth: the caption on a picture a tool put in front of the
         // model (`run_tools`), folded beside the results. The tool's voice.
         || text.starts_with(TOOL_IMAGE_STEM)
+        // The ninth: a persona's Core, handed back by the harness near the
+        // newest turn (`persona::safety::reanchor_text`, PERSONA-DESIGN.md
+        // §12.5). The owner's words about the persona, not to it.
+        || text.starts_with(crate::persona::safety::REANCHOR_STEM)
         // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
         // recorded before it carry the same fully-templated nudge bodies
         // bare, and one such nudge was already mined as a steer and probed as
