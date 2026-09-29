@@ -52,6 +52,12 @@ fn new_key() -> String {
     )
 }
 
+/// A transcript id as `Session::new_id` mints one — letters, digits and `-`,
+/// never a separator or a dot — checked before it becomes a file name.
+fn valid_session_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
 /// How a persona agent's provider is made — the router's, in `serve`; a
 /// scripted one in tests.
 type ProviderFactory = Arc<
@@ -431,7 +437,13 @@ impl PersonaChats {
             return Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }));
         }
         let dir = Store::load(&self.store).sessions_dir(&p.name);
-        let path = Session::find(&dir, id).map_err(|_| Refusal::NotFound)?;
+        // An exact id, not `Session::find`'s prefix: an empty or partial id
+        // from a page bug must miss rather than resume whichever chat it
+        // happens to match (review of #409).
+        let path = dir.join(format!("{id}.jsonl"));
+        if !valid_session_id(id) || !path.is_file() {
+            return Err(Refusal::NotFound);
+        }
         let (meta, conversation) = Session::load(&path).map_err(failed)?;
         let pin: PinRecord = std::fs::read(pin_path(&dir, &meta.id))
             .map_err(anyhow::Error::from)
@@ -747,8 +759,10 @@ impl PersonaChats {
         let context_window = bound.context_window;
         let chats = Arc::clone(self);
         let key = key.to_string();
-        drop(sessions);
-
+        // Spawned under the sessions lock, as the assistant's `begin_turn`
+        // spawns under its map: `stop` takes this lock before it closes
+        // `runs`, so the run is on the tracker before `drain` can report
+        // quiescence (found on review of #409).
         chat.runs.spawn(async move {
             let _held = held;
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -842,6 +856,7 @@ impl PersonaChats {
             drop(sessions);
             let _ = bcast.send(done);
         });
+        drop(sessions);
         Ok(serde_json::json!({ "started": true }))
     }
 }
@@ -1707,6 +1722,32 @@ mod tests {
             .await
             .unwrap();
         assert!(after.is_none(), "the stream outlived the unlock: {after:?}");
+    }
+
+    /// Resume takes an exact id: an empty, partial or path-shaped one misses
+    /// rather than resuming whichever chat it happens to match.
+    #[tokio::test]
+    async fn resume_needs_the_exact_id() {
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let id = opened["session"].as_str().unwrap().to_string();
+        w.personas().sessions.lock().await.clear();
+        for bad in ["", &id[..8], "../x", &format!("{id}.persona")] {
+            let r = w
+                .personas()
+                .resume(&w.chat, &w.library, "mara", bad, None)
+                .await;
+            assert!(matches!(r, Err(Refusal::NotFound)), "{bad:?}: {r:?}");
+        }
+        assert!(w
+            .personas()
+            .resume(&w.chat, &w.library, "mara", &id, None)
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
