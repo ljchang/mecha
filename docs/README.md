@@ -25,6 +25,7 @@ belonged in three other places.
 | `*-RESEARCH.md` | One question, researched once, with evidence and a date | past | one per question |
 | `*-DESIGN.md` | One thing, designed before it is built — the decisions, and what is deliberately not in scope | present, then past | one per thing |
 | [`LEARNING-AUTONOMY-DESIGN.md`](LEARNING-AUTONOMY-DESIGN.md) | Why learning is ungated in every domain, what replaces the gate, and the cost of that in `behavior`. Read §3 before loosening anything further | present | once |
+| [`LEARNING-STORE-RESEARCH.md`](LEARNING-STORE-RESEARCH.md) | Where the learning store should live: files, fixed, until the graph converges into mecha — then a mecha-owned SQLite, never `graph.db`. §7 holds the owner's decisions | past | once |
 | [`GOAL-SYSTEM-DESIGN.md`](GOAL-SYSTEM-DESIGN.md) | The goal representation, the signed error signal it produces, and its three consumers. Read §7 before letting any disposition stand in for a structural check | present | once |
 | [`CHANGELOG.md`](../CHANGELOG.md) | User-visible changes per release | past | append-only |
 | [`website/docs/`](../website/docs) | User-facing documentation for the published site | present | with features |
@@ -89,6 +90,7 @@ something shipped.
 | [`IMAGE-COMPILER-DESIGN.md`](IMAGE-COMPILER-DESIGN.md) | The image library and scene compiler: the owner's rulings, the store, the compile rules, and what phase 1 leaves out |
 | [`INCOGNITO-DESIGN.md`](INCOGNITO-DESIGN.md) | A web chat that leaves no trace once closed: the owner's rulings, the audit of every place a chat writes today, and what closes each. §8 is how "no trace" is measured |
 | [`LEARNING-AUTONOMY-DESIGN.md`](LEARNING-AUTONOMY-DESIGN.md) | Why learning is ungated per domain, what replaces the gate, and the cost in `behavior`. Read §3 before loosening anything |
+| [`LEARNING-STORE-RESEARCH.md`](LEARNING-STORE-RESEARCH.md) | Where the learning store should live — files, a mecha-owned database, or the graph — and when that changes |
 | [`MAIL-UX-DESIGN.md`](MAIL-UX-DESIGN.md) | Mail as a surface you work: the phases, and what each settled |
 | [`NOTES-GRAPH-DESIGN.md`](NOTES-GRAPH-DESIGN.md) | One web surface over the graph: capture, find, edit — the consolidation of the notes and graph tabs |
 | [`MEETING-POLL-UX-DESIGN.md`](MEETING-POLL-UX-DESIGN.md) | The meeting poll from the owner's chair: one call, one card, a deterministic sweep, and the stated decision policy. §6 holds the rulings the build waits on |
