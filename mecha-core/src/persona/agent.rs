@@ -694,19 +694,24 @@ mod tests {
     }
 
     /// `registry_for` refuses `egress >= Chosen`; that is exact while
-    /// `Chosen` is the top class. A class added above it fails here rather
-    /// than being admitted silently.
+    /// `Chosen` is the top class. The `match` is exhaustive, so a class
+    /// added to `Egress` is a compile error here until someone places it —
+    /// a list of the three today could not fail (review of #409).
     #[test]
     fn chosen_is_the_widest_egress_class() {
-        for class in [Egress::None, Egress::Blind, Egress::Chosen] {
-            assert!(class <= Egress::Chosen);
+        fn rank(e: Egress) -> u8 {
+            match e {
+                Egress::None => 0,
+                Egress::Blind => 1,
+                Egress::Chosen => 2,
+            }
         }
-        assert_eq!(
-            [Egress::None, Egress::Blind, Egress::Chosen]
-                .into_iter()
-                .max(),
-            Some(Egress::Chosen)
-        );
+        for e in [Egress::None, Egress::Blind, Egress::Chosen] {
+            assert!(e <= Egress::Chosen);
+            assert!(rank(e) <= rank(Egress::Chosen));
+            // `Ord` agrees with the rank, so `>=` means what it says.
+            assert_eq!(e >= Egress::Chosen, rank(e) >= rank(Egress::Chosen));
+        }
     }
 
     #[test]
