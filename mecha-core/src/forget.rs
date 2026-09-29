@@ -527,6 +527,20 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         ),
     }
 
+    // The document cache is keyed by a PDF's hash, not by the session that
+    // read it, so delete cannot find this conversation's entries in it. Said
+    // rather than left silent: a report that reads `complete` while a
+    // forgotten conversation's PDFs sit extracted on disk is the leak this
+    // module's header names (found on review of #404).
+    if dir_has_entries(&roots.home.join("documents")) {
+        report.residue.push(
+            "~/.mecha/documents/ keeps the text of every PDF any conversation read, by file \
+             rather than by conversation, so this one's were kept — `mecha document forget \
+             <file>` removes one, `mecha document prune --days 0` all of them"
+                .into(),
+        );
+    }
+
     if report.errors.is_empty() {
         std::fs::remove_file(&parked).with_context(|| format!("removing {}", parked.display()))?;
         report.complete = true;
@@ -691,6 +705,15 @@ fn purge_learning(roots: &Roots, id: &str, keep_distilled: bool, report: &mut Re
     });
     if let Err(e) = result {
         report.errors.push(format!("learning store: {e:#}"));
+    }
+}
+
+/// Whether `dir` exists and holds anything. Unreadable counts as holding
+/// something: unknown is never clean.
+fn dir_has_entries(dir: &Path) -> bool {
+    match std::fs::read_dir(dir) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
     }
 }
 

@@ -148,8 +148,12 @@ hand. `cache = false` writes nothing.
 **What `forget` does not reach, said out loud.** The cache is
 content-addressed and holds no path, name or session, so `mecha sessions
 forget` (`forget.rs`) does not enumerate it: a PDF read in a forgotten session
-stays extracted until it ages out or is forgotten by hash. Teaching `forget`
-to hash the session workspace's PDFs is the fix and is not built.
+stays extracted until it ages out or is forgotten by hash. So the forget
+report says so: whenever `~/.mecha/documents/` holds anything, `Report::residue`
+names it and the two commands that clear it, and a report can no longer read
+`complete` while a forgotten conversation's PDFs sit extracted in silence
+(found on review). Teaching `forget` to hash the session workspace's PDFs is
+the fix and is not built.
 **Incognito chats never offer the tool**: it is not in
 `incognito::ALLOWED_BUILTINS`, because its cache writes outside the room.
 
