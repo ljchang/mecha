@@ -1851,16 +1851,12 @@ is exactly the set holding a long-lived process.
   `--aged` before 07:00 or the briefing pastes a clap usage error into
   itself** — caught on the day by running the hook rather than reading it. And
   `llama-local.service` is new (below). A fresh clone has neither.
-- **Two model servers are socket-activated since 2026-09-29**, shipped in
-  `scripts/llama/` and installed by copying (never symlinking — a unit must
-  not run a working tree): `llama-ocr.socket` (:8085) and
-  `llama-embed.socket` (:8081). Each socket is enabled at boot and costs
-  nothing; a connection starts a `systemd-socket-proxyd` that requires the
-  backend and forwards only once `mecha-wait-healthy` sees `/health` 200 and
-  `ok`, and the proxy's ten idle minutes (`MECHA_LLAMA_IDLE`) stop the
-  backend. The 2026-08-19 reason `llama-embed` became a unit — a reboot that
-  restored consumers but not the server — now lives in the socket: an idle
-  or rebooted server is a cold start, never "connection refused".
+- **Two model servers are socket-activated since 2026-09-29** —
+  `llama-ocr.socket` (:8085) and `llama-embed.socket` (:8081), shipped in
+  `scripts/llama/`. The mechanism, and why an idle or rebooted server is a
+  cold start and never "connection refused", is `LLAMA-SERVER.md` §Document
+  OCR and `DOCUMENT-EXTRACTION-DESIGN.md` §6–§7; rollback for the
+  embeddings one is `scripts/llama/install-embed.sh --remove`.
 - **ComfyUI is `comfyui.service`** (systemd user, enabled, since
   2026-09-25 17:48Z), and the unit exists in no repository:
   `~/.config/systemd/user/comfyui.service` runs the venv's python on
