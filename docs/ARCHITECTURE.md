@@ -3848,11 +3848,16 @@ cards say "edited by you" only for an `owner` edit (`edited_by` rides the
 review payload). A run's `edit` that changes nothing stamps nothing. The
 page holds both note prefixes as literals (`outbox-view.js`), and a
 test in `commands/outbox.rs` reads that file. `writing_outcome` itself still
-says what happened to the draft — `SentEdited` is structural — so the
-appraisal's `edit`-channel sign stays actor-blind, like the reject's
-−1.0: **the words are gated, the sign is not**; 2b-2's observed act is
-gated on it too (above). Every edited send on the live store had been mined
-when this landed.
+says what happened to the draft — `SentEdited` is structural. The
+appraisal's `edit`-channel sign was actor-blind, like the reject's −1.0,
+until ruling 2A→C (2026-09-28) carried the release's rule to both **going
+forward** (`OutboxItem::drafting_verdict_signs`): an edit or reject stamped
+as the owner's signs −1.0; one stamped as not the owner's (a run's shell,
+`owner-approved`, `unknown`) signs nothing, so a run rejecting its own
+draft is no verdict against a rule in tenure or replay priority; one from
+before the stamps existed keeps its −1.0, the history kept rather than
+re-read as unknown. 2b-2's observed act is gated on it too (above). Every
+edited send on the live store had been mined when this landed.
 
 **The residue is the closure path's** (see "Closing a task is a recorded
 event"): a command that detaches from its shell and clears the variable, a
@@ -6197,7 +6202,8 @@ the store that owns it, never copied into a new one:
   resumed. `WorkflowStore::verify` — the owner's `verify` and `close` — writes
   it; `today`'s display-time re-check on an unsaved copy does not.
 - **A draft rejected with a reason** (R16a) signs nothing new — the reject
-  is already `-1.0` on the edit channel — and its reason reaches the
+  is already `-1.0` on the edit channel when the owner made it or it came
+  before the stamps (ruling 2A→C) — and its reason reaches the
   reflector as an owner correction: `reflect`'s outbox pass mines
   `OutboxItem::rejection_reason` (a model's message draft, rejected, reason
   non-empty) as `learning::Trigger::Reject`, framed for the behaviour
@@ -6842,6 +6848,23 @@ the owner's** (row 2b-2, R33, R37).
   scored. Unknown asks. A withheld row carries `expected_act_withheld`, set
   by the harness and never parsed from the reply, and the readout counts it
   as `not_asked`, apart from a prediction the appraiser left out.
+- **A session distilled before the appraisal leg can be appraised after
+  the fact** (`mecha distill --backfill-appraisals`, ruling 3D→D,
+  2026-09-28). The sessions are chosen by row 2e-1's own predicate
+  (`lesson_source::backfill_targets`): a reflection `Sources::pair` refuses
+  as exactly `NoAppraisal`, and that the provenance gate admits. Distill
+  never revisits a session it has marked, so every clean steer and denial
+  from before 2026-09-26 was waiting on this. The episode call still runs,
+  because the appraisal is a follow-up on it, but nothing is pushed and
+  nothing is re-marked.
+  - **The row predicts nothing:** `backfilled`, with no `expected_act`,
+    enforced at the store's door as well as by the producer, because the
+    outcome was already known when it was written. The readout counts these
+    rows apart as `backfilled`.
+  - **Only appraisals of sessions that had ended by this one's end are shown
+    as earlier ones.** An older session must not see what came after it as
+    its history.
+  - **Local model only (R29).**
 
 **The counts-only appraiser is retired into it** (row 2a-3, R25). Before,
 `appraise_with_model` ran a quarantined pass over `AppraiserEvidence` behind

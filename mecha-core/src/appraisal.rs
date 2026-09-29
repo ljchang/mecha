@@ -1759,7 +1759,22 @@ pub fn of_session(
                 (1.0, Agency::Own)
             }
             (Some(crate::outbox::WritingOutcome::SentUnchanged), _) => continue,
+            // The edited and rejected verdicts, by the same rule going
+            // forward (ruling 2A→C, `OutboxItem::drafting_verdict_signs`):
+            // the owner's stamped act signs, a stamped act that is not the
+            // owner's signs nothing, one from before the stamps keeps its sign.
+            (Some(crate::outbox::WritingOutcome::SentEdited), _)
+                if !item.drafting_verdict_signs() =>
+            {
+                continue
+            }
             (Some(crate::outbox::WritingOutcome::SentEdited), _) => (-1.0, Agency::Owner),
+            (None, "rejected")
+                if item.kind == crate::outbox::OutboxKind::Message
+                    && !item.drafting_verdict_signs() =>
+            {
+                continue
+            }
             // `writing_outcome` returns `None` for a rejected item too (it
             // never went out), so the message-only guard is this arm's to
             // keep — a rejected publish is still bookkeeping, not a
@@ -3684,10 +3699,54 @@ mod tests {
             let a = built(&stats(), &[&d], &[]);
             assert!(a.errors.is_empty(), "{by:?}: {:?}", a.errors);
         }
-        // The edited and the rejected verdicts are unchanged by this ruling.
-        let mut edited = draft("o2", "sent", true);
-        edited.resolved_by = Some(Actor::OwnerApproved);
-        assert_eq!(built(&stats(), &[&edited], &[]).errors[0].sign, -1.0);
+    }
+
+    /// Ruling 2A→C (2026-09-28): the edited and rejected verdicts follow the
+    /// release's rule going forward. The owner's stamped act signs −1.0; a
+    /// stamped act that is not the owner's — a run's shell, `owner-approved`,
+    /// `unknown` — signs nothing; one from before the stamps existed keeps
+    /// its −1.0. Fails on the tree before, which signed every edit and every
+    /// reject −1.0 whoever made it.
+    #[test]
+    fn an_edit_or_reject_signs_as_the_owners_only_when_stamped_so_or_from_before_the_stamps() {
+        use crate::closure::Actor;
+        let signs = |d: &crate::outbox::OutboxItem| {
+            built(&stats(), &[d], &[])
+                .errors
+                .iter()
+                .map(|e| e.sign)
+                .collect::<Vec<_>>()
+        };
+        for status in ["rejected", "sent"] {
+            let edited = status == "sent";
+            // The owner's own act.
+            let mut d = draft("o1", status, edited);
+            d.resolved_by = Some(Actor::Owner);
+            if edited {
+                d.edited_by = Some(Actor::Owner);
+            }
+            assert_eq!(signs(&d), vec![-1.0], "{status}: the owner's");
+            // Stamped, not the owner's: no verdict.
+            for by in [Actor::OwnerApproved, Actor::Unknown] {
+                let mut d = draft("o1", status, edited);
+                d.resolved_by = Some(by);
+                if edited {
+                    d.edited_by = Some(by);
+                }
+                assert!(signs(&d).is_empty(), "{status} by {by:?}");
+            }
+            // From before the stamps: the history keeps its sign.
+            let mut d = draft("o1", status, edited);
+            d.resolved_by = None;
+            d.edited_by = None;
+            assert_eq!(signs(&d), vec![-1.0], "{status}: pre-stamp");
+        }
+        // An edit a run's shell made, released by the owner, is not the
+        // owner's edit.
+        let mut d = draft("o1", "sent", true);
+        d.resolved_by = Some(Actor::Owner);
+        d.edited_by = Some(Actor::OwnerApproved);
+        assert!(signs(&d).is_empty());
     }
 
     /// The owner's rewrite is what reached the recipient, not mecha's

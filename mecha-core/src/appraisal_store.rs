@@ -310,6 +310,13 @@ pub struct Draft {
     /// The owner act expected next time, from R16's closed set — what 2b-2
     /// scores the prediction by.
     pub expected_act: Option<ExpectedAct>,
+    /// Written after the fact by `mecha distill --backfill-appraisals`, for
+    /// a session distilled before the appraisal leg existed (ruling 3D→D,
+    /// 2026-09-28). Set by the producer, never by a model; such a row
+    /// carries no `expected_act`, because the outcome was already known when
+    /// it was written — a prediction then is a postdiction. Nor any prose
+    /// `prediction`, for the same reason: the store drops both.
+    pub backfilled: bool,
     /// The harness did not ask for `expected_act` (ruling 1B,
     /// [`withholds_expectation`]) — set by the producer, never by a model,
     /// so a withheld prediction and one the appraiser simply left out are
@@ -419,6 +426,13 @@ impl SessionEvidence {
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// When the transcript was last written, as the read happened — the
+    /// session's end as appraised. `None` where the file system could not
+    /// say.
+    pub fn ended_at(&self) -> Option<DateTime<Utc>> {
+        self.ended_at
     }
 
     /// Whether the run ever called a task-linking tool, compaction or not.
@@ -566,6 +580,10 @@ pub struct TextAppraisal {
         deserialize_with = "de_expected_act"
     )]
     pub expected_act: Option<ExpectedAct>,
+    /// Written after the fact ([`Draft::backfilled`]). Absent on every row
+    /// before the field — written when its session was distilled.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub backfilled: bool,
     /// The harness withheld the question ([`Draft::expected_act_withheld`]):
     /// counted apart from a prediction the appraiser left out. Absent on a
     /// row from before the field — not withheld.
@@ -721,9 +739,12 @@ impl TextAppraisal {
             })
             .collect();
 
+        // A backfilled row predicts nothing, in prose as in the act word:
+        // both would be postdiction (review of #388).
         let prediction = draft
             .prediction
             .as_deref()
+            .filter(|_| !draft.backfilled)
             .and_then(|p| bound(p, PREDICTION_MAX_CHARS, &mut clipped));
         let goal_hypotheses = bound_list(
             &draft.goal_hypotheses,
@@ -749,7 +770,12 @@ impl TextAppraisal {
             prediction,
             // The structural half is kept even when the prose prediction is
             // empty: an expected act is a prediction on its own.
-            expected_act: draft.expected_act.filter(|a| *a != ExpectedAct::Unknown),
+            // A backfilled row predicts nothing, whatever a producer passed:
+            // the store enforces it, not only the producer.
+            expected_act: draft
+                .expected_act
+                .filter(|a| *a != ExpectedAct::Unknown && !draft.backfilled),
+            backfilled: draft.backfilled,
             expected_act_withheld: draft.expected_act_withheld,
             goal_hypotheses,
             lessons,
@@ -886,6 +912,31 @@ impl CleanRead {
         )
     }
 
+    /// [`Self::same_situation_and_goal`], only of sessions that had ended
+    /// by `ended_by` — the earlier appraisals of a session appraised after
+    /// the fact (`--backfill-appraisals`). The cutoff is applied before the
+    /// newest `n` are taken, or the newest would crowd out every earlier
+    /// one (review of #388). `None` — this session's end unknown — shows
+    /// nothing.
+    pub fn same_situation_and_goal_ended_by(
+        &self,
+        evidence: &SessionEvidence,
+        ended_by: Option<DateTime<Utc>>,
+        n: usize,
+    ) -> Vec<&Clean> {
+        let Some(cutoff) = ended_by else {
+            return Vec::new();
+        };
+        newest_keyed(
+            self.appraisals
+                .iter()
+                .filter(|c| c.session_ended_at.unwrap_or(c.at) <= cutoff),
+            evidence.situation.as_ref(),
+            Some(evidence.session_id.as_str()),
+            n,
+        )
+    }
+
     fn keyed_as(&self, here: Option<&Situation>, not: Option<&str>, n: usize) -> Vec<&Clean> {
         newest_keyed(self.appraisals.iter(), here, not, n)
     }
@@ -912,7 +963,11 @@ fn newest_keyed<'a>(
         .filter(|c| not.is_none_or(|id| c.session_id != id))
         .filter(|c| region_key(c.situation.as_ref()).as_ref() == Some(&here))
         .collect();
-    out.sort_by_key(|c| std::cmp::Reverse(c.at));
+    // Newest by the session's end, not the write: a row written after the
+    // fact (`--backfill-appraisals`) is an old session's, and must not rank
+    // ahead of recent ones in either door (review of #388). A row from
+    // before the field falls back to its write.
+    out.sort_by_key(|c| std::cmp::Reverse(c.session_ended_at.unwrap_or(c.at)));
     out.truncate(n);
     out
 }
@@ -1885,6 +1940,10 @@ pub struct ScoreSummary {
     pub appraisals: usize,
     /// Appraisals carrying a readable expected act.
     pub with_expectation: usize,
+    /// Appraisals written after the fact, which predict nothing
+    /// ([`Draft::backfilled`]): counted apart, never read as the appraiser
+    /// declining to predict.
+    pub backfilled: usize,
     /// Appraisals the harness asked for no expected act (ruling 1B): the
     /// output offered nothing to act on. Apart from `with_expectation`, and
     /// from an appraisal that left the field out.
@@ -2065,7 +2124,9 @@ impl AppraisalStore {
         };
         for row in &rows {
             if !row.expected_act.is_some_and(|a| a != ExpectedAct::Unknown) {
-                if row.expected_act_withheld {
+                if row.backfilled {
+                    s.backfilled += 1;
+                } else if row.expected_act_withheld {
                     s.not_asked += 1;
                 }
                 continue;
@@ -2755,6 +2816,7 @@ mod tests {
     /// turn, a judgment resting on both.
     fn draft() -> Draft {
         Draft {
+            backfilled: false,
             expected_act_withheld: false,
             interpretation: "The run found the review date in the owner's mail and was asked \
                              to pass it on; it matters because the task is the budget review."
@@ -4369,6 +4431,122 @@ mod tests {
 
         Marks::append(&dir, &mark(MarkAction::Unmark)).unwrap();
         assert_eq!(store.for_owner().unwrap().0.len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A backfilled session's earlier appraisals are chosen with the cutoff
+    /// applied before the newest are taken: one qualifying older appraisal
+    /// behind three newer ones is still shown, where taking the newest three
+    /// first and filtering after would show nothing (review of #388).
+    #[test]
+    fn an_earlier_appraisal_is_found_behind_newer_ones_for_a_backfill() {
+        let root = temp_root("ended-by");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let aged = |days: u64| {
+            let path = session(&dir, clean_taint());
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 3600),
+                )
+                .unwrap();
+            SessionEvidence::read(&path).unwrap()
+        };
+        let older = aged(30);
+        store.record(&older, draft(), "m", &known()).unwrap();
+        for _ in 0..3 {
+            let newer = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+            store.record(&newer, draft(), "m", &known()).unwrap();
+        }
+        let target = aged(20);
+        let read = store.clean().unwrap();
+        let shown = read.same_situation_and_goal_ended_by(&target, target.ended_at(), PAST_SHOWN);
+        assert_eq!(
+            shown
+                .iter()
+                .map(|c| c.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![older.session_id()]
+        );
+        // The order it replaces: the newest three, then the cutoff — empty.
+        let mut capped_first = read.same_situation_and_goal(&target, PAST_SHOWN);
+        capped_first.retain(|c| c.session_ended_at.unwrap_or(c.at) <= target.ended_at().unwrap());
+        assert!(capped_first.is_empty());
+        // An unknown end shows nothing.
+        assert!(read
+            .same_situation_and_goal_ended_by(&target, None, PAST_SHOWN)
+            .is_empty());
+
+        // The converse: an old session's appraisal written *last* — a
+        // backfill — does not rank ahead of recent ones for a new session.
+        // Newest is by the session's end, not the write (review of #388).
+        let late = aged(40);
+        store.record(&late, draft(), "m", &known()).unwrap();
+        let fresh = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        let read = store.clean().unwrap();
+        let recent = read.same_situation_and_goal(&fresh, PAST_SHOWN);
+        assert_eq!(recent.len(), PAST_SHOWN);
+        assert!(
+            recent.iter().all(|c| c.session_id != late.session_id()),
+            "a month-old session is not the newest history"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Ruling 3D→D: a backfilled row predicts nothing — the store drops an
+    /// expected act whatever the producer passed, since the outcome was
+    /// known when it was written — and the readout counts it apart from an
+    /// appraisal that left the field out.
+    #[test]
+    fn a_backfilled_appraisal_predicts_nothing_and_is_counted_apart() {
+        let root = temp_root("backfilled");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let late = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        store
+            .record(
+                &late,
+                Draft {
+                    expected_act: Some(ExpectedAct::NoAct),
+                    prediction: Some("The owner will ask again.".into()),
+                    backfilled: true,
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let rows = store.for_owner().unwrap().0;
+        assert_eq!((rows[0].expected_act, rows[0].backfilled), (None, true));
+        assert_eq!(rows[0].prediction, None, "nor the prose half");
+        let s = store
+            .score_summary(&OwnerActs::default(), Utc::now())
+            .unwrap();
+        assert_eq!((s.appraisals, s.with_expectation, s.backfilled), (1, 0, 1));
+
+        // A backfill of an output with nothing to act on is also asked for
+        // no expected act (ruling 1B): counted once, as backfilled — never
+        // as well under not asked.
+        let quiet = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        store
+            .record(
+                &quiet,
+                Draft {
+                    backfilled: true,
+                    expected_act_withheld: true,
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let s = store
+            .score_summary(&OwnerActs::default(), Utc::now())
+            .unwrap();
+        assert_eq!((s.appraisals, s.backfilled, s.not_asked), (2, 2, 0));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can mark, from your own terminal; a run's shell is refused. The verb names
   the session's graph episode, if it was distilled, for you to retract there.
 
+- **`mecha distill --backfill-appraisals`** appraises, after the fact, the
+  sessions distilled before appraisals existed whose clean steer or denial
+  was waiting only on an appraisal to be compared. There were 9 on the live
+  store. Nothing is pushed to the graph, and the rows written predict
+  nothing, since the outcome was already known. `--dry-run` lists them.
+
 - **`mecha rules show <id>` finds a rule that consolidation dropped.** Learning
   rewrites its rule set and leaves some rules out; they are not retired, so the
   learner is never told they were harmful. Their text lives on in the proposal
@@ -115,6 +121,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The owner's amendment to `INCOGNITO-DESIGN.md` §6.1 (2026-09-28).
 
 ### Fixed
+
+- **A run can no longer mark a rule down by rejecting its own draft.** An
+  edited or rejected draft counted as your verdict on the drafting, in the
+  appraisal and so in rule tenure and replay priority, whoever made the edit
+  or the reject. Now it counts only when it is stamped as yours, as a
+  release already did. A stamped act that is not yours counts as neither,
+  and acts from before the stamps existed keep their sign.
 
 - **The appraisals' hit rate counts only predictions that could miss.** A
   chat answer or a run that staged nothing leaves the owner no draft, task or
