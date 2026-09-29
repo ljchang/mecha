@@ -1447,6 +1447,12 @@ impl Tool for ImageGenerate {
         "image_generate"
     }
 
+    /// Eligible for a persona (`docs/PERSONA-DESIGN.md` §3.3): its request goes only
+    /// to the loopback image server `[image]` names, and it reads no owner store.
+    fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        Some(self)
+    }
+
     fn description(&self) -> &str {
         "Generate an image with the local image model, or edit one, and save the result as a \
          PNG in the workspace. Takes about a minute. It renders text inside images well — put \

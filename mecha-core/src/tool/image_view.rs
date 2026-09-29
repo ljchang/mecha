@@ -18,6 +18,7 @@ use super::{Capabilities, Tool, ToolCtx, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 /// A file larger than this is refused rather than read: the look is bounded
 /// by `image::rendered_block` either way, and decoding a hundred-megabyte
@@ -30,6 +31,12 @@ pub struct ImageView;
 impl Tool for ImageView {
     fn name(&self) -> &str {
         "image_view"
+    }
+
+    /// Eligible for a persona (`docs/PERSONA-DESIGN.md` §3.3): it reads a picture in
+    /// the chat's own workspace and sends nothing.
+    fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        Some(self)
     }
 
     fn description(&self) -> &str {
