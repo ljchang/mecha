@@ -292,7 +292,7 @@ impl PersonaChats {
         token: Option<&str>,
         tz: chrono_tz::Tz,
     ) -> serde_json::Value {
-        let now = chrono::Utc::now();
+        let doses = safety::doses(&self.store, chrono::Utc::now(), tz);
         let store = Store::load(&self.store);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
         let unlocked = library.unlocked(token);
@@ -322,7 +322,7 @@ impl PersonaChats {
                     "safety": safety_json(&p.settings.safety),
                     // The meters are shown to the owner, never to the model.
                     "dose": p.settings.safety.dose.then(|| {
-                        safety::dose(&self.store, Some(&p.name), now, tz)
+                        doses.get(&p.name).copied().unwrap_or_default()
                     }),
                 })
             })
@@ -2178,6 +2178,9 @@ mod tests {
     #[tokio::test]
     async fn a_persona_with_crisis_off_is_not_paused_or_counted() {
         let w = world();
+        // The message does trip the tier — so what follows is the switch's
+        // doing, not a phrase the tier misses.
+        assert!(safety::keyword_hit("I want to die laughing at this"));
         set_switch(&w, "crisis    ", false);
         let key = open_chat(&w).await;
         turn(&w, &key, "I want to die laughing at this").await;

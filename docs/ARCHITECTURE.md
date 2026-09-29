@@ -958,14 +958,17 @@ module.
   - **The safety layer's model-free half** (`persona::safety`, §12) runs in
     every persona chat, each piece switchable per persona by the owner.
     - The crisis keyword tier reads the owner's words before anything runs.
-      On a hit the persona **pauses**: the message is recorded, the persona
-      does not answer it, and a plain voice sends `SAFE_MESSAGE`
-      (`WireEvent::Crisis`). That is the owner's ruling of 2026-09-29. A hit
+      On a hit the persona **pauses**: the message is recorded, the persona's
+      immediate reply is held, and a plain voice sends `SAFE_MESSAGE`
+      (`WireEvent::Crisis`). The words stay in the conversation, so once the
+      owner carries on they fold into the next turn and the persona responds
+      to them then. Both halves are the owner's rulings of 2026-09-29. A hit
       within `CRISIS_COOLDOWN` of a pause does not pause again. Every hit is
       a content-free line in `safety.jsonl`.
     - A message sent while a run is live passes through the same sensor
       (`steer_or_pause`). A hit stops the run, and the hand-back records
-      the words, so the persona never answers them.
+      the words, so they reach the persona with the owner's next turn, as
+      above, and never mid-answer.
     - The cooldown is held in memory per chat, so a restart or a resume
       re-arms the pause. That is the safer direction, and it is chosen
       rather than accidental.
