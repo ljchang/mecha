@@ -311,6 +311,8 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_unfinished_forgets(&home.join("sessions")));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
     findings.extend(check_learning(&home.join("learning"), now));
+    findings.extend(check_rule_commits(&home.join("learning"), now));
+    findings.extend(check_rule_files(&home.join("learning")));
     findings.extend(check_proposal_review(&home.join("learning"), now));
     // The graph store is `~/.mecha-graph`, a hidden sibling of the mecha home
     // by that store's own convention — resolved relative to `home` so a test
@@ -2344,6 +2346,172 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     out
 }
 
+/// A rule change a crash interrupted, and one recovery set aside
+/// (`LearningStore::commit_rules`, `resume_interrupted`). A commit in flight
+/// lasts milliseconds with no model call in it, so one older than a minute
+/// was interrupted.
+fn check_rule_commits(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let pending = root.join(crate::learning::COMMIT_FILE);
+    if let Ok(meta) = std::fs::metadata(&pending) {
+        let written = meta.modified().ok().map(DateTime::<Utc>::from);
+        if written.is_none_or(|t| now - t > chrono::Duration::minutes(1)) {
+            out.push(Finding {
+                component: "learning".to_string(),
+                severity: Severity::Attention,
+                summary: "a rule change was interrupted part-way".to_string(),
+                detail: format!(
+                    "{} records a change to the learned rules that did not finish. The \
+                     next writer to the rules or proposals (`mecha learn`, which the \
+                     nightly pass runs, or an owner verb) finishes it first, or sets it \
+                     aside if the live rules have moved since.",
+                    pending.display()
+                ),
+                remedy: None,
+            });
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
+    let mut aside: Vec<String> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| {
+            n.starts_with(crate::learning::UNFINISHED_COMMIT_PREFIX) && n.ends_with(".json")
+        })
+        .collect();
+    aside.sort();
+    if !aside.is_empty() {
+        out.push(Finding {
+            component: "learning".to_string(),
+            severity: Severity::Attention,
+            summary: format!(
+                "{} interrupted rule change(s) were set aside rather than finished",
+                aside.len()
+            ),
+            detail: format!(
+                "Either the live rules matched neither state the record names when \
+                 recovery ran, or the record could not be read. So what landed cannot be \
+                 told from here. The change's rules may be live underneath a later edit, and \
+                 its reflections, left unmarked, may be argued again against their own \
+                 result. Compare each record with `rules/<domain>.learned.toml`, then delete \
+                 it: {}.",
+                aside
+                    .iter()
+                    .map(|n| root.join(n).display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            remedy: None,
+        });
+    }
+    out
+}
+
+/// A rules file that does not parse (D1, `docs/LEARNING-STORE-RESEARCH.md`
+/// §7). The consequence differs by author, and so does the finding:
+/// - the owner's `*.user.toml` stops every run start, so it is broken;
+/// - a machine-written `*.learned.toml` is skipped, so runs go on without
+///   those rules, which is quiet by construction and why it is said here.
+fn check_rule_files(root: &Path) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root.join("rules")) else {
+        return out;
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let (domain, user) = if let Some(d) = name.strip_suffix(".user.toml") {
+            (d.to_string(), true)
+        } else if let Some(d) = name.strip_suffix(".learned.toml") {
+            (d.to_string(), false)
+        } else {
+            continue;
+        };
+        let error = match std::fs::read_to_string(&path) {
+            Ok(text) => match crate::learning::parse_rules_file(&text) {
+                Ok(_) => continue,
+                Err(e) => format!("{e:#}"),
+            },
+            Err(e) => e.to_string(),
+        };
+        // What stops, or goes on without them, depends on who reads the
+        // domain: every run, one pass, or nothing at all. Say which, never a
+        // consequence the domain does not have (`PASS_DOMAINS`' ruling: a
+        // permanent false positive is where a real one hides).
+        let reader = if crate::learning::RUN_DOMAINS.contains(&domain.as_str()) {
+            Some((
+                "every run refuses to start",
+                "runs are going on without them",
+            ))
+        } else if crate::learning::PASS_DOMAINS.contains(&domain.as_str()) {
+            Some((
+                "`mecha mail classify` refuses to run",
+                "the mail classifier is going on without them",
+            ))
+        } else {
+            None
+        };
+        let Some((stops, without)) = reader else {
+            out.push(Finding {
+                component: "learning".to_string(),
+                severity: Severity::Attention,
+                summary: format!(
+                    "`{name}` does not parse, and no run or pass reads `{domain}` rules"
+                ),
+                detail: format!(
+                    "{}: {error}. Nothing stops over it, and nothing would load it if it \
+                     parsed: check the filename against the routed domains ({}).",
+                    path.display(),
+                    crate::learning::routed_domains().join(", ")
+                ),
+                remedy: None,
+            });
+            continue;
+        };
+        out.push(if user {
+            Finding {
+                component: "learning".to_string(),
+                severity: Severity::Broken,
+                summary: format!("your `{domain}` rules do not parse — {stops}"),
+                detail: format!("{}: {error}", path.display()),
+                remedy: Some(Remedy {
+                    description: "edit them with a parse check before the save".to_string(),
+                    argv: vec![
+                        "mecha".into(),
+                        "rules".into(),
+                        "edit".into(),
+                        "--user".into(),
+                        "--domain".into(),
+                        domain,
+                    ],
+                    needs_terminal: true,
+                }),
+            }
+        } else {
+            Finding {
+                component: "learning".to_string(),
+                severity: Severity::Attention,
+                summary: format!("learned `{domain}` rules do not parse — {without}"),
+                detail: format!(
+                    "{}: {error}. Each read that renders a prompt skips this file (a run \
+                     records its rule set as unknown), and `mecha learn` will not \
+                     consolidate over it. Fix it by hand, or remove it to start the \
+                     domain's learned rules afresh.",
+                    path.display()
+                ),
+                remedy: None,
+            }
+        });
+    }
+    out
+}
+
 /// Scan `<learning>/harness/candidates` for staged candidates waiting on the
 /// user. Quiet when the store has never existed — the loop not being wired is
 /// not a finding. Reads the files directly, on the rule that an examination
@@ -2669,6 +2837,96 @@ mod tests {
     use crate::outbox::{OutboxItem, OutboxKind};
     use serde_json::json;
     use std::path::PathBuf;
+
+    /// A commit record older than any commit takes is an interrupted one; a
+    /// fresh one is a pass in flight and says nothing.
+    #[test]
+    fn an_interrupted_rule_change_is_reported_and_one_in_flight_is_not() {
+        let root = std::env::temp_dir()
+            .join("mecha-doctor-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(crate::learning::COMMIT_FILE), "{}").unwrap();
+        let now = Utc::now();
+        assert!(check_rule_commits(&root, now).is_empty());
+        let later = check_rule_commits(&root, now + chrono::Duration::minutes(5));
+        assert_eq!(later.len(), 1, "{later:#?}");
+        assert!(later[0].summary.contains("interrupted"));
+
+        std::fs::remove_file(root.join(crate::learning::COMMIT_FILE)).unwrap();
+        std::fs::write(
+            root.join(format!(
+                "{}20260929T060000.000Z.json",
+                crate::learning::UNFINISHED_COMMIT_PREFIX
+            )),
+            "{}",
+        )
+        .unwrap();
+        let aside = check_rule_commits(&root, now);
+        assert_eq!(aside.len(), 1, "{aside:#?}");
+        assert!(aside[0].summary.contains("set aside"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// D1's two consequences, reported apart: the owner's file stops every
+    /// run (broken, with the verb that fixes it); a learned one is skipped
+    /// (attention: quiet by construction, so said here).
+    #[test]
+    fn a_rules_file_that_does_not_parse_is_reported_by_its_author() {
+        let root = std::env::temp_dir()
+            .join("mecha-doctor-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(root.join("rules")).unwrap();
+        let broken = "[[rules]]\ntext = \"half\n";
+        std::fs::write(root.join("rules/behavior.user.toml"), broken).unwrap();
+        std::fs::write(root.join("rules/triage.learned.toml"), broken).unwrap();
+        std::fs::write(
+            root.join("rules/writing.learned.toml"),
+            "[[rules]]\ntext = \"Fine.\"\n",
+        )
+        .unwrap();
+
+        std::fs::write(root.join("rules/triage.user.toml"), broken).unwrap();
+        std::fs::write(root.join("rules/behaviour.user.toml"), broken).unwrap();
+
+        let found = check_rule_files(&root);
+        assert_eq!(found.len(), 4, "{found:#?}");
+        let user = found
+            .iter()
+            .find(|f| f.summary.contains("your `behavior`"))
+            .unwrap();
+        assert!(matches!(user.severity, Severity::Broken));
+        assert!(user.summary.contains("every run refuses to start"));
+        // Only the classifier reads triage: no claim about every run.
+        let triage = found
+            .iter()
+            .find(|f| f.summary.contains("your `triage`"))
+            .unwrap();
+        assert!(
+            triage.summary.contains("mail classify"),
+            "{}",
+            triage.summary
+        );
+        // A typo'd domain is read by nothing, so nothing stops over it.
+        let typo = found
+            .iter()
+            .find(|f| f.summary.contains("behaviour"))
+            .unwrap();
+        assert!(matches!(typo.severity, Severity::Attention));
+        assert!(
+            typo.summary.contains("no run or pass reads"),
+            "{}",
+            typo.summary
+        );
+        let argv = &user.remedy.as_ref().unwrap().argv;
+        assert_eq!(argv[..4], ["mecha", "rules", "edit", "--user"]);
+        let learned = found
+            .iter()
+            .find(|f| f.summary.contains("learned `triage`"))
+            .unwrap();
+        assert!(matches!(learned.severity, Severity::Attention));
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     /// A booking that never reached the calendar for a reason the sweep did
     /// **not** record. Every failure other than a collision writes no ledger

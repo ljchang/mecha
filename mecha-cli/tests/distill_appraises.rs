@@ -131,6 +131,26 @@ async fn fixture_model() -> (String, Arc<Mutex<Vec<Value>>>, tokio::task::JoinHa
 /// front-end records one. `marker` names it in the owner's turn; `age`
 /// orders the sessions.
 fn session(home: &Path, marker: &str, untrusted: bool, age_mins: i64) -> String {
+    session_on(
+        home,
+        marker,
+        untrusted,
+        age_mins,
+        Some(GoalRef::Task("task-1".into())),
+        "mail_search",
+    )
+}
+
+/// [`session`], anchored to `goal` — or to nothing: a chat answer that
+/// staged nothing, which leaves the owner no act to take.
+fn session_on(
+    home: &Path,
+    marker: &str,
+    untrusted: bool,
+    age_mins: i64,
+    goal: Option<GoalRef>,
+    tool: &str,
+) -> String {
     let session = Session::create(
         &home.join("sessions"),
         SessionMeta {
@@ -146,26 +166,20 @@ fn session(home: &Path, marker: &str, untrusted: bool, age_mins: i64) -> String 
     .unwrap();
     session
         .append(&Record::Config(RunConfig {
-            tools: vec!["mail_search".into()],
+            tools: vec![tool.into()],
             rules_surface: Some(SessionKind::Task),
             // The goal the run was matched toward (2c-1) — what "the same
             // situation and goal" is keyed on.
-            rules_goal: Some(mecha_core::situation::GoalKey::Named(GoalRef::Task(
-                "task-1".into(),
-            ))),
+            rules_goal: goal.clone().map(mecha_core::situation::GoalKey::Named),
             ..Default::default()
         }))
         .unwrap();
-    session
-        .append(&Record::GoalAnchor {
-            goal: Some(GoalRef::Task("task-1".into())),
-        })
-        .unwrap();
+    session.append(&Record::GoalAnchor { goal }).unwrap();
     for m in [
         Message::user(format!("Please check the budget review date for {marker}.")),
         Message::assistant(vec![Block::ToolUse {
             id: "t1".into(),
-            name: "mail_search".into(),
+            name: tool.into(),
             input: json!({"query": "budget review"}),
         }]),
         Message::tool_results(vec![Block::ToolResult {
@@ -681,5 +695,58 @@ async fn a_backfill_appraises_only_what_row_2e_1_waits_on_and_pushes_nothing() {
         "a later session's appraisal is not an earlier one: {}",
         asks[0]
     );
+    server.abort();
+}
+
+/// Ruling 1B end to end: `mecha distill` asks an output with nothing for the
+/// owner to act on for no expected act, and stores none even though the
+/// fixture's reply carries one — while the task-anchored session beside it
+/// is asked and keeps its `no_act`.
+#[tokio::test]
+async fn distill_asks_no_expected_act_of_an_output_with_nothing_to_act_on() {
+    if !python3() {
+        return;
+    }
+    mecha_core::session::ignore_kind_env_for_tests();
+    let root =
+        Root(std::env::temp_dir().join(format!("mecha-distill-no-act-{}", Session::new_id())));
+    let (base_url, seen, server) = fixture_model().await;
+    let home = seed(&root.0, &base_url);
+    let work = root.0.join("work");
+
+    let chat = session_on(&home, "delta", false, 30, None, "mail_search");
+    let tasked = session(&home, "echo", false, 20);
+    // Unanchored, but it touched the board: the owner may close that task
+    // later, naming this session, so the question is still asked.
+    let board = session_on(&home, "foxtrot", false, 10, None, "kg_task_update");
+    let out = ok(&mecha(&home, &work, &["distill"]).await, "distill");
+    assert!(
+        out.contains("1 not asked: the output offered nothing to act on"),
+        "{out}"
+    );
+
+    let store = AppraisalStore::open(home.join("appraisals")).unwrap();
+    let (rows, _) = store.for_owner().unwrap();
+    let of = |id: &str| rows.iter().find(|r| r.session_id == id).unwrap();
+    assert_eq!(
+        (of(&chat).expected_act, of(&chat).expected_act_withheld),
+        (None, true),
+        "nothing to act on: withheld, and the row says so"
+    );
+    assert_eq!(of(&tasked).expected_act, Some(ExpectedAct::NoAct));
+    assert!(!of(&tasked).expected_act_withheld);
+    assert_eq!(of(&board).expected_act, Some(ExpectedAct::NoAct));
+
+    // What each follow-up asked, told apart by the owner's turn's marker.
+    let asks = follow_ups(&seen, 0);
+    let ask_of = |marker: &str| {
+        asks.iter()
+            .find(|b| b.to_string().contains(&format!("for {marker}.")))
+            .unwrap()
+            .to_string()
+    };
+    assert!(ask_of("delta").contains("so leave out expected_act"));
+    assert!(!ask_of("echo").contains("so leave out expected_act"));
+    assert!(!ask_of("foxtrot").contains("so leave out expected_act"));
     server.abort();
 }
