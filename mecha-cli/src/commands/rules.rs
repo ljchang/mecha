@@ -1016,6 +1016,11 @@ fn edit_user(
     mut edit: impl FnMut(&str) -> Result<String>,
     mut reopen: impl FnMut(&anyhow::Error) -> bool,
 ) -> Result<UserEdit> {
+    // Before the read and the editor, not only at the write: a bad name must
+    // not cost the owner an editing session to find out.
+    if !mecha_core::learning::is_domain_name(domain) {
+        bail!("`{domain}` is not a domain name (letters, digits, `-` and `_`)");
+    }
     let original = store.user_rules_text(domain)?;
     let start = original
         .clone()
@@ -1531,6 +1536,20 @@ mod tests {
             store.user_rules_text("behavior").unwrap().as_deref(),
             Some(before)
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_path_for_a_domain_is_refused_before_the_editor_opens() {
+        let (store, dir) = user_store();
+        let err = edit_user(
+            &store,
+            "../escape",
+            |_| panic!("the editor opened for a bad domain"),
+            |_| false,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not a domain name"), "{err}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

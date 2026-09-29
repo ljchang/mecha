@@ -1338,6 +1338,15 @@ struct RulesFile {
     rules: Vec<Rule>,
 }
 
+/// Whether `domain` can name a rules file: it becomes a filename, so a plain
+/// name, never a path.
+pub fn is_domain_name(domain: &str) -> bool {
+    !domain.is_empty()
+        && domain
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// A rules file's text, parsed: the one parser every reader and the owner's
 /// edit check share, so "it parses" means the same thing to each.
 pub fn parse_rules_file(text: &str) -> Result<Vec<Rule>> {
@@ -1566,12 +1575,8 @@ impl LearningStore {
     /// store lock. Run start reads this file with no lock, so it must be
     /// whole at every instant.
     pub fn replace_user_rules(&self, domain: &str, text: &str) -> Result<usize> {
-        // The domain becomes a filename: a plain name, never a path.
         anyhow::ensure!(
-            !domain.is_empty()
-                && domain
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            is_domain_name(domain),
             "`{domain}` is not a domain name (letters, digits, `-` and `_`)"
         );
         let rules = parse_rules_file(text)?;
