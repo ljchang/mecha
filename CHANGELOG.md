@@ -119,6 +119,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A run can no longer mark a rule down by rejecting its own draft.** An
+  edited or rejected draft counted as your verdict on the drafting, in the
+  appraisal and so in rule tenure and replay priority, whoever made the edit
+  or the reject. Now it counts only when it is stamped as yours, as a
+  release already did. A stamped act that is not yours counts as neither,
+  and acts from before the stamps existed keep their sign.
+
 - **The appraisals' hit rate counts only predictions that could miss.** A
   chat answer or a run that staged nothing leaves the owner no draft, task or
   workflow to act on, so `no_act` is the only act that can be observed there
