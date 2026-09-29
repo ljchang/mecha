@@ -457,7 +457,7 @@ fn front_matter(text: &str) -> Result<(Suggest, &str)> {
             .ok_or_else(|| anyhow!("front matter opened with `+++` is never closed"))?;
         (&rest[..end.0], &rest[end.1..])
     };
-    let suggest: Suggest = toml::from_str(head).context("reading the front matter")?;
+    let suggest: Suggest = parse_toml(head).context("reading the front matter")?;
     Ok((suggest, body))
 }
 
@@ -560,7 +560,7 @@ fn read_prose(path: &Path) -> Result<String> {
     }
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    if let Some(c) = text.chars().find(|c| is_forbidden_control(*c)) {
+    if let Some(c) = forbidden_control(&text) {
         bail!(
             "{} holds a control character (U+{:04X}); only newlines and tabs are allowed",
             path.display(),
@@ -570,12 +570,55 @@ fn read_prose(path: &Path) -> Result<String> {
     Ok(text)
 }
 
+/// The first control character in `text` a terminal or page could act on.
+/// A carriage return is allowed only as half of a CRLF: alone it returns
+/// the cursor to overwrite the line it is on.
+fn forbidden_control(text: &str) -> Option<char> {
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\r' {
+            if chars.peek() != Some(&'\n') {
+                return Some(c);
+            }
+        } else if is_forbidden_control(c) {
+            return Some(c);
+        }
+    }
+    None
+}
+
+/// Parse a TOML file of this store with every string in it — key or value,
+/// however deep — held to the prose rule. A TOML escape (`"\u001b"`) gets a
+/// control character past [`read_prose`]'s check on the file's bytes, and
+/// any field can reach the terminal (`show`, `problems`, the approval
+/// screen), so the check is over the parsed values, not a list of fields.
+fn parse_toml<T: serde::de::DeserializeOwned>(text: &str) -> Result<T> {
+    fn walk(v: &toml::Value) -> Option<char> {
+        match v {
+            toml::Value::String(s) => forbidden_control(s),
+            toml::Value::Array(a) => a.iter().find_map(walk),
+            toml::Value::Table(t) => t
+                .iter()
+                .find_map(|(k, v)| forbidden_control(k).or_else(|| walk(v))),
+            _ => None,
+        }
+    }
+    let table: toml::Table = toml::from_str(text)?;
+    if let Some(c) = walk(&toml::Value::Table(table.clone())) {
+        bail!(
+            "a value holds a control character (U+{:04X}); only newlines and tabs are allowed",
+            c as u32
+        );
+    }
+    Ok(table.try_into()?)
+}
+
 /// A control character a terminal or page could act on. Prose from this
 /// store is printed raw before a `[y/N]` (`mecha persona approve`), so text
 /// that could repaint the screen would repaint the review of itself —
 /// `imagelib::validate_text`'s rule, with tabs allowed for Markdown.
 fn is_forbidden_control(c: char) -> bool {
-    c.is_control() && !matches!(c, '\n' | '\t' | '\r')
+    c.is_control() && !matches!(c, '\n' | '\t')
 }
 
 fn dir_name(path: &Path) -> Option<String> {
@@ -695,7 +738,7 @@ impl Store {
                 continue;
             }
             let loaded = validate_name(&name).and_then(|()| {
-                let profile: VoiceProfile = toml::from_str(&read_prose(&file)?)?;
+                let profile: VoiceProfile = parse_toml(&read_prose(&file)?)?;
                 match (&profile.voice, &profile.reference) {
                     (None, None) => bail!("a profile needs a `voice` or a `reference` clip"),
                     (_, Some(clip)) => {
@@ -728,7 +771,7 @@ impl Store {
             return;
         }
         let loaded = read_prose(&path).and_then(|raw| {
-            let groups: BTreeMap<String, GroupDecl> = toml::from_str(&raw)?;
+            let groups: BTreeMap<String, GroupDecl> = parse_toml(&raw)?;
             for name in groups.keys() {
                 validate_name(name)?;
             }
@@ -789,8 +832,10 @@ impl Store {
 
     /// The `files/` folders `p` may read, most specific first: its own, each
     /// group it joins that `groups.toml` declares, and everyone's (§10.2).
-    /// These are the only roots a persona's file tools resolve in, each
-    /// canonicalised and contained on its own. A group that is not declared
+    /// These are the only roots a persona's file tools may resolve in —
+    /// joined here, not checked: canonicalising and containing a path in one
+    /// (and a root that does not exist yet) is the resolver's job when step 3
+    /// builds it. A group that is not declared
     /// contributes nothing: a broken link grants no access.
     pub fn files_roots(&self, p: &Persona) -> Vec<PathBuf> {
         let mut roots = vec![self.dir.join(&p.name).join("files")];
@@ -928,13 +973,10 @@ fn digest_of(files: &[(String, String)]) -> String {
 fn load_persona(dir: &Path, name: &str) -> Result<Persona> {
     validate_persona_name(name)?;
     let raw = read_prose(&dir.join("persona.toml"))?;
-    let settings: Settings = toml::from_str(&raw)?;
+    let settings: Settings = parse_toml(&raw)?;
     let mut notes = unknown_values(&toml::from_str(&raw)?);
-    // A TOML escape (`"\u001b"`) survives the file-level check.
-    if settings.display.chars().count() > MAX_DISPLAY
-        || settings.display.chars().any(char::is_control)
-    {
-        bail!("display is one line of at most {MAX_DISPLAY} characters, no control characters");
+    if settings.display.chars().count() > MAX_DISPLAY || settings.display.contains(['\n', '\t']) {
+        bail!("display is one line of at most {MAX_DISPLAY} characters");
     }
     for r in &settings.relationship.0 {
         validate_name(r).context("in `relationship`")?;
@@ -1061,6 +1103,7 @@ pub fn seed_starters(dir: &Path) -> Result<Vec<String>> {
         Err(e) => return Err(e).with_context(|| format!("reading {}", seeded_path.display())),
     };
     let mut copied = Vec::new();
+    let mut offered = false;
     for (name, text) in STARTERS {
         if seeded.contains(name) {
             continue;
@@ -1068,9 +1111,11 @@ pub fn seed_starters(dir: &Path) -> Result<Vec<String>> {
         if write_new(&rel.join(format!("{name}.md")), text)? {
             copied.push(name.to_string());
         }
+        // Offered even when the owner already had a file of that name.
         seeded.insert(name.to_string());
+        offered = true;
     }
-    if !copied.is_empty() || !seeded_path.exists() {
+    if offered || !seeded_path.exists() {
         let mut text: String = seeded.iter().map(|n| format!("{n}\n")).collect();
         text.insert_str(
             0,
@@ -1485,7 +1530,10 @@ pub fn remove(dir: &Path, name: &str) -> Result<PathBuf> {
     let removed = dir.join("removed");
     std::fs::create_dir_all(&removed)?;
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-    let to = removed.join(format!("{name}-{stamp}"));
+    // The stamp alone is per second: remove, recreate and remove again in
+    // one second must not collide with the first.
+    let unique = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    let to = removed.join(format!("{name}-{stamp}-{unique}"));
     std::fs::rename(&pdir, &to)?;
     Ok(to)
 }
@@ -1919,10 +1967,30 @@ mod tests {
         assert!(store.get("priya").is_none());
         let why: Vec<&str> = store.errors().iter().map(|e| e.why.as_str()).collect();
         assert!(why.iter().any(|w| w.contains("U+001B")), "{why:?}");
-        assert!(
-            why.iter().any(|w| w.contains("no control characters")),
-            "{why:?}"
-        );
+        assert!(why.iter().any(|w| w.contains("a value holds")), "{why:?}");
+        // Every string field, not just `display`, and a bare carriage return.
+        for (field, value) in [
+            ("# voice      = \"mara-low\"", "voice = \"x\\u001b[2J\""),
+            ("allow = []", "allow = [\"web\\u0007\"]"),
+            ("# model      = \"local\"", "model = \"a\\rb\""),
+        ] {
+            create(&dir, &no_lib(), new("ada")).unwrap();
+            let toml = dir.join("ada/persona.toml");
+            let text = std::fs::read_to_string(&toml).unwrap();
+            assert!(text.contains(field), "{field}");
+            std::fs::write(&toml, text.replace(field, value)).unwrap();
+            let store = Store::load(&dir);
+            assert!(store.get("ada").is_none(), "{value} loaded");
+            remove(&dir, "ada").unwrap();
+        }
+        std::fs::write(dir.join("mara/identity.md"), "## Core\nDry.\rWet.\n").unwrap();
+        assert!(Store::load(&dir).get("mara").is_none(), "a bare CR loaded");
+        std::fs::write(
+            dir.join("groups.toml"),
+            "[work]\ndescription = \"\\u001b[31m\"\n",
+        )
+        .unwrap();
+        assert!(Store::load(&dir).groups().is_empty());
         // Tabs are Markdown, not an attack.
         std::fs::write(dir.join("mara/identity.md"), "## Core\n\tDry.\r\n").unwrap();
         assert!(Store::load(&dir).get("mara").is_some());
