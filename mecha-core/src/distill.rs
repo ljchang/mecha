@@ -1112,7 +1112,9 @@ pub fn render_appraisal_inputs(i: &AppraisalInputs<'_>) -> String {
         let _ = writeln!(
             out,
             "- {}: {}",
-            p.at.format("%Y-%m-%d"),
+            // The session's date, not the write's: a backfilled row is an
+            // old session's (review of #388).
+            p.session_ended_at.unwrap_or(p.at).format("%Y-%m-%d"),
             p.interpretation.trim()
         );
         if let Some(pred) = &p.prediction {
