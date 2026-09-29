@@ -286,13 +286,19 @@ impl PersonaChats {
     }
 
     /// The personas a browsing surface may list, with what is wrong with each.
+    /// `tz` is `[agent] timezone`; `None` is the machine's own zone, as
+    /// `Config::timezone` documents — not UTC (review of #418).
     pub fn list(
         &self,
         library: &LibraryState,
         token: Option<&str>,
-        tz: chrono_tz::Tz,
+        tz: Option<chrono_tz::Tz>,
     ) -> serde_json::Value {
-        let doses = safety::doses(&self.store, chrono::Utc::now(), tz);
+        let now = chrono::Utc::now();
+        let doses = match tz {
+            Some(tz) => safety::doses(&self.store, now, &tz),
+            None => safety::doses(&self.store, now, &chrono::Local),
+        };
         let store = Store::load(&self.store);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
         let unlocked = library.unlocked(token);
@@ -685,32 +691,46 @@ impl PersonaChats {
                 "`{name}` is not approved — `mecha persona approve {name}` after reading it"
             )));
         }
-        let (pinned, notices) = {
+        let (pinned, notices, early_pause) = {
             let mut sessions = self.sessions.lock().await;
             let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
             if ps.live.is_some() {
                 return self.steer_or_pause(ps, &name, text, request_id);
             }
-            (Arc::clone(&ps.pinned), ps.events.clone())
+            // A pause needs no model: decided here, from the owner's words,
+            // it skips the router hold and the agent below, so 988 is not
+            // queued behind a model load it never uses (review of #418).
+            let switches = ps.pinned.settings.safety;
+            let early_pause = switches.crisis
+                && safety::keyword_hit(&text)
+                && !ps
+                    .crisis_paused_at
+                    .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
+            (Arc::clone(&ps.pinned), ps.events.clone(), early_pause)
         };
         if chat.stopping.is_cancelled() {
             return Err(Refusal::Failed("server is shutting down".into()));
         }
         // The router is held for the turn, as the assistant's are (D13): a
         // switch waits for it, and the page is told when a turn waits on one.
-        let (held, bound) = chat
-            .follower
-            .enter("persona chat", |switch| {
-                let _ = notices.send(WireEvent::Notice {
-                    text: format!(
-                        "Switching the model to {} — this turn starts once it is loaded.",
-                        switch.to
-                    ),
-                });
-            })
-            .await
-            .map_err(failed)?;
-        let (agent, _) = self.agent_for(&bound, &pinned).map_err(failed)?;
+        let (held, ready) = if early_pause {
+            (None, None)
+        } else {
+            let (held, bound) = chat
+                .follower
+                .enter("persona chat", |switch| {
+                    let _ = notices.send(WireEvent::Notice {
+                        text: format!(
+                            "Switching the model to {} — this turn starts once it is loaded.",
+                            switch.to
+                        ),
+                    });
+                })
+                .await
+                .map_err(failed)?;
+            let (agent, _) = self.agent_for(&bound, &pinned).map_err(failed)?;
+            (held, Some((bound, agent)))
+        };
 
         let mut sessions = self.sessions.lock().await;
         // Under the lock `stop` takes, so a turn is either cancelled by it or
@@ -755,7 +775,8 @@ impl PersonaChats {
         let cooling = ps
             .crisis_paused_at
             .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
-        let pause = hit && !cooling;
+        // An early decision binds: it skipped the agent this turn would need.
+        let pause = hit && (!cooling || early_pause);
         // The Core, handed back near the newest turn on a cadence, after a
         // compaction, and when a chat is picked back up (§12.5).
         let anchor = (!pause
@@ -846,6 +867,11 @@ impl PersonaChats {
             });
             return Ok(serde_json::json!({ "started": false, "paused": true }));
         }
+        let Some((bound, agent)) = ready else {
+            // Unreachable: an early pause always pauses above.
+            ps.conversation = Some(conversation);
+            return Err(Refusal::Failed("a paused turn reached the model".into()));
+        };
         let anchored = anchor.is_some();
         if anchored {
             ps.turns_since_anchor = 0;
@@ -1156,13 +1182,7 @@ pub async fn list(State(state): Web, Query(q): Query<UnlockQuery>) -> axum::resp
     // Off the async threads, as `library::list` is: it walks two stores.
     let personas = Arc::clone(&chat.personas);
     let library = Arc::clone(&state.library);
-    let tz = chat
-        .follower
-        .current()
-        .config
-        .agent
-        .timezone()
-        .unwrap_or(chrono_tz::UTC);
+    let tz = chat.follower.current().config.agent.timezone();
     match tokio::task::spawn_blocking(move || personas.list(&library, q.unlock.as_deref(), tz))
         .await
     {
@@ -1566,7 +1586,7 @@ mod tests {
     async fn a_locked_persona_is_indistinguishable_from_none() {
         let w = world();
         store::set_locked(&w.store(), "mara", true).unwrap();
-        let listed = w.personas().list(&w.library, None, chrono_tz::UTC);
+        let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
         assert_eq!(listed["personas"].as_array().unwrap().len(), 0);
         assert_eq!(listed["hidden_locked"], 1);
         for token in [None, Some("not-a-token")] {
@@ -2027,7 +2047,8 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n");
             std::fs::write(&toml, format!("character = \"{links}\"\n{text}\n")).unwrap();
-            w.personas().list(&w.library, token, chrono_tz::UTC)["personas"][0]["portrait"].clone()
+            w.personas().list(&w.library, token, Some(chrono_tz::UTC))["personas"][0]["portrait"]
+                .clone()
         };
         // Locked character: no portrait, not even its blob name, until unlocked.
         assert!(portrait_of("maya", None).is_null());
@@ -2249,7 +2270,7 @@ mod tests {
             .iter()
             .any(|r| format!("{:?}", r.messages).contains("A reminder from the harness")));
         assert!(!w.store().join("dose.jsonl").exists());
-        let listed = w.personas().list(&w.library, None, chrono_tz::UTC);
+        let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
         assert!(listed["personas"][0]["dose"].is_null());
         assert_eq!(listed["personas"][0]["safety"]["reanchor"], false);
     }

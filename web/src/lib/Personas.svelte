@@ -39,6 +39,9 @@
   // Attached while a run was streaming: that run's end is re-read, because
   // what streamed before the stream opened is only on the server.
   let partial = false;
+  // How many runs this page has seen end, so a `done` that overtakes
+  // `attach`'s first read is noticed (`Chat.svelte`'s `doneSeq`).
+  let doneSeq = 0;
   let refused = $state([]);
   let goal = $state('');
   let input = $state('');
@@ -195,6 +198,7 @@
       run = applyEvent(run, ev);
       scrollDown();
       if (ev.type === 'done') {
+        doneSeq += 1;
         // Only a run that finished is re-read: a failed one was rolled back
         // on the server, and the page's own record of it — the message and
         // why it failed — is the one worth keeping on screen.
@@ -208,14 +212,24 @@
       }
     };
     // A stream the server ended (a relock, a restart) is said, not frozen.
+    // One the browser is re-opening lost whatever was sent in the gap — the
+    // server keeps no replay — so the run it rejoins is read again at its
+    // end, as a late join is (review of #418).
     s.onerror = () => {
-      if (s.readyState === 2 && source === s) {
-        error = 'this chat stopped updating — open it again';
-      }
+      if (source !== s) return;
+      if (s.readyState === 2) error = 'this chat stopped updating — open it again';
+      else partial = true;
     };
     try {
+      const seen = doneSeq;
       const t = await reread(k);
       partial = !!t?.running;
+      // The run ended while that read was in flight: its `done` found
+      // nothing to re-read and the read says "running" — read once more.
+      if (partial && doneSeq !== seen) {
+        partial = false;
+        await reread(k);
+      }
     } catch (e) {
       close();
       key = null;

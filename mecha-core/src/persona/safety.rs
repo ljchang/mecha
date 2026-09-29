@@ -240,11 +240,11 @@ pub struct Doses {
 
 /// Read the meters for `persona` (or every persona, with `None`). A missing
 /// file is no turns; an unreadable one is not — see [`doses`].
-pub fn dose(
+pub fn dose<Tz: chrono::TimeZone>(
     dir: &Path,
     persona: Option<&str>,
     now: chrono::DateTime<chrono::Utc>,
-    tz: chrono_tz::Tz,
+    tz: &Tz,
 ) -> Dose {
     let all = doses(dir, now, tz).by_persona;
     match persona {
@@ -259,7 +259,13 @@ pub fn dose(
 
 /// Every persona's meters in one walk of the file — what a list of
 /// personas reads, rather than one parse per row (review of #418).
-pub fn doses(dir: &Path, now: chrono::DateTime<chrono::Utc>, tz: chrono_tz::Tz) -> Doses {
+/// Generic over the zone: `[agent] timezone` when set, and the machine's own
+/// (`chrono::Local`) when not — never UTC by default.
+pub fn doses<Tz: chrono::TimeZone>(
+    dir: &Path,
+    now: chrono::DateTime<chrono::Utc>,
+    tz: &Tz,
+) -> Doses {
     let mut read = Doses::default();
     let text = match std::fs::read_to_string(dir.join("dose.jsonl")) {
         Ok(text) => text,
@@ -270,7 +276,7 @@ pub fn doses(dir: &Path, now: chrono::DateTime<chrono::Utc>, tz: chrono_tz::Tz) 
             return read;
         }
     };
-    let today = now.with_timezone(&tz).date_naive();
+    let today = now.with_timezone(tz).date_naive();
     let week_ago = now - chrono::Duration::days(7);
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let Ok(r) = serde_json::from_str::<DoseRecord>(line) else {
@@ -278,7 +284,7 @@ pub fn doses(dir: &Path, now: chrono::DateTime<chrono::Utc>, tz: chrono_tz::Tz) 
             continue;
         };
         let out = read.by_persona.entry(r.persona.clone()).or_default();
-        let local = r.at.with_timezone(&tz);
+        let local = r.at.with_timezone(tz);
         if local.date_naive() == today {
             out.turns_today += 1;
         }
@@ -406,26 +412,26 @@ mod tests {
         std::fs::write(dir.join("dose.jsonl"), lines.join("\n") + "\nnot json\n").unwrap();
         let now = at(29, 23) + chrono::Duration::minutes(30);
         assert_eq!(
-            dose(&dir, Some("mara"), now, tz),
+            dose(&dir, Some("mara"), now, &tz),
             Dose {
                 turns_today: 2,
                 turns_7d: 3,
                 late_night_7d: 2
             }
         );
-        assert_eq!(dose(&dir, None, now, tz).turns_today, 3);
-        assert_eq!(dose(&dir, Some("nobody"), now, tz), Dose::default());
+        assert_eq!(dose(&dir, None, now, &tz).turns_today, 3);
+        assert_eq!(dose(&dir, Some("nobody"), now, &tz), Dose::default());
         // The line that did not parse is counted, not silently dropped.
-        assert_eq!(doses(&dir, now, tz).skipped, 1);
+        assert_eq!(doses(&dir, now, &tz).skipped, 1);
         std::fs::remove_dir_all(&dir).ok();
         // A store never written is a true zero; one that cannot be read is
         // said, not reported as zero turns.
         std::fs::create_dir_all(&dir).unwrap();
-        let none = doses(&dir, now, tz);
+        let none = doses(&dir, now, &tz);
         assert!(none.unreadable.is_none() && none.by_persona.is_empty());
         std::fs::create_dir_all(dir.join("dose.jsonl")).unwrap();
         assert!(
-            doses(&dir, now, tz).unreadable.is_some(),
+            doses(&dir, now, &tz).unreadable.is_some(),
             "a directory cannot be read as the file"
         );
         std::fs::remove_dir_all(dir).ok();
