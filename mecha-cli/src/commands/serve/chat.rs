@@ -2578,11 +2578,7 @@ fn begin_turn(
         cx.hooks = Arc::new(mecha_core::hooks::HookSet::default());
     }
     if let Some(shared) = &bound.agent.context().outbox {
-        if let Ok(mut store) = OutboxStore::open(&chat.outbox_root) {
-            // The shared route's forecasting travels with its session's own.
-            if let Some(w) = shared.store.forecasting() {
-                store = store.with_forecasts(w);
-            }
+        if let Ok(store) = OutboxStore::open_like(&shared.store, &chat.outbox_root) {
             let mine = OutboxRoute::new(
                 store,
                 shared.routed().map(String::from).collect::<Vec<_>>(),

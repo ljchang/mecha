@@ -214,12 +214,33 @@ fn a_forecast_rests_on_settled_history_and_never_on_its_own_draft() {
     let mut own = resolved(fresh.clone(), "sent", 0, Actor::Owner);
     own.created_at = fresh.created_at.clone();
     history.push(own);
-    let f = record(&dir, &fresh, Some(&history), Some(window))
+    // The history is what this ledger forecast as real: before any line
+    // exists, nothing counts.
+    let bare = record(&dir, &fresh, Some(&history), Some(window), false)
+        .unwrap()
+        .unwrap();
+    assert_eq!((bare.expected, bare.basis), (None, 0));
+    for h in &history[..2] {
+        record(&dir, h, Some(&[]), Some(window), false).unwrap();
+    }
+    // A smoke run's draft, rejected by the owner, is on the ledger as a
+    // test and never history.
+    let smoke = resolved(
+        draft(&store, "mail_send", false, 4 * DAY, now),
+        "sent",
+        1,
+        Actor::Owner,
+    );
+    record(&dir, &smoke, None, Some(window), true).unwrap();
+    history.push(smoke);
+    let f = record(&dir, &fresh, Some(&history), Some(window), false)
         .unwrap()
         .unwrap();
     assert!(!f.basis_unreadable);
     // An unreadable history is no basis, and says why.
-    let blind = record(&dir, &fresh, None, Some(window)).unwrap().unwrap();
+    let blind = record(&dir, &fresh, None, Some(window), false)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         (blind.expected, blind.basis, blind.basis_unreadable),
         (None, 0, true)
@@ -244,6 +265,7 @@ fn the_summary_scores_what_resolved_and_names_the_rest() {
         basis: 3,
         basis_unreadable: false,
         patience_secs: None,
+        test: false,
         source: Source::BaseRate,
     };
     let hit = resolved(
@@ -346,6 +368,74 @@ fn the_summary_scores_what_resolved_and_names_the_rest() {
             partial.unforecast
         ),
         (2, 2, 0, 0)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A surface's own store, opened like the shared one, forecasts as it does
+/// — by construction, never by a copy each caller must remember; and the
+/// staging's history read is bounded to the newest items (review of #401).
+#[test]
+fn a_surface_store_inherits_forecasting_and_history_is_bounded() {
+    let dir = root("like");
+    let shared = OutboxStore::open(&dir)
+        .unwrap()
+        .with_forecasts(Window::Fixed(hours(2 * DAY)));
+    let mine = OutboxStore::open_like(&shared, &dir).unwrap();
+    assert_eq!(mine.forecasting(), Some(Window::Fixed(hours(2 * DAY))));
+    let plain = OutboxStore::open_like(&OutboxStore::open(&dir).unwrap(), &dir).unwrap();
+    assert_eq!(plain.forecasting(), None);
+
+    let now = Utc::now();
+    for _ in 0..5 {
+        draft(&mine, "mail_send", false, 0, now);
+    }
+    let (newest, skipped) = mine.items_newest(3).unwrap();
+    assert_eq!((newest.len(), skipped), (3, 0));
+    let all = mine.items().unwrap();
+    let mut ids: Vec<_> = all.iter().map(|i| i.id.clone()).collect();
+    ids.sort();
+    let mut got: Vec<_> = newest.iter().map(|i| i.id.clone()).collect();
+    got.sort();
+    assert_eq!(got, ids[ids.len() - 3..].to_vec(), "the newest by id");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A smoke run's forecast line is set aside by the readout: not scored,
+/// not a basis, and not an unforecast draft either.
+#[test]
+fn a_smoke_runs_forecast_is_set_aside() {
+    let dir = root("smoke");
+    let store = OutboxStore::open(&dir).unwrap();
+    let now = Utc::now();
+    let window = hours(2 * DAY);
+    let item = resolved(
+        draft(&store, "mail_send", false, 4 * DAY, now),
+        "sent",
+        1,
+        Actor::Owner,
+    );
+    let f = record(&dir, &item, None, Some(window), true)
+        .unwrap()
+        .unwrap();
+    assert!(f.test && f.expected.is_none());
+    let s = summarize(
+        &[f],
+        0,
+        std::slice::from_ref(&item),
+        true,
+        Some(window),
+        now,
+    );
+    assert_eq!(
+        (
+            s.forecasts,
+            s.tests_set_aside,
+            s.scored,
+            s.no_basis,
+            s.unforecast
+        ),
+        (0, 1, 0, 0, 0)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
