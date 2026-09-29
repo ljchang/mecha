@@ -167,10 +167,13 @@ fn accept(store: &LearningStore, id: &str, force: bool) -> Result<()> {
     // The owner asked for exactly what recovery just finished: this
     // proposal's own interrupted accept, not a set-aside and not some other
     // change, which leave an already-accepted proposal refused as before.
+    // And only an *accept*: a gated `learn --auto` apply finished here
+    // leaves its proposal `auto_applied`, which this verb did not do.
     if matches!(
         &resumed,
         Some(mecha_core::learning::Resumed::Finished { proposal: Some(done), .. }) if *done == p.id
-    ) {
+    ) && p.status == "accepted"
+    {
         store.log_pass(&format!(
             "accept[{}]: proposal {} — {} rule(s), finished after an interruption",
             p.domain,

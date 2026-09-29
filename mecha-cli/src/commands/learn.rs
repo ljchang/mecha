@@ -1198,6 +1198,36 @@ fn already_argued(
 }
 
 #[cfg(test)]
+mod commit_order_tests {
+    /// Read from the source, as the lock tests are: the path makes model
+    /// calls. The gated path used to write an applied proposal ahead of its
+    /// rules, so a crash in between left `auto_applied` over rules that never
+    /// went live. An applied proposal now travels inside the commit, and the
+    /// only direct write is for one that was not applied.
+    #[test]
+    fn an_applied_proposal_is_written_by_the_commit_not_before_it() {
+        let src = include_str!("learn.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let direct: Vec<usize> = code
+            .match_indices("store.write_proposal(&proposal)")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(direct.len(), 1, "one direct proposal write");
+        let guard = code[..direct[0]]
+            .rfind("if !applied {")
+            .expect("no applied guard");
+        assert!(
+            direct[0] - guard < 80,
+            "the direct write is the unapplied branch"
+        );
+        assert!(
+            code.contains("proposal: Some(proposal.clone()),"),
+            "the applied proposal rides in the commit"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{already_argued, closed_goal_lines, dispose, hold_out, stamp_probation, widened};
     use std::collections::BTreeMap;
