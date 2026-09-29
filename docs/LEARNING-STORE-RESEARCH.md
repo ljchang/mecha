@@ -22,7 +22,8 @@ moving the learning store into the graph now.
 
 `~/.mecha/learning/`, 1.9 MB on 2026-09-29: 86 reflections (≈11 a week,
 weeks 32–39), one `behavior.learned.toml` with 7 rules, 10 proposals, 378
-validation rows (≈75 a week) and 144 attempts, the mined and distilled
+validation rows (≈90 a week since the ledger's first row on 2026-08-29) and
+144 attempts, the mined and distilled
 ledgers (≈630 each), `runs.jsonl`, `passes.jsonl`, `harness/`, `logs/`.
 Written by the `session_end` hook (`learn-live.sh`: reflect, learn;
 `distill`), the nightly `ruminate.sh`, owner verbs from the CLI, TUI and web
@@ -78,8 +79,9 @@ Summarised from the external survey (sources in the PR description):
   The security evidence says why: a four-stage content screen rejected 0 of
   360 poisoned memories, and provenance-*weighted* retrieval was
   indistinguishable from no defense (p=0.80) — only excluding untrusted
-  sources worked ("Utility Under Attack", arXiv 2608.21230, 2026-08-21,
-  verified). That is mecha's structural provenance gate, and an argument
+  sources worked ("Utility Under Attack", arXiv 2608.21230, 2026-08-21 —
+  a preprint, not peer-reviewed; the citation is verified, the result is
+  one paper's). That is mecha's structural provenance gate, and an argument
   for keeping prompt text away from the graph.
 - **Embedded engines in Rust:** SQLite is the only one that is multi-process,
   transactional, mature and readable with standard tools. redb's
@@ -205,16 +207,26 @@ adopted. **D2 stays open** — see the caveat under it.
 
 1. **Locks and single-write appends** (defects 1–2). Ship regardless.
    The lock guards a *dead* holder (the kernel drops it) but not a *hung*
-   one: `reflect` and `mail reflect` hold it across provider calls, so a
-   stuck provider parks every other writer, `forget` from the web included,
-   with no timeout. That predates this plan. It is worth a bounded wait
-   with a message in `forget` if it ever bites.
+   one. So the two newly locked writers take it only around their appends,
+   never across a model call: `validate` after each probe, and `mail
+   reflect` per correction, re-checking the mined set under the lock.
+   Taking it at verb entry would bring back #89's symptom. `reflect` and
+   `learn` already held it across provider calls before this plan, because
+   their passes are read-modify-writes of the whole pool. A stuck provider
+   there still parks every other writer, `forget` from the web included,
+   with no timeout. If that ever bites, the fix is a bounded wait with a
+   message in `forget`.
 2. **Lossless rewrites** (defect 3).
 3. **Resumable multi-step writes and the parse-failure policy** (defect 4,
    D1). D1's warning has to be written in the same change. The run-start
    callers beside `rules_carried_for` in `setup.rs` already swallow errors
    with `unwrap_or_default()`, so a skipped `learned.toml` with no warning
-   of its own would degrade silently.
+   of its own would degrade silently. The skip also has to reach the run
+   record. `RunConfig::rules_hash` is `None` for "attribute nothing", while
+   an empty block hashes to a real value. A run that skipped a bad file
+   must record `None`, or the validation ledger and tenure attribution will
+   read it as a measured run that carried no rules. stderr and doctor reach
+   neither reader.
 4. Correct the stale descriptions: the `learning.rs` module-doc layout, the
    user guide's file table, `Proposal::status`'s vocabulary, and the git
    mentions left in `SettingsLearning.svelte` and `MEMORY-RESEARCH.md`.
