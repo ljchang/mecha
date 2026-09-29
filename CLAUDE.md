@@ -156,6 +156,7 @@ policy.rs    per-command approval rules: `allow | prompt | forbid` by prefix,
              narrowing only; an allowlisted interpreter is not an allowlisted command
 outbox.rs    the store behind staged sends and publishes
 outbox_source.rs  what a staged draft answers, joined out of the staging session
+forecast.rs  the harness's sealed forecast of the owner's act on a staged draft
 questions.rs the outbox's inbound twin: a delegated run's question, and the resume
 mailbox.rs   inter-agent messages between sessions; taint travels with them
 sandbox.rs   bwrap/docker confinement for shell and MCP servers

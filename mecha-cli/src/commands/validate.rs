@@ -362,7 +362,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     } else {
         args.trigger.iter().map(String::as_str).collect()
     };
-    let all = store.reflexions()?;
+    // A session the owner marked as an experiment probes nothing (ruling 4D;
+    // review of #382). The ledger unread stops the run.
+    let (all, withdrawn) =
+        mecha_core::session::Marks::load(&mecha_core::session::Session::default_dir()?)?
+            .keep_unmarked(store.reflexions()?, |r| r.session_id.as_str());
     // The cover pool needs the corpus again; every other pass does not.
     let for_cover = (args.cover > 0).then(|| all.clone());
     let mut reflexions: Vec<_> = select_probe_corpus(all, &wanted_triggers, args.unprocessed_only);
@@ -497,6 +501,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 covering.len()
             );
         }
+    }
+    if withdrawn > 0 {
+        println!(
+            "{withdrawn} reflection(s) from sessions you marked as experiments set aside — \
+             not probed while the mark stands"
+        );
     }
     if reflexions.is_empty() {
         println!("no reflections to probe");
@@ -760,6 +770,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
         // Write the compact outcome before the receipt: an interrupted append
         // must not suppress a measurement the retirement ledger never received.
+        //
+        // Under the store lock, and only around the writes: `forget` rewrites
+        // these ledgers under it, and an unlocked append landing between that
+        // rewrite's read and its rename would be lost. Not across the probe's
+        // model calls, which run for hours on a nightly and would hold every
+        // owner verb behind them.
+        let store_lock = store.lock()?;
         store.append_validation(&ValidationRecord {
             reflexion_id: r.id.clone(),
             trigger: r.trigger.clone(),
@@ -777,6 +794,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 .map(|s| s.scope()),
         })?;
         store.append_validation_attempt(&receipt)?;
+        drop(store_lock);
         recorded_rows += 1;
         // Both arms drove and each produced a verdict: that is a comparison,
         // inconclusive or not. A pair cut short by a provider or judge error
@@ -823,6 +841,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         println!(
             "{recorded_rows} row(s) appended to the validation ledger — `mecha rules` folds them"
         );
+        // No lock: `passes.jsonl` is append-only and nothing rewrites it
+        // (`forget` does not touch it), so this append races no rename, and
+        // `log_pass` is best-effort by design. A lock taken with `?` here
+        // would fail a run whose ledger rows had all landed.
         store.log_pass(&format!("validate: {recorded_rows} probe(s) → ledger"));
     }
     Ok(())
@@ -964,6 +986,25 @@ fn outcome_str(baseline: &ProbeVerdict, with: &ProbeVerdict) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Read from the source: the appends sit after a probe's model calls.
+    /// `forget` rewrites these ledgers under the store lock, so an unlocked
+    /// append could be lost between that rewrite's read and its rename.
+    #[test]
+    fn the_ledger_appends_are_taken_under_the_store_lock() {
+        let src = include_str!("validate.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let append = code
+            .find("store.append_validation(")
+            .expect("validate appends the ledger");
+        let lock = code[..append]
+            .rfind("store.lock()")
+            .expect("no lock before the appends");
+        assert!(
+            !code[lock..append].contains("provider") && append - lock < 600,
+            "the lock is taken right before the appends, not across the probe"
+        );
+    }
 
     fn temp_store() -> LearningStore {
         // A process-unique counter, not a timestamp. `as_nanos()` is only as

@@ -75,6 +75,7 @@ pub mod eval;
 pub mod exp_report;
 pub mod experiment;
 pub mod fixture_check;
+pub mod forecast;
 pub mod forget;
 pub mod frontdoor;
 pub mod goal;

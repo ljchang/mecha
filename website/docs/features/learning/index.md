@@ -555,7 +555,20 @@ happened in:
 | inconclusive | moments where this arm could not be graded |
 
 and, for the region: moments compared, not yet measured, unavailable this
-pass, and excluded, by reason. A moment is compared only when **both** sides
+pass, and excluded, by reason.
+
+Above the table, one line gives the verdict on "at least as well", decided
+on the moments where exactly one source passed:
+
+| verdict | when |
+|---|---|
+| pilot | fewer than 10 moments decided: worth reading, not a verdict |
+| no worse | the appraisal's lessons win at most 2 fewer of those moments than the reflector's, or more |
+| worse | they win 3 or more fewer |
+| no verdict | some store line could not be read, so every count is a floor |
+
+The rule was set before any moment was measured, so it cannot be bent to
+fit the result. A moment is compared only when **both** sides
 are clean — the reflection passes the same provenance gate `mecha learn`
 applies and is still the reflector's own words (not one you dropped or
 rewrote), and the appraisal comes from a session with no third-party content.
