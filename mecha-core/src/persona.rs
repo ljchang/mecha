@@ -762,8 +762,28 @@ impl Store {
         &self.errors
     }
 
+    /// The persona's folder — for the owner's doors (the CLI, the page).
+    /// **Never a jail root:** `sessions/`, `state.toml` and, later,
+    /// `memory.db` sit in it beside `files/`. A tool reading a persona's
+    /// material is jailed to [`Store::files_roots`] instead.
     pub fn persona_dir(&self, name: &str) -> PathBuf {
         self.dir.join(name)
+    }
+
+    /// The `files/` folders `p` may read, most specific first: its own, each
+    /// group it joins that `groups.toml` declares, and everyone's (§10.2).
+    /// These are the only roots a persona's file tools resolve in, each
+    /// canonicalised and contained on its own. A group that is not declared
+    /// contributes nothing: a broken link grants no access.
+    pub fn files_roots(&self, p: &Persona) -> Vec<PathBuf> {
+        let mut roots = vec![self.dir.join(&p.name).join("files")];
+        for g in &p.settings.groups {
+            if self.groups.contains_key(g) {
+                roots.push(self.dir.join("groups").join(g).join("files"));
+            }
+        }
+        roots.push(self.dir.join("files"));
+        roots
     }
 
     /// Where this persona's chats will be kept (§3.2) — apart from
@@ -1819,6 +1839,34 @@ mod tests {
         };
         assert_eq!(names(false), vec!["priya".to_string()]);
         assert_eq!(names(true), vec!["mara".to_string(), "priya".to_string()]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_persona_reads_only_its_files_roots() {
+        let dir = scratch();
+        add_group(&dir, "work", "").unwrap();
+        let mut n = new("mara");
+        n.groups = vec!["work".into()];
+        create(&dir, &no_lib(), n).unwrap();
+        // `play` joined by hand edit but never declared: no access from it.
+        let path = dir.join("mara/persona.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("[\"work\"]", "[\"work\", \"play\"]")).unwrap();
+        let store = Store::load(&dir);
+        let roots = store.files_roots(store.get("mara").unwrap());
+        assert_eq!(
+            roots,
+            vec![
+                dir.join("mara/files"),
+                dir.join("groups/work/files"),
+                dir.join("files"),
+            ]
+        );
+        for root in &roots {
+            assert!(root.is_dir(), "{}", root.display());
+            assert!(!dir.join("mara/sessions").starts_with(root));
+        }
         std::fs::remove_dir_all(dir).ok();
     }
 
