@@ -427,7 +427,8 @@ pub(crate) fn gate_line(report: &Report) -> String {
     match report.gate() {
         Gate::Floors { skipped } => format!(
             "gate (2a-4, 2e-2): no verdict — {skipped} unreadable store line(s) make every count \
-             a floor; {pairs}"
+             a floor, {} decided at least; {pairs}",
+            total.decided
         ),
         Gate::Pilot { decided } => format!(
             "gate (2a-4, 2e-2): pilot — {decided} decided of the {GATE_MIN_DECIDED} a verdict \
@@ -604,12 +605,19 @@ pub(crate) fn on_record() -> std::result::Result<Option<Report>, String> {
         Some(store) => store.comparisons_counting().map_err(|e| format!("{e:#}"))?,
         None => (Vec::new(), 0),
     };
-    if read.reflections.is_empty() && !rows.iter().any(|c| c.kind == Kind::LessonSource) {
+    let skipped = read.reflections_skipped + read.appraisals_skipped + rows_skipped;
+    // "Nothing on record" only when nothing was torn either: a store with
+    // every line unreadable is floors, not an empty record, and R44 states
+    // no verdict over floors (review of #400).
+    if skipped == 0
+        && read.reflections.is_empty()
+        && !rows.iter().any(|c| c.kind == Kind::LessonSource)
+    {
         return Ok(None);
     }
     let sources = Sources::new(&read.clean, read.on_record.clone());
     let mut report = lesson_source::report(&read.reflections, &sources, &rows, None, None);
-    report.skipped_lines = read.reflections_skipped + read.appraisals_skipped + rows_skipped;
+    report.skipped_lines = skipped;
     Ok(Some(report))
 }
 
@@ -649,6 +657,11 @@ mod tests {
         assert!(lead.contains("the appraisal leads by 5"), "{lead}");
         assert!(!lead.contains("trails by 0"), "{lead}");
         // Floors: no verdict.
-        assert!(at(12, 5, 0, 2).contains("no verdict — 2 unreadable store line(s)"));
+        let floors = at(12, 5, 0, 2);
+        assert!(
+            floors.contains("no verdict — 2 unreadable store line(s)")
+                && floors.contains("12 decided at least"),
+            "{floors}"
+        );
     }
 }
