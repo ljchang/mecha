@@ -2096,11 +2096,22 @@ impl LearningStore {
     /// leaves the record, and [`Self::resume_interrupted`] finishes it. Every
     /// step is idempotent, so finishing means doing them again.
     pub fn commit_rules(&self, change: &RuleCommit) -> Result<()> {
+        // A pending record is an interrupted change nobody finished. Writing
+        // over it would lose that change for good (its reflections unmarked,
+        // its run gone) with nothing left for doctor to find. So a writer that
+        // skipped `resume_interrupted` is refused here, not trusted to have
+        // called it.
+        let path = self.root.join(COMMIT_FILE);
+        anyhow::ensure!(
+            !path.exists(),
+            "an interrupted rule change is waiting in {} — finish it first \
+             (`LearningStore::resume_interrupted`, which `mecha learn` runs)",
+            path.display()
+        );
         let intent = CommitIntent {
             change: change.clone(),
             rules_before: self.learned_rules(&change.run.domain)?,
         };
-        let path = self.root.join(COMMIT_FILE);
         lossless::write_replacing(&path, serde_json::to_string_pretty(&intent)?.as_bytes())?;
         self.finish_commit(&intent.change, true)?;
         std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
