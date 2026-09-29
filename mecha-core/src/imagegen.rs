@@ -1518,7 +1518,7 @@ impl Tool for ImageGenerate {
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let (mut req, paths, ask) = match self.request(&input) {
             Ok(parsed) => parsed,
-            Err(why) => return Ok(ToolOutput::err(why)),
+            Err(why) => return Ok(refused(why)),
         };
         let is_edit = !paths.is_empty();
         let scene_prompt = req.prompt.clone();
@@ -1539,10 +1539,10 @@ impl Tool for ImageGenerate {
                 // diner" reach the GPU and draw a stranger (review of #383).
                 let broken = crate::imagelib::broken_named_in(&lib, &req.prompt);
                 if !broken.is_empty() {
-                    return Ok(ToolOutput::err(format!(
-                        "{} named in the prompt {} in the owner's image library, but the entry \
-                         could not be read, so they cannot be drawn as themselves. The owner can \
-                         check with `mecha imagelib list`.",
+                    return Ok(refused(format!(
+                        "{} named in the prompt {} in the owner's image \
+                         library, but the entry could not be read, so they cannot be drawn as \
+                         themselves. The owner can check with `mecha imagelib list`.",
                         broken
                             .iter()
                             .map(|n| format!("`{n}`"))
@@ -1560,9 +1560,11 @@ impl Tool for ImageGenerate {
                             .collect()
                     })
                     .unwrap_or_default();
-                let named: Vec<String> = crate::imagelib::named_in(&lib, &req.prompt)
-                    .into_iter()
-                    .filter(|n| !cast.contains(n))
+                let in_prompt = crate::imagelib::named_in(&lib, &req.prompt);
+                let named: Vec<String> = in_prompt
+                    .iter()
+                    .filter(|n| !cast.contains(*n))
+                    .cloned()
                     .collect();
                 if !named.is_empty() {
                     let names = named
@@ -1570,11 +1572,76 @@ impl Tool for ImageGenerate {
                         .map(|n| format!("`{n}`"))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    return Ok(ToolOutput::err(format!(
-                        "{names} {} in the owner's image library. To draw them as themselves, \
-                         name them in `cast` — left to right, each with what they are wearing \
-                         and doing — and leave their looks out of the prompt: from words alone \
-                         they come out as different people. If you mean someone else with that \
+                    // "Nothing was drawn" leads: the first live run read a
+                    // sentence that opened with the characters' names as
+                    // confirmation they had been drawn, never retried, and
+                    // told the owner the picture existed (2026-09-28). The
+                    // retry's shape is spelled out so the next call is a copy.
+                    //
+                    // The skeleton is the *whole* cast, not the missing names:
+                    // everyone the prompt names, in its order, then anyone
+                    // already cast it does not name, each carrying what the
+                    // call already said they wear and do. A skeleton of only
+                    // the missing names, copied, dropped the ones already
+                    // there, and the next refusal asked for those instead —
+                    // round and round (review of #384).
+                    let given = |n: &str| {
+                        ask.as_ref()
+                            .and_then(|a| a.cast.iter().find(|m| m.name.trim().to_lowercase() == n))
+                    };
+                    let mut order: Vec<String> = in_prompt.clone();
+                    for m in ask.iter().flat_map(|a| a.cast.iter()) {
+                        let n = m.name.trim().to_lowercase();
+                        // Only library characters count toward the head count
+                        // or belong in the sentence below: a name that is no
+                        // entry is `compile`'s `missing` to report, not a
+                        // reason to split the scene (review of #384).
+                        let known = lib
+                            .get(crate::imagelib::Kind::Character, &n)
+                            .is_some_and(|e| e.status == crate::imagelib::Status::Approved);
+                        if known && !order.contains(&n) {
+                            order.push(n);
+                        }
+                    }
+                    // More people than one picture holds: a skeleton of all
+                    // of them is a cast `compile` refuses, and dropping one
+                    // just trips this check again. The only retry that
+                    // converges is a different prompt (review of #384).
+                    if order.len() > crate::imagelib::MAX_CAST {
+                        return Ok(refused(format!(
+                            "{} characters from the owner's image library are named \
+                             ({}), and one picture holds at most {}. Split the scene into \
+                             separate pictures, naming at most {} in each prompt and \
+                             putting those in `cast`. If you mean other people with those \
+                             names, pass \"cast\": [].",
+                            order.len(),
+                            order.join(", "),
+                            crate::imagelib::MAX_CAST,
+                            crate::imagelib::MAX_CAST
+                        )));
+                    }
+                    let quote =
+                        |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"…\"".into());
+                    let skeleton = order
+                        .iter()
+                        .map(|n| {
+                            let (wearing, doing) = match given(n) {
+                                Some(m) => (quote(m.wearing.trim()), quote(m.doing.trim())),
+                                None => (quote("…"), quote("…")),
+                            };
+                            format!(
+                                "{{\"name\": {}, \"wearing\": {wearing}, \"doing\": {doing}}}",
+                                quote(n)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Ok(refused(format!(
+                        "{names} {} in the owner's image library, and a \
+                         prompt that describes them in words draws strangers. Call \
+                         image_generate again with them in `cast`, in left-to-right order, each \
+                         with what they are wearing and doing, and leave their looks out of the \
+                         prompt: \"cast\": [{skeleton}]. If you mean someone else with that \
                          name, pass \"cast\": [].",
                         if named.len() == 1 {
                             "is a character"
@@ -1588,11 +1655,11 @@ impl Tool for ImageGenerate {
         // Before reading anything: up to a hundred megabytes of references is
         // itself a cost on the pool this check guards.
         if let Err(why) = memory_verdict(mem_available_mb(), self.cfg.min_available_mb) {
-            return Ok(ToolOutput::err(why));
+            return Ok(refused(why));
         }
         req.references = match read_references(ctx, &paths).await {
             Ok(references) => references,
-            Err(why) => return Ok(ToolOutput::err(why)),
+            Err(why) => return Ok(refused(why)),
         };
         // The library's half: the model named who and what style; this code
         // writes how they look — each portrait as a reference at 512², each
@@ -1601,7 +1668,7 @@ impl Tool for ImageGenerate {
         let mut source_seeds = Vec::new();
         if let Some(ask) = &ask {
             let Some(dir) = &self.library_dir else {
-                return Ok(ToolOutput::err(
+                return Ok(refused(
                     "The image library is not available: the mecha home could not be resolved.",
                 ));
             };
@@ -1613,7 +1680,8 @@ impl Tool for ImageGenerate {
                 ask.style.as_deref(),
             ) {
                 Ok(compiled) => compiled,
-                Err(why) => return Ok(ToolOutput::err(why)),
+                // Before the GPU, so `refused` says nothing was drawn.
+                Err(why) => return Ok(refused(why)),
             };
             req.prompt = compiled.prompt;
             if !compiled.references.is_empty() {
@@ -1824,6 +1892,15 @@ impl Tool for ImageGenerate {
         text.push_str(&left);
         Ok(ToolOutput::ok(text))
     }
+}
+
+/// A refusal before any GPU time, saying so first. The first live run read a
+/// refusal that opened with the characters' names as a finished picture,
+/// never retried, and told the owner it existed (2026-09-28); one exit for
+/// every pre-GPU refusal in `call` means the next one added cannot ship
+/// without the lead (review of #384).
+fn refused(why: impl std::fmt::Display) -> ToolOutput {
+    ToolOutput::err(format!("Nothing was drawn. {why}"))
 }
 
 /// Write a generation's manifest beside its PNG — `images/<stem>.json`, new
@@ -3588,8 +3665,21 @@ mod tests {
             .await
             .unwrap();
         assert!(out.is_error);
+        // Unmistakable as a failure, and the retry is a copy away.
         assert!(
-            out.content.contains("`john`, `maya` are characters"),
+            out.content.starts_with("Nothing was drawn."),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains(
+                r#""cast": [{"name": "maya", "wearing": "…", "doing": "…"}, {"name": "john""#
+            ),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("`maya`, `john` are characters"),
             "{}",
             out.content
         );
@@ -3627,6 +3717,37 @@ mod tests {
             "{}",
             out.content
         );
+        // The retry is the whole cast, in the prompt's order, keeping what
+        // was already said — a copy converges instead of swapping who is
+        // missing each round.
+        assert!(
+            out.content.contains(
+                r#""cast": [{"name": "maya", "wearing": "a coat", "doing": "laughing"}, {"name": "john", "wearing": "…", "doing": "…"}]"#
+            ),
+            "{}",
+            out.content
+        );
+        // And a literal copy of that is refused before the GPU, saying so.
+        let out = t
+            .call(
+                json!({"prompt": "Maya laughing, John at the next table",
+                       "cast": [{"name": "maya", "wearing": "a coat", "doing": "laughing"},
+                                {"name": "john", "wearing": "…", "doing": "…"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.starts_with("Nothing was drawn."),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("`john` needs `wearing` and `doing`"),
+            "{}",
+            out.content
+        );
         assert!(!seen
             .lock()
             .unwrap()
@@ -3639,6 +3760,11 @@ mod tests {
             .await
             .unwrap();
         assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.starts_with("Nothing was drawn."),
+            "{}",
+            out.content
+        );
         assert!(out.content.contains("could not be read"), "{}", out.content);
         assert!(!seen
             .lock()
@@ -3654,6 +3780,66 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    #[tokio::test]
+    async fn more_characters_than_a_picture_holds_are_told_to_split() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john", "priya", "theo", "sam"]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let out = t
+            .call(
+                json!({"prompt": "Maya, John, Priya, Theo and Sam at a picnic"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.starts_with("Nothing was drawn."),
+            "{}",
+            out.content
+        );
+        assert!(out.content.contains("Split the scene"), "{}", out.content);
+        // No five-person cast to copy: that retry could never succeed.
+        assert!(!out.content.contains(r#""cast": [{"#), "{}", out.content);
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    #[tokio::test]
+    async fn an_invented_cast_name_is_reported_as_unknown_not_counted() {
+        let (url, _) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let member = |n: &str| json!({"name": n, "wearing": "a coat", "doing": "waving"});
+        let out = t
+            .call(
+                json!({"prompt": "Maya and John at a picnic",
+                       "cast": [member("maya"), member("alice"), member("bob"), member("carol")]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        // Two library people are named, so no split — and alice, bob and
+        // carol are not claimed to be the owner's characters.
+        assert!(!out.content.contains("Split the scene"), "{}", out.content);
+        assert!(!out.content.contains("alice"), "{}", out.content);
+        assert!(
+            out.content.contains("`john` is a character"),
+            "{}",
+            out.content
+        );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
