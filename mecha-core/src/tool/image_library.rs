@@ -128,7 +128,8 @@ impl Tool for ImageLibrary {
         // prompt and left `cast` out, and drew two strangers.
         let how = "To draw a character, put its name in image_generate's `cast` with what they \
                    are wearing and doing; their look comes from their portrait. Do not copy \
-                   these descriptions into the prompt. Put a style's name in `style`.";
+                   these descriptions into the prompt. Anyone else in the scene — a waiter, a \
+                   stranger — goes in `extras`. Put a style's name in `style`.";
         // A broken entry is said, never silently absent.
         let broken = if errors.is_empty() {
             String::new()
@@ -186,7 +187,9 @@ impl Search {
             return names.contains(&e.name);
         }
         let text = e.text.to_lowercase();
-        let mut long = words(q).filter(|w| w.chars().count() >= 3).peekable();
+        let mut long = words(q)
+            .filter(|w| w.chars().count() >= 3 && !STOPWORDS.contains(&w.as_str()))
+            .peekable();
         if long.peek().is_none() {
             return e.name.contains(q) || text.contains(q);
         }
@@ -196,6 +199,16 @@ impl Search {
         long.all(|w| e.name.contains(&w) || text.contains(&w))
     }
 }
+
+/// Common words of three letters or more, which every word must otherwise
+/// match: "picnic in the park" missed `picnic-park` because "the" is in
+/// neither its name nor its description (review of #384).
+const STOPWORDS: &[&str] = &[
+    "the", "and", "with", "for", "her", "his", "she", "him", "they", "them", "their", "this",
+    "that", "these", "those", "from", "into", "onto", "over", "under", "who", "are", "was", "were",
+    "has", "have", "its", "our", "your", "you", "one", "two", "some", "any", "all", "but", "not",
+    "out", "off", "near", "while", "wearing",
+];
 
 fn words(q: &str) -> impl Iterator<Item = String> + '_ {
     q.split(|c: char| !(c.is_alphanumeric() || c == '-'))
@@ -464,6 +477,32 @@ mod tests {
             "{}",
             out.content
         );
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn a_phrase_finds_what_its_content_words_name() {
+        let lib = scratch();
+        let ws = scratch();
+        imagelib::create(
+            &lib,
+            NewEntry {
+                kind: Kind::Style,
+                name: "picnic-park".into(),
+                text: "a sunny park with checked blankets".into(),
+                portrait: None,
+                source_seed: None,
+                origin: Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let out = ImageLibrary::new(lib.clone())
+            .call(json!({"query": "picnic in the park"}), &ctx(&ws, None))
+            .await
+            .unwrap();
+        assert!(out.content.contains("style picnic-park"), "{}", out.content);
         std::fs::remove_dir_all(lib).ok();
         std::fs::remove_dir_all(ws).ok();
     }

@@ -115,7 +115,13 @@ of the Library tab shows locked entries until you reload or leave it idle for
 half an hour. With no password it is a plain toggle; to require one, set it
 once with `mecha imagelib set-lock-password`. A character saved from a
 picture made with a locked character starts locked; untick the box to save
-it unlocked.
+it unlocked. Locking hides a character from then on; a portrait your browser
+already showed may stay in its cache until you clear the site's data.
+
+**People who aren't in the library.** Mention them in the scene — "a waiter
+pouring coffee" — and the model adds them as `extras`: drawn as new faces
+each time, and counted with your characters so they take part in the scene
+instead of fading into the background.
 
 Every generated picture also gets a small `.json` file beside it recording
 how it was made — the prompt, the seed, and which library entries (and which

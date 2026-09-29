@@ -31,6 +31,11 @@ pub const MAX_STYLE_TEXT: usize = 1000;
 pub const MAX_CAST: usize = 4;
 /// `wearing` and `doing`, each.
 pub const MAX_CAST_FIELD: usize = 300;
+/// People in a scene who are no library character — a waiter, a crowd's
+/// front row. They carry no reference, so the four-reference ceiling (E3)
+/// does not bound them; four is what has been asked of the model alongside
+/// a cast, not a measured limit.
+pub const MAX_EXTRAS: usize = 4;
 /// Candidates waiting on the owner. A model that proposes in a loop fills a
 /// queue nobody reads; past this it is refused.
 pub const MAX_PENDING: usize = 50;
@@ -250,7 +255,12 @@ fn write_atomic_mode(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<()>
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
-    std::fs::rename(&tmp, path).with_context(|| format!("installing {}", path.display()))?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        // A failed rename leaves a fresh random name behind each time, where
+        // the old fixed name left at most one: take it back (review of #385).
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("installing {}", path.display()));
+    }
     Ok(())
 }
 
@@ -816,10 +826,12 @@ pub struct Compiled {
 pub const MAX_COMPILED_PROMPT: usize = 9_000;
 
 fn number(n: usize) -> &'static str {
-    ["no", "one", "two", "three", "four"]
-        .get(n)
-        .copied()
-        .unwrap_or("several")
+    [
+        "no", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    ]
+    .get(n)
+    .copied()
+    .unwrap_or("several")
 }
 
 fn missing(lib: &Library, kind: Kind, name: &str) -> String {
@@ -857,12 +869,39 @@ fn missing(lib: &Library, kind: Kind, name: &str) -> String {
 /// stated (E2, E9: each reference slot tends to become a person); every
 /// person carries their stored description beside the pointer (E1) and what
 /// they are wearing and doing (E8: a reference supplies its own otherwise).
+/// Empty, or only the refusal's own placeholder copied back — no answer.
+fn blank(s: &str) -> bool {
+    s.chars().all(|c| c == '…' || c == '.')
+}
+
 pub fn compile(
     lib: &Library,
     scene: &str,
     cast: &[CastMember],
+    extras: &[String],
     style: Option<&str>,
 ) -> std::result::Result<Compiled, String> {
+    if extras.len() > MAX_EXTRAS {
+        return Err(format!(
+            "At most {MAX_EXTRAS} people in `extras`, not {}.",
+            extras.len()
+        ));
+    }
+    let extras: Vec<&str> = extras
+        .iter()
+        .map(|e| e.trim().trim_end_matches('.'))
+        .collect();
+    if extras.iter().any(|e| blank(e)) {
+        return Err(
+            "Each entry in `extras` is a person: what they look like and what they are doing."
+                .into(),
+        );
+    }
+    if extras.iter().any(|e| e.chars().count() > MAX_CAST_FIELD) {
+        return Err(format!(
+            "Each entry in `extras` is capped at {MAX_CAST_FIELD} characters."
+        ));
+    }
     if cast.len() > MAX_CAST {
         return Err(format!(
             "At most {MAX_CAST} people in `cast`, not {}.",
@@ -889,7 +928,6 @@ pub fn compile(
             .ok_or_else(|| missing(lib, Kind::Character, &name))?;
         let (wearing, doing) = (member.wearing.trim(), member.doing.trim());
         // A placeholder copied from a refusal's example is no answer.
-        let blank = |s: &str| s.is_empty() || s.chars().all(|c| c == '…' || c == '.');
         if blank(wearing) || blank(doing) {
             return Err(format!(
                 "`{name}` needs `wearing` and `doing`: a reference supplies its own outfit and \
@@ -946,17 +984,51 @@ pub fn compile(
     } else {
         format!("{scene}.")
     };
-    match people.len() {
-        0 => {}
-        1 => prompt.push_str(&format!(
-            " {}. Exactly one person in the image. The image is an identity reference only; \
-             this is a new image with its own composition, pose and lighting.",
+    // Two measured rules. With extras, the head count counts everyone (E11):
+    // "Exactly three people" beside a scene with a waiter pushed him into the
+    // background, and counted as a new person he stood where the scene put
+    // him. Without extras, no total at all (E12): the model does not always
+    // use `extras` — a live run wrote the waiter into the prose — and there
+    // "Exactly two people" erased him outright, while "each appears exactly
+    // once; anyone else is a new person" drew him and, with four cast and no
+    // one else, still drew exactly four with no duplicate.
+    let others = extras.join("; ");
+    let m = extras.len();
+    let new_people = if m == 1 {
+        "one new person".to_string()
+    } else {
+        format!("{} new people", number(m))
+    };
+    match (people.len(), m) {
+        (0, 0) => {}
+        (0, _) => prompt.push_str(&format!(" Also in the scene: {others}.")),
+        (1, 0) => prompt.push_str(&format!(
+            " {}. The person from the image appears exactly once; anyone else the scene \
+             describes is a new person, not from the image. The image is an identity reference \
+             only; this is a new image with its own composition, pose and lighting.",
             capitalize(&people[0])
         )),
-        n => prompt.push_str(&format!(
-            " From left to right: {}. Exactly {} people in the image. All images serve as \
-             identity sources only; each person appears exactly once.",
+        (1, _) => prompt.push_str(&format!(
+            " {}. Also in the scene, not from the image: {others}. Exactly {} people in the \
+             image: the one from the image, exactly once, and {new_people} not from any image. \
+             The image is an identity reference only; this is a new image with its own \
+             composition, pose and lighting.",
+            capitalize(&people[0]),
+            number(1 + m)
+        )),
+        (n, 0) => prompt.push_str(&format!(
+            " From left to right: {}. Each of the {} people from the images appears exactly \
+             once; anyone else the scene describes is a new person, not from any image. All \
+             images serve as identity sources only.",
             people.join("; "),
+            number(n)
+        )),
+        (n, _) => prompt.push_str(&format!(
+            " From left to right: {}. Also in the scene, not from any image: {others}. Exactly \
+             {} people in the image: the {} from the images, each exactly once, and \
+             {new_people} not from any image. All images serve as identity sources only.",
+            people.join("; "),
+            number(n + m),
             number(n)
         )),
     }
@@ -1260,7 +1332,7 @@ mod tests {
         std::fs::write(dir.path().join("characters/maya/entry.toml"), "not = [toml").unwrap();
         let (lib, errors) = Library::load(dir.path());
         assert_eq!(errors.len(), 1);
-        let why = compile(&lib, "x", &[member("maya")], None).unwrap_err();
+        let why = compile(&lib, "x", &[member("maya")], &[], None).unwrap_err();
         assert!(why.contains("could not be read"), "{why}");
     }
 
@@ -1416,13 +1488,15 @@ mod tests {
         let dir = scratch();
         create(dir.path(), character("maya", Origin::Owner)).unwrap();
         let (lib, _) = Library::load(dir.path());
-        let c = compile(&lib, "a diner at night.", &[member("maya")], None).unwrap();
+        let c = compile(&lib, "a diner at night.", &[member("maya")], &[], None).unwrap();
         assert!(c
             .prompt
             .starts_with("a diner at night. The person in the image (maya, a person"));
         assert!(c.prompt.contains("wearing a yellow raincoat, laughing"));
-        assert!(c.prompt.contains("Exactly one person"));
-        let c = compile(&lib, "a surprise party!", &[member("maya")], None).unwrap();
+        assert!(c
+            .prompt
+            .contains("The person from the image appears exactly once"));
+        let c = compile(&lib, "a surprise party!", &[member("maya")], &[], None).unwrap();
         assert!(
             c.prompt.starts_with("a surprise party! The person"),
             "{}",
@@ -1442,12 +1516,14 @@ mod tests {
         create(dir.path(), style("noir")).unwrap();
         let (lib, _) = Library::load(dir.path());
         let cast = [member("maya"), member("John"), member("priya")];
-        let c = compile(&lib, "a diner booth", &cast, Some("noir")).unwrap();
+        let c = compile(&lib, "a diner booth", &cast, &[], Some("noir")).unwrap();
         let first = c.prompt.find("<image1> (maya").unwrap();
         let second = c.prompt.find("<image2> (john").unwrap();
         assert!(first < second);
         assert!(c.prompt.contains("<image3> (priya"));
-        assert!(c.prompt.contains("Exactly three people"));
+        assert!(c
+            .prompt
+            .contains("Each of the three people from the images appears exactly once"));
         assert!(c
             .prompt
             .ends_with("Style: high-contrast black and white film noir"));
@@ -1462,11 +1538,83 @@ mod tests {
     }
 
     #[test]
+    fn extras_are_counted_and_called_new_people() {
+        let dir = scratch();
+        for n in ["maya", "john", "priya"] {
+            create(dir.path(), character(n, Origin::Owner)).unwrap();
+        }
+        let (lib, _) = Library::load(dir.path());
+        let cast = [member("maya"), member("john"), member("priya")];
+        let waiter = vec!["a waiter in a white apron, pouring coffee.".to_string()];
+        let c = compile(&lib, "a diner booth", &cast, &waiter, None).unwrap();
+        assert!(
+            c.prompt.contains(
+                "Also in the scene, not from any image: a waiter in a white apron, pouring coffee."
+            ),
+            "{}",
+            c.prompt
+        );
+        assert!(
+            c.prompt.contains(
+                "Exactly four people in the image: the three from the images, each exactly \
+                 once, and one new person not from any image."
+            ),
+            "{}",
+            c.prompt
+        );
+        // Extras carry no reference.
+        assert_eq!(c.references.len(), 3);
+        // One cast member keeps the single-image wording, counted with the extras.
+        let two = vec!["a child".to_string(), "a dog walker".to_string()];
+        let c = compile(&lib, "a park", &[member("maya")], &two, None).unwrap();
+        assert!(
+            c.prompt.contains("The person in the image (maya"),
+            "{}",
+            c.prompt
+        );
+        assert!(
+            c.prompt.contains("Exactly three people in the image: the one from the image, exactly once, and two new people"),
+            "{}",
+            c.prompt
+        );
+        // No cast: extras are scene text, and no head count is claimed.
+        let c = compile(&lib, "a park", &[], &two, None).unwrap();
+        assert_eq!(
+            c.prompt,
+            "a park. Also in the scene: a child; a dog walker."
+        );
+        // No extras: no total that would forbid a person the prose describes.
+        let c = compile(&lib, "a park", &cast, &[], None).unwrap();
+        assert!(
+            c.prompt.contains(
+                "Each of the three people from the images appears exactly once; anyone else"
+            ),
+            "{}",
+            c.prompt
+        );
+    }
+
+    #[test]
+    fn an_extra_must_be_a_person_and_there_are_at_most_four() {
+        let dir = scratch();
+        create(dir.path(), character("maya", Origin::Owner)).unwrap();
+        let (lib, _) = Library::load(dir.path());
+        for bad in ["", "  ", "…", "..."] {
+            let why = compile(&lib, "x", &[member("maya")], &[bad.to_string()], None).unwrap_err();
+            assert!(why.contains("`extras`"), "{bad:?}: {why}");
+        }
+        let five: Vec<String> = (0..5).map(|i| format!("person {i}")).collect();
+        assert!(compile(&lib, "x", &[], &five, None)
+            .unwrap_err()
+            .contains("At most 4"));
+    }
+
+    #[test]
     fn candidates_never_compile() {
         let dir = scratch();
         create(dir.path(), character("maya", Origin::ModelClean)).unwrap();
         let (lib, _) = Library::load(dir.path());
-        let why = compile(&lib, "x", &[member("maya")], None).unwrap_err();
+        let why = compile(&lib, "x", &[member("maya")], &[], None).unwrap_err();
         assert!(why.contains("waiting for the owner's approval"), "{why}");
     }
 
@@ -1477,12 +1625,12 @@ mod tests {
         let (lib, _) = Library::load(dir.path());
         let mut m = member("maya");
         m.wearing = " ".into();
-        let why = compile(&lib, "x", &[m], None).unwrap_err();
+        let why = compile(&lib, "x", &[m], &[], None).unwrap_err();
         assert!(why.contains("wearing"), "{why}");
         // The refusal's own placeholder, copied literally, is no answer.
         let mut m = member("maya");
         m.doing = "…".into();
-        assert!(compile(&lib, "x", &[m], None)
+        assert!(compile(&lib, "x", &[m], &[], None)
             .unwrap_err()
             .contains("doing"));
     }
@@ -1494,14 +1642,14 @@ mod tests {
             create(dir.path(), character(n, Origin::Owner)).unwrap();
         }
         let (lib, _) = Library::load(dir.path());
-        assert!(compile(&lib, "x", &[member("a"), member("a")], None)
+        assert!(compile(&lib, "x", &[member("a"), member("a")], &[], None)
             .unwrap_err()
             .contains("twice"));
         let five: Vec<_> = ["a", "b", "c", "d", "e"]
             .iter()
             .map(|n| member(n))
             .collect();
-        assert!(compile(&lib, "x", &five, None)
+        assert!(compile(&lib, "x", &five, &[], None)
             .unwrap_err()
             .contains("At most 4"));
     }
