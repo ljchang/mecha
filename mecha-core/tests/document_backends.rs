@@ -212,6 +212,9 @@ async fn a_broken_pdf_is_an_error_from_the_confined_parser() {
         .await
         .unwrap_err();
     assert!(!err.to_string().is_empty());
+    // Real poppler, real failure: its stderr is the document's words, and
+    // the error says so, so `document_read` marks it external.
+    assert!(mecha_core::document::carries_document_text(&err), "{err:#}");
 }
 
 /// A scan has no text layer, so `auto` sends it to the model — and the

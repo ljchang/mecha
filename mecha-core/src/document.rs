@@ -553,7 +553,14 @@ impl Renderer {
                 .rev()
                 .collect::<Vec<_>>()
                 .join(" / ");
-            bail!("`{program}` failed ({}): {}", out.status, tail.trim());
+            // The tail is poppler's words about *this document* — and poppler
+            // interpolates content-stream strings into its diagnostics — so it
+            // travels as third-party text (found on review of #404).
+            return Err(anyhow::Error::new(ParserSaid(format!(
+                "`{program}` failed ({}): {}",
+                out.status,
+                tail.trim()
+            ))));
         }
         Ok(out.stdout)
     }
@@ -1131,6 +1138,29 @@ pub struct Page {
     pub regions: Vec<Region>,
 }
 
+/// An error carrying what a parser printed about the document. Poppler
+/// interpolates strings from a PDF's content streams into its diagnostics, so
+/// this text is the document author's as much as the page text is: a caller
+/// returning it to a model marks it external, exactly as it marks a page
+/// ([`carries_document_text`]). Our own refusals ("not a PDF", a size cap)
+/// are not this type, so they are not mislabelled third-party content.
+#[derive(Debug)]
+pub struct ParserSaid(pub String);
+
+impl std::fmt::Display for ParserSaid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ParserSaid {}
+
+/// Whether `e`, anywhere in its chain, carries a parser's words about the
+/// document ([`ParserSaid`]).
+pub fn carries_document_text(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<ParserSaid>())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Extraction {
     pub sha256: String,
@@ -1425,7 +1455,15 @@ impl Extractor {
                                     }
                                     page.ocr = Some(ocr);
                                 }
-                                Err(e) => page.ocr_error = Some(format!("{e:#}")),
+                                Err(e) => {
+                                    page.ocr_error = Some(format!("{e:#}"));
+                                    // A thin text layer is still the file's
+                                    // own words: shown when OCR failed, not
+                                    // dropped behind the error (found on
+                                    // review) — the ocr = false branch's rule.
+                                    page.text
+                                        .get_or_insert_with(|| layer.text[n as usize - 1].clone());
+                                }
                             }
                         }
                     }
@@ -1463,6 +1501,18 @@ async fn until_cancelled<F: std::future::Future>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A parser's words survive context-wrapping as document text; our own
+    /// refusals never read as it.
+    #[test]
+    fn parser_output_is_document_text_and_our_refusals_are_not() {
+        let e = anyhow::Error::new(ParserSaid("pdftotext failed: Syntax Error: (hi)".into()))
+            .context("extracting the text layer");
+        assert!(carries_document_text(&e));
+        assert!(!carries_document_text(&anyhow!(
+            "not a PDF (no %PDF- header in the first kilobyte)"
+        )));
+    }
 
     /// A tiny HTTP server answering each connection with the next canned
     /// response, for the OCR client's transport tests.
