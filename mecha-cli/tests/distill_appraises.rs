@@ -551,6 +551,15 @@ async fn a_backfill_appraises_only_what_row_2e_1_waits_on_and_pushes_nothing() {
     }))
     .unwrap();
     learning.append_reflexion(&steer).unwrap();
+    // A target the distill ledger does not hold yet — reflected on, not yet
+    // distilled — is the ordinary pass's, never the backfill's (review of
+    // #388).
+    let juliet = session(&home, "juliet", false, 60 * 24 * 28);
+    keyed(&juliet);
+    let mut undistilled = steer.clone();
+    undistilled.id = "refl-juliet".into();
+    undistilled.session_id = juliet.clone();
+    learning.append_reflexion(&undistilled).unwrap();
     let ledger_before =
         std::fs::read_to_string(home.join("learning").join("distilled.jsonl")).unwrap();
 
@@ -563,7 +572,10 @@ async fn a_backfill_appraises_only_what_row_2e_1_waits_on_and_pushes_nothing() {
         .await,
         "distill --backfill-appraisals --dry-run",
     );
-    assert!(dry.contains(&golf) && !dry.contains(&hotel), "{dry}");
+    assert!(
+        dry.contains(&golf) && !dry.contains(&hotel) && !dry.contains(&juliet),
+        "{dry}"
+    );
     assert!(
         dry.contains("1 session(s) would be appraised after the fact"),
         "{dry}"
@@ -586,6 +598,10 @@ async fn a_backfill_appraises_only_what_row_2e_1_waits_on_and_pushes_nothing() {
     assert!(golf_row.backfilled);
     assert_eq!(golf_row.expected_act, None, "no prediction after the fact");
     assert!(of(&hotel).is_none(), "nothing waits on hotel's appraisal");
+    assert!(
+        of(&juliet).is_none(),
+        "not yet distilled: left to the ordinary pass"
+    );
     assert!(!of(&india).unwrap().backfilled);
 
     // Nothing pushed, nothing re-marked.
