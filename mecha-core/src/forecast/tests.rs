@@ -243,6 +243,7 @@ fn the_summary_scores_what_resolved_and_names_the_rest() {
         expected,
         basis: 3,
         basis_unreadable: false,
+        patience_secs: None,
         source: Source::BaseRate,
     };
     let hit = resolved(
@@ -301,6 +302,38 @@ fn the_summary_scores_what_resolved_and_names_the_rest() {
         ),
         (0, 4, 0, None)
     );
+    // The window a forecast was made under scores it, whatever today's
+    // charter says: widening the window later does not turn a settled hit
+    // back into "waiting" (review of #401).
+    let untouched = draft(&store, "mail_send", false, 3 * DAY, now);
+    let pinned = Forecast {
+        patience_secs: Some(window.num_seconds()),
+        ..f(&untouched, Some(ExpectedAct::NoAct))
+    };
+    let wider = Some(hours(7 * DAY));
+    let r = summarize(
+        std::slice::from_ref(&pinned),
+        0,
+        std::slice::from_ref(&untouched),
+        true,
+        wider,
+        now,
+    );
+    assert_eq!((r.scored, r.hits, r.pending), (1, 1, 0));
+    // A line from before the field falls back to today's window.
+    let legacy = Forecast {
+        patience_secs: None,
+        ..pinned.clone()
+    };
+    let r = summarize(
+        std::slice::from_ref(&legacy),
+        0,
+        std::slice::from_ref(&untouched),
+        true,
+        wider,
+        now,
+    );
+    assert_eq!((r.scored, r.pending), (0, 1));
     // A partial outbox read: the drafts it did not see are unread, never
     // "not the owner's", and coverage is not claimed.
     let partial = summarize(&made, 0, &items[..2], false, Some(window), now);

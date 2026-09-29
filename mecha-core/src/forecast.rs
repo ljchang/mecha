@@ -84,6 +84,13 @@ pub struct Forecast {
     /// are indistinguishable afterwards otherwise (review of #401).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub basis_unreadable: bool,
+    /// The patience window, in seconds, the forecast was made under — and
+    /// the one it is scored by. Pre-registered with the forecast, so editing
+    /// the charter's outbox line later cannot re-score history (review of
+    /// #401). `None` where the window was unknown at staging, or on a line
+    /// from before the field: scored by today's window instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patience_secs: Option<i64>,
     #[serde(default)]
     pub source: Source,
 }
@@ -272,11 +279,16 @@ pub fn record(
         expected,
         basis,
         basis_unreadable,
+        patience_secs: patience.map(|p| p.num_seconds()),
         source: Source::BaseRate,
     };
     let path = ledger(outbox_root);
     let dir = path.parent().expect("the ledger has a directory");
     crate::create_private_dir(dir).with_context(|| format!("creating {}", dir.display()))?;
+    // `<forecasts>/.lock`, the lock `forget` takes to rewrite this ledger, so
+    // a forecast written during a delete is not appended to the file the
+    // rewrite replaces (review of #401). Held for one short append.
+    let _lock = lock(dir)?;
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -288,6 +300,22 @@ pub fn record(
     file.write_all(line.as_bytes())
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(Some(f))
+}
+
+/// Hold `<dir>/.lock` until the returned handle drops.
+fn lock(dir: &Path) -> Result<std::fs::File> {
+    use std::os::unix::io::AsRawFd;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(".lock"))
+        .with_context(|| format!("opening {}", dir.join(".lock").display()))?;
+    // SAFETY: flock on an fd we own, held open until `file` drops.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("locking the forecast ledger");
+    }
+    Ok(file)
 }
 
 /// Every forecast on record, and how many lines could not be read. A
@@ -379,7 +407,8 @@ pub fn summarize(
             }
             Some(a) => a,
         };
-        let Some(p) = patience else {
+        // The window the forecast was made under, else today's.
+        let Some(p) = f.patience_secs.map(chrono::Duration::seconds).or(patience) else {
             s.window_unreadable += 1;
             continue;
         };

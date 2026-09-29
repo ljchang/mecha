@@ -3401,7 +3401,11 @@ X3 unparked).
   window, and every surface's own route copies the setting
   (`OutboxStore::forecasting`). Tests pass a fixed window, so none reads
   the machine's charter.
-- **Scored only at read time**, by `sessions appraise` (`forecast::summarize`).
+- **Scored only at read time**, by `sessions appraise` (`forecast::summarize`),
+  under the patience window recorded on the forecast when it was made
+  (`patience_secs`), so a later edit to the charter's outbox line cannot
+  re-score history. The ledger's append and `forget`'s rewrite share
+  `<forecasts>/.lock`.
   A miss feeds nothing until the forecasts are calibrated. `sessions delete`
   purges a session's forecasts with its drafts.
 - **A model forecaster comes later**, as an arm measured against this one
