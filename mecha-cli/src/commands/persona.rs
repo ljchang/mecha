@@ -266,10 +266,12 @@ fn after_edit(dir: &Path, lib: &Library, name: &str, again: &str) -> Result<()> 
              no chat can open it until this is fixed — `{again}`"
         );
     };
-    let before = p.state.version;
+    // By digest, not number: a persona made outside mecha is v1 before its
+    // first version and v1 after it.
+    let before = p.state.digest.clone();
     let snapshot = persona::snapshot(dir, name);
     match &snapshot {
-        Ok(state) if state.version == before => println!("unchanged"),
+        Ok(state) if state.digest == before => println!("unchanged"),
         Ok(state) => println!(
             "saved — `{name}` is v{}; new chats use it, open chats keep the version they began with",
             state.version
@@ -440,7 +442,11 @@ fn run_with(
                 bail!("`{}` is already approved", p.name);
             }
             describe(&store, &lib, p);
-            println!("\n{}", p.identity.trim());
+            // Both files go into every chat's prompt, so both are read here.
+            println!("\n── identity.md ──\n{}", p.identity.trim());
+            if !p.motivation.trim().is_empty() {
+                println!("\n── motivation.md ──\n{}", p.motivation.trim());
+            }
             if p.state.origin == Origin::ModelUntrusted && yes {
                 bail!(
                     "`{}` came from somewhere mecha cannot vouch for, and once approved its text \
