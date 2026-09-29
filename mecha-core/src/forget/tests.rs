@@ -162,6 +162,34 @@ fn seeded(home: &Path) -> Roots {
     write(&l.join("validation-attempts.jsonl"), &format!(
         "{{\"reflexion_id\":\"refl-gone\",\"arms\":[{{\"text\":\"{CANARY}\"}}]}}\n{{\"reflexion_id\":\"refl-kept\",\"arms\":[]}}\n"
     ));
+    // Artifact-task probe receipts (`probe.rs`): one per repeat, naming the
+    // session replayed and the reflection measured.
+    write(
+        &l.join("artifact-probes/a-gone.json"),
+        &format!(
+            r#"{{"method":"artifact_task_repeat","session_id":"{GONE}","reflection_id":"refl-gone"}}"#
+        ),
+    );
+    write(
+        &l.join("artifact-probes/a-kept.json"),
+        &format!(
+            r#"{{"method":"artifact_task_repeat","session_id":"{KEPT}","reflection_id":"refl-kept"}}"#
+        ),
+    );
+    // An interrupted rule change (`LearningStore::commit_rules`) whose live
+    // rules have since moved, so forget's resume sets it aside, and one that
+    // was already set aside: both carry a rule the forgotten reflection
+    // alone argued, and the proposal that records it.
+    let change = |run: &str| {
+        format!(
+            r#"{{"run":{{"id":"{run}","domain":"behavior","reflexions_processed":2,"rules_before":0,"rules_after":2,"created_at":"2026-09-28T06:00:00Z"}},"reflexion_ids":["refl-gone","refl-kept"],"rules":[{{"text":"Mind {CANARY}.","sources":["refl-gone"]}},{{"text":"Keep answers short.","sources":["refl-gone","refl-kept"]}}],"proposal":{{"id":"{run}","domain":"behavior","status":"accepted","reflexion_ids":["refl-gone","refl-kept"],"rules_before":[],"rules":[{{"text":"Mind {CANARY}.","sources":["refl-gone"]}}],"evidence":"e","created_at":"2026-09-28T06:00:00Z","resolved_at":null,"reason":null}},"rules_before":[]}}"#
+        )
+    };
+    write(&l.join("commit.json"), &change("run-pending"));
+    write(
+        &l.join("commit.unfinished.20260928T070000.000Z.json"),
+        &change("run-aside"),
+    );
     write(
         &l.join("proposals/p-only.json"),
         &format!(
@@ -314,6 +342,15 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
         ("learning/mined_outbox.jsonl", "item-kept"),
         ("learning/validations.jsonl", "refl-kept"),
         ("learning/validation-attempts.jsonl", "refl-kept"),
+        ("learning/artifact-probes/a-kept.json", "refl-kept"),
+        (
+            "learning/commit.unfinished.20260928T070000.000Z.json",
+            "Keep answers short.",
+        ),
+        (
+            "learning/commit.unfinished.20260928T070000.000Z.json",
+            "refl-kept",
+        ),
         ("learning/proposals/p-both.json", "Keep answers short."),
         ("learning/proposals/p-other.json", "refl-kept"),
         ("learning/rules/behavior.user.toml", "The owner's own."),
