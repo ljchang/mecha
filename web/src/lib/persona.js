@@ -62,7 +62,10 @@ export function relationshipLabel(p) {
 // The state a streamed run folds into: the transcript so far, the answer
 // still arriving, and whether a run is live.
 export function emptyRun(entries = [], taint = null) {
-  return { entries, streaming: null, running: false, taint };
+  // `crisisSeq` carries on past the entries it numbered, so ids never repeat
+  // within a page's life of the chat.
+  const seq = entries.filter((e) => e.kind === 'crisis').length;
+  return { entries, streaming: null, running: false, taint, crisisSeq: seq };
 }
 
 // Move text still streaming into the transcript as the answer it became.
@@ -130,8 +133,13 @@ export function applyEvent(state, ev) {
       };
     // The crisis sensor fired and the persona paused: the plain voice's
     // message, drawn as its own card — not the persona's words (§12.2).
-    case 'crisis':
-      return { ...flush(state), entries: [...flush(state).entries, { kind: 'crisis', text: ev.text }] };
+    // Each card has its own id, so closing one survives a re-read that moves
+    // it (review of #418: keyed by position, a closed card re-opened).
+    case 'crisis': {
+      const s = flush(state);
+      const seq = (s.crisisSeq ?? 0) + 1;
+      return { ...s, crisisSeq: seq, entries: [...s.entries, { kind: 'crisis', text: ev.text, id: `crisis-${seq}` }] };
+    }
     // A call refused before it ran: the row says so, with the reason.
     case 'denied':
       return { ...state, entries: [...state.entries, { kind: 'notice', text: `${ev.name} refused: ${ev.reason}` }] };
@@ -161,6 +169,8 @@ export function safetyLine(safety) {
   if (!safety) return '';
   const crisis = safety.crisis === 'off' ? 'crisis detection off' : 'crisis detection: keywords only';
   const off = ['disclosure', 'reanchor', 'dose'].filter((k) => safety[k] === false);
+  // The farewell check arrives as a state, not a flag (review of #418).
+  if (safety.farewell === 'off') off.push('farewell');
   return off.length ? `${crisis} · off: ${off.join(', ')}` : crisis;
 }
 

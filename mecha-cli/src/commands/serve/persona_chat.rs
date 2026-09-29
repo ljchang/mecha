@@ -104,6 +104,10 @@ struct PersonaSession {
     /// When the crisis sensor last paused this chat: a hit inside
     /// `safety::CRISIS_COOLDOWN` of it does not pause again (§12.2).
     crisis_paused_at: Option<std::time::Instant>,
+    /// An owner message that tripped the crisis sensor while a run was live:
+    /// the run is stopped, and its hand-back records this so the words are
+    /// kept although the persona never answers them.
+    pending_crisis: Option<String>,
 }
 
 struct Live {
@@ -178,6 +182,9 @@ fn safety_json(s: &mecha_core::persona::Safety) -> serde_json::Value {
         "dose": s.dose,
         "breaks": s.breaks,
         "farewell": if s.farewell { "unbuilt" } else { "off" },
+        // The plain voice's words, so the page can keep them one tap away
+        // after a reload has dropped the card that carried them.
+        "resources": s.crisis.then_some(safety::SAFE_MESSAGE),
     })
 }
 
@@ -406,6 +413,7 @@ impl PersonaChats {
                 turns_since_anchor: 0,
                 anchor_due: false,
                 crisis_paused_at: None,
+                pending_crisis: None,
             },
         );
         Ok(serde_json::json!({
@@ -536,6 +544,7 @@ impl PersonaChats {
                 turns_since_anchor: 0,
                 anchor_due,
                 crisis_paused_at: None,
+                pending_crisis: None,
             },
         );
         Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }))
@@ -667,10 +676,10 @@ impl PersonaChats {
             )));
         }
         let (pinned, notices) = {
-            let sessions = self.sessions.lock().await;
-            let ps = sessions.get(key).ok_or(Refusal::NotFound)?;
+            let mut sessions = self.sessions.lock().await;
+            let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
             if ps.live.is_some() {
-                return steer(ps, text, request_id);
+                return self.steer_or_pause(ps, &name, text, request_id);
             }
             (Arc::clone(&ps.pinned), ps.events.clone())
         };
@@ -701,7 +710,7 @@ impl PersonaChats {
         }
         let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
         if ps.live.is_some() {
-            return steer(ps, text, request_id);
+            return self.steer_or_pause(ps, &name, text, request_id);
         }
         let Some(mut conversation) = ps.conversation.take() else {
             return Err(Refusal::Conflict("a turn is still finishing".into()));
@@ -730,7 +739,9 @@ impl PersonaChats {
         // persona does not answer it, and a plain voice does.
         let switches = pinned.settings.safety;
         let crisis_state = safety::crisis_state(switches.crisis);
-        let hit = switches.crisis && safety::keyword_hit(&text);
+        // `said`, not `text`: a goal typed at open rides in the first turn,
+        // and is the owner's words as much as the message is.
+        let hit = switches.crisis && safety::keyword_hit(&said);
         let cooling = ps
             .crisis_paused_at
             .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
@@ -825,7 +836,8 @@ impl PersonaChats {
             });
             return Ok(serde_json::json!({ "started": false, "paused": true }));
         }
-        if anchor.is_some() {
+        let anchored = anchor.is_some();
+        if anchored {
             ps.turns_since_anchor = 0;
             ps.anchor_due = false;
         } else {
@@ -913,7 +925,13 @@ impl PersonaChats {
                 }
             }
             let _ = session.append(&Record::Taint(conversation.taint));
+            // `compactions`, not `context_overflows`: the question is whether
+            // history above the tail was rewritten — only `compact()` does
+            // that, and it counts `compactions` on both of its paths.
             let compacted = matches!(&outcome, Ok(o) if o.compactions > 0);
+            // A failed run was rolled back, anchor block and all: the Core
+            // was not delivered, so the next turn still owes it.
+            let owed_anchor = anchored && outcome.is_err();
             let taint = conversation.taint;
             let done = match &outcome {
                 Ok(o) => WireEvent::Done {
@@ -962,8 +980,31 @@ impl PersonaChats {
                 ps.conversation = Some(conversation);
                 ps.live = None;
                 // A compaction may have summarised the Core away (§12.5).
-                if compacted {
+                if compacted || owed_anchor {
                     ps.anchor_due = true;
+                }
+                // A crisis message typed while this run was live: recorded
+                // now, beside the run it stopped, so the words are kept.
+                if let Some(said) = ps.pending_crisis.take() {
+                    if let Some(convo) = ps.conversation.as_mut() {
+                        let tail_is_owner = convo
+                            .messages
+                            .last()
+                            .is_some_and(|m| m.role == mecha_core::message::Role::User);
+                        let recorded = if tail_is_owner {
+                            mecha_core::agent::append_user_text(&mut convo.messages, said);
+                            session.append(&Record::Rewrite {
+                                messages: convo.messages.clone(),
+                            })
+                        } else {
+                            let user = Message::user(&said);
+                            convo.push(user.clone());
+                            session.append(&Record::Message(user))
+                        };
+                        if let Err(e) = recorded {
+                            tracing::warn!("a paused crisis message was not recorded: {e:#}");
+                        }
+                    }
                 }
             }
             drop(sessions);
@@ -971,6 +1012,59 @@ impl PersonaChats {
         });
         drop(sessions);
         Ok(serde_json::json!({ "started": true }))
+    }
+}
+
+impl PersonaChats {
+    /// A message sent while a run is live. The safety layer reads it as it
+    /// reads any other (found on review of #418: the steer path skipped it,
+    /// so a crisis message typed mid-answer reached the persona in
+    /// character): it is metered, and a crisis hit outside the cooldown stops
+    /// the run and pauses the persona — the message is kept, the plain voice
+    /// answers. Anything else steers, as before.
+    fn steer_or_pause(
+        &self,
+        ps: &mut PersonaSession,
+        name: &str,
+        text: String,
+        request_id: String,
+    ) -> Result<serde_json::Value, Refusal> {
+        let switches = ps.pinned.settings.safety;
+        if switches.dose {
+            if let Err(e) = safety::record_dose(
+                &self.store,
+                name,
+                &ps.session.meta.id,
+                safety::crisis_state(switches.crisis),
+            ) {
+                tracing::warn!("a persona dose record was not written: {e:#}");
+            }
+        }
+        if switches.crisis && safety::keyword_hit(&text) {
+            let cooling = ps
+                .crisis_paused_at
+                .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
+            if let Err(e) = safety::record_crisis(&self.store, "web", !cooling) {
+                tracing::warn!("a crisis record was not written: {e:#}");
+            }
+            if !cooling {
+                ps.crisis_paused_at = Some(std::time::Instant::now());
+                ps.pending_crisis = Some(text.clone());
+                if let Some(live) = &ps.live {
+                    live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
+                }
+                let _ = ps.events.send(WireEvent::User {
+                    text,
+                    spoken: false,
+                    request_id: Some(request_id),
+                });
+                let _ = ps.events.send(WireEvent::Crisis {
+                    text: safety::SAFE_MESSAGE.to_string(),
+                });
+                return Ok(serde_json::json!({ "steered": false, "paused": true }));
+            }
+        }
+        steer(ps, text, request_id)
     }
 }
 
@@ -2012,6 +2106,73 @@ mod tests {
         assert_eq!(seen[0].messages.len(), 1, "the paused turn was folded in");
         let counted = std::fs::read_to_string(w.store().join("safety.jsonl")).unwrap();
         assert!(counted.contains("\"paused\":false"), "{counted}");
+    }
+
+    /// A crisis message typed while the persona is answering goes through
+    /// the same sensor (review of #418: the steer path skipped it): the run
+    /// stops, the persona never sees the message, the plain voice answers,
+    /// and the words are kept in the transcript.
+    #[tokio::test]
+    async fn a_crisis_message_sent_mid_answer_pauses_too() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_with(Mode::Gate(Arc::clone(&gate)));
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        for _ in 0..200 {
+            if !w.seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let paused = w
+            .personas()
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "I want to die",
+                Some("r-7".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(paused["paused"], true, "{paused}");
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Crisis { .. }).then_some(())
+        })
+        .await;
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Done { .. }).then_some(())
+        })
+        .await;
+        // The in-flight request was the only one; the crisis words never
+        // reached the model.
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        assert!(!format!("{:?}", seen[0].messages).contains("want to die"));
+        // Kept in the transcript all the same.
+        for _ in 0..200 {
+            let t = w
+                .personas()
+                .transcript(&w.chat, &w.library, &key, None)
+                .await
+                .unwrap();
+            if t["running"] == false {
+                assert!(t["entries"].to_string().contains("I want to die"), "{t}");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let counted = std::fs::read_to_string(w.store().join("safety.jsonl")).unwrap();
+        assert!(counted.contains("\"paused\":true"), "{counted}");
     }
 
     #[tokio::test]
