@@ -146,7 +146,7 @@ async fn the_text_layer_comes_back_exact_from_a_confined_parser() {
     let cache = Cache::new(dir.join("cache"));
     let ex = Extractor::new(cfg.clone(), Some(cache.clone())).unwrap();
     let out = ex
-        .extract(&text_pdf(), "all", Mode::Text, true)
+        .extract(&text_pdf(), "all", Mode::Text, true, None)
         .await
         .unwrap();
     assert_eq!(out.pages_total, 1);
@@ -163,7 +163,7 @@ async fn the_text_layer_comes_back_exact_from_a_confined_parser() {
     );
     // Second read is the cache's, and says so.
     let again = ex
-        .extract(&text_pdf(), "1", Mode::Text, false)
+        .extract(&text_pdf(), "1", Mode::Text, false, None)
         .await
         .unwrap();
     assert!(again.layer_cached);
@@ -207,6 +207,7 @@ async fn a_broken_pdf_is_an_error_from_the_confined_parser() {
             "all",
             Mode::Auto,
             false,
+            None,
         )
         .await
         .unwrap_err();
@@ -231,7 +232,10 @@ async fn a_scan_is_read_by_the_ocr_model() {
     };
     let cache = Cache::new(dir.join("cache"));
     let ex = Extractor::new(cfg, Some(cache)).unwrap();
-    let out = ex.extract(&scan, "all", Mode::Auto, false).await.unwrap();
+    let out = ex
+        .extract(&scan, "all", Mode::Auto, false, None)
+        .await
+        .unwrap();
     let page = &out.pages[0];
     assert!(!page.has_text_layer, "the scan should have no text layer");
     let ocr = page
@@ -243,7 +247,10 @@ async fn a_scan_is_read_by_the_ocr_model() {
         "{:?}",
         ocr.markdown
     );
-    let again = ex.extract(&scan, "all", Mode::Auto, false).await.unwrap();
+    let again = ex
+        .extract(&scan, "all", Mode::Auto, false, None)
+        .await
+        .unwrap();
     assert!(again.pages[0].ocr_cached);
     std::fs::remove_dir_all(dir).ok();
 }
@@ -271,7 +278,7 @@ async fn an_unreachable_ocr_server_is_named() {
     )
     .unwrap();
     let err = ex
-        .extract(&scanned_pdf(&dir), "all", Mode::Auto, false)
+        .extract(&scanned_pdf(&dir), "all", Mode::Auto, false, None)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("not reachable"), "{err:#}");
