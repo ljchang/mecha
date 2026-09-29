@@ -623,11 +623,15 @@ conversation, so the capabilities do not change. Three rules:
   cost every recolour a minute. For the same reason neither notice says the
   edit failed: each leads with "expected after a colour or detail change",
   and the result stays the next thing to edit. A near-copy records
-  `same_layout_as`, so a retry that edits the near-copy still counts against
-  the original. The second in a row within 15 minutes says stop and tell
-  the owner, if the change was a move. An edit of it that does change the
-  layout ends the row: a record that only accumulated called a second
-  successful recolour "did not take" (review of #408).
+  `same_layout_as`, so a retry that edits the near-copy is pointed back at
+  the original. Strikes count per picture actually edited: a failed move
+  retried as told edits the same original again, and the second within 15
+  minutes says stop and tell the owner if the change was a move, while a
+  recolour chain edits a new result each time and never counts twice. An
+  edit that does change the layout ends the row. Counting per chain root
+  instead told a second successful recolour to stop (review of #408). The
+  record holds a salted hash of each path, never the path, and is swept on
+  every edit, since an incognito room's path must not outlive the room.
 - **The web chat's Edit button starts a sentence, it does not send one** —
   `Edit images/…png: ` in the input, cursor after it. The path is what lets
   the model name the right reference; the change is the owner's to describe.
