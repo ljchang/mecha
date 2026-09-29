@@ -306,6 +306,12 @@ pub struct RegionReport {
     /// The recorded prompt with no rules: what both sources are measured
     /// against. Its `improved` and `regressed` are zero by construction.
     pub rules_free: SourceCounts,
+    /// Of the decided comparisons, the ones where exactly one lesson source
+    /// passed: the appraisal's alone, or the reflector's alone. The paired
+    /// test [`RegionReport::gate`] reads — concordant pairs say nothing about
+    /// which source is better.
+    pub appraisal_only: usize,
+    pub reflector_only: usize,
     /// Interventions in this region not compared, by why.
     pub excluded: BTreeMap<Exclusion, usize>,
 }
@@ -356,11 +362,53 @@ impl Report {
                 mine.regressed += theirs.regressed;
                 mine.inconclusive += theirs.inconclusive;
             }
+            t.appraisal_only += r.appraisal_only;
+            t.reflector_only += r.reflector_only;
             for (why, n) in &r.excluded {
                 *t.excluded.entry(*why).or_default() += n;
             }
         }
         t
+    }
+}
+
+/// Fewer decided comparisons than this and 2e-1's result is a pilot, never
+/// a gate verdict (the owner's ruling of 2026-09-29).
+pub const GATE_MIN_DECIDED: usize = 10;
+/// How many more discordant pairs the reflector may win than the appraisal
+/// with the appraisal still "no worse" (the same ruling).
+pub const GATE_MAX_TRAIL: usize = 2;
+
+/// What row 2e-1's measurement says about R25's gate for 2a-4 and 2e-2,
+/// decided on the paired verdicts: the owner's ruling of 2026-09-29.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "gate", rename_all = "snake_case")]
+pub enum Gate {
+    /// Fewer than [`GATE_MIN_DECIDED`] decided: informative, not a verdict.
+    Pilot { decided: usize },
+    /// The appraisal trails the reflector by at most [`GATE_MAX_TRAIL`]
+    /// discordant pairs: no worse.
+    NoWorse { trail: usize },
+    /// It trails by more.
+    Worse { trail: usize },
+}
+
+impl RegionReport {
+    /// R25's gate, on this report's decided set: a pilot under
+    /// [`GATE_MIN_DECIDED`], else no worse while the reflector wins at most
+    /// [`GATE_MAX_TRAIL`] more discordant pairs than the appraisal.
+    pub fn gate(&self) -> Gate {
+        if self.decided < GATE_MIN_DECIDED {
+            return Gate::Pilot {
+                decided: self.decided,
+            };
+        }
+        let trail = self.reflector_only.saturating_sub(self.appraisal_only);
+        if trail <= GATE_MAX_TRAIL {
+            Gate::NoWorse { trail }
+        } else {
+            Gate::Worse { trail }
+        }
     }
 }
 
@@ -411,6 +459,14 @@ fn fold(region: &mut RegionReport, c: &Comparison) {
     }
     if decided {
         region.decided += 1;
+        match (
+            outcome_of(c, Role::ReflectorLesson),
+            outcome_of(c, Role::AppraisalLesson),
+        ) {
+            (Outcome::Pass, Outcome::Fail) => region.reflector_only += 1,
+            (Outcome::Fail, Outcome::Pass) => region.appraisal_only += 1,
+            _ => {}
+        }
     } else {
         region.inconclusive += 1;
     }
@@ -565,6 +621,32 @@ mod tests {
         )
     }
 
+    /// R25's gate on the owner's ruling of 2026-09-29: a pilot below the
+    /// minimum decided, no worse while the appraisal trails by at most the
+    /// margin in discordant pairs, worse past it — and a lead is no worse.
+    #[test]
+    fn the_gate_is_a_pilot_below_ten_decided_then_no_worse_within_two() {
+        let at = |decided, reflector_only, appraisal_only| {
+            RegionReport {
+                decided,
+                reflector_only,
+                appraisal_only,
+                ..RegionReport::default()
+            }
+            .gate()
+        };
+        assert_eq!(at(9, 9, 0), Gate::Pilot { decided: 9 });
+        assert_eq!(at(10, 2, 0), Gate::NoWorse { trail: 2 });
+        assert_eq!(at(10, 3, 0), Gate::Worse { trail: 3 });
+        assert_eq!(at(10, 4, 2), Gate::NoWorse { trail: 2 });
+        assert_eq!(
+            at(12, 0, 5),
+            Gate::NoWorse { trail: 0 },
+            "a lead is no worse"
+        );
+        assert_eq!((GATE_MIN_DECIDED, GATE_MAX_TRAIL), (10, 2));
+    }
+
     /// Every exclusion is its own count, and the clean-for-one-side cases
     /// are told apart from each other and from "no appraisal at all".
     #[test]
@@ -717,6 +799,10 @@ mod tests {
         );
         assert_eq!(write.reflector.rate(), Some(1.0));
         assert_eq!(write.appraisal.rate(), Some(0.0));
+        // Both decided pairs went to the reflector alone; the inconclusive
+        // one is in neither. Two decided is a pilot, never a verdict.
+        assert_eq!((write.reflector_only, write.appraisal_only), (2, 0));
+        assert_eq!(write.gate(), Gate::Pilot { decided: 2 });
         assert_eq!(write.rules_free.rate(), Some(0.5));
         assert_eq!(
             write.reflector,

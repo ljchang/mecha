@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The lesson-source comparison states its verdict.** `mecha learn
+  --compare-sources` and `sessions appraise` print R25's gate for folding the
+  reflector in (2a-4) and feeding appraisal lessons to `learn` (2e-2), decided
+  on the paired verdicts. Under 10 decided comparisons the result is a pilot.
+  From 10 up it is "no worse" while the appraisal trails the reflector by at
+  most 2 discordant pairs, and "worse" past that. The counts behind the
+  verdict are printed beside it, and `--json` carries it as `gate`.
+
 - **Add and edit characters and styles from the Library tab.** **Add
   character** takes a portrait from your device, a name and a description.
   **Add style** takes a name and its text. **Edit** changes an approved
