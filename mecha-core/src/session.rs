@@ -2424,7 +2424,9 @@ pub struct Mark {
 /// **A ledger that cannot be read is an error, never "no marks".** A lost
 /// mark hands a probe back to the learner as the owner's own session, so a
 /// torn line or an unreadable file stops the listing that would have
-/// admitted it, and says which line.
+/// admitted it, and says which line. That includes `sessions mark` and
+/// `unmark`, which find the session through the same listing, so a torn
+/// ledger is repaired by hand at the line the error names.
 #[derive(Debug, Clone, Default)]
 pub struct Marks {
     latest: std::collections::BTreeMap<String, Mark>,
@@ -2508,6 +2510,24 @@ impl Marks {
             .filter(|id| self.withdrawn(id))
             .cloned()
             .collect()
+    }
+
+    /// `items` without those from a session a mark withdraws, and how many
+    /// went — for a reader that takes a store keyed by session id rather
+    /// than a session listing (the reflections `sessions compare` and
+    /// `validate` probe with; review of #382).
+    pub fn keep_unmarked<T>(
+        &self,
+        items: Vec<T>,
+        session_of: impl Fn(&T) -> &str,
+    ) -> (Vec<T>, usize) {
+        let before = items.len();
+        let kept: Vec<T> = items
+            .into_iter()
+            .filter(|i| !self.withdrawn(session_of(i)))
+            .collect();
+        let dropped = before - kept.len();
+        (kept, dropped)
     }
 
     /// The owner's latest mark on this session, whatever it did.
@@ -5194,6 +5214,11 @@ mod marks_tests {
         assert!(headers
             .iter()
             .any(|(m, _, _)| m.id == probe && m.kind == Some(SessionKind::Experiment)));
+
+        // A store keyed by session id loses the marked session's rows.
+        let marks = Marks::load(&dir).unwrap();
+        let (kept, dropped) = marks.keep_unmarked(vec![probe.clone(), work.clone()], |s| s);
+        assert_eq!((kept, dropped), (vec![work.clone()], 1));
 
         Marks::append(&dir, &mark(&probe, MarkAction::Unmark)).unwrap();
         let marks = Marks::load(&dir).unwrap();

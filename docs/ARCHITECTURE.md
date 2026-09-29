@@ -4200,7 +4200,11 @@ The design decisions, each of which is a bug if undone:
   claim). `proposals accept` refuses a proposal resting on one, even with
   `--force`, because a consolidated rule cannot shed one reflection's part.
   A rule already learned from it is named for the owner to retire, never
-  passed over in silence.
+  passed over in silence. The two readers that take reflections by
+  session id rather than through a listing, `sessions compare`'s lesson
+  pass and `validate`'s probe corpus, drop a marked session's too
+  (`Marks::keep_unmarked`). `sessions delete` takes the mark with every
+  other trace (`forget`).
   - **A ledger that cannot be read stops the listing.** A lost mark would
     hand the probe back to the learner as the owner's work, and a word a
     newer build wrote reads as a withdrawal.
