@@ -649,6 +649,27 @@ impl OutboxItem {
             && self.resolved_by() == Actor::Owner
     }
 
+    /// Whether this item's edit or reject signs as the owner's verdict on the
+    /// drafting — ruling 2A→C (the owner, 2026-09-28): the release's rule,
+    /// made symmetric **going forward**. A stamped act signs only when it is
+    /// the owner's ([`Self::owners_edit`], or a reject stamped
+    /// [`Actor::Owner`]); a stamped act that is not (a run's shell,
+    /// `owner-approved`, `unknown`) signs neither, so a run rejecting its own
+    /// draft is no verdict against a rule. An act from before the stamps
+    /// existed keeps the −1.0 it always had — the history is kept, not
+    /// re-read as unknown.
+    pub fn drafting_verdict_signs(&self) -> bool {
+        match self.status.as_str() {
+            "rejected" => matches!(self.resolved_by, None | Some(Actor::Owner)),
+            "sent" if self.edited() => {
+                self.owners_edit()
+                    || (self.edited_by.is_none()
+                        && matches!(self.resolved_by, None | Some(Actor::Owner)))
+            }
+            _ => false,
+        }
+    }
+
     /// What this item says about the drafting, if it says anything.
     ///
     /// **The signed half of the outbox's evidence, and the cheapest signal in
