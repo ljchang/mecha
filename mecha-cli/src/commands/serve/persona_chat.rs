@@ -410,18 +410,36 @@ impl PersonaChats {
         if pin.persona != p.name {
             return Err(Refusal::NotFound);
         }
+        // As `open` refuses through `pin`: a persona that stopped being
+        // approved after the chat was made does not speak again.
+        if p.state.status != mecha_core::persona::Status::Approved {
+            return Err(Refusal::Conflict(format!(
+                "`{}` is not approved — `mecha persona approve {}` after reading it",
+                p.name, p.name
+            )));
+        }
         let pinned = persona_agent::load_version(&self.store, &p.name, &pin.digest)
             .map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
         let bound = chat.follower.current();
         let (_, refused) = self.agent_for(&bound, &pinned).map_err(failed)?;
-        let key = new_key();
-        let workspace = self.work.join(&key);
-        mecha_core::create_private_dir(&workspace).map_err(|e| failed(e.into()))?;
         // A goal set at open and never sent — the chat was opened and left.
         let goal = pin.goal.filter(|_| conversation.messages.is_empty());
         let session = Session { meta, path };
         let (events, _) = broadcast::channel(512);
-        self.sessions.lock().await.insert(
+        let mut sessions = self.sessions.lock().await;
+        // Again, under the lock the insert takes: the loads above ran
+        // without it, and two resumes of one chat must not become two live
+        // sessions writing one transcript (found on review of #409).
+        if let Some((key, _)) = sessions
+            .iter()
+            .find(|(_, ps)| ps.session.meta.id == id && ps.pinned.name == p.name)
+        {
+            return Ok(serde_json::json!({ "key": key }));
+        }
+        let key = new_key();
+        let workspace = self.work.join(&key);
+        mecha_core::create_private_dir(&workspace).map_err(|e| failed(e.into()))?;
+        sessions.insert(
             key.clone(),
             PersonaSession {
                 pinned: Arc::new(pinned),
@@ -598,6 +616,11 @@ impl PersonaChats {
         if !conversation.messages.is_empty() {
             ps.goal = goal.clone();
         }
+        let spent_goal = if conversation.messages.is_empty() {
+            goal.clone()
+        } else {
+            None
+        };
         let user = Message::user(&said);
         conversation.push(user.clone());
         // Refuse a turn the record did not accept, as the assistant's do —
@@ -640,6 +663,7 @@ impl PersonaChats {
         cx.queued_input = Some(queue);
 
         let session = Arc::clone(&ps.session);
+        let unconsumed = Arc::clone(&queued_ids);
         let bcast = ps.events.clone();
         let last_usage = Arc::clone(&ps.last_usage);
         let context_window = bound.context_window;
@@ -709,6 +733,31 @@ impl PersonaChats {
             // Hand the conversation back, then announce the end.
             let mut sessions = chats.sessions.lock().await;
             if let Some(ps) = sessions.get_mut(&key) {
+                // A steer that arrived after the run's last read of its queue
+                // was neither delivered nor discarded: say so, as the
+                // assistant's chats do, or the page's bubble never resolves
+                // (found on review of #409). Under the lock `send` steers
+                // under, so none can arrive between this and `live = None`.
+                let discarded: Vec<String> = unconsumed
+                    .lock()
+                    .map(|mut ids| ids.drain(..).collect())
+                    .unwrap_or_default();
+                if !discarded.is_empty() {
+                    let _ = bcast.send(WireEvent::Notice {
+                        text: format!(
+                            "{} queued message(s) arrived too late for this turn — send again",
+                            discarded.len()
+                        ),
+                    });
+                    let _ = bcast.send(WireEvent::QueuedDiscarded {
+                        request_ids: discarded,
+                    });
+                }
+                // A first turn that failed was rolled back to nothing; the
+                // goal it carried goes back with it, so the retry has it.
+                if conversation.messages.is_empty() && ps.goal.is_none() {
+                    ps.goal = spent_goal;
+                }
                 ps.conversation = Some(conversation);
                 ps.live = None;
             }
@@ -948,9 +997,20 @@ mod tests {
     use mecha_core::message::{Block, CompletionRequest, CompletionResponse, StopReason};
     use mecha_core::persona::{self as store, NewPersona, Origin};
 
-    /// A provider that answers every request and keeps a copy of it — or,
-    /// gated, never answers, as a model mid-generation.
-    struct Capture(Arc<StdMutex<Vec<CompletionRequest>>>, bool);
+    /// How the test provider behaves once it has kept a copy of a request.
+    #[derive(Clone)]
+    enum Mode {
+        Answer,
+        /// Never answers, as a model mid-generation.
+        Hang,
+        /// Answers once the gate is opened.
+        Gate(Arc<tokio::sync::Notify>),
+        Fail,
+    }
+
+    /// A provider that keeps a copy of every request and then does what its
+    /// mode says.
+    struct Capture(Arc<StdMutex<Vec<CompletionRequest>>>, Mode);
 
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for Capture {
@@ -966,8 +1026,11 @@ mod tests {
             _: Option<&mecha_core::provider::StreamSink>,
         ) -> Result<CompletionResponse> {
             self.0.lock().unwrap().push(req.clone());
-            if self.1 {
-                std::future::pending::<()>().await;
+            match &self.1 {
+                Mode::Answer => {}
+                Mode::Hang => std::future::pending::<()>().await,
+                Mode::Gate(open) => open.notified().await,
+                Mode::Fail => anyhow::bail!("the model is not loaded"),
             }
             Ok(CompletionResponse {
                 message: Message::assistant(vec![Block::Text {
@@ -1009,10 +1072,10 @@ mod tests {
     /// (`web_search`), beside an assistant whose prompt and tools are
     /// marked so a leak into her chat is visible.
     fn world() -> World {
-        world_gated(false)
+        world_with(Mode::Answer)
     }
 
-    fn world_gated(gated: bool) -> World {
+    fn world_with(mode: Mode) -> World {
         let root = std::env::temp_dir().join(format!("mecha-pchat-{}", uuid::Uuid::new_v4()));
         let dir = root.join("personas");
         let lib = mecha_core::imagelib::Library::load(&root.join("imagelib")).0;
@@ -1047,7 +1110,7 @@ mod tests {
             dir,
             root.join("work"),
             Arc::new(move |_| {
-                Ok(Box::new(Capture(Arc::clone(&for_persona), gated))
+                Ok(Box::new(Capture(Arc::clone(&for_persona), mode.clone()))
                     as Box<dyn mecha_core::provider::Provider>)
             }),
         );
@@ -1057,7 +1120,7 @@ mod tests {
         let mut config = mecha_core::config::Config::default();
         config.agent.system_prompt = Some("ASSISTANT-ONLY: the owner's charter".into());
         let chat = chat::test_chat_built(
-            Box::new(Capture(Arc::new(StdMutex::new(Vec::new())), false)),
+            Box::new(Capture(Arc::new(StdMutex::new(Vec::new())), Mode::Answer)),
             pool,
             config,
             None,
@@ -1270,7 +1333,7 @@ mod tests {
     /// finishes instead of waiting on work nothing asked to stop.
     #[tokio::test]
     async fn shutdown_cancels_a_persona_run_and_the_drain_finishes() {
-        let w = world_gated(true);
+        let w = world_with(Mode::Hang);
         let opened = w
             .personas()
             .open(&w.chat, &w.library, "mara", None, None)
@@ -1303,6 +1366,128 @@ mod tests {
             matches!(refused, Refusal::Failed(ref m) if m.contains("shutting down")),
             "{refused:?}"
         );
+    }
+
+    /// Wait for the next event that `pick` accepts.
+    async fn next<T>(
+        rx: &mut broadcast::Receiver<WireEvent>,
+        mut pick: impl FnMut(&WireEvent) -> Option<T>,
+    ) -> T {
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
+                Ok(Ok(ev)) => {
+                    if let Some(t) = pick(&ev) {
+                        return t;
+                    }
+                }
+                other => panic!("the event never came: {other:?}"),
+            }
+        }
+    }
+
+    /// Every steer resolves: delivered into the run, or said to have come
+    /// too late — never left pending on the page (review of #409).
+    #[tokio::test]
+    async fn a_steer_is_always_delivered_or_discarded() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_with(Mode::Gate(Arc::clone(&gate)));
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let mut rx = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        // The request is in flight; steer it, then let the model answer.
+        for _ in 0..200 {
+            if !w.seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let steered = w
+            .personas()
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "Also this",
+                Some("r-1".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(steered["steered"], true);
+        gate.notify_waiters();
+        gate.notify_one();
+        let resolved = next(&mut rx, |ev| match ev {
+            WireEvent::QueuedDelivered { request_id } if request_id == "r-1" => Some("delivered"),
+            WireEvent::QueuedDiscarded { request_ids }
+                if request_ids.iter().any(|r| r == "r-1") =>
+            {
+                Some("discarded")
+            }
+            _ => None,
+        })
+        .await;
+        assert!(["delivered", "discarded"].contains(&resolved));
+        // Keep the gate open for any turn the steer started, and let it end.
+        for _ in 0..3 {
+            gate.notify_one();
+        }
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Done { .. }).then_some(())
+        })
+        .await;
+    }
+
+    /// A first turn that fails is rolled back to nothing, and its goal comes
+    /// back with it, so the retry still carries it (review of #409).
+    #[tokio::test]
+    async fn a_failed_first_turn_gives_its_goal_back() {
+        let w = world_with(Mode::Fail);
+        let opened = w
+            .personas()
+            .open(
+                &w.chat,
+                &w.library,
+                "mara",
+                None,
+                Some("Plan the kelp survey".into()),
+            )
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let mut rx = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        let ok = next(&mut rx, |ev| match ev {
+            WireEvent::Done { ok, .. } => Some(*ok),
+            _ => None,
+        })
+        .await;
+        assert!(!ok, "the provider fails every turn");
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(t["goal"], "Plan the kelp survey", "{t}");
+        assert_eq!(t["entries"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
