@@ -745,6 +745,14 @@ pub struct WebSearch {
     /// Where result handles are recorded for [`WebOpen`]. `None` prints no
     /// handles, which is right exactly when no `web_open` is registered.
     ledger: Option<Arc<ResultLedger>>,
+    /// The persona form (`docs/PERSONA-DESIGN.md` §3.3): every call takes
+    /// [`SearchChain::search_blind`] — blind backends only, quick depth —
+    /// whatever the taint. Egress is declared per depth and depth is the
+    /// model's choice (Exa is `Blind` at quick, `Chosen` at deep), and the
+    /// armed narrowing below never fires in a persona chat, which is private
+    /// at most; forcing the path is what makes "no `Chosen` sender" hold for
+    /// every depth and every taint.
+    blind_only: bool,
 }
 
 impl WebSearch {
@@ -752,6 +760,7 @@ impl WebSearch {
         WebSearch {
             chain,
             ledger: None,
+            blind_only: false,
         }
     }
 
@@ -770,7 +779,11 @@ impl Tool for WebSearch {
     }
 
     fn description(&self) -> &str {
-        if self.ledger.is_some() {
+        if self.blind_only {
+            // No http_fetch or web_open beside it in a persona chat, and no
+            // depth to choose.
+            "Search the web. Returns titles, URLs, and short extracts from each result."
+        } else if self.ledger.is_some() {
             "Search the web. Returns titles, URLs, and extracts, each result with a handle \
              in brackets. To read a full page, pass that handle to web_open if you have it, \
              or the URL to http_fetch otherwise. Set depth to \"deep\" only for genuine \
@@ -785,6 +798,22 @@ impl Tool for WebSearch {
     }
 
     fn input_schema(&self) -> Value {
+        if self.blind_only {
+            return json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "What to search for. Write it as a search query, not a question."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "How many results to return. Default 8."
+                    }
+                },
+                "required": ["query"]
+            });
+        }
         json!({
             "type": "object",
             "properties": {
@@ -846,6 +875,18 @@ impl Tool for WebSearch {
         } else {
             caps.sends()
         }
+    }
+
+    /// Eligible for a persona in its blind-only form, and only where that
+    /// form is `Blind`: with no blind backend configured it declares
+    /// `Chosen`, and the persona registry refuses it.
+    fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(WebSearch {
+            chain: Arc::clone(&self.chain),
+            // No web_open in a persona chat, so no handles to open.
+            ledger: None,
+            blind_only: true,
+        }))
     }
 
     fn denial_remedy(&self, cause: DenialCause) -> Option<String> {
@@ -923,7 +964,7 @@ impl Tool for WebSearch {
             && self.chain.has_blind_backend()
             && ctx.taint.is_none_or(|t| t.trifecta_armed());
 
-        let response = match if armed {
+        let response = match if self.blind_only || armed {
             self.chain.search_blind(query, limit).await
         } else {
             self.chain.search(query, limit, depth).await

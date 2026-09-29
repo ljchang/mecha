@@ -420,6 +420,27 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// The form of this tool a persona chat may be given, or `None` — the
+    /// default — when a persona may never have it (`docs/PERSONA-DESIGN.md`
+    /// §3.3).
+    ///
+    /// **A declaration, defaulting to no, rather than a rule over
+    /// [`capabilities`](Tool::capabilities)**: those have no "reads an owner
+    /// store" axis (`private_data` cannot be it — a persona's own memory arms
+    /// it), and [`Capabilities::default`] is all-false, so a derived rule
+    /// would make the next tool added eligible by omission. A tool that
+    /// answers `Some` reads none of the owner's private stores; the persona
+    /// registry still refuses anything whose class *on this install* is
+    /// [`Egress::Chosen`], so a declaration can never admit a sender the
+    /// model aims. A wrapper that does not override this is ineligible, which
+    /// is the safe direction.
+    ///
+    /// The returned tool may differ from `self` — `web_search`'s persona form
+    /// is always the blind path.
+    fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        None
+    }
+
     /// Does this tool do its work in a conversation of its own?
     ///
     /// The fourth method in the family with
