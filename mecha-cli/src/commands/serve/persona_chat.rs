@@ -285,6 +285,9 @@ impl PersonaChats {
                 "a session goal is at most {MAX_GOAL} characters"
             )));
         }
+        if chat.stopping.is_cancelled() {
+            return Err(Refusal::Failed("server is shutting down".into()));
+        }
         let p = self
             .visible(library, name, token)
             .ok_or(Refusal::NotFound)?;
@@ -387,6 +390,9 @@ impl PersonaChats {
         id: &str,
         token: Option<&str>,
     ) -> Result<serde_json::Value, Refusal> {
+        if chat.stopping.is_cancelled() {
+            return Err(Refusal::Failed("server is shutting down".into()));
+        }
         let p = self
             .visible(library, name, token)
             .ok_or(Refusal::NotFound)?;
@@ -562,7 +568,17 @@ impl PersonaChats {
             return Err(Refusal::Bad("request id too long".into()));
         }
         let request_id = request_id.unwrap_or_else(Session::new_id);
-        self.persona_of(library, key, token).await?;
+        let name = self.persona_of(library, key, token).await?;
+        // An open chat stops answering when its persona stops being approved,
+        // as `open` and `resume` refuse one — not only after a restart.
+        let approved = Store::load(&self.store)
+            .get(&name)
+            .is_some_and(|p| p.state.status == mecha_core::persona::Status::Approved);
+        if !approved {
+            return Err(Refusal::Conflict(format!(
+                "`{name}` is not approved — `mecha persona approve {name}` after reading it"
+            )));
+        }
         let (pinned, notices) = {
             let sessions = self.sessions.lock().await;
             let ps = sessions.get(key).ok_or(Refusal::NotFound)?;
@@ -621,12 +637,41 @@ impl PersonaChats {
         } else {
             None
         };
-        let user = Message::user(&said);
-        conversation.push(user.clone());
+        // Folded, not pushed, when the tail is already the owner's: a turn
+        // cancelled after a tool ran ends on the user message carrying the
+        // results, and a second user message in a row is a request no
+        // provider accepts — the chat could never be continued (found on
+        // review of #409; `chat::begin_turn` folds for the same reason). The
+        // fold is recorded as a `Rewrite`, or the file would hold the
+        // invalid shape and a resume would replay it.
+        let recorded = if conversation
+            .messages
+            .last()
+            .is_some_and(|m| m.role == mecha_core::message::Role::User)
+        {
+            let pre_fold = conversation.messages.clone();
+            mecha_core::agent::append_user_text(&mut conversation.messages, said.clone());
+            ps.session
+                .append(&Record::Rewrite {
+                    messages: conversation.messages.clone(),
+                })
+                .map_err(|e| (e, Some(pre_fold)))
+        } else {
+            let user = Message::user(&said);
+            conversation.push(user.clone());
+            ps.session
+                .append(&Record::Message(user))
+                .map_err(|e| (e, None))
+        };
         // Refuse a turn the record did not accept, as the assistant's do —
         // and give the goal back with it, so the retry still carries it.
-        if let Err(e) = ps.session.append(&Record::Message(user)) {
-            conversation.messages.pop();
+        if let Err((e, pre_fold)) = recorded {
+            match pre_fold {
+                Some(messages) => conversation.messages = messages,
+                None => {
+                    conversation.messages.pop();
+                }
+            }
             ps.conversation = Some(conversation);
             ps.goal = goal;
             return Err(Refusal::Failed(format!("recording: {e:#}")));
@@ -1488,6 +1533,69 @@ mod tests {
             .unwrap();
         assert_eq!(t["goal"], "Plan the kelp survey", "{t}");
         assert_eq!(t["entries"].as_array().unwrap().len(), 0);
+    }
+
+    /// A turn cancelled after a tool ran leaves the conversation ending on
+    /// the owner's side; the next send folds into it rather than making two
+    /// user messages in a row — in the request and in the record (review of
+    /// #409).
+    #[tokio::test]
+    async fn a_send_after_a_user_tail_folds_into_it() {
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        {
+            let personas = w.personas();
+            let mut sessions = personas.sessions.lock().await;
+            let ps = sessions.get_mut(&key).unwrap();
+            let tail = Message::user("the owner's words, then a tool's results");
+            ps.session.append(&Record::Message(tail.clone())).unwrap();
+            ps.conversation.as_mut().unwrap().push(tail);
+        }
+        turn(&w, &key, "and this").await;
+        let req = w.seen.lock().unwrap()[0].clone();
+        for pair in req.messages.windows(2) {
+            assert!(
+                !(pair[0].role == mecha_core::message::Role::User
+                    && pair[1].role == mecha_core::message::Role::User),
+                "two user messages in a row went to the provider"
+            );
+        }
+        assert_eq!(req.messages.len(), 1);
+        assert!(req.messages[0].text().contains("and this"));
+        // A resume reads back the same shape the provider was sent.
+        let id = opened["session"].as_str().unwrap();
+        let path = w.store().join("mara/sessions").join(format!("{id}.jsonl"));
+        let (_, convo) = Session::load(&path).unwrap();
+        assert_eq!(convo.messages.len(), 2, "the folded turn and its answer");
+        assert_eq!(convo.messages[0].role, mecha_core::message::Role::User);
+    }
+
+    /// An open chat stops answering once its persona is no longer approved.
+    #[tokio::test]
+    async fn an_open_chat_stops_when_approval_goes() {
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        std::fs::remove_file(w.store().join("mara/state.toml")).unwrap();
+        let refused = w
+            .personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(refused, Refusal::Conflict(ref m) if m.contains("not approved")),
+            "{refused:?}"
+        );
+        assert!(w.seen.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
