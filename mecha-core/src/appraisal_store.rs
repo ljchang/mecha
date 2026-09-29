@@ -2316,6 +2316,9 @@ pub struct Taught {
     /// Decided comparisons whose session has no appraisal on record yet — a
     /// later pass teaches them once it has one.
     pub awaiting_appraisal: usize,
+    /// Comparisons from a session the owner marked as an experiment (ruling
+    /// 4D): never taught while the mark stands, and never pending.
+    pub withdrawn: usize,
     /// Point-wise comparisons that decided nothing: inconclusive, unposed,
     /// or a verdict this build cannot read. They write nothing.
     pub undecided: usize,
@@ -2391,7 +2394,12 @@ impl AppraisalStore {
         use std::io::Write;
         let _lock = self.lock()?;
         let (appraisals, appraisals_unreadable) = self.for_owner()?;
-        let (existing, counterfactuals_unreadable) = self.counterfactuals()?;
+        // The dedup set is every reflection on record, the marks unapplied,
+        // like `on_record` and `score`'s — and a comparison from a marked
+        // session is counted as withdrawn, never as awaiting an appraisal
+        // that will not come (review of #382).
+        let (existing, counterfactuals_unreadable) = self.all_counterfactuals()?;
+        let withdrawn = self.withdrawn()?;
         let packet = comparison_referents(comparisons);
         let mut taught: std::collections::BTreeSet<String> = existing
             .iter()
@@ -2433,6 +2441,10 @@ impl AppraisalStore {
             let session = c.pointers.session_id.trim();
             if session.is_empty() {
                 t.no_session += 1;
+                continue;
+            }
+            if withdrawn.contains(session) {
+                t.withdrawn += 1;
                 continue;
             }
             if taught.contains(&c.id) {
@@ -4316,6 +4328,31 @@ mod tests {
     /// The acceptance: a decided comparison's loser appears on the
     /// session's appraisal, pointing at its comparison — read back through
     /// a fresh handle, in words the harness wrote from the typed record.
+    /// A decided comparison from a session the owner marked is counted as
+    /// withdrawn — never as awaiting an appraisal that will not come — and
+    /// is taught once the mark is undone (review of #382).
+    #[test]
+    fn a_marked_sessions_comparison_is_withdrawn_not_awaiting() {
+        use crate::session::{Mark, MarkAction, Marks};
+        let (root, store) = appraised("teach-marked", &[row("s-dana", true)]);
+        let sessions = root.join("sessions");
+        let store = store.with_marks_from(&sessions);
+        let cmp = rejected_draft("s-dana");
+        let mark = |action| Mark {
+            session_id: "s-dana".into(),
+            action,
+            at: Utc::now(),
+            reason: None,
+        };
+        Marks::append(&sessions, &mark(MarkAction::Experiment)).unwrap();
+        let t = store.teach(std::slice::from_ref(&cmp)).unwrap();
+        assert_eq!((t.withdrawn, t.awaiting_appraisal, t.written), (1, 0, 0));
+        Marks::append(&sessions, &mark(MarkAction::Unmark)).unwrap();
+        let t = store.teach(std::slice::from_ref(&cmp)).unwrap();
+        assert_eq!((t.withdrawn, t.written), (0, 1));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_decided_loser_appears_on_the_sessions_appraisal_pointing_at_its_comparison() {
         let (root, store) = appraised("teach", &[row("s-dana", true), row("s-idris", true)]);
