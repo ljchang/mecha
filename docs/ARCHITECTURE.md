@@ -6802,6 +6802,17 @@ the owner's** (row 2b-2, R33, R37).
   unread (a task anchor, with the outbox blind). Classified at read time, so
   `scores.jsonl` is unchanged and the surprises replay priority reads cannot
   be forced.
+- **Where nothing could be acted on, the prediction is not asked for**
+  (ruling 1B, #378). `withholds_expectation` is the write-time test: the
+  output offers no act now (`output_offers_act` is `Some(false)`) *and* the
+  run never called a task-linking tool (`kg_task_create` / `kg_task_update`,
+  over every message it ever had, since compaction does not unlink a task).
+  It is stricter than the read-time test on purpose. The owner's closures
+  and workflow dispositions do not exist yet when the appraisal is written,
+  and a row is written once, so a prediction withheld wrongly could never be
+  scored. Unknown asks. A withheld row carries `expected_act_withheld`, set
+  by the harness and never parsed from the reply, and the readout counts it
+  as `not_asked`, apart from a prediction the appraiser left out.
 
 **The counts-only appraiser is retired into it** (row 2a-3, R25). Before,
 `appraise_with_model` ran a quarantined pass over `AppraiserEvidence` behind
