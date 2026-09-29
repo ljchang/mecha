@@ -751,6 +751,31 @@ mecha work clean --producer briefing --keep 3
 
 See [The work directory](/docs/features/automation/work).
 
+## `document`
+
+Extract a PDF from the terminal: each page's own text layer and, for pages
+with none (a scan) or with `--mode ocr|both`, a local OCR model's transcript.
+Needs a `[documents]` table in `~/.mecha/config.toml`. Shares the cache with
+the `document_read` tool, so a page read here is not transcribed again.
+
+```
+mecha document extract <FILE> [--pages <SPEC>] [--mode auto|text|ocr|both] [--json] [--no-cache]
+mecha document prune [--days <N>]
+mecha document forget <FILE|SHA256>
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `extract` | `--pages <SPEC>` | `all` (default), `3`, `2-5`, `1,4,7-9`. |
+| `extract` | `--mode <MODE>` | `auto` (default): the text layer, OCR only where a page has none. |
+| `extract` | `--json` | The whole extraction, including each page's text-layer regions with their boxes in PDF points. |
+| `extract` | `--no-cache` | Neither read nor write the cache. |
+| `prune` | `--days <N>` | Remove cached extractions not read for N days. Defaults to `[documents] cache_days`. |
+| `forget` | `<FILE\|SHA256>` | Remove one file's cached extraction. |
+
+`extract` exits non-zero when any page could not be transcribed, after printing
+the rest, so a script never mistakes a partial extraction for a whole one.
+
 ## `mail`
 
 The inbox as a queue you work. `list` is the default subcommand.

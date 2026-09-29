@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Read PDFs: `document_read` and `mecha document extract`.** Each page
+  comes back twice, labelled: the PDF's own text layer (exact — what a quote
+  is checked against) and, for scanned pages or when asked, a transcript from
+  a local OCR model (PaddleOCR-VL 1.6) with equations as LaTeX. The PDF parser
+  runs sandboxed, results are cached by the file's hash so a page is never
+  read twice, and the OCR server starts when a page needs it and stops after
+  ten idle minutes. Configure with a `[documents]` table in
+  `~/.mecha/config.toml` (see `mecha config init`); install the server with
+  `scripts/llama/install.sh`. Tables read by OCR are not reliable yet — use the
+  text layer for numbers.
+
 - **`mecha distill --backfill-appraisals`** appraises, after the fact, the
   sessions distilled before appraisals existed whose clean steer or denial
   was waiting only on an appraisal to be compared. There were 9 on the live
