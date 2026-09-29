@@ -634,14 +634,17 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   description beside the pointer 0.78 (E1). So `compile` sends each cast
   member's portrait as a reference and pastes the description verbatim
   beside it — never the description alone, never a paraphrase.
-- **One reference per person, the head count stated, `wearing` and `doing`
-  required.** Every reference slot tends to become a person (two unnamed
+- **One reference per person, each appearing exactly once, `wearing` and
+  `doing` required.** Every reference slot tends to become a person (two unnamed
   references of one character drew it twice, E2, and a bound face-and-body
   pair failed once in four, E9); a reference supplies its own outfit, pose
   and stare when the scene is silent, and stated they land (E3, E8). The
   prompt's shape — "the person in the image" for one, `<imageN>` left to
-  right with "Exactly N people" for more — is in `compile`, not asked of the
-  model.
+  right for more, each appearing exactly once and anyone else a new person —
+  is in `compile`, not asked of the model. There is no total unless `extras`
+  are given: "Exactly two people" erased a waiter the model had written into
+  the prose instead of `extras`, and the softer wording still drew four cast
+  as exactly four (E12).
 - **Portraits go at 512² (`REFERENCE_SIZE`), edits at 1024.** Four references
   at 1024² took 190 s and four at 512² 79 s, and a whole portrait at 512²
   held identity within a few hundredths of a tight crop (E2, E10). `Request`
@@ -656,6 +659,27 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   cast of one does not excuse a second character named beside it (review of
   #383); an explicit `"cast": []` says "someone else by that name". The lookup's result also says how entries are
   used, which alone was enough on the rerun (0.68 and 0.45).
+- **Every refusal before the GPU opens "Nothing was drawn."** — through one
+  helper, `imagegen::refused`, which every pre-GPU exit in `call` uses today;
+  a convention the tests check for those exits, not something the compiler
+  enforces on the next one, so a new refusal should use it. The first live run read a
+  refusal that opened with the characters' names as a finished picture,
+  never retried, and told the owner it existed; the named-character refusal
+  also spells out the *whole* cast to copy (everyone named, in the prompt's
+  order, keeping what was already given), because a skeleton of only the
+  missing names swapped who was missing each round (review of #384). Past
+  `MAX_CAST` library characters it asks for separate pictures instead, with
+  no cast to copy — a skeleton of five is one `compile` refuses — and only
+  approved characters count toward that, so an invented cast name is
+  `compile`'s "no approved character" rather than a reason to split.
+- **The lookup picks by name first.** A query word that is an approved
+  entry's name (of the kind asked) returns those entries only; otherwise
+  every word of three letters or more must match a name or description (any
+  word returned the whole library, "and" being in every description); and a
+  query with no such word — nothing of three letters or more, and no name —
+  matches as one substring, so a short fragment like `ya` finds `maya`.
+  Names resolve against what the listing can return, or a candidate's name
+  would blank a search and betray the candidate (review of #384).
 - **The owner approves; the model proposes — bounded in entries and in
   bytes, and a rejection leaves nothing.** At most `MAX_PENDING` candidates,
   each portrait at most `MAX_PROPOSED_PORTRAIT_BYTES` (4 MB; the owner's own
@@ -703,6 +727,56 @@ doing; this code writes how they look. Decisions, each a bug if undone:
 - **Every generation writes a manifest** (`images/<stem>.json`, `create_new`
   like the PNG): the scene as written, the compiled prompt, seed, sizes, the
   model files, and each entry's name, version and portrait hash.
+- **The owner adds and edits from the web as from the terminal**
+  (`serve/library.rs` `add`, `edit`): each runs `add-character`, `add-style`
+  or `update` as a child, a portrait arriving base64 in the JSON body under
+  its own body limit (`MAX_WRITE_BODY` — axum's 2 MB default would answer
+  413 before the store's cap could) and staged in a private scratch
+  directory. Edit honours the lock like every write, and is refused on a
+  candidate: a text rewrite approves (`imagelib::update`), so an edit screen
+  would be approval without the read.
+- **The web door hides on the server** (`serve/library.rs`). Locked entries
+  are absent from `GET /api/library` and their portraits 404 unless the
+  request carries a live unlock token; a blurred thumbnail would still ship
+  its bytes. The token lives in process memory and the page's — never a
+  cookie or storage — and lapses after 30 idle minutes. The password is
+  optional (the owner's ruling): with no `lock.toml` the token is granted for
+  the asking and the lock is a plain toggle; with one, the argon2id hash
+  (0600, set only from the CLI) is checked, five wrong passwords in five
+  minutes answer 429, and a damaged file errors — the file's presence
+  decides, so damage never reads as absence.
+- **An `extra` is counted, and read by the guard.** People in the scene who
+  are no library character go in `image_generate`'s `extras`: listed as "not
+  from any image" and counted in the head count, because a count of the cast
+  alone pushed a described waiter into the background (research E11). With
+  no cast there is no head count — the extras are scene text, "Also in the
+  scene: …". The named-character guard reads the extras as it reads the
+  prompt, except on an edit, where it reads neither: an edit's people carry
+  their own identity. A name in both `cast` and `extras` is refused in
+  `compile` — one face in two slots. Extras need no library, so a scene with
+  only extras draws where the mecha home cannot be resolved.
+- **Locking does not reach back into a browser's cache.** Open portraits are
+  content-addressed and served `immutable`, so one browsed before its entry
+  was locked stays cached on that device; nothing asks for it again once the
+  list hides it, but the bytes remain until evicted or cleared.
+- **The web approves what it showed, and only it can vouch for that.** The
+  list carries an HMAC of each entry's `shown_digest` under a key `serve`
+  draws at start and never stores; approval checks it against the entry as
+  re-read and happens in `serve`'s process — so approval needs a client of
+  this server, as every approve route on it does (an owner-authenticated
+  client can fetch a signature and replay it; the gap closed was a shell with
+  no server at all). A bare digest, passed to a CLI
+  `--shown` flag, was computable by anything that can read the store — a
+  shell could approve a model's proposal unread (review of #385); the flag
+  is gone. Writes honour the lock as reads do: a locked entry is acted on
+  only with a live token, and hidden answers exactly as missing.
+- **Save copies through the jail, and never from incognito.** A chat's
+  files exist to the server only while it is open, so the picture is staged
+  now (0700 scratch directory, removed on drop) and `add-character` runs as a
+  child. Both library routes that read a chat refuse an incognito key.
+- **Candidates are a review-queue row, not a `Backlog` field** — `Backlog` is
+  recorded per run and a new field moves every older row's comparison (the
+  `requests_on_owner` precedent); they are owed to nobody outside.
 
 ## Security model
 
