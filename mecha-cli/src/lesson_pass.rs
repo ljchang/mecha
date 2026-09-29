@@ -102,6 +102,11 @@ fn read_sources() -> Result<Read> {
             .context("reading the reflections")?,
         None => (Vec::new(), 0),
     };
+    // A session the owner marked as an experiment is no lesson source
+    // (ruling 4D; review of #382). The ledger unread stops the pass.
+    let (reflections, _) =
+        mecha_core::session::Marks::load(&mecha_core::session::Session::default_dir()?)?
+            .keep_unmarked(reflections, |r| r.session_id.as_str());
     let (clean, on_record) =
         match mecha_core::appraisal_store::AppraisalStore::open_existing_default() {
             Some(store) => store
