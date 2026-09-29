@@ -68,6 +68,8 @@
       // toggle says what is true.
       if (token && !data.unlocked) token = null;
       if (open) open = data.entries.find((e) => e.kind === open.kind && e.name === open.name) ?? null;
+      // An edit form lives only as long as the entry it edits.
+      if (!open && form?.mode === 'edit') closeForm();
       error = null;
     } catch (e) {
       error = String(e?.message ?? e);
@@ -103,7 +105,10 @@
   async function relock() {
     const t = token;
     token = null;
-    open = open?.locked ? null : open;
+    if (open?.locked) {
+      open = null;
+      if (form?.mode === 'edit') closeForm();
+    }
     await load();
     if (t) {
       fetch('/api/library/relock', {
@@ -128,9 +133,12 @@
   // orientation, so a phone portrait stays upright.
   async function pick(file) {
     if (!file || !form) return;
+    // The form this picture is for: a cancel, or a new form, while it
+    // decodes must not receive it.
+    const target = form;
     preparing = true;
     try {
-      const bitmap = await createImageBitmap(file);
+      const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
       const { w, h } = fitWithin(bitmap.width, bitmap.height, PORTRAIT_EDGE);
       const canvas = document.createElement('canvas');
       canvas.width = w;
@@ -142,8 +150,8 @@
       const bytes = new Uint8Array(await blob.arrayBuffer());
       let binary = '';
       for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-      // Cancelled, or the pane changed, while this was decoding.
-      if (!form) return;
+      // Cancelled, the pane changed, or another form opened while this decoded.
+      if (form !== target) return;
       if (form.preview) URL.revokeObjectURL(form.preview);
       form.portrait = btoa(binary);
       form.preview = URL.createObjectURL(blob);
@@ -161,6 +169,8 @@
 
   async function submitForm() {
     const entry = form.mode === 'edit' ? open : null;
+    // The form is meaningless without the entry it edits.
+    if (form.mode === 'edit' && !entry) return closeForm();
     if (formProblem(form, entry)) return;
     busy = true;
     try {

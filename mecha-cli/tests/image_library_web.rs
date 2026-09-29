@@ -298,6 +298,21 @@ kind = "none"
             .join(format!("imagelib/characters/maya/history/{v}.toml"))
             .is_file());
     }
+    // A style's text through the same door.
+    let r = post(
+        "/api/library/edit",
+        serde_json::json!({"kind": "style", "name": "ink", "text": "soft ink wash, grey paper"}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let shown = mecha(&home, &["imagelib", "show", "ink", "--kind", "style"]);
+    let shown = String::from_utf8_lossy(&shown.stdout);
+    assert!(shown.contains("style ink (v2)"), "{shown}");
+    assert!(
+        shown.contains("text:    soft ink wash, grey paper"),
+        "{shown}"
+    );
+
     // A locked entry is edited only while unlocked.
     let r = post(
         "/api/library/edit",
