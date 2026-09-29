@@ -49,8 +49,10 @@ blocking on the store lock that `reflect`/`learn` hold across a model call
 whole-store rewrite caught before merge (#184); the same unlocked-append
 pattern caught in review in the sessions store (#382).
 
-Measured cost: `mecha rules list --json` (rules plus the whole validation
-ledger, with tallies) takes 0.01 s; parsing all three ledgers takes 3 ms.
+Measured cost: `mecha rules list --json --no-board` (rules plus the whole
+validation ledger, with tallies) takes 0.01 s; the full verb takes 0.85 s,
+and the difference is the task board it fetches, not the store. Parsing all
+three ledgers takes 3 ms.
 Whole-file reading would need tens of megabytes of reflections — decades at
 today's rate — before a run start noticed.
 
@@ -202,9 +204,17 @@ adopted. **D2 stays open** — see the caveat under it.
 ## 8. Plan
 
 1. **Locks and single-write appends** (defects 1–2). Ship regardless.
+   The lock guards a *dead* holder (the kernel drops it) but not a *hung*
+   one: `reflect` and `mail reflect` hold it across provider calls, so a
+   stuck provider parks every other writer, `forget` from the web included,
+   with no timeout. That predates this plan. It is worth a bounded wait
+   with a message in `forget` if it ever bites.
 2. **Lossless rewrites** (defect 3).
 3. **Resumable multi-step writes and the parse-failure policy** (defect 4,
-   D1).
+   D1). D1's warning has to be written in the same change. The run-start
+   callers beside `rules_carried_for` in `setup.rs` already swallow errors
+   with `unwrap_or_default()`, so a skipped `learned.toml` with no warning
+   of its own would degrade silently.
 4. Correct the stale descriptions: the `learning.rs` module-doc layout, the
    user guide's file table, `Proposal::status`'s vocabulary, and the git
    mentions left in `SettingsLearning.svelte` and `MEMORY-RESEARCH.md`.
