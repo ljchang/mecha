@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use super::{
     current, digest_of, front_matter, parse_toml, read_prose, snapshot, strip_comments,
-    validate_persona_name, Answers, Settings, Status, VersionRecord,
+    validate_name, validate_persona_name, Answers, Settings, Status, VersionRecord,
 };
 use crate::config::{AgentConfig, SecurityConfig};
 use crate::tool::{Egress, Registry};
@@ -112,6 +112,9 @@ pub fn load_version(dir: &Path, name: &str, digest: &str) -> Result<Pinned> {
     ];
     let mut relationships = Vec::new();
     for r in &settings.relationship.0 {
+        // Validated before it becomes a path, as the live load does; the
+        // re-digest below would catch a tampered name, but only after a read.
+        validate_name(r).context("in the snapshot's `relationship`")?;
         let text = read_prose(&vdir.join("relationships").join(format!("{r}.md")))?;
         files.push((format!("relationships/{r}.md"), text.clone()));
         relationships.push((r.clone(), text));
@@ -235,7 +238,9 @@ pub fn registry_for(pool: &Registry, settings: &Settings) -> PersonaTools {
             continue;
         };
         let caps = form.capabilities();
-        if caps.egress == Egress::Chosen {
+        // `>=`, not `==`: exact today, and still exact if a class is ever
+        // added above `Chosen`.
+        if caps.egress >= Egress::Chosen {
             refused.push(refuse(
                 "here it could send to a destination the model names (for web_search: \
                  no backend with a fixed destination is configured)",
@@ -660,6 +665,53 @@ mod tests {
         assert!(format!("{e}").contains("changed on disk"), "{e}");
         assert!(load_version(&dir, "mara", "../../x").is_err());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A snapshot naming a relationship that is a path is refused before
+    /// any read — not only by the re-digest after one (review of #409).
+    #[test]
+    fn a_snapshot_relationship_is_a_name_not_a_path() {
+        let dir = scratch();
+        super::super::create(&dir, &no_lib(), new("mara")).unwrap();
+        fill_core(&dir, "mara");
+        let pinned = pin(&dir, "mara").unwrap();
+        let toml = dir
+            .join("mara/versions")
+            .join(&pinned.digest)
+            .join("persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(
+            &toml,
+            format!("relationship = [\"../../../../etc/passwd\"]\n{text}"),
+        )
+        .unwrap();
+        let e = load_version(&dir, "mara", &pinned.digest).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("snapshot's `relationship`"),
+            "{e:#}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// `registry_for` refuses `egress >= Chosen`; that is exact while
+    /// `Chosen` is the top class. The `match` is exhaustive, so a class
+    /// added to `Egress` is a compile error here until someone places it —
+    /// a list of the three today could not fail (review of #409).
+    #[test]
+    fn chosen_is_the_widest_egress_class() {
+        fn rank(e: Egress) -> u8 {
+            match e {
+                Egress::None => 0,
+                Egress::Blind => 1,
+                Egress::Chosen => 2,
+            }
+        }
+        for e in [Egress::None, Egress::Blind, Egress::Chosen] {
+            assert!(e <= Egress::Chosen);
+            assert!(rank(e) <= rank(Egress::Chosen));
+            // `Ord` agrees with the rank, so `>=` means what it says.
+            assert_eq!(e >= Egress::Chosen, rank(e) >= rank(Egress::Chosen));
+        }
     }
 
     #[test]
