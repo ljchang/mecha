@@ -43,7 +43,9 @@ pub struct Args {
     /// appraisal leg existed whose clean steer or denial is waiting only on
     /// an appraisal to be compared (row 2e-1). Nothing is pushed to the
     /// graph and no session is re-marked; the rows written predict nothing,
-    /// since the outcome was already known. Local model only.
+    /// since the outcome was already known. Local model only; the graph
+    /// server is still connected, read-only, for the goal pointers a claim
+    /// is grounded against.
     #[arg(long)]
     pub backfill_appraisals: bool,
 }
@@ -184,10 +186,14 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
     // target not yet distilled waits on the ordinary pass, and one whose
     // transcript is gone cannot be appraised. Said whenever either is not
     // zero, never read as zero (review of #388).
-    let (undistilled, missing) = match &backfill {
+    // And the ones distilled and listed but not taken this run: past
+    // `--limit`, or a test or experiment session (review of #388).
+    let (undistilled, missing, held) = match &backfill {
         Some(targets) => {
             let listed: std::collections::HashSet<&str> =
                 listed_ids.iter().map(String::as_str).collect();
+            let taken: std::collections::HashSet<&str> =
+                todo.iter().map(|(m, _)| m.id.as_str()).collect();
             (
                 targets
                     .iter()
@@ -197,15 +203,24 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
                     .iter()
                     .filter(|t| !listed.contains(t.as_str()))
                     .count(),
+                targets
+                    .iter()
+                    .filter(|t| {
+                        listed.contains(t.as_str())
+                            && done.contains(*t)
+                            && !taken.contains(t.as_str())
+                    })
+                    .count(),
             )
         }
-        None => (0, 0),
+        None => (0, 0, 0),
     };
-    if backfill.is_some() && !todo.is_empty() && (undistilled > 0 || missing > 0) {
+    if backfill.is_some() && !todo.is_empty() && (undistilled + missing + held) > 0 {
         println!(
             "backfill: {} session(s) to appraise; also {undistilled} waiting on the ordinary \
-             pass (not distilled yet) and {missing} whose transcript is no longer in the \
-             session store",
+             pass (not distilled yet), {missing} whose transcript is no longer in the session \
+             store, and {held} left for another run (past --limit, or a test or experiment \
+             session)",
             todo.len()
         );
     }
@@ -218,8 +233,9 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
             } else {
                 println!(
                     "nothing to backfill now: {undistilled} session(s) wait on an appraisal but \
-                     are not distilled yet — the ordinary pass takes those — and {missing} \
-                     whose transcript is no longer in the session store"
+                     are not distilled yet — the ordinary pass takes those — {missing} whose \
+                     transcript is no longer in the session store, and {held} passed over as a \
+                     test or experiment session"
                 );
             }
         } else {
