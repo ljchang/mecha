@@ -553,14 +553,18 @@ impl Renderer {
                 .rev()
                 .collect::<Vec<_>>()
                 .join(" / ");
-            // The tail is poppler's words about *this document* — and poppler
-            // interpolates content-stream strings into its diagnostics — so it
-            // travels as third-party text (found on review of #404).
-            return Err(anyhow::Error::new(ParserSaid(format!(
-                "`{program}` failed ({}): {}",
-                out.status,
-                tail.trim()
-            ))));
+            let msg = format!("`{program}` failed ({}): {}", out.status, tail.trim());
+            // Poppler's words about *this document* — it interpolates
+            // content-stream strings into its diagnostics — travel as
+            // third-party text (found on review of #404). The sandbox's own
+            // refusal (bwrap's "bwrap: …", before poppler ever ran) is ours,
+            // and marking it would arm untrusted taint over nothing a
+            // document said.
+            return Err(if stderr_is_the_sandboxs(&stderr) {
+                anyhow!(msg)
+            } else {
+                anyhow::Error::new(ParserSaid(msg))
+            });
         }
         Ok(out.stdout)
     }
@@ -572,9 +576,14 @@ impl Renderer {
         let scratch = Scratch::new(b"")?;
         // `pdfinfo -v` exits 0 on the poppler shipped here (24.02); what it
         // proves is that the confinement starts *and* poppler is inside it.
+        // No document here — an empty scratch — so whatever failed, it is not
+        // a document's words: the chain is flattened to plain text, dropping
+        // any `ParserSaid`, before it can be marked external (found on
+        // review).
         self.run(&scratch, "pdfinfo", &["-v".to_string()])
             .await
             .map(|_| ())
+            .map_err(|e| anyhow!("{e:#}"))
             .with_context(|| {
                 format!(
                     "the PDF renderer cannot run under {} confinement — install poppler-utils, \
@@ -1155,6 +1164,18 @@ impl std::fmt::Display for ParserSaid {
 
 impl std::error::Error for ParserSaid {}
 
+/// Whether a failed confined command's stderr is only the sandbox's own —
+/// bwrap refusing to start (no user namespaces, a missing path) — so poppler
+/// never ran and nothing in it came from a document.
+fn stderr_is_the_sandboxs(stderr: &str) -> bool {
+    let mut lines = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .peekable();
+    lines.peek().is_some() && lines.all(|l| l.starts_with("bwrap:"))
+}
+
 /// Whether `e`, anywhere in its chain, carries a parser's words about the
 /// document ([`ParserSaid`]).
 pub fn carries_document_text(e: &anyhow::Error) -> bool {
@@ -1389,8 +1410,11 @@ impl Extractor {
                             "this page has no text layer and OCR is off ([documents] ocr = false)"
                                 .into(),
                         );
-                        // Show the (empty) text layer so the page is not silent.
-                        page.text.get_or_insert_with(String::new);
+                        // Show the text layer — thin as it may be — so the
+                        // page is not silent: a few words of the file's own
+                        // are still its words (the OCR-failure branch's rule).
+                        page.text
+                            .get_or_insert_with(|| layer.text[n as usize - 1].clone());
                     }
                     Some(client) => {
                         if let Some(hit) = self
@@ -1501,6 +1525,22 @@ async fn until_cancelled<F: std::future::Future>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sandbox's own refusal is ours; anything poppler said is the
+    /// document's.
+    #[test]
+    fn a_sandbox_refusal_is_not_document_text() {
+        assert!(stderr_is_the_sandboxs(
+            "bwrap: No permissions to create new namespace\n"
+        ));
+        assert!(!stderr_is_the_sandboxs(
+            "Syntax Error: Couldn't find trailer dictionary\n"
+        ));
+        assert!(!stderr_is_the_sandboxs(
+            "bwrap: warning\nSyntax Error (12): Illegal character <2f> in (hi)\n"
+        ));
+        assert!(!stderr_is_the_sandboxs(""));
+    }
 
     /// A parser's words survive context-wrapping as document text; our own
     /// refusals never read as it.
