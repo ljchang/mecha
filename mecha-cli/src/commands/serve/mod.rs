@@ -47,6 +47,7 @@ pub(crate) mod incognito;
 mod library;
 mod mail;
 mod model;
+mod persona_chat;
 mod present;
 mod proposals;
 mod questions;
@@ -335,6 +336,27 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/chat/{key}/todo", get(chat::todo))
         .route("/api/chat/{key}/send", axum::routing::post(chat::send))
         .route("/api/chat/{key}/cancel", axum::routing::post(chat::cancel))
+        // Persona chats: a door of their own, never the routes above
+        // (`persona_chat`, `PERSONA-DESIGN.md` §3.2).
+        .route("/api/personas", get(persona_chat::list))
+        .route(
+            "/api/personas/{name}/chats",
+            get(persona_chat::history).post(persona_chat::open),
+        )
+        .route(
+            "/api/personas/{name}/resume",
+            axum::routing::post(persona_chat::resume),
+        )
+        .route("/api/persona-chat/{key}", get(persona_chat::transcript))
+        .route("/api/persona-chat/{key}/events", get(persona_chat::events))
+        .route(
+            "/api/persona-chat/{key}/send",
+            axum::routing::post(persona_chat::send),
+        )
+        .route(
+            "/api/persona-chat/{key}/cancel",
+            axum::routing::post(persona_chat::cancel),
+        )
         .route("/api/chat/{key}/events", get(chat::events))
         .route("/api/chat/{key}/answer", axum::routing::post(chat::answer))
         .route("/api/chat/{key}/mode", axum::routing::post(chat::set_mode))
@@ -679,6 +701,9 @@ async fn cache_headers(request: Request<axum::body::Body>, next: Next) -> Respon
         path.starts_with("/api/incognito")
             || path == "/api/sessions"
             || path.contains(INCOGNITO_KEY_SEGMENT)
+            // A persona chat's too: a locked persona's words must not sit in
+            // the browser's cache after the library relocks (§8.3).
+            || path.starts_with("/api/persona")
     };
     let mut response = next.run(request).await;
     if is_api {

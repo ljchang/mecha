@@ -81,12 +81,15 @@ pub struct ChatState {
     /// The agent and everything read off its build, following the router's
     /// loaded model turn by turn (`crate::follow`). Shared with the mounted
     /// voice facade, so a spoken turn and a typed one run on the same model.
-    follower: Arc<crate::follow::Follower>,
+    pub(super) follower: Arc<crate::follow::Follower>,
     routes: QuestionRoutes,
     outbox_root: PathBuf,
     sessions: Mutex<HashMap<String, WebSession>>,
-    stopping: tokio_util::sync::CancellationToken,
-    runs: tokio_util::task::TaskTracker,
+    /// Persona chats: their own map, agents and transcript directory, so no
+    /// route of the assistant's can reach one (`persona_chat`).
+    pub(super) personas: Arc<super::persona_chat::PersonaChats>,
+    pub(super) stopping: tokio_util::sync::CancellationToken,
+    pub(super) runs: tokio_util::task::TaskTracker,
 }
 
 /// Where a web session's turns go.
@@ -317,6 +320,7 @@ impl ChatState {
             routes,
             outbox_root,
             sessions: Mutex::new(HashMap::new()),
+            personas: Arc::new(super::persona_chat::PersonaChats::new()?),
             stopping: Default::default(),
             runs: Default::default(),
         })
@@ -370,6 +374,9 @@ impl ChatState {
                 routes.remove(key);
             }
         }
+        // Persona runs share `runs` but live in a map of their own: cancelled
+        // here too, or `drain` waits on them (found on review of #409).
+        self.personas.stop().await;
         self.runs.close();
     }
 
@@ -903,7 +910,7 @@ pub enum WireEvent {
 /// invites reading it as the answer), `AssistantText` is redundant with the
 /// deltas that already streamed, and nested subagent events are collapsed to
 /// their own surface later — Phase 2 shows the parent run.
-fn wire_event(event: &AgentEvent, context_window: Option<u64>) -> Option<WireEvent> {
+pub(super) fn wire_event(event: &AgentEvent, context_window: Option<u64>) -> Option<WireEvent> {
     match event {
         AgentEvent::TextDelta(text) => Some(WireEvent::Delta { text: text.clone() }),
         // The turn forwarder sends a delivery receipt, without a second bubble.
@@ -1011,7 +1018,7 @@ fn strip_voice_preamble(text: &str) -> &str {
     }
 }
 
-fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
+pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
     // The call's arguments, kept until its result arrives — a `tool_result`
     // block names only the id that produced it.
     //
@@ -1447,6 +1454,14 @@ fn ensure_session_as<'a>(
         // transcript under a key that promised it none.
         if super::incognito::is_incognito_key(key) {
             return Err(super::incognito::Closed.into());
+        }
+        // A persona chat has its own door and its own transcript directory
+        // (`persona_chat`), and one missing here must never be re-created as
+        // an assistant chat — that would record a persona's words in
+        // `~/.mecha/sessions/`, where learning and distillation read
+        // (`PERSONA-DESIGN.md` §3.2).
+        if super::persona_chat::is_persona_key(key) {
+            anyhow::bail!("`{key}` is a persona chat; it has its own routes");
         }
         // Picking one back up, or starting one. `Session::load` restores the
         // messages *and* the recorded taint, so a conversation that read a
@@ -3195,26 +3210,52 @@ pub async fn events(
             None => return (StatusCode::NOT_FOUND, "no such session\n").into_response(),
         }
     };
-    let stop = chat.stopping.clone();
-    let stream = futures::stream::unfold((rx, stop), |(mut rx, stop)| async move {
-        let received = tokio::select! {
-            biased;
-            _ = stop.cancelled() => return None,
-            received = rx.recv() => received,
-        };
-        match received {
-            Ok(wire) => {
-                let event = SseEvent::default().json_data(&wire).ok()?;
-                Some((Ok::<_, std::convert::Infallible>(event), (rx, stop)))
+    sse(rx, chat.stopping.clone())
+}
+
+/// A session's broadcast as server-sent events, ending at shutdown. Shared
+/// by the assistant's chats and persona chats (`persona_chat`), so a
+/// subscriber that falls behind gets the same notice on either.
+pub(super) fn sse(
+    rx: broadcast::Receiver<WireEvent>,
+    stop: tokio_util::sync::CancellationToken,
+) -> axum::response::Response {
+    sse_while(rx, stop, || true)
+}
+
+/// [`sse`], ending at the first event after `allowed` stops holding — for a
+/// stream a token let in, which must not outlive the token (`persona_chat`).
+pub(super) fn sse_while(
+    rx: broadcast::Receiver<WireEvent>,
+    stop: tokio_util::sync::CancellationToken,
+    allowed: impl Fn() -> bool + Send + Sync + 'static,
+) -> axum::response::Response {
+    let allowed = std::sync::Arc::new(allowed);
+    let stream = futures::stream::unfold((rx, stop), move |(mut rx, stop)| {
+        let allowed = std::sync::Arc::clone(&allowed);
+        async move {
+            let received = tokio::select! {
+                biased;
+                _ = stop.cancelled() => return None,
+                received = rx.recv() => received,
+            };
+            if !allowed() {
+                return None;
             }
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                let notice = WireEvent::Notice {
-                    text: format!("{n} events missed — reload for the full transcript"),
-                };
-                let event = SseEvent::default().json_data(&notice).ok()?;
-                Some((Ok(event), (rx, stop)))
+            match received {
+                Ok(wire) => {
+                    let event = SseEvent::default().json_data(&wire).ok()?;
+                    Some((Ok::<_, std::convert::Infallible>(event), (rx, stop)))
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    let notice = WireEvent::Notice {
+                        text: format!("{n} events missed — reload for the full transcript"),
+                    };
+                    let event = SseEvent::default().json_data(&notice).ok()?;
+                    Some((Ok(event), (rx, stop)))
+                }
+                Err(broadcast::error::RecvError::Closed) => None,
             }
-            Err(broadcast::error::RecvError::Closed) => None,
         }
     });
     Sse::new(stream)
@@ -4652,6 +4693,7 @@ pub(super) fn test_chat() -> Arc<ChatState> {
         routes: Arc::default(),
         outbox_root: OutboxStore::default_root().unwrap(),
         sessions: Mutex::new(HashMap::new()),
+        personas: Arc::new(super::persona_chat::PersonaChats::for_tests()),
         stopping: Default::default(),
         runs: Default::default(),
     })
@@ -4988,6 +5030,25 @@ fn test_chat_with(
     config: Config,
     todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
 ) -> Arc<ChatState> {
+    test_chat_built(
+        provider,
+        registry,
+        config,
+        todo,
+        super::persona_chat::PersonaChats::for_tests(),
+    )
+}
+
+/// [`test_chat_with`], with the persona door the caller built — for
+/// `persona_chat`'s tests, which need a store and a provider of their own.
+#[cfg(test)]
+pub(super) fn test_chat_built(
+    provider: Box<dyn mecha_core::provider::Provider>,
+    registry: mecha_core::tool::Registry,
+    config: Config,
+    todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
+    personas: super::persona_chat::PersonaChats,
+) -> Arc<ChatState> {
     let agent = Agent::new(
         provider,
         registry,
@@ -5009,9 +5070,29 @@ fn test_chat_with(
         routes: Arc::default(),
         outbox_root: OutboxStore::default_root().unwrap(),
         sessions: Mutex::new(HashMap::new()),
+        personas: Arc::new(personas),
         stopping: Default::default(),
         runs: Default::default(),
     })
+}
+
+/// An assistant route handed a persona chat's key must not create an
+/// assistant chat under it: that would record a persona's words in
+/// `~/.mecha/sessions/`, where learning and distillation read.
+#[cfg(test)]
+#[tokio::test]
+async fn an_assistant_route_never_creates_a_persona_chat() {
+    let chat = test_chat();
+    let bound = chat.follower.current();
+    let mut sessions = chat.sessions.lock().await;
+    let refused = ensure_session(&chat, &bound, &mut sessions, "p-0123456789ab")
+        .err()
+        .expect("a persona key was accepted by the assistant's door");
+    assert!(format!("{refused}").contains("persona chat"), "{refused}");
+    // The refusal names the persona door, so it is the key's and not some
+    // other failure to create (an ordinary key would create a transcript in
+    // the real `~/.mecha/sessions`, which no test may do).
+    assert!(sessions.is_empty());
 }
 
 #[cfg(test)]
