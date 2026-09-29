@@ -4726,7 +4726,12 @@ The decisions that carry it, each a bug if undone:
   the hash of the empty string with no ids is *recorded and empty* (the
   lever off, or no store — `RulesCarried::none`); no hash at all is a
   record from before the field and reads as *unknown*, as does `delivered:
-  None` against this build's `Some([])`. `mecha replay` prints which
+  None` against this build's `Some([])`. A fourth: no hash *with*
+  `rules_skipped` is a run whose block was rendered past a learned-rules
+  file that could not be read (D1 in `LEARNING-STORE-RESEARCH.md`: skipped
+  rather than failing the run). That is also *unknown*, for a reason the
+  record names; tenure's scan reports such sessions as a caveat rather
+  than passing over them as carrying nothing. `mecha replay` prints which
   (`RunConfig::rules_arm_note`), and "unknown" must never print as
   "nothing", the dash-is-never-zero shape one store over.
 - **A divergent episode is dropped, not scored.** Replay answers from the
@@ -6820,7 +6825,37 @@ the owner's** (row 2b-2, R33, R37).
 - **Who writes and who reads.** `mecha distill` scores what has resolved
   on every writing pass — even one with nothing to distill or with the
   graph down, since windows close on quiet nights — with no model call. `sessions appraise` reads coverage
-  (`expectations` in `--json`), and `hit_rate` is `None` over no scores.
+  (`expectations` in `--json`).
+- **The hit rate is over predictions that could miss.** A chat answer or a
+  run that staged nothing leaves the owner no draft, task or workflow to act
+  on (`output_offers_act`), so `no_act` is the only answer `observe` can give
+  it and predicting `no_act` there is a hit by construction. Such hits are
+  counted as `forced` and left out of `hit_rate` on both sides; `hit_rate` is
+  `None` when no scored prediction could miss — over no scores, or over
+  forced ones alone, which read "100%" on the live store before (#377). An
+  unreadable act store never makes a hit forced, and never vouches that it
+  could miss either: with nothing found in what was read, the hit is
+  `forced_unknown`, named on the line, and while any is on record the rate
+  is withheld — an unjudged hit gets no rate. Dropping only those hits would
+  push the rate down instead, since surprises are never classified.
+  Forcing is one-sided on purpose: a prediction of some other act on an
+  output that offered none is a miss by construction and stays in the rate,
+  because predicting an impossible act is a real error where predicting the
+  only possible one is not a real success. One act found decides it whatever else is
+  unread (a task anchor, with the outbox blind). Classified at read time, so
+  `scores.jsonl` is unchanged and the surprises replay priority reads cannot
+  be forced.
+- **Where nothing could be acted on, the prediction is not asked for**
+  (ruling 1B, #378). `withholds_expectation` is the write-time test: the
+  output offers no act now (`output_offers_act` is `Some(false)`) *and* the
+  run never called a task-linking tool (`kg_task_create` / `kg_task_update`,
+  over every message it ever had, since compaction does not unlink a task).
+  It is stricter than the read-time test on purpose. The owner's closures
+  and workflow dispositions do not exist yet when the appraisal is written,
+  and a row is written once, so a prediction withheld wrongly could never be
+  scored. Unknown asks. A withheld row carries `expected_act_withheld`, set
+  by the harness and never parsed from the reply, and the readout counts it
+  as `not_asked`, apart from a prediction the appraiser left out.
 
 **The counts-only appraiser is retired into it** (row 2a-3, R25). Before,
 `appraise_with_model` ran a quarantined pass over `AppraiserEvidence` behind

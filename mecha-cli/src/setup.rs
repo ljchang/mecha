@@ -661,6 +661,19 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                     mecha_core::planning::examples(&dir, &situation).unwrap_or_default();
             }
             rules = store.rules_carried_for(mecha_core::learning::RUN_DOMAINS, &situation)?;
+            // D1: a learned file that does not parse is skipped rather than
+            // failing the run, and said here, where the run starts (the
+            // routed-name precedent). doctor repeats it for the surfaces
+            // whose stderr nobody sees.
+            for s in &rules.skipped {
+                eprintln!(
+                    "mecha: learned rules for `{}` could not be read, so this run carries \
+                     none of them — fix or remove {}: {}",
+                    s.domain,
+                    s.path.display(),
+                    s.error
+                );
+            }
             if let Some(block) = rules.block.clone() {
                 let base = agent_cfg.resolve_system_prompt()?.unwrap_or_default();
                 agent_cfg.system_prompt = Some(if base.is_empty() {
