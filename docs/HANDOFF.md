@@ -22,15 +22,10 @@ maps which document holds what.
 
 ## Where the work is
 
-**2026-09-28/29 — the image library (#380, #383–#385), merged and
-installed.** What shipped is in HISTORY under 2026-09-28 and 2026-09-29.
+**2026-09-28/29 — the image library (#380, #383–#385, #390, #391, #394),
+merged and installed.** What shipped is in HISTORY under 2026-09-28 and 2026-09-29.
 Open:
 
-- **`extras` on `image_generate` (#390, `a6941f8d`) and its follow-ups
-  (#391, `fc0b7c75`): merged, not deployed.** What they shipped, including
-  four items this block used to list, is in HISTORY under 2026-09-29.
-  Checked 2026-09-29: the installed binary (`c6ae2c69`) carries none of
-  their literals, so the deploy is what is open.
 - **#385's remaining last-pass minor:** the route tests for the CLI-child
   actions (reject, lock, unlock, remove, save) should run under
   `testenv::HomeGuard`.
@@ -3199,6 +3194,17 @@ code, but the next move is an ordinary fast-forward by the recipe. Four
 Claude Code sessions still hold `mecha-graph-mcp` children on a deleted
 binary (pids 2006709, 52563, 53059 and 54331; each `/proc/<pid>/exe` reads
 `(deleted)`, checked 2026-09-29). They refresh when those sessions restart.
+
+**2026-09-29 04:06Z, mecha-d7: `mecha` from `8103d746` (#390, #391, #394)
+and its dist (`index-OHSoDwAD.js`).** `mecha-slack`, `mecha-triggers`,
+`mecha-drain` and `mecha-serve` were restarted, `mecha-serve` at 04:06:18Z;
+`mecha-mail`, the graph binaries and the voice worker were not touched.
+Checked the same morning:
+- `strings ~/.cargo/bin/mecha` carries "not from any image" (#390), "the
+  portrait is not base64" (#394) and `mecha/unlogged` (#376).
+- The `:8443` door serves `index-OHSoDwAD.js`, which still carries the
+  incognito answer gate.
+- The worker still answers `{"unlogged":true}`.
 
 ## What the measurements say
 

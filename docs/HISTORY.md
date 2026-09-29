@@ -15,7 +15,7 @@ still worth knowing about, because the next person will otherwise re-derive it.
 ## What shipped, and when
 
 **2026-09-29 — people in a picture who are not library characters
-(#390, #391); merged, not deployed.** `IMAGE-COMPILER-RESEARCH.md` §E11
+(#390, #391), and adding to the library from the page (#394).** `IMAGE-COMPILER-RESEARCH.md` §E11
 and §E12 are the evidence.
 - E11 (4 images): a head count covering only the cast ("Exactly three
   people") pushed a described waiter into the background; counting him in
@@ -44,8 +44,14 @@ refused. The same PR closed four follow-ups from #384 and #385:
   (`a_failed_install_leaves_no_temp_file_behind`);
 - the `ARCHITECTURE.md` bullet names its exceptions.
 
-Neither is installed: the binary in `~/.cargo/bin` (`c6ae2c69`) carries
-none of their literals.
+#394 (`8103d746`) lets the Library tab add a character (an uploaded
+portrait, a name and a description) or a style, and edit an approved
+entry. Each action runs the same `mecha imagelib` child the terminal does,
+behind `/api/library/add` and `/api/library/edit`. The page scales the
+portrait to 1536 px and re-encodes it, which drops its photo metadata. An
+edit honours the lock and is refused on a candidate, because a rewritten
+text would approve it. All three were installed 2026-09-29 at 04:06Z
+(HANDOFF, *Machine state*).
 
 **2026-09-29 — the image library reaches the page (#384, #385).** #384
 (`1139ac79`) makes every pre-GPU `image_generate` refusal lead with
