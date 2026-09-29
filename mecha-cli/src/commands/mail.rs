@@ -2328,16 +2328,9 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
     let learning = mecha_core::learning::LearningStore::open(
         mecha_core::learning::LearningStore::default_root()?,
     )?;
-    // The store lock, before reading the mined set — as `mecha reflect`
-    // takes it. Unlocked, a reflection appended here while a learn pass
-    // rewrote the file (marking reflections processed) could vanish in that
-    // rewrite's rename, while its mined mark survived: lost for good, and
-    // never mined again. Held across the model calls, like reflect.
-    let _lock = if dry_run {
-        None
-    } else {
-        Some(learning.lock()?)
-    };
+    // Read unlocked, as a filter: each write re-checks it under the lock
+    // (`record_correction`), which is held for the write and never across
+    // the model call before it.
     let mined = learning.mined_corrections()?;
 
     let mut todo: Vec<(Record, mecha_core::mail_triage::Correction)> = Vec::new();
@@ -2409,8 +2402,9 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
                     continue;
                 }
                 Ok(None) => {
-                    declined += 1;
-                    learning.mark_correction_mined(&key)?;
+                    if record_correction(&learning, &key, None)? {
+                        declined += 1;
+                    }
                 }
                 Ok(Some(lesson)) => {
                     let refl = mecha_core::learning::Reflexion {
@@ -2455,10 +2449,10 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
                         dropped_at: None,
                         dropped_reason: None,
                     };
-                    learning.append_reflexion(&refl)?;
-                    learning.mark_correction_mined(&key)?;
-                    learned += 1;
-                    println!("  + {lesson}");
+                    if record_correction(&learning, &key, Some(&refl))? {
+                        learned += 1;
+                        println!("  + {lesson}");
+                    }
                 }
             },
         }
@@ -2468,6 +2462,34 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
         println!("`mecha learn --domain triage` consolidates them into rules.");
     }
     Ok(())
+}
+
+/// Write one correction's outcome — its lesson, if it taught one, and its
+/// mined mark — under the learning store's lock. Returns false when another
+/// pass mined the same correction first.
+///
+/// Unlocked, a reflection appended here while a learn pass rewrote the file
+/// (marking reflections processed) could vanish in that rewrite's rename
+/// while its mined mark survived: lost for good, and never mined again. The
+/// lock is held for these two appends and not across the model call before
+/// them, so a hung provider cannot park every other writer (`forget` from the
+/// web included) behind it. The price is the re-check: two passes can ask
+/// about the same correction, and the second one's answer is dropped rather
+/// than doubled.
+fn record_correction(
+    learning: &mecha_core::learning::LearningStore,
+    key: &str,
+    lesson: Option<&mecha_core::learning::Reflexion>,
+) -> Result<bool> {
+    let _lock = learning.lock()?;
+    if learning.mined_corrections()?.contains(key) {
+        return Ok(false);
+    }
+    if let Some(r) = lesson {
+        learning.append_reflexion(r)?;
+    }
+    learning.mark_correction_mined(key)?;
+    Ok(true)
 }
 
 /// Put a thread on the task board, carrying its deadline.
@@ -3088,27 +3110,46 @@ fn draft_prompt(
 #[cfg(test)]
 mod reflect_lock_tests {
     /// Read from the source, as the served-session tests are: the path makes
-    /// model calls, and what matters is that the learning-store lock is taken
-    /// before the mined set is read. Unlocked, an append here raced a learn
-    /// pass's rewrite of `reflections.jsonl` and could be lost for good.
+    /// model calls. Two things matter. Every write goes through
+    /// `record_correction`, which takes the lock before re-reading the mined
+    /// set and before appending — unlocked, an append here raced a learn
+    /// pass's rewrite of `reflections.jsonl` and could be lost for good. And
+    /// `reflect` itself never holds the lock, so a hung provider call cannot
+    /// park every other writer behind it.
     #[test]
-    fn mail_reflect_takes_the_learning_lock_before_reading_the_mined_set() {
+    fn mail_reflect_writes_under_the_lock_and_never_holds_it_across_a_model_call() {
         let src = include_str!("mail.rs");
-        let body = src
-            .split("async fn reflect(")
-            .nth(1)
-            .and_then(|b| b.split("\nasync fn ").next())
-            .expect("mail reflect is where this test expects it");
-        let lock = body
+        let section = |start: &str| {
+            src.split(start)
+                .nth(1)
+                .and_then(|b| b.split("\n}\n").next())
+                .unwrap_or_else(|| panic!("`{start}` is where this test expects it"))
+                .to_string()
+        };
+        let record = section("fn record_correction(");
+        let lock = record
             .find("learning.lock()")
-            .expect("mail reflect takes no store lock");
-        let read = body
+            .expect("record_correction takes no lock");
+        let reread = record
             .find("mined_corrections()")
-            .expect("the mined set is read");
+            .expect("no re-check under the lock");
+        let append = record.find("append_reflexion(").expect("no append");
+        assert!(lock < reread && reread < append, "{record}");
+
+        let reflect = section("async fn reflect(");
         assert!(
-            lock < read,
-            "the lock must be taken before the mined set is read"
+            !reflect.contains(".lock()"),
+            "reflect holds the lock itself"
         );
+        assert!(
+            !reflect.contains("append_reflexion("),
+            "a write bypasses record_correction"
+        );
+        assert!(
+            !reflect.contains("mark_correction_mined("),
+            "a write bypasses record_correction"
+        );
+        assert_eq!(reflect.matches("record_correction(").count(), 2);
     }
 }
 
