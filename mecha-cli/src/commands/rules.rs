@@ -965,6 +965,7 @@ fn find_rule(store: &LearningStore, id: &str) -> Result<(String, Vec<Rule>, usiz
 
 fn retire(store: &LearningStore, id: &str, reason: Option<String>) -> Result<()> {
     let _lock = store.lock()?;
+    crate::commands::learn::finish_interrupted(store)?;
     let (domain, mut rules, i) = find_rule(store, id)?;
     if rules[i].retired_at.is_some() {
         bail!(
@@ -990,6 +991,7 @@ fn retire(store: &LearningStore, id: &str, reason: Option<String>) -> Result<()>
 
 fn restore(store: &LearningStore, id: &str) -> Result<()> {
     let _lock = store.lock()?;
+    crate::commands::learn::finish_interrupted(store)?;
     let (domain, mut rules, i) = find_rule(store, id)?;
     if rules[i].retired_at.is_none() {
         bail!(
@@ -1055,6 +1057,7 @@ fn propose(
     owner: Option<&Tally>,
 ) -> Result<()> {
     let _lock = store.lock()?;
+    crate::commands::learn::finish_interrupted(store)?;
     // Two folds of one ledger (owner's ruling, 2026-09-27: count one model).
     // The convictions a retirement counts are this model's rows only; whether
     // a rule was measured beyond its convictions — the probation release — is
@@ -1271,22 +1274,29 @@ fn propose(
         // re-derived. It is per-rule and leaves the rest of the store alone,
         // which a whole-store rewind (the old `git revert`) never did.
         if apply {
-            store.write_learned_rules(&domain, &rules)?;
-            store.append_run(&LeapRun {
-                id: Session::new_id(),
-                domain: domain.clone(),
-                reflexions_processed: 0,
-                // **Whole file, not the active subset** — the count every
-                // other `LeapRun` writer uses (`learn` writes
-                // `learned_before.len()` / `rules.len()`; `accept` the same).
-                // A retirement never removes a row, so these are equal and
-                // the pass shows as a flat step; counting `active()` here
-                // instead put two different measures on one series in the
-                // "Rule set over time" chart, where a retirement would read
-                // as a drop and a consolidation as a total.
-                rules_before: before.len() as u32,
-                rules_after: rules.len() as u32,
-                created_at: now.clone(),
+            // One commit, like every other change that puts rules live: a
+            // crash between the rules and the run would leave a retirement
+            // live with no run recording it.
+            store.commit_rules(&mecha_core::learning::RuleCommit {
+                reflexion_ids: Vec::new(),
+                rules: rules.clone(),
+                proposal: None,
+                run: LeapRun {
+                    id: Session::new_id(),
+                    domain: domain.clone(),
+                    reflexions_processed: 0,
+                    // **Whole file, not the active subset** — the count every
+                    // other `LeapRun` writer uses (`learn` writes
+                    // `learned_before.len()` / `rules.len()`; `accept` the same).
+                    // A retirement never removes a row, so these are equal and
+                    // the pass shows as a flat step; counting `active()` here
+                    // instead put two different measures on one series in the
+                    // "Rule set over time" chart, where a retirement would read
+                    // as a drop and a consolidation as a total.
+                    rules_before: before.len() as u32,
+                    rules_after: rules.len() as u32,
+                    created_at: now.clone(),
+                },
             })?;
             store.log_pass(&format!(
                 "retire[{domain}]: {retired_count} retired, {narrowed_count} narrowed at \
