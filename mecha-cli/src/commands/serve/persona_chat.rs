@@ -936,7 +936,13 @@ pub async fn list(State(state): Web, Query(q): Query<UnlockQuery>) -> axum::resp
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    Json(chat.personas.list(&state.library, q.unlock.as_deref())).into_response()
+    // Off the async threads, as `library::list` is: it walks two stores.
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    match tokio::task::spawn_blocking(move || personas.list(&library, q.unlock.as_deref())).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => Refusal::Failed(format!("listing personas: {e}")).into_response(),
+    }
 }
 
 /// POST /api/personas/{name}/chats

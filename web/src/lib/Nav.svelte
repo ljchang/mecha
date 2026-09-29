@@ -74,7 +74,7 @@
     cursor: default;
   }
 
-  /* The same six places, turned ninety degrees. A bottom bar is a thumb
+  /* The same places, turned ninety degrees. A bottom bar is a thumb
      affordance; on a desktop the thumb is a cursor and the bottom of a
      1400px window is the furthest point from where the eye already is —
      so the bar becomes a left rail. `order: -1` does the moving: the shell
