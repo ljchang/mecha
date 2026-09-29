@@ -1873,7 +1873,7 @@ impl Extractor {
                         }
                         return Ok(ocr);
                     }
-                    None => Some("the layout model found no regions on this page".to_string()),
+                    None => Some("the layout model found nothing to read on this page".to_string()),
                 }
             }
             Stage::Unavailable(_) => Some("the layout stage is unavailable".to_string()),
@@ -1881,12 +1881,29 @@ impl Extractor {
         };
         let png = self.renderer.page_png(s, n, size).await?;
         let mut ocr = client.page(&png).await?;
+        ocr.fallback = fallback;
         if let Some(cache) = &self.cache {
-            if let Err(e) = cache.store_ocr(sha, client.model(), OCR_PIPELINE, n, &ocr) {
+            // A page the layout stage read whole is that pipeline's answer for
+            // this page, so it is stored under the key `cached_ocr` reads for
+            // it, note and all — under OCR_PIPELINE alone the stage never found
+            // it again, and every call re-paid the layout pass and a
+            // whole-page read (found on review). The whole-page recipe's own
+            // entry keeps no note: a later `layout = false` read must not
+            // inherit "the layout stage is unavailable".
+            let stored = match stage {
+                Stage::Layout { key, .. } => cache.store_ocr(sha, client.model(), key, n, &ocr),
+                _ => {
+                    let plain = OcrPage {
+                        fallback: None,
+                        ..ocr.clone()
+                    };
+                    cache.store_ocr(sha, client.model(), OCR_PIPELINE, n, &plain)
+                }
+            };
+            if let Err(e) = stored {
                 tracing::warn!("document cache: page {n} not stored: {e:#}");
             }
         }
-        ocr.fallback = fallback;
         Ok(ocr)
     }
 
@@ -1908,7 +1925,12 @@ impl Extractor {
         let started = Instant::now();
         let found = worker.detect(&img).await.context("the layout stage")?;
         let layout_secs = started.elapsed().as_secs_f64();
-        if found.is_empty() {
+        // Nothing *readable* is the same as nothing found: a page whose only
+        // regions are figures (no region with a prompt) would otherwise be
+        // transcribed as `*[image]*`, cached as a complete reading and served
+        // from then on — where design §5 reads such a page whole (found on
+        // review).
+        if !found.iter().any(|d| Task::of(d.label()).prompt().is_some()) {
             return Ok(None);
         }
         // Pixels of the render → PDF points, the frame the text layer's own
