@@ -162,15 +162,26 @@ fn accept(store: &LearningStore, id: &str, force: bool) -> Result<()> {
     // An accept a crash interrupted is finished first — which, when it is
     // this proposal, is what makes the check below say "not pending" rather
     // than "the live rules changed" over rules this very proposal wrote.
-    let resumed = store.resume_interrupted()?;
-    if let Some(line) = &resumed {
-        println!("{line}");
-        store.log_pass(&format!("resume: {line}"));
-    }
+    let resumed = crate::commands::learn::finish_interrupted(store)?;
     let mut p = store.proposal(id)?;
-    // The owner asked for exactly what recovery just finished.
-    if resumed.is_some() && p.status == "accepted" {
-        println!("proposal {} is accepted", p.id);
+    // The owner asked for exactly what recovery just finished: this
+    // proposal's own interrupted accept, not a set-aside and not some other
+    // change, which leave an already-accepted proposal refused as before.
+    if matches!(
+        &resumed,
+        Some(mecha_core::learning::Resumed::Finished { proposal: Some(done), .. }) if *done == p.id
+    ) {
+        store.log_pass(&format!(
+            "accept[{}]: proposal {} — {} rule(s), finished after an interruption",
+            p.domain,
+            p.id,
+            p.rules.len()
+        ));
+        println!(
+            "accepted: {} rule(s) now live for `{}`",
+            p.rules.len(),
+            p.domain
+        );
         return Ok(());
     }
     if p.status != "pending" {
@@ -219,6 +230,7 @@ fn accept(store: &LearningStore, id: &str, force: bool) -> Result<()> {
 
 fn reject(store: &LearningStore, id: &str, reason: Option<String>) -> Result<()> {
     let _lock = store.lock()?;
+    crate::commands::learn::finish_interrupted(store)?;
     let mut p = store.proposal(id)?;
     if p.status != "pending" {
         bail!("proposal {} is {}, not pending", p.id, p.status);
@@ -318,6 +330,7 @@ fn supersede_cmd(
     reason: Option<String>,
 ) -> Result<()> {
     let _lock = store.lock()?;
+    crate::commands::learn::finish_interrupted(store)?;
     let mut proposals = store.proposals()?;
 
     // Which ones this call is about. `--stale` is deliberately not "every
@@ -490,6 +503,39 @@ mod tests {
         let r = store.reflexion("r-1").unwrap();
         assert!(r.is_processed);
         assert_eq!(r.leap_run_id.as_deref(), Some("p-crash"));
+    }
+
+    /// Recovery finishing a *different* change is not this accept: an
+    /// already-accepted proposal is still refused, not reported as a success.
+    #[test]
+    fn a_resume_of_another_change_does_not_accept_this_one() {
+        let store = temp_store();
+        store.append_reflexion(&reflexion("r-9")).unwrap();
+        let mut done = staged(&store, "p-done", &[]);
+        done.status = "accepted".into();
+        store.write_proposal(&done).unwrap();
+        // An interrupted ungated consolidation: no proposal of its own.
+        let intent = serde_json::json!({
+            "run": {
+                "id": "run-other", "domain": "behavior", "reflexions_processed": 1,
+                "rules_before": 0, "rules_after": 1, "created_at": "2026-09-29T06:00:00Z"
+            },
+            "reflexion_ids": ["r-9"],
+            "rules": [rule("from the other run")],
+            "rules_before": [],
+        });
+        std::fs::write(
+            store.root().join(mecha_core::learning::COMMIT_FILE),
+            intent.to_string(),
+        )
+        .unwrap();
+
+        let err = accept(&store, "p-done", false).unwrap_err();
+        assert!(err.to_string().contains("not pending"), "{err}");
+        assert!(
+            store.reflexion("r-9").unwrap().is_processed,
+            "the other change was finished"
+        );
     }
 
     /// **Supersede releases a proposal's reflections; reject consumes them.**

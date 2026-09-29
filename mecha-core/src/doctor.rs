@@ -2132,66 +2132,6 @@ pub fn legacy_learning_git(learning: &Path) -> Option<PathBuf> {
 /// command: accept the rate, or change what evidence the loop can use. That
 /// is why its remedy is the dry-run that shows the classifications, never
 /// anything that loosens the gate.
-/// A rule change a crash interrupted, and one recovery set aside
-/// (`LearningStore::commit_rules`, `resume_interrupted`). A commit in flight
-/// lasts milliseconds with no model call in it, so one older than a minute
-/// was interrupted.
-fn check_rule_commits(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
-    let mut out = Vec::new();
-    let pending = root.join(crate::learning::COMMIT_FILE);
-    if let Ok(meta) = std::fs::metadata(&pending) {
-        let written = meta.modified().ok().map(DateTime::<Utc>::from);
-        if written.is_none_or(|t| now - t > chrono::Duration::minutes(1)) {
-            out.push(Finding {
-                component: "learning".to_string(),
-                severity: Severity::Attention,
-                summary: "a rule change was interrupted part-way".to_string(),
-                detail: format!(
-                    "{} records a change to the learned rules that did not finish. The \
-                     next `mecha learn` or `mecha proposals accept` finishes it before \
-                     doing anything else, and the nightly pass runs `learn`.",
-                    pending.display()
-                ),
-                remedy: None,
-            });
-        }
-    }
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return out;
-    };
-    let mut aside: Vec<String> = entries
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| {
-            n.starts_with(crate::learning::UNFINISHED_COMMIT_PREFIX) && n.ends_with(".json")
-        })
-        .collect();
-    aside.sort();
-    if !aside.is_empty() {
-        out.push(Finding {
-            component: "learning".to_string(),
-            severity: Severity::Attention,
-            summary: format!(
-                "{} interrupted rule change(s) were set aside rather than finished",
-                aside.len()
-            ),
-            detail: format!(
-                "The live rules had moved by the time recovery ran, or the record was \
-                 unreadable, so finishing would have overwritten a later decision. Nothing \
-                 in them went live, and their reflections were left for the next pass to \
-                 learn from again. Read what each would have written, then delete it: {}.",
-                aside
-                    .iter()
-                    .map(|n| root.join(n).display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            remedy: None,
-        });
-    }
-    out
-}
-
 fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let mut out = Vec::new();
     let path = root.join("reflections.jsonl");
@@ -2402,6 +2342,68 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         .join(" "),
         remedy: Some(remedy),
     });
+    out
+}
+
+/// A rule change a crash interrupted, and one recovery set aside
+/// (`LearningStore::commit_rules`, `resume_interrupted`). A commit in flight
+/// lasts milliseconds with no model call in it, so one older than a minute
+/// was interrupted.
+fn check_rule_commits(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let pending = root.join(crate::learning::COMMIT_FILE);
+    if let Ok(meta) = std::fs::metadata(&pending) {
+        let written = meta.modified().ok().map(DateTime::<Utc>::from);
+        if written.is_none_or(|t| now - t > chrono::Duration::minutes(1)) {
+            out.push(Finding {
+                component: "learning".to_string(),
+                severity: Severity::Attention,
+                summary: "a rule change was interrupted part-way".to_string(),
+                detail: format!(
+                    "{} records a change to the learned rules that did not finish. The \
+                     next `mecha learn` or `mecha proposals accept` finishes it before \
+                     doing anything else, and the nightly pass runs `learn`.",
+                    pending.display()
+                ),
+                remedy: None,
+            });
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
+    let mut aside: Vec<String> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| {
+            n.starts_with(crate::learning::UNFINISHED_COMMIT_PREFIX) && n.ends_with(".json")
+        })
+        .collect();
+    aside.sort();
+    if !aside.is_empty() {
+        out.push(Finding {
+            component: "learning".to_string(),
+            severity: Severity::Attention,
+            summary: format!(
+                "{} interrupted rule change(s) were set aside rather than finished",
+                aside.len()
+            ),
+            detail: format!(
+                "Either the live rules matched neither state the record names when \
+                 recovery ran, or the record could not be read. So what landed cannot be \
+                 told from here. The change's rules may be live underneath a later edit, and \
+                 its reflections, left unmarked, may be argued again against their own \
+                 result. Compare each record with `rules/<domain>.learned.toml`, then delete \
+                 it: {}.",
+                aside
+                    .iter()
+                    .map(|n| root.join(n).display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            remedy: None,
+        });
+    }
     out
 }
 
