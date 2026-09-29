@@ -861,19 +861,21 @@ fn missing(lib: &Library, kind: Kind, name: &str) -> String {
     }
 }
 
-/// Compile a scene. Errors are sentences for the model.
-///
-/// The prompt's shape is Qwen-Image 2.1's and each clause is a measurement:
-/// one person is "the person in the image" (the rewriter's rule for a single
-/// reference); two or more are `<image1>…` left to right with the head count
-/// stated (E2, E9: each reference slot tends to become a person); every
-/// person carries their stored description beside the pointer (E1) and what
-/// they are wearing and doing (E8: a reference supplies its own otherwise).
 /// Empty, or only the refusal's own placeholder copied back — no answer.
 fn blank(s: &str) -> bool {
     s.chars().all(|c| c == '…' || c == '.')
 }
 
+/// Compile a scene. Errors are sentences for the model.
+///
+/// The prompt's shape is Qwen-Image 2.1's and each clause is a measurement:
+/// one person is "the person in the image" (the rewriter's rule for a single
+/// reference); two or more are `<image1>…` left to right (E2, E9: each
+/// reference slot tends to become a person), each said to appear exactly
+/// once — with a total only when `extras` are counted into it (E11), since a
+/// total with no extras erased a person the scene described (E12); every
+/// person carries their stored description beside the pointer (E1) and what
+/// they are wearing and doing (E8: a reference supplies its own otherwise).
 pub fn compile(
     lib: &Library,
     scene: &str,
@@ -907,6 +909,22 @@ pub fn compile(
             "At most {MAX_CAST} people in `cast`, not {}.",
             cast.len()
         ));
+    }
+    // An extra is someone the library does not hold. One who names a cast
+    // member is that person again as "a new person not from any image": two
+    // slots for one face, the duplicate the rest of this shape prevents
+    // (review of #390).
+    for extra in &extras {
+        if let Some(name) = named_in(lib, extra)
+            .into_iter()
+            .find(|n| cast.iter().any(|m| m.name.trim().to_lowercase() == *n))
+        {
+            return Err(format!(
+                "`{name}` is in `cast` and also in `extras`; `extras` is for people who are \
+                 not in the library. Leave `{name}` in `cast` only, and put what they are \
+                 doing in their `doing`."
+            ));
+        }
     }
     let mut refs = Vec::with_capacity(cast.len());
     let mut used = Vec::new();
@@ -1592,6 +1610,37 @@ mod tests {
             "{}",
             c.prompt
         );
+    }
+
+    #[test]
+    fn a_cast_member_named_again_in_extras_is_refused() {
+        let dir = scratch();
+        for n in ["maya", "john"] {
+            create(dir.path(), character(n, Origin::Owner)).unwrap();
+        }
+        let (lib, _) = Library::load(dir.path());
+        let cast = [member("maya"), member("john")];
+        let why = compile(
+            &lib,
+            "a diner",
+            &cast,
+            &["John waving from the door".into()],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            why.contains("`john` is in `cast` and also in `extras`"),
+            "{why}"
+        );
+        // A stranger who shares no name with the cast is fine.
+        compile(
+            &lib,
+            "a diner",
+            &cast,
+            &["a waiter pouring coffee".into()],
+            None,
+        )
+        .unwrap();
     }
 
     #[test]

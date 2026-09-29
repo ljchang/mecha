@@ -649,7 +649,10 @@ anyone else the scene describes is a new person" — drew the waiter in both
 images (in the background, as E11's uncounted arm did), and four cast with no
 one else came back as exactly four faces, each the right person (0.63–0.80),
 no duplicate. So the compiler states no total unless `extras` are given, and
-counts them when they are.
+counts them when they are. The one-reference case lost "Exactly one person
+in the image" on the same reasoning with no arm of its own: it is carried by
+inference from the three- and four-person arms, not measured, so a
+duplicate there is not a regression E12 covers.
 
 **Still open**, in the order they would change the design:
 
