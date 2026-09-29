@@ -194,7 +194,7 @@ fn kind_label(kind: Kind) -> &'static str {
     kind.label()
 }
 
-fn portrait_url(entry: &Entry, token: Option<&str>) -> Option<String> {
+pub(super) fn portrait_url(entry: &Entry, token: Option<&str>) -> Option<String> {
     let blob = entry.portrait.as_deref()?;
     Some(match (entry.locked, token) {
         (true, Some(t)) => format!("/api/library/portrait/{blob}?unlock={t}"),
