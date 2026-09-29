@@ -955,13 +955,34 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
 /// (`lesson_source::backfill_targets`). The appraisal store is read through
 /// its clean door with the sessions on record, as the pass reads it.
 fn backfill_targets(store: &LearningStore) -> Result<std::collections::BTreeSet<String>> {
-    let reflections = store.reflexions().context("reading the reflections")?;
+    let (reflections, torn_reflections) = store
+        .reflexions_counting()
+        .context("reading the reflections")?;
     let (clean, on_record) = match AppraisalStore::open_existing_default() {
         Some(s) => s
             .clean_with_sessions()
             .context("reading the text appraisals")?,
         None => Default::default(),
     };
+    // A torn appraisal line hides its session from `on_record`, so the
+    // session would look un-appraised and be appraised a second time — and
+    // the store's own door skips the same line. Refused, not guessed
+    // (review of #388).
+    if clean.skipped > 0 {
+        bail!(
+            "{} appraisal line(s) could not be read, so a session they hold would look \
+             un-appraised and be appraised twice — refusing to backfill until the store reads \
+             whole",
+            clean.skipped
+        );
+    }
+    // A torn reflection line only hides a target: the list is a floor.
+    if torn_reflections > 0 {
+        eprintln!(
+            "mecha: {torn_reflections} reflection line(s) could not be read — the sessions to \
+             backfill below are a floor"
+        );
+    }
     let sources = mecha_core::lesson_source::Sources::new(&clean, on_record);
     Ok(mecha_core::lesson_source::backfill_targets(
         &sources,
