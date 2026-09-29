@@ -3,6 +3,7 @@
   import { apiFetch as fetch } from './api.js';
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
+    taintLabel, safetyLine, doseLine,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -28,6 +29,19 @@
   let history = $state([]);
   let key = $state(null);
   let run = $state(emptyRun());
+  // The open chat's safety switches, as its transcript reports them (§12).
+  let safety = $state(null);
+  // Crisis cards the owner has closed, by id; a closed one leaves a link to
+  // its resources rather than vanishing.
+  let dismissed = $state(new Set());
+  // The resources card opened from the chat's standing link.
+  let showResources = $state(false);
+  // Attached while a run was streaming: that run's end is re-read, because
+  // what streamed before the stream opened is only on the server.
+  let partial = false;
+  // How many runs this page has seen end, so a `done` that overtakes
+  // `attach`'s first read is noticed (`Chat.svelte`'s `doneSeq`).
+  let doneSeq = 0;
   let refused = $state([]);
   let goal = $state('');
   let input = $state('');
@@ -151,8 +165,10 @@
     if (!res.ok) throw new Error((await res.text()).trim());
     const t = await res.json();
     if (key !== k || gen !== readGen) return;
-    run = { ...emptyRun(settle(t.entries, run)), running: !!t.running };
+    run = { ...emptyRun(settle(t.entries, run), t.taint ?? null), running: !!t.running };
+    safety = t.safety ?? null;
     scrollDown();
+    return t;
   }
 
   // The stream opens *before* the read, and a finished run is read again:
@@ -163,6 +179,13 @@
   async function attach(k) {
     close();
     key = k;
+    run = emptyRun();
+    // Or the previous chat's disclosure line and resources show for a round
+    // trip (review of #418).
+    safety = null;
+    dismissed = new Set();
+    showResources = false;
+    partial = false;
     const s = new EventSource(chatUrl(k, '/events', token));
     source = s;
     s.onmessage = (m) => {
@@ -175,21 +198,38 @@
       run = applyEvent(run, ev);
       scrollDown();
       if (ev.type === 'done') {
+        doneSeq += 1;
         // Only a run that finished is re-read: a failed one was rolled back
         // on the server, and the page's own record of it — the message and
         // why it failed — is the one worth keeping on screen.
-        if (ev.ok) reread(k).catch((e) => (error = String(e?.message ?? e)));
+        // And only when this page joined it midway: otherwise the stream
+        // carried the whole turn (review of #415).
+        if (ev.ok && partial) {
+          partial = false;
+          reread(k).catch((e) => (error = String(e?.message ?? e)));
+        }
         loadHistory();
       }
     };
     // A stream the server ended (a relock, a restart) is said, not frozen.
+    // One the browser is re-opening lost whatever was sent in the gap — the
+    // server keeps no replay — so the run it rejoins is read again at its
+    // end, as a late join is (review of #418).
     s.onerror = () => {
-      if (s.readyState === 2 && source === s) {
-        error = 'this chat stopped updating — open it again';
-      }
+      if (source !== s) return;
+      if (s.readyState === 2) error = 'this chat stopped updating — open it again';
+      else partial = true;
     };
     try {
-      await reread(k);
+      const seen = doneSeq;
+      const t = await reread(k);
+      partial = !!t?.running;
+      // The run ended while that read was in flight: its `done` found
+      // nothing to re-read and the read says "running" — read once more.
+      if (partial && doneSeq !== seen) {
+        partial = false;
+        await reread(k);
+      }
     } catch (e) {
       close();
       key = null;
@@ -293,6 +333,11 @@
         <!-- Disclosure is the harness's, not the persona's (§12.1). -->
         <span class="meta"><span class="ai">AI</span>{#if relationshipLabel(chosen)} · {relationshipLabel(chosen)}{/if} · v{chosen.version}</span>
       </div>
+      {#if key && taintLabel(run.taint)}
+        <!-- What this conversation has touched. With the leak guard lifted
+             for personas (D11), this is what is left to say it. -->
+        <span class="chip taint" title="what this conversation has touched">{taintLabel(run.taint)}</span>
+      {/if}
     {:else}
       <div class="dtitle grow">Personas</div>
     {/if}
@@ -359,6 +404,9 @@
         {#each chosen.problems as problem}
           <div class="warnline">{problem}</div>
         {/each}
+        <div class="barnote">
+          {safetyLine(chosen.safety)}{#if doseLine(chosen.dose)}<br />{doseLine(chosen.dose)}{/if}
+        </div>
         <div class="startbox">
           <input
             class="editbox"
@@ -377,6 +425,10 @@
           {/each}
         {/if}
       {:else}
+        {#if safety?.disclosure}
+          <!-- The harness says it, not the persona (§12.1). -->
+          <div class="disclosure">{chosen.display} is an AI playing a character you wrote.</div>
+        {/if}
         {#if refused.length}
           <div class="barnote">
             Not given here: {refused.map((r) => `${r.tool} (${r.why})`).join('; ')}.
@@ -393,10 +445,35 @@
             <div class="tool" class:err={entry.is_error}>{entry.name}{entry.is_error ? ' — failed' : ''}</div>
           {:else if entry.kind === 'notice'}
             <div class="notice">{entry.text}</div>
+          {:else if entry.kind === 'crisis'}
+            {#if dismissed.has(entry.id)}
+              <button class="linkbtn" onclick={() => { dismissed.delete(entry.id); dismissed = new Set(dismissed); }}>
+                support resources
+              </button>
+            {:else}
+              <!-- The plain voice, not the persona (§12.2): the persona paused
+                   on this message and did not answer it. -->
+              <div class="crisis" role="alert">
+                <div class="crisistext">{entry.text}</div>
+                <button class="abtn" onclick={() => (dismissed = new Set([...dismissed, entry.id]))}>Close</button>
+              </div>
+            {/if}
           {/if}
         {/each}
         {#if run.streaming}
           <div class="answer">{run.streaming}</div>
+        {/if}
+        {#if safety?.resources}
+          <!-- One tap away in every chat the sensor watches, whatever a
+               reload did to the card (review of #418). -->
+          {#if showResources}
+            <div class="crisis" role="note">
+              <div class="crisistext">{safety.resources}</div>
+              <button class="abtn" onclick={() => (showResources = false)}>Close</button>
+            </div>
+          {:else}
+            <button class="linkbtn quiet" onclick={() => (showResources = true)}>support resources</button>
+          {/if}
         {/if}
       {/if}
     </div>
@@ -440,7 +517,16 @@
   .who { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .dtitle { font-family: var(--mono); font-size: 13px; color: var(--accent-400); overflow-wrap: anywhere; }
   .meta { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
-  .ai { color: var(--hazard); border: 1px solid var(--hazard); border-radius: var(--radius-chip); padding: 0 5px; margin-right: 2px; }
+  /* Muted, not amber: amber is the taint chip's (Chat.svelte's rule), and
+     "this is an AI" is not a security posture. */
+  .ai { color: var(--text-muted); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 0 5px; margin-right: 2px; }
+  .chip.taint { flex-shrink: 0; font-family: var(--mono); font-size: 10px; color: var(--hazard); border: 1px solid var(--hazard); border-radius: var(--radius-chip); padding: 2px 6px; }
+  .disclosure { font-size: 12px; color: var(--text-muted); border: 1px solid var(--accent-900); border-radius: var(--radius); padding: 8px 12px; }
+  .crisis { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--accent-500); border-radius: var(--radius); padding: 14px; }
+  .crisistext { font-size: 14px; line-height: 1.55; white-space: pre-wrap; color: var(--text); }
+  .crisis .abtn { align-self: flex-start; }
+  .linkbtn.quiet { color: var(--text-muted); font-size: 11px; }
+  .linkbtn { align-self: flex-start; background: none; border: none; padding: 0; color: var(--accent-400); font-size: 12px; text-decoration: underline; cursor: pointer; }
   .lockbtn { flex-shrink: 0; display: flex; align-items: center; justify-content: center; min-height: 40px; min-width: 40px; padding: 0; background: none; border: 1px solid var(--accent-900); border-radius: var(--radius-chip); color: var(--text-muted); cursor: pointer; }
   .lockbtn.on { color: var(--hazard); border-color: var(--hazard); }
   .backbtn { background: none; border: none; color: var(--text-muted); min-width: 44px; min-height: 44px; margin: -10px 0 -10px -12px; cursor: pointer; display: flex; align-items: center; justify-content: center; }

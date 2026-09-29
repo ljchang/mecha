@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Personas: characters you write and talk to, in their own tab.** A new
+  Personas tab on the web page lists the personas you made with `mecha
+  persona`, each with its library portrait. Choose one to start a chat, with
+  an optional goal, or to pick up an earlier chat. Persona chats are kept
+  apart from your assistant. They cannot see your mail, calendar, graph or
+  other chats. Their transcripts live under the persona's own folder, where
+  nothing that learns from your sessions looks. A persona gets only the tools
+  it asked for that are safe for it: web search (fixed destinations only),
+  image generation and viewing, and the image library. A safety layer runs in
+  every persona chat:
+  - a line saying it is an AI;
+  - a crisis check on what you type, which pauses the persona and shows 988
+    and the Crisis Text Line;
+  - the persona's Core handed back to it on a cadence;
+  - usage meters.
+
+  Each can be switched off per persona in its `persona.toml`. The crisis
+  check reads keywords only for now, and the page says so.
+
 - **OCR reads tables whole.** With the layout stage installed
   (`scripts/layout/install.sh`), an OCR page is read region by region: a
   layout model (PP-DocLayoutV3, CPU, sandboxed like the PDF parser) finds
