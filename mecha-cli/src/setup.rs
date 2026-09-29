@@ -664,8 +664,8 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
             // whose stderr nobody sees.
             for s in &rules.skipped {
                 eprintln!(
-                    "mecha: learned rules for `{}` do not parse, so this run carries none of \
-                     them — fix or remove {}: {}",
+                    "mecha: learned rules for `{}` could not be read, so this run carries \
+                     none of them — fix or remove {}: {}",
                     s.domain,
                     s.path.display(),
                     s.error

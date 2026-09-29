@@ -140,7 +140,15 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
                 ask_to_reopen,
             )?;
             match outcome {
-                UserEdit::Unchanged => println!("unchanged"),
+                UserEdit::Unchanged => {
+                    // Doctor sends the owner here for a file that does not
+                    // parse. Closing the editor on it unfixed is not "done".
+                    if let Err(e) = store.user_rules(&domain) {
+                        eprintln!("unchanged, and still not loading: {e:#}");
+                        std::process::exit(1);
+                    }
+                    println!("unchanged")
+                }
                 UserEdit::Saved(n) => {
                     println!("saved — {n} rule(s) for `{domain}`, carried from the next run")
                 }
