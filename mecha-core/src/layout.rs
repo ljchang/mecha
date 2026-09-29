@@ -587,6 +587,29 @@ impl LayoutModel {
                 }
             }
         }
+        // A floor under the jail: an interpreter at `/venv/bin/python` or
+        // `/bin/python3` would make `/` readable, and a venv placed above the
+        // mecha home would expose it — `~/.mecha`, `~/.ssh` — to a process
+        // reading pixels a document's author chose (found on review). The
+        // same rule `setup` keeps for a workspace that contains the mecha
+        // home: refused, never silently widened.
+        let mut protected: Vec<PathBuf> = Vec::new();
+        if let Ok(home) = crate::work::mecha_home() {
+            protected.push(home);
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            protected.push(PathBuf::from(home));
+        }
+        for root in &readable {
+            if widens_the_jail(root, &protected) {
+                bail!(
+                    "the layout interpreter's environment {} would expose too much to the \
+                     confined worker (it is / or contains the mecha home or $HOME) — install \
+                     the layout venv with scripts/layout/install.sh",
+                    root.display()
+                );
+            }
+        }
         readable.push(model.clone());
         Ok(Located {
             python: self.python.clone(),
@@ -759,8 +782,30 @@ impl LayoutChild {
     }
 }
 
+/// Whether making `root` readable would expose `/` or any `protected`
+/// directory (the mecha home, the user's home) to the confined worker.
+fn widens_the_jail(root: &Path, protected: &[PathBuf]) -> bool {
+    root.parent().is_none() || protected.iter().any(|p| p.starts_with(root))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_worker_jail_never_widens_to_root_or_a_home() {
+        let protected = vec![
+            PathBuf::from("/home/priya/.mecha"),
+            PathBuf::from("/home/priya"),
+        ];
+        assert!(widens_the_jail(Path::new("/"), &protected));
+        assert!(widens_the_jail(Path::new("/home"), &protected));
+        assert!(widens_the_jail(Path::new("/home/priya"), &protected));
+        assert!(!widens_the_jail(Path::new("/usr"), &protected));
+        assert!(!widens_the_jail(
+            Path::new("/home/priya/.mecha/layout/venv"),
+            &protected
+        ));
+    }
+
     use super::*;
 
     fn det(label: &str, score: f32, bbox: [f32; 4], order: f32) -> Detection {

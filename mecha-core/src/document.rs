@@ -75,8 +75,9 @@ pub const REGION_CONCURRENCY: usize = 2;
 /// The prompt PaddleOCR-VL is trained on for plain recognition. The model
 /// has six (`OCR:`, `Table Recognition:`, `Formula Recognition:`, `Chart
 /// Recognition:`, `Seal Recognition:`, `Spotting:`) and answers nothing else
-/// reliably; the full pipeline sends the element prompts on regions a layout
-/// model cropped, which this build does not have (design §5).
+/// reliably. With the layout stage (`layout.rs`) each cropped region gets
+/// its element's prompt; this one reads a page whole — the fallback when the
+/// stage is off, unavailable, or finds no regions (design §5).
 pub const OCR_PROMPT: &str = "OCR:";
 
 /// The projector's pixel budget (`clip.vision.image_max_pixels` in the
@@ -1752,14 +1753,27 @@ impl Extractor {
                             // run for page_timeout × regions (found on review).
                             let limit = Duration::from_secs(self.cfg.page_timeout_secs.max(1));
                             let work = async {
-                                tokio::time::timeout(
+                                match tokio::time::timeout(
                                     limit,
                                     self.read_page(client, st, s, &sha, n, size),
                                 )
                                 .await
-                                .unwrap_or_else(|_| {
-                                    Err(anyhow!("the page did not finish within {limit:?}"))
-                                })
+                                {
+                                    Ok(r) => r,
+                                    Err(_) => {
+                                        // The read was dropped mid-page, and with
+                                        // it `read_page`'s own reset: a layout
+                                        // worker whose reply is still in the pipe
+                                        // would hand the next page this page's
+                                        // boxes — wrong crops, parsed as valid
+                                        // and cached (found on review). So the
+                                        // worker goes; the next page starts fresh.
+                                        if let Stage::Layout { worker, .. } = &mut *st {
+                                            *worker = None;
+                                        }
+                                        Err(anyhow!("the page did not finish within {limit:?}"))
+                                    }
+                                }
                             };
                             // Raced against the token: a cancel drops the page
                             // mid-read — the region requests in flight and the

@@ -651,7 +651,12 @@ async fn a_wedged_server_costs_a_page_one_timeout_not_one_per_region() {
     });
     let ex = Extractor::new(
         DocumentsConfig {
-            page_timeout_secs: 3,
+            // Long enough for the worker to start and the layout pass to
+            // finish (~1–2 s), so the budget is spent on region requests to
+            // the wedged server — the path the test is named for (found on
+            // review) — and short enough that one budget per region batch
+            // (the old behaviour) fails the message check below.
+            page_timeout_secs: 15,
             ..layout_config(format!("http://127.0.0.1:{port}"))
         },
         None,
@@ -665,7 +670,7 @@ async fn a_wedged_server_costs_a_page_one_timeout_not_one_per_region() {
     let err = out.pages[0].ocr_error.clone().unwrap_or_default();
     assert!(err.contains("the page did not finish within"), "{err}");
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(10),
+        started.elapsed() < std::time::Duration::from_secs(25),
         "{:?}",
         started.elapsed()
     );
