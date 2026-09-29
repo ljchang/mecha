@@ -48,6 +48,48 @@ never ran (HANDOFF). Closed with it: the HANDOFF item saying the result
 text tells the model "the user can" see the picture was obsolete, since
 `9d16e757` (image_view on request, 2026-09-27) had removed the phrase.
 
+**2026-09-29 — the appraisal audit's fixes: seven PRs merged and
+installed, and the backfill that found 2e-1 starved.** The audit of
+2026-09-28 read a store in which every appraisal predicted `no_act`, the
+readout said "hit rate 100%", valence stood at +1.0 / −93.0, and 2e-1 had
+0 eligible interventions. The owner's rulings (1B, 4B/4D, 2A→C, 3D→D,
+in-run prediction → a, and R44–R47 on 2026-09-29) each became one PR:
+- #377 counts a `no_act` hit on an output that offered nothing to act on
+  (`output_offers_act`) as `forced`, keeps it out of `hit_rate`, and
+  withholds the rate while any hit is `forced_unknown`.
+- #378 stops asking for that prediction at write time
+  (`withholds_expectation`) and counts the row as `not_asked`.
+- #382 adds `mecha sessions mark <id> experiment` / `unmark`. A ledger
+  withdraws the session from listing admission, every appraisal-store door,
+  `learn` (`Admission::Withdrawn`), `validate` and `lesson_pass`.
+  `proposals accept` refuses a proposal resting on it, and only the owner's
+  own terminal can mark.
+- #387 (`OutboxItem::drafting_verdict_signs`) signs an edit or reject only
+  when it is stamped as the owner's, or when it predates the stamps.
+- #388 is `mecha distill --backfill-appraisals`, and ranks past appraisals
+  by the session's end.
+- #400 is R44's gate (`Report::gate`, `GATE_MIN_DECIDED` = 10,
+  `GATE_MAX_TRAIL` = 2): pilot, no worse, worse, or floors.
+- #401 is `forecast.rs`, a base-rate forecast of the owner's act on each
+  staged draft, sealed in `<outbox>/forecasts/forecasts.jsonl` and read
+  only by `sessions appraise`.
+
+Each ran the review loop to a pass with no major or medium finding. The
+passes after the merges found two more, both fixed before merge. The
+doctor's starvation check had counted a marked session's reflections as a
+pool that `learn` would consume. And a store torn with nothing else
+readable had read back as fully read, with a pilot gate. All seven were
+installed at 19:50Z (HANDOFF, *Machine state*).
+
+The backfill then ran (20:30–20:52Z, 22 minutes on the local model). It
+appraised 8 of its 9 sessions, and one reply was unusable. Every row was
+stamped `backfilled` with no prediction, and the existing lines were
+byte-identical. All 8 came out not clean, because an appraisal's origin is
+the session-end taint and these sessions had read mail or the web, most
+from their first checkpoint. 2e-1 still reads 0 eligible, so its evidence
+has to come from somewhere else (HANDOFF). #399 had recorded these PRs as
+open; this entry supersedes it.
+
 **2026-09-29 — people in a picture who are not library characters
 (#390, #391), and adding to the library from the page (#394).** `IMAGE-COMPILER-RESEARCH.md` §E11
 and §E12 are the evidence.
@@ -7049,6 +7091,16 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**A gate whose input is already on disk should be checked before the step
+it gates is paid for.** The appraisal backfill chose its sessions by 2e-1's
+own exclusion, "no appraisal", and paid a model call per session to make one.
+But whether that appraisal could ever be clean depends only on the session's
+recorded end taint, which was readable all along. All 8 came out untrusted,
+and 22 minutes of seats bought nothing the comparison can use (2026-09-29).
+When a step exists to feed a filter, apply every part of the filter it can
+already know first, and let the expensive step settle only what it alone
+can.
 
 **A failure that looks random may be fixed by its seed: replay the failing
 seed before theorising.** Image edits that "sometimes" came back unchanged

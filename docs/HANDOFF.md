@@ -57,54 +57,59 @@ What is open:
     `cast` with `reference_images`. If that is ever allowed, the similarity
     compares against a 512² portrait without saying so.
 
-**2026-09-28/29 — the appraisal audit, the owner's rulings on it, and five
-appraisal PRs open, all reviewed to the bar.** An audit read the live store:
-- 7 text appraisals on 2026-09-28, every one predicting `no_act`, and 4
-  scores, all hits.
-  The readout said "hit rate 100%" over outputs that offered nothing to act
-  on.
-- Valence stood at +1.0 / −93.0.
-- 2e-1 had 0 eligible interventions in 35 regions. Every clean steer and
-  denial came from a session distilled before the appraisal leg existed,
-  and distill never revisits a session.
+**2026-09-28/29 — the appraisal audit's fixes (#377, #378, #382, #387,
+#388, #400, #401), merged and installed.** What shipped, the rulings, and
+the backfill's result are in HISTORY under 2026-09-29; the install is in
+*Machine state, dated*. What is open:
 
-The rulings, in `~/.claude` memory and in each PR's body:
-- **1B:** don't ask for a forced prediction.
-- **4B/4D:** probes run in incognito, and a verb marks a session an
-  experiment.
-- **2A→C:** the stamp rule applies to edits and rejects too, going forward
-  only.
-- **3D→D:** backfill-appraise the stranded sessions first.
-- **In-run prediction → (a):** before a consequential act.
-
-The PRs, none merged at this writing:
-
-| PR | What |
-|---|---|
-| #377 | `ScoreSummary::forced` / `forced_unknown`, and a hit rate only over predictions that could have missed. Merge first, **without** `--delete-branch`. |
-| #378 | 1B, stacked on #377: `withholds_expectation`, the `expected_act_withheld` stamp, and `not_asked`. Retarget it to `main` after #377. |
-| #382 | 4D: `mecha sessions mark <id> experiment` / `unmark`, over a ledger at `<sessions>/marks/marks.jsonl`. It withdraws the session from listing admission, every appraisal-store door, `learn`, `validate` and `sessions compare`. `proposals accept` refuses a proposal resting on a marked session, and the doctor and `supersede --stale` treat that proposal as unappliable. Only the owner may mark. |
-| #387 | 2A→C: `OutboxItem::drafting_verdict_signs`. |
-| #388 | D: `mecha distill --backfill-appraisals`. It chooses sessions by 2e-1's own predicate (`lesson_source::backfill_targets`), pushes and re-marks nothing, writes rows stamped `backfilled` with no prediction, and dates and ranks past appraisals by the session's end everywhere. |
-
-**Owed after merge**, in this order:
-1. Install through the `update` skill.
-2. Run `mecha distill --backfill-appraisals --dry-run` (9 sessions on
-   2026-09-28, before two probe sessions were deleted), then run it for
-   real. It takes about 15 minutes of local-model seats.
-3. Read `mecha learn --compare-sources`.
-
-**Awaiting the owner's rulings:**
-- For (a): the base-rate forecaster first, which unparks X3, with a model
-  forecaster later as a measured arm?
-- Do forecast surprises go to a readout only, or also to replay priority?
-- Is a draft still pending when outbox patience ends `no_act`?
-- What does 2e-1's "no worse" mean? The proposal on the table: at least 10
-  decided, trailing by at most 2 discordant pairs, and a pilot below 10.
-
-The scoping behind (a): none of the 85 outbox items carried an owner stamp
-on 2026-09-28, so there is no stamped history to forecast from yet.
-Tasks are deferred to v2.
+- **2e-1 cannot get evidence from real sessions, and how it should is the
+  owner's call.** The backfill appraised 8 of its 9 sessions and every one
+  came out not clean: an appraisal's origin is the session-end taint
+  (`SessionEvidence::of`), a reflection's is the owner's correction, and 7
+  of the 8 were tainted from their first checkpoint. `mecha sessions
+  appraise` now reads 0 eligible, with 16 sessions clean for the reflector
+  only, 3 clean for neither and 1 with no appraisal, so the R44 gate is
+  "pilot, 0 of 10". Loosening the origin rule is not an option: appraisal
+  prose built from untrusted content is a paraphrase of it. The two options
+  on the table are C, the fixture denial pilot (with the open question of
+  whether synthetic evidence counts), or waiting for sessions that stay clean
+  end to end. `mecha learn --compare-sources` was not run, since there is
+  nothing for it to compare.
+- **`lesson_source::backfill_targets` should drop sessions that ended
+  tainted.** That taint is on disk before any model call. Without the filter,
+  the backfill spent 22 minutes of local-model seats on 8 rows that could
+  never enter the comparison. It is a small change to a merged PR, so it
+  waits for the owner.
+- **One target is left: `20260826T184906`.** Its appraisal reply was
+  unusable and nothing was stored. A re-run would pick it up, and it would
+  most likely come out not clean like the other 8.
+- **The draft forecaster starts from no history.** It forecasts only from
+  acts stamped as the owner's, and none of the 85 outbox items carried a
+  stamp on 2026-09-28. Read the `draft_forecasts` block of `sessions
+  appraise --json` after a few weeks of releases.
+- **2B is uninvestigated:** the successes readout shows 6 `task_done`,
+  while valence credits only 1 closure.
+- **The last-pass minors, for the owner:**
+  - #387: `drafting_verdict_signs` answers only for the negative verdicts,
+    and its name reads wider. An edit from before the stamps, released
+    under a stamped non-owner, loses its −1 (no such row exists live). And
+    `brief::attempts::act_of` still reads a pre-stamp reject as not the
+    owner's.
+  - #388: the backfill asks the model for a prediction and then drops it,
+    which keeps the prompt identical to the ordinary pass. With `--limit 0`,
+    the held-over count is misattributed.
+  - #400: an exact tie prints "trails by 0". The JSON shows a gate for
+    "nothing on record" where the text does not. Only "pilot" is exercised
+    end to end.
+  - #382: `is_stale` and the appraisal store re-read the marks ledger on
+    every call. `mecha reflections` does not say that a marked session's
+    reflections are withdrawn. And `distill::backfill_targets` does not
+    filter marks, which costs noise and never writes a row.
+  - #401: the forecast ledger is read whole on every staging and has no
+    retention. `items_newest` is newest-first, which nothing pins. A
+    `SessionKind::Experiment` draft is kept out of the base rate only
+    because trials own their outbox (`experiment.rs` sets
+    `config.outbox.dir = None`), so name that dependency in `forecast.rs`.
 
 **2026-09-28/29 — the image library (#380, #383–#385, #390, #391, #394),
 merged and installed.** What shipped is in HISTORY under 2026-09-28 and 2026-09-29.
@@ -3301,6 +3306,22 @@ Checked the same morning:
 - The `:8443` door serves `index-OHSoDwAD.js`, which still carries the
   incognito answer gate.
 - The worker still answers `{"unlogged":true}`.
+
+**2026-09-29 19:50Z, mecha-ce: `mecha` from `b82ac15f`.** That build
+brought in the appraisal PRs (#377, #378, #382, #387, #388, #400, #401),
+the learning-store PRs (#392–#398, #402) and #405. The shared checkout was
+fast-forwarded `c6ae2c69` → `b82ac15f`; an untracked `trial.pid` there was
+left alone. `mecha-slack`, `mecha-triggers`, `mecha-drain` and `mecha-serve`
+were restarted at 19:51Z, and each logged its startup line. Checked:
+`strings ~/.cargo/bin/mecha` carries "withdrawn by your experiment marks",
+"backfilled: written after the outcome", "gate (2a-4, 2e-2)" and
+`draft_forecasts`, none of which the 04:06Z binary had, and they were still
+present after the 21:05Z install. Not touched: `mecha-mail` (unchanged, and
+it does not depend on `mecha-core`), the graph binaries (no commits since
+2026-09-28 23:54Z at the time), the voice worker (`worker.py` unchanged),
+ComfyUI and the dist (`web/` unchanged since #394). The mecha-46 session
+was closed at the owner's word to free memory, which ended graph child
+2006709. The backfill ran against this binary, 20:30–20:52Z, which started before mecha-d7's 20:48Z reinstall and its `[documents]` config edit, and neither disturbed it (0 failed).
 
 **2026-09-29 21:05Z, mecha-5d: `mecha` from `b26537b0` (#408).** The
 installed binary already carried `document_read`, so mecha-d7's 20:48Z
