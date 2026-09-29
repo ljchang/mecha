@@ -76,6 +76,14 @@ What is open:
 learning store no longer uses git (#379), and the graph can redact
 (mecha-graph#25); all merged and installed.** What shipped is in HISTORY
 under 2026-09-28. Open, none of it blocking:
+- **The learning-store plan, adopted by the owner 2026-09-29:**
+  `LEARNING-STORE-RESEARCH.md` §8, which is on PR #392 (open) and not yet on
+  main. It is mecha-46's lane:
+  - #393, locks and single-write appends: open.
+  - Lossless rewrites (`fix/learning-store-lossless-rewrites`).
+  - Still to write: resumable learn and accept writes with the D1 parse
+    policy, and a doc refresh.
+  - D2, rules dropped in consolidation, awaits the owner.
 
 - #381's `forget_config` guard is redundant: `[outbox]` and `[messages]`
   dirs are stripped from project layers, so it equals `load_global`.
@@ -1839,9 +1847,11 @@ is exactly the set holding a long-lived process.
     sees all fifteen immediately. It has now been restarted, though
     `[slack] tools` was emptied the same day, so a Slack thread now carries the
     same surface as `chat` and `tui` — including `mail__*` and the graph.
-- The learning store (`~/.mecha/learning`) holds **zero live rules** — the one
-  early rule was reverted with its poisoned reflection — so everything from here
-  accumulates from real usage through the gate.
+- The learning store (`~/.mecha/learning`) holds **7 live learned rules in
+  `behavior`**, counted 2026-09-29: 7 `[[rules]]` in
+  `rules/behavior.learned.toml`, none with `retired_at`, none `enabled =
+  false`. All of them came through the gate from real usage; the one early
+  rule was reverted with its poisoned reflection.
 
 ### The public box
 
