@@ -1747,9 +1747,13 @@ impl LearningStore {
     /// anything to the user's `$EDITOR` — the store's files staying humanly
     /// editable is a requirement, not an accident. The kernel drops the lock
     /// when the fd closes, crash included, so a dead pass can never wedge
-    /// the store. Read paths (prompt assembly, validate) do not take it:
-    /// a run start must never block on a learn pass, which is why every
-    /// rewrite in this module goes through a temp sibling and rename.
+    /// the store. Read paths (prompt assembly, and `validate`'s probes) do
+    /// not take it: a run start must never block on a learn pass, which is
+    /// why every rewrite in this module goes through a temp sibling and
+    /// rename. `validate` takes it only around its ledger appends, never
+    /// across a model call. A *hung* holder is another matter: `reflect` and
+    /// `mail reflect` hold it across provider calls, so a stuck provider
+    /// parks every other writer (`forget` included) until it returns.
     pub fn lock(&self) -> Result<StoreLock> {
         Ok(self.flock(true)?.expect("blocking flock returns held"))
     }
@@ -2282,10 +2286,6 @@ impl LearningStore {
     }
 }
 
-/// Stable content hash of a rendered rules block. FNV-1a written out here
-/// because the std hasher is deliberately unstable across Rust releases, and
-/// a ledger key that drifts with the toolchain would silently split every
-/// tally.
 /// One record, one `write`. `writeln!` writes the line and its newline in
 /// separate calls, so two processes appending at once could interleave into
 /// `AB\n\n` — one corrupt line that readers skip and the next rewrite
@@ -2300,6 +2300,10 @@ fn append_record(w: &mut impl Write, line: &str) -> std::io::Result<()> {
     w.write_all(record.as_bytes())
 }
 
+/// Stable content hash of a rendered rules block. FNV-1a written out here
+/// because the std hasher is deliberately unstable across Rust releases, and
+/// a ledger key that drifts with the toolchain would silently split every
+/// tally.
 pub fn rules_hash(block: &str) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in block.bytes() {
