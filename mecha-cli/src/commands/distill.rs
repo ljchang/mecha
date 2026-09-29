@@ -38,6 +38,16 @@ pub struct Args {
     /// The `[[mcp]]` server holding the knowledge graph.
     #[arg(long, default_value = "graph")]
     pub server: String,
+
+    /// Appraise, after the fact, the sessions distilled before the
+    /// appraisal leg existed whose clean steer or denial is waiting only on
+    /// an appraisal to be compared (row 2e-1). Nothing is pushed to the
+    /// graph and no session is re-marked; the rows written predict nothing,
+    /// since the outcome was already known. Local model only; the graph
+    /// server is still connected, read-only, for the goal pointers a claim
+    /// is grounded against.
+    #[arg(long)]
+    pub backfill_appraisals: bool,
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
@@ -136,15 +146,29 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
         Some(store.lock()?)
     };
     let done = store.distilled_sessions()?;
+    // Ruling 3D→D (2026-09-28): the sessions only an appraisal keeps out of
+    // row 2e-1's comparison, chosen by the pass's own predicate.
+    let backfill = args
+        .backfill_appraisals
+        .then(|| backfill_targets(&store))
+        .transpose()?;
 
     let sessions = Session::list(&sessions_dir)?;
+    let listed_ids: Vec<String> = sessions.iter().map(|(m, _)| m.id.clone()).collect();
     // A test or stray experiment session must not become a graph episode —
     // the graph is the owner's memory (`session::split_admitted`).
     // Skipped sessions are never marked distilled, so this is every test or
     // experiment session in the store, reprinted each pass — worded so.
     let candidates: Vec<_> = sessions
         .into_iter()
-        .filter(|(meta, _)| !done.contains(&meta.id))
+        .filter(|(meta, _)| match &backfill {
+            // A target not yet distilled is left to the ordinary pass: its
+            // appraisal written now would not be after its outcome, and the
+            // row, once on record, would keep the real one from ever being
+            // written (review of #388).
+            Some(targets) => targets.contains(&meta.id) && done.contains(&meta.id),
+            None => !done.contains(&meta.id),
+        })
         .collect();
     let (mut todo, skipped) = mecha_core::session::split_admitted(candidates);
     if skipped > 0 {
@@ -158,8 +182,65 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
     // situation (row 2a-2), so an earlier session must be on record before
     // a later one is appraised — in one night's batch as across nights.
     todo.reverse();
+    // What a backfill's targets are made of beyond what it will appraise: a
+    // target not yet distilled waits on the ordinary pass, and one whose
+    // transcript is gone cannot be appraised. Said whenever either is not
+    // zero, never read as zero (review of #388).
+    // And the ones distilled and listed but not taken this run: past
+    // `--limit`, or a test or experiment session (review of #388).
+    let (undistilled, missing, held) = match &backfill {
+        Some(targets) => {
+            let listed: std::collections::HashSet<&str> =
+                listed_ids.iter().map(String::as_str).collect();
+            let taken: std::collections::HashSet<&str> =
+                todo.iter().map(|(m, _)| m.id.as_str()).collect();
+            (
+                targets
+                    .iter()
+                    .filter(|t| listed.contains(t.as_str()) && !done.contains(*t))
+                    .count(),
+                targets
+                    .iter()
+                    .filter(|t| !listed.contains(t.as_str()))
+                    .count(),
+                targets
+                    .iter()
+                    .filter(|t| {
+                        listed.contains(t.as_str())
+                            && done.contains(*t)
+                            && !taken.contains(t.as_str())
+                    })
+                    .count(),
+            )
+        }
+        None => (0, 0, 0),
+    };
+    if backfill.is_some() && !todo.is_empty() && (undistilled + missing + held) > 0 {
+        println!(
+            "backfill: {} session(s) to appraise; also {undistilled} waiting on the ordinary \
+             pass (not distilled yet), {missing} whose transcript is no longer in the session \
+             store, and {held} left for another run (past --limit, or a test or experiment \
+             session)",
+            todo.len()
+        );
+    }
     if todo.is_empty() {
-        println!("nothing to distill: every session is already in the graph's ledger");
+        if let Some(targets) = &backfill {
+            if targets.is_empty() {
+                println!(
+                    "nothing to backfill: no session's steer or denial waits only on an appraisal"
+                );
+            } else {
+                println!(
+                    "nothing to backfill now: {undistilled} session(s) wait on an appraisal but \
+                     are not distilled yet — the ordinary pass takes those — {missing} whose \
+                     transcript is no longer in the session store, and {held} passed over as a \
+                     test or experiment session"
+                );
+            }
+        } else {
+            println!("nothing to distill: every session is already in the graph's ledger");
+        }
         return Ok(());
     }
 
@@ -171,8 +252,13 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
             println!("{} ({n} message(s), {})", meta.id, meta.created_at);
         }
         println!(
-            "dry run: {} session(s) would be distilled; nothing written",
-            todo.len()
+            "dry run: {} session(s) would be {}; nothing written",
+            todo.len(),
+            if backfill.is_some() {
+                "appraised after the fact"
+            } else {
+                "distilled"
+            }
         );
         return Ok(());
     }
@@ -197,6 +283,12 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
     // distill run on another provider still distills; it appraises nothing,
     // and says so.
     let local = provider_cfg.kind == "local";
+    if backfill.is_some() && !local {
+        bail!(
+            "{provider_name} is not a local provider — a backfill only appraises, and an \
+             appraisal reads the whole transcript, which stays on the local model (R29)"
+        );
+    }
     eprintln!(
         "distilling with {} ({provider_name}) → {}",
         distiller.model(),
@@ -354,7 +446,16 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
     // from each session. Best-effort, and an unreadable one is said to the
     // appraiser rather than read as empty.
     let appraiser = if local {
-        Some(Appraiser::open())
+        let a = Appraiser::open();
+        // A backfill has no other leg: with no store to write to, every
+        // target would pay the episode call and keep nothing (review of
+        // #388).
+        if backfill.is_some() {
+            if let Err(e) = &a.store {
+                bail!("the appraisal store could not be opened ({e}); nothing to backfill into");
+            }
+        }
+        Some(a)
     } else {
         eprintln!(
             "mecha: {provider_name} is not a local provider — sessions are distilled but not \
@@ -397,7 +498,10 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
         // A session with no assistant turn taught the graph nothing, and that
         // is a fact about the transcript, not about today's model — mark it.
         if convo.messages.len() < 2 {
-            store.mark_distilled(&meta.id)?;
+            // A backfill re-marks nothing: its sessions are in the ledger.
+            if backfill.is_none() {
+                store.mark_distilled(&meta.id)?;
+            }
             skipped += 1;
             continue;
         }
@@ -463,12 +567,27 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
                         charter: charter.as_ref(),
                         charter_unreadable,
                         known: &known,
+                        backfill: backfill.is_some(),
                     },
                     &mut tally,
                 )
                 .await;
         }
         drop(seat);
+        // A backfill writes only the appraisal: the episode is already in
+        // the graph and the session already in the ledger. An episode call
+        // that failed appraised nothing, and says so — the tally must add
+        // up (review of #388).
+        if backfill.is_some() {
+            if let Err(e) = &turn {
+                eprintln!(
+                    "· {} — the episode call failed, so nothing was appraised: {e:#}",
+                    meta.id
+                );
+                tally.failed += 1;
+            }
+            continue;
+        }
         match turn.map(|t| t.distilled) {
             Ok(Some(out)) => {
                 // Decide what may leave BEFORE writing the body: a carrier
@@ -644,6 +763,16 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     }
 
+    // A backfill wrote nothing to the learning store, so it logs no pass
+    // there and reports what it did rather than a distill it did not do
+    // (review of #388).
+    if backfill.is_some() {
+        println!("backfill: nothing pushed to the graph, the ledger untouched, {skipped} skip(s)");
+        if appraiser.is_some() {
+            println!("{}", tally.line());
+        }
+        return Ok(());
+    }
     store.log_pass(&format!(
         "distill: {distilled} episode(s), {carriers} carrier(s), {skipped} skip(s)"
     ));
@@ -768,6 +897,16 @@ pub(crate) fn owner_acts(
 /// unknown — and a hit rate only over predictions known to have been able
 /// to miss.
 pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -> String {
+    // Backfilled rows predict nothing, by construction: named apart from an
+    // appraisal that left the field out.
+    let backfilled = if s.backfilled > 0 {
+        format!(
+            " · {} backfilled: written after the outcome, so no prediction",
+            s.backfilled
+        )
+    } else {
+        String::new()
+    };
     // Ruling 1B: the appraisals the harness asked for no expected act, apart
     // from any the appraiser left it out of.
     let not_asked = if s.not_asked > 0 {
@@ -780,7 +919,7 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
     };
     if s.with_expectation == 0 {
         return format!(
-            "appraisals' predictions: none carries an expected act ({} appraisal(s) on record{}){not_asked}",
+            "appraisals' predictions: none carries an expected act ({} appraisal(s) on record{}){backfilled}{not_asked}",
             s.appraisals,
             if s.appraisals_unreadable > 0 {
                 format!(", {} unreadable", s.appraisals_unreadable)
@@ -842,8 +981,49 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
             )
         } else {
             String::new()
-        } + &not_asked
+        } + &backfilled
+            + &not_asked
     )
+}
+
+/// The sessions `--backfill-appraisals` appraises: those whose clean steer
+/// or denial row 2e-1 excludes only for want of an appraisal
+/// (`lesson_source::backfill_targets`). The appraisal store is read through
+/// its clean door with the sessions on record, as the pass reads it.
+fn backfill_targets(store: &LearningStore) -> Result<std::collections::BTreeSet<String>> {
+    let (reflections, torn_reflections) = store
+        .reflexions_counting()
+        .context("reading the reflections")?;
+    let (clean, on_record) = match AppraisalStore::open_existing_default() {
+        Some(s) => s
+            .clean_with_sessions()
+            .context("reading the text appraisals")?,
+        None => Default::default(),
+    };
+    // A torn appraisal line hides its session from `on_record`, so the
+    // session would look un-appraised and be appraised a second time — and
+    // the store's own door skips the same line. Refused, not guessed
+    // (review of #388).
+    if clean.skipped > 0 {
+        bail!(
+            "{} appraisal line(s) could not be read, so a session they hold would look \
+             un-appraised and be appraised twice — refusing to backfill until the store reads \
+             whole",
+            clean.skipped
+        );
+    }
+    // A torn reflection line only hides a target: the list is a floor.
+    if torn_reflections > 0 {
+        eprintln!(
+            "mecha: {torn_reflections} reflection line(s) could not be read — the sessions to \
+             backfill below are a floor"
+        );
+    }
+    let sources = mecha_core::lesson_source::Sources::new(&clean, on_record);
+    Ok(mecha_core::lesson_source::backfill_targets(
+        &sources,
+        &reflections,
+    ))
 }
 
 /// Take a background seat, waiting for one if all are held — a nightly or
@@ -895,7 +1075,8 @@ struct AppraisalTally {
     /// Replies that stored nothing, by why.
     malformed: std::collections::BTreeMap<String, usize>,
     /// The provider failed on the follow-up, or the store could not be
-    /// read or written.
+    /// read or written — or, in a backfill, the episode call it rides on
+    /// failed, which leaves no appraisal to write.
     failed: usize,
     /// Wall-clock seconds of a seat the follow-up calls added, and the
     /// prompt tokens they sent and read from the server's cache.
@@ -946,6 +1127,10 @@ struct AppraisalContext<'a> {
     charter: Option<&'a mecha_core::charter::Charter>,
     charter_unreadable: bool,
     known: &'a distill::KnownPointers,
+    /// `--backfill-appraisals`: the row predicts nothing and is stamped
+    /// `backfilled`, and only appraisals of sessions that had ended by this
+    /// one's end are shown as earlier ones.
+    backfill: bool,
 }
 
 /// The appraisal leg's stores, opened once per run.
@@ -1035,10 +1220,21 @@ impl Appraiser {
         // Past appraisals through the clean door only: a tainted one has no
         // way into another session's input.
         let clean = store.clean();
+        // A backfill appraises a session older than most on record: only
+        // appraisals of sessions that had ended by its end are *earlier*
+        // ones, chosen before the newest are taken (review of #388).
         let past = clean
             .as_ref()
             .map(|read| {
-                read.same_situation_and_goal(evidence, mecha_core::appraisal_store::PAST_SHOWN)
+                if cx.backfill {
+                    read.same_situation_and_goal_ended_by(
+                        evidence,
+                        evidence.ended_at(),
+                        mecha_core::appraisal_store::PAST_SHOWN,
+                    )
+                } else {
+                    read.same_situation_and_goal(evidence, mecha_core::appraisal_store::PAST_SHOWN)
+                }
             })
             .unwrap_or_default();
         let inputs = distill::render_appraisal_inputs(&distill::AppraisalInputs {
@@ -1081,7 +1277,14 @@ impl Appraiser {
         tally.prompt_tokens += answered.usage.total_input();
         tally.cached_tokens += answered.usage.cache_read_input_tokens;
         let draft = match answered.draft {
-            Ok(d) => d,
+            Ok(mut d) => {
+                if cx.backfill {
+                    d.expected_act = None;
+                    d.prediction = None;
+                    d.backfilled = true;
+                }
+                d
+            }
             Err(why) => {
                 eprintln!(
                     "· {id} — appraisal reply unusable ({}); nothing stored",
