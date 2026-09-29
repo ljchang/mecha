@@ -7194,13 +7194,13 @@ watcher across #376's seven passes used it with `2>/dev/null`, so its
 failing-check branch never ran. Every check passed, so nothing was missed; the
 plain tab-separated output is the form that works.) The general lesson: **a
 check that cannot go red is not a check, and the only way to tell which kind
-you have is to break the thing and watch
-it fail.** Reverting the fix before trusting the test is seconds of work; not
-one of these survived that step, and every one of them survived until
-something forced it. The corollary for review: when a reviewer's finding
-cannot be reproduced, that is a fact about the harness as often as about the
-finding — the `fillId` defect in the same PR was unreproducible in Chromium
-and fixed anyway, because the browser that mattered would not launch to check.
+you have is to break the thing and watch it fail.** Reverting the fix before
+trusting the test is seconds of work; not one of these survived that step, and
+every one of them survived until something forced it. The corollary for
+review: when a reviewer's finding cannot be reproduced, that is a fact about
+the harness as often as about the finding — the `fillId` defect in the same PR
+was unreproducible in Chromium and fixed anyway, because the browser that
+mattered would not launch to check.
 
 **2026-08-29 — v0.1.16 shipped a web page that threw on load, past three
 green checks.** `Tasks.svelte`'s `stateOf` called `stalled(t)` where
@@ -8237,10 +8237,10 @@ only the serving process holds, so approval needs the page that showed the
 text. **Evidence of reading has to come from the surface that did the
 showing.**
 
-**A lock enforced on reads must be enforced on writes.** `POST …/unlock`
-revealed a hidden library entry with no password, and its 200/409 split
-said which entries exist (#385). A write route that can change what a read
-shows is itself a read.
+**A lock enforced on reads must be enforced on writes.** `POST
+/api/library/{kind}/{name}/unlock` revealed a hidden library entry with no
+token, and the 404-vs-409 split against `approve` said which entries exist
+(#385). A write route that can change what a read shows is itself a read.
 
 **A fixed `.tmp` name opened with `create(true)` keeps an existing file's
 mode and writes through a planted symlink.** #258's lesson, re-learned in
