@@ -84,9 +84,15 @@ words — a different someone every time. To draw the same people across many
 pictures, keep them in the **image library**: a portrait and a short
 description per character, plus any styles you reuse.
 
-**Adding a character.** Generate or attach a front-facing portrait, then tap
-**Save to library** under it in web chat. Give it a name (`maya`) and a short
-description that includes build and height. From a terminal:
+**Adding a character.** In the web app's **Library** tab, tap **Add
+character**, choose a front-facing portrait, and give it a name (`maya`) and a
+short description that includes build and height. The picture is resized
+before it is sent, and the photo's metadata, location included, is left
+behind. Or, for a picture already in a chat, tap **Save to library** under
+it. **Add style** on the Styles pane takes a name and a few lines on how the
+pictures should look, and **Edit** on any character or style changes its
+description or portrait. Pictures already made keep the version they used.
+From a terminal:
 
 ```bash
 mecha imagelib add-character maya --portrait maya.png \

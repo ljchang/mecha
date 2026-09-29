@@ -727,6 +727,14 @@ doing; this code writes how they look. Decisions, each a bug if undone:
 - **Every generation writes a manifest** (`images/<stem>.json`, `create_new`
   like the PNG): the scene as written, the compiled prompt, seed, sizes, the
   model files, and each entry's name, version and portrait hash.
+- **The owner adds and edits from the web as from the terminal**
+  (`serve/library.rs` `add`, `edit`): each runs `add-character`, `add-style`
+  or `update` as a child, a portrait arriving base64 in the JSON body under
+  its own body limit (`MAX_WRITE_BODY` — axum's 2 MB default would answer
+  413 before the store's cap could) and staged in a private scratch
+  directory. Edit honours the lock like every write, and is refused on a
+  candidate: a text rewrite approves (`imagelib::update`), so an edit screen
+  would be approval without the read.
 - **The web door hides on the server** (`serve/library.rs`). Locked entries
   are absent from `GET /api/library` and their portraits 404 unless the
   request carries a live unlock token; a blurred thumbnail would still ship

@@ -482,6 +482,21 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
                                                 // reads them from the chat's jail — so the default is ample.
         )
         .route(
+            "/api/library/add",
+            axum::routing::post(library::add)
+                // A portrait rides this body, base64: the store's cap, not
+                // axum's 2 MB default, is the ceiling that should answer.
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    library::MAX_WRITE_BODY,
+                )),
+        )
+        .route(
+            "/api/library/edit",
+            axum::routing::post(library::edit).layer(axum::extract::DefaultBodyLimit::max(
+                library::MAX_WRITE_BODY,
+            )),
+        )
+        .route(
             "/api/library/{kind}/{name}/{action}",
             axum::routing::post(library::act),
         )

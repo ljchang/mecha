@@ -19,8 +19,8 @@ use crate::{probe, setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
 use mecha_core::learning::{
-    batches_by_region, budget_refuses, LeapRun, Learner, LearningStore, Proposal, Trigger,
-    MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
+    batches_by_region, budget_refuses, LeapRun, Learner, LearningStore, Proposal, RuleCommit,
+    Trigger, MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
 };
 use mecha_core::session::Session;
 use std::collections::{BTreeMap, BTreeSet};
@@ -265,6 +265,20 @@ fn hold_out(ids: &[String], fraction: f64) -> std::collections::BTreeSet<String>
         .collect()
 }
 
+/// Finish (or set aside) a rule change a crash interrupted, saying so. Every
+/// CLI writer of the learned rules or the proposals calls this right after
+/// taking the store lock (`LearningStore::resume_interrupted`).
+pub(crate) fn finish_interrupted(
+    store: &LearningStore,
+) -> Result<Option<mecha_core::learning::Resumed>> {
+    let resumed = store.resume_interrupted()?;
+    if let Some(r) = &resumed {
+        println!("{}", r.line());
+        store.log_pass(&format!("resume: {}", r.line()));
+    }
+    Ok(resumed)
+}
+
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Before the store is opened or locked: this mode reads the learning
     // store and never writes it (row 2e-1 is shadow).
@@ -289,6 +303,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     } else {
         Some(store.lock()?)
     };
+    // A change a crash interrupted is finished before this pass reads the
+    // rules and the pool it would otherwise re-argue.
+    if !args.dry_run {
+        finish_interrupted(&store)?;
+    }
 
     anyhow::ensure!(
         (0.0..1.0).contains(&args.holdout),
@@ -868,7 +887,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 reason: None,
                 scope: Some(region.clone()),
             };
-            store.write_proposal(&proposal)?;
+            // An applied proposal is written by the commit below, with the
+            // rules it records; written here, a crash in between would leave
+            // it `auto_applied` over rules that never went live.
+            if !applied {
+                store.write_proposal(&proposal)?;
+            }
             println!(
                 "{domain}: proposal {} [{status}] — {} rule(s) from {} reflection(s)",
                 proposal.id,
@@ -895,9 +919,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     rules_after: rules.len() as u32,
                     created_at: chrono::Utc::now().to_rfc3339(),
                 };
-                store.write_learned_rules(domain, &rules)?;
-                store.mark_reflexions_processed(&ids, &run.id)?;
-                store.append_run(&run)?;
+                store.commit_rules(&RuleCommit {
+                    run,
+                    reflexion_ids: ids.clone(),
+                    rules: rules.clone(),
+                    proposal: Some(proposal.clone()),
+                })?;
                 for (text, from, to) in &widenings {
                     println!("{domain}: widened — \"{text}\" loaded with {from}, now {to}");
                 }
@@ -937,9 +964,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             created_at: chrono::Utc::now().to_rfc3339(),
         };
 
-        store.write_learned_rules(domain, &rules)?;
-        store.mark_reflexions_processed(&ids, &run.id)?;
-        store.append_run(&run)?;
+        store.commit_rules(&RuleCommit {
+            run: run.clone(),
+            reflexion_ids: ids.clone(),
+            rules: rules.clone(),
+            proposal: None,
+        })?;
         for (text, from, to) in &widenings {
             println!("{domain}: widened — \"{text}\" loaded with {from}, now {to}");
         }
@@ -1176,6 +1206,36 @@ fn already_argued(
             && p.reflexion_ids.len() == ids.len()
             && p.reflexion_ids.iter().all(|id| ids.contains(id.as_str()))
     })
+}
+
+#[cfg(test)]
+mod commit_order_tests {
+    /// Read from the source, as the lock tests are: the path makes model
+    /// calls. The gated path used to write an applied proposal ahead of its
+    /// rules, so a crash in between left `auto_applied` over rules that never
+    /// went live. An applied proposal now travels inside the commit, and the
+    /// only direct write is for one that was not applied.
+    #[test]
+    fn an_applied_proposal_is_written_by_the_commit_not_before_it() {
+        let src = include_str!("learn.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let direct: Vec<usize> = code
+            .match_indices("store.write_proposal(&proposal)")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(direct.len(), 1, "one direct proposal write");
+        let guard = code[..direct[0]]
+            .rfind("if !applied {")
+            .expect("no applied guard");
+        assert!(
+            direct[0] - guard < 80,
+            "the direct write is the unapplied branch"
+        );
+        assert!(
+            code.contains("proposal: Some(proposal.clone()),"),
+            "the applied proposal rides in the commit"
+        );
+    }
 }
 
 #[cfg(test)]

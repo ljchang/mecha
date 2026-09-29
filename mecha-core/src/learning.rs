@@ -55,6 +55,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
+mod commit_tests;
+mod lossless;
+#[cfg(test)]
 mod parse_policy_tests;
 
 // ─── Reflections ────────────────────────────────────────────────────────────
@@ -1338,6 +1341,53 @@ struct RulesFile {
     rules: Vec<Rule>,
 }
 
+/// The learned-rules file to write when the stored one (`table`, parsed as
+/// `stored`) carries something this build would drop, or `None` when the
+/// plain rendering of `rules` loses nothing — which keeps the struct's field
+/// order, and so the file's usual look, in the common case.
+fn merged_rules_file(
+    mut table: toml::Table,
+    stored: &[Rule],
+    rules: &[Rule],
+) -> Result<Option<String>> {
+    let trees: Vec<toml::Value> = match table.get("rules") {
+        Some(toml::Value::Array(a)) => a.clone(),
+        _ => Vec::new(),
+    };
+    let mut used = vec![false; stored.len()];
+    let mut carried = table.keys().any(|k| k != "rules");
+    let mut out = Vec::with_capacity(rules.len());
+    for rule in rules {
+        let new = toml::Value::try_from(rule)?;
+        // The stored rule this one continues: the same id, or — for a rule
+        // with none — the same text. First unused match, so duplicates pair
+        // in order.
+        let pair = (0..stored.len()).find(|&i| {
+            !used[i]
+                && match (&rule.id, &stored[i].id) {
+                    (Some(a), Some(b)) => a == b,
+                    (None, None) => rule.text == stored[i].text,
+                    _ => false,
+                }
+        });
+        let merged = match pair.and_then(|i| trees.get(i).map(|t| (i, t))) {
+            Some((i, orig)) => {
+                used[i] = true;
+                let reparsed = toml::Value::try_from(&stored[i])?;
+                lossless::merge_toml(orig, &reparsed, &new)
+            }
+            None => new.clone(),
+        };
+        carried |= merged != new;
+        out.push(merged);
+    }
+    if !carried {
+        return Ok(None);
+    }
+    table.insert("rules".into(), toml::Value::Array(out));
+    Ok(Some(toml::to_string_pretty(&table)?))
+}
+
 /// Whether `domain` can name a rules file: it becomes a filename, so a plain
 /// name, never a path.
 pub fn is_domain_name(domain: &str) -> bool {
@@ -1402,7 +1452,7 @@ impl LearningStore {
             .create(true)
             .append(true)
             .open(self.root.join(file))?;
-        writeln!(f, "{line}")?;
+        append_record(&mut f, line)?;
         Ok(())
     }
 
@@ -1643,14 +1693,38 @@ impl LearningStore {
     /// reads this file with no lock (a read must never wait on a learn pass),
     /// so the file on disk has to be complete at every instant — a torn TOML
     /// here would fail an unrelated run at startup.
+    ///
+    /// Lossless against the file it replaces ([`lossless`]): each rule is
+    /// paired with the stored one it continues — by id, else by text — and
+    /// keeps any field this build has no slot for, and a top-level key other
+    /// than `rules` is kept. A file this build cannot read is refused rather
+    /// than overwritten: it holds rules someone wrote, and the fix for it is
+    /// the owner's.
     pub fn write_learned_rules(&self, domain: &str, rules: &[Rule]) -> Result<()> {
-        let file = RulesFile {
-            rules: rules.to_vec(),
-        };
         let path = self.rules_path(domain, "learned");
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, toml::to_string_pretty(&file)?)?;
-        std::fs::rename(&tmp, &path)?;
+        let fresh = toml::to_string_pretty(&RulesFile {
+            rules: rules.to_vec(),
+        })?;
+        let old = match std::fs::read_to_string(&path) {
+            Ok(t) => Some(t),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let body = match &old {
+            None => fresh,
+            Some(old) => {
+                let refuse =
+                    || format!("refusing to replace {}: it does not parse", path.display());
+                let table: toml::Table = toml::from_str(old).with_context(refuse)?;
+                let stored: RulesFile = toml::Value::Table(table.clone())
+                    .try_into()
+                    .with_context(refuse)?;
+                merged_rules_file(table, &stored.rules, rules)?.unwrap_or(fresh)
+            }
+        };
+        if old.as_deref() != Some(body.as_str()) {
+            lossless::write_replacing(&path, body.as_bytes())?;
+        }
         Ok(())
     }
 
@@ -1879,9 +1953,14 @@ impl LearningStore {
     /// anything to the user's `$EDITOR` — the store's files staying humanly
     /// editable is a requirement, not an accident. The kernel drops the lock
     /// when the fd closes, crash included, so a dead pass can never wedge
-    /// the store. Read paths (prompt assembly, validate) do not take it:
-    /// a run start must never block on a learn pass, which is why every
-    /// rewrite in this module goes through a temp sibling and rename.
+    /// the store. Read paths (prompt assembly, and `validate`'s probes) do
+    /// not take it: a run start must never block on a learn pass, which is
+    /// why every rewrite in this module goes through a temp sibling and
+    /// rename. `validate` and `mail reflect` take it only around their
+    /// appends, never across a model call. A *hung* holder is another
+    /// matter: `reflect` and `learn` hold it across provider calls (their
+    /// passes are read-modify-writes of the whole pool), so a stuck provider
+    /// parks every other writer (`forget` included) until it returns.
     pub fn lock(&self) -> Result<StoreLock> {
         Ok(self.flock(true)?.expect("blocking flock returns held"))
     }
@@ -1941,6 +2020,77 @@ pub struct LeapRun {
     pub created_at: String,
 }
 
+/// A rule change going live, as [`LearningStore::commit_rules`] takes it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleCommit {
+    /// The run the change is recorded as. Its id marks the reflections.
+    pub run: LeapRun,
+    /// The reflections the change consumes.
+    pub reflexion_ids: Vec<String>,
+    /// The domain's learned rules after the change.
+    pub rules: Vec<Rule>,
+    /// The proposal that records why, in its final state. `None` for an
+    /// ungated consolidation, which writes no proposal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<Proposal>,
+}
+
+/// What [`COMMIT_FILE`] holds: the change, and the live rules it was made
+/// against. Recovery needs both to tell "landed" from "never landed" from
+/// "moved since".
+#[derive(Debug, Serialize, Deserialize)]
+struct CommitIntent {
+    #[serde(flatten)]
+    change: RuleCommit,
+    rules_before: Vec<Rule>,
+}
+
+/// A rule change in progress, or one a crash interrupted. It exists only
+/// between the first and last write of [`LearningStore::commit_rules`],
+/// which is milliseconds with no model call in it. So one that is older than
+/// that was interrupted, which doctor reports.
+pub const COMMIT_FILE: &str = "commit.json";
+
+/// An interrupted rule change that recovery would not finish, kept for the
+/// owner to read as `commit.unfinished.<when>.json`. See
+/// [`LearningStore::resume_interrupted`].
+pub const UNFINISHED_COMMIT_PREFIX: &str = "commit.unfinished.";
+
+/// What [`LearningStore::resume_interrupted`] did with a record it found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resumed {
+    /// Every step is done now. `proposal` is the one the change recorded,
+    /// if it had one.
+    Finished {
+        proposal: Option<String>,
+        line: String,
+    },
+    /// Not finished: kept as `commit.unfinished.<when>.json` for the owner.
+    SetAside(String),
+}
+
+impl Resumed {
+    /// One line for the caller to print and log.
+    pub fn line(&self) -> &str {
+        match self {
+            Resumed::Finished { line, .. } | Resumed::SetAside(line) => line,
+        }
+    }
+}
+
+/// The same rules, field for field — recovery's "is this what is live?".
+/// Stricter than `proposals accept`'s text-and-enabled check on purpose:
+/// here a difference in any field means someone other than this change
+/// wrote the file. Both sides are typed `Rule`s, so a field the lossless
+/// rewrite carried through for a newer build (present on disk, not in the
+/// struct) does not read as a move.
+fn same_rule_set(a: &[Rule], b: &[Rule]) -> bool {
+    match (serde_json::to_value(a), serde_json::to_value(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
 // ─── Proposals ──────────────────────────────────────────────────────────────
 
 /// A rule change waiting for the user, with the evidence that argues for it.
@@ -1984,14 +2134,30 @@ pub struct Proposal {
 impl LearningStore {
     /// Write (or rewrite) one proposal, atomically — `mecha proposals list`
     /// must never read a half-written file from a nightly pass.
+    ///
+    /// Lossless against the file it replaces ([`lossless`]); one this build
+    /// cannot read is refused rather than overwritten — `proposals()` skips
+    /// it, so no caller here built `p` from it.
     pub fn write_proposal(&self, p: &Proposal) -> Result<()> {
         let dir = self.root.join("proposals");
         crate::create_private_dir(&dir)?;
         let path = dir.join(format!("{}.json", p.id));
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(p)?)?;
-        std::fs::rename(&tmp, &path)?;
-        Ok(())
+        let body = match std::fs::read_to_string(&path) {
+            Ok(old) => {
+                let refuse =
+                    || format!("refusing to replace {}: it does not parse", path.display());
+                let orig: serde_json::Value = serde_json::from_str(&old).with_context(refuse)?;
+                let stored = Proposal::deserialize(&orig).with_context(refuse)?;
+                let reparsed = serde_json::to_value(&stored)?;
+                match lossless::render_json(&old, &orig, &reparsed, p, true)? {
+                    Some(body) => body,
+                    None => return Ok(()),
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::to_string_pretty(p)?,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        lossless::write_replacing(&path, body.as_bytes())
     }
 
     /// Every proposal, oldest first.
@@ -2038,6 +2204,138 @@ impl LearningStore {
         self.append_line("runs.jsonl", &serde_json::to_string(run)?)
     }
 
+    /// Whether `runs.jsonl` already records a run with this id. A line this
+    /// build cannot read is not a match.
+    fn has_run(&self, id: &str) -> Result<bool> {
+        let text = match std::fs::read_to_string(self.root.join("runs.jsonl")) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(text.lines().any(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .is_ok_and(|v| v.get("id").and_then(|i| i.as_str()) == Some(id))
+        }))
+    }
+
+    /// Put a rule change live as one unit. The caller holds the store lock.
+    ///
+    /// Going live is up to four writes to four files — the rules, the
+    /// reflections' marks, the run, the proposal — and a crash between two of
+    /// them used to leave the store half-changed. Rules live but reflections
+    /// unmarked meant the next pass re-argued the batch against its own
+    /// result. A proposal already marked `accepted` whose rules never landed
+    /// meant a record that lied.
+    ///
+    /// So the whole change is written down first, in [`COMMIT_FILE`]
+    /// (fsynced), then the steps run, then the record is removed. A crash
+    /// leaves the record, and [`Self::resume_interrupted`] finishes it. Every
+    /// step is idempotent, so finishing means doing them again.
+    pub fn commit_rules(&self, change: &RuleCommit) -> Result<()> {
+        // A pending record is an interrupted change nobody finished. Writing
+        // over it would lose that change for good (its reflections unmarked,
+        // its run gone) with nothing left for doctor to find. So a writer that
+        // skipped `resume_interrupted` is refused here, not trusted to have
+        // called it.
+        let path = self.root.join(COMMIT_FILE);
+        anyhow::ensure!(
+            !path.exists(),
+            "an interrupted rule change is waiting in {} — finish it first \
+             (`LearningStore::resume_interrupted`, which `mecha learn` runs)",
+            path.display()
+        );
+        let intent = CommitIntent {
+            change: change.clone(),
+            rules_before: self.learned_rules(&change.run.domain)?,
+        };
+        lossless::write_replacing(&path, serde_json::to_string_pretty(&intent)?.as_bytes())?;
+        self.finish_commit(&intent.change, true)?;
+        std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        Ok(())
+    }
+
+    fn finish_commit(&self, c: &RuleCommit, write_rules: bool) -> Result<()> {
+        if write_rules {
+            self.write_learned_rules(&c.run.domain, &c.rules)?;
+        }
+        self.mark_reflexions_processed(&c.reflexion_ids, &c.run.id)?;
+        if !self.has_run(&c.run.id)? {
+            self.append_run(&c.run)?;
+        }
+        if let Some(p) = &c.proposal {
+            self.write_proposal(p)?;
+        }
+        Ok(())
+    }
+
+    /// Finish a rule change a crash interrupted, if one is on disk. The
+    /// caller holds the store lock, and every writer of the rules or the
+    /// proposals calls this right after taking it. A writer that moved the
+    /// rules first would turn an ordinary crash into a set-aside. Returns
+    /// what it did, for the caller to print.
+    ///
+    /// The live rules decide what "finish" means:
+    /// - still the change's `rules`: the rules landed, so finish the rest;
+    /// - still its `rules_before`: nothing landed, so do it all;
+    /// - neither: someone moved the rules since (an owner verb after the
+    ///   crash). Writing over that would clobber a later decision, so the
+    ///   record is set aside as `commit.unfinished.<when>.json` for doctor to
+    ///   report. Its reflections stay unmarked, and the next pass learns
+    ///   from them again.
+    ///
+    /// A record this build cannot read is set aside the same way. An I/O
+    /// error keeps the record where it is, for the next writer to retry.
+    pub fn resume_interrupted(&self) -> Result<Option<Resumed>> {
+        let path = self.root.join(COMMIT_FILE);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let set_aside = |why: String| -> Result<Option<Resumed>> {
+            // Named by when, so a second set-aside never overwrites the first.
+            let aside = self.root.join(format!(
+                "{UNFINISHED_COMMIT_PREFIX}{}.json",
+                chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
+            ));
+            std::fs::rename(&path, &aside)
+                .with_context(|| format!("setting aside {}", path.display()))?;
+            Ok(Some(Resumed::SetAside(format!(
+                "an interrupted rule change could not be finished ({why}); set aside as {}",
+                aside.display()
+            ))))
+        };
+        let intent: CommitIntent = match serde_json::from_str(&text) {
+            Ok(i) => i,
+            Err(e) => return set_aside(format!("this build cannot read it: {e}")),
+        };
+        let c = &intent.change;
+        let live = self.learned_rules(&c.run.domain)?;
+        let write_rules = if same_rule_set(&live, &c.rules) {
+            false
+        } else if same_rule_set(&live, &intent.rules_before) {
+            true
+        } else {
+            return set_aside(format!(
+                "the live `{}` rules changed after it was interrupted",
+                c.run.domain
+            ));
+        };
+        self.finish_commit(c, write_rules)?;
+        std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        Ok(Some(Resumed::Finished {
+            proposal: c.proposal.as_ref().map(|p| p.id.clone()),
+            line: format!(
+                "finished an interrupted rule change to `{}` (run {}): {} rule(s), {} \
+                 reflection(s)",
+                c.run.domain,
+                c.run.id,
+                c.rules.len(),
+                c.reflexion_ids.len()
+            ),
+        }))
+    }
+
     /// Mark reflections consumed by a pass. Rewrites the file via a temp
     /// sibling and rename, so a crash mid-write loses the marking, never the
     /// reflections.
@@ -2066,21 +2364,61 @@ impl LearningStore {
     /// Every writer here holds the store lock at the CLI boundary. Two
     /// concurrent rewrites would otherwise be a lost update, and this file is
     /// the one that carries what nobody can reconstruct.
+    ///
+    /// Lossless ([`lossless`]): a line this build cannot parse is written
+    /// back where it was, a line the caller left alone is written back byte
+    /// for byte, and a changed one keeps any field this build has no slot
+    /// for. The caller gets a slice, not a `Vec` — a rewrite edits records,
+    /// it never adds or removes one (`forget` removes, at the line level), and
+    /// the slice is what pairs each record with the line it came from. When
+    /// nothing changed, the file is not touched.
     fn rewrite_reflexions(
         &self,
-        change: impl FnOnce(&mut Vec<Reflexion>) -> Result<()>,
+        change: impl FnOnce(&mut [Reflexion]) -> Result<()>,
     ) -> Result<()> {
-        let mut all = self.reflexions()?;
-        change(&mut all)?;
-        let mut out = String::new();
-        for r in &all {
-            out.push_str(&serde_json::to_string(r)?);
+        let path = self.root.join("reflections.jsonl");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        // Each non-blank line, and — when this build can read it — the index
+        // of its record and the tree it was parsed from.
+        let mut lines: Vec<(&str, Option<(usize, serde_json::Value)>)> = Vec::new();
+        let mut records = Vec::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let parsed = serde_json::from_str::<serde_json::Value>(line.trim())
+                .ok()
+                .and_then(|v| Reflexion::deserialize(&v).ok().map(|r| (v, r)));
+            match parsed {
+                Some((tree, r)) => {
+                    lines.push((line, Some((records.len(), tree))));
+                    records.push(r);
+                }
+                None => lines.push((line, None)),
+            }
+        }
+        let reparsed = records
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        change(&mut records)?;
+        let mut out = String::with_capacity(text.len());
+        let mut changed = false;
+        for (line, record) in &lines {
+            let rendered = match record {
+                Some((i, orig)) => {
+                    lossless::render_json(line.trim(), orig, &reparsed[*i], &records[*i], false)?
+                }
+                None => None,
+            };
+            changed |= rendered.is_some();
+            out.push_str(rendered.as_deref().unwrap_or(line));
             out.push('\n');
         }
-        let path = self.root.join("reflections.jsonl");
-        let tmp = self.root.join("reflections.jsonl.tmp");
-        std::fs::write(&tmp, out)?;
-        std::fs::rename(&tmp, &path)?;
+        if changed {
+            lossless::write_replacing(&path, out.as_bytes())?;
+        }
         Ok(())
     }
 
@@ -2183,13 +2521,12 @@ impl LearningStore {
         updates: &[(String, crate::situation::Situation)],
         recomputed_at: &str,
     ) -> Result<usize> {
-        // Decide before writing. `rewrite_reflexions` re-serialises the
-        // whole file whatever its closure did, and a re-serialisation is
-        // not identity — a lenient field (`Situation::surface`) that this
-        // build could not name is written back as absent — so a pass with
-        // nothing to apply must not touch the file at all, or the
-        // advertised free second run is a lossy, uncommitted rewrite
-        // (found on review).
+        // Decide before writing, so a pass with nothing to apply reads the
+        // file once and never opens it for writing. This guard predates the
+        // lossless rewrite, when re-serialising the whole file dropped a
+        // lenient field this build could not name (found on review); the
+        // rewrite now leaves untouched lines alone and skips the write when
+        // nothing changed, so the guard is the cheap path, not the safe one.
         let applicable: Vec<&(String, crate::situation::Situation)> = {
             let absent: std::collections::HashSet<String> = self
                 .reflexions()?
@@ -2412,6 +2749,20 @@ impl LearningStore {
         }
         Ok(out)
     }
+}
+
+/// One record, one `write`. `writeln!` writes the line and its newline in
+/// separate calls, so two processes appending at once could interleave into
+/// `AB\n\n` — one corrupt line that readers skip and the next rewrite
+/// deletes. A single `write_all` of the whole record keeps each append whole
+/// on an `O_APPEND` descriptor (in practice, for records this size, on a
+/// local filesystem); the store lock is what serialises appends with
+/// rewrites.
+fn append_record(w: &mut impl Write, line: &str) -> std::io::Result<()> {
+    let mut record = String::with_capacity(line.len() + 1);
+    record.push_str(line);
+    record.push('\n');
+    w.write_all(record.as_bytes())
 }
 
 /// Stable content hash of a rendered rules block. FNV-1a written out here
@@ -4932,6 +5283,29 @@ mod tests {
             "ref: refs/heads/main\n"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_appended_record_is_one_write_with_its_newline() {
+        // `writeln!` issued the line and the newline as two writes, which two
+        // concurrent appenders can interleave into one corrupt line.
+        struct Counting(Vec<Vec<u8>>);
+        impl std::io::Write for Counting {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut w = Counting(Vec::new());
+        append_record(&mut w, r#"{"id":"r1"}"#).unwrap();
+        assert_eq!(
+            w.0,
+            vec![b"{\"id\":\"r1\"}\n".to_vec()],
+            "not one whole record per write"
+        );
     }
 
     /// A pass leaves one `{"at", "message"}` line in `passes.jsonl`, in order,
