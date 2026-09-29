@@ -14,6 +14,39 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-29 — image edits that came back unchanged: the prompt, not
+chance (#408).** The owner reported that an edit asking to move someone or
+change a pose sometimes returned the same picture, and that only a new chat
+got past it. Measured on the fictional picnic scene (one picture, the Q4
+GGUF and the w4a8 text encoder, 40 steps), with the seed held fixed:
+- The failing seed from a live chat, 363985941, reproduced its near-copy
+  exactly (layout similarity 0.995). The failure is set by the seed, the
+  prompt and the model files, not by chance at run time.
+- On the same 12 seeds, a caption of the scene stood Maya up 0 times, with
+  11 near-copies. "Have Maya stand up …" alone stood her up 8 times, with 3
+  near-copies and 1 partial. "Keep the watercolor style, the lake, willow
+  tree, and red checkered blanket unchanged. Have Maya stand up …" did it 12
+  times. Every image was also judged by eye.
+
+The edit model reads a caption, or "keep <image1> unchanged", as the picture
+it already has. #408 (`b26537b0`) makes the tool description, the `prompt`
+field and a new near-copy notice ask for the kept parts, named, then the
+instruction. The first draft's guidance, "describe the finished picture", had
+produced exactly the caption that failed (*Traps*, Measuring). Each edit's
+`layout_similarity` (`imagegen::layout_similarity`) now goes in its
+manifest. At `NEAR_COPY_LAYOUT` (0.78) the result says the layout did not
+change and how to retry, never that the edit failed, because a recolour
+scores 0.78–1.00 too. Strikes count per picture edited, held as salted
+hashes (`ImageGenerate::near_copy_key`), and a second in a row says stop.
+Three review passes; the first two found that a recolour chain was told to
+stop. In four live Edit-button chats with the final wording, the model wrote
+every prompt in the new form and all four stood her up. One needed a retry,
+which landed in the same turn in about 3½ minutes. Installed 21:05Z
+(HANDOFF, *Machine state*). The quantisation comparison, the first suspect,
+never ran (HANDOFF). Closed with it: the HANDOFF item saying the result
+text tells the model "the user can" see the picture was obsolete, since
+`9d16e757` (image_view on request, 2026-09-27) had removed the phrase.
+
 **2026-09-29 — people in a picture who are not library characters
 (#390, #391), and adding to the library from the page (#394).** `IMAGE-COMPILER-RESEARCH.md` §E11
 and §E12 are the evidence.
@@ -7015,6 +7048,16 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**A failure that looks random may be fixed by its seed: replay the failing
+seed before theorising.** Image edits that "sometimes" came back unchanged
+were blamed first on chance, then on quantised model files. Replaying the one
+failing seed reproduced the copy exactly, and varying only the prompt on 12
+fixed seeds moved it from 0 of 12 to 12 of 12. The first fix, guidance to
+"describe the finished picture", had produced the very caption that failed.
+When an outcome is stochastic, pin the randomness, reproduce the failure,
+then vary one input, and treat a change of guidance as a hypothesis to
+measure, not a fix (2026-09-29, #408).
 
 **A recognizer's contract includes the shape of the clip, not just its
 words.** The late lane handed Parakeet-TDT five seconds of clear speech

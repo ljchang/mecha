@@ -22,6 +22,39 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-29 — image edits that came back unchanged: the cause was the
+prompt (#408), merged and installed.** What shipped, and the measurement,
+are in HISTORY under 2026-09-29; the install is in *Machine state, dated*.
+What is open:
+
+- **E4, Q4 against int8, is still unmeasured.** It was the first suspect
+  and turned out not to be the cause. The run stopped at 17 of 84 images,
+  all on today's files, when Claude Code reaped it for low memory while
+  other lanes were building. It now bears only on quality and speed. The
+  int8 files are on disk (`qwen_image_2.1_int8_convrot.safetensors`,
+  `qwen3vl_8b_int8_convrot.safetensors`) and need about 4.4 GB more than
+  today's pair. `comfy_graph` would have to choose `UNETLoader` over
+  `UnetLoaderGGUF` by file type. Run it when no build is going.
+- **The model still describes pictures it has not seen.** In all eight live
+  chats it told the user "Maya is now standing" without looking. By the end
+  of each chat that was true, but only because a retry had landed. The result
+  text already says "do not describe what it shows", and the near-copy
+  notice now gives it something true to say. Not acted on.
+- **What was not tested:** uploaded photos, small moves ("turn her head"),
+  long chains of edits, and any scene but the one picnic. `NEAR_COPY_LAYOUT`
+  (0.78) comes from that scene, with same-shape edits only. An edit that
+  passes a `size` unlike its reference's squashes both thumbnails, so it
+  reads as changed, which fails in the safe direction.
+- **"the scene" in a keep list:** once in three live prompts, "Keep … the
+  blanket, and the scene unchanged" came back a near-copy, and the retry,
+  which named parts instead, worked. That is one case, and it was not acted on.
+- **#408's last-pass minors, for the owner:**
+  - the `NEAR_COPY_WINDOW` expiry is the one strike branch with no test;
+  - the tool description has a 140-character source line;
+  - `req.references[0]` is the edited picture only because `request` refuses
+    `cast` with `reference_images`. If that is ever allowed, the similarity
+    compares against a 512² portrait without saying so.
+
 **2026-09-28/29 — the appraisal audit, the owner's rulings on it, and five
 appraisal PRs open, all reviewed to the bar.** An audit read the live store:
 - 7 text appraisals on 2026-09-28, every one predicting `no_act`, and 4
@@ -80,7 +113,9 @@ Open:
   `testenv::HomeGuard`.
 - **The live library holds test entries** `maya`, `john` and `watercolour`,
   plus a model-proposed candidate, `sam`, awaiting the owner's approve or
-  reject. Whether to keep them is the owner's call.
+  reject (all four still there on 2026-09-29). Whether to keep them is the
+  owner's call. #408's probes used `maya`, `john` and `watercolour` as their
+  cast, so removing them leaves the next image probe without its fixture.
 
 **2026-09-28 — voice calls in incognito chats (#376) and a connect
 deadline (#386), merged and installed; one live call is owed.** What each
@@ -153,12 +188,6 @@ install is in *Machine state, dated* below. What is open:
 - **Known limit, not a bug:** taint a run acquires mid-turn reaches the page
   only at `done`, so a mid-run chip shows the floor the run started from
   (`Live::taint`). The arm #358 replaced sent `null`, which drew no chip.
-- **`image_generate` tells the model "the user can" see the picture on every
-  surface** (`imagegen.rs`, the result text), but only the web chat draws it
-  (`Chat.svelte`'s `generatedImage`). `setup.rs` registers the tool wherever
-  `[image]` is configured, which includes Slack and the TUI. Not acted on.
-  This was found while checking the phone report, whose own cause was #358:
-  the model had been told correctly, and the page was not drawing the picture.
 
 **2026-09-27 — model switching, server side: `:8080` is a llama-server
 router, installed, and every long-lived surface follows it; the chip is not
@@ -3270,6 +3299,17 @@ Checked the same morning:
 - The `:8443` door serves `index-OHSoDwAD.js`, which still carries the
   incognito answer gate.
 - The worker still answers `{"unlogged":true}`.
+
+**2026-09-29 21:05Z, mecha-5d: `mecha` from `b26537b0` (#408).** The
+installed binary already carried `document_read`, so mecha-d7's 20:48Z
+install of #404 and #406 was in place, and #408 was the only addition.
+`mecha-slack`, `mecha-triggers`, `mecha-drain` and `mecha-serve` were
+restarted at 21:05:28Z with no live hold, and each `/proc/<pid>/exe` is
+`~/.cargo/bin/mecha` (for `mecha-drain`, its bash wrapper). Checked:
+`strings ~/.cargo/bin/mecha | grep -c "has now kept its layout through two
+edits in a row"` → 1. The voice worker, ComfyUI, `llama-*`, the graph
+binaries and the dist were not touched. The 20:48Z install is mecha-d7's to
+record.
 
 ## What the measurements say
 
