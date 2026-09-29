@@ -187,7 +187,8 @@ fn summary_json(store: &Store, lib: &Library, p: &Persona) -> serde_json::Value 
         "locked": p.state.locked,
         "version": p.state.version,
         "digest": p.state.digest,
-        "edited_since_version": store.content_digest(p).ok().as_deref() != Some(p.state.digest.as_str()),
+        // `null` when the persona cannot be rendered: unknown, not "edited".
+        "edited_since_version": store.content_digest(p).ok().map(|d| d != p.state.digest),
         "dir": store.persona_dir(&p.name),
         "sessions": store.sessions_dir(&p.name),
         "notes": p.notes,
@@ -266,14 +267,14 @@ fn after_edit(dir: &Path, lib: &Library, name: &str, again: &str) -> Result<()> 
         );
     };
     let before = p.state.version;
-    let state = persona::snapshot(dir, name)?;
-    if state.version == before {
-        println!("unchanged");
-    } else {
-        println!(
+    let snapshot = persona::snapshot(dir, name);
+    match &snapshot {
+        Ok(state) if state.version == before => println!("unchanged"),
+        Ok(state) => println!(
             "saved — `{name}` is v{}; new chats use it, open chats keep the version they began with",
             state.version
-        );
+        ),
+        Err(_) => eprintln!("saved, but no new version could be taken:"),
     }
     let store = Store::load(dir);
     if let Some(p) = store.get(name) {
@@ -284,7 +285,7 @@ fn after_edit(dir: &Path, lib: &Library, name: &str, again: &str) -> Result<()> 
             eprintln!("problem: {problem}");
         }
     }
-    Ok(())
+    snapshot.map(|_| ())
 }
 
 fn run(dir: &Path, lib_dir: &Path, cmd: Cmd) -> Result<()> {
@@ -384,7 +385,7 @@ fn run_with(
                     voice,
                     groups,
                     locked,
-                    origin: None,
+                    origin: Origin::Owner,
                 },
             )?;
             let pdir = dir.join(&p.name);
