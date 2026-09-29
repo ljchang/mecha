@@ -1325,10 +1325,15 @@ pub struct ImageGenerate {
     /// every call so an entry the owner just approved is usable at once.
     /// `None` when the mecha home cannot be resolved.
     library_dir: Option<std::path::PathBuf>,
-    /// When each picture last came back from an edit as a near-copy, by its
-    /// resolved path — the original, however many near-copies deep the edit
-    /// started — so the second one in a row says stop rather than retry.
-    near_copies: std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Instant>>,
+    /// When an edit of each picture last kept its layout, so two in a row
+    /// say stop rather than retry. Keyed by the picture actually edited, not
+    /// the one a chain started from: a recolour chain edits a new result each
+    /// time and never counts twice, while a failed move retried as told edits
+    /// the same original again (review of #408). The key is a salted hash of
+    /// the resolved path, so no path — an incognito room's included — is
+    /// held here, only a number and a time.
+    near_copies: std::sync::Mutex<std::collections::HashMap<u64, Instant>>,
+    near_copy_salt: std::collections::hash_map::RandomState,
 }
 
 /// An edit that came back a near-copy: the picture a retry should edit, and
@@ -1356,33 +1361,29 @@ impl ImageGenerate {
             generation: Arc::new(AtomicU64::new(0)),
             library_dir: crate::imagelib::Library::default_dir().ok(),
             near_copies: Default::default(),
+            near_copy_salt: Default::default(),
         })
     }
 
-    /// Record an edit of `original` that kept its layout; true when the last
-    /// edit of it, inside [`NEAR_COPY_WINDOW`], kept it too.
-    fn near_copy_again(&self, original: std::path::PathBuf) -> bool {
+    /// The strike key for an edit of `edited`.
+    fn near_copy_key(&self, ctx: &ToolCtx, edited: &str) -> u64 {
+        use std::hash::BuildHasher;
+        let path = ctx
+            .resolve(edited)
+            .unwrap_or_else(|_| ctx.workspace.join(edited));
+        self.near_copy_salt.hash_one(path)
+    }
+
+    /// The strikes still inside [`NEAR_COPY_WINDOW`], swept on every edit.
+    fn strikes(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, Instant>> {
         let mut seen = self.near_copies.lock().unwrap_or_else(|p| p.into_inner());
         seen.retain(|_, at| at.elapsed() < NEAR_COPY_WINDOW);
-        seen.insert(original, Instant::now()).is_some()
+        seen
     }
 
-    /// An edit of `original` changed the layout, so the next one that does
-    /// not is the first in a row again (review of #408: a strike that only
-    /// ever accumulated called any later one "the second in a row").
-    fn layout_changed(&self, original: &std::path::Path) {
-        let mut seen = self.near_copies.lock().unwrap_or_else(|p| p.into_inner());
-        seen.remove(original);
-    }
-
-    /// The picture an edit of `edited` counts against: the one its manifest
-    /// says it kept the layout of, else itself — so a chain of near-copies
-    /// keys on one picture. Also the manifest, and the path the key resolves to.
-    async fn original_of(
-        &self,
-        ctx: &ToolCtx,
-        edited: &str,
-    ) -> (String, Option<Value>, std::path::PathBuf) {
+    /// The picture a retry of an edit of `edited` should go back to: the one
+    /// its manifest says it kept the layout of, else itself. Also the manifest.
+    async fn original_of(&self, ctx: &ToolCtx, edited: &str) -> (String, Option<Value>) {
         let own = read_manifest(ctx, edited).await;
         // A plain workspace path that resolves, or it is not used: the
         // manifest is a file in the workspace, and this text reaches the model.
@@ -1397,10 +1398,7 @@ impl ImageGenerate {
             })
             .map(str::to_string)
             .unwrap_or_else(|| edited.to_string());
-        let key = ctx
-            .resolve(&original)
-            .unwrap_or_else(|_| ctx.workspace.join(&original));
-        (original, own, key)
+        (original, own)
     }
 
     /// What an edit that kept the layout of `edited` tells the model. It
@@ -1409,8 +1407,9 @@ impl ImageGenerate {
     /// and "stop" is only ever for a move or a pose (review of #408: a
     /// second successful recolour was told it had not taken).
     async fn near_copy(&self, ctx: &ToolCtx, edited: &str, similarity: f64) -> NearCopy {
-        let (original, own, key) = self.original_of(ctx, edited).await;
-        let again = self.near_copy_again(key);
+        let key = self.near_copy_key(ctx, edited);
+        let again = self.strikes().insert(key, Instant::now()).is_some();
+        let (original, own) = self.original_of(ctx, edited).await;
         let drawn = if original == edited {
             own
         } else {
@@ -1433,8 +1432,8 @@ impl ImageGenerate {
                 .unwrap_or_default();
             format!(
                 "{expected} But if the user asked to move someone, change a pose or rearrange \
-                 the picture, this is the second edit of {original} in a row that kept its \
-                 layout: stop editing it, and tell the user it did not take{offer}."
+                 the picture, {edited} has now kept its layout through two edits in a row: stop \
+                 editing it, and tell the user it did not take{offer}."
             )
         } else {
             let offer = redraw
@@ -2079,9 +2078,10 @@ impl Tool for ImageGenerate {
         };
         let near = match similarity {
             Some(r) if r >= NEAR_COPY_LAYOUT => Some(self.near_copy(ctx, &paths[0], r).await),
+            // A changed layout ends the row for the picture it was made from.
             Some(_) => {
-                let (_, _, original) = self.original_of(ctx, &paths[0]).await;
-                self.layout_changed(&original);
+                let key = self.near_copy_key(ctx, &paths[0]);
+                self.strikes().remove(&key);
                 None
             }
             None => None,
@@ -4333,7 +4333,7 @@ mod tests {
     async fn an_edit_that_changed_nothing_says_so_and_the_second_says_stop() {
         let scene = picture(8, [240, 220, 40]);
         let (url, _) = fake_with(Fake {
-            history: vec![done(), done()],
+            history: vec![done(), done(), done()],
             views: vec![scene.clone()],
             ..Fake::default()
         })
@@ -4371,8 +4371,8 @@ mod tests {
         assert_eq!(manifest["same_layout_as"], "images/orig.png");
         assert!(manifest["layout_similarity"].as_f64().unwrap() > 0.99);
 
-        // The retry edits the near-copy rather than the original: it still
-        // counts against the original, and the second in a row says stop.
+        // A retry that edits the near-copy instead is pointed back at the
+        // original, and is not yet a second strike: it is a new picture.
         let copy = out.content.lines().next().unwrap()["image: ".len()..].to_string();
         let out = t
             .call(
@@ -4383,14 +4383,30 @@ mod tests {
             .unwrap();
         assert!(
             out.content
-                .contains("the second edit of images/orig.png in a row that kept its layout")
-                && out.content.contains("stop editing it"),
+                .contains("editing images/orig.png rather than this result")
+                && !out.content.contains("stop editing it"),
             "{}",
             out.content
         );
         assert_eq!(
             manifest_of(&dir, &out.content)["same_layout_as"],
             "images/orig.png"
+        );
+        // The retry as told, of the original, keeps it again: stop.
+        let out = t
+            .call(
+                json!({"prompt": "Keep the background unchanged. Have Maya stand up.",
+                       "reference_images": ["images/orig.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content
+                .contains("images/orig.png has now kept its layout through two edits in a row")
+                && out.content.contains("stop editing it"),
+            "{}",
+            out.content
         );
         std::fs::remove_dir_all(dir).ok();
     }
@@ -4524,7 +4540,8 @@ mod tests {
                 .contains("that is expected, and nothing is wrong")
                 && out
                     .content
-                    .contains(&format!("To change it further, edit {orange} next")),
+                    .contains(&format!("To change it further, edit {orange} next"))
+                && !out.content.contains("stop editing it"),
             "{}",
             out.content
         );
