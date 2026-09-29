@@ -159,7 +159,11 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
     let candidates: Vec<_> = sessions
         .into_iter()
         .filter(|(meta, _)| match &backfill {
-            Some(targets) => targets.contains(&meta.id),
+            // A target not yet distilled is left to the ordinary pass: its
+            // appraisal written now would not be after its outcome, and the
+            // row, once on record, would keep the real one from ever being
+            // written (review of #388).
+            Some(targets) => targets.contains(&meta.id) && done.contains(&meta.id),
             None => !done.contains(&meta.id),
         })
         .collect();
@@ -508,8 +512,17 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
         }
         drop(seat);
         // A backfill writes only the appraisal: the episode is already in
-        // the graph and the session already in the ledger.
+        // the graph and the session already in the ledger. An episode call
+        // that failed appraised nothing, and says so — the tally must add
+        // up (review of #388).
         if backfill.is_some() {
+            if let Err(e) = &turn {
+                eprintln!(
+                    "· {} — the episode call failed, so nothing was appraised: {e:#}",
+                    meta.id
+                );
+                tally.failed += 1;
+            }
             continue;
         }
         match turn.map(|t| t.distilled) {
@@ -1076,24 +1089,23 @@ impl Appraiser {
         // Past appraisals through the clean door only: a tainted one has no
         // way into another session's input.
         let clean = store.clean();
-        let mut past = clean
+        // A backfill appraises a session older than most on record: only
+        // appraisals of sessions that had ended by its end are *earlier*
+        // ones, chosen before the newest are taken (review of #388).
+        let past = clean
             .as_ref()
             .map(|read| {
-                read.same_situation_and_goal(evidence, mecha_core::appraisal_store::PAST_SHOWN)
+                if cx.backfill {
+                    read.same_situation_and_goal_ended_by(
+                        evidence,
+                        evidence.ended_at(),
+                        mecha_core::appraisal_store::PAST_SHOWN,
+                    )
+                } else {
+                    read.same_situation_and_goal(evidence, mecha_core::appraisal_store::PAST_SHOWN)
+                }
             })
             .unwrap_or_default();
-        // A backfill appraises sessions older than every appraisal on
-        // record: one of a later session is not an *earlier* appraisal, and
-        // showing it would hand the appraiser what happened afterwards.
-        // Unknown ends show nothing.
-        if cx.backfill {
-            past.retain(
-                |p| match (p.session_ended_at.or(Some(p.at)), evidence.ended_at()) {
-                    (Some(theirs), Some(ours)) => theirs <= ours,
-                    _ => false,
-                },
-            );
-        }
         let inputs = distill::render_appraisal_inputs(&distill::AppraisalInputs {
             evidence,
             charter: cx.charter,

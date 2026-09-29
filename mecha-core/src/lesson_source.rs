@@ -213,9 +213,6 @@ impl<'a> Sources<'a> {
     }
 }
 
-/// The region an intervention is reported under: its recorded situation's
-/// scope key, `None` when the reflection predates situations — unknown,
-/// never standing (an empty key is standing, and matches every run).
 /// The sessions a backfilled appraisal would make eligible (ruling 3D→D,
 /// 2026-09-28): a reflection [`Sources::pair`] refuses as exactly
 /// [`Exclusion::NoAppraisal`] — every gate before it passed — and that the
@@ -231,6 +228,9 @@ pub fn backfill_targets(sources: &Sources<'_>, reflections: &[Reflexion]) -> BTr
         .collect()
 }
 
+/// The region an intervention is reported under: its recorded situation's
+/// scope key, `None` when the reflection predates situations — unknown,
+/// never standing (an empty key is standing, and matches every run).
 pub fn region_of(situation: Option<&Situation>) -> Option<String> {
     situation.map(Situation::key)
 }

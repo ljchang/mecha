@@ -886,6 +886,31 @@ impl CleanRead {
         )
     }
 
+    /// [`Self::same_situation_and_goal`], only of sessions that had ended
+    /// by `ended_by` — the earlier appraisals of a session appraised after
+    /// the fact (`--backfill-appraisals`). The cutoff is applied before the
+    /// newest `n` are taken, or the newest would crowd out every earlier
+    /// one (review of #388). `None` — this session's end unknown — shows
+    /// nothing.
+    pub fn same_situation_and_goal_ended_by(
+        &self,
+        evidence: &SessionEvidence,
+        ended_by: Option<DateTime<Utc>>,
+        n: usize,
+    ) -> Vec<&Clean> {
+        let Some(cutoff) = ended_by else {
+            return Vec::new();
+        };
+        newest_keyed(
+            self.appraisals
+                .iter()
+                .filter(|c| c.session_ended_at.unwrap_or(c.at) <= cutoff),
+            evidence.situation.as_ref(),
+            Some(evidence.session_id.as_str()),
+            n,
+        )
+    }
+
     fn keyed_as(&self, here: Option<&Situation>, not: Option<&str>, n: usize) -> Vec<&Clean> {
         newest_keyed(self.appraisals.iter(), here, not, n)
     }
@@ -4061,6 +4086,54 @@ mod tests {
         std::fs::write(fresh.ledger(), ledger).unwrap();
         let s = fresh.score_summary(&blind, later).unwrap();
         assert_eq!(s.appraisals_unreadable, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A backfilled session's earlier appraisals are chosen with the cutoff
+    /// applied before the newest are taken: one qualifying older appraisal
+    /// behind three newer ones is still shown, where taking the newest three
+    /// first and filtering after would show nothing (review of #388).
+    #[test]
+    fn an_earlier_appraisal_is_found_behind_newer_ones_for_a_backfill() {
+        let root = temp_root("ended-by");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let aged = |days: u64| {
+            let path = session(&dir, clean_taint());
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 3600),
+                )
+                .unwrap();
+            SessionEvidence::read(&path).unwrap()
+        };
+        let older = aged(30);
+        store.record(&older, draft(), "m", &known()).unwrap();
+        for _ in 0..3 {
+            let newer = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+            store.record(&newer, draft(), "m", &known()).unwrap();
+        }
+        let target = aged(20);
+        let read = store.clean().unwrap();
+        let shown = read.same_situation_and_goal_ended_by(&target, target.ended_at(), PAST_SHOWN);
+        assert_eq!(
+            shown
+                .iter()
+                .map(|c| c.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![older.session_id()]
+        );
+        // The order it replaces: the newest three, then the cutoff — empty.
+        let mut capped_first = read.same_situation_and_goal(&target, PAST_SHOWN);
+        capped_first.retain(|c| c.session_ended_at.unwrap_or(c.at) <= target.ended_at().unwrap());
+        assert!(capped_first.is_empty());
+        // An unknown end shows nothing.
+        assert!(read
+            .same_situation_and_goal_ended_by(&target, None, PAST_SHOWN)
+            .is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
