@@ -54,6 +54,8 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+mod lossless;
+
 // ─── Reflections ────────────────────────────────────────────────────────────
 
 /// Where a reflection's evidence came from, provenance-wise.
@@ -1313,6 +1315,53 @@ struct RulesFile {
     rules: Vec<Rule>,
 }
 
+/// The learned-rules file to write when the stored one (`table`, parsed as
+/// `stored`) carries something this build would drop, or `None` when the
+/// plain rendering of `rules` loses nothing — which keeps the struct's field
+/// order, and so the file's usual look, in the common case.
+fn merged_rules_file(
+    mut table: toml::Table,
+    stored: &[Rule],
+    rules: &[Rule],
+) -> Result<Option<String>> {
+    let trees: Vec<toml::Value> = match table.get("rules") {
+        Some(toml::Value::Array(a)) => a.clone(),
+        _ => Vec::new(),
+    };
+    let mut used = vec![false; stored.len()];
+    let mut carried = table.keys().any(|k| k != "rules");
+    let mut out = Vec::with_capacity(rules.len());
+    for rule in rules {
+        let new = toml::Value::try_from(rule)?;
+        // The stored rule this one continues: the same id, or — for a rule
+        // with none — the same text. First unused match, so duplicates pair
+        // in order.
+        let pair = (0..stored.len()).find(|&i| {
+            !used[i]
+                && match (&rule.id, &stored[i].id) {
+                    (Some(a), Some(b)) => a == b,
+                    (None, None) => rule.text == stored[i].text,
+                    _ => false,
+                }
+        });
+        let merged = match pair.and_then(|i| trees.get(i).map(|t| (i, t))) {
+            Some((i, orig)) => {
+                used[i] = true;
+                let reparsed = toml::Value::try_from(&stored[i])?;
+                lossless::merge_toml(orig, &reparsed, &new)
+            }
+            None => new.clone(),
+        };
+        carried |= merged != new;
+        out.push(merged);
+    }
+    if !carried {
+        return Ok(None);
+    }
+    table.insert("rules".into(), toml::Value::Array(out));
+    Ok(Some(toml::to_string_pretty(&table)?))
+}
+
 // ─── The store ──────────────────────────────────────────────────────────────
 
 pub struct LearningStore {
@@ -1515,14 +1564,38 @@ impl LearningStore {
     /// reads this file with no lock (a read must never wait on a learn pass),
     /// so the file on disk has to be complete at every instant — a torn TOML
     /// here would fail an unrelated run at startup.
+    ///
+    /// Lossless against the file it replaces ([`lossless`]): each rule is
+    /// paired with the stored one it continues — by id, else by text — and
+    /// keeps any field this build has no slot for, and a top-level key other
+    /// than `rules` is kept. A file this build cannot read is refused rather
+    /// than overwritten: it holds rules someone wrote, and the fix for it is
+    /// the owner's.
     pub fn write_learned_rules(&self, domain: &str, rules: &[Rule]) -> Result<()> {
-        let file = RulesFile {
-            rules: rules.to_vec(),
-        };
         let path = self.rules_path(domain, "learned");
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, toml::to_string_pretty(&file)?)?;
-        std::fs::rename(&tmp, &path)?;
+        let fresh = toml::to_string_pretty(&RulesFile {
+            rules: rules.to_vec(),
+        })?;
+        let old = match std::fs::read_to_string(&path) {
+            Ok(t) => Some(t),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let body = match &old {
+            None => fresh,
+            Some(old) => {
+                let refuse =
+                    || format!("refusing to replace {}: it does not parse", path.display());
+                let table: toml::Table = toml::from_str(old).with_context(refuse)?;
+                let stored: RulesFile = toml::Value::Table(table.clone())
+                    .try_into()
+                    .with_context(refuse)?;
+                merged_rules_file(table, &stored.rules, rules)?.unwrap_or(fresh)
+            }
+        };
+        if old.as_deref() != Some(body.as_str()) {
+            lossless::write_replacing(&path, body.as_bytes())?;
+        }
         Ok(())
     }
 
@@ -1857,14 +1930,30 @@ pub struct Proposal {
 impl LearningStore {
     /// Write (or rewrite) one proposal, atomically — `mecha proposals list`
     /// must never read a half-written file from a nightly pass.
+    ///
+    /// Lossless against the file it replaces ([`lossless`]); one this build
+    /// cannot read is refused rather than overwritten — `proposals()` skips
+    /// it, so no caller here built `p` from it.
     pub fn write_proposal(&self, p: &Proposal) -> Result<()> {
         let dir = self.root.join("proposals");
         crate::create_private_dir(&dir)?;
         let path = dir.join(format!("{}.json", p.id));
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(p)?)?;
-        std::fs::rename(&tmp, &path)?;
-        Ok(())
+        let body = match std::fs::read_to_string(&path) {
+            Ok(old) => {
+                let refuse =
+                    || format!("refusing to replace {}: it does not parse", path.display());
+                let orig: serde_json::Value = serde_json::from_str(&old).with_context(refuse)?;
+                let stored = Proposal::deserialize(&orig).with_context(refuse)?;
+                let reparsed = serde_json::to_value(&stored)?;
+                match lossless::render_json(&old, &orig, &reparsed, p, true)? {
+                    Some(body) => body,
+                    None => return Ok(()),
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::to_string_pretty(p)?,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        lossless::write_replacing(&path, body.as_bytes())
     }
 
     /// Every proposal, oldest first.
@@ -1939,21 +2028,61 @@ impl LearningStore {
     /// Every writer here holds the store lock at the CLI boundary. Two
     /// concurrent rewrites would otherwise be a lost update, and this file is
     /// the one that carries what nobody can reconstruct.
+    ///
+    /// Lossless ([`lossless`]): a line this build cannot parse is written
+    /// back where it was, a line the caller left alone is written back byte
+    /// for byte, and a changed one keeps any field this build has no slot
+    /// for. The caller gets a slice, not a `Vec` — a rewrite edits records,
+    /// it never adds or removes one (`forget` removes, at the line level), and
+    /// the slice is what pairs each record with the line it came from. When
+    /// nothing changed, the file is not touched.
     fn rewrite_reflexions(
         &self,
-        change: impl FnOnce(&mut Vec<Reflexion>) -> Result<()>,
+        change: impl FnOnce(&mut [Reflexion]) -> Result<()>,
     ) -> Result<()> {
-        let mut all = self.reflexions()?;
-        change(&mut all)?;
-        let mut out = String::new();
-        for r in &all {
-            out.push_str(&serde_json::to_string(r)?);
+        let path = self.root.join("reflections.jsonl");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        // Each non-blank line, and — when this build can read it — the index
+        // of its record and the tree it was parsed from.
+        let mut lines: Vec<(&str, Option<(usize, serde_json::Value)>)> = Vec::new();
+        let mut records = Vec::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let parsed = serde_json::from_str::<serde_json::Value>(line.trim())
+                .ok()
+                .and_then(|v| Reflexion::deserialize(&v).ok().map(|r| (v, r)));
+            match parsed {
+                Some((tree, r)) => {
+                    lines.push((line, Some((records.len(), tree))));
+                    records.push(r);
+                }
+                None => lines.push((line, None)),
+            }
+        }
+        let reparsed = records
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        change(&mut records)?;
+        let mut out = String::with_capacity(text.len());
+        let mut changed = false;
+        for (line, record) in &lines {
+            let rendered = match record {
+                Some((i, orig)) => {
+                    lossless::render_json(line.trim(), orig, &reparsed[*i], &records[*i], false)?
+                }
+                None => None,
+            };
+            changed |= rendered.is_some();
+            out.push_str(rendered.as_deref().unwrap_or(line));
             out.push('\n');
         }
-        let path = self.root.join("reflections.jsonl");
-        let tmp = self.root.join("reflections.jsonl.tmp");
-        std::fs::write(&tmp, out)?;
-        std::fs::rename(&tmp, &path)?;
+        if changed {
+            lossless::write_replacing(&path, out.as_bytes())?;
+        }
         Ok(())
     }
 
@@ -2056,13 +2185,12 @@ impl LearningStore {
         updates: &[(String, crate::situation::Situation)],
         recomputed_at: &str,
     ) -> Result<usize> {
-        // Decide before writing. `rewrite_reflexions` re-serialises the
-        // whole file whatever its closure did, and a re-serialisation is
-        // not identity — a lenient field (`Situation::surface`) that this
-        // build could not name is written back as absent — so a pass with
-        // nothing to apply must not touch the file at all, or the
-        // advertised free second run is a lossy, uncommitted rewrite
-        // (found on review).
+        // Decide before writing, so a pass with nothing to apply reads the
+        // file once and never opens it for writing. This guard predates the
+        // lossless rewrite, when re-serialising the whole file dropped a
+        // lenient field this build could not name (found on review); the
+        // rewrite now leaves untouched lines alone and skips the write when
+        // nothing changed, so the guard is the cheap path, not the safe one.
         let applicable: Vec<&(String, crate::situation::Situation)> = {
             let absent: std::collections::HashSet<String> = self
                 .reflexions()?
