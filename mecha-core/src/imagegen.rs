@@ -1670,8 +1670,8 @@ impl Tool for ImageGenerate {
                          prompt that describes them in words draws strangers. Call \
                          image_generate again with them in `cast`, in left-to-right order, each \
                          with what they are wearing and doing, and leave their looks out of the \
-                         prompt: \"cast\": [{skeleton}]. If you mean someone else with that \
-                         name, pass \"cast\": [].",
+                         prompt and their names out of `extras`: \"cast\": [{skeleton}]. If \
+                         you mean someone else with that name, pass \"cast\": [].",
                         if named.len() == 1 {
                             "is a character"
                         } else {

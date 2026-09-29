@@ -129,7 +129,10 @@ The rules, each a measurement:
 - **`cast` and `reference_images` are exclusive in v1.** ComfyUI's encoder
   takes one reference resolution per call, so an edit canvas at 1024² and
   portraits at 512² cannot share one; editing a cast image works already by
-  passing the image, whose people carry their own identity.
+  passing the image, whose people carry their own identity. `extras` are
+  words, not references, so an edit may take them: they are appended as
+  "Also in the scene: …", and the named-character guard, which an edit
+  skips, does not read them there.
 - **A cast generation defaults to square**, not to its first reference's
   shape — a portrait is not a canvas.
 - **The same-seed rule, narrowed and kept.** An edit still always samples at
