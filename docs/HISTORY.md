@@ -22,8 +22,8 @@ GGUF and the w4a8 text encoder, 40 steps), with the seed held fixed:
 - The failing seed from a live chat, 363985941, reproduced its near-copy
   exactly (layout similarity 0.995). The failure is set by the seed, the
   prompt and the model files, not by chance at run time.
-- On the same 12 seeds, a caption of the scene stood Maya up 0 times, with
-  11 near-copies. "Have Maya stand up …" alone stood her up 8 times, with 3
+- On the same 12 seeds, a caption of the scene stood Maya up 0 times: 11
+  near-copies, and a twelfth that redrew the scene with her still sitting. "Have Maya stand up …" alone stood her up 8 times, with 3
   near-copies and 1 partial. "Keep the watercolor style, the lake, willow
   tree, and red checkered blanket unchanged. Have Maya stand up …" did it 12
   times. Every image was also judged by eye.

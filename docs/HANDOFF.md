@@ -36,18 +36,21 @@ What is open:
   today's pair. `comfy_graph` would have to choose `UNETLoader` over
   `UnetLoaderGGUF` by file type. Run it when no build is going.
 - **The model still describes pictures it has not seen.** In all eight live
-  chats it told the user "Maya is now standing" without looking. By the end
-  of each chat that was true, but only because a retry had landed. The result
-  text already says "do not describe what it shows", and the near-copy
-  notice now gives it something true to say. Not acted on.
+  chats it told the user "Maya is now standing" without looking. Four ran
+  #408's draft wording and four its final wording. In two of the eight (one
+  of each set), the claim was true only because a retry had landed after a
+  near-copy. In the other six, the first edit had worked. The result text
+  already says "do not describe what it shows", and the near-copy notice now
+  gives it something true to say. Not acted on.
 - **What was not tested:** uploaded photos, small moves ("turn her head"),
   long chains of edits, and any scene but the one picnic. `NEAR_COPY_LAYOUT`
   (0.78) comes from that scene, with same-shape edits only. An edit that
   passes a `size` unlike its reference's squashes both thumbnails, so it
   reads as changed, which fails in the safe direction.
-- **"the scene" in a keep list:** once in three live prompts, "Keep … the
-  blanket, and the scene unchanged" came back a near-copy, and the retry,
-  which named parts instead, worked. That is one case, and it was not acted on.
+- **"the scene" in a keep list:** three of the four final-wording chats
+  wrote "Keep … the blanket, and the scene unchanged". One of the three came
+  back a near-copy, and its retry, which named parts instead, worked. That
+  is one case, and it was not acted on.
 - **#408's last-pass minors, for the owner:**
   - the `NEAR_COPY_WINDOW` expiry is the one strike branch with no test;
   - the tool description has a 140-character source line;
