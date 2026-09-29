@@ -1269,6 +1269,8 @@ pub struct ImageGenerate {
 #[derive(Debug, Clone, Default)]
 struct LibraryAsk {
     cast: Vec<crate::imagelib::CastMember>,
+    /// People in the scene who are no library character, each described.
+    extras: Vec<String>,
     style: Option<String>,
 }
 
@@ -1365,6 +1367,15 @@ impl ImageGenerate {
             Some(Value::String(s)) => Some(s.trim().to_string()),
             Some(_) => return Err("`style` must be a style's name.".into()),
         };
+        let extras: Vec<String> = match input.get("extras") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|v| v.as_str().map(str::to_string))
+                .collect::<Option<_>>()
+                .ok_or("`extras` must be a list of short descriptions.")?,
+            Some(_) => return Err("`extras` must be a list of short descriptions.".into()),
+        };
         // One reference size per call is all the encoder takes, and an edit's
         // canvas wants full detail while portraits go at 512² — so the two do
         // not share a call yet. Editing a picture that already has the people
@@ -1378,7 +1389,12 @@ impl ImageGenerate {
                     .into(),
             );
         }
-        let ask = (!cast.is_empty() || style.is_some()).then_some(LibraryAsk { cast, style });
+        let ask =
+            (!cast.is_empty() || !extras.is_empty() || style.is_some()).then_some(LibraryAsk {
+                cast,
+                extras,
+                style,
+            });
         let size = match input.get("size").and_then(Value::as_str) {
             // An edit follows its first reference's shape unless asked not to.
             None if !references.is_empty() => None,
@@ -1442,7 +1458,8 @@ impl Tool for ImageGenerate {
          what is where — not to confirm that it worked. To draw the owner's recurring characters, name \
          them in cast, left to right, with what each is wearing and doing (image_library lists who \
          exists); the library supplies how they look, so do not describe their faces in the prompt. \
-         style names a stored style."
+         Anyone else in the scene — a waiter, a stranger — goes in extras, so the picture counts \
+         them. style names a stored style."
     }
 
     fn input_schema(&self) -> Value {
@@ -1486,6 +1503,12 @@ impl Tool for ImageGenerate {
                         },
                         "required": ["name", "wearing", "doing"]
                     }
+                },
+                "extras": {
+                    "type": "array",
+                    "maxItems": crate::imagelib::MAX_EXTRAS,
+                    "items": {"type": "string"},
+                    "description": "People in the scene who are not library characters, each as one short description of who they are and what they are doing, e.g. \"a waiter in a white apron, pouring coffee\". They are drawn as new faces each time."
                 },
                 "style": {
                     "type": "string",
@@ -1537,7 +1560,13 @@ impl Tool for ImageGenerate {
                 // A broken entry is invisible to `named_in`, so it is checked
                 // on its own: otherwise a corrupt `maya` lets "Maya at a
                 // diner" reach the GPU and draw a stranger (review of #383).
-                let broken = crate::imagelib::broken_named_in(&lib, &req.prompt);
+                // The extras are words about people too: "John waving" as an
+                // extra is John drawn from words.
+                let said = match ask.as_ref().filter(|a| !a.extras.is_empty()) {
+                    Some(a) => format!("{} {}", req.prompt, a.extras.join(" ")),
+                    None => req.prompt.clone(),
+                };
+                let broken = crate::imagelib::broken_named_in(&lib, &said);
                 if !broken.is_empty() {
                     return Ok(refused(format!(
                         "{} named in the prompt {} in the owner's image \
@@ -1560,7 +1589,7 @@ impl Tool for ImageGenerate {
                             .collect()
                     })
                     .unwrap_or_default();
-                let in_prompt = crate::imagelib::named_in(&lib, &req.prompt);
+                let in_prompt = crate::imagelib::named_in(&lib, &said);
                 let named: Vec<String> = in_prompt
                     .iter()
                     .filter(|n| !cast.contains(*n))
@@ -1641,8 +1670,8 @@ impl Tool for ImageGenerate {
                          prompt that describes them in words draws strangers. Call \
                          image_generate again with them in `cast`, in left-to-right order, each \
                          with what they are wearing and doing, and leave their looks out of the \
-                         prompt: \"cast\": [{skeleton}]. If you mean someone else with that \
-                         name, pass \"cast\": [].",
+                         prompt and their names out of `extras`: \"cast\": [{skeleton}]. If \
+                         you mean someone else with that name, pass \"cast\": [].",
                         if named.len() == 1 {
                             "is a character"
                         } else {
@@ -1677,6 +1706,7 @@ impl Tool for ImageGenerate {
                 &lib,
                 &req.prompt,
                 &ask.cast,
+                &ask.extras,
                 ask.style.as_deref(),
             ) {
                 Ok(compiled) => compiled,
@@ -1821,6 +1851,7 @@ impl Tool for ImageGenerate {
                 "name": u.name, "version": u.version, "portrait": u.portrait,
                 "wearing": m.wearing.trim(), "doing": m.doing.trim(),
             })).collect::<Vec<_>>()),
+            "extras": ask.as_ref().filter(|a| !a.extras.is_empty()).map(|a| &a.extras),
             "style": used.iter().find(|u| u.kind == crate::imagelib::Kind::Style)
                 .map(|u| json!({"name": u.name, "version": u.version})),
             "model": {
@@ -2222,6 +2253,7 @@ mod tests {
             keys,
             [
                 "cast",
+                "extras",
                 "negative_prompt",
                 "prompt",
                 "reference_images",
@@ -3551,7 +3583,10 @@ mod tests {
             submitted.contains("wearing a flannel shirt, smiling"),
             "{submitted}"
         );
-        assert!(submitted.contains("Exactly two people"), "{submitted}");
+        assert!(
+            submitted.contains("Each of the two people from the images appears exactly once"),
+            "{submitted}"
+        );
         // A portrait is not a canvas: the default is square, not its shape.
         assert!(submitted.contains("\"width\":1024"), "{submitted}");
 
@@ -3839,6 +3874,72 @@ mod tests {
             out.content.contains("`john` is a character"),
             "{}",
             out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    #[tokio::test]
+    async fn extras_are_counted_recorded_and_checked_for_library_names() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        // A library name hiding in an extra is refused like one in the prompt.
+        let out = t
+            .call(
+                json!({"prompt": "a diner", "extras": ["John waving from the door"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("`john` is a character"),
+            "{}",
+            out.content
+        );
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+
+        let out = t
+            .call(
+                json!({"prompt": "a diner booth at night", "cast": two_people(),
+                       "extras": ["a waiter in a white apron, pouring coffee"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(
+            submitted.contains("Exactly three people in the image: the two from the images"),
+            "{submitted}"
+        );
+        // Two references, not three: an extra has no portrait.
+        assert_eq!(
+            seen.iter()
+                .filter(|l| l.starts_with("POST /upload/image"))
+                .count(),
+            2
+        );
+        let png = out
+            .content
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("image: ")
+            .unwrap();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(dir.join(png.replace(".png", ".json"))).unwrap())
+                .unwrap();
+        assert_eq!(
+            manifest["extras"][0],
+            "a waiter in a white apron, pouring coffee"
         );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();

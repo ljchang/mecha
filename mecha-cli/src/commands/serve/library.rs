@@ -284,7 +284,11 @@ pub async fn portrait(
         _ => "image/png",
     };
     // Content-addressed, so an open portrait never changes under its name;
-    // one only a locked entry names is never cached.
+    // one only a locked entry names is never cached. What this cannot do is
+    // reach back: a portrait browsed while its entry was open stays in that
+    // browser's cache after the entry is locked — the list hides its name
+    // from then on, so nothing asks for it, but the bytes are there until the
+    // cache evicts them or the browser's data is cleared (review of #385).
     let cache = if open {
         "private, max-age=31536000, immutable"
     } else {

@@ -138,6 +138,8 @@ message.rs   provider-agnostic Message/Block/Usage/StopReason types
 image.rs     a file on disk to a bounded image block, capped at the door
 imagegen.rs  image_generate: typed values to a loopback image server, PNG into the
              run's workspace; the graph is fixed in code, never the model's
+imagelib.rs  the character and style library, and the compiler a scene runs
+             through: names in, portraits and verbatim descriptions out
 provider/    Provider trait + anthropic.rs (raw HTTP) + openai.rs (compatible)
 quarantine.rs a one-shot with no tools and no history: the property in the type
 mail_triage.rs the front door's shape one directory over: a typed verdict per
