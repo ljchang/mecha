@@ -177,7 +177,10 @@ export function safetyLine(safety) {
 // The dose meters, in a line; '' when they are off.
 export function doseLine(dose) {
   if (!dose) return '';
+  // A store that could not be read is not zero turns (review of #418).
+  if (dose.unread) return 'usage meters unreadable';
   const parts = [`${dose.turns_today} today`, `${dose.turns_7d} this week`];
   if (dose.late_night_7d) parts.push(`${dose.late_night_7d} late at night`);
+  if (dose.skipped) parts.push(`${dose.skipped} unreadable record${dose.skipped === 1 ? '' : 's'} not counted`);
   return parts.join(' · ');
 }

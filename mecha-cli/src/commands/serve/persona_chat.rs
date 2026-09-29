@@ -321,8 +321,18 @@ impl PersonaChats {
                     "problems": store.problems(p, &lib),
                     "safety": safety_json(&p.settings.safety),
                     // The meters are shown to the owner, never to the model.
-                    "dose": p.settings.safety.dose.then(|| {
-                        doses.get(&p.name).copied().unwrap_or_default()
+                    "dose": p.settings.safety.dose.then(|| match &doses.unreadable {
+                        // Unread is said, not shown as zero turns.
+                        Some(why) => serde_json::json!({ "unread": why }),
+                        None => {
+                            let d = doses.by_persona.get(&p.name).copied().unwrap_or_default();
+                            serde_json::json!({
+                                "turns_today": d.turns_today,
+                                "turns_7d": d.turns_7d,
+                                "late_night_7d": d.late_night_7d,
+                                "skipped": doses.skipped,
+                            })
+                        }
                     }),
                 })
             })
