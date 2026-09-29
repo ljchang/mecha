@@ -484,6 +484,220 @@ async fn distill_appraises_each_session_once_behind_the_right_door() {
     assert!(e["hit_rate"].is_null(), "no rate over nothing: {e:#}");
 }
 
+/// Ruling 3D→D end to end: `mecha distill --backfill-appraisals` appraises
+/// exactly the distilled sessions whose clean steer or denial waits only on
+/// an appraisal — nothing pushed to the graph, nothing re-marked, no
+/// prediction on the row — and never shows a later session's appraisal to
+/// an older one as an earlier appraisal.
+#[tokio::test]
+async fn a_backfill_appraises_only_what_row_2e_1_waits_on_and_pushes_nothing() {
+    if !python3() {
+        return;
+    }
+    mecha_core::session::ignore_kind_env_for_tests();
+    let root =
+        Root(std::env::temp_dir().join(format!("mecha-distill-backfill-{}", Session::new_id())));
+    let (base_url, seen, server) = fixture_model().await;
+    let home = seed(&root.0, &base_url);
+    let work = root.0.join("work");
+
+    // The situation a past appraisal is looked up by needs a workspace
+    // key, which `session`'s config does not record: give these sessions
+    // one, so an earlier appraisal *could* be shown and the check below
+    // means something.
+    let keyed = |id: &str| {
+        use std::io::Write;
+        let config = Record::Config(RunConfig {
+            tools: vec!["mail_search".into()],
+            rules_workspace: Some(PathBuf::from("/project")),
+            rules_surface: Some(SessionKind::Task),
+            rules_goal: Some(mecha_core::situation::GoalKey::Named(GoalRef::Task(
+                "task-1".into(),
+            ))),
+            ..Default::default()
+        });
+        let mut f = std::fs::File::options()
+            .append(true)
+            .open(home.join("sessions").join(format!("{id}.jsonl")))
+            .unwrap();
+        writeln!(f, "{}", serde_json::to_string(&config).unwrap()).unwrap();
+    };
+
+    // A session appraised the ordinary way, now, in the same situation.
+    let india = session(&home, "india", false, 5);
+    keyed(&india);
+    ok(&mecha(&home, &work, &["distill"]).await, "distill");
+    let staged_before = std::fs::read_to_string(root.0.join("board").join("staged.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .count();
+
+    // Two older sessions distilled before the appraisal leg: one with a
+    // clean steer the reflector learned from, one with nothing.
+    let golf = session(&home, "golf", false, 60 * 24 * 30);
+    let hotel = session(&home, "hotel", false, 60 * 24 * 29);
+    keyed(&golf);
+    keyed(&hotel);
+    let month_ago = std::time::SystemTime::now() - Duration::from_secs(30 * 24 * 3600);
+    for id in [&golf, &hotel] {
+        std::fs::File::options()
+            .write(true)
+            .open(home.join("sessions").join(format!("{id}.jsonl")))
+            .unwrap()
+            .set_modified(month_ago)
+            .unwrap();
+    }
+    let learning = mecha_core::learning::LearningStore::open(home.join("learning")).unwrap();
+    learning.mark_distilled(&golf).unwrap();
+    learning.mark_distilled(&hotel).unwrap();
+    let steer: mecha_core::learning::Reflexion = serde_json::from_value(json!({
+        "id": "refl-golf",
+        "domain": "behavior",
+        "session_id": golf,
+        "trigger": "steer",
+        "context": "the run searched the wrong folder",
+        "intervention": "look in the mail instead",
+        "reflexion_text": "Search the owner's mail before the files.",
+        "error_type": null,
+        "confidence": null,
+        "created_at": "2026-08-29T00:00:00Z",
+        "origin": "clean"
+    }))
+    .unwrap();
+    learning.append_reflexion(&steer).unwrap();
+    // A target the distill ledger does not hold yet — reflected on, not yet
+    // distilled — is the ordinary pass's, never the backfill's (review of
+    // #388).
+    let juliet = session(&home, "juliet", false, 60 * 24 * 28);
+    keyed(&juliet);
+    let mut undistilled = steer.clone();
+    undistilled.id = "refl-juliet".into();
+    undistilled.session_id = juliet.clone();
+    learning.append_reflexion(&undistilled).unwrap();
+    let ledger_before =
+        std::fs::read_to_string(home.join("learning").join("distilled.jsonl")).unwrap();
+
+    let dry = ok(
+        &mecha(
+            &home,
+            &work,
+            &["distill", "--backfill-appraisals", "--dry-run"],
+        )
+        .await,
+        "distill --backfill-appraisals --dry-run",
+    );
+    assert!(
+        dry.contains(&golf) && !dry.contains(&hotel) && !dry.contains(&juliet),
+        "{dry}"
+    );
+    assert!(
+        dry.contains("1 session(s) would be appraised after the fact"),
+        "{dry}"
+    );
+
+    let passes =
+        || std::fs::read_to_string(home.join("learning").join("passes.jsonl")).unwrap_or_default();
+    let passes_before = passes();
+    let asked_from = seen.lock().unwrap().len();
+    let out = ok(
+        &mecha(&home, &work, &["distill", "--backfill-appraisals"]).await,
+        "distill --backfill-appraisals",
+    );
+    assert!(
+        out.contains("backfilled: written after the outcome"),
+        "{out}"
+    );
+    // A target it passed over is said beside the ones it appraised, not
+    // only when nothing is left (review of #388): juliet waits on the
+    // ordinary pass.
+    assert!(
+        out.contains("backfill: 1 session(s) to appraise; also 1 waiting on the ordinary pass"),
+        "{out}"
+    );
+    // It reports the backfill it did, not a distill it did not do, and
+    // logs no pass to a store it did not write (review of #388).
+    assert!(
+        out.contains("backfill: nothing pushed to the graph"),
+        "{out}"
+    );
+    assert!(!out.contains("distilled 0 session(s)"), "{out}");
+    assert_eq!(passes(), passes_before, "no pass logged");
+
+    let store = AppraisalStore::open(home.join("appraisals")).unwrap();
+    let (rows, _) = store.for_owner().unwrap();
+    let of = |id: &str| rows.iter().find(|r| r.session_id == id);
+    let golf_row = of(&golf).expect("golf appraised");
+    assert!(golf_row.backfilled);
+    assert_eq!(golf_row.expected_act, None, "no prediction after the fact");
+    assert!(of(&hotel).is_none(), "nothing waits on hotel's appraisal");
+    assert!(
+        of(&juliet).is_none(),
+        "not yet distilled: left to the ordinary pass"
+    );
+    assert!(!of(&india).unwrap().backfilled);
+
+    // Nothing pushed, nothing re-marked.
+    let staged_after = std::fs::read_to_string(root.0.join("board").join("staged.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .count();
+    assert_eq!(staged_after, staged_before, "no episode pushed");
+    assert_eq!(
+        std::fs::read_to_string(home.join("learning").join("distilled.jsonl")).unwrap(),
+        ledger_before,
+        "no session re-marked"
+    );
+
+    // Run again: golf is on record, and juliet waits on the ordinary pass —
+    // said so, never read as "nothing waits".
+    let again = ok(
+        &mecha(&home, &work, &["distill", "--backfill-appraisals"]).await,
+        "distill --backfill-appraisals, again",
+    );
+    assert!(
+        again.contains(
+            "nothing to backfill now: 1 session(s) wait on an appraisal but are not distilled yet"
+        ),
+        "{again}"
+    );
+
+    // A torn appraisal line would hide its session from what is on record,
+    // and the backfill would appraise it twice: refused (review of #388).
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::options()
+            .append(true)
+            .open(home.join("appraisals").join("appraisals.jsonl"))
+            .unwrap();
+        writeln!(f, "{{\"id\":\"apr-torn\",\"session_i").unwrap();
+    }
+    let torn = mecha(&home, &work, &["distill", "--backfill-appraisals"]).await;
+    assert!(
+        !torn.status.success(),
+        "a torn appraisal store must stop the backfill"
+    );
+    assert!(
+        String::from_utf8_lossy(&torn.stderr).contains("refusing to backfill"),
+        "{}",
+        String::from_utf8_lossy(&torn.stderr)
+    );
+
+    // India's appraisal came after golf ended: not shown as an earlier one.
+    let asks = follow_ups(&seen, asked_from);
+    assert_eq!(asks.len(), 1, "one follow-up: golf's");
+    // (The fixture labels every appraisal it writes from the request's
+    // marker, which the ordinary pass's request does not carry, so the
+    // section is checked, not a name in it.)
+    assert!(
+        asks[0].to_string().contains(
+            "Earlier appraisals of the same situation and goal (clean runs only)\\nNone is on record."
+        ),
+        "a later session's appraisal is not an earlier one: {}",
+        asks[0]
+    );
+    server.abort();
+}
+
 /// Ruling 1B end to end: `mecha distill` asks an output with nothing for the
 /// owner to act on for no expected act, and stores none even though the
 /// fixture's reply carries one — while the task-anchored session beside it

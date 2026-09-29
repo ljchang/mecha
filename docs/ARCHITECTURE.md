@@ -6819,6 +6819,23 @@ the owner's** (row 2b-2, R33, R37).
   scored. Unknown asks. A withheld row carries `expected_act_withheld`, set
   by the harness and never parsed from the reply, and the readout counts it
   as `not_asked`, apart from a prediction the appraiser left out.
+- **A session distilled before the appraisal leg can be appraised after
+  the fact** (`mecha distill --backfill-appraisals`, ruling 3D→D,
+  2026-09-28). The sessions are chosen by row 2e-1's own predicate
+  (`lesson_source::backfill_targets`): a reflection `Sources::pair` refuses
+  as exactly `NoAppraisal`, and that the provenance gate admits. Distill
+  never revisits a session it has marked, so every clean steer and denial
+  from before 2026-09-26 was waiting on this. The episode call still runs,
+  because the appraisal is a follow-up on it, but nothing is pushed and
+  nothing is re-marked.
+  - **The row predicts nothing:** `backfilled`, with no `expected_act`,
+    enforced at the store's door as well as by the producer, because the
+    outcome was already known when it was written. The readout counts these
+    rows apart as `backfilled`.
+  - **Only appraisals of sessions that had ended by this one's end are shown
+    as earlier ones.** An older session must not see what came after it as
+    its history.
+  - **Local model only (R29).**
 
 **The counts-only appraiser is retired into it** (row 2a-3, R25). Before,
 `appraise_with_model` ran a quarantined pass over `AppraiserEvidence` behind
