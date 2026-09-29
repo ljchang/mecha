@@ -77,6 +77,10 @@ pub enum Cmd {
     /// TUI's `Enter` on the Rules pane runs — a rule is the one record here
     /// that rides in every future prompt, so it is the one most worth
     /// reading in full.
+    ///
+    /// A rule no rules file holds any more (consolidation leaves a rule out
+    /// rather than retiring it) is answered from the proposal snapshots:
+    /// which proposal dropped it, when, and its last text.
     Show {
         id: String,
         /// As on `list`: skip the board read. The TUI's `Enter` passes it.
@@ -119,6 +123,15 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         Cmd::Retire { id, reason } => retire(&store, &id, reason),
         Cmd::Restore { id } => restore(&store, &id),
         Cmd::Show { id, no_board } => {
+            // A rule no rules file holds any more is answered from the
+            // proposal snapshots (D2), rather than "no rule matching".
+            if rule_hits(&store, &id)?.is_empty() {
+                if let Some(gone) = find_gone(&store, &id)? {
+                    let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
+                    println!("{}", describe_gone(&gone, &tallies));
+                    return Ok(());
+                }
+            }
             let (_, rules, i) = find_rule(&store, &id)?;
             let goals = goals_of(global, &[rules[i].clone()], !no_board).await;
             let standing =
@@ -875,7 +888,17 @@ fn describe(
     // "0 improved, 0 regressed" for inconclusive-only coverage — a clean
     // bill of health from rows that graded nothing, and the reason a
     // covered rule can still be on probation.
-    let measured = match r.id.as_deref().and_then(|id| tallies.get(id)) {
+    let measured = measured_line(r, tallies);
+    format!(
+        "[{state}] {}\n      id {id} · created {} · {scope}{support}{narrowed} · {measured}",
+        r.text,
+        r.created_at.as_deref().unwrap_or("unknown"),
+    )
+}
+
+/// What the validation ledger says of `r`, in one clause.
+fn measured_line(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
+    match r.id.as_deref().and_then(|id| tallies.get(id)) {
         Some(t) if t.graded > 0 => format!(
             "{} probe(s), {} graded: {} improved, {} regressed, {} attributed to this rule; last {}{}",
             t.observations,
@@ -892,12 +915,7 @@ fn describe(
             t.last_validated.as_deref().unwrap_or("never")
         ),
         _ => "never validated".into(),
-    };
-    format!(
-        "[{state}] {}\n      id {id} · created {} · {scope}{support}{narrowed} · {measured}",
-        r.text,
-        r.created_at.as_deref().unwrap_or("unknown"),
-    )
+    }
 }
 
 /// The graded rows split by the sub-region they exercised, after the
@@ -940,12 +958,8 @@ fn regions_line(t: &RuleTally) -> String {
 
 /// Find one learned rule by id or unique prefix, returning its domain.
 /// Ambiguity is an error rather than a guess, same as proposal lookup.
-fn find_rule(store: &LearningStore, id: &str) -> Result<(String, Vec<Rule>, usize)> {
-    // `rid.starts_with("")` is true for every rule that has an id, so an
-    // empty needle — a TUI row whose `Rule::id` was `None`, serialised to
-    // `null` and read back as `""` — would match every learned rule in
-    // every domain instead of none. `mecha rules retire ""` is reachable
-    // from the command line too.
+/// Every learned rule whose id starts with `id`, as `(domain, rules, index)`.
+fn rule_hits(store: &LearningStore, id: &str) -> Result<Vec<(String, Vec<Rule>, usize)>> {
     anyhow::ensure!(!id.is_empty(), "no rule id given");
     let mut hits: Vec<(String, Vec<Rule>, usize)> = Vec::new();
     for domain in store.domains() {
@@ -956,6 +970,138 @@ fn find_rule(store: &LearningStore, id: &str) -> Result<(String, Vec<Rule>, usiz
             }
         }
     }
+    Ok(hits)
+}
+
+/// A rule id no rules file holds any more, as the proposal snapshots
+/// remember it (the D2 ruling, `docs/LEARNING-STORE-RESEARCH.md` §7).
+///
+/// Consolidation rewrites the learned set and a rule it leaves out simply
+/// goes. It is deliberately not retired, because the learner reads retired
+/// rules as measured harmful. Its text survives in the proposals that
+/// carried it, which is where this reads it from. Read-only, and nothing
+/// here reaches a prompt.
+#[derive(Debug)]
+struct Gone {
+    domain: String,
+    last: Rule,
+    fate: Fate,
+}
+
+#[derive(Debug, PartialEq)]
+enum Fate {
+    /// An applied proposal's `rules_before` held it and its `rules` did not.
+    Dropped {
+        proposal: String,
+        status: String,
+        at: String,
+    },
+    /// It was live, and the change that removed it left no proposal: an
+    /// ungated consolidation or a hand edit of the file.
+    GoneUnrecorded { last_seen: String },
+    /// It appeared only in proposals that never applied.
+    NeverLive { proposal: String, status: String },
+}
+
+/// Statuses under which a proposal's `rules` became the live set.
+const APPLIED: &[&str] = &["accepted", "auto_applied", "auto_applied_probation"];
+
+/// The rule `id` (or unique prefix) names in the proposal snapshots, when no
+/// rules file holds it. `None` when no snapshot names it either.
+fn find_gone(store: &LearningStore, id: &str) -> Result<Option<Gone>> {
+    let proposals = store.proposals()?;
+    let named = |r: &Rule| r.id.as_deref().is_some_and(|rid| rid.starts_with(id));
+    let mut ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for p in &proposals {
+        for r in p.rules.iter().chain(&p.rules_before).filter(|r| named(r)) {
+            ids.extend(r.id.clone());
+        }
+    }
+    let full = match ids.len() {
+        0 => return Ok(None),
+        1 => ids.into_iter().next().expect("one id"),
+        n => bail!("`{id}` matches {n} rules no longer in any rules file; give more of the id"),
+    };
+    let has = |rules: &[Rule]| rules.iter().any(|r| r.id.as_deref() == Some(full.as_str()));
+    let mut last: Option<(String, Rule, String, String)> = None;
+    let mut went_live = false;
+    let mut dropped = None;
+    for p in &proposals {
+        let applied = APPLIED.contains(&p.status.as_str());
+        if let Some(r) = p
+            .rules
+            .iter()
+            .chain(&p.rules_before)
+            .find(|r| r.id.as_deref() == Some(full.as_str()))
+        {
+            last = Some((p.domain.clone(), r.clone(), p.id.clone(), p.status.clone()));
+        }
+        went_live |= has(&p.rules_before) || (applied && has(&p.rules));
+        if applied && has(&p.rules_before) && !has(&p.rules) {
+            dropped = Some(Fate::Dropped {
+                proposal: p.id.clone(),
+                status: p.status.clone(),
+                at: p
+                    .resolved_at
+                    .clone()
+                    .unwrap_or_else(|| p.created_at.clone()),
+            });
+        }
+    }
+    let (domain, last, seen_in, status) = last.expect("an id found above has a snapshot");
+    let fate = match dropped {
+        Some(f) => f,
+        None if went_live => Fate::GoneUnrecorded { last_seen: seen_in },
+        None => Fate::NeverLive {
+            proposal: seen_in,
+            status,
+        },
+    };
+    Ok(Some(Gone { domain, last, fate }))
+}
+
+fn describe_gone(g: &Gone, tallies: &BTreeMap<String, RuleTally>) -> String {
+    let id = g.last.id.as_deref().unwrap_or_default();
+    let (state, how) = match &g.fate {
+        Fate::Dropped {
+            proposal,
+            status,
+            at,
+        } => (
+            "dropped in consolidation",
+            format!(
+                "dropped by proposal {proposal} ({status}) on {at} — not retired, so nothing \
+                 tells the learner it was harmful; `mecha proposals show {proposal}`"
+            ),
+        ),
+        Fate::GoneUnrecorded { last_seen } => (
+            "no longer in the rules file",
+            format!(
+                "last seen in proposal {last_seen}; the change that removed it left no \
+                 proposal (an ungated consolidation or a hand edit)"
+            ),
+        ),
+        Fate::NeverLive { proposal, status } => (
+            "never live",
+            format!("proposed in {proposal} ({status}), which did not apply"),
+        ),
+    };
+    format!(
+        "## {} — not in any rules file\n[{state}] {}\n      id {id} · created {} · {how} · {}",
+        g.domain,
+        g.last.text,
+        g.last.created_at.as_deref().unwrap_or("unknown"),
+        measured_line(&g.last, tallies)
+    )
+}
+
+fn find_rule(store: &LearningStore, id: &str) -> Result<(String, Vec<Rule>, usize)> {
+    // `rid.starts_with("")` is true for every rule that has an id, so an
+    // empty needle — a TUI row whose `Rule::id` was `None`, serialised to
+    // `null` and read back as `""` — would match every learned rule in
+    // every domain instead of none. `mecha rules retire ""` is reachable
+    // from the command line too.
+    let mut hits = rule_hits(store, id)?;
     match hits.len() {
         0 => bail!("no learned rule matching `{id}` — `mecha rules` lists ids"),
         1 => Ok(hits.remove(0)),
@@ -1398,6 +1544,109 @@ mod tests {
             id: Some(id.into()),
             ..Default::default()
         }
+    }
+
+    fn snapshot(
+        id: &str,
+        status: &str,
+        before: Vec<Rule>,
+        after: Vec<Rule>,
+    ) -> mecha_core::learning::Proposal {
+        mecha_core::learning::Proposal {
+            id: id.into(),
+            domain: "behavior".into(),
+            status: status.into(),
+            reflexion_ids: Vec::new(),
+            rules_before: before,
+            rules: after,
+            evidence: "e".into(),
+            created_at: format!("2026-09-{}T06:00:00Z", &id[..2]),
+            resolved_at: None,
+            reason: None,
+            scope: None,
+        }
+    }
+
+    /// D2: a rule consolidation left out is answered from the proposal that
+    /// dropped it. It is not retired and never was. Before this, `show`
+    /// said "no learned rule matching" for a rule whose text was on disk.
+    #[test]
+    fn a_rule_dropped_in_consolidation_is_found_in_its_proposal() {
+        let store = temp_store();
+        let kept = rule("Kept.", "r-kept");
+        let gone = rule("Squeezed out.", "r-gone");
+        store
+            .write_proposal(&snapshot(
+                "10-add",
+                "accepted",
+                vec![],
+                vec![kept.clone(), gone.clone()],
+            ))
+            .unwrap();
+        store
+            .write_proposal(&snapshot(
+                "20-cut",
+                "auto_applied",
+                vec![kept.clone(), gone],
+                vec![kept.clone()],
+            ))
+            .unwrap();
+        store.write_learned_rules("behavior", &[kept]).unwrap();
+
+        assert!(rule_hits(&store, "r-gone").unwrap().is_empty());
+        let g = find_gone(&store, "r-go")
+            .unwrap()
+            .expect("found in the snapshots");
+        assert_eq!(g.last.text, "Squeezed out.");
+        assert_eq!(
+            g.fate,
+            Fate::Dropped {
+                proposal: "20-cut".into(),
+                status: "auto_applied".into(),
+                at: "2026-09-20T06:00:00Z".into()
+            }
+        );
+        let text = describe_gone(&g, &BTreeMap::new());
+        assert!(
+            text.contains("dropped by proposal 20-cut") && text.contains("not retired"),
+            "{text}"
+        );
+        assert!(text.contains("never validated"), "{text}");
+    }
+
+    #[test]
+    fn a_rule_only_ever_proposed_is_never_live_and_one_removed_unrecorded_says_so() {
+        let store = temp_store();
+        let a = rule("Proposed, refused.", "r-refused");
+        let b = rule("Live once.", "r-live");
+        store
+            .write_proposal(&snapshot("10-no", "rejected_by_gate", vec![], vec![a]))
+            .unwrap();
+        // Live in a later proposal's baseline, removed by nothing on record.
+        store
+            .write_proposal(&snapshot("20-pend", "pending", vec![b.clone()], vec![b]))
+            .unwrap();
+
+        let refused = find_gone(&store, "r-refused").unwrap().unwrap();
+        assert_eq!(
+            refused.fate,
+            Fate::NeverLive {
+                proposal: "10-no".into(),
+                status: "rejected_by_gate".into()
+            }
+        );
+        let live = find_gone(&store, "r-live").unwrap().unwrap();
+        assert_eq!(
+            live.fate,
+            Fate::GoneUnrecorded {
+                last_seen: "20-pend".into()
+            }
+        );
+        assert!(find_gone(&store, "r-nowhere").unwrap().is_none());
+        assert!(
+            find_gone(&store, "r-").is_err(),
+            "an ambiguous prefix is refused"
+        );
     }
 
     fn regression(rule_id: &str, at: &str) -> ValidationRecord {
