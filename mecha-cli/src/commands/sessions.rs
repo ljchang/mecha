@@ -2242,7 +2242,17 @@ async fn appraise(
     println!();
     println!("  {}\n", crate::success_readout::line(&successes));
     println!("  {}\n", predictions_line(&calibration, outbox_unreadable));
-    println!("  {}\n", forecasts_line(&forecasts));
+    println!(
+        "  {}{}\n",
+        forecasts_line(&forecasts),
+        // Which drafts the forecasts were scored against: a short walk makes
+        // "unknown" partly the outbox's doing, and says so (review of #401).
+        if outbox_unreadable {
+            " (the outbox could not be read whole, so unknown includes drafts it could not see)"
+        } else {
+            ""
+        }
+    );
     println!(
         "  {}\n",
         match &expectations {
