@@ -2,7 +2,7 @@
   import { tick, untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import {
-    listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent,
+    listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -32,6 +32,7 @@
   let goal = $state('');
   let input = $state('');
   let source = null;
+  let usedInitial = false;
   let scroller = $state(null);
 
   const personas = $derived(data?.personas ?? []);
@@ -44,8 +45,10 @@
       // A token the server no longer honours has lapsed.
       if (token && !data.unlocked) token = null;
       if (chosen) chosen = personas.find((p) => p.name === chosen.name) ?? null;
-      // A deep link (`#personas/mara`) opens that persona, earlier chats and all.
-      if (!chosen && initial) {
+      // A deep link (`#personas/mara`) opens that persona, earlier chats and
+      // all — once: a later reload (a lock toggle) must not re-enter it.
+      if (!chosen && initial && !usedInitial) {
+        usedInitial = true;
         chosen = personas.find((p) => p.name === initial) ?? null;
         if (chosen) await loadHistory();
       }
@@ -138,13 +141,17 @@
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   }
 
-  // Read the transcript as the server holds it now.
+  // Read the transcript as the server holds it now, keeping what only the
+  // page holds (`settle`). Reads are numbered so a slow one never lands over
+  // a newer one.
+  let readGen = 0;
   async function reread(k) {
+    const gen = ++readGen;
     const res = await fetch(chatUrl(k, '', token));
     if (!res.ok) throw new Error((await res.text()).trim());
     const t = await res.json();
-    if (key !== k) return;
-    run = { ...emptyRun(t.entries ?? []), running: !!t.running };
+    if (key !== k || gen !== readGen) return;
+    run = { ...emptyRun(settle(t.entries, run)), running: !!t.running };
     scrollDown();
   }
 
@@ -168,7 +175,10 @@
       run = applyEvent(run, ev);
       scrollDown();
       if (ev.type === 'done') {
-        reread(k).catch((e) => (error = String(e?.message ?? e)));
+        // Only a run that finished is re-read: a failed one was rolled back
+        // on the server, and the page's own record of it — the message and
+        // why it failed — is the one worth keeping on screen.
+        if (ev.ok) reread(k).catch((e) => (error = String(e?.message ?? e)));
         loadHistory();
       }
     };
@@ -260,6 +270,11 @@
       send();
     }
   }
+
+  const clock = (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  };
 
   const when = (iso) => {
     const d = new Date(iso);
@@ -357,7 +372,7 @@
           <div class="earlier">earlier</div>
           {#each history as h (h.id)}
             <button class="card rowbtn" disabled={busy} onclick={() => resume(h.id)}>
-              <span class="rowtop"><span class="topic">{when(h.created)}</span><span class="when">{h.id.slice(9, 15)}</span></span>
+              <span class="rowtop"><span class="topic">{when(h.created)}</span><span class="when">{clock(h.created)}</span></span>
             </button>
           {/each}
         {/if}
@@ -394,10 +409,11 @@
           bind:value={input}
           onkeydown={onKey}
         ></textarea>
+        <!-- Send stays during a run: it steers, and a phone has no Enter to
+             spare for that. -->
+        <button class="abtn primary" disabled={!input.trim()} onclick={send}>{run.running ? 'Steer' : 'Send'}</button>
         {#if run.running}
           <button class="abtn" onclick={stop}>Stop</button>
-        {:else}
-          <button class="abtn primary" disabled={!input.trim()} onclick={send}>Send</button>
         {/if}
         <button class="abtn" onclick={() => { close(); key = null; run = emptyRun(); loadHistory(); }}>Done</button>
       </div>

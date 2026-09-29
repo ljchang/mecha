@@ -1,7 +1,7 @@
 // The Personas tab's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
 import {
-  isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS,
+  isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle,
 } from '../src/lib/persona.js';
 
 // Only a key the server could have minted is a persona chat's.
@@ -62,6 +62,20 @@ s = applyEvent(s, { type: 'queued', text: 'and this', request_id: 'r-2' });
 s = applyEvent(s, { type: 'queued_delivered', request_id: 'r-1' });
 s = applyEvent(s, { type: 'queued_discarded', request_ids: ['r-2'] });
 assert.deepEqual(s.entries.map((e) => e.delivery), ['delivered', 'discarded']);
+
+// A re-read after the run keeps what only the page held: the server's
+// entries, then the notice and the undelivered steer — not dropped.
+{
+  let r = emptyRun([{ kind: 'user', text: 'Hi' }]);
+  r = applyEvent(r, { type: 'queued', text: 'late', request_id: 'r-9' });
+  r = applyEvent(r, { type: 'notice', text: 'switching models' });
+  r = applyEvent(r, { type: 'queued_discarded', request_ids: ['r-9'] });
+  const server = [{ kind: 'user', text: 'Hi' }, { kind: 'assistant', text: 'Hello.' }];
+  assert.deepEqual(
+    settle(server, r).map((e) => [e.kind, e.text]),
+    [['user', 'Hi'], ['assistant', 'Hello.'], ['user', 'late'], ['notice', 'switching models']],
+  );
+}
 
 // A failed turn says so rather than ending silently.
 s = applyEvent(emptyRun(), { type: 'done', ok: false, error: 'model unavailable' });

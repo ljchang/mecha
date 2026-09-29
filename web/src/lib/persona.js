@@ -75,6 +75,21 @@ function flush(state) {
   };
 }
 
+// What only the page holds: the server's transcript has users, answers and
+// tools, and nothing of a notice or a steer that never reached the run.
+function pageOnly(e) {
+  return e.kind === 'notice' || (e.queued && e.delivery === 'discarded');
+}
+
+// The transcript after a finished run: the server's, which has the whole
+// answer — the part that streamed before a late subscriber arrived too —
+// with what only the page held carried across, in the order it arrived.
+// Re-reading without this deleted the failure notice and the "not
+// delivered" receipt one round trip after drawing them (review of #415).
+export function settle(serverEntries, local) {
+  return [...(serverEntries ?? []), ...local.entries.filter(pageOnly)];
+}
+
 function markDelivery(state, ids, delivery) {
   const wanted = new Set(ids);
   return {

@@ -69,7 +69,6 @@
        run into the neighbour. */
     max-width: 100%;
     overflow: hidden;
-    text-overflow: clip;
   }
   .nav-item.active {
     color: var(--accent-400);
