@@ -4317,6 +4317,35 @@ The design decisions, each of which is a bug if undone:
   a chat into a test, never a test into anything else. The incident: 46 of
   143 appraised sessions were development runs before the mark existed, and
   the instrument measured its own tests.
+- **The owner can mark a session an experiment after the fact**
+  (`mecha sessions mark <id> experiment`, ruling 4D). A model probe run as
+  ordinary chat is not the owner's work, and the appraiser read two such
+  probes on the live store as the owner's own wishes. The mark is a line
+  in `<sessions>/marks/marks.jsonl`, never an edit to the transcript.
+  `Session::list_counting` applies it, so the session lists as
+  `Experiment` and every reader that admits by kind (the corpus,
+  `reflect`, `distill`) passes it over with no change of its own. Its text
+  appraisal and scores leave every door of the appraisal store, though it
+  stays on record so it is never appraised twice, and `learn` withholds
+  its reflections (`Admission::Withdrawn`, ahead of a pending proposal's
+  claim). `proposals accept` refuses a proposal resting on one, even with
+  `--force`, because a consolidated rule cannot shed one reflection's part.
+  A rule already learned from it is named for the owner to retire, never
+  passed over in silence. The two readers that take reflections by
+  session id rather than through a listing, `sessions compare`'s lesson
+  pass and `validate`'s probe corpus, drop a marked session's too
+  (`Marks::keep_unmarked`). `sessions delete` takes the mark with every
+  other trace (`forget`).
+  - **A ledger that cannot be read stops the listing.** A lost mark would
+    hand the probe back to the learner as the owner's work, and a word a
+    newer build wrote reads as a withdrawal.
+  - **Only the owner marks, at their own terminal.** Every run's shell is
+    refused, including an interactive one with a person in the
+    conversation, because a mark hides a session's record and a run must
+    not hide its own.
+  - **Not reached: the graph episode.** mecha-graph is a separate store,
+    so the verb names the episode `(agent:mecha, <id>)` for the owner to
+    retract there.
 - **A rate over a zero denominator is `None`, never zero.** "Nothing went
   wrong" and "nothing happened" are different answers, and printing them the
   same way is how a component that stopped working reads as healthy — the
