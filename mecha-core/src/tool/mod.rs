@@ -6,6 +6,7 @@
 
 pub mod ask;
 pub mod builtin;
+pub mod document;
 pub mod goal_context;
 pub mod image_library;
 pub mod image_view;
