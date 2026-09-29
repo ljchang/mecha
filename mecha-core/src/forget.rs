@@ -453,6 +453,22 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
                     })
                 }),
             );
+            // The harness's forecasts of the owner's act on those drafts
+            // (`forecast`), keyed by the session and by the item: a trace
+            // like any other.
+            let forecasts = crate::forecast::ledger(&roots.outbox);
+            report.attempt(
+                "draft forecasts",
+                // Under the lock `forecast::record` appends with.
+                with_lock(forecasts.parent().expect("a directory"), || {
+                    filter_jsonl(&forecasts, |v| {
+                        field_is(v, "session_id", id)
+                            || v["item_id"]
+                                .as_str()
+                                .is_some_and(|x| items.iter().any(|i| i == x))
+                    })
+                }),
+            );
         }
         report.attempt(
             "questions",
