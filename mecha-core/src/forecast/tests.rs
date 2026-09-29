@@ -280,9 +280,9 @@ fn the_summary_scores_what_resolved_and_names_the_rest() {
         ..made[0].clone()
     });
     // A newer build's act word is unknown, never "no basis".
-    let k = summarize(&skewed, 0, &items, Some(window), now);
+    let k = summarize(&skewed, 0, &items, true, Some(window), now);
     assert_eq!((k.no_basis, k.unknown), (1, 2));
-    let s = summarize(&made, 0, &items, Some(window), now);
+    let s = summarize(&made, 0, &items, true, Some(window), now);
     assert_eq!((s.forecasts, s.scored, s.hits, s.surprises), (5, 2, 1, 1));
     assert_eq!(
         (s.pending, s.unknown, s.no_basis, s.unforecast),
@@ -291,7 +291,7 @@ fn the_summary_scores_what_resolved_and_names_the_rest() {
     assert_eq!(s.hit_rate, Some(0.5));
     // An unreadable charter scores nothing, and says it was the window —
     // never "not the owner's by the stamps".
-    let blind = summarize(&made, 0, &items, None, now);
+    let blind = summarize(&made, 0, &items, true, None, now);
     assert_eq!(
         (
             blind.scored,
@@ -300,6 +300,19 @@ fn the_summary_scores_what_resolved_and_names_the_rest() {
             blind.hit_rate
         ),
         (0, 4, 0, None)
+    );
+    // A partial outbox read: the drafts it did not see are unread, never
+    // "not the owner's", and coverage is not claimed.
+    let partial = summarize(&made, 0, &items[..2], false, Some(window), now);
+    assert!(partial.outbox_unreadable);
+    assert_eq!(
+        (
+            partial.scored,
+            partial.drafts_unread,
+            partial.unknown,
+            partial.unforecast
+        ),
+        (2, 2, 0, 0)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

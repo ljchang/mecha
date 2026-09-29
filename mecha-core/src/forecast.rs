@@ -331,6 +331,12 @@ pub struct Summary {
     /// not be read now (the charter): a finding about the charter, never
     /// "not the owner's by the stamps" (review of #401).
     pub window_unreadable: usize,
+    /// The outbox could not be read whole, so `drafts_unread` forecasts
+    /// could not be scored and `unforecast` was not checked (review of
+    /// #401): a read failure, said as one.
+    pub outbox_unreadable: bool,
+    /// Forecasts whose draft the partial outbox read did not see.
+    pub drafts_unread: usize,
     /// Drafts this should have forecast, staged since the first forecast,
     /// with none on record — a write that failed, said rather than hidden.
     pub unforecast: usize,
@@ -346,12 +352,14 @@ pub fn summarize(
     made: &[Forecast],
     skipped: usize,
     items: &[OutboxItem],
+    items_complete: bool,
     patience: Option<chrono::Duration>,
     now: DateTime<Utc>,
 ) -> Summary {
     let mut s = Summary {
         forecasts: made.len(),
         skipped,
+        outbox_unreadable: !items_complete,
         ..Summary::default()
     };
     for f in made {
@@ -377,6 +385,11 @@ pub fn summarize(
         };
         let observed = match items.iter().find(|i| i.id == f.item_id) {
             Some(item) => observe(item, p, now),
+            // Not seen by a partial read: unread, never "gone".
+            None if !items_complete => {
+                s.drafts_unread += 1;
+                continue;
+            }
             None => Observed::Unknown,
         };
         let actual = match observed {
@@ -398,7 +411,8 @@ pub fn summarize(
             s.surprises += 1;
         }
     }
-    if let Some(first) = made.iter().map(|f| f.at).min() {
+    // Coverage is checked only over a whole read.
+    if let Some(first) = made.iter().map(|f| f.at).min().filter(|_| items_complete) {
         s.unforecast = items
             .iter()
             .filter(|i| forecasts(i) && at(&i.created_at).is_some_and(|t| t >= first))
