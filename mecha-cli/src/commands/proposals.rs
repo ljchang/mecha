@@ -166,20 +166,16 @@ fn accept(store: &LearningStore, id: &str, force: bool) -> Result<()> {
     // across its reflections, so the part it contributed cannot be cut out.
     // Refused whatever `--force` says: the mark is the owner's, and the
     // ledger unread is refused too (review of #382).
-    let withdrawn =
-        mecha_core::session::Marks::load(&mecha_core::session::Session::default_dir()?)?
-            .withdrawn_ids();
-    let marked: Vec<String> = store
-        .reflexions()?
-        .into_iter()
-        .filter(|r| p.reflexion_ids.contains(&r.id) && withdrawn.contains(&r.session_id))
-        .map(|r| r.id)
-        .collect();
+    let marked = marked_in(store, &p)?;
     if !marked.is_empty() {
+        // Supersede, never reject: `reject` marks *every* reflection it holds
+        // processed, burning the unmarked sessions' corrections with the
+        // marked one's; `supersede` releases them unconsumed, so the next
+        // learn pass does propose again from the rest (review of #382).
         bail!(
             "proposal {} rests on reflection(s) from a session you marked as an experiment ({}); \
-             reject it with `mecha proposals reject {}` — the next learn pass proposes again \
-             from the rest",
+             supersede it with `mecha proposals supersede {}` — its other reflections go back \
+             to the pool unconsumed, and the next learn pass proposes again from them",
             p.id,
             marked.join(", "),
             p.id
@@ -312,9 +308,27 @@ fn supersede_one(p: &mut mecha_core::learning::Proposal, reason: &str) {
 /// live rules, so one that fails this is not a decision awaiting an owner —
 /// it is unappliable paper, and the reflections behind it are being held for
 /// nothing.
+///
+/// Two ways, the same two `accept` refuses on: the baseline moved, or the
+/// proposal rests on a session the owner marked as an experiment (ruling
+/// 4D; review of #382) — so `--stale` sweeps both, and neither is left
+/// holding its reflections out of `learn` for good.
 fn is_stale(store: &LearningStore, p: &mecha_core::learning::Proposal) -> Result<bool> {
     let live = store.learned_rules(&p.domain)?;
-    Ok(!same_rules(&live, &p.rules_before))
+    Ok(!same_rules(&live, &p.rules_before) || !marked_in(store, p)?.is_empty())
+}
+
+/// The proposal's reflections from a marked session. The marks ledger
+/// unread is an error: `accept` must not guess it clean.
+fn marked_in(store: &LearningStore, p: &mecha_core::learning::Proposal) -> Result<Vec<String>> {
+    let withdrawn =
+        mecha_core::session::Marks::load(&mecha_core::session::Session::default_dir()?)?
+            .withdrawn_ids();
+    Ok(mecha_core::learning::rests_on_marked(
+        &p.reflexion_ids,
+        &store.reflexions()?,
+        &withdrawn,
+    ))
 }
 
 fn supersede_cmd(
