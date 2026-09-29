@@ -50,6 +50,16 @@ model (OpenAI's guidance is the opposite: restate the preserve list every
 call) the adapter compiles them differently, which is the draft's
 principle 10 earning its keep.
 
+> **Addendum, 2026-09-29 (#408):** the preservation rule has now been
+> tested on edits, and on this model it falls on OpenAI's side, not Qwen's
+> word: the kept parts named, then the instruction, stood a sitting woman up
+> on every one of 12 fixed seeds, where a caption of the scene did so on
+> none (HISTORY, 2026-09-29, has the full measurement). The blanket form,
+> "Keep <image1> unchanged except: …", gave no clean edit in 2 tries (1
+> near-copy, 1 partial). So the preserve list compiles to named parts,
+> restated in the edit prompt, not one blanket clause. The mask and the
+> validator check are untested.
+
 **Three more things the measurements found** (§8). A reference **fills in
 whatever the scene leaves unsaid** — wardrobe, pose, expression — so "a
 candid photograph of friends" came back as a line-up of the four portraits;
@@ -143,6 +153,11 @@ what came out except `image_view` on request.
     near-copy. mecha already forces a fresh seed on every edit — and a
     library that reuses its own outputs as references is exactly where this
     bites, so the rule must hold for compiled calls too.
+    *Addendum, 2026-09-29 (#408):* a fresh seed is not enough. With a fresh
+    seed, an edit whose prompt was a caption of the scene still came back a
+    near-copy on 11 of 12 seeds. The seed only decides which way an
+    ambiguous prompt tips, and the prompt form decides how ambiguous it is
+    (the addendum under the summary above).
   - *Face preservation "still below expectations"* [reported, HF #11].
   - *Degradation with many mixed references* [measured, on Edit-2511, not
     2.1: DyRef, arXiv 2606.26947].
@@ -478,7 +493,7 @@ the tiers do not notice.
 | 12–13 | Model adapter, ComfyUI executor | **keep**; executor picks among fixed graphs | already `Request`'s shape |
 | 14 | Vision validator with `confidence: 0.94` | **split three ways** | identity by embedding, counts by detector, relationships by VLM; a model's self-reported confidence is hearsay here, as appraisal labels are |
 | 15 | Repair planner | **keep**, re-seed before edit for identity | an edit compounds drift; a fresh seed does not |
-| 16 | Preserve constraints in the generation instruction | **adjust for Qwen** | one blanket clause by type/position/role; the list itself becomes the mask and the validator's checks |
+| 16 | Preserve constraints in the generation instruction | **adjust for Qwen** | one blanket clause by type/position/role; the list itself becomes the mask and the validator's checks. *2026-09-29: the blanket clause measured against: name the kept parts in the edit prompt (addendum under the summary)* |
 | 17 | Bounded loop, best candidate | **keep**; add a wall-clock budget | three repairs at ~1 min each is the owner waiting |
 | 18 | `generated → candidate → approved → canonical` | **keep**; promotion is an owner act | a lane must not promote itself |
 | 19 | Provenance record | **keep**, add model-file hash, entry versions, template and rewriter versions, `Origin` | "ask the artifact" |
