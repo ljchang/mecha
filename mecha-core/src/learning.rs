@@ -54,6 +54,9 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod parse_policy_tests;
+
 // ─── Reflections ────────────────────────────────────────────────────────────
 
 /// Where a reflection's evidence came from, provenance-wise.
@@ -1145,6 +1148,27 @@ pub struct RulesCarried {
     /// hand-over or a mid-run confirmation can set to a goal the block was
     /// not matched on. `None` when the front-end declared none.
     pub goal: Option<crate::situation::GoalKey>,
+    /// Learned-rules files that could not be read, so this block was rendered
+    /// without them. A run carrying these records its `rules_hash` as
+    /// *unknown* rather than as the hash of what it rendered: the ledger and
+    /// tenure attribution would otherwise read a skipped file as a measured
+    /// run that carried none of those rules.
+    pub skipped: Vec<SkippedRules>,
+}
+
+/// A learned-rules file a prompt was rendered without, and why.
+///
+/// The D1 ruling (`docs/LEARNING-STORE-RESEARCH.md` §7). The two files differ
+/// by author. A machine-written `learned.toml` that does not parse is
+/// skipped, because running without learned rules is the safe direction. The
+/// owner's `user.toml` still stops the run, because the owner's own rules
+/// must not vanish silently. Skipping is still never silent: the front-end
+/// prints it, doctor reports it, and the run record says unknown.
+#[derive(Debug, Clone)]
+pub struct SkippedRules {
+    pub domain: String,
+    pub path: PathBuf,
+    pub error: String,
 }
 
 impl Default for RulesCarried {
@@ -1167,6 +1191,7 @@ impl RulesCarried {
             workspace: None,
             surface: None,
             goal: None,
+            skipped: Vec::new(),
         }
     }
 }
@@ -1311,6 +1336,12 @@ fn default_true() -> bool {
 struct RulesFile {
     #[serde(default)]
     rules: Vec<Rule>,
+}
+
+/// A rules file's text, parsed: the one parser every reader and the owner's
+/// edit check share, so "it parses" means the same thing to each.
+pub fn parse_rules_file(text: &str) -> Result<Vec<Rule>> {
+    Ok(toml::from_str::<RulesFile>(text)?.rules)
 }
 
 // ─── The store ──────────────────────────────────────────────────────────────
@@ -1494,16 +1525,107 @@ impl LearningStore {
             return Ok(Vec::new());
         }
         let text = std::fs::read_to_string(path)?;
-        let file: RulesFile =
-            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        Ok(file.rules)
+        parse_rules_file(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
     /// The user's own rules. This file is never written by any pass: the
     /// consolidation prompt is told these rules are immutable, and this is
-    /// that constraint made structural rather than left to the model.
+    /// that constraint made structural rather than left to the model. The
+    /// one writer is the owner, by hand or through
+    /// [`Self::replace_user_rules`].
+    ///
+    /// A file that does not parse is an error, and every run start stops on
+    /// it (D1: the owner's rules must not vanish silently). The error names
+    /// the verb that fixes it.
     pub fn user_rules(&self, domain: &str) -> Result<Vec<Rule>> {
         self.load_rules(&self.rules_path(domain, "user"))
+            .with_context(|| {
+                format!(
+                    "your `{domain}` rules do not parse, and every run stops until they do — \
+                 `mecha rules edit --user --domain {domain}` checks an edit before saving it"
+                )
+            })
+    }
+
+    /// The owner's own rules file, as written. `None` when there is none.
+    pub fn user_rules_text(&self, domain: &str) -> Result<Option<String>> {
+        match std::fs::read_to_string(self.rules_path(domain, "user")) {
+            Ok(t) => Ok(Some(t)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Replace the owner's rules for `domain` with `text`, verbatim, so
+    /// comments survive. Only if it parses: the check comes before the write,
+    /// so a typo cannot reach the file that every run start reads. The
+    /// owner's verb (`mecha rules edit --user`), never a pass's. Returns how
+    /// many rules the file now holds.
+    ///
+    /// Temp sibling, fsync, the original's permissions, rename, under the
+    /// store lock. Run start reads this file with no lock, so it must be
+    /// whole at every instant.
+    pub fn replace_user_rules(&self, domain: &str, text: &str) -> Result<usize> {
+        // The domain becomes a filename: a plain name, never a path.
+        anyhow::ensure!(
+            !domain.is_empty()
+                && domain
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "`{domain}` is not a domain name (letters, digits, `-` and `_`)"
+        );
+        let rules = parse_rules_file(text)?;
+        let path = self.rules_path(domain, "user");
+        crate::create_private_dir(path.parent().expect("rules/ has a parent"))?;
+        let _lock = self.lock()?;
+        let tmp = path.with_extension("toml.tmp");
+        {
+            let mut f = std::fs::File::create(&tmp)
+                .with_context(|| format!("writing {}", tmp.display()))?;
+            f.write_all(text.as_bytes())?;
+            f.sync_all()?;
+        }
+        if let Ok(meta) = std::fs::metadata(&path) {
+            std::fs::set_permissions(&tmp, meta.permissions())?;
+        }
+        std::fs::rename(&tmp, &path).with_context(|| format!("replacing {}", path.display()))?;
+        Ok(rules.len())
+    }
+
+    /// A domain's learned rules for rendering into a prompt. A file that
+    /// cannot be read is recorded in `skipped` and read as no rules
+    /// ([`SkippedRules`]).
+    fn learned_or_skip(&self, domain: &str, skipped: &mut Vec<SkippedRules>) -> Vec<Rule> {
+        match self.learned_rules(domain) {
+            Ok(rules) => rules,
+            Err(e) => {
+                tracing::warn!("skipping unreadable learned rules for `{domain}`: {e:#}");
+                skipped.push(SkippedRules {
+                    domain: domain.to_string(),
+                    path: self.rules_path(domain, "learned"),
+                    error: format!("{e:#}"),
+                });
+                Vec::new()
+            }
+        }
+    }
+
+    /// [`Self::rules_prompt_block_for`] for a pass that must keep running
+    /// past a bad learned file: the mail classifier. The owner's rules stay
+    /// strict; a learned file that cannot be read is skipped and returned
+    /// beside the block, for the caller to say so.
+    pub fn pass_rules_block_for(
+        &self,
+        domains: &[&str],
+    ) -> Result<(Option<String>, Vec<SkippedRules>)> {
+        let mut parts: Vec<String> = Vec::new();
+        let mut skipped = Vec::new();
+        for domain in domains {
+            let user = self.user_rules(domain)?;
+            let learned = self.learned_or_skip(domain, &mut skipped);
+            parts.extend(domain_rules_section(domain, &user, &learned));
+        }
+        Ok((wrap_rules_block(parts), skipped))
     }
 
     pub fn learned_rules(&self, domain: &str) -> Result<Vec<Rule>> {
@@ -1609,11 +1731,12 @@ impl LearningStore {
     ) -> Result<RulesCarried> {
         let mut parts: Vec<String> = Vec::new();
         let mut rule_ids: Vec<String> = Vec::new();
+        let mut skipped = Vec::new();
         for domain in domains {
             let user = self.user_rules(domain)?;
             let learned = match replace {
                 Some((d, rules)) if d == *domain => rules.to_vec(),
-                _ => self.learned_rules(domain)?,
+                _ => self.learned_or_skip(domain, &mut skipped),
             };
             parts.extend(domain_rules_section_for(domain, &user, &learned, run));
             rule_ids.extend(carried_in(&learned, run).filter_map(|r| r.id.clone()));
@@ -1626,6 +1749,7 @@ impl LearningStore {
             workspace: run.workspace.clone(),
             surface: run.surface,
             goal: run.goal.clone(),
+            skipped,
         })
     }
 

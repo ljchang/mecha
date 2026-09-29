@@ -73,6 +73,20 @@ pub enum Cmd {
     },
     /// Un-retire a rule by id (or unique prefix).
     Restore { id: String },
+    /// Edit your own rules in `$EDITOR`, checked before they are saved.
+    ///
+    /// A `*.user.toml` that does not parse stops every run start, which is
+    /// the D1 ruling: your rules must not vanish silently. So this verb edits
+    /// a copy, parses it, and only then replaces the file, offering to reopen
+    /// the editor on an edit that does not parse. Comments are kept.
+    Edit {
+        /// Required, and the only kind: learned rules are the learner's to
+        /// write, and a hand fix to one is a hand edit of its file.
+        #[arg(long, required = true)]
+        user: bool,
+        #[arg(long, default_value = "behavior")]
+        domain: String,
+    },
     /// One rule in full: its text, domain, state and ledger tally. What the
     /// TUI's `Enter` on the Rules pane runs — a rule is the one record here
     /// that rides in every future prompt, so it is the one most worth
@@ -118,6 +132,25 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         }
         Cmd::Retire { id, reason } => retire(&store, &id, reason),
         Cmd::Restore { id } => restore(&store, &id),
+        Cmd::Edit { user: _, domain } => {
+            let outcome = edit_user(
+                &store,
+                &domain,
+                |text| crate::editor::edit_text(text, &format!("mecha-rules-{domain}.user.toml")),
+                ask_to_reopen,
+            )?;
+            match outcome {
+                UserEdit::Unchanged => println!("unchanged"),
+                UserEdit::Saved(n) => {
+                    println!("saved — {n} rule(s) for `{domain}`, carried from the next run")
+                }
+                UserEdit::Discarded(e) => {
+                    eprintln!("not saved, the file is as it was: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+            Ok(())
+        }
         Cmd::Show { id, no_board } => {
             let (_, rules, i) = find_rule(&store, &id)?;
             let goals = goals_of(global, &[rules[i].clone()], !no_board).await;
@@ -963,6 +996,75 @@ fn find_rule(store: &LearningStore, id: &str) -> Result<(String, Vec<Rule>, usiz
     }
 }
 
+/// What `mecha rules edit --user` did.
+#[derive(Debug)]
+enum UserEdit {
+    Unchanged,
+    /// Written, with this many rules.
+    Saved(usize),
+    /// The last edit did not parse and the owner declined to reopen it.
+    Discarded(anyhow::Error),
+}
+
+/// Edit the owner's rules through `edit`, which gets the text and returns
+/// what was saved. The file is replaced only when that parses. On an edit
+/// that does not parse, `reopen` is asked (with the error), and `true` goes
+/// round again on the broken text rather than losing it.
+fn edit_user(
+    store: &LearningStore,
+    domain: &str,
+    mut edit: impl FnMut(&str) -> Result<String>,
+    mut reopen: impl FnMut(&anyhow::Error) -> bool,
+) -> Result<UserEdit> {
+    let original = store.user_rules_text(domain)?;
+    let start = original
+        .clone()
+        .unwrap_or_else(|| user_rules_template(domain));
+    let mut text = start.clone();
+    loop {
+        let edited = edit(&text)?;
+        if edited == start {
+            return Ok(UserEdit::Unchanged);
+        }
+        match mecha_core::learning::parse_rules_file(&edited) {
+            Ok(_) => return Ok(UserEdit::Saved(store.replace_user_rules(domain, &edited)?)),
+            Err(e) => {
+                if reopen(&e) {
+                    text = edited;
+                } else {
+                    return Ok(UserEdit::Discarded(e));
+                }
+            }
+        }
+    }
+}
+
+fn user_rules_template(domain: &str) -> String {
+    format!(
+        "# Your own rules for `{domain}`. Only you write this file; `mecha learn`\n\
+         # treats every rule in it as fixed. One [[rules]] table per rule:\n\
+         #\n\
+         # [[rules]]\n\
+         # text = \"Ask before pushing to a shared branch.\"\n"
+    )
+}
+
+/// On a terminal, ask; anywhere else, do not reopen.
+fn ask_to_reopen(e: &anyhow::Error) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+    eprintln!("that does not parse: {e:#}");
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+    eprint!("reopen the editor on it? [Y/n] ");
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    if std::io::stdin().lock().read_line(&mut answer).is_err() {
+        return false;
+    }
+    !matches!(answer.trim(), "n" | "N" | "no")
+}
+
 fn retire(store: &LearningStore, id: &str, reason: Option<String>) -> Result<()> {
     let _lock = store.lock()?;
     let (domain, mut rules, i) = find_rule(store, id)?;
@@ -1366,6 +1468,80 @@ fn propose(
 mod tests {
     use super::*;
     use mecha_core::learning::rules_hash;
+
+    fn user_store() -> (LearningStore, PathBuf) {
+        let dir = std::env::temp_dir()
+            .join("mecha-rules-edit-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        (LearningStore::open(dir.clone()).unwrap(), dir)
+    }
+
+    #[test]
+    fn an_edit_that_parses_is_saved_as_typed() {
+        let (store, dir) = user_store();
+        let typed = "# why\n[[rules]]\ntext = \"Mine.\"\n";
+        let out = edit_user(&store, "behavior", |_| Ok(typed.into()), |_| false).unwrap();
+        assert!(matches!(out, UserEdit::Saved(1)), "{out:?}");
+        assert_eq!(
+            store.user_rules_text("behavior").unwrap().as_deref(),
+            Some(typed)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The broken edit is handed back to the editor rather than lost, and
+    /// nothing reaches the file until an edit parses.
+    #[test]
+    fn a_broken_edit_is_reopened_and_never_written() {
+        let (store, dir) = user_store();
+        let mut calls = Vec::new();
+        let out = edit_user(
+            &store,
+            "behavior",
+            |text| {
+                calls.push(text.to_string());
+                Ok(if calls.len() == 1 {
+                    "[[rules]]\ntext = \"half".into()
+                } else {
+                    "[[rules]]\ntext = \"whole\"\n".into()
+                })
+            },
+            |_| {
+                assert_eq!(store.user_rules_text("behavior").unwrap(), None);
+                true
+            },
+        )
+        .unwrap();
+        assert!(matches!(out, UserEdit::Saved(1)), "{out:?}");
+        assert_eq!(
+            calls[1], "[[rules]]\ntext = \"half",
+            "reopened on the broken text"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_declined_broken_edit_leaves_the_file_as_it_was() {
+        let (store, dir) = user_store();
+        let before = "[[rules]]\ntext = \"Kept.\"\n";
+        store.replace_user_rules("behavior", before).unwrap();
+        let out = edit_user(&store, "behavior", |_| Ok("[[rules".into()), |_| false).unwrap();
+        assert!(matches!(out, UserEdit::Discarded(_)), "{out:?}");
+        assert_eq!(
+            store.user_rules_text("behavior").unwrap().as_deref(),
+            Some(before)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn saving_the_untouched_template_creates_nothing() {
+        let (store, dir) = user_store();
+        let out = edit_user(&store, "behavior", |t| Ok(t.to_string()), |_| false).unwrap();
+        assert!(matches!(out, UserEdit::Unchanged), "{out:?}");
+        assert_eq!(store.user_rules_text("behavior").unwrap(), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     fn temp_store() -> LearningStore {
         // A process-unique counter, not a timestamp. `as_nanos()` is only as

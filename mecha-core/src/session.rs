@@ -610,6 +610,7 @@ impl RunConfig {
             .filter(|l| levers_off.contains(l))
             .collect();
         let cfg = agent.config();
+        let known = rules.filter(|r| r.skipped.is_empty());
         RunConfig {
             appraisal_evidence: agent.ctx().appraisal_evidence.as_ref().map(|b| {
                 serde_json::to_value(b.snapshot()).expect("appraisal evidence serializes")
@@ -649,8 +650,10 @@ impl RunConfig {
             sandbox_network: config.sandbox.network,
             levers_off: Some(levers_off),
             experiment: crate::experiment::ExperimentRef::from_env(),
-            rules_hash: rules.map(|r| r.hash.clone()),
-            rule_ids: rules.map(|r| r.rule_ids.clone()).unwrap_or_default(),
+            // A block rendered past a skipped file is not a measurement of
+            // the rule set: unknown, never the hash of what was left.
+            rules_hash: known.map(|r| r.hash.clone()),
+            rule_ids: known.map(|r| r.rule_ids.clone()).unwrap_or_default(),
             rules_workspace: rules.and_then(|r| r.workspace.clone()),
             rules_surface: rules.and_then(|r| r.surface),
             rules_goal: rules.and_then(|r| r.goal.clone()),

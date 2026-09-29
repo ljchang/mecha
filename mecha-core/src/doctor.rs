@@ -311,6 +311,7 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_unfinished_forgets(&home.join("sessions")));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
     findings.extend(check_learning(&home.join("learning"), now));
+    findings.extend(check_rule_files(&home.join("learning")));
     findings.extend(check_proposal_review(&home.join("learning"), now));
     // The graph store is `~/.mecha-graph`, a hidden sibling of the mecha home
     // by that store's own convention — resolved relative to `home` so a test
@@ -2131,6 +2132,76 @@ pub fn legacy_learning_git(learning: &Path) -> Option<PathBuf> {
 /// command: accept the rate, or change what evidence the loop can use. That
 /// is why its remedy is the dry-run that shows the classifications, never
 /// anything that loosens the gate.
+/// A rules file that does not parse (D1, `docs/LEARNING-STORE-RESEARCH.md`
+/// §7). The consequence differs by author, and so does the finding:
+/// - the owner's `*.user.toml` stops every run start, so it is broken;
+/// - a machine-written `*.learned.toml` is skipped, so runs go on without
+///   those rules, which is quiet by construction and why it is said here.
+fn check_rule_files(root: &Path) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root.join("rules")) else {
+        return out;
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let (domain, user) = if let Some(d) = name.strip_suffix(".user.toml") {
+            (d.to_string(), true)
+        } else if let Some(d) = name.strip_suffix(".learned.toml") {
+            (d.to_string(), false)
+        } else {
+            continue;
+        };
+        let error = match std::fs::read_to_string(&path) {
+            Ok(text) => match crate::learning::parse_rules_file(&text) {
+                Ok(_) => continue,
+                Err(e) => format!("{e:#}"),
+            },
+            Err(e) => e.to_string(),
+        };
+        out.push(if user {
+            Finding {
+                component: "learning".to_string(),
+                severity: Severity::Broken,
+                summary: format!("your `{domain}` rules do not parse — every run refuses to start"),
+                detail: format!("{}: {error}", path.display()),
+                remedy: Some(Remedy {
+                    description: "edit them with a parse check before the save".to_string(),
+                    argv: vec![
+                        "mecha".into(),
+                        "rules".into(),
+                        "edit".into(),
+                        "--user".into(),
+                        "--domain".into(),
+                        domain,
+                    ],
+                    needs_terminal: true,
+                }),
+            }
+        } else {
+            Finding {
+                component: "learning".to_string(),
+                severity: Severity::Attention,
+                summary: format!(
+                    "learned `{domain}` rules do not parse — runs are going on without them"
+                ),
+                detail: format!(
+                    "{}: {error}. Each run skips this file and records its rule set as \
+                     unknown, and `mecha learn` will not consolidate over it. Fix it by \
+                     hand, or remove it to start the domain's learned rules afresh.",
+                    path.display()
+                ),
+                remedy: None,
+            }
+        });
+    }
+    out
+}
+
 fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let mut out = Vec::new();
     let path = root.join("reflections.jsonl");
@@ -2669,6 +2740,41 @@ mod tests {
     use crate::outbox::{OutboxItem, OutboxKind};
     use serde_json::json;
     use std::path::PathBuf;
+
+    /// D1's two consequences, reported apart: the owner's file stops every
+    /// run (broken, with the verb that fixes it); a learned one is skipped
+    /// (attention: quiet by construction, so said here).
+    #[test]
+    fn a_rules_file_that_does_not_parse_is_reported_by_its_author() {
+        let root = std::env::temp_dir()
+            .join("mecha-doctor-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(root.join("rules")).unwrap();
+        let broken = "[[rules]]\ntext = \"half\n";
+        std::fs::write(root.join("rules/behavior.user.toml"), broken).unwrap();
+        std::fs::write(root.join("rules/triage.learned.toml"), broken).unwrap();
+        std::fs::write(
+            root.join("rules/writing.learned.toml"),
+            "[[rules]]\ntext = \"Fine.\"\n",
+        )
+        .unwrap();
+
+        let found = check_rule_files(&root);
+        assert_eq!(found.len(), 2, "{found:#?}");
+        let user = found
+            .iter()
+            .find(|f| f.summary.contains("your `behavior`"))
+            .unwrap();
+        assert!(matches!(user.severity, Severity::Broken));
+        let argv = &user.remedy.as_ref().unwrap().argv;
+        assert_eq!(argv[..4], ["mecha", "rules", "edit", "--user"]);
+        let learned = found
+            .iter()
+            .find(|f| f.summary.contains("learned `triage`"))
+            .unwrap();
+        assert!(matches!(learned.severity, Severity::Attention));
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     /// A booking that never reached the calendar for a reason the sweep did
     /// **not** record. Every failure other than a collision writes no ledger
