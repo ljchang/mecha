@@ -310,7 +310,11 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_runs(&home.join("sessions"), charter));
     findings.extend(check_unfinished_forgets(&home.join("sessions")));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
-    findings.extend(check_learning(&home.join("learning"), now));
+    findings.extend(check_learning(
+        &home.join("learning"),
+        &home.join("sessions"),
+        now,
+    ));
     findings.extend(check_rule_commits(&home.join("learning"), now));
     findings.extend(check_rule_files(&home.join("learning")));
     findings.extend(check_proposal_review(
@@ -2158,7 +2162,7 @@ pub fn legacy_learning_git(learning: &Path) -> Option<PathBuf> {
 /// command: accept the rate, or change what evidence the loop can use. That
 /// is why its remedy is the dry-run that shows the classifications, never
 /// anything that loosens the gate.
-fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+fn check_learning(root: &Path, sessions: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let mut out = Vec::new();
     let path = root.join("reflections.jsonl");
     if !path.is_file() {
@@ -2186,6 +2190,16 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     // "nothing went wrong" unless something here says so (found on review).
     let mut withheld = 0usize;
     let mut newest_withheld: Option<DateTime<Utc>> = None;
+    // Unprocessed reflections from a session the owner marked as an
+    // experiment (ruling 4D): `learn` withdraws them (`Admission::Withdrawn`),
+    // so they are never consumed. Counted in `waiting` they would read a
+    // pool at the floor that never moves, which silences this finding the
+    // way the two gates above once did (review of #382). The owner's own
+    // act, like a drop, so not a cause of starvation either: named on the
+    // line, never counted toward it. An unreadable ledger reads as no marks
+    // here; `check_runs` reports it, since the session listing fails on it.
+    let marks = crate::session::Marks::load(sessions).unwrap_or_default();
+    let mut marked = 0usize;
     let newest = |slot: &mut Option<DateTime<Utc>>, at: &str| {
         if let Ok(t) = DateTime::parse_from_rfc3339(at) {
             let t = t.with_timezone(&Utc);
@@ -2209,6 +2223,14 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             // whose finding asks a person to make a decision.
             continue;
         };
+        // `learn`'s order: the owner's drop first, then the mark. Withdrawn
+        // from the total too, as from every reader.
+        if r.dropped_at.is_none() && marks.withdrawn(&r.session_id) {
+            if !r.is_processed {
+                marked += 1;
+            }
+            continue;
+        }
         total += 1;
         // `r.origin` is the miner's decision at write time, and the store is
         // append-only — `r.learnable()` is what `learn.rs` actually admits
@@ -2304,6 +2326,10 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         String::new()
     } else {
         format!(" and {withheld} withheld on attribution")
+    } + &if marked == 0 {
+        String::new()
+    } else {
+        format!(" ({marked} more withdrawn by your experiment marks)")
     };
     // Each half of the detail is said only when its cause is present: with
     // nothing excluded by origin there are no excluded records to read and
@@ -3522,7 +3548,7 @@ mod tests {
 
         // With no pass on record, that is genuine starvation.
         assert!(
-            check_learning(&root, now)
+            check_learning(&root, &root.join("no-sessions"), now)
                 .iter()
                 .any(|f| f.summary.contains("starved")),
             "an unfed learner with no recent pass is starved"
@@ -3535,7 +3561,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            check_learning(&root, now).is_empty(),
+            check_learning(&root, &root.join("no-sessions"), now).is_empty(),
             "a consolidation nine hours ago is the pool being consumed, not starvation"
         );
 
@@ -3546,7 +3572,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            check_learning(&root, now)
+            check_learning(&root, &root.join("no-sessions"), now)
                 .iter()
                 .any(|f| f.summary.contains("starved")),
             "a pass five weeks old explains nothing about today"
@@ -3562,7 +3588,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            check_learning(&root, now)
+            check_learning(&root, &root.join("no-sessions"), now)
                 .iter()
                 .any(|f| f.summary.contains("starved")),
             "a retirement pass consumed no reflections and must not silence starvation"
@@ -3584,7 +3610,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".git")).unwrap();
         assert_eq!(legacy_learning_git(&root), Some(root.join(".git")));
         assert!(
-            check_learning(&root, Utc::now()).is_empty(),
+            check_learning(&root, &root.join("no-sessions"), Utc::now()).is_empty(),
             "a standing decision must not make doctor exit non-zero"
         );
     }
@@ -3626,6 +3652,58 @@ mod tests {
             learning[0].summary.contains("12 of 15")
                 && learning[0].summary.contains("3 withheld on attribution"),
             "withheld on attribution is not excluded by origin: {}",
+            learning[0].summary
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A marked probe's clean reflections at the learn floor are withdrawn
+    /// by `learn` and never consumed, so they must not read as a pool that
+    /// silences starvation (review of #382). Fails with the mark unread,
+    /// which is what it was.
+    #[test]
+    fn a_marked_sessions_reflections_do_not_silence_starvation() {
+        let home = home("learning-starved-marked");
+        let mut lines: Vec<String> = (0..12)
+            .map(|i| reflection_line(&format!("u{i}"), "untrusted", false, "2026-08-13T12:00:00Z"))
+            .collect();
+        for i in 0..crate::learning::LEARN_MIN_REFLECTIONS {
+            let mut v: serde_json::Value = serde_json::from_str(&reflection_line(
+                &format!("probe{i}"),
+                "clean",
+                false,
+                "2026-08-13T12:00:00Z",
+            ))
+            .unwrap();
+            v["session_id"] = "s-probe".into();
+            v["attribution"] = serde_json::json!({"class": "behaviour", "basis": "no_fact"});
+            lines.push(v.to_string());
+        }
+        write_reflections(&home, &lines);
+        // Unmarked, the probe's reflections are a pool at the floor: quiet.
+        assert!(
+            of(&examine(&home, utc(NOW)), "learning").is_empty(),
+            "the fixture's pool must reach the floor, or the case below is vacuous"
+        );
+        crate::session::Marks::append(
+            &home.join("sessions"),
+            &crate::session::Mark {
+                session_id: "s-probe".into(),
+                action: crate::session::MarkAction::Experiment,
+                at: Utc::now(),
+                reason: None,
+            },
+        )
+        .unwrap();
+        let findings = examine(&home, utc(NOW));
+        let learning = of(&findings, "learning");
+        assert_eq!(learning.len(), 1, "{findings:#?}");
+        assert!(
+            learning[0].summary.contains("12 of 12")
+                && learning[0]
+                    .summary
+                    .contains("3 more withdrawn by your experiment marks"),
+            "{}",
             learning[0].summary
         );
         let _ = std::fs::remove_dir_all(&home);
