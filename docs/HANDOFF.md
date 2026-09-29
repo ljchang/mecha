@@ -32,7 +32,9 @@ Open:
   not yet on main:
   - E11 (4 images): the compiled "Exactly N people" pushes a described
     waiter into the background, while counted wording puts him in the scene.
-  - E12 (8 images, 4 arms × 2 seeds) tests the softer wording.
+  - E12 (4 images, 2 arms × 2 seeds): with the softer wording the waiter
+    is still drawn, in the background, and a four-person cast with no one
+    else comes back as four right faces.
   #390 changes the default head-count wording from "Exactly N people" to
   "each of the N appears exactly once", with a total only when `extras` are
   given.
