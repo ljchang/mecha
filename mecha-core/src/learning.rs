@@ -1750,9 +1750,10 @@ impl LearningStore {
     /// the store. Read paths (prompt assembly, and `validate`'s probes) do
     /// not take it: a run start must never block on a learn pass, which is
     /// why every rewrite in this module goes through a temp sibling and
-    /// rename. `validate` takes it only around its ledger appends, never
-    /// across a model call. A *hung* holder is another matter: `reflect` and
-    /// `mail reflect` hold it across provider calls, so a stuck provider
+    /// rename. `validate` and `mail reflect` take it only around their
+    /// appends, never across a model call. A *hung* holder is another
+    /// matter: `reflect` and `learn` hold it across provider calls (their
+    /// passes are read-modify-writes of the whole pool), so a stuck provider
     /// parks every other writer (`forget` included) until it returns.
     pub fn lock(&self) -> Result<StoreLock> {
         Ok(self.flock(true)?.expect("blocking flock returns held"))
