@@ -181,7 +181,8 @@ author, one writer, and nothing gained by a database.
 ## 7. Decisions for the owner
 
 **Ruled 2026-09-29:** the plan in §8 is adopted; D1 as recommended; D3
-adopted. **D2 stays open** — see the caveat under it.
+adopted; D2 as recommended (below): dropped rules are not retired, and
+`mecha rules show` looks them up from the proposal snapshots (#402).
 
 - **D1 — A hand-edited rules file that does not parse.** Keep failing every
   run start (a user rule silently not obeyed is a silently-degrading guard),
@@ -202,7 +203,7 @@ adopted. **D2 stays open** — see the caveat under it.
   way needs a distinct mark, shown to nobody as harmful, not retirement. It
   cannot be called "superseded": `Proposal::status` already uses that word
   for a pending proposal overtaken by `--apply`.
-  **Recommendation (2026-09-29, awaiting the owner):** no change to storage
+  **Ruled 2026-09-29, as recommended:** no change to storage
   or to consolidation. The history is already on disk — every
   consolidation passes through a proposal whose `rules_before`/`rules`
   snapshot the text, and `runs.jsonl` counts it — and nothing in the code
