@@ -208,3 +208,25 @@ fn an_unreadable_record_is_set_aside_not_fatal() {
     assert!(!dir.join(COMMIT_FILE).exists());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A writer that forgot to resume first is refused rather than allowed to
+/// write over the interrupted record, which would lose it with no trace.
+#[test]
+fn a_commit_over_a_pending_record_is_refused() {
+    let (store, dir) = store();
+    with_reflections(&dir, &["x1", "x2"]);
+    store
+        .write_learned_rules("behavior", &[rule("Old.", "r-a")])
+        .unwrap();
+    interrupted(&dir, &change(false), vec![rule("Old.", "r-a")]);
+    let pending = std::fs::read_to_string(dir.join(COMMIT_FILE)).unwrap();
+
+    let err = store.commit_rules(&change(true)).unwrap_err();
+    assert!(err.to_string().contains("interrupted rule change"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join(COMMIT_FILE)).unwrap(),
+        pending
+    );
+    assert_eq!(store.learned_rules("behavior").unwrap().len(), 1);
+    std::fs::remove_dir_all(&dir).ok();
+}
