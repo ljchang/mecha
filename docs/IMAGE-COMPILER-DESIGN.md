@@ -1,6 +1,6 @@
 # Image compiler — design
 
-**2026-09-28. Phase 1 building on `feat/image-library`.** What a character
+**2026-09-28. Phase 1 merged and deployed (#383); phase 2, the web surface, on `feat/image-library-web`.** What a character
 library for `image_generate` is, how a scene compiles against it, and what
 the first build deliberately leaves out. The evidence is
 `IMAGE-COMPILER-RESEARCH.md` (E1–E10 there, cited below by number); this
@@ -25,7 +25,13 @@ Settled; the build follows them and does not re-ask.
 - **The web surface ships second**, minimal: save to library, browse, lock.
 - **The lock is a browsing filter, not an access control.** Generation
   always has access to locked entries. Things made from a locked entry start
-  locked, and any item can be unlocked individually.
+  locked, and any item can be unlocked individually. It hides the whole
+  entry — card, portrait, description — from the library only; pictures
+  already in chats are untouched.
+- **The password is optional** (a later ruling the same day). With none set,
+  the Library tab's lock is a plain show/hide toggle; with one set
+  (`mecha imagelib set-lock-password`), showing locked entries asks for it.
+  Locking works either way.
 - **No likeness rule in the compiler** — declined; the chat model's
   guardrails are the control (research §5 states the cost).
 
@@ -170,7 +176,10 @@ image reproducible, and what phase 2's lineage and "save to library" read.
   and `add-style <name> --text <text> [--locked]` — owner-made, approved.
 - `approve <name>` — prints the entry's text and asks; `--yes` skips the
   question **only for `model_clean`**. An untrusted candidate's text is read
-  before it can ride into prompts.
+  before it can ride into prompts. The web approves in `mecha serve`'s own
+  process against a signature only it can make (§7); there is no CLI flag
+  that stands in for having read the text.
+- `set-lock-password` — the browse lock's password, read without echo.
 - `reject <name>` deletes a candidate outright, with its portrait unless another
   entry names the same blob — nothing was generated from a candidate, and a
   kept portrait would let propose-reject-propose fill the mecha home.
@@ -179,17 +188,65 @@ image reproducible, and what phase 2's lineage and "save to library" read.
 - `lock <name>`, `unlock <name>`, `update <name> …` — an update approves
   nothing it did not rewrite: only new text makes an entry the owner's.
 
-## 7. Not in phase 1
+## 7. Phase 2: the web surface (built 2026-09-28)
 
-- **The web surface** — Save to library, the Library tab, the character page,
-  the "show locked" toggle, candidates in `/queues`. Phase 2, from §1's
-  rulings.
-- **Candidates in `backlog.rs`'s walk** — deferred with the surface, and the
-  cost is stated: until then a waiting candidate is visible only to `mecha
-  imagelib list --all`; `mecha review`, `doctor` and the goal system read
-  zero, and at 50 pending the only signal is the model's refusal text. The
-  walk is the reader that makes the queue visible without a browser, so it
-  lands with phase 2's `/queues` row, not after it (review of #383).
+The **Library** tab (`#library`, panes `characters`, `styles`, `candidates`),
+**Save to library** on the chat image card, and the lock — from §1's rulings.
+The decisions that are this design's rather than the owner's:
+
+- **Reads direct, writes by the CLI — except approval** (`serve/library.rs`).
+  The list and the portraits are read from the store; reject, lock, unlock,
+  remove and save are `mecha imagelib` children, the house rule of every
+  write on the server. Approval is made in the server's process (below).
+- **Writes honour the lock as reads do.** An action on a locked entry needs a
+  live unlock token, and a hidden entry and a missing one answer the same
+  404 before any child runs — without that, `unlock` revealed a hidden entry
+  with no password, and the 200/409 split named which exist (review of #385).
+- **The server does the hiding.** Locked entries are left out of
+  `GET /api/library`, and `GET /api/library/portrait/{blob}` answers 404 for a
+  blob no visible entry names — a page that blurred a thumbnail would still
+  receive its bytes. The list and every locked portrait carry `no-store`; an
+  open portrait is content-addressed and cached `immutable`.
+- **The unlock is a token in the page's memory.** `POST /api/library/unlock`
+  returns a token the page keeps in a variable — no cookie, no storage,
+  which `web/test/no-storage.mjs` forbids — and sends as `?unlock=`; it lapses
+  after 30 idle minutes and a reload drops it. With no password set it is
+  granted for the asking: the lock is then a plain toggle (§1). With one,
+  it is checked against `lock.toml` (argon2id, 0600, set only by
+  `mecha imagelib set-lock-password`, read without echo); five wrong
+  passwords in five minutes answer 429. The file's presence decides which,
+  so a damaged lock file is verified, errors, and never opens as if absent.
+- **Approval is of the text shown, vouched for by the server.** The list
+  carries, per entry, an HMAC of its `shown_digest` (kind, name, version,
+  text) under a key the server draws at start and never stores; the approve
+  button sends it back, and the server approves in process only if the
+  entry as re-read still signs the same (`imagelib::approve_as_shown`
+  re-reads once more at the write). A bare digest was the first cut, passed
+  to `mecha imagelib approve --shown` — but anyone who can read the store can
+  compute one, so any shell could approve a model's proposal unread (review
+  of #385). The flag is gone: the CLI's only door for an untrusted candidate
+  is the interactive question, and the web's is a page only this process
+  could have signed:
+  a client of this server, as every approve route on it is. An
+  owner-authenticated client can fetch a signature and send it back; the gap
+  closed was a shell with no server at all.
+- **Save copies, never points.** A chat's files are served only while the
+  chat is open, so `POST /api/library/save` reads the picture through the
+  jail now, stages it in a 0700 scratch directory, reads the seed from its
+  manifest, and runs `add-character`. The lock box starts checked when the
+  picture's manifest names a locked character (`GET /api/library/source`).
+  Both routes refuse an incognito key.
+- **Candidates are a review-queue row, not a backlog field.** `mecha review
+  queues` (and so the Home cards) gains `image candidates`, opening
+  `#library/candidates`. It is not added to `backlog::Backlog`, which is
+  recorded on every run — a new field there moves what every older row is
+  compared against, the reason `requests_on_owner` sits beside it — and
+  candidates are owed to nobody outside, like the harness's own queues.
+- **Deferred:** a character page's "appears in" (a walk over every chat's
+  manifests), and the crop box (E10: a small gain).
+
+## 8. Not yet built
+
 - **Locations, scene assets, lineage and branching** (draft §6–7, §20).
 - **Tier B checks** (face embedding, detector, VLM) and the repair loop.
 - **Cast plus an edit canvas in one call** — needs a per-reference

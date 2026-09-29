@@ -724,6 +724,34 @@ doing; this code writes how they look. Decisions, each a bug if undone:
 - **Every generation writes a manifest** (`images/<stem>.json`, `create_new`
   like the PNG): the scene as written, the compiled prompt, seed, sizes, the
   model files, and each entry's name, version and portrait hash.
+- **The web door hides on the server** (`serve/library.rs`). Locked entries
+  are absent from `GET /api/library` and their portraits 404 unless the
+  request carries a live unlock token; a blurred thumbnail would still ship
+  its bytes. The token lives in process memory and the page's — never a
+  cookie or storage — and lapses after 30 idle minutes. The password is
+  optional (the owner's ruling): with no `lock.toml` the token is granted for
+  the asking and the lock is a plain toggle; with one, the argon2id hash
+  (0600, set only from the CLI) is checked, five wrong passwords in five
+  minutes answer 429, and a damaged file errors — the file's presence
+  decides, so damage never reads as absence.
+- **The web approves what it showed, and only it can vouch for that.** The
+  list carries an HMAC of each entry's `shown_digest` under a key `serve`
+  draws at start and never stores; approval checks it against the entry as
+  re-read and happens in `serve`'s process — so approval needs a client of
+  this server, as every approve route on it does (an owner-authenticated
+  client can fetch a signature and replay it; the gap closed was a shell with
+  no server at all). A bare digest, passed to a CLI
+  `--shown` flag, was computable by anything that can read the store — a
+  shell could approve a model's proposal unread (review of #385); the flag
+  is gone. Writes honour the lock as reads do: a locked entry is acted on
+  only with a live token, and hidden answers exactly as missing.
+- **Save copies through the jail, and never from incognito.** A chat's
+  files exist to the server only while it is open, so the picture is staged
+  now (0700 scratch directory, removed on drop) and `add-character` runs as a
+  child. Both library routes that read a chat refuse an incognito key.
+- **Candidates are a review-queue row, not a `Backlog` field** — `Backlog` is
+  recorded per run and a new field moves every older row's comparison (the
+  `requests_on_owner` precedent); they are owed to nobody outside.
 
 ## Security model
 
