@@ -273,6 +273,39 @@ pub enum Args {
         #[arg(long)]
         json: bool,
     },
+
+    /// Mark a session as an experiment — a model probe run as ordinary
+    /// chat, not your own work. It leaves every reader that learns from
+    /// your sessions: the run corpus, `reflect`, `distill` and `learn`, and
+    /// its appraisal and scores are withdrawn. The transcript is untouched.
+    /// Only you can mark, at your own terminal; a run's shell is refused.
+    /// `sessions unmark` undoes it.
+    Mark {
+        /// Session id or unique prefix.
+        id: String,
+        /// What the session is. `experiment` is the only kind a mark sets.
+        #[arg(value_enum)]
+        kind: MarkKind,
+        /// Why — recorded with the mark.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Undo `sessions mark`: the session reads as recorded again.
+    Unmark {
+        /// Session id or unique prefix.
+        id: String,
+        /// Why — recorded with the undo.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+}
+
+/// What `sessions mark` can say a session is.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum MarkKind {
+    /// Not the owner's work: a model probe, a trial run by hand.
+    Experiment,
 }
 
 /// What `sessions appraise --appraise` says since row 2a-3 retired the
@@ -437,7 +470,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     }
                     if hidden_experiments > 0 {
                         why.push(format!(
-                            "{hidden_experiments} experiment session(s) hidden (they belong to a trial home)"
+                            "{hidden_experiments} experiment session(s) hidden — trial runs, and any you marked with `sessions mark`; `--kind experiment` shows them"
                         ));
                     }
                     if unkinded > 0 && kind.is_some() {
@@ -479,7 +512,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             }
             if hidden_experiments > 0 {
                 println!(
-                    "({hidden_experiments} experiment session(s) hidden; they belong to a trial home)"
+                    "({hidden_experiments} experiment session(s) hidden — trial runs, and any you marked with `sessions mark`; `--kind experiment` shows them)"
                 );
             }
         }
@@ -543,6 +576,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
         Args::Path { id } => println!("{}", Session::find(&dir, &id)?.display()),
 
+        Args::Mark { id, kind, reason } => {
+            let MarkKind::Experiment = kind;
+            mark(
+                &dir,
+                &id,
+                mecha_core::session::MarkAction::Experiment,
+                reason,
+                owners_hand,
+            )?
+        }
+        Args::Unmark { id, reason } => mark(
+            &dir,
+            &id,
+            mecha_core::session::MarkAction::Unmark,
+            reason,
+            owners_hand,
+        )?,
+
         Args::Stats { days, json } => stats(&dir, days, json)?,
 
         Args::Archive { id } => {
@@ -598,6 +649,178 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Refuse unless the owner is at their own terminal — the closure store's
+/// rule (`closure::attribute_explained`), stricter than a task close: an
+/// interactive run's shell is refused too, since a mark hides a session's
+/// record from every reader, and a run must not hide its own.
+fn owners_hand() -> Result<()> {
+    use mecha_core::closure::{self, Actor};
+    let pids = crate::commands::tasks::live_run_pids().context(
+        "the run markers could not be read, so whether a run is doing this cannot be told; \
+         refused",
+    )?;
+    let (actor, why) = closure::attribute_explained(
+        &closure::posture_from_env(),
+        &closure::ShellReading::from_registry(),
+        closure::run_ancestor(&pids),
+    );
+    if actor != Actor::Owner {
+        anyhow::bail!(
+            "{}; refusing — a mark withdraws a session from every reader, which only the \
+             owner does, at their own terminal",
+            why.unwrap_or_else(|| "this is not the owner's own terminal".into())
+        );
+    }
+    Ok(())
+}
+
+/// `sessions mark` and `unmark`: the owner's check, then one line on the
+/// marks ledger, then what it reached. `check` is the owner's-hand guard,
+/// passed in so a test can run the rest.
+fn mark(
+    dir: &std::path::Path,
+    id: &str,
+    action: mecha_core::session::MarkAction,
+    reason: Option<String>,
+    check: fn() -> Result<()>,
+) -> Result<()> {
+    use mecha_core::session::{Mark, MarkAction, Marks};
+    check()?;
+    let path = Session::find(dir, id)?;
+    // The header's id, which every reader keys on — never the file name,
+    // which a transcript restored under another name would not share, and
+    // a mark keyed on it would match nothing (review of #382).
+    let session_id = Session::peek_meta(&path)
+        .context("the session's header could not be read")?
+        .id;
+    let marks = Marks::load(dir)?;
+    let marked = marks.withdrawn(&session_id);
+    match (action, marked) {
+        (MarkAction::Unmark, false) => {
+            println!("{session_id} is not marked; nothing written");
+            return Ok(());
+        }
+        (MarkAction::Experiment, true) => {
+            println!("{session_id} is already marked as an experiment; nothing written");
+            return Ok(());
+        }
+        _ => {}
+    }
+    Marks::append(
+        dir,
+        &Mark {
+            session_id: session_id.clone(),
+            action,
+            at: chrono::Utc::now(),
+            reason: reason.filter(|r| !r.trim().is_empty()),
+        },
+    )?;
+    if action == MarkAction::Unmark {
+        println!("{session_id} unmarked: it reads as recorded again");
+        return Ok(());
+    }
+    println!(
+        "{session_id} marked as an experiment: out of the run corpus, reflect, distill and \
+         learn, and its appraisal and scores are withdrawn"
+    );
+    // The mark is durable now; what it reached is a report, so a store that
+    // cannot be read says so rather than failing a command that succeeded
+    // (review of #382).
+    if let Err(e) = report_reach(&session_id) {
+        eprintln!("  what the mark reached could not be read: {e:#}");
+    }
+    Ok(())
+}
+
+/// What a fresh mark had already reached, from the stores that hold it.
+fn report_reach(session_id: &str) -> Result<()> {
+    let session_id = session_id.to_string();
+    // What it had already reached, from the stores that hold it — read
+    // only: a read path must not create the store it reports on (review of
+    // #382). No learning store is nothing reached.
+    let Some(learning) = mecha_core::learning::LearningStore::open_existing_default() else {
+        return Ok(());
+    };
+    let reflexions: Vec<_> = learning
+        .reflexions()?
+        .into_iter()
+        .filter(|r| r.session_id == session_id)
+        .collect();
+    // An unprocessed one held by a pending proposal is named apart: the
+    // proposal already carries it, and `proposals accept` refuses it while
+    // the mark stands (review of #382).
+    let pending: Vec<_> = learning
+        .proposals()?
+        .into_iter()
+        .filter(|p| p.status == "pending")
+        .collect();
+    let held_by = |id: &str| {
+        pending
+            .iter()
+            .filter(|p| p.reflexion_ids.iter().any(|r| r == id))
+            .map(|p| p.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let unprocessed: Vec<_> = reflexions.iter().filter(|r| !r.is_processed).collect();
+    let mut holding: Vec<String> = unprocessed.iter().flat_map(|r| held_by(&r.id)).collect();
+    holding.sort();
+    holding.dedup();
+    let free = unprocessed
+        .iter()
+        .filter(|r| held_by(&r.id).is_empty())
+        .count();
+    if free > 0 {
+        println!("  {free} unprocessed reflection(s) from it are withheld from learn");
+    }
+    if !holding.is_empty() {
+        println!(
+            "  pending proposal(s) {} hold reflection(s) from it — accepting is refused while \
+             the mark stands; `mecha proposals supersede --stale` releases the rest unconsumed, \
+             and the next learn pass proposes again from them",
+            holding.join(", ")
+        );
+    }
+    // A processed one already reached `learn`: the mark cannot take back a
+    // rule it minted, so name the live ones for the owner to retire rather
+    // than fall silent, which would read as "nothing here" (review of #382).
+    let ids: std::collections::BTreeSet<&str> = reflexions
+        .iter()
+        .filter(|r| r.is_processed)
+        .map(|r| r.id.as_str())
+        .collect();
+    if !ids.is_empty() {
+        let mut live = Vec::new();
+        for domain in learning.domains() {
+            for rule in learning.learned_rules(&domain)? {
+                if rule.active() && rule.sources.iter().any(|s| ids.contains(s.as_str())) {
+                    live.push(rule.id.clone().unwrap_or_else(|| rule.text.clone()));
+                }
+            }
+        }
+        println!(
+            "  {} reflection(s) from it already reached learn; the mark does not take back a \
+             rule{}",
+            ids.len(),
+            if live.is_empty() {
+                " — none of them is behind a live rule".to_string()
+            } else {
+                format!(
+                    ". Live rule(s) resting on them — retire with `mecha rules retire`: {}",
+                    live.join(", ")
+                )
+            }
+        );
+    }
+    if learning.distilled_sessions()?.contains(&session_id) {
+        println!(
+            "  it was distilled into the graph as episode ({}, {session_id}) — the graph is \
+             a separate store: retract the episode in its review if it should not stand",
+            mecha_core::distill::EPISODE_SOURCE
+        );
+    }
     Ok(())
 }
 
@@ -1461,6 +1684,74 @@ fn predictions_json(
     o
 }
 
+/// The harness's draft forecasts in one line: what was made, what scored,
+/// and everything that did not score named by why — a rate only over
+/// scores, and never a zero for "none yet".
+fn forecasts_line(
+    forecasts: &std::result::Result<Option<mecha_core::forecast::Summary>, String>,
+) -> String {
+    let s = match forecasts {
+        Err(e) => return format!("draft forecasts: could not be read ({e})"),
+        Ok(None) => return "draft forecasts (base rate, readout only): none on record".into(),
+        // "None" only when there is nothing else to say: a ledger of smoke
+        // runs alone can still carry an unforecast draft — a failed write —
+        // or an unreadable outbox (review of #401).
+        Ok(Some(s))
+            if s.forecasts == 0
+                && s.skipped == 0
+                && s.unforecast == 0
+                && s.tests_set_aside == 0
+                && !s.outbox_unreadable =>
+        {
+            return "draft forecasts (base rate, readout only): none on record".into()
+        }
+        Ok(Some(s)) => s,
+    };
+    let mut out = format!(
+        "draft forecasts (base rate, readout only): {} made ({} with no basis yet) · {} scored \
+         — {} hit, {} surprise(s); {}",
+        s.forecasts,
+        s.no_basis,
+        s.scored,
+        s.hits,
+        s.surprises,
+        match s.hit_rate {
+            Some(r) => format!("hit rate {:.0}%", r * 100.0),
+            None => "no rate".into(),
+        }
+    );
+    for (n, what) in [
+        (s.pending, "waiting for the owner or the window"),
+        (s.tests_set_aside, "from smoke runs set aside"),
+        (
+            s.window_unreadable,
+            "unscored: the outbox's patience window could not be read (check the charter)",
+        ),
+        (
+            s.unknown,
+            "unknown (not the owner's by the stamps, or gone)",
+        ),
+        (
+            s.basis_unreadable,
+            "of the no-basis ones made over an unreadable history or charter",
+        ),
+        (
+            s.drafts_unread,
+            "unscored: the outbox could not be read whole, so their drafts were not seen",
+        ),
+        (s.unforecast, "draft(s) staged with no forecast"),
+        (s.skipped, "unreadable forecast line(s)"),
+    ] {
+        if n > 0 {
+            out.push_str(&format!(" · {n} {what}"));
+        }
+    }
+    if s.outbox_unreadable {
+        out.push_str(" · coverage unchecked: the outbox could not be read whole");
+    }
+    out
+}
+
 /// One line for the table: coverage first, and a rate only where there are
 /// points — "no outcome recorded yet" is coverage, never a calibration of
 /// zero.
@@ -1622,6 +1913,24 @@ async fn appraise(
 
     // Anticipation's calibration (row 2b-1), over every draft read.
     let calibration = mecha_core::anticipation::Calibration::of(&drafts);
+    // The harness's draft forecasts (ruling (a) of 2026-09-29): scored here,
+    // at read time, and nowhere else — readout only.
+    let forecasts: std::result::Result<Option<mecha_core::forecast::Summary>, String> =
+        match mecha_core::outbox::OutboxStore::open_existing_default() {
+            None => Ok(None),
+            Some(store) => mecha_core::forecast::load(store.root())
+                .map(|(made, skipped)| {
+                    Some(mecha_core::forecast::summarize(
+                        &made,
+                        skipped,
+                        &drafts,
+                        !outbox_unreadable,
+                        mecha_core::forecast::outbox_patience(),
+                        chrono::Utc::now(),
+                    ))
+                })
+                .map_err(|e| format!("{e:#}")),
+        };
 
     // The three commitment stores (`docs/APPRAISAL-RESEARCH.md` §3.4, §3.6),
     // read once for the whole walk and filtered per session inside
@@ -2099,6 +2408,10 @@ async fn appraise(
                 // outcome can arrive long after its session. Coverage
                 // always; a rate is `null` over no points.
                 "predictions": predictions_json(&calibration, outbox_unreadable),
+                "draft_forecasts": match &forecasts {
+                    Ok(s) => serde_json::to_value(s).unwrap_or_default(),
+                    Err(e) => serde_json::json!({"unreadable": e}),
+                },
                 // Row 2b-2: `null` rate over no scores; `read: false` when
                 // the store could not be read, never an empty summary.
                 "expectations": match &expectations {
@@ -2190,6 +2503,7 @@ async fn appraise(
     println!();
     println!("  {}\n", crate::success_readout::line(&successes));
     println!("  {}\n", predictions_line(&calibration, outbox_unreadable));
+    println!("  {}\n", forecasts_line(&forecasts));
     println!(
         "  {}\n",
         match &expectations {
@@ -3066,6 +3380,35 @@ mod probe_readout_tests {
             "anticipation's predictions: none on record"
         );
         assert!(predictions_line(&empty, true).contains("floor"));
+        // The draft forecasts' line: none is none, and what did not score
+        // is named, never a zero (ruling (a) of 2026-09-29).
+        assert_eq!(
+            super::forecasts_line(&Ok(None)),
+            "draft forecasts (base rate, readout only): none on record"
+        );
+        let some = mecha_core::forecast::Summary {
+            forecasts: 5,
+            no_basis: 1,
+            scored: 2,
+            hits: 1,
+            surprises: 1,
+            pending: 1,
+            unknown: 1,
+            hit_rate: Some(0.5),
+            ..Default::default()
+        };
+        let line = super::forecasts_line(&Ok(Some(some)));
+        assert!(
+            line.contains(
+                "5 made (1 with no basis yet) · 2 scored — 1 hit, 1 surprise(s); hit rate 50%"
+            ),
+            "{line}"
+        );
+        assert!(
+            line.contains("1 waiting") && line.contains("1 unknown"),
+            "{line}"
+        );
+        assert!(super::forecasts_line(&Err("torn".into())).contains("could not be read (torn)"));
         let mut some = Calibration::of(&[]);
         some.total.predictions = 3;
         if let Some(c) = some.by_response.get_mut("verify") {

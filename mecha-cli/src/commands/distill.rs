@@ -117,6 +117,7 @@ pub(crate) fn losing_arms_line(
         (t.not_structural, "separated by no structural validator"),
         (t.inconsistent, "inconsistent with their own arms"),
         (t.no_session, "naming no session"),
+        (t.withdrawn, "from sessions you marked as experiments"),
         (refused, refused_what.as_str()),
         (comparisons_unreadable, "unreadable comparison line(s)"),
         (t.appraisals_unreadable, "unreadable appraisal line(s)"),

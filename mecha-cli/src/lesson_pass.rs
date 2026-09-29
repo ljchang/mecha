@@ -42,6 +42,10 @@ pub struct Tally {
     pub reflections_read: usize,
     /// Torn lines in the reflection store: a floor on every count below.
     pub reflections_skipped: usize,
+    /// Reflections from sessions the owner marked as experiments (ruling
+    /// 4D), set aside before pairing — said, so a pool the marks emptied
+    /// never reads as an empty store.
+    pub reflections_withdrawn: usize,
     /// Appraisals withheld by the clean door, and torn appraisal lines.
     pub appraisals_withheld: usize,
     pub appraisals_skipped: usize,
@@ -87,6 +91,7 @@ fn default_seed() -> u64 {
 struct Read {
     reflections: Vec<Reflexion>,
     reflections_skipped: usize,
+    reflections_withdrawn: usize,
     clean: mecha_core::appraisal_store::CleanRead,
     on_record: std::collections::BTreeSet<String>,
     appraisals_skipped: usize,
@@ -102,6 +107,11 @@ fn read_sources() -> Result<Read> {
             .context("reading the reflections")?,
         None => (Vec::new(), 0),
     };
+    // A session the owner marked as an experiment is no lesson source
+    // (ruling 4D; review of #382). The ledger unread stops the pass.
+    let (reflections, reflections_withdrawn) =
+        mecha_core::session::Marks::load(&mecha_core::session::Session::default_dir()?)?
+            .keep_unmarked(reflections, |r| r.session_id.as_str());
     let (clean, on_record) =
         match mecha_core::appraisal_store::AppraisalStore::open_existing_default() {
             Some(store) => store
@@ -113,6 +123,7 @@ fn read_sources() -> Result<Read> {
     Ok(Read {
         reflections,
         reflections_skipped,
+        reflections_withdrawn,
         clean,
         on_record,
         appraisals_skipped,
@@ -154,6 +165,7 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
     let mut tally = Tally {
         reflections_read: read.reflections.len(),
         reflections_skipped: read.reflections_skipped,
+        reflections_withdrawn: read.reflections_withdrawn,
         appraisals_withheld: read.clean.withheld,
         appraisals_skipped: read.appraisals_skipped,
         ..Tally::default()
@@ -357,6 +369,13 @@ fn print_tally(t: &Tally, seed: u64) {
             )
         } else {
             String::new()
+        } + &if t.reflections_withdrawn > 0 {
+            format!(
+                " (and {} from sessions you marked as experiments, set aside)",
+                t.reflections_withdrawn
+            )
+        } else {
+            String::new()
         },
         t.eligible,
         t.already_measured
@@ -404,6 +423,56 @@ fn rate_words(c: &lesson_source::SourceCounts) -> String {
     }
 }
 
+/// R25's gate in words: a pilot under the ruled minimum, else no worse or
+/// worse by the discordant pairs, with the counts it was decided on.
+pub(crate) fn gate_line(report: &Report) -> String {
+    use lesson_source::{Gate, GATE_MAX_TRAIL, GATE_MIN_DECIDED};
+    let total = report.total();
+    let pairs = format!(
+        "discordant pairs: reflector alone {}, appraisal alone {}",
+        total.reflector_only, total.appraisal_only
+    );
+    // A lead is said as a lead: "trails by 0" would read as a tie.
+    let standing = |trail: usize| {
+        if total.appraisal_only > total.reflector_only {
+            format!(
+                "the appraisal leads by {}",
+                total.appraisal_only - total.reflector_only
+            )
+        } else {
+            format!("the appraisal trails by {trail}")
+        }
+    };
+    match report.gate() {
+        Gate::Floors { skipped } => format!(
+            "gate (2a-4, 2e-2): no verdict — {skipped} unreadable store line(s) make every count \
+             a floor, {} decided at least; {pairs}",
+            total.decided
+        ),
+        Gate::Pilot { decided } => format!(
+            "gate (2a-4, 2e-2): pilot — {decided} decided of the {GATE_MIN_DECIDED} a verdict \
+             needs; {pairs}"
+        ),
+        Gate::NoWorse { trail } => format!(
+            "gate (2a-4, 2e-2): NO WORSE — over {} decided, {}{}; {pairs}",
+            total.decided,
+            standing(trail),
+            // The criterion beside a trail, never beside a lead.
+            if total.appraisal_only > total.reflector_only {
+                String::new()
+            } else {
+                format!(" (at most {GATE_MAX_TRAIL} behind)")
+            }
+        ),
+        Gate::Worse { trail } => format!(
+            "gate (2a-4, 2e-2): WORSE — over {} decided, {} (more than {GATE_MAX_TRAIL}); \
+             {pairs}",
+            total.decided,
+            standing(trail)
+        ),
+    }
+}
+
 /// The report as lines: a header, then per region each source's rate with
 /// its counts beneath it, and the region's other counts.
 pub(crate) fn report_lines(report: &Report) -> Vec<String> {
@@ -434,6 +503,10 @@ pub(crate) fn report_lines(report: &Report) -> Vec<String> {
             report.skipped_lines
         ));
     }
+    // R25's gate for 2a-4 and 2e-2, on the paired verdicts (the owner's
+    // ruling of 2026-09-29): said on every readout, so a result is never
+    // read off the rates by eye.
+    out.push(format!("  {}", gate_line(report)));
     // A region where nothing is eligible has only exclusions to say, and a
     // store of followups would print a block of zeros per region: those are
     // folded into one line below (`--json` keeps every region).
@@ -534,6 +607,10 @@ pub(crate) fn report_json(report: &Report) -> serde_json::Value {
     with_rates(&mut t, &total);
     if let Some(o) = v.as_object_mut() {
         o.insert("total".into(), t);
+        o.insert(
+            "gate".into(),
+            serde_json::to_value(report.gate()).unwrap_or_default(),
+        );
     }
     v
 }
@@ -547,11 +624,63 @@ pub(crate) fn on_record() -> std::result::Result<Option<Report>, String> {
         Some(store) => store.comparisons_counting().map_err(|e| format!("{e:#}"))?,
         None => (Vec::new(), 0),
     };
-    if read.reflections.is_empty() && !rows.iter().any(|c| c.kind == Kind::LessonSource) {
+    let skipped = read.reflections_skipped + read.appraisals_skipped + rows_skipped;
+    // "Nothing on record" only when nothing was torn either: a store with
+    // every line unreadable is floors, not an empty record, and R44 states
+    // no verdict over floors (review of #400).
+    if skipped == 0
+        && read.reflections.is_empty()
+        && !rows.iter().any(|c| c.kind == Kind::LessonSource)
+    {
         return Ok(None);
     }
     let sources = Sources::new(&read.clean, read.on_record.clone());
     let mut report = lesson_source::report(&read.reflections, &sources, &rows, None, None);
-    report.skipped_lines = read.reflections_skipped + read.appraisals_skipped + rows_skipped;
+    report.skipped_lines = skipped;
     Ok(Some(report))
+}
+
+#[cfg(test)]
+mod tests {
+    use mecha_core::lesson_source::{RegionReport, Report};
+
+    /// The gate is said in words on every readout, with the counts it was
+    /// decided on (the owner's ruling of 2026-09-29).
+    #[test]
+    fn the_gate_line_says_pilot_no_worse_or_worse_with_its_pairs() {
+        let at = |decided, reflector_only, appraisal_only, skipped_lines| {
+            super::gate_line(&Report {
+                regions: vec![RegionReport {
+                    decided,
+                    reflector_only,
+                    appraisal_only,
+                    ..RegionReport::default()
+                }],
+                skipped_lines,
+                ..Report::default()
+            })
+        };
+        let pilot = at(3, 1, 0, 0);
+        assert!(
+            pilot.contains("pilot — 3 decided of the 10 a verdict needs"),
+            "{pilot}"
+        );
+        assert!(
+            pilot.contains("reflector alone 1, appraisal alone 0"),
+            "{pilot}"
+        );
+        assert!(at(10, 2, 0, 0).contains("NO WORSE — over 10 decided, the appraisal trails by 2"));
+        assert!(at(10, 3, 0, 0).contains("WORSE — over 10 decided, the appraisal trails by 3"));
+        // A lead is a lead, never "trails by 0".
+        let lead = at(12, 0, 5, 0);
+        assert!(lead.contains("the appraisal leads by 5"), "{lead}");
+        assert!(!lead.contains("trails by 0"), "{lead}");
+        // Floors: no verdict.
+        let floors = at(12, 5, 0, 2);
+        assert!(
+            floors.contains("no verdict — 2 unreadable store line(s)")
+                && floors.contains("12 decided at least"),
+            "{floors}"
+        );
+    }
 }

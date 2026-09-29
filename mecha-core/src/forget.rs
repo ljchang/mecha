@@ -328,6 +328,15 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
             Ok(n)
         }),
     );
+    // The owner's mark on it (ruling 4D): a line in the sessions' marks
+    // ledger, keyed by the session id — a trace like any other.
+    let marks = crate::session::Marks::ledger(&roots.sessions);
+    report.attempt(
+        "session marks",
+        with_lock(marks.parent().expect("the ledger has a directory"), || {
+            filter_jsonl(&marks, |v| field_is(v, "session_id", id))
+        }),
+    );
     report.attempt(
         "closures",
         with_lock(&roots.closures, || {
@@ -441,6 +450,22 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
                 with_lock(&roots.learning, || {
                     filter_lines(&roots.learning.join("mined_outbox.jsonl"), |l| {
                         items.iter().any(|i| i == l.trim())
+                    })
+                }),
+            );
+            // The harness's forecasts of the owner's act on those drafts
+            // (`forecast`), keyed by the session and by the item: a trace
+            // like any other.
+            let forecasts = crate::forecast::ledger(&roots.outbox);
+            report.attempt(
+                "draft forecasts",
+                // Under the lock `forecast::record` appends with.
+                with_lock(forecasts.parent().expect("a directory"), || {
+                    filter_jsonl(&forecasts, |v| {
+                        field_is(v, "session_id", id)
+                            || v["item_id"]
+                                .as_str()
+                                .is_some_and(|x| items.iter().any(|i| i == x))
                     })
                 }),
             );

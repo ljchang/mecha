@@ -310,10 +310,18 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_runs(&home.join("sessions"), charter));
     findings.extend(check_unfinished_forgets(&home.join("sessions")));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
-    findings.extend(check_learning(&home.join("learning"), now));
+    findings.extend(check_learning(
+        &home.join("learning"),
+        &home.join("sessions"),
+        now,
+    ));
     findings.extend(check_rule_commits(&home.join("learning"), now));
     findings.extend(check_rule_files(&home.join("learning")));
-    findings.extend(check_proposal_review(&home.join("learning"), now));
+    findings.extend(check_proposal_review(
+        &home.join("learning"),
+        &home.join("sessions"),
+        now,
+    ));
     // The graph store is `~/.mecha-graph`, a hidden sibling of the mecha home
     // by that store's own convention — resolved relative to `home` so a test
     // (or a relocated home) carries its sibling with it.
@@ -1967,8 +1975,26 @@ const STALE_PROPOSAL_AFTER: chrono::Duration = chrono::Duration::hours(48);
 /// "Nothing went wrong" and "nothing happened" are opposite findings and this
 /// is the second, which is why it is a separate check rather than another
 /// clause in that one.
-fn check_proposal_review(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+fn check_proposal_review(root: &Path, sessions: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let mut out = Vec::new();
+    // `accept`'s second refusal (ruling 4D): a proposal resting on a session
+    // the owner marked can never apply, so it is paper like a moved
+    // baseline — the same predicate, or this check calls it a review
+    // awaiting the owner (review of #382). The marks and reflections are
+    // read, never created; unreadable reads as unmarked here, and the
+    // session store's own check reports the ledger.
+    let withdrawn = crate::session::Marks::load(sessions)
+        .map(|m| m.withdrawn_ids())
+        .unwrap_or_default();
+    let reflexions: Vec<crate::learning::Reflexion> = if withdrawn.is_empty() {
+        Vec::new()
+    } else {
+        std::fs::read_to_string(root.join("reflections.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    };
     let dir = root.join("proposals");
     let Ok(entries) = std::fs::read_dir(&dir) else {
         // No proposals directory is a store that has never staged one, not a
@@ -2011,7 +2037,9 @@ fn check_proposal_review(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         // rule's `enabled`, read as unchanged here and as changed there.
         let unappliable = read_learned_rules(root, &p.domain)
             .map(|live| !same_rules_as_accept(&live, &p.rules_before))
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || !crate::learning::rests_on_marked(&p.reflexion_ids, &reflexions, &withdrawn)
+                .is_empty();
         pending.push((
             p.id.clone(),
             at.with_timezone(&Utc),
@@ -2041,7 +2069,8 @@ fn check_proposal_review(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             severity: Severity::Attention,
             summary: format!(
                 "{} rule proposal(s) can no longer be applied — the live rules moved \
-                 after they were measured",
+                 after they were measured, or they rest on a session you marked as an \
+                 experiment",
                 unappliable.len()
             ),
             detail: format!(
@@ -2133,7 +2162,7 @@ pub fn legacy_learning_git(learning: &Path) -> Option<PathBuf> {
 /// command: accept the rate, or change what evidence the loop can use. That
 /// is why its remedy is the dry-run that shows the classifications, never
 /// anything that loosens the gate.
-fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+fn check_learning(root: &Path, sessions: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let mut out = Vec::new();
     let path = root.join("reflections.jsonl");
     if !path.is_file() {
@@ -2161,6 +2190,16 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     // "nothing went wrong" unless something here says so (found on review).
     let mut withheld = 0usize;
     let mut newest_withheld: Option<DateTime<Utc>> = None;
+    // Unprocessed reflections from a session the owner marked as an
+    // experiment (ruling 4D): `learn` withdraws them (`Admission::Withdrawn`),
+    // so they are never consumed. Counted in `waiting` they would read a
+    // pool at the floor that never moves, which silences this finding the
+    // way the two gates above once did (review of #382). The owner's own
+    // act, like a drop, so not a cause of starvation either: named on the
+    // line, never counted toward it. An unreadable ledger reads as no marks
+    // here; `check_runs` reports it, since the session listing fails on it.
+    let marks = crate::session::Marks::load(sessions).unwrap_or_default();
+    let mut marked = 0usize;
     let newest = |slot: &mut Option<DateTime<Utc>>, at: &str| {
         if let Ok(t) = DateTime::parse_from_rfc3339(at) {
             let t = t.with_timezone(&Utc);
@@ -2184,6 +2223,14 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             // whose finding asks a person to make a decision.
             continue;
         };
+        // `learn`'s order: the owner's drop first, then the mark. Withdrawn
+        // from the total too, as from every reader.
+        if r.dropped_at.is_none() && marks.withdrawn(&r.session_id) {
+            if !r.is_processed {
+                marked += 1;
+            }
+            continue;
+        }
         total += 1;
         // `r.origin` is the miner's decision at write time, and the store is
         // append-only — `r.learnable()` is what `learn.rs` actually admits
@@ -2279,6 +2326,10 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         String::new()
     } else {
         format!(" and {withheld} withheld on attribution")
+    } + &if marked == 0 {
+        String::new()
+    } else {
+        format!(" ({marked} more withdrawn by your experiment marks)")
     };
     // Each half of the detail is said only when its cause is present: with
     // nothing excluded by origin there are no excluded records to read and
@@ -3497,7 +3548,7 @@ mod tests {
 
         // With no pass on record, that is genuine starvation.
         assert!(
-            check_learning(&root, now)
+            check_learning(&root, &root.join("no-sessions"), now)
                 .iter()
                 .any(|f| f.summary.contains("starved")),
             "an unfed learner with no recent pass is starved"
@@ -3510,7 +3561,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            check_learning(&root, now).is_empty(),
+            check_learning(&root, &root.join("no-sessions"), now).is_empty(),
             "a consolidation nine hours ago is the pool being consumed, not starvation"
         );
 
@@ -3521,7 +3572,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            check_learning(&root, now)
+            check_learning(&root, &root.join("no-sessions"), now)
                 .iter()
                 .any(|f| f.summary.contains("starved")),
             "a pass five weeks old explains nothing about today"
@@ -3537,7 +3588,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            check_learning(&root, now)
+            check_learning(&root, &root.join("no-sessions"), now)
                 .iter()
                 .any(|f| f.summary.contains("starved")),
             "a retirement pass consumed no reflections and must not silence starvation"
@@ -3559,7 +3610,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".git")).unwrap();
         assert_eq!(legacy_learning_git(&root), Some(root.join(".git")));
         assert!(
-            check_learning(&root, Utc::now()).is_empty(),
+            check_learning(&root, &root.join("no-sessions"), Utc::now()).is_empty(),
             "a standing decision must not make doctor exit non-zero"
         );
     }
@@ -3601,6 +3652,58 @@ mod tests {
             learning[0].summary.contains("12 of 15")
                 && learning[0].summary.contains("3 withheld on attribution"),
             "withheld on attribution is not excluded by origin: {}",
+            learning[0].summary
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A marked probe's clean reflections at the learn floor are withdrawn
+    /// by `learn` and never consumed, so they must not read as a pool that
+    /// silences starvation (review of #382). Fails with the mark unread,
+    /// which is what it was.
+    #[test]
+    fn a_marked_sessions_reflections_do_not_silence_starvation() {
+        let home = home("learning-starved-marked");
+        let mut lines: Vec<String> = (0..12)
+            .map(|i| reflection_line(&format!("u{i}"), "untrusted", false, "2026-08-13T12:00:00Z"))
+            .collect();
+        for i in 0..crate::learning::LEARN_MIN_REFLECTIONS {
+            let mut v: serde_json::Value = serde_json::from_str(&reflection_line(
+                &format!("probe{i}"),
+                "clean",
+                false,
+                "2026-08-13T12:00:00Z",
+            ))
+            .unwrap();
+            v["session_id"] = "s-probe".into();
+            v["attribution"] = serde_json::json!({"class": "behaviour", "basis": "no_fact"});
+            lines.push(v.to_string());
+        }
+        write_reflections(&home, &lines);
+        // Unmarked, the probe's reflections are a pool at the floor: quiet.
+        assert!(
+            of(&examine(&home, utc(NOW)), "learning").is_empty(),
+            "the fixture's pool must reach the floor, or the case below is vacuous"
+        );
+        crate::session::Marks::append(
+            &home.join("sessions"),
+            &crate::session::Mark {
+                session_id: "s-probe".into(),
+                action: crate::session::MarkAction::Experiment,
+                at: Utc::now(),
+                reason: None,
+            },
+        )
+        .unwrap();
+        let findings = examine(&home, utc(NOW));
+        let learning = of(&findings, "learning");
+        assert_eq!(learning.len(), 1, "{findings:#?}");
+        assert!(
+            learning[0].summary.contains("12 of 12")
+                && learning[0]
+                    .summary
+                    .contains("3 more withdrawn by your experiment marks"),
+            "{}",
             learning[0].summary
         );
         let _ = std::fs::remove_dir_all(&home);
@@ -5431,7 +5534,7 @@ mod proposal_review_tests {
         let root = store_at("stale");
         write_proposal(&root, "p-old", "2026-08-23T12:00:00Z", &[], 10);
 
-        let out = check_proposal_review(&root, now());
+        let out = check_proposal_review(&root, &root.join("no-sessions"), now());
         assert_eq!(out.len(), 1, "one latency finding: {out:?}");
         assert!(out[0].summary.contains("6 day(s)"), "{}", out[0].summary);
         assert!(
@@ -5447,7 +5550,7 @@ mod proposal_review_tests {
     fn a_fresh_proposal_is_not_a_finding() {
         let root = store_at("fresh");
         write_proposal(&root, "p-new", "2026-08-29T03:30:00Z", &[], 4);
-        assert!(check_proposal_review(&root, now()).is_empty());
+        assert!(check_proposal_review(&root, &root.join("no-sessions"), now()).is_empty());
     }
 
     /// A proposal measured against rules that have since moved is not a
@@ -5460,7 +5563,7 @@ mod proposal_review_tests {
         // a non-empty baseline can no longer be applied.
         write_proposal(&root, "p-stale", "2026-08-29T03:30:00Z", &["was live"], 7);
 
-        let out = check_proposal_review(&root, now());
+        let out = check_proposal_review(&root, &root.join("no-sessions"), now());
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(out[0].summary.contains("can no longer be applied"));
         assert!(out[0].detail.contains("p-stale"));
@@ -5471,12 +5574,53 @@ mod proposal_review_tests {
         assert!(!argv.contains(&"reject".to_string()), "{argv:?}");
     }
 
+    /// `accept`'s other refusal: a proposal whose baseline still matches but
+    /// which rests on a session the owner marked as an experiment can never
+    /// apply, so it is paper too, freed by the same verb — never reported as
+    /// a review awaiting the owner (review of #382).
+    #[test]
+    fn a_proposal_resting_on_a_marked_session_is_unappliable() {
+        let root = store_at("marked");
+        write_proposal(&root, "p-marked", "2026-08-29T03:30:00Z", &[], 2);
+        std::fs::write(
+            root.join("reflections.jsonl"),
+            serde_json::json!({
+                "id": "r-0", "domain": "behavior", "session_id": "s-probe",
+                "trigger": "steer", "context": "c", "intervention": "i",
+                "reflexion_text": "t", "error_type": null, "confidence": null,
+                "created_at": "2026-08-28T00:00:00Z", "origin": "clean"
+            })
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+        let sessions = root.join("sessions");
+        // Unmarked, it is an ordinary, fresh proposal: nothing to say.
+        assert!(check_proposal_review(&root, &sessions, now()).is_empty());
+        crate::session::Marks::append(
+            &sessions,
+            &crate::session::Mark {
+                session_id: "s-probe".into(),
+                action: crate::session::MarkAction::Experiment,
+                at: Utc::now(),
+                reason: None,
+            },
+        )
+        .unwrap();
+        let out = check_proposal_review(&root, &sessions, now());
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].summary.contains("can no longer be applied"));
+        assert!(out[0].detail.contains("p-marked"));
+        let argv = &out[0].remedy.as_ref().unwrap().argv;
+        assert!(argv.contains(&"supersede".to_string()), "{argv:?}");
+    }
+
     /// No proposals directory is a young install, not a fault.
     #[test]
     fn a_store_that_has_never_staged_one_is_silent() {
         let dir = std::env::temp_dir().join("mecha-doctor-proposals-absent");
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(check_proposal_review(&dir, now()).is_empty());
+        assert!(check_proposal_review(&dir, &dir.join("no-sessions"), now()).is_empty());
     }
 
     #[test]
