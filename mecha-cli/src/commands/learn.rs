@@ -2,9 +2,10 @@
 //!
 //! Unprocessed reflections per domain go in; a rewritten learned rule set
 //! comes out, within the budget. The user's own rules are immutable context.
-//! Every pass appends a `LeapRun` audit record and commits the store, so
-//! `git log` in `~/.mecha/learning` reads as the system's learning history
-//! and `git revert` undoes a pass that made things worse.
+//! Every pass appends a `LeapRun` audit record to `runs.jsonl` and a line to
+//! `passes.jsonl`, so those two files read as the system's learning history;
+//! a rule a pass should not have kept is undone per rule by `mecha rules
+//! retire` (which `restore` reverses), never by rewinding the store.
 //!
 //! `--propose` is the hyperagent gate: instead of writing `learned.toml`,
 //! the pass measures its candidate by counterfactual replay (candidate vs
@@ -12,7 +13,7 @@
 //! and stages the result as a proposal for `mecha proposals` to review. A
 //! candidate that *regresses* a probe is rejected by the gate before any
 //! human sees it. Unattended learning — the nightly timer — should always
-//! propose; direct `mecha learn` at a terminal remains apply-with-git-undo.
+//! propose; direct `mecha learn` at a terminal remains apply-with-retire-undo.
 
 use crate::{probe, setup, GlobalOpts};
 use anyhow::{Context, Result};
@@ -97,7 +98,7 @@ pub struct Args {
 /// What the gate decided about a candidate, and whether it lands marked.
 #[derive(Debug, PartialEq)]
 pub struct Disposition {
-    /// Recorded on the proposal; also what `git log` in the store reads as.
+    /// Recorded on the proposal; also what the store's `passes.jsonl` reads as.
     pub status: &'static str,
     /// Applied without the gate being able to grade it.
     pub probation: bool,
@@ -921,7 +922,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 }
             }
 
-            store.commit(&format!(
+            store.log_pass(&format!(
                 "{}[{domain}]: {} rule(s) from {} reflection(s), {status}",
                 if applied { "learn" } else { "propose" },
                 proposal.rules.len(),
@@ -956,7 +957,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             println!("  - {}", r.text);
         }
 
-        store.commit(&format!(
+        store.log_pass(&format!(
             "learn[{domain}]: {} reflection(s), {} → {} rule(s)",
             reflexions.len(),
             run.rules_before,

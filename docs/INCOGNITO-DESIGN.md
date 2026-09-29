@@ -108,8 +108,10 @@ yet on `main` when this was written, so §3.4's ComfyUI row, §5.1's
 
 ### 3.2 Derived later from session files
 
-`reflect` (writes `learning/reflections.jsonl` — a **git repository**, so a
-deleted line survives in history), `distill` (sends the transcript to the model
+`reflect` (writes `learning/reflections.jsonl` — a **git repository** until
+2026-09-28, when the store stopped using git; a store created before then keeps
+its `.git`, and a deleted line survives in that history until it is removed),
+`distill` (sends the transcript to the model
 and **writes an episode into the knowledge graph**), `learn`, `validate`,
 `gossip`, `runlog::Corpus`, `harness_probe::draw_episodes`,
 `planning::examples` (copies plan text from recent sessions into later runs),
@@ -393,7 +395,11 @@ conversation has no `Session` to record into, and a closed key comes back
   (`voice-core.js`'s `refusesAnswer`) sets no remote description, so lets no
   media flow, without it — so a `mecha serve` too old to ask is refused too.
   The worker's `OfferSilence` holds the silence while the runner handles the
-  offer, whose error path logs the whole request at DEBUG. Both sides call a
+  offer, whose error path logs the whole request at DEBUG. An answered offer
+  whose browser never connects ends at `CONNECT_DEADLINE_SECS` (90 s) rather
+  than the fifteen-minute idle timeout, so the silence it holds is released
+  with it (measured on the deploy, 2026-09-28: a synthetic offer held it for
+  the full fifteen minutes). Both sides call a
   name incognito on its prefix, before validating it (`offers_incognito`):
   serve refuses a prefixed name `valid_key` rejects, and the worker holds the
   silence for one and ends the call rather than answer it in the facade's

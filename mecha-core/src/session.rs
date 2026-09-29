@@ -1569,6 +1569,17 @@ impl Session {
 
     pub fn append(&self, record: &Record) -> Result<()> {
         use std::io::Write;
+        // **A transcript the owner deleted stays deleted.** Only the header
+        // may create the file; any later record finding it gone means a
+        // forget (`crate::forget`) ran while this writer still held the
+        // session, and `create(true)` would quietly start a headless copy of
+        // the rest of the conversation — invisible to every listing, and
+        // exactly the trace the owner asked to be rid of.
+        anyhow::ensure!(
+            matches!(record, Record::Meta(_)) || self.path.exists(),
+            "session {} was deleted; nothing more is recorded for it",
+            self.meta.id
+        );
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
