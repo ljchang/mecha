@@ -404,6 +404,32 @@ fn rate_words(c: &lesson_source::SourceCounts) -> String {
     }
 }
 
+/// R25's gate in words: a pilot under the ruled minimum, else no worse or
+/// worse by the discordant pairs, with the counts it was decided on.
+pub(crate) fn gate_line(total: &lesson_source::RegionReport) -> String {
+    use lesson_source::{Gate, GATE_MAX_TRAIL, GATE_MIN_DECIDED};
+    let pairs = format!(
+        "discordant pairs: reflector alone {}, appraisal alone {}",
+        total.reflector_only, total.appraisal_only
+    );
+    match total.gate() {
+        Gate::Pilot { decided } => format!(
+            "gate (2a-4, 2e-2): pilot — {decided} decided of the {GATE_MIN_DECIDED} a verdict \
+             needs; {pairs}"
+        ),
+        Gate::NoWorse { trail } => format!(
+            "gate (2a-4, 2e-2): NO WORSE — over {} decided, the appraisal trails by {trail} \
+             (at most {GATE_MAX_TRAIL}); {pairs}",
+            total.decided
+        ),
+        Gate::Worse { trail } => format!(
+            "gate (2a-4, 2e-2): WORSE — over {} decided, the appraisal trails by {trail} \
+             (more than {GATE_MAX_TRAIL}); {pairs}",
+            total.decided
+        ),
+    }
+}
+
 /// The report as lines: a header, then per region each source's rate with
 /// its counts beneath it, and the region's other counts.
 pub(crate) fn report_lines(report: &Report) -> Vec<String> {
@@ -434,6 +460,10 @@ pub(crate) fn report_lines(report: &Report) -> Vec<String> {
             report.skipped_lines
         ));
     }
+    // R25's gate for 2a-4 and 2e-2, on the paired verdicts (the owner's
+    // ruling of 2026-09-29): said on every readout, so a result is never
+    // read off the rates by eye.
+    out.push(format!("  {}", gate_line(&total)));
     // A region where nothing is eligible has only exclusions to say, and a
     // store of followups would print a block of zeros per region: those are
     // folded into one line below (`--json` keeps every region).
@@ -534,6 +564,10 @@ pub(crate) fn report_json(report: &Report) -> serde_json::Value {
     with_rates(&mut t, &total);
     if let Some(o) = v.as_object_mut() {
         o.insert("total".into(), t);
+        o.insert(
+            "gate".into(),
+            serde_json::to_value(total.gate()).unwrap_or_default(),
+        );
     }
     v
 }
@@ -554,4 +588,34 @@ pub(crate) fn on_record() -> std::result::Result<Option<Report>, String> {
     let mut report = lesson_source::report(&read.reflections, &sources, &rows, None, None);
     report.skipped_lines = read.reflections_skipped + read.appraisals_skipped + rows_skipped;
     Ok(Some(report))
+}
+
+#[cfg(test)]
+mod tests {
+    use mecha_core::lesson_source::RegionReport;
+
+    /// The gate is said in words on every readout, with the counts it was
+    /// decided on (the owner's ruling of 2026-09-29).
+    #[test]
+    fn the_gate_line_says_pilot_no_worse_or_worse_with_its_pairs() {
+        let at = |decided, reflector_only, appraisal_only| {
+            super::gate_line(&RegionReport {
+                decided,
+                reflector_only,
+                appraisal_only,
+                ..RegionReport::default()
+            })
+        };
+        let pilot = at(3, 1, 0);
+        assert!(
+            pilot.contains("pilot — 3 decided of the 10 a verdict needs"),
+            "{pilot}"
+        );
+        assert!(
+            pilot.contains("reflector alone 1, appraisal alone 0"),
+            "{pilot}"
+        );
+        assert!(at(10, 2, 0).contains("NO WORSE — over 10 decided, the appraisal trails by 2"));
+        assert!(at(10, 3, 0).contains("WORSE — over 10 decided, the appraisal trails by 3"));
+    }
 }
