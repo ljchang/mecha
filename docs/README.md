@@ -57,6 +57,7 @@ something shipped.
 | [`HARNESS-RESEARCH.md`](HARNESS-RESEARCH.md) | Where agent performance actually comes from — planning, the loop, or the tools |
 | [`IMAGE-COMPILER-RESEARCH.md`](IMAGE-COMPILER-RESEARCH.md) | How a library of characters and scenes compiles a narrative into consistent generations, and what local runs measured |
 | [`LEARNING-LOOP-RESEARCH.md`](LEARNING-LOOP-RESEARCH.md) | How the learning loop runs without the owner, what flowmail's two loops actually do, and how anyone would know it is improving |
+| [`LEARNING-STORE-RESEARCH.md`](LEARNING-STORE-RESEARCH.md) | Where the learning store should live — files, a mecha-owned database, or the graph — and when that changes |
 | `MAIL-CORPUS-RESEARCH.md` | What a year of this mailbox actually contains. **Gitignored** |
 | [`MAIL-UX-RESEARCH.md`](MAIL-UX-RESEARCH.md) | What the field has converged on for agent-driven email |
 | [`MEMORY-RESEARCH.md`](MEMORY-RESEARCH.md) | Whether agent memory should accumulate or be curated, and what the evidence says |
@@ -90,7 +91,6 @@ something shipped.
 | [`IMAGE-COMPILER-DESIGN.md`](IMAGE-COMPILER-DESIGN.md) | The image library and scene compiler: the owner's rulings, the store, the compile rules, and what phase 1 leaves out |
 | [`INCOGNITO-DESIGN.md`](INCOGNITO-DESIGN.md) | A web chat that leaves no trace once closed: the owner's rulings, the audit of every place a chat writes today, and what closes each. §8 is how "no trace" is measured |
 | [`LEARNING-AUTONOMY-DESIGN.md`](LEARNING-AUTONOMY-DESIGN.md) | Why learning is ungated per domain, what replaces the gate, and the cost in `behavior`. Read §3 before loosening anything |
-| [`LEARNING-STORE-RESEARCH.md`](LEARNING-STORE-RESEARCH.md) | Where the learning store should live — files, a mecha-owned database, or the graph — and when that changes |
 | [`MAIL-UX-DESIGN.md`](MAIL-UX-DESIGN.md) | Mail as a surface you work: the phases, and what each settled |
 | [`NOTES-GRAPH-DESIGN.md`](NOTES-GRAPH-DESIGN.md) | One web surface over the graph: capture, find, edit — the consolidation of the notes and graph tabs |
 | [`MEETING-POLL-UX-DESIGN.md`](MEETING-POLL-UX-DESIGN.md) | The meeting poll from the owner's chair: one call, one card, a deterministic sweep, and the stated decision policy. §6 holds the rulings the build waits on |
