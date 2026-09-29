@@ -174,6 +174,54 @@ beside `start-moe-mtp.sh`; and a race between spawning a shell and
 registering it (`shell_registry::ShellRegistry`), seen as a flaky test and
 not fixed in product code.
 
+**2026-09-28/29 — the appraisal audit, the owner's rulings on it, and five
+appraisal PRs open, all reviewed to the bar.** An audit read the live store:
+- 7 text appraisals, every one predicting `no_act`, and 4 scores, all hits.
+  The readout said "hit rate 100%" over outputs that offered nothing to act
+  on.
+- Valence stood at +1.0 / −93.0.
+- 2e-1 had 0 eligible interventions in 35 regions. Every clean steer and
+  denial came from a session distilled before the appraisal leg existed,
+  and distill never revisits a session.
+
+The rulings, in `~/.claude` memory and in each PR's body:
+- **1B:** don't ask for a forced prediction.
+- **4B/4D:** probes run in incognito, and a verb marks a session an
+  experiment.
+- **2A→C:** the stamp rule applies to edits and rejects too, going forward
+  only.
+- **3D→D:** backfill-appraise the stranded sessions first.
+- **In-run prediction → (a):** before a consequential act.
+
+The PRs, none merged at this writing:
+
+| PR | What |
+|---|---|
+| #377 | `ScoreSummary::forced` / `forced_unknown`, and a hit rate only over predictions that could have missed. Merge first, **without** `--delete-branch`. |
+| #378 | 1B, stacked on #377: `withholds_expectation`, the `expected_act_withheld` stamp, and `not_asked`. Retarget it to `main` after #377. |
+| #382 | 4D: `mecha sessions mark <id> experiment` / `unmark`, over a ledger at `<sessions>/marks/marks.jsonl`. It withdraws the session from listing admission, every appraisal-store door, `learn`, `validate` and `sessions compare`. `proposals accept` refuses a proposal resting on a marked session, and the doctor and `supersede --stale` treat that proposal as unappliable. Only the owner may mark. |
+| #387 | 2A→C: `OutboxItem::drafting_verdict_signs`. |
+| #388 | D: `mecha distill --backfill-appraisals`. It chooses sessions by 2e-1's own predicate (`lesson_source::backfill_targets`), pushes and re-marks nothing, writes rows stamped `backfilled` with no prediction, and dates and ranks past appraisals by the session's end everywhere. |
+
+**Owed after merge**, in this order:
+1. Install through the `update` skill.
+2. Run `mecha distill --backfill-appraisals --dry-run` (9 sessions on
+   2026-09-28, before two probe sessions were deleted), then run it for
+   real. It takes about 15 minutes of local-model seats.
+3. Read `mecha learn --compare-sources`.
+
+**Awaiting the owner's rulings:**
+- For (a): the base-rate forecaster first, which unparks X3, with a model
+  forecaster later as a measured arm?
+- Do forecast surprises go to a readout only, or also to replay priority?
+- Is a draft still pending when outbox patience ends `no_act`?
+- What does 2e-1's "no worse" mean? The proposal on the table: at least 10
+  decided, trailing by at most 2 discordant pairs, and a pilot below 10.
+
+The scoping behind (a): none of the 85 outbox items carried an owner stamp
+on 2026-09-28, so there is no stamped history to forecast from yet.
+Tasks are deferred to v2.
+
 **2026-09-26 — appraisal wiring: phase 1 and every phase-2 row but 2a-4,
 2e-2, 2e-4b, 2e-4c and 2e-5's appraisal-weighted half are merged and
 installed, with 3a and 3a-3.**
@@ -186,7 +234,8 @@ What each row built is in HISTORY: phase 1, 2a-1 to 2a-3, 2b-1, 2c-1,
 was last installed at 22:40Z from `b3135e1b`, `main`'s tip, and carries
 all of it (*Machine state, dated* below). Nothing that measures phase 2 has
 run yet: #333, which puts `sessions compare` and `learn --compare-sources`
-in the nightly, is open and held, and `~/.mecha/comparisons/` is empty.
+in the nightly, was then open and held. It merged 2026-09-27 (`f62e345a`,
+HISTORY); the 2026-09-28/29 entry above has what followed.
 What is open, the follow-ups owed, the minors banked for the owner and the
 `CLAUDE.md` drift are at the top of *The goal system* below. Two other
 lanes' work of the same day is theirs to record: model switching and the
@@ -4235,9 +4284,10 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
-**2026-09-26 — appraisal wiring: phase 1, 3a, 3a-3 and every phase-2 row
-but 2a-4, 2e-2, 2e-4b, 2e-4c and 2e-5's appraisal-weighted half are merged
-and installed.** The authority is `APPRAISAL-WIRING-DESIGN.md`: §3 holds
+**2026-09-26/27 — appraisal wiring: phase 1, 3a, 3a-2, 3a-3 and every
+phase-2 row but 2a-4, 2e-2, 2e-4c and 2e-5's appraisal-weighted half are
+merged and installed** (2e-4b, 3a-2 and #333 on 2026-09-27, HISTORY). The
+audit of 2026-09-28/29 and its five open PRs are at the top of this file. The authority is `APPRAISAL-WIRING-DESIGN.md`: §3 holds
 the plan as pull requests with their order, and §6 the rulings: R30–R37
 of 2026-09-25, R38 of 2026-09-25/26 and R39–R41 of 2026-09-26. What each
 row built is in HISTORY under 2026-09-24/25 and 2026-09-25/26. Every
@@ -4248,58 +4298,28 @@ S3 and O4 carry none, so what 1a, 1b, 1d and 1g deferred is in their PR
 bodies (#292, #293 and #294, #299, #298), save 1d's graph channel below.
 What is open:
 
-- **#333 is open and held, and it is what makes phase 2 measure
-  anything.** It adds `mecha sessions compare` (2d-1) and `mecha learn
-  --compare-sources` (2e-1) to `scripts/ruminate.sh`, and a
-  `Tally::owner_bound` count to the Rust. Until it lands, neither pass runs
-  unattended. `grep -c compare scripts/ruminate.sh` on `main` at
-  `b3135e1b` prints 0, and `~/.mecha/comparisons/` exists but is empty
-  (`ls -A ~/.mecha/comparisons | wc -l` prints 0, 2026-09-26 22:50Z). So
-  **2e-1's real-session measurement, R25's gate for 2a-4 and the gate for
-  2e-2, has never run**, and 2d-3 has no comparison to teach from.
-  - *The owner's rulings of 2026-09-26 on #333*, recorded in the design's
-    O1 and L2 paragraphs on its branch and landing with it. The nightly
-    never drives an owner-bound check point: such a point is posed as an
-    artifact probe, which executes its task, so the pass counts it as
-    `owner_bound`, apart from `unavailable`. `sessions compare` runs
-    before `learn`, for `validate`'s reason. Running before `learn` is
-    **not a hold-out**: live consolidation (`learn-live.sh`) has usually
-    learned from a point's steer within minutes, and the draw has no
-    unprocessed filter. The ruling corrects that claim and keeps the order.
-    #333's own description still says "keeps them held out"; the branch's
-    script and design doc say otherwise.
-  - *Held until `:8080` serves the production model again.* At 22:50Z
-    `curl -s localhost:8080/props` answered `model_alias`
-    `qwen3.6-35b-a3b-uncensored`, the qwen3.6 comparison arm, not the
-    `qwen3.6-35b-a3b` the incognito check read at 01:15Z. Points driven
-    now would write that model's verdicts into the real comparison store.
-    Production returns with the model-switching lane's router install,
-    after the 03:30Z and 05:31Z passes (the times `mecha-ruminate.timer` and
-    `mecha-mail-classify.timer` fire), and then the owner's go.
-  - *Then, in order:* merge (the owner's call), install `mecha` from the
-    merged `main` (`owner_bound` is Rust), fast-forward the shared
-    `~/Github/mecha` checkout (the timer runs the script from there), and
-    run the owed one-point smoke from `mecha work path ruminate`:
-    `MECHA_SESSION_KIND=test mecha sessions compare -p local --points 1`.
-    Then run `scripts/retirement-drill.sh`, which ARCHITECTURE's learning
-    section asks for after touching the retirement scan, as #338 did. It
-    drives real probe passes against the live model, so it waits for
-    `:8080` too.
-- **In flight, other agents: row 2e-4b** (planning success examples and
-  contrast evidence, branch `feat/planning-successes-2e-4b`) **and row
-  3a-2** (a re-delegated task's previous attempts, branch
-  `feat/brief-previous-attempts-3a-2`). Both branches are local with no PR
-  yet, and neither is on `main`: `planning.rs` reads no success, and
-  nothing names a previous attempt.
+- **#333 merged 2026-09-27 (`f62e345a`), so the nightly now runs `mecha
+  sessions compare` (2d-1) and `mecha learn --compare-sources` (2e-1)**:
+  `grep -c compare scripts/ruminate.sh` prints 9 at `2847fbfe`, and
+  `~/.mecha/comparisons/comparisons.jsonl` held 2 rows on 2026-09-29. **2e-1
+  has decided nothing yet: 0 eligible in 35 regions.** Every clean steer and
+  denial came from a session distilled before the appraisal leg. #388's
+  backfill is the fix (the entry at the top). Unverified from here: whether
+  the one-point smoke (`MECHA_SESSION_KIND=test mecha sessions compare -p
+  local --points 1`) and `scripts/retirement-drill.sh`, owed after #333 and
+  #338, have been run.
+- **The two 2e-4b levers' measured runs are owed.** `success_examples`
+  (#342) and `contrast_evidence` (#345) ship off, like `past_appraisals`.
 - **Still gated or deferred.** 2a-4 (the reflector folded in) and 2e-2
   (`learn` fed clean appraisals) wait on 2e-1's measurement above. 2e-4c
   (a staged skill draft) is deferred by R40 until the success set has been
   read on real data. 2e-5's appraisal-weighted half waits behind R20. Serving
   2e-4a's exemplars to drafting runs is a lever not yet built, and when it
   lands it arms `private_data` (the L2 entry).
-- **What phase 2 has on disk so far.** At 22:50Z `~/.mecha/appraisals/`
-  held `appraisals.jsonl` (4 lines, `grep -c .`) and neither
-  `scores.jsonl` (2b-2) nor `counterfactuals.jsonl` (2d-3). Read `sessions
+- **What phase 2 has on disk so far.** On 2026-09-29 `~/.mecha/appraisals/`
+  held `appraisals.jsonl` (6 lines, after the owner deleted two probe
+  sessions) and `scores.jsonl` (3), and no `counterfactuals.jsonl` (2d-3).
+  Every appraisal predicts `no_act`, which is #377's and #378's subject. Read `sessions
   appraise` and `mecha sessions successes` after a few nights before
   judging any phase-2 row on real data.
 - **2c-2's measured run is owed** (#320). `Lever::PastAppraisals` ships
@@ -4316,20 +4336,14 @@ What is open:
   - R35's arming and 3a-3's fold-as-append are built (#316, HISTORY), so
     turning the lever on is now the experiment arms' measurement (§1
     decision 7), not an unbuilt safeguard.
-  - **3a-2 (M5), a re-delegated task's previous attempts, is in flight**
-    (above). No record lists them, and a reopen's reason needs an
-    authorship rule first (the design's M5 entry).
-- **2d-1's pass is not in the nightly job, and #333 is where it lands
-  (still open; see its item above).** `mecha sessions compare` runs only by
-  hand on `main` (`grep -c compare scripts/ruminate.sh` prints 0 at
-  `b3135e1b`). Owner-bound check points run a whole artifact repeat per
-  arm, and `ProbePrep::unrunnable_under` refuses one unless hooks, the
-  outbox and messages are off (`--no-hooks`, `--no-outbox`, messages off),
-  so under the default config they never run. That is the same gap as
-  `mecha validate`'s mismatch probes. #333 does not close the gap. It
-  counts those points as `owner_bound` instead of `unavailable`, by the
-  owner's ruling. Remove this item once #333 is merged and the shared
-  checkout carries it.
+  - **3a-2 (M5) is merged** (#344, `brief::attempts`, R42: the brief
+    quotes only the owner). The lever itself is still the arms'
+    measurement.
+- **Owner-bound check points still never run unattended.**
+  `ProbePrep::unrunnable_under` refuses one unless hooks, the outbox and
+  messages are off, so the nightly `sessions compare` counts them
+  `owner_bound` (#333) and drives none. This is the same gap as `mecha
+  validate`'s mismatch probes, and it is still open.
 - **2a-2's seat time: watch the tail.** Measured on 8 copied real sessions
   (#314): follow-ups of 19.8 to 137.2 s, median about 64 s, against 272 s
   for all 8 episode calls, so distilling a session holds a seat about three
