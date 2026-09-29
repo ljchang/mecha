@@ -615,12 +615,16 @@ conversation, so the capabilities do not change. Three rules:
   correlated) goes in the manifest; at `NEAR_COPY_LAYOUT` (0.78) the result
   says the layout did not change and how to retry: edit the original with the
   prompt rewritten as an instruction, or redraw from the library by the names
-  in the original's manifest. It
-  gives the names only, each checked against the library, since the manifest
-  is a workspace file. A recolour also keeps the layout (it scored 0.78–1.00
-  where edits that stood someone up scored ≤ 0.76), which is why the tool reports rather than
-  retries: only the model knows which it asked for, and a blind retry would
-  cost every recolour a minute. For the same reason neither notice says the
+  in the original's manifest. It gives the names only, each checked against
+  the library, since the manifest is a workspace file. The threshold was
+  measured on one scene and on same-shape edits only: every copy scored 0.80
+  or more but one kneeling partial (0.754), and every edit that stood someone
+  up scored 0.761 or less. The 0.761 was a small standing figure that 0.75
+  flagged, which is why the line sits at 0.78. An edit that passes a `size`
+  unlike its reference's squashes both thumbnails and reads as changed, which
+  fails in the safe direction. A recolour also keeps the layout (0.78–1.00),
+  which is why the tool reports rather than retries: only the model knows
+  which it asked for, and a blind retry would cost every recolour a minute. For the same reason neither notice says the
   edit failed: each leads with "expected after a colour or detail change",
   and the result stays the next thing to edit. A near-copy records
   `same_layout_as`, so a retry that edits the near-copy is pointed back at
