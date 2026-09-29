@@ -990,11 +990,14 @@ impl OutboxStore {
         // basis, never a guess from part of it.
         if let Some(window) = self.forecasting {
             if crate::forecast::forecasts(&item) {
-                let (history, patience) = match self.items_counting() {
-                    Ok((h, 0)) => (h, window.patience()),
-                    _ => (Vec::new(), None),
+                let history = match self.items_counting() {
+                    Ok((h, 0)) => Some(h),
+                    _ => None,
                 };
-                if let Err(e) = crate::forecast::record(&self.root, &item, &history, patience) {
+                let patience = window.patience();
+                if let Err(e) =
+                    crate::forecast::record(&self.root, &item, history.as_deref(), patience)
+                {
                     tracing::warn!("no forecast recorded for draft {}: {e:#}", item.id);
                 }
             }

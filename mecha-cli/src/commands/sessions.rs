@@ -1482,6 +1482,10 @@ fn forecasts_line(
             s.unknown,
             "unknown (not the owner's by the stamps, gone, or the window unreadable)",
         ),
+        (
+            s.basis_unreadable,
+            "of the no-basis ones made over an unreadable history or charter",
+        ),
         (s.unforecast, "draft(s) staged with no forecast"),
         (s.skipped, "unreadable forecast line(s)"),
     ] {

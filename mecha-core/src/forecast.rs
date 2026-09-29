@@ -79,6 +79,11 @@ pub struct Forecast {
     /// How many of the owner's acts on similar drafts it rests on.
     #[serde(default)]
     pub basis: usize,
+    /// No basis because the history or the window could not be read — not
+    /// because none has accumulated. Kept apart on the record, since the two
+    /// are indistinguishable afterwards otherwise (review of #401).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub basis_unreadable: bool,
     #[serde(default)]
     pub source: Source,
 }
@@ -244,16 +249,19 @@ pub fn outbox_patience() -> Option<chrono::Duration> {
 pub fn record(
     outbox_root: &Path,
     item: &OutboxItem,
-    history: &[OutboxItem],
+    history: Option<&[OutboxItem]>,
     patience: Option<chrono::Duration>,
 ) -> Result<Option<Forecast>> {
     if !forecasts(item) {
         return Ok(None);
     }
     let now = at(&item.created_at).unwrap_or_else(Utc::now);
-    let (expected, basis) = match patience {
-        Some(p) => base_rate(&item.tool, armed(item), history, p, now),
-        None => (None, 0),
+    let (expected, basis, basis_unreadable) = match (history, patience) {
+        (Some(h), Some(p)) => {
+            let (e, b) = base_rate(&item.tool, armed(item), h, p, now);
+            (e, b, false)
+        }
+        _ => (None, 0, true),
     };
     let f = Forecast {
         item_id: item.id.clone(),
@@ -263,6 +271,7 @@ pub fn record(
         armed: armed(item),
         expected,
         basis,
+        basis_unreadable,
         source: Source::BaseRate,
     };
     let path = ledger(outbox_root);
@@ -307,6 +316,9 @@ pub struct Summary {
     pub forecasts: usize,
     /// Made with no stamped history on a similar draft: nothing to score.
     pub no_basis: usize,
+    /// Of those, made when the history or the window could not be read —
+    /// a finding, not "none yet".
+    pub basis_unreadable: usize,
     pub scored: usize,
     pub hits: usize,
     pub surprises: usize,
@@ -342,6 +354,9 @@ pub fn summarize(
         let expected = match f.expected {
             None => {
                 s.no_basis += 1;
+                if f.basis_unreadable {
+                    s.basis_unreadable += 1;
+                }
                 continue;
             }
             // An act word a newer build wrote: a basis existed, this build

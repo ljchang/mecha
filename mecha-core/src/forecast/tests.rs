@@ -214,9 +214,16 @@ fn a_forecast_rests_on_settled_history_and_never_on_its_own_draft() {
     let mut own = resolved(fresh.clone(), "sent", 0, Actor::Owner);
     own.created_at = fresh.created_at.clone();
     history.push(own);
-    let f = record(&dir, &fresh, &history, Some(window))
+    let f = record(&dir, &fresh, Some(&history), Some(window))
         .unwrap()
         .unwrap();
+    assert!(!f.basis_unreadable);
+    // An unreadable history is no basis, and says why.
+    let blind = record(&dir, &fresh, None, Some(window)).unwrap().unwrap();
+    assert_eq!(
+        (blind.expected, blind.basis, blind.basis_unreadable),
+        (None, 0, true)
+    );
     assert_eq!((f.expected, f.basis), (Some(ExpectedAct::Rejected), 2));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -235,6 +242,7 @@ fn the_summary_scores_what_resolved_and_names_the_rest() {
         armed: false,
         expected,
         basis: 3,
+        basis_unreadable: false,
         source: Source::BaseRate,
     };
     let hit = resolved(
