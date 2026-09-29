@@ -956,8 +956,6 @@ fn regions_line(t: &RuleTally) -> String {
     }
 }
 
-/// Find one learned rule by id or unique prefix, returning its domain.
-/// Ambiguity is an error rather than a guess, same as proposal lookup.
 /// Every learned rule whose id starts with `id`, as `(domain, rules, index)`.
 fn rule_hits(store: &LearningStore, id: &str) -> Result<Vec<(String, Vec<Rule>, usize)>> {
     anyhow::ensure!(!id.is_empty(), "no rule id given");
@@ -1095,6 +1093,8 @@ fn describe_gone(g: &Gone, tallies: &BTreeMap<String, RuleTally>) -> String {
     )
 }
 
+/// Find one learned rule by id or unique prefix, returning its domain.
+/// Ambiguity is an error rather than a guess, same as proposal lookup.
 fn find_rule(store: &LearningStore, id: &str) -> Result<(String, Vec<Rule>, usize)> {
     // `rid.starts_with("")` is true for every rule that has an id, so an
     // empty needle — a TUI row whose `Rule::id` was `None`, serialised to
