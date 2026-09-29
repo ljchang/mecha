@@ -26,32 +26,11 @@ maps which document holds what.
 installed.** What shipped is in HISTORY under 2026-09-28 and 2026-09-29.
 Open:
 
-- **`extras` on `image_generate` for people not in the library: merged as
-  #390 (`a6941f8d`), not deployed.** Checked 2026-09-29: the installed binary
-  (`c6ae2c69`) carries none of the literals #390 added. The evidence is
-  `IMAGE-COMPILER-RESEARCH.md` §E11 and §E12:
-  - E11 (4 images): the compiled "Exactly N people" pushes a described
-    waiter into the background, while counted wording puts him in the scene.
-  - E12 (4 images, 2 arms × 2 seeds): with the softer wording the waiter
-    is still drawn, in the background, and a four-person cast with no one
-    else comes back as four right faces.
-  #390 changes the default head-count wording from "Exactly N people" to
-  "each of the N appears exactly once", with a total only when `extras` are
-  given. It also closed four items this block used to list:
-  - the temp file `imagelib::write_atomic_mode` leaked on a rename error;
-  - the stopword miss in library search (`tool::image_library`'s
-    `STOPWORDS`: "picnic in the park" had missed `picnic-park`);
-  - the `imagelib.rs` line in CLAUDE.md's module map;
-  - the note in `ARCHITECTURE.md`'s image-library section that locking does
-    not reach portraits a browser already cached `immutable`.
-  **#391 (`fc0b7c75`) followed from #390's review:**
-  - a scene with only `extras` draws with no head count ("Also in the
-    scene: …") and needs no library;
-  - the rename cleanup gets a test that can go red
-    (`a_failed_install_leaves_no_temp_file_behind`);
-  - the `ARCHITECTURE.md` bullet names its exceptions.
-  #390 and #391 are both merged and not deployed; the installed binary
-  carries none of their literals.
+- **`extras` on `image_generate` (#390, `a6941f8d`) and its follow-ups
+  (#391, `fc0b7c75`): merged, not deployed.** What they shipped, including
+  four items this block used to list, is in HISTORY under 2026-09-29.
+  Checked 2026-09-29: the installed binary (`c6ae2c69`) carries none of
+  their literals, so the deploy is what is open.
 - **#385's remaining last-pass minor:** the route tests for the CLI-child
   actions (reject, lock, unlock, remove, save) should run under
   `testenv::HomeGuard`.
@@ -3213,7 +3192,8 @@ it replaced a binary or the dist, and built from a detached worktree.
 As left: `~/.cargo/bin/mecha` carries both `mecha/unlogged` (#376) and
 `Nothing was drawn.` (#384), and the page served through `:8443` is
 `index-BFFDu_fZ.js`, which still carries the incognito answer gate. **The
-shared checkout is at `dbce699e`, behind `origin/main` (`c6ae2c69`).**
+shared checkout is at `dbce699e`, behind `c6ae2c69`, which was
+`origin/main` at 01:40Z; #390 and #391 have merged since.**
 Nothing between them touches `scripts/voice`, so the worker runs current
 code, but the next move is an ordinary fast-forward by the recipe. Four
 Claude Code sessions still hold `mecha-graph-mcp` children on a deleted

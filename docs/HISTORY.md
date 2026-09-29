@@ -14,6 +14,39 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-29 — people in a picture who are not library characters
+(#390, #391); merged, not deployed.** `IMAGE-COMPILER-RESEARCH.md` §E11
+and §E12 are the evidence.
+- E11 (4 images): a head count covering only the cast ("Exactly three
+  people") pushed a described waiter into the background; counting him in
+  put him at the table.
+- E12 (4 images): a total with no extras erased him outright, while "each
+  of the N appears exactly once" alone still drew him, and held a
+  four-person cast to four right faces.
+
+#390 (`a6941f8d`) adds `extras` to `image_generate`: people described in
+the scene and taken from no reference. The compiled wording becomes "each
+of the N people from the images appears exactly once", with a total only
+when `extras` are counted into it. A name in both `cast` and `extras` is
+refused. The same PR closed four follow-ups from #384 and #385:
+- `imagelib::write_atomic_mode` now takes its temp file back on a failed
+  rename;
+- library search drops common words (`tool::image_library`'s `STOPWORDS`),
+  so "picnic in the park" finds `picnic-park`;
+- CLAUDE.md's module map gains `imagelib.rs`;
+- `ARCHITECTURE.md` says locking does not reach portraits a browser already
+  cached `immutable`.
+
+#391 (`fc0b7c75`), from #390's review:
+- a scene with only `extras` draws with no head count ("Also in the scene:
+  …") and needs no library;
+- the rename cleanup gets a test that can go red
+  (`a_failed_install_leaves_no_temp_file_behind`);
+- the `ARCHITECTURE.md` bullet names its exceptions.
+
+Neither is installed: the binary in `~/.cargo/bin` (`c6ae2c69`) carries
+none of their literals.
+
 **2026-09-29 — the image library reaches the page (#384, #385).** #384
 (`1139ac79`) makes every pre-GPU `image_generate` refusal lead with
 "Nothing was drawn." (`imagegen::refused`). The first live run had read a
