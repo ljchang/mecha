@@ -647,6 +647,27 @@ async fn a_backfill_appraises_only_what_row_2e_1_waits_on_and_pushes_nothing() {
         "{again}"
     );
 
+    // A torn appraisal line would hide its session from what is on record,
+    // and the backfill would appraise it twice: refused (review of #388).
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::options()
+            .append(true)
+            .open(home.join("appraisals").join("appraisals.jsonl"))
+            .unwrap();
+        writeln!(f, "{{\"id\":\"apr-torn\",\"session_i").unwrap();
+    }
+    let torn = mecha(&home, &work, &["distill", "--backfill-appraisals"]).await;
+    assert!(
+        !torn.status.success(),
+        "a torn appraisal store must stop the backfill"
+    );
+    assert!(
+        String::from_utf8_lossy(&torn.stderr).contains("refusing to backfill"),
+        "{}",
+        String::from_utf8_lossy(&torn.stderr)
+    );
+
     // India's appraisal came after golf ended: not shown as an earlier one.
     let asks = follow_ups(&seen, asked_from);
     assert_eq!(asks.len(), 1, "one follow-up: golf's");
