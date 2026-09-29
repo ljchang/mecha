@@ -3379,6 +3379,58 @@ refactor from making it two values.
 
 ## The outbox
 
+**The harness forecasts the owner's act on each drafted message, sealed
+and readout only** (`forecast.rs`, the owner's ruling (a) of 2026-09-29;
+X3 unparked).
+- **What v1 forecasts:** when a store opened `with_forecasts` stages a
+  model-authored message with a body, it predicts the owner's act:
+  `released_unchanged`, `edited`, `rejected`, or `no_act`. The prediction
+  is the owner's most frequent stamped act on earlier drafts staged through
+  the same tool in the same armed state, taken from history settled before
+  the staging, so it is pre-registered by construction.
+- **What counts as the owner's act:** only acts the stamps prove the
+  owner's (`owners_unchanged_release`, `owners_edit`, a reject stamped
+  `owner`), and a draft untouched past the outbox's patience (R37 carried
+  to items). An unreadable history or charter makes a forecast with no
+  basis, never a guess.
+- **Sealed:** it is written to `<outbox>/forecasts/forecasts.jsonl`, out
+  of the item walk. No per-draft surface, staging result or prompt reads
+  it, because a forecast of the owner's approval shown to the reviewer or
+  the acting model is a way to steer the verdict.
+- **Where it is on:** the agent's route turns it on with the charter
+  window. Every surface that opens its own store per session does it with
+  `OutboxStore::open_like`, which carries the setting. This is a
+  convention checked at review, not a type: the plain `open` is still
+  public. A surface that uses it shows up as a rising count of drafts
+  staged with no forecast.
+  Tests pass a fixed window, so none reads the machine's charter.
+- **Off the staging path's critical cost:** the history is the newest
+  `HISTORY_LIMIT` items (ids sort by time), the window is resolved once per
+  store, and the ledger's lock is tried, never waited on. The ledger itself
+  is read whole on each staging, to know which history items were real
+  forecasts. That read grows with lifetime drafts and has no retention yet:
+  a few milliseconds at today's sizes, and the first thing to bound if it
+  ever shows.
+- **A torn line stops the base rate until it is repaired.** One unreadable
+  ledger or history line makes every later forecast `basis_unreadable`,
+  since which history is real can no longer be told. The readout counts it,
+  so it is fail-closed and said, but nothing heals it: the line is repaired
+  or removed by hand.
+- **History is what the ledger forecast as real.** A smoke run's draft
+  (`MECHA_SESSION_KIND=test`) is recorded `test`, predicts nothing, never
+  counts as history, and the readout sets it aside. The instrument must not
+  measure its own tests. Drafts from before forecasting began are not
+  history either.
+- **Scored only at read time**, by `sessions appraise` (`forecast::summarize`),
+  under the patience window recorded on the forecast when it was made
+  (`patience_secs`), so a later edit to the charter's outbox line cannot
+  re-score history. The ledger's append and `forget`'s rewrite share
+  `<forecasts>/.lock`.
+  A miss feeds nothing until the forecasts are calibrated. `sessions delete`
+  purges a session's forecasts with its drafts.
+- **A model forecaster comes later**, as an arm measured against this one
+  on the same drafts.
+
 **Anticipatory evidence belongs to an exact draft version.**
 `OutboxItem::predictions` stores immutable argument snapshots; editing and
 reassessment leave the old forecast changed or reassessed, never failed or

@@ -120,6 +120,15 @@ fn seeded(home: &Path) -> Roots {
         &o.join("item-gone.json"),
         &format!(r#"{{"id":"item-gone","session_id":"{GONE}","args":{{"body":"{CANARY}"}}}}"#),
     );
+    // The harness's forecasts of the owner's act on each session's draft.
+    write(
+        &crate::forecast::ledger(o),
+        &format!(
+            "{}\n{}\n",
+            serde_json::json!({"item_id": "item-gone", "session_id": GONE, "at": "2026-09-28T00:00:00Z", "tool": "mail_send", "armed": false, "basis": 0}),
+            serde_json::json!({"item_id": "item-kept", "session_id": KEPT, "at": "2026-09-28T00:00:00Z", "tool": "mail_send", "armed": false, "basis": 0}),
+        ),
+    );
     write(
         &o.join("item-kept.json"),
         &format!(r#"{{"id":"item-kept","session_id":"{KEPT}","args":{{}}}}"#),
@@ -313,6 +322,12 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert!(report.complete);
     assert_eq!(*graph.asked.borrow(), vec![GONE.to_string()]);
+    // The deleted session's forecast goes; the other's stays.
+    let (left, _) = crate::forecast::load(&roots.outbox).unwrap();
+    assert_eq!(
+        left.iter().map(|f| f.item_id.as_str()).collect::<Vec<_>>(),
+        vec!["item-kept"]
+    );
     // The owner's mark goes with it; the other session's stays.
     let marks = crate::session::Marks::load(&roots.sessions).unwrap();
     assert!(!marks.withdrawn(GONE) && marks.withdrawn(KEPT));
