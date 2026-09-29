@@ -1690,6 +1690,11 @@ mod tests {
             admission(&admitted, &claimed, &marked),
             Admission::Withdrawn
         );
+        // The owner's own drop keeps its count under a mark: the more
+        // specific act (review of #382).
+        let mut dropped = refl("steer", Some(Basis::NoFact));
+        dropped.dropped_at = Some("2026-09-28T00:00:00Z".into());
+        assert_eq!(admission(&dropped, &none, &marked), Admission::Dropped);
     }
 
     #[test]
