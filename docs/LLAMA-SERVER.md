@@ -17,6 +17,7 @@ llama-server holds **one model per process**. So:
 ```
 :8080   qwen3.6-35b-a3b   chat/agent    mecha's [providers.local], mecha-graph's extractor
 :8081   an embedding model              mecha-graph's embed + retrieval
+:8085   paddleocr-vl-1.6  document OCR  mecha's document_read — on demand (§Document OCR)
 ```
 
 Pointing both at one port silently sends embedding requests to the chat model.
@@ -436,6 +437,36 @@ machine from starting is one people turn off.
 - Measured full re-embed of 27,140 vectors (20,444 episodes + 6,696 facts):
   **0.6B ≈ 9–10 min, 4B ≈ 27 min** and double the storage.
 
+## Document OCR — on demand, behind a socket
+
+`:8085` is PaddleOCR-VL 1.6 for `document_read` and `mecha document`
+(`DOCUMENT-EXTRACTION-DESIGN.md`), and unlike every server above it **holds
+no memory while unused** — the owner's ruling of 2026-09-29. systemd owns the
+port (`llama-ocr.socket`, enabled at boot); the first connection starts
+`llama-ocr-proxy.service` (`systemd-socket-proxyd`), which requires
+`llama-ocr.service` — the llama-server on `127.0.0.1:18085` — and the proxy
+exits after ten idle minutes, taking the unneeded server with it. Units,
+launcher and `install.sh` are in `scripts/llama/`; what runs is the copy in
+`~/.local/bin` and `~/.config/systemd/user`, for the reason the embed launcher
+gives.
+
+- **A listening server is not a ready one.** `/health` is 503 while the model
+  loads. The backend's `ExecStartPost` (`mecha-wait-healthy`) waits for 200
+  *and* `"status":"ok"`, the unit is active only then, and the proxy is
+  ordered after it — a caller's connection waits through the load rather
+  than being forwarded into it. Cold start, measured: 2.96 s to `/health` ok
+  (1.16 s with the files in the page cache), 3.66 s to a first page.
+- **`--sleep-idle-seconds` is in this build and is not "nothing".** A
+  sleeping llama-server frees the model and keeps its CUDA context: 189 MiB
+  of GPU memory and 352 MB RSS measured on this model. A stopped process
+  holds zero.
+- **The idle time is the proxy's `MECHA_LLAMA_IDLE`** (default `10min`);
+  change it with `systemctl --user edit llama-ocr-proxy.service`. A client
+  holding a keep-alive connection holds the model up; mecha's pools for 5 s.
+- **Loaded, it costs 2.6 GB of GPU memory** (0.9 + 0.9 GB BF16 weights, 576
+  MiB KV for `-c 32768 -np 2`). A page is rendered to the projector's
+  1,003,520-pixel budget (~103 dpi for Letter) and costs 1,253 prompt tokens.
+
 ## Router mode — one port, the model chosen per request
 
 `scripts/start-router.sh` runs llama-server with no `-m` and a generated
@@ -502,6 +533,7 @@ Measured on 2026-09-26 against `c841aee`, unless a bullet names another build:
 - `scripts/start-moe-mtp.sh` — the single-model flags, and the history behind each number
 - `provider/router.rs` — which model is resident, and following it
 - `scripts/mmproj.sh` — the projector guard every start script sources
+- `scripts/llama/` — the on-demand OCR server's units, launcher and installer
 - `provider/preflight.rs` — one `GET /props`, checked against config
 - `scripts/bench-slots.sh` — throughput
 - `scripts/model-idle.sh` — the idle check that reads `/slots` before daytime background work

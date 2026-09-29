@@ -376,6 +376,18 @@ running on http://127.0.0.1:7860` line, from a journal window that opens
 and only then, because coming back costs a model load and voice is deaf
 until it finishes.
 
+**`llama-ocr` is not in the list either, and restarts itself.** It is socket
+activated (`docs/DOCUMENT-EXTRACTION-DESIGN.md` §6): `llama-ocr.socket` holds
+:8085, the server starts on the first request and stops after ten idle
+minutes, so it picks up a new llama.cpp build or launcher on its next cold
+start. What does need a step is a change under `scripts/llama/`: the units
+and launcher run from `~/.local/bin` and `~/.config/systemd/user`, not the
+tree, so re-run `scripts/llama/install.sh` (it copies, reloads, and
+re-enables the socket). Verify with a request, not `is-active` — an idle
+server is correctly inactive: `curl -s localhost:8085/health` must print
+`{"status":"ok"}`, and `journalctl --user -u llama-ocr.service` show a fresh
+`listening on http://127.0.0.1:18085`.
+
 **The timer-driven units need nothing.** `mecha-frontdoor`, `mecha-ruminate`
 and `mecha-slots` are `.timer`-fired and exec fresh on each firing, so they
 pick up a new binary by themselves. Knowing which list a unit is on is the
