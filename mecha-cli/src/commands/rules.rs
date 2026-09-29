@@ -73,10 +73,28 @@ pub enum Cmd {
     },
     /// Un-retire a rule by id (or unique prefix).
     Restore { id: String },
+    /// Edit your own rules in `$EDITOR`, checked before they are saved.
+    ///
+    /// A `*.user.toml` that does not parse stops every run start, which is
+    /// the D1 ruling: your rules must not vanish silently. So this verb edits
+    /// a copy, parses it, and only then replaces the file, offering to reopen
+    /// the editor on an edit that does not parse. Comments are kept.
+    Edit {
+        /// Required, and the only kind: learned rules are the learner's to
+        /// write, and a hand fix to one is a hand edit of its file.
+        #[arg(long, required = true)]
+        user: bool,
+        #[arg(long, default_value = "behavior")]
+        domain: String,
+    },
     /// One rule in full: its text, domain, state and ledger tally. What the
     /// TUI's `Enter` on the Rules pane runs — a rule is the one record here
     /// that rides in every future prompt, so it is the one most worth
     /// reading in full.
+    ///
+    /// A rule no rules file holds any more (consolidation leaves a rule out
+    /// rather than retiring it) is answered from the proposal snapshots:
+    /// which proposal dropped it, when, and its last text.
     Show {
         id: String,
         /// As on `list`: skip the board read. The TUI's `Enter` passes it.
@@ -118,7 +136,43 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         }
         Cmd::Retire { id, reason } => retire(&store, &id, reason),
         Cmd::Restore { id } => restore(&store, &id),
+        Cmd::Edit { user: _, domain } => {
+            let outcome = edit_user(
+                &store,
+                &domain,
+                |text| crate::editor::edit_text(text, &format!("mecha-rules-{domain}.user.toml")),
+                ask_to_reopen,
+            )?;
+            match outcome {
+                UserEdit::Unchanged => {
+                    // Doctor sends the owner here for a file that does not
+                    // parse. Closing the editor on it unfixed is not "done".
+                    if let Err(e) = store.user_rules(&domain) {
+                        eprintln!("unchanged, and still not loading: {e:#}");
+                        std::process::exit(1);
+                    }
+                    println!("unchanged")
+                }
+                UserEdit::Saved(n) => {
+                    println!("saved — {n} rule(s) for `{domain}`, carried from the next run")
+                }
+                UserEdit::Discarded(e) => {
+                    eprintln!("not saved, the file is as it was: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+            Ok(())
+        }
         Cmd::Show { id, no_board } => {
+            // A rule no rules file holds any more is answered from the
+            // proposal snapshots (D2), rather than "no rule matching".
+            if rule_hits(&store, &id)?.is_empty() {
+                if let Some(gone) = find_gone(&store, &id)? {
+                    let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
+                    println!("{}", describe_gone(&gone, &tallies));
+                    return Ok(());
+                }
+            }
             let (_, rules, i) = find_rule(&store, &id)?;
             let goals = goals_of(global, &[rules[i].clone()], !no_board).await;
             let standing =
@@ -875,7 +929,17 @@ fn describe(
     // "0 improved, 0 regressed" for inconclusive-only coverage — a clean
     // bill of health from rows that graded nothing, and the reason a
     // covered rule can still be on probation.
-    let measured = match r.id.as_deref().and_then(|id| tallies.get(id)) {
+    let measured = measured_line(r, tallies);
+    format!(
+        "[{state}] {}\n      id {id} · created {} · {scope}{support}{narrowed} · {measured}",
+        r.text,
+        r.created_at.as_deref().unwrap_or("unknown"),
+    )
+}
+
+/// What the validation ledger says of `r`, in one clause.
+fn measured_line(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
+    match r.id.as_deref().and_then(|id| tallies.get(id)) {
         Some(t) if t.graded > 0 => format!(
             "{} probe(s), {} graded: {} improved, {} regressed, {} attributed to this rule; last {}{}",
             t.observations,
@@ -892,12 +956,7 @@ fn describe(
             t.last_validated.as_deref().unwrap_or("never")
         ),
         _ => "never validated".into(),
-    };
-    format!(
-        "[{state}] {}\n      id {id} · created {} · {scope}{support}{narrowed} · {measured}",
-        r.text,
-        r.created_at.as_deref().unwrap_or("unknown"),
-    )
+    }
 }
 
 /// The graded rows split by the sub-region they exercised, after the
@@ -938,14 +997,8 @@ fn regions_line(t: &RuleTally) -> String {
     }
 }
 
-/// Find one learned rule by id or unique prefix, returning its domain.
-/// Ambiguity is an error rather than a guess, same as proposal lookup.
-fn find_rule(store: &LearningStore, id: &str) -> Result<(String, Vec<Rule>, usize)> {
-    // `rid.starts_with("")` is true for every rule that has an id, so an
-    // empty needle — a TUI row whose `Rule::id` was `None`, serialised to
-    // `null` and read back as `""` — would match every learned rule in
-    // every domain instead of none. `mecha rules retire ""` is reachable
-    // from the command line too.
+/// Every learned rule whose id starts with `id`, as `(domain, rules, index)`.
+fn rule_hits(store: &LearningStore, id: &str) -> Result<Vec<(String, Vec<Rule>, usize)>> {
     anyhow::ensure!(!id.is_empty(), "no rule id given");
     let mut hits: Vec<(String, Vec<Rule>, usize)> = Vec::new();
     for domain in store.domains() {
@@ -956,6 +1009,140 @@ fn find_rule(store: &LearningStore, id: &str) -> Result<(String, Vec<Rule>, usiz
             }
         }
     }
+    Ok(hits)
+}
+
+/// A rule id no rules file holds any more, as the proposal snapshots
+/// remember it (the D2 ruling, `docs/LEARNING-STORE-RESEARCH.md` §7).
+///
+/// Consolidation rewrites the learned set and a rule it leaves out simply
+/// goes. It is deliberately not retired, because the learner reads retired
+/// rules as measured harmful. Its text survives in the proposals that
+/// carried it, which is where this reads it from. Read-only, and nothing
+/// here reaches a prompt.
+#[derive(Debug)]
+struct Gone {
+    domain: String,
+    last: Rule,
+    fate: Fate,
+}
+
+#[derive(Debug, PartialEq)]
+enum Fate {
+    /// An applied proposal's `rules_before` held it and its `rules` did not.
+    Dropped {
+        proposal: String,
+        status: String,
+        at: String,
+    },
+    /// It was live, and the change that removed it left no proposal: an
+    /// ungated consolidation or a hand edit of the file.
+    GoneUnrecorded { last_seen: String },
+    /// It appeared only in proposals that never applied.
+    NeverLive { proposal: String, status: String },
+}
+
+/// Statuses under which a proposal's `rules` became the live set.
+const APPLIED: &[&str] = &["accepted", "auto_applied", "auto_applied_probation"];
+
+/// The rule `id` (or unique prefix) names in the proposal snapshots, when no
+/// rules file holds it. `None` when no snapshot names it either.
+fn find_gone(store: &LearningStore, id: &str) -> Result<Option<Gone>> {
+    let proposals = store.proposals()?;
+    let named = |r: &Rule| r.id.as_deref().is_some_and(|rid| rid.starts_with(id));
+    let mut ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for p in &proposals {
+        for r in p.rules.iter().chain(&p.rules_before).filter(|r| named(r)) {
+            ids.extend(r.id.clone());
+        }
+    }
+    let full = match ids.len() {
+        0 => return Ok(None),
+        1 => ids.into_iter().next().expect("one id"),
+        n => bail!("`{id}` matches {n} rules no longer in any rules file; give more of the id"),
+    };
+    let has = |rules: &[Rule]| rules.iter().any(|r| r.id.as_deref() == Some(full.as_str()));
+    let mut last: Option<(String, Rule, String, String)> = None;
+    let mut went_live = false;
+    let mut dropped = None;
+    for p in &proposals {
+        let applied = APPLIED.contains(&p.status.as_str());
+        if let Some(r) = p
+            .rules
+            .iter()
+            .chain(&p.rules_before)
+            .find(|r| r.id.as_deref() == Some(full.as_str()))
+        {
+            last = Some((p.domain.clone(), r.clone(), p.id.clone(), p.status.clone()));
+        }
+        went_live |= has(&p.rules_before) || (applied && has(&p.rules));
+        if applied && has(&p.rules_before) && !has(&p.rules) {
+            dropped = Some(Fate::Dropped {
+                proposal: p.id.clone(),
+                status: p.status.clone(),
+                at: p
+                    .resolved_at
+                    .clone()
+                    .unwrap_or_else(|| p.created_at.clone()),
+            });
+        }
+    }
+    let (domain, last, seen_in, status) = last.expect("an id found above has a snapshot");
+    let fate = match dropped {
+        Some(f) => f,
+        None if went_live => Fate::GoneUnrecorded { last_seen: seen_in },
+        None => Fate::NeverLive {
+            proposal: seen_in,
+            status,
+        },
+    };
+    Ok(Some(Gone { domain, last, fate }))
+}
+
+fn describe_gone(g: &Gone, tallies: &BTreeMap<String, RuleTally>) -> String {
+    let id = g.last.id.as_deref().unwrap_or_default();
+    let (state, how) = match &g.fate {
+        Fate::Dropped {
+            proposal,
+            status,
+            at,
+        } => (
+            "dropped in consolidation",
+            format!(
+                "dropped by proposal {proposal} ({status}) on {at} — not retired, so nothing \
+                 tells the learner it was harmful; `mecha proposals show {proposal}`"
+            ),
+        ),
+        Fate::GoneUnrecorded { last_seen } => (
+            "no longer in the rules file",
+            format!(
+                "last seen in proposal {last_seen}; the change that removed it left no \
+                 proposal (an ungated consolidation or a hand edit)"
+            ),
+        ),
+        Fate::NeverLive { proposal, status } => (
+            "never live",
+            format!("proposed in {proposal} ({status}), which did not apply"),
+        ),
+    };
+    format!(
+        "## {} — not in any rules file\n[{state}] {}\n      id {id} · created {} · {how} · {}",
+        g.domain,
+        g.last.text,
+        g.last.created_at.as_deref().unwrap_or("unknown"),
+        measured_line(&g.last, tallies)
+    )
+}
+
+/// Find one learned rule by id or unique prefix, returning its domain.
+/// Ambiguity is an error rather than a guess, same as proposal lookup.
+fn find_rule(store: &LearningStore, id: &str) -> Result<(String, Vec<Rule>, usize)> {
+    // `rid.starts_with("")` is true for every rule that has an id, so an
+    // empty needle — a TUI row whose `Rule::id` was `None`, serialised to
+    // `null` and read back as `""` — would match every learned rule in
+    // every domain instead of none. `mecha rules retire ""` is reachable
+    // from the command line too.
+    let mut hits = rule_hits(store, id)?;
     match hits.len() {
         0 => bail!("no learned rule matching `{id}` — `mecha rules` lists ids"),
         1 => Ok(hits.remove(0)),
@@ -963,8 +1150,83 @@ fn find_rule(store: &LearningStore, id: &str) -> Result<(String, Vec<Rule>, usiz
     }
 }
 
+/// What `mecha rules edit --user` did.
+#[derive(Debug)]
+enum UserEdit {
+    Unchanged,
+    /// Written, with this many rules.
+    Saved(usize),
+    /// The last edit did not parse and the owner declined to reopen it.
+    Discarded(anyhow::Error),
+}
+
+/// Edit the owner's rules through `edit`, which gets the text and returns
+/// what was saved. The file is replaced only when that parses. On an edit
+/// that does not parse, `reopen` is asked (with the error), and `true` goes
+/// round again on the broken text rather than losing it.
+fn edit_user(
+    store: &LearningStore,
+    domain: &str,
+    mut edit: impl FnMut(&str) -> Result<String>,
+    mut reopen: impl FnMut(&anyhow::Error) -> bool,
+) -> Result<UserEdit> {
+    // Before the read and the editor, not only at the write: a bad name must
+    // not cost the owner an editing session to find out.
+    if !mecha_core::learning::is_domain_name(domain) {
+        bail!("`{domain}` is not a domain name (letters, digits, `-` and `_`)");
+    }
+    let original = store.user_rules_text(domain)?;
+    let start = original
+        .clone()
+        .unwrap_or_else(|| user_rules_template(domain));
+    let mut text = start.clone();
+    loop {
+        let edited = edit(&text)?;
+        if edited == start {
+            return Ok(UserEdit::Unchanged);
+        }
+        match mecha_core::learning::parse_rules_file(&edited) {
+            Ok(_) => return Ok(UserEdit::Saved(store.replace_user_rules(domain, &edited)?)),
+            Err(e) => {
+                if reopen(&e) {
+                    text = edited;
+                } else {
+                    return Ok(UserEdit::Discarded(e));
+                }
+            }
+        }
+    }
+}
+
+fn user_rules_template(domain: &str) -> String {
+    format!(
+        "# Your own rules for `{domain}`. Only you write this file; `mecha learn`\n\
+         # treats every rule in it as fixed. One [[rules]] table per rule:\n\
+         #\n\
+         # [[rules]]\n\
+         # text = \"Ask before pushing to a shared branch.\"\n"
+    )
+}
+
+/// On a terminal, ask; anywhere else, do not reopen.
+fn ask_to_reopen(e: &anyhow::Error) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+    eprintln!("that does not parse: {e:#}");
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+    eprint!("reopen the editor on it? [Y/n] ");
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    if std::io::stdin().lock().read_line(&mut answer).is_err() {
+        return false;
+    }
+    !matches!(answer.trim(), "n" | "N" | "no")
+}
+
 fn retire(store: &LearningStore, id: &str, reason: Option<String>) -> Result<()> {
     let _lock = store.lock()?;
+    crate::commands::learn::finish_interrupted(store)?;
     let (domain, mut rules, i) = find_rule(store, id)?;
     if rules[i].retired_at.is_some() {
         bail!(
@@ -990,6 +1252,7 @@ fn retire(store: &LearningStore, id: &str, reason: Option<String>) -> Result<()>
 
 fn restore(store: &LearningStore, id: &str) -> Result<()> {
     let _lock = store.lock()?;
+    crate::commands::learn::finish_interrupted(store)?;
     let (domain, mut rules, i) = find_rule(store, id)?;
     if rules[i].retired_at.is_none() {
         bail!(
@@ -1055,6 +1318,7 @@ fn propose(
     owner: Option<&Tally>,
 ) -> Result<()> {
     let _lock = store.lock()?;
+    crate::commands::learn::finish_interrupted(store)?;
     // Two folds of one ledger (owner's ruling, 2026-09-27: count one model).
     // The convictions a retirement counts are this model's rows only; whether
     // a rule was measured beyond its convictions — the probation release — is
@@ -1271,22 +1535,29 @@ fn propose(
         // re-derived. It is per-rule and leaves the rest of the store alone,
         // which a whole-store rewind (the old `git revert`) never did.
         if apply {
-            store.write_learned_rules(&domain, &rules)?;
-            store.append_run(&LeapRun {
-                id: Session::new_id(),
-                domain: domain.clone(),
-                reflexions_processed: 0,
-                // **Whole file, not the active subset** — the count every
-                // other `LeapRun` writer uses (`learn` writes
-                // `learned_before.len()` / `rules.len()`; `accept` the same).
-                // A retirement never removes a row, so these are equal and
-                // the pass shows as a flat step; counting `active()` here
-                // instead put two different measures on one series in the
-                // "Rule set over time" chart, where a retirement would read
-                // as a drop and a consolidation as a total.
-                rules_before: before.len() as u32,
-                rules_after: rules.len() as u32,
-                created_at: now.clone(),
+            // One commit, like every other change that puts rules live: a
+            // crash between the rules and the run would leave a retirement
+            // live with no run recording it.
+            store.commit_rules(&mecha_core::learning::RuleCommit {
+                reflexion_ids: Vec::new(),
+                rules: rules.clone(),
+                proposal: None,
+                run: LeapRun {
+                    id: Session::new_id(),
+                    domain: domain.clone(),
+                    reflexions_processed: 0,
+                    // **Whole file, not the active subset** — the count every
+                    // other `LeapRun` writer uses (`learn` writes
+                    // `learned_before.len()` / `rules.len()`; `accept` the same).
+                    // A retirement never removes a row, so these are equal and
+                    // the pass shows as a flat step; counting `active()` here
+                    // instead put two different measures on one series in the
+                    // "Rule set over time" chart, where a retirement would read
+                    // as a drop and a consolidation as a total.
+                    rules_before: before.len() as u32,
+                    rules_after: rules.len() as u32,
+                    created_at: now.clone(),
+                },
             })?;
             store.log_pass(&format!(
                 "retire[{domain}]: {retired_count} retired, {narrowed_count} narrowed at \
@@ -1367,6 +1638,94 @@ mod tests {
     use super::*;
     use mecha_core::learning::rules_hash;
 
+    fn user_store() -> (LearningStore, PathBuf) {
+        let dir = std::env::temp_dir()
+            .join("mecha-rules-edit-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        (LearningStore::open(dir.clone()).unwrap(), dir)
+    }
+
+    #[test]
+    fn an_edit_that_parses_is_saved_as_typed() {
+        let (store, dir) = user_store();
+        let typed = "# why\n[[rules]]\ntext = \"Mine.\"\n";
+        let out = edit_user(&store, "behavior", |_| Ok(typed.into()), |_| false).unwrap();
+        assert!(matches!(out, UserEdit::Saved(1)), "{out:?}");
+        assert_eq!(
+            store.user_rules_text("behavior").unwrap().as_deref(),
+            Some(typed)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The broken edit is handed back to the editor rather than lost, and
+    /// nothing reaches the file until an edit parses.
+    #[test]
+    fn a_broken_edit_is_reopened_and_never_written() {
+        let (store, dir) = user_store();
+        let mut calls = Vec::new();
+        let out = edit_user(
+            &store,
+            "behavior",
+            |text| {
+                calls.push(text.to_string());
+                Ok(if calls.len() == 1 {
+                    "[[rules]]\ntext = \"half".into()
+                } else {
+                    "[[rules]]\ntext = \"whole\"\n".into()
+                })
+            },
+            |_| {
+                assert_eq!(store.user_rules_text("behavior").unwrap(), None);
+                true
+            },
+        )
+        .unwrap();
+        assert!(matches!(out, UserEdit::Saved(1)), "{out:?}");
+        assert_eq!(
+            calls[1], "[[rules]]\ntext = \"half",
+            "reopened on the broken text"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_declined_broken_edit_leaves_the_file_as_it_was() {
+        let (store, dir) = user_store();
+        let before = "[[rules]]\ntext = \"Kept.\"\n";
+        store.replace_user_rules("behavior", before).unwrap();
+        let out = edit_user(&store, "behavior", |_| Ok("[[rules".into()), |_| false).unwrap();
+        assert!(matches!(out, UserEdit::Discarded(_)), "{out:?}");
+        assert_eq!(
+            store.user_rules_text("behavior").unwrap().as_deref(),
+            Some(before)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_path_for_a_domain_is_refused_before_the_editor_opens() {
+        let (store, dir) = user_store();
+        let err = edit_user(
+            &store,
+            "../escape",
+            |_| panic!("the editor opened for a bad domain"),
+            |_| false,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not a domain name"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn saving_the_untouched_template_creates_nothing() {
+        let (store, dir) = user_store();
+        let out = edit_user(&store, "behavior", |t| Ok(t.to_string()), |_| false).unwrap();
+        assert!(matches!(out, UserEdit::Unchanged), "{out:?}");
+        assert_eq!(store.user_rules_text("behavior").unwrap(), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     fn temp_store() -> LearningStore {
         // A process-unique counter, not a timestamp. `as_nanos()` is only as
         // fine-grained as the platform's clock: on macOS two of these called
@@ -1398,6 +1757,109 @@ mod tests {
             id: Some(id.into()),
             ..Default::default()
         }
+    }
+
+    fn snapshot(
+        id: &str,
+        status: &str,
+        before: Vec<Rule>,
+        after: Vec<Rule>,
+    ) -> mecha_core::learning::Proposal {
+        mecha_core::learning::Proposal {
+            id: id.into(),
+            domain: "behavior".into(),
+            status: status.into(),
+            reflexion_ids: Vec::new(),
+            rules_before: before,
+            rules: after,
+            evidence: "e".into(),
+            created_at: format!("2026-09-{}T06:00:00Z", &id[..2]),
+            resolved_at: None,
+            reason: None,
+            scope: None,
+        }
+    }
+
+    /// D2: a rule consolidation left out is answered from the proposal that
+    /// dropped it. It is not retired and never was. Before this, `show`
+    /// said "no learned rule matching" for a rule whose text was on disk.
+    #[test]
+    fn a_rule_dropped_in_consolidation_is_found_in_its_proposal() {
+        let store = temp_store();
+        let kept = rule("Kept.", "r-kept");
+        let gone = rule("Squeezed out.", "r-gone");
+        store
+            .write_proposal(&snapshot(
+                "10-add",
+                "accepted",
+                vec![],
+                vec![kept.clone(), gone.clone()],
+            ))
+            .unwrap();
+        store
+            .write_proposal(&snapshot(
+                "20-cut",
+                "auto_applied",
+                vec![kept.clone(), gone],
+                vec![kept.clone()],
+            ))
+            .unwrap();
+        store.write_learned_rules("behavior", &[kept]).unwrap();
+
+        assert!(rule_hits(&store, "r-gone").unwrap().is_empty());
+        let g = find_gone(&store, "r-go")
+            .unwrap()
+            .expect("found in the snapshots");
+        assert_eq!(g.last.text, "Squeezed out.");
+        assert_eq!(
+            g.fate,
+            Fate::Dropped {
+                proposal: "20-cut".into(),
+                status: "auto_applied".into(),
+                at: "2026-09-20T06:00:00Z".into()
+            }
+        );
+        let text = describe_gone(&g, &BTreeMap::new());
+        assert!(
+            text.contains("dropped by proposal 20-cut") && text.contains("not retired"),
+            "{text}"
+        );
+        assert!(text.contains("never validated"), "{text}");
+    }
+
+    #[test]
+    fn a_rule_only_ever_proposed_is_never_live_and_one_removed_unrecorded_says_so() {
+        let store = temp_store();
+        let a = rule("Proposed, refused.", "r-refused");
+        let b = rule("Live once.", "r-live");
+        store
+            .write_proposal(&snapshot("10-no", "rejected_by_gate", vec![], vec![a]))
+            .unwrap();
+        // Live in a later proposal's baseline, removed by nothing on record.
+        store
+            .write_proposal(&snapshot("20-pend", "pending", vec![b.clone()], vec![b]))
+            .unwrap();
+
+        let refused = find_gone(&store, "r-refused").unwrap().unwrap();
+        assert_eq!(
+            refused.fate,
+            Fate::NeverLive {
+                proposal: "10-no".into(),
+                status: "rejected_by_gate".into()
+            }
+        );
+        let live = find_gone(&store, "r-live").unwrap().unwrap();
+        assert_eq!(
+            live.fate,
+            Fate::GoneUnrecorded {
+                last_seen: "20-pend".into()
+            }
+        );
+        assert!(find_gone(&store, "r-nowhere").unwrap().is_none());
+        assert!(
+            find_gone(&store, "r-").is_err(),
+            "an ambiguous prefix is refused"
+        );
     }
 
     fn regression(rule_id: &str, at: &str) -> ValidationRecord {
