@@ -809,6 +809,22 @@ its measurements are `docs/DOCUMENT-EXTRACTION-DESIGN.md`.
 - **The cache key is the sha256 of the bytes rendered** — the scratch copy,
   never the path — and an OCR entry's key carries the model and
   `OCR_PIPELINE`; bump the pipeline when the prompt or render size changes.
+  A layout reading's key carries `LAYOUT_PIPELINE` and the layout model's own
+  hash instead, so a whole-page reading is never served as a layout one.
+- **The layout model (`layout.rs`) runs confined, like the parser, and never
+  sees an image file.** It is a Python/ONNX Runtime child started under the
+  same `[documents] confine` backend with three read-only paths (the
+  interpreter's environment and prefix, the model file), rlimited, fed a
+  fixed-size float tensor built from this process's own decode of the page,
+  and killed when the extraction ends. Its answer is parsed as untrusted
+  (row count capped, unknown classes and non-finite values dropped). A child
+  that cannot start is *unavailable*, never run unconfined.
+- **A layout stage that cannot run is said, never passed off.** Pages it
+  affects are read whole with `fallback` set on the transcript,
+  `Extraction::layout_unavailable` names why, and the rendered label reads
+  "read whole — …" where a layout reading reads "read by region". A region
+  that fails is named in place, keeps its page out of the cache, and makes
+  `mecha document extract` exit non-zero.
 
 ## Personas
 

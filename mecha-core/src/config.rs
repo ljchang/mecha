@@ -1142,6 +1142,10 @@ impl ConfigLayer {
         if let Some(h) = self.harness.as_mut() {
             opt(&mut h.source_dir);
         }
+        if let Some(d) = self.documents.as_mut() {
+            opt(&mut d.layout_python);
+            opt(&mut d.layout_model);
+        }
         for server in self.mcp.iter_mut().flatten() {
             server.command = expand_home_str(&server.command);
             for arg in server.args.iter_mut() {
