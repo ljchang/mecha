@@ -252,14 +252,31 @@ page 1, 655 output tokens) — the load is under a second
 (`loaded multimodal model` at 0.95 s in the journal), and the rest is the
 page.
 
-## 7. The embeddings server: requested, not done
+## 7. The embeddings server: on demand too, once mecha-graph can wait
 
-The owner asked (2026-09-29, relayed) for `llama-embed.service` (:8081) to move
-to the same mechanism. Writing its units was refused by this session's
-permission system as a change to a shared resource, so nothing about
-`llama-embed` was changed — not the unit, not the launcher, not the running
-service. §6 is written for both servers; applying it to :8081 waits on the
-owner's own go-ahead in a session permitted to make it.
+The owner asked (2026-09-29) for `llama-embed.service` (:8081) to move to §6's
+mechanism, and approved it in the owner's own session. The units are in
+`scripts/llama/` — `llama-embed.socket` on :8081, `llama-embed-proxy.service`
+idling out after ten minutes, `llama-embed.service` as the backend on :18081
+behind `mecha-wait-healthy` — and `scripts/llama/install-embed.sh` performs
+the switch, keeping the always-on unit and launcher as `*.always-on.bak` so
+`install-embed.sh --remove` restores them in one step.
+
+**The switch waits on a consumer, and the installer enforces it.** Every
+consumer keeps its address — the point of a socket — but not every consumer
+waits. mecha-graph's `Embedder::available()` probed `/health` with a **1.5 s**
+timeout, and a cold start takes ~4 s; the probe's own request would wake the
+server and then give up on it. It gates semantic search on every query
+(`search.rs`), the `kg_search` handler in `mecha-graph-mcp`, `embed`,
+`precheck` and the TUIs, so each would fall back to keyword-only with no
+error — the unit's own 2026-08-19 incident again, where absence was silent.
+mecha-graph `fix/embed-probe-cold-start` raises it to 20 s
+(`embed::AVAILABLE_TIMEOUT`), with a test that fails at 1.5 s. Until that
+build is installed (`mecha-graph` *and* `mecha-graph-mcp`),
+`install-embed.sh` refuses to run without `MECHA_EMBED_COLD_START_OK=1`.
+
+Every other consumer found waits long enough: mecha-graph's embedding
+requests allow 300 s, and mecha's TUI grouping 360 s.
 
 ## 8. Measurements
 
