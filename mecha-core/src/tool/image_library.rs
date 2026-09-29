@@ -41,6 +41,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Lists and searches the owner's approved characters and styles.
 pub struct ImageLibrary {
@@ -68,6 +69,13 @@ fn parse_kind(input: &Value) -> std::result::Result<Option<Kind>, String> {
 impl Tool for ImageLibrary {
     fn name(&self) -> &str {
         "image_library"
+    }
+
+    /// Eligible for a persona (`docs/PERSONA-DESIGN.md` §3.3): it reads only the
+    /// owner's *approved* characters and styles, shared with personas on purpose
+    /// (§8.6), and sends nothing.
+    fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        Some(self)
     }
 
     fn description(&self) -> &str {

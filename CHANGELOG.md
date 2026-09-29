@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Personas, step 1: the store and `mecha persona`.** A persona is a
+  character you write and talk to, kept apart from the assistant. It lives in
+  a folder under `~/.mecha/personas/`: `persona.toml` holds its settings,
+  `identity.md` who it is, and `motivation.md` what it wants. `mecha persona
+  new` makes one, optionally starting from a relationship template. Ten
+  starter templates are copied into `relationships/` once, for you to edit
+  freely. `edit` opens a file in `$EDITOR`, and each saved change becomes a
+  new version. `lock` hides a persona while browsing, using the image
+  library's lock. `group add` declares a group whose members share an
+  about-me and a `files/` folder. A broken link to a template, group, voice or
+  library character is reported by name. Chatting with a persona comes in the
+  next step.
+
+- **`mecha sessions mark <id> experiment`** withdraws a session you ran as a
+  model probe from everything that learns from your sessions: the run
+  corpus, `reflect`, `distill`, `learn`, and its appraisal and scores. The
+  transcript is untouched, and `mecha sessions unmark` undoes it. Only you
+  can mark, from your own terminal; a run's shell is refused. The verb names
+  the session's graph episode, if it was distilled, for you to retract there.
+
 - **`mecha distill --backfill-appraisals`** appraises, after the fact, the
   sessions distilled before appraisals existed whose clean steer or denial
   was waiting only on an appraisal to be compared. There were 9 on the live
@@ -31,6 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that dropped them. `show` now answers from there: which proposal dropped the
   rule, when, its last text, and its validation record. It says "never live"
   for a rule only ever proposed. Read-only.
+- **Draft forecasts.** When a run stages a message, mecha now predicts what
+  you will do with it: send it as written, edit it, reject it, or leave it
+  past the outbox's patience. The prediction is your most common act on
+  similar earlier drafts. It is kept out of every review surface and every
+  prompt, so it cannot sway your verdict, and `sessions appraise` reports
+  how the predictions fare. Only acts stamped as yours count.
+
 - **Add and edit characters and styles from the Library tab.** **Add
   character** takes a portrait from your device, a name and a description.
   **Add style** takes a name and its text. **Edit** changes an approved

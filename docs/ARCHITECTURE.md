@@ -805,6 +805,79 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   recorded per run and a new field moves every older row's comparison (the
   `requests_on_owner` precedent); they are owed to nobody outside.
 
+## Personas
+
+`persona.rs` is the store behind personas — characters the owner writes and
+talks to, kept apart from the assistant. `docs/PERSONA-DESIGN.md` is the
+contract. Build step 1 (the store and `mecha persona`) and the core of step 2
+(`persona::agent`: what a persona chat runs on) exist; the chat surface,
+memory and the web page come in later steps and read the store through this
+module.
+
+- **Separation is by location, never by session kind.** A persona's
+  transcripts go under `~/.mecha/personas/<persona>/sessions/`, which no
+  reader of `~/.mecha/sessions/` scans. `runlog::Scan::admits` admits every
+  kind it does not know, and older binaries cannot be taught otherwise, so a
+  `SessionKind::Persona` could be recorded but can exclude nothing.
+- **The owner's files are never rewritten by code.** `persona.toml`, the
+  Markdown, relationship templates, `groups.toml` and `about-me.md` are the
+  owner's; a starter is copied in once and a group is appended. Approval,
+  provenance, the browse lock and the version live in a machine-written
+  `state.toml` beside `persona.toml`, because the `toml` crate cannot edit a
+  file in place and `lock` would otherwise erase the owner's comments.
+- **Unknown keys fail the load; unknown values narrow.** `persona.toml` denies
+  unknown fields. An unknown value in a closed set loads as the narrowest variant
+  (`answers` → `files`, `user_facts` → `off`) and is reported in
+  `Persona::notes`. A persona folder without `state.toml` loads unapproved and
+  of untrusted origin, and `--yes` cannot approve it unread.
+- **Group membership lives once**, in each persona's `groups`. `groups.toml`
+  only declares groups; a persona naming an undeclared group is a broken link.
+- **Links are by name, resolved on load, broken ones named**
+  (`Store::problems`): relationship templates, groups, voice profiles, and the
+  image-library character, which must be approved. `create` refuses a
+  broken link, while a later hand edit is reported. A missing or empty
+  `## Core` is also reported, since the re-anchor needs it.
+- **A version covers what a chat renders**, including the text of the relationship templates it
+  names. `snapshot` copies those files to `versions/<digest>/` and appends
+  `versions/log.jsonl`, and it is idempotent. Editing `colleague.md` therefore
+  makes a new version of every persona that names it.
+- **Starters are offered once** (`relationships/.seeded`). An edited starter
+  keeps the edit, a deleted one stays deleted, and an upgrade adds only starters
+  not yet offered. They ship in the public crate, so a test holds them to the
+  design's §15 wording rules.
+- **Reserved names.** Persona folders sit beside `files/`, `groups/`,
+  `relationships/`, `voices/`, `scenarios/`, `removed/` and `sessions/`, so none of those
+  can name a persona. A `persona.toml` planted in one is a load error.
+- **The lock is the image library's.** It is a browse filter
+  (`Store::visible`), not encryption, and uses the library's `lock.toml`
+  password.
+- **A persona's tools are declared, never derived.** `Tool::for_persona`
+  returns the form a persona may have, and the default is `None`.
+  `Capabilities` has no axis for reading an owner store, and its default is
+  all-false, so a rule derived from it would make the next tool added
+  eligible by omission. `persona::agent::registry_for` builds a fresh
+  `Registry` from the pool. It admits only declared tools whose persona form
+  is not `Egress::Chosen` on this install, so `web_search` is refused where no
+  blind backend exists. It builds rather than narrows because
+  `RunContext::withheld` still offers a tool it refuses. `answers = "files"`
+  leaves out every untrusted-input tool.
+  `every_real_tool_declares_as_the_design_lists` checks every constructible
+  tool against the design's explicit list, on blind, chosen and mixed search
+  chains.
+- **`web_search`'s persona form is always the blind path.** It uses
+  `search_blind`, which means blind backends only at quick depth, whatever the
+  taint, and its schema has no `depth`. Egress is per depth, and the armed
+  narrowing never fires in a persona chat, which is private at most. The leak
+  guard is lifted for persona chats (`persona::agent::security`, D11).
+- **The system prompt is replaced, never appended to.** It is rendered from a
+  pinned version (`pin` / `load_version`), which is re-digested on read, so a
+  snapshot edited on disk is refused. The order is base block, date guidance,
+  relationship templates (front matter and comments stripped), identity, then
+  motivation. It is a function of the version alone. `agent_config`
+  destructures `AgentConfig` exhaustively and switches off every lever that
+  reads the charter, the board or the session corpus, so a new lever is a
+  compile error there until someone decides it.
+
 ## Security model
 
 **The full trifecta map lives in `docs/TRIFECTA.md`** — the four ways a
@@ -3406,6 +3479,58 @@ refactor from making it two values.
 
 ## The outbox
 
+**The harness forecasts the owner's act on each drafted message, sealed
+and readout only** (`forecast.rs`, the owner's ruling (a) of 2026-09-29;
+X3 unparked).
+- **What v1 forecasts:** when a store opened `with_forecasts` stages a
+  model-authored message with a body, it predicts the owner's act:
+  `released_unchanged`, `edited`, `rejected`, or `no_act`. The prediction
+  is the owner's most frequent stamped act on earlier drafts staged through
+  the same tool in the same armed state, taken from history settled before
+  the staging, so it is pre-registered by construction.
+- **What counts as the owner's act:** only acts the stamps prove the
+  owner's (`owners_unchanged_release`, `owners_edit`, a reject stamped
+  `owner`), and a draft untouched past the outbox's patience (R37 carried
+  to items). An unreadable history or charter makes a forecast with no
+  basis, never a guess.
+- **Sealed:** it is written to `<outbox>/forecasts/forecasts.jsonl`, out
+  of the item walk. No per-draft surface, staging result or prompt reads
+  it, because a forecast of the owner's approval shown to the reviewer or
+  the acting model is a way to steer the verdict.
+- **Where it is on:** the agent's route turns it on with the charter
+  window. Every surface that opens its own store per session does it with
+  `OutboxStore::open_like`, which carries the setting. This is a
+  convention checked at review, not a type: the plain `open` is still
+  public. A surface that uses it shows up as a rising count of drafts
+  staged with no forecast.
+  Tests pass a fixed window, so none reads the machine's charter.
+- **Off the staging path's critical cost:** the history is the newest
+  `HISTORY_LIMIT` items (ids sort by time), the window is resolved once per
+  store, and the ledger's lock is tried, never waited on. The ledger itself
+  is read whole on each staging, to know which history items were real
+  forecasts. That read grows with lifetime drafts and has no retention yet:
+  a few milliseconds at today's sizes, and the first thing to bound if it
+  ever shows.
+- **A torn line stops the base rate until it is repaired.** One unreadable
+  ledger or history line makes every later forecast `basis_unreadable`,
+  since which history is real can no longer be told. The readout counts it,
+  so it is fail-closed and said, but nothing heals it: the line is repaired
+  or removed by hand.
+- **History is what the ledger forecast as real.** A smoke run's draft
+  (`MECHA_SESSION_KIND=test`) is recorded `test`, predicts nothing, never
+  counts as history, and the readout sets it aside. The instrument must not
+  measure its own tests. Drafts from before forecasting began are not
+  history either.
+- **Scored only at read time**, by `sessions appraise` (`forecast::summarize`),
+  under the patience window recorded on the forecast when it was made
+  (`patience_secs`), so a later edit to the charter's outbox line cannot
+  re-score history. The ledger's append and `forget`'s rewrite share
+  `<forecasts>/.lock`.
+  A miss feeds nothing until the forecasts are calibrated. `sessions delete`
+  purges a session's forecasts with its drafts.
+- **A model forecaster comes later**, as an arm measured against this one
+  on the same drafts.
+
 **Anticipatory evidence belongs to an exact draft version.**
 `OutboxItem::predictions` stores immutable argument snapshots; editing and
 reassessment leave the old forecast changed or reassessed, never failed or
@@ -4292,6 +4417,35 @@ The design decisions, each of which is a bug if undone:
   a chat into a test, never a test into anything else. The incident: 46 of
   143 appraised sessions were development runs before the mark existed, and
   the instrument measured its own tests.
+- **The owner can mark a session an experiment after the fact**
+  (`mecha sessions mark <id> experiment`, ruling 4D). A model probe run as
+  ordinary chat is not the owner's work, and the appraiser read two such
+  probes on the live store as the owner's own wishes. The mark is a line
+  in `<sessions>/marks/marks.jsonl`, never an edit to the transcript.
+  `Session::list_counting` applies it, so the session lists as
+  `Experiment` and every reader that admits by kind (the corpus,
+  `reflect`, `distill`) passes it over with no change of its own. Its text
+  appraisal and scores leave every door of the appraisal store, though it
+  stays on record so it is never appraised twice, and `learn` withholds
+  its reflections (`Admission::Withdrawn`, ahead of a pending proposal's
+  claim). `proposals accept` refuses a proposal resting on one, even with
+  `--force`, because a consolidated rule cannot shed one reflection's part.
+  A rule already learned from it is named for the owner to retire, never
+  passed over in silence. The two readers that take reflections by
+  session id rather than through a listing, `sessions compare`'s lesson
+  pass and `validate`'s probe corpus, drop a marked session's too
+  (`Marks::keep_unmarked`). `sessions delete` takes the mark with every
+  other trace (`forget`).
+  - **A ledger that cannot be read stops the listing.** A lost mark would
+    hand the probe back to the learner as the owner's work, and a word a
+    newer build wrote reads as a withdrawal.
+  - **Only the owner marks, at their own terminal.** Every run's shell is
+    refused, including an interactive one with a person in the
+    conversation, because a mark hides a session's record and a run must
+    not hide its own.
+  - **Not reached: the graph episode.** mecha-graph is a separate store,
+    so the verb names the episode `(agent:mecha, <id>)` for the owner to
+    retract there.
 - **A rate over a zero denominator is `None`, never zero.** "Nothing went
   wrong" and "nothing happened" are different answers, and printing them the
   same way is how a component that stopped working reads as healthy — the
