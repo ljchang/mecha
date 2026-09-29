@@ -83,6 +83,7 @@ something shipped.
 | [`APPRAISAL-WIRING-DESIGN.md`](APPRAISAL-WIRING-DESIGN.md) | What the appraisal system is for — the agent's own interpretation of meaning, serving self-learning, goal alignment and multi-goal planning — and the five phases that wire it in: foundation, one interpretation, meaning in the run, alignment and the scheduler, guardrails and mid-run policy change. §6 holds the rulings |
 | [`ASSISTANT-FOLLOW-THROUGH-DESIGN.md`](ASSISTANT-FOLLOW-THROUGH-DESIGN.md) | Durable delegated work, delivery recovery, verification, commitments and the daily assistant view |
 | [`BRANCHING-DESIGN.md`](BRANCHING-DESIGN.md) | Branching a conversation, and why the TUI batch deliberately left it out |
+| [`DOCUMENT-EXTRACTION-DESIGN.md`](DOCUMENT-EXTRACTION-DESIGN.md) | PDFs as two outputs per page — the text layer (exact, what a quote is checked against) and a local OCR model's transcript — with the parser confined, the cache by content hash, the OCR server on demand behind a socket, and what whole-page OCR measured as not good enough for (tables) |
 | [`EGRESS-DESIGN.md`](EGRESS-DESIGN.md) | Why the send axis is a class (`None < Blind < Chosen`) rather than a bool, which of the two security controls owns each class, and what a blind send does not close. Read §6 before treating `Blind` as safety rather than risk reduction |
 | [`EXPERIMENT-DESIGN.md`](EXPERIMENT-DESIGN.md) | The instrument that states, from artifacts alone, what differed between two runs and what it cost. §5 depends on `BRANCHING-DESIGN.md`; issue #60 holds the communication policy question. Part II (§13–§21): ablation as a closed lever set, the lifetime trial for cross-session subsystems, the principal simulator, and the datasets for grading the appraisal system |
 | [`FACTORY-DOCS-DESIGN.md`](FACTORY-DOCS-DESIGN.md) | The published documentation site and what belongs on it |
@@ -93,6 +94,7 @@ something shipped.
 | [`MAIL-UX-DESIGN.md`](MAIL-UX-DESIGN.md) | Mail as a surface you work: the phases, and what each settled |
 | [`NOTES-GRAPH-DESIGN.md`](NOTES-GRAPH-DESIGN.md) | One web surface over the graph: capture, find, edit — the consolidation of the notes and graph tabs |
 | [`MEETING-POLL-UX-DESIGN.md`](MEETING-POLL-UX-DESIGN.md) | The meeting poll from the owner's chair: one call, one card, a deterministic sweep, and the stated decision policy. §6 holds the rulings the build waits on |
+| [`PERSONA-DESIGN.md`](PERSONA-DESIGN.md) | Characters the owner authors and talks to — relationship templates, memory, files they can read and cite, voice, self-portraits — kept in their own sessions, apart from the assistant's reach. §3 is the boundary; §16 holds every ruling |
 | [`POLL-DESIGN.md`](POLL-DESIGN.md) | Polls as a general-purpose instrument — the six kinds and the lecture mode |
 | [`PROVENANCE-DESIGN.md`](PROVENANCE-DESIGN.md) | Why nearly every conversation arms, and four ways to label by provenance instead of by server — self-writes, field labels, grounded destinations, re-derivation — without any classifier lowering a label |
 | [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) | The public surface: what mecha may publish, and under what review |

@@ -1,0 +1,16 @@
+# Forwards the socket's connections to the OCR llama-server, and is the idle
+# timer: systemd-socket-proxyd exits after MECHA_LLAMA_IDLE with no open
+# connection, and llama-ocr.service (StopWhenUnneeded=yes) stops with it.
+# Change the idle time with `systemctl --user edit llama-ocr-proxy.service`:
+#   [Service]
+#   Environment=MECHA_LLAMA_IDLE=20min
+# A client holding a keep-alive connection open keeps the model up for as long
+# as it holds it; every client here closes or pools for seconds, not minutes.
+[Unit]
+Description=Proxy to the on-demand document-OCR llama-server (idle stop)
+Requires=llama-ocr.service
+After=llama-ocr.service
+
+[Service]
+Environment=MECHA_LLAMA_IDLE=10min
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=${MECHA_LLAMA_IDLE} 127.0.0.1:18085

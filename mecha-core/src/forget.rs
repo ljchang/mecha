@@ -67,6 +67,9 @@ pub struct Roots {
     /// Mail triage records: the owner's threads, so they stay; a drafting
     /// conversation's pointer (`draft_session`) leaves them.
     pub triage: PathBuf,
+    /// The document cache (`MECHA_DOCUMENTS_DIR`, or `~/.mecha/documents`):
+    /// keyed by a PDF's hash, so named in the residue rather than purged.
+    pub documents: PathBuf,
 }
 
 impl Roots {
@@ -104,6 +107,7 @@ impl Roots {
             workflows: home.join("workflows"),
             requests: home.join("requests"),
             triage: crate::mail_triage::TriageStore::default_root()?,
+            documents: crate::document::Cache::default_dir()?,
             regression_pins: std::env::var_os("MECHA_REGRESSION_PINS")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
@@ -129,6 +133,7 @@ impl Roots {
             workflows: home.join("workflows"),
             requests: home.join("requests"),
             triage: home.join("mail-triage"),
+            documents: home.join("documents"),
             regression_pins: home.join("regression-sessions.txt"),
             home: home.to_path_buf(),
         }
@@ -527,6 +532,23 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         ),
     }
 
+    // The document cache is keyed by a PDF's hash, not by the session that
+    // read it, so delete cannot find this conversation's entries in it. Said
+    // rather than left silent: a report that reads `complete` while a
+    // forgotten conversation's PDFs sit extracted on disk is the leak this
+    // module's header names (found on review of #404).
+    // Where the cache really is: `MECHA_DOCUMENTS_DIR` relocates it, and a
+    // check that looked only under ~/.mecha would report a relocated cache
+    // clean (found on review).
+    if dir_has_entries(&roots.documents) {
+        report.residue.push(format!(
+            "{} keeps the text of every PDF any conversation read, by file rather than \
+             by conversation, so this one's were kept — `mecha document forget <file>` \
+             removes one, `mecha document prune --days 0` all of them",
+            roots.documents.display()
+        ));
+    }
+
     if report.errors.is_empty() {
         std::fs::remove_file(&parked).with_context(|| format!("removing {}", parked.display()))?;
         report.complete = true;
@@ -691,6 +713,15 @@ fn purge_learning(roots: &Roots, id: &str, keep_distilled: bool, report: &mut Re
     });
     if let Err(e) = result {
         report.errors.push(format!("learning store: {e:#}"));
+    }
+}
+
+/// Whether `dir` exists and holds anything. Unreadable counts as holding
+/// something: unknown is never clean.
+fn dir_has_entries(dir: &Path) -> bool {
+    match std::fs::read_dir(dir) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
     }
 }
 
