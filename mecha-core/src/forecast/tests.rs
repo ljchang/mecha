@@ -439,3 +439,61 @@ fn a_smoke_runs_forecast_is_set_aside() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The smoke-run mark is decided at the staging site, from the process's
+/// `MECHA_SESSION_KIND` — which a unit test ignores unless it opts in — so
+/// it is measured the way `session`'s kind override is: a child of this
+/// test binary stages one draft under each environment, and the forecast's
+/// `test` flag must follow it, both ways (review of #401).
+#[test]
+fn a_smoke_runs_staging_marks_its_forecast_and_an_ordinary_one_does_not() {
+    let exe = std::env::current_exe().unwrap();
+    for (kind, expect) in [(Some("test"), "true"), (None, "false")] {
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.args([
+            "forecast::tests::smoke_mark_probe",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("MECHA_KIND_PROBE_EXPECT", "test")
+        .env("MECHA_FORECAST_PROBE_TEST", expect);
+        match kind {
+            Some(k) => cmd.env(crate::session::SESSION_KIND_ENV, k),
+            None => cmd.env_remove(crate::session::SESSION_KIND_ENV),
+        };
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{kind:?}:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+            "the probe must actually run:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}
+
+/// The child half of the test above.
+#[test]
+#[ignore]
+fn smoke_mark_probe() {
+    let expect = std::env::var("MECHA_FORECAST_PROBE_TEST").unwrap() == "true";
+    let dir = root("smoke-probe");
+    let store = OutboxStore::open(&dir)
+        .unwrap()
+        .with_forecasts(Window::Fixed(hours(2 * DAY)));
+    let item = draft(&store, "mail_send", false, 0, Utc::now());
+    let (made, _) = load(&dir).unwrap();
+    assert_eq!(made.len(), 1);
+    assert_eq!(made[0].item_id, item.id);
+    assert_eq!(
+        made[0].test, expect,
+        "the forecast follows the staging's kind"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
