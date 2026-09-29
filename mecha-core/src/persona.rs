@@ -1963,6 +1963,87 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// §3.2's boundary is an absence — no reader of the assistant's
+    /// sessions looks under `personas/` — which is the shape that stops being
+    /// true silently. So: a real transcript in a persona's `sessions/`, the
+    /// real readers run over the real layout, and a control proving the same
+    /// readers *would* take that transcript if they were pointed at it.
+    #[test]
+    fn no_session_reader_sees_a_persona_transcript() {
+        use crate::runlog::{Corpus, Scan};
+        use crate::session::{split_admitted, Session, SessionKind, SessionMeta};
+        let home = scratch();
+        let meta = |id: &str, kind| SessionMeta {
+            id: id.into(),
+            created_at: chrono::Utc::now(),
+            provider: "local".into(),
+            model: "m".into(),
+            workspace: home.clone(),
+            title: None,
+            kind,
+        };
+        let sessions = home.join("sessions");
+        Session::create(
+            &sessions,
+            meta("20260929T000000-assist01", Some(SessionKind::Web)),
+        )
+        .unwrap();
+        let dir = home.join("personas");
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        let persona_sessions = Store::load(&dir).sessions_dir("mara");
+        // The worst case: a kind every default reader admits.
+        Session::create(&persona_sessions, meta("20260929T000001-persona1", None)).unwrap();
+
+        let ids = |d: &Path| -> Vec<String> {
+            Session::list(d)
+                .unwrap()
+                .into_iter()
+                .map(|(m, _)| m.id)
+                .collect()
+        };
+        let admitted = |d: &Path| -> Vec<String> {
+            split_admitted(Session::list(d).unwrap())
+                .0
+                .into_iter()
+                .map(|(m, _)| m.id)
+                .collect()
+        };
+        let scan = Scan {
+            include_tests: true,
+            ..Scan::default()
+        };
+        let read = |d: &Path| Corpus::scan(d, &scan).unwrap().sessions_read;
+
+        // What the assistant's readers see: its own session, never Mara's.
+        assert_eq!(ids(&sessions), vec!["20260929T000000-assist01".to_string()]);
+        assert_eq!(
+            Session::list_headers_counting(&sessions).unwrap().0.len(),
+            1
+        );
+        assert!(!admitted(&sessions).iter().any(|id| id.contains("persona")));
+        assert_eq!(read(&sessions), read(&home.join("no-such-dir")) + 1);
+
+        // Control: the transcript is readable and would be admitted.
+        assert_eq!(
+            ids(&persona_sessions),
+            vec!["20260929T000001-persona1".to_string()]
+        );
+        if std::env::var_os("MECHA_SESSION_KIND").is_none() {
+            assert_eq!(admitted(&persona_sessions).len(), 1);
+        }
+        assert_eq!(read(&persona_sessions), 1);
+
+        // And the default layout keeps the two trees apart.
+        if std::env::var_os("MECHA_SESSION_DIR").is_none() {
+            let (s, p) = (
+                Session::default_dir().unwrap(),
+                Store::default_dir().unwrap(),
+            );
+            assert!(!p.starts_with(&s) && !s.starts_with(&p), "{s:?} / {p:?}");
+        }
+        std::fs::remove_dir_all(home).ok();
+    }
+
     #[test]
     fn removal_moves_the_whole_folder_aside() {
         let dir = scratch();
