@@ -30,7 +30,7 @@ use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crate::imagelib::{self, write_atomic};
+use crate::imagelib::{self, write_atomic_mode};
 pub use crate::imagelib::{Origin, Status};
 
 /// A name — persona, relationship, group or voice: `[a-z0-9][a-z0-9_-]*`.
@@ -1041,12 +1041,35 @@ const GROUPS_TOML: &str = "\
 # description = \"the kelp project\"
 ";
 
+/// A folder of the store, owner-only like every `~/.mecha` leaf: what is in
+/// here is about the owner. Re-applied to a folder that already exists.
+fn private_dir(dir: &Path) -> Result<()> {
+    crate::create_private_dir(dir).with_context(|| format!("creating {}", dir.display()))
+}
+
+/// Claim a new owner-only folder: fails if it exists, so two claims of one
+/// name cannot both succeed.
+fn claim_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
+/// Write-then-rename, owner-only.
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_atomic_mode(path, bytes, Some(0o600))
+}
+
 /// Create the store's shared folders and files where missing, and offer the
 /// starters. Never overwrites anything.
 pub fn ensure_layout(dir: &Path) -> Result<()> {
+    private_dir(dir)?;
     for sub in ["files", "groups", "relationships", "voices", "scenarios"] {
-        std::fs::create_dir_all(dir.join(sub))
-            .with_context(|| format!("creating {}", dir.join(sub).display()))?;
+        private_dir(&dir.join(sub))?;
     }
     write_new(&dir.join("about-me.md"), ABOUT_ME)?;
     write_new(&dir.join("groups.toml"), GROUPS_TOML)?;
@@ -1060,7 +1083,8 @@ pub fn ensure_layout(dir: &Path) -> Result<()> {
 
 fn ensure_group_dirs(dir: &Path, group: &str) -> Result<()> {
     let g = dir.join("groups").join(group);
-    std::fs::create_dir_all(g.join("files"))?;
+    private_dir(&g)?;
+    private_dir(&g.join("files"))?;
     write_new(&g.join("about-me.md"), ABOUT_ME)?;
     Ok(())
 }
@@ -1069,11 +1093,14 @@ fn ensure_group_dirs(dir: &Path, group: &str) -> Result<()> {
 /// something was.
 fn write_new(path: &Path, text: &str) -> Result<bool> {
     use std::io::Write;
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(path) {
         Ok(mut f) => {
             f.write_all(text.as_bytes())
                 .with_context(|| format!("writing {}", path.display()))?;
@@ -1090,7 +1117,8 @@ fn write_new(path: &Path, text: &str) -> Result<bool> {
 /// adds just that one. Returns the names copied.
 pub fn seed_starters(dir: &Path) -> Result<Vec<String>> {
     let rel = dir.join("relationships");
-    std::fs::create_dir_all(&rel)?;
+    private_dir(dir)?;
+    private_dir(&rel)?;
     let seeded_path = rel.join(SEEDED);
     let mut seeded: BTreeSet<String> = match std::fs::read_to_string(&seeded_path) {
         Ok(s) => s
@@ -1121,7 +1149,7 @@ pub fn seed_starters(dir: &Path) -> Result<Vec<String>> {
             0,
             "# Starters already offered; one deleted from here is offered again.\n",
         );
-        write_atomic(&seeded_path, text.as_bytes())?;
+        write_private(&seeded_path, text.as_bytes())?;
     }
     Ok(copied)
 }
@@ -1154,7 +1182,7 @@ pub fn add_group(dir: &Path, name: &str, description: &str) -> Result<()> {
             toml::Value::String(description.trim().to_string())
         ));
     }
-    write_atomic(&path, text.as_bytes())?;
+    write_private(&path, text.as_bytes())?;
     ensure_group_dirs(dir, name)
 }
 
@@ -1283,7 +1311,7 @@ fn motivation_template(display: &str) -> String {
 }
 
 /// Create a persona. The owner's are approved on creation. The folder is
-/// claimed with a plain `create_dir`, so two creations of one name cannot
+/// claimed with an exclusive create, so two creations of one name cannot
 /// both succeed, and every link it names must resolve — a persona is never
 /// *created* broken, though a later hand edit can break it (and is told so).
 pub fn create(dir: &Path, lib: &imagelib::Library, new: NewPersona) -> Result<Persona> {
@@ -1343,7 +1371,7 @@ pub fn create(dir: &Path, lib: &imagelib::Library, new: NewPersona) -> Result<Pe
     }
 
     let pdir = dir.join(&new.name);
-    std::fs::create_dir(&pdir).map_err(|e| {
+    claim_dir(&pdir).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AlreadyExists {
             anyhow!("a persona named `{}` already exists", new.name)
         } else {
@@ -1351,17 +1379,17 @@ pub fn create(dir: &Path, lib: &imagelib::Library, new: NewPersona) -> Result<Pe
         }
     })?;
     for sub in ["files", "sessions", "candidates", "versions"] {
-        std::fs::create_dir(pdir.join(sub))?;
+        claim_dir(&pdir.join(sub))?;
     }
-    write_atomic(
+    write_private(
         &pdir.join("persona.toml"),
         render_settings(&new, &tools, answers).as_bytes(),
     )?;
-    write_atomic(
+    write_private(
         &pdir.join("identity.md"),
         identity_template(&new.display).as_bytes(),
     )?;
-    write_atomic(
+    write_private(
         &pdir.join("motivation.md"),
         motivation_template(&new.display).as_bytes(),
     )?;
@@ -1396,7 +1424,7 @@ fn write_state(pdir: &Path, state: &State) -> Result<()> {
          # Your settings are in persona.toml.\n\n{}",
         toml::to_string_pretty(state)?
     );
-    write_atomic(&pdir.join("state.toml"), text.as_bytes())
+    write_private(&pdir.join("state.toml"), text.as_bytes())
 }
 
 fn current(dir: &Path, name: &str) -> Result<(Store, Persona)> {
@@ -1407,7 +1435,7 @@ fn current(dir: &Path, name: &str) -> Result<(Store, Persona)> {
     if let Some(e) = store
         .errors
         .iter()
-        .find(|e| e.path.parent().is_some_and(|p| p.ends_with(name)))
+        .find(|e| e.path == store.persona_dir(name).join("persona.toml"))
     {
         bail!("persona `{name}` does not load: {}", e.why);
     }
@@ -1437,7 +1465,7 @@ pub fn snapshot(dir: &Path, name: &str) -> Result<State> {
     }
     let pdir = store.persona_dir(name);
     let versions = pdir.join("versions");
-    std::fs::create_dir_all(&versions)?;
+    private_dir(&versions)?;
     let target = versions.join(&digest);
     if !target.is_dir() {
         // Built aside and renamed in, so a half-written version never has
@@ -1447,9 +1475,9 @@ pub fn snapshot(dir: &Path, name: &str) -> Result<State> {
             for (file, text) in &files {
                 let path = tmp.join(file);
                 if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
+                    private_dir(parent)?;
                 }
-                std::fs::write(&path, text)?;
+                write_new(&path, text)?;
             }
             std::fs::rename(&tmp, &target)?;
             Ok(())
@@ -1477,10 +1505,14 @@ pub fn snapshot(dir: &Path, name: &str) -> Result<State> {
     };
     {
         use std::io::Write;
-        let mut log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(versions.join("log.jsonl"))?;
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut log = options.open(versions.join("log.jsonl"))?;
         writeln!(log, "{}", serde_json::to_string(&record)?)?;
     }
     write_state(&pdir, &state)?;
@@ -1528,7 +1560,7 @@ pub fn remove(dir: &Path, name: &str) -> Result<PathBuf> {
         bail!("no persona named `{name}`");
     }
     let removed = dir.join("removed");
-    std::fs::create_dir_all(&removed)?;
+    private_dir(&removed)?;
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
     // The stamp alone is per second: remove, recreate and remove again in
     // one second must not collide with the first.
@@ -2110,6 +2142,103 @@ mod tests {
             assert!(!p.starts_with(&s) && !s.starts_with(&p), "{s:?} / {p:?}");
         }
         std::fs::remove_dir_all(home).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_store_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch();
+        let mut n = new("mara");
+        n.relationships = vec!["colleague".into()];
+        let v = create(&dir, &no_lib(), n).unwrap().state;
+        add_group(&dir, "work", "").unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        for d in [
+            "",
+            "mara",
+            "mara/files",
+            "mara/sessions",
+            "mara/versions",
+            "files",
+            "relationships",
+            "groups/work",
+            "groups/work/files",
+        ] {
+            assert_eq!(mode(&dir.join(d)), 0o700, "{d}/");
+        }
+        let snap = format!("mara/versions/{}", v.digest);
+        for f in [
+            "mara/persona.toml",
+            "mara/identity.md",
+            "mara/motivation.md",
+            "mara/state.toml",
+            "mara/versions/log.jsonl",
+            "about-me.md",
+            "groups.toml",
+            "groups/work/about-me.md",
+            "relationships/colleague.md",
+            "relationships/.seeded",
+        ] {
+            assert_eq!(mode(&dir.join(f)), 0o600, "{f}");
+        }
+        assert_eq!(mode(&dir.join(&snap)), 0o700);
+        assert_eq!(mode(&dir.join(&snap).join("identity.md")), 0o600);
+        assert_eq!(mode(&dir.join(&snap).join("relationships")), 0o700);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_candidate_character_is_named_as_unapproved() {
+        let dir = scratch();
+        let lib_dir = dir.join("imagelib");
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 4)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        for (name, origin) in [("mara", Origin::Owner), ("ada", Origin::ModelClean)] {
+            imagelib::create(
+                &lib_dir,
+                imagelib::NewEntry {
+                    kind: imagelib::Kind::Character,
+                    name: name.into(),
+                    text: "tall, dark hair".into(),
+                    portrait: Some(png.clone()),
+                    source_seed: None,
+                    origin,
+                    locked: false,
+                },
+            )
+            .unwrap();
+        }
+        let lib = imagelib::Library::load(&lib_dir).0;
+        let mut n = new("mara");
+        n.character = Some("mara".into());
+        create(&dir.join("p"), &lib, n).unwrap();
+        let mut n = new("ada");
+        n.character = Some("ada".into());
+        let refused = create(&dir.join("p"), &lib, n).unwrap_err();
+        assert!(format!("{refused}").contains("candidate"), "{refused}");
+        let mut n = new("priya");
+        n.character = Some("priya".into());
+        let refused = create(&dir.join("p"), &lib, n).unwrap_err();
+        assert!(
+            format!("{refused}").contains("not in the image library"),
+            "{refused}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_load_error_is_blamed_on_its_own_file() {
+        let dir = scratch();
+        ensure_layout(&dir).unwrap();
+        // A voice profile named like a persona that does not exist.
+        std::fs::create_dir_all(dir.join("voices/mara")).unwrap();
+        std::fs::write(dir.join("voices/mara/profile.toml"), "").unwrap();
+        let e = approve(&dir, "mara").unwrap_err();
+        assert_eq!(format!("{e}"), "no persona named `mara`");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
