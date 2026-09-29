@@ -1490,12 +1490,19 @@ fn forecasts_line(
             s.basis_unreadable,
             "of the no-basis ones made over an unreadable history or charter",
         ),
+        (
+            s.drafts_unread,
+            "unscored: the outbox could not be read whole, so their drafts were not seen",
+        ),
         (s.unforecast, "draft(s) staged with no forecast"),
         (s.skipped, "unreadable forecast line(s)"),
     ] {
         if n > 0 {
             out.push_str(&format!(" · {n} {what}"));
         }
+    }
+    if s.outbox_unreadable {
+        out.push_str(" · coverage unchecked: the outbox could not be read whole");
     }
     out
 }
@@ -1672,6 +1679,7 @@ async fn appraise(
                         &made,
                         skipped,
                         &drafts,
+                        !outbox_unreadable,
                         mecha_core::forecast::outbox_patience(),
                         chrono::Utc::now(),
                     ))
@@ -2250,17 +2258,7 @@ async fn appraise(
     println!();
     println!("  {}\n", crate::success_readout::line(&successes));
     println!("  {}\n", predictions_line(&calibration, outbox_unreadable));
-    println!(
-        "  {}{}\n",
-        forecasts_line(&forecasts),
-        // Which drafts the forecasts were scored against: a short walk makes
-        // "unknown" partly the outbox's doing, and says so (review of #401).
-        if outbox_unreadable {
-            " (the outbox could not be read whole, so unknown includes drafts it could not see)"
-        } else {
-            ""
-        }
-    );
+    println!("  {}\n", forecasts_line(&forecasts));
     println!(
         "  {}\n",
         match &expectations {
