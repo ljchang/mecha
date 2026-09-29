@@ -155,6 +155,28 @@ mark_untrusted_output = true
 # default: it breaks "read my notes, then look something up".
 # block_sends_after_private = false
 
+# PDFs: the `document_read` tool and `mecha document extract`. Each page's
+# own text layer (exact — what a quote is checked against) and, for scans or
+# when asked, a local OCR model's Markdown transcript. poppler runs confined
+# (bwrap by default; a confinement that cannot run fails the extraction, it
+# never falls back). The OCR server must be on this machine — page images of
+# your documents go to it. Global file only. See
+# docs/DOCUMENT-EXTRACTION-DESIGN.md; scripts/llama/install.sh installs the
+# on-demand OCR server this points at.
+# [documents]
+# ocr = true
+# ocr_url = "http://127.0.0.1:8085"    # llama-ocr.socket; starts on first use
+# ocr_model = "paddleocr-vl-1.6"
+# confine = "bwrap"                     # bwrap | landlock | none
+# max_file_mb = 100
+# max_pages = 2000
+# max_ocr_pages = 30                    # per call; the rest are named, not lost
+# cache_days = 30                       # ~/.mecha/documents, by content hash
+# layout = true                         # read OCR pages region by region (tables);
+#                                       # scripts/layout/install.sh installs it
+# layout_python = "~/.mecha/layout/venv/bin/python"
+# layout_model = "~/.mecha/layout/PP-DocLayoutV3.onnx"
+
 # Search backends, in preference order; the chain falls through on failure.
 # A conversation holding private data and third-party content is served only
 # by backends whose destination your config fixes and whose query is search

@@ -1,0 +1,20 @@
+# The always-listening door to the embeddings model (harrier-oss-v1-0.6b).
+# systemd owns 127.0.0.1:8081 from boot, so every consumer keeps the address
+# it has always used, and a request after a reboot or an idle stop waits
+# through a cold start (~4 s) instead of being refused — idle-stopped must
+# never look like absent (the 2026-08-19 incident in llama-embed.service).
+#
+# The first connection starts llama-embed-proxy.service, which requires
+# llama-embed.service and is ordered after it, and that unit is only "active"
+# once /health answers ok.
+[Unit]
+Description=Socket for the on-demand embeddings llama-server (harrier-oss-v1-0.6b, :8081)
+
+[Socket]
+ListenStream=127.0.0.1:8081
+# Named, because the default would be llama-embed.service — the backend, which
+# does not speak socket activation.
+Service=llama-embed-proxy.service
+
+[Install]
+WantedBy=sockets.target

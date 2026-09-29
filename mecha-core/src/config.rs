@@ -37,6 +37,10 @@ pub struct Config {
     /// Local image generation — the `image_generate` tool. Absent means no
     /// tool. Global-file only; see [`crate::imagegen::ImageConfig`].
     pub image: Option<crate::imagegen::ImageConfig>,
+    /// Document extraction — the `document_read` tool and `mecha document`.
+    /// Absent means no tool. Global-file only; see
+    /// [`crate::document::DocumentsConfig`].
+    pub documents: Option<crate::document::DocumentsConfig>,
     /// User commands run at loop lifecycle points. See [`crate::hooks`].
     #[serde(rename = "hook")]
     pub hooks: Vec<HookConfig>,
@@ -346,6 +350,7 @@ impl Default for Config {
             subagents: Vec::new(),
             search: Vec::new(),
             image: None,
+            documents: None,
             hooks: Vec::new(),
             rules: Vec::new(),
             approval: ApprovalConfig::default(),
@@ -1137,6 +1142,10 @@ impl ConfigLayer {
         if let Some(h) = self.harness.as_mut() {
             opt(&mut h.source_dir);
         }
+        if let Some(d) = self.documents.as_mut() {
+            opt(&mut d.layout_python);
+            opt(&mut d.layout_model);
+        }
         for server in self.mcp.iter_mut().flatten() {
             server.command = expand_home_str(&server.command);
             for arg in server.args.iter_mut() {
@@ -1313,6 +1322,17 @@ impl Config {
         if trust == LayerTrust::Project && layer.image.take().is_some() {
             tracing::warn!(
                 "[image] in {} is ignored — image generation loads from the \
+                 global config only",
+                path.display()
+            );
+        }
+        // `[documents]` for `[image]`'s reason with page images in place of
+        // prompts — `ocr_url` is where the owner's documents are sent — and
+        // one more: `confine` is the confinement around the PDF parser, and a
+        // cloned repository must not be able to switch it off.
+        if trust == LayerTrust::Project && layer.documents.take().is_some() {
+            tracing::warn!(
+                "[documents] in {} is ignored — document extraction loads from the \
                  global config only",
                 path.display()
             );
@@ -1629,6 +1649,7 @@ struct ConfigLayer {
     #[serde(rename = "search")]
     search: Option<Vec<SearchBackendConfig>>,
     image: Option<crate::imagegen::ImageConfig>,
+    documents: Option<crate::document::DocumentsConfig>,
     #[serde(rename = "hook")]
     hooks: Option<Vec<HookConfig>>,
     #[serde(rename = "rule")]
@@ -1969,6 +1990,12 @@ impl ConfigLayer {
         // Only ever reached from the global layer — `merge_file` strips it.
         if let Some(v) = self.image {
             cfg.image = Some(v);
+        }
+        // Wholesale, `[image]`'s reason: a URL from one layer and a
+        // confinement from another is a configuration nobody wrote. Only
+        // ever reached from the global layer — `merge_file` strips it.
+        if let Some(v) = self.documents {
+            cfg.documents = Some(v);
         }
         // Wholesale, like MCP servers and for the same reason: a project that
         // cannot turn a global hook off cannot be trusted to run anything.
@@ -2343,6 +2370,39 @@ mod tests {
         assert_eq!(
             image.diffusion_model,
             crate::imagegen::ImageConfig::default().diffusion_model
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_layer_cannot_choose_where_pages_go_or_unconfine_the_parser() {
+        // `ocr_url` receives page images of the owner's documents and
+        // `confine` is the sandbox around the PDF parser: a cloned
+        // repository choosing either is `[image]`'s hazard twice over.
+        let dir =
+            std::env::temp_dir().join(format!("mecha-documents-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(
+            &path,
+            "[documents]\nocr_url = \"http://127.0.0.1:9998\"\nconfine = \"none\"\n",
+        )
+        .unwrap();
+
+        let mut cfg = Config::default();
+        cfg.merge_file(&path, LayerTrust::Project).unwrap();
+        assert_eq!(cfg.documents, None);
+
+        let mut cfg = Config::default();
+        cfg.merge_file(&path, LayerTrust::Global).unwrap();
+        let docs = cfg
+            .documents
+            .expect("the operator's own file configures it");
+        assert_eq!(docs.ocr_url, "http://127.0.0.1:9998");
+        assert_eq!(docs.confine, crate::sandbox::Backend::None);
+        assert_eq!(
+            docs.ocr_model,
+            crate::document::DocumentsConfig::default().ocr_model
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

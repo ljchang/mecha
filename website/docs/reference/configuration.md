@@ -54,8 +54,8 @@ hooks to execute and tools to enable. That is a reasonable bargain for someone
 who just decided to work in that repository, and no bargain at all for a
 scheduled run firing at 03:00 with nobody watching.
 
-Six tables are stripped out of a project layer for the same reason, wherever the
-run happens: `[messages]`, `[slack]`, `[web]`, `[harness]`, `[image]` and `[approval]`.
+Seven tables are stripped out of a project layer for the same reason, wherever the
+run happens: `[messages]`, `[slack]`, `[web]`, `[harness]`, `[image]`, `[documents]` and `[approval]`.
 `[approval]` controls whether inline code needs an explicit decision; `[messages]` is
 receiver-side admission policy, so a cloned repository must not be able to set
 `inbound = "accept"` on your sessions; `[slack]` is the remote control, and a
@@ -64,8 +64,9 @@ the tailnet surface's port and the one identity allowed through it; and
 `[harness]` names the checkout an unattended nightly reads and treats as the
 authority on which of this harness's protections are load-bearing — a repository
 able to set that could hand the diagnostician its own prose about what is safe to
-change; and `[image]` names where model-written image prompts are sent, which is
-only safe while you chose it. The strip is loud rather than silent — a project file naming any of them
+change; `[image]` names where model-written image prompts are sent, which is
+only safe while you chose it; and `[documents]` names where page images of your
+documents are sent and how the PDF parser is confined. The strip is loud rather than silent — a project file naming any of them
 logs a warning saying the section is ignored, because an ignored section that
 looks applied is the silently-degrading-sandbox shape. A global one is kept, of
 course; there is a test on each side of that boundary.
@@ -673,6 +674,39 @@ Global file only — a project layer's `[image]` is ignored with a warning.
 and a seed, and the prompt goes only to a server on this machine. That is why
 the address must be loopback — the declaration is only true while it is.
 
+## `[documents]`
+
+Registers the `document_read` tool and enables `mecha document extract`.
+Absent means neither. Global file only — a project layer's `[documents]` is
+ignored with a warning. The design, and what was measured, is
+`docs/DOCUMENT-EXTRACTION-DESIGN.md`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `ocr` | bool | `true` | Transcribe pages with the OCR model. Off, extraction is the text layer only, and a page with no text layer says so. |
+| `ocr_url` | string | `http://127.0.0.1:8085` | The OCR llama-server. Must be on this machine; anything else is refused at startup. `scripts/llama/install.sh` installs an on-demand one here. |
+| `ocr_model` | string | `paddleocr-vl-1.6` | The model name sent with each page, and part of the cache key. |
+| `ocr_ready_secs` | integer | `120` | How long the first page may wait for the server to start and answer `/health`. |
+| `page_timeout_secs` | integer | `180` | One page's rendering or OCR running longer is abandoned, and the page says so. |
+| `ocr_max_tokens` | integer | `8192` | Output cap per page; a page cut off at it is an error, never a partial transcript. |
+| `max_file_mb` | integer | `100` | Larger files are refused before anything parses them. |
+| `max_pages` | integer | `2000` | Documents with more pages are refused. |
+| `max_ocr_pages` | integer | `30` | Pages sent to OCR in one call; the answer names the pages left for the next. |
+| `confine` | string | `bwrap` | How the PDF parser (poppler) is confined: `bwrap`, `landlock`, or `none`. `docker` is refused. A confinement that cannot run fails the extraction — there is no fallback. |
+| `memory_mb` | integer | `2048` | Address-space ceiling for each parser process. |
+| `cache` | bool | `true` | Keep extractions under `~/.mecha/documents/`, by the file's sha256. |
+| `cache_days` | integer | `30` | Extractions not read for this long are removed when a new one is written. `0` keeps them until `mecha document prune`. |
+| `layout` | bool | `true` | Read OCR pages region by region: a layout model (PP-DocLayoutV3) finds the tables, formulas, headings and paragraphs, and each is read with its own prompt — tables come back as Markdown tables, headings marked. Off, or not installed, pages are read whole and the transcript says so. `scripts/layout/install.sh` installs it. |
+| `layout_python` | path | `~/.mecha/layout/venv/bin/python` | The interpreter that runs the layout model (it needs `onnxruntime` and `numpy`). It runs confined like the parser, CPU only. |
+| `layout_model` | path | `~/.mecha/layout/PP-DocLayoutV3.onnx` | The layout model file. Its hash is part of the cache key. |
+| `layout_threads` | integer | `4` | CPU threads for the layout model. |
+| `layout_memory_mb` | integer | `4096` | Address-space ceiling for the layout process. |
+
+`document_read` declares private data (your files) and untrusted input (a
+document's words are its author's): reading a PDF arms both legs of the
+trifecta, as reading a mail body does. It sends nothing — which is only true
+while `ocr_url` is loopback.
+
 ## Triggers are not configurable here
 
 There is no `[[trigger]]` table, and that is deliberate. Trigger definitions live in
@@ -701,6 +735,7 @@ Manage them with `mecha trigger add` / `edit` / `rm`, or edit the files directly
 | `MECHA_SESSION_DIR` | Where transcripts are written. Default `~/.mecha/sessions`. |
 | `MECHA_OUTBOX_DIR` | Where outbox items are staged. Default `~/.mecha/outbox`. |
 | `MECHA_MESSAGES_DIR` | The inter-agent mailbox. Default `~/.mecha/messages`. |
+| `MECHA_DOCUMENTS_DIR` | The document extraction cache. Default `~/.mecha/documents`. |
 | `MECHA_LEARNING_DIR` | The learning store. Default `~/.mecha/learning`. |
 | `MECHA_COMPARISONS_DIR` | The comparison store (point-wise and counterfactual comparisons). Default `~/.mecha/comparisons`. |
 | `MECHA_TRIGGERS_DIR` | Trigger definitions and their ledger. Default `~/.mecha/triggers`. |
