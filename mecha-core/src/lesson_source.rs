@@ -223,6 +223,10 @@ pub fn backfill_targets(sources: &Sources<'_>, reflections: &[Reflexion]) -> BTr
     reflections
         .iter()
         .filter(|r| r.learnable())
+        // `pair` refuses a reflection with no lesson of its own only after
+        // the appraisal gate; decided here, so no appraisal is paid for a
+        // pair that would be refused anyway (review of #388).
+        .filter(|r| lesson_block(&r.domain, &[r.reflexion_text.as_str()]).is_some())
         .filter(|r| matches!(sources.pair(r), Err(Exclusion::NoAppraisal)))
         .map(|r| r.session_id.clone())
         .collect()
@@ -599,6 +603,11 @@ mod tests {
             r.dropped_at = Some("2026-09-25T01:00:00Z".into());
             r
         };
+        let lessonless = {
+            let mut r = reflection("r6", "s-lessonless", "denial", &["fs_write"]);
+            r.reflexion_text = "   ".into();
+            r
+        };
         let targets = backfill_targets(
             &sources,
             &[
@@ -607,6 +616,7 @@ mod tests {
                 reflection("r3", "s-followup", "followup", &[]),
                 untrusted,
                 dropped,
+                lessonless,
             ],
         );
         assert_eq!(targets, ["s-waiting".to_string()].into());
