@@ -466,6 +466,11 @@ pub enum Command {
     /// for it in ~/.mecha/skills, and which of them this run would load.
     Skills(commands::skills::Args),
 
+    /// The image library — recurring characters and styles that
+    /// image_generate's `cast` and `style` compile against. List, add,
+    /// approve a model's proposal, lock for browsing.
+    Imagelib(commands::imagelib::Args),
+
     /// Show the standing priorities in ~/.mecha/charter.toml, ranked highest
     /// first. Only a person edits a charter — `mecha charter edit` hands the
     /// file to $EDITOR — and never a model.
@@ -602,6 +607,7 @@ impl Command {
             | Command::Proposals(_)
             | Command::Review(_)
             | Command::Skills(_)
+            | Command::Imagelib(_)
             | Command::Charter(_)
             | Command::Config(_)
             | Command::Model(_) => false,
@@ -667,6 +673,7 @@ impl Command {
             | Command::Proposals(_)
             | Command::Review(_)
             | Command::Skills(_)
+            | Command::Imagelib(_)
             | Command::Charter(_)
             | Command::Config(_)
             | Command::Model(_) => false,
@@ -829,6 +836,7 @@ async fn dispatch() -> Result<()> {
         Command::Replay(args) => commands::replay::execute(&cli.global, args).await,
         Command::Tools(args) => commands::tools::execute(&cli.global, args).await,
         Command::Skills(args) => commands::skills::execute(&cli.global, args).await,
+        Command::Imagelib(args) => commands::imagelib::execute(&cli.global, args).await,
         Command::Charter(args) => commands::charter::execute(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
         Command::Config(args) => commands::config::execute(&cli.global, args).await,
