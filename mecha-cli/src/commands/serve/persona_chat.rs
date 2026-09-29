@@ -978,10 +978,17 @@ pub async fn history(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    respond(
-        chat.personas
-            .history(&state.library, &name, q.unlock.as_deref()),
-    )
+    // Off the async threads, as `list` is: it walks the transcripts.
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    match tokio::task::spawn_blocking(move || {
+        personas.history(&library, &name, q.unlock.as_deref())
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("listing chats: {e}")).into_response(),
+    }
 }
 
 /// POST /api/personas/{name}/resume
@@ -1754,6 +1761,59 @@ mod tests {
             .resume(&w.chat, &w.library, "mara", &id, None)
             .await
             .is_ok());
+    }
+
+    /// A persona's card shows its character's portrait only by the library's
+    /// rule: approved, and a locked one only with the live token — a locked
+    /// character's blob name must not reach a page that is not unlocked.
+    #[tokio::test]
+    async fn a_portrait_is_shown_by_the_librarys_rule() {
+        let w = world();
+        let lib_dir = w.root.join("imagelib");
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 4)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        for (name, origin, locked) in [
+            ("maya", mecha_core::imagelib::Origin::Owner, true),
+            ("sam", mecha_core::imagelib::Origin::ModelClean, false),
+        ] {
+            mecha_core::imagelib::create(
+                &lib_dir,
+                mecha_core::imagelib::NewEntry {
+                    kind: mecha_core::imagelib::Kind::Character,
+                    name: name.into(),
+                    text: "tall".into(),
+                    portrait: Some(png.clone()),
+                    source_seed: None,
+                    origin,
+                    locked,
+                },
+            )
+            .unwrap();
+        }
+        let portrait_of = |links: &str, token: Option<&str>| {
+            let toml = w.store().join("mara/persona.toml");
+            let text = std::fs::read_to_string(&toml).unwrap();
+            let text = text
+                .lines()
+                .filter(|l| !l.starts_with("character"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(&toml, format!("character = \"{links}\"\n{text}\n")).unwrap();
+            w.personas().list(&w.library, token)["personas"][0]["portrait"].clone()
+        };
+        // Locked character: no portrait, not even its blob name, until unlocked.
+        assert!(portrait_of("maya", None).is_null());
+        let token = w.library.grant_for_tests();
+        let shown = portrait_of("maya", Some(&token));
+        let url = shown.as_str().expect("unlocked: the portrait is shown");
+        assert!(
+            url.starts_with("/api/library/portrait/") && url.contains("unlock="),
+            "{url}"
+        );
+        // A candidate character never shows, unlocked or not.
+        assert!(portrait_of("sam", Some(&token)).is_null());
     }
 
     #[tokio::test]
