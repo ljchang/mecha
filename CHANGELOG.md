@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Archive or delete a conversation from the web chat's drawer.** Each row
+  has a ⋯ control. **Archive** hides a conversation and keeps the record
+  whole — learning, appraisal and the graph still read it — under a new
+  **archived** section; opening one (or **restore**) puts it back in the list. **Delete**
+  removes the transcript and everything derived from it: its workspace,
+  staged drafts and waiting questions, the reflections and learned rules
+  drawn from it, appraisals, and its knowledge-graph episode. A delete that
+  could not reach a store says so and can be run again to finish. The same
+  from the command line: `mecha sessions archive|unarchive|delete <id>`.
+  Deleting a distilled conversation needs the mecha-graph release with
+  `redact --source`.
+
 - **An image library of recurring characters and styles.** Add a character
   once — a portrait and a short description — and name it in
   `image_generate`'s new `cast` field, with what each person is wearing and
@@ -30,6 +42,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it.
 
 ### Changed
+
+- **The learning store no longer uses git.** `~/.mecha/learning/` is plain
+  files: opening it no longer runs `git init` or writes a `.gitignore`, and a
+  pass no longer commits. Git history kept every deleted reflection's text,
+  which a chat deleted with all its traces must not leave behind. Each pass
+  now appends one line to `passes.jsonl` — when it ran and what it counted,
+  never content — beside `runs.jsonl` and each rule's `sources` and
+  retirement fields, which already carried the lineage anything reads; the
+  undo for a bad rule is `mecha rules retire`, per rule. An existing `.git`
+  in the store is left where it is, unused; removing it is the owner's call.
 
 - **The local model's prompt cache is 16 GiB, not 32** (`-cram`, both launch
   scripts). It fills over hours and never shrinks while a model stays loaded,
@@ -64,6 +86,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or the reject. Now it counts only when it is stamped as yours, as a
   release already did. A stamped act that is not yours counts as neither,
   and acts from before the stamps existed keep their sign.
+
+- **A voice call whose browser never connects ends after 90 seconds**, not
+  at the fifteen-minute idle timeout. Until now it held the speech models
+  for the quarter hour, and for a call into an incognito chat it kept the
+  voice worker's log silence on for every other call in that time. Restart
+  the voice worker to apply it.
 
 - **A model switch waits for a reply in flight instead of failing.** The
   router refuses an explicit load with `model limit reached, try again

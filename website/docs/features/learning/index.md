@@ -20,8 +20,10 @@ mecha learn       # consolidate reflections into a rule set
 mecha rules       # what each rule has measured, and what should retire
 ```
 
-Everything lives in files under `~/.mecha/learning/`, which is a git
-repository. `git log` is the learning history; `git revert` is the undo.
+Everything lives in plain files under `~/.mecha/learning/`, and none of it is
+kept in git: a deleted reflection is gone, not preserved in a history.
+`runs.jsonl` and `passes.jsonl` are the learning history; `mecha rules retire`
+is the undo, one rule at a time, and `mecha rules restore` reverses it.
 
 | Path | What it is |
 |---|---|
@@ -31,6 +33,7 @@ repository. `git log` is the learning history; `git revert` is the undo.
 | `validations.jsonl` | Every attempted probe outcome, keyed to the rule set measured |
 | `validation-attempts.jsonl` | Input identities, reasons and arm receipts used to schedule retries |
 | `runs.jsonl` | One audit record per consolidation pass |
+| `passes.jsonl` | One line per pass that wrote to the store: when, and what it counted — never content |
 | `mined.jsonl`, `mined_outbox.jsonl`, `distilled.jsonl` | Idempotence ledgers |
 | `proposals/<id>.json` | Rule changes waiting for a human |
 
@@ -228,8 +231,8 @@ page do not wait on it, so there a task goal reads as unknown.
 
 ### Choose how changes go live
 
-Bare `mecha learn` applies immediately, with the learning store's git history as
-undo. The supplied automation uses **`mecha learn --auto`**:
+Bare `mecha learn` applies immediately, with `mecha rules retire` as the undo
+for any rule it should not have kept. The supplied automation uses **`mecha learn --auto`**:
 
 - A candidate that regresses any graded probe is refused.
 - A candidate with graded probes and no regression applies.

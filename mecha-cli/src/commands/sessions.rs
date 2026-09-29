@@ -242,6 +242,37 @@ pub enum Args {
         #[arg(long)]
         json: bool,
     },
+
+    /// Take a conversation out of the web chat's list. The record is kept
+    /// whole and every reader — learning, appraisal, the graph — still
+    /// reads it; `unarchive` puts it back.
+    Archive {
+        /// Session id or unique prefix.
+        id: String,
+    },
+
+    /// Put an archived conversation back in the list.
+    Unarchive {
+        /// Session id or unique prefix.
+        id: String,
+    },
+
+    /// Permanently delete a conversation and every trace of it: the
+    /// transcript, its workspace, staged drafts and questions, the lessons
+    /// and rules learned from it, its appraisals, and its episode in the
+    /// knowledge graph. Cannot be undone.
+    Delete {
+        /// Session id or unique prefix.
+        id: String,
+
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+
+        /// Emit the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// What `sessions appraise --appraise` says since row 2a-3 retired the
@@ -513,9 +544,218 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         Args::Path { id } => println!("{}", Session::find(&dir, &id)?.display()),
 
         Args::Stats { days, json } => stats(&dir, days, json)?,
+
+        Args::Archive { id } => {
+            let id = resolve_id(&dir, &id)?;
+            mecha_core::archive::archive(&dir, &id, chrono::Utc::now())?;
+            println!("archived {id}");
+        }
+
+        Args::Unarchive { id } => {
+            let id = resolve_id(&dir, &id)?;
+            if mecha_core::archive::unarchive(&dir, &id)? {
+                println!("unarchived {id}");
+            } else {
+                println!("{id} was not archived");
+            }
+        }
+
+        Args::Delete { id, yes, json } => {
+            // A session set aside by a forget that did not finish is no
+            // longer listed, so `find` cannot see it; the whole id still
+            // names it, and running again is how it finishes.
+            let id = if dir.join(format!("{id}.jsonl.forgetting")).exists() {
+                id
+            } else {
+                resolve_id(&dir, &id)?
+            };
+            // A detached task run writes this conversation from another
+            // process; deleting under it removes its workspace mid-call.
+            if let Some(task) = super::tasks::detached_writer(&id)? {
+                anyhow::bail!(
+                    "a run is working {task} in {id} — stop it first (`mecha tasks stop {task}`)"
+                );
+            }
+            if !yes && !confirm_delete(&dir, &id)? {
+                println!("kept {id}");
+                return Ok(());
+            }
+            let report = mecha_core::forget::forget(
+                &mecha_core::forget::Roots::from_config(&forget_config(&dir, &id)?)?,
+                &id,
+                &GraphCli,
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print_forget(&report);
+            }
+            if !report.complete {
+                anyhow::bail!(
+                    "{id} is only partly deleted; fix the above and run `mecha sessions delete {id}` again"
+                );
+            }
+        }
     }
 
     Ok(())
+}
+
+/// The config the conversation staged under: the owner's project layer over
+/// the global file, for a conversation rooted in the owner's project —
+/// `[outbox] dir` is not stripped from project layers, so its drafts may live
+/// only where that layer says.
+///
+/// **Never a chat's own jail.** A web, voice or task conversation's
+/// workspace is under `~/.mecha/work`, where the model writes files; reading
+/// a `mecha.toml` there would let the conversation being deleted relocate
+/// the outbox the delete purges (the report then says clean while the
+/// drafts survive) or make itself undeletable with a config that does not
+/// validate. There, and whenever a project layer fails to load, the global
+/// file alone decides.
+fn forget_config(dir: &std::path::Path, id: &str) -> Result<mecha_core::config::Config> {
+    let header = Session::peek_meta(&dir.join(format!("{id}.jsonl")))
+        .or_else(|| Session::peek_meta(&dir.join(format!("{id}.jsonl.forgetting"))));
+    let jails = mecha_core::work::mecha_home()?.join("work");
+    let jails = jails.canonicalize().unwrap_or(jails);
+    let project = header.map(|m| m.workspace).filter(|ws| {
+        ws.is_dir()
+            && !ws
+                .canonicalize()
+                .unwrap_or_else(|_| ws.clone())
+                .starts_with(&jails)
+    });
+    match project {
+        Some(ws) => mecha_core::config::Config::load(&ws).or_else(|e| {
+            eprintln!(
+                "mecha: {}: project config not used for this delete ({e:#}); using the global config",
+                ws.display()
+            );
+            mecha_core::config::Config::load_global()
+        }),
+        None => mecha_core::config::Config::load_global(),
+    }
+}
+
+/// A prefix to the one whole id it names — `find`'s rule, so an ambiguous
+/// prefix is an error and never a pick.
+fn resolve_id(dir: &std::path::Path, prefix: &str) -> Result<String> {
+    let path = Session::find(dir, prefix)?;
+    Session::peek_meta(&path)
+        .map(|m| m.id)
+        .with_context(|| format!("{} has no header", path.display()))
+}
+
+fn confirm_delete(dir: &std::path::Path, id: &str) -> Result<bool> {
+    use std::io::Write;
+    let title = Session::peek_meta(&dir.join(format!("{id}.jsonl")))
+        .and_then(|m| m.title)
+        .unwrap_or_default();
+    print!(
+        "Permanently delete {id} {title:?} and everything learned from it? \
+         This cannot be undone. [y/N] "
+    );
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(line.trim(), "y" | "Y" | "yes"))
+}
+
+fn print_forget(report: &mecha_core::forget::Report) {
+    let removed: Vec<String> = report
+        .removed
+        .iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(store, n)| format!("{store} {n}"))
+        .collect();
+    println!(
+        "{} {}",
+        if report.complete {
+            "deleted"
+        } else {
+            "partly deleted"
+        },
+        report.id
+    );
+    if removed.is_empty() {
+        println!("  nothing else held it");
+    } else {
+        println!("  removed: {}", removed.join(", "));
+    }
+    for r in &report.residue {
+        println!("  left: {r}");
+    }
+    for e in &report.errors {
+        println!("  failed: {e}");
+    }
+}
+
+/// The knowledge graph, reached through its own binary — on
+/// `commands::review`'s rule for where that binary is. The graph is another
+/// program's store behind its own key; mecha asks it to redact, it never
+/// opens the database itself.
+pub(crate) struct GraphCli;
+
+impl mecha_core::forget::GraphRedactor for GraphCli {
+    fn redact_session(&self, id: &str) -> Result<mecha_core::forget::GraphOutcome> {
+        let bin = super::review::graph_bin();
+        let out = match std::process::Command::new(&bin)
+            .args([
+                "redact",
+                "--source",
+                mecha_core::distill::EPISODE_SOURCE,
+                "--source-id",
+                id,
+                "--vacuum",
+                // The session id is exact, so the tombstone is safe to write
+                // even when nothing matched — and it is what refuses a
+                // distill that read the transcript before the delete and
+                // lands after it.
+                "--tombstone-absent",
+                "--json",
+            ])
+            .output()
+        {
+            Ok(out) => out,
+            // No binary is only "no graph" when there is no database either:
+            // a graph that exists and cannot be reached still holds the
+            // episode, and saying otherwise is the silently-degrading guard.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !graph_db().exists() => {
+                return Ok(mecha_core::forget::GraphOutcome::Absent);
+            }
+            Err(e) => {
+                return Err(anyhow::Error::new(e).context(format!(
+                    "running `{bin}` — install mecha-graph, or set MECHA_GRAPH_BIN"
+                )))
+            }
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            anyhow::bail!(
+                "`{bin} redact` failed: {}",
+                if stderr.trim().is_empty() {
+                    stdout.trim()
+                } else {
+                    stderr.trim()
+                }
+            );
+        }
+        let v: serde_json::Value = serde_json::from_str(stdout.trim())
+            .with_context(|| format!("`{bin} redact` answered something other than JSON"))?;
+        let n = v
+            .get("redacted")
+            .and_then(serde_json::Value::as_u64)
+            .with_context(|| format!("`{bin} redact` did not say how many it redacted: {v}"))?;
+        Ok(mecha_core::forget::GraphOutcome::Redacted(n as usize))
+    }
+}
+
+fn graph_db() -> std::path::PathBuf {
+    std::env::var_os("MECHA_GRAPH_DB")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".mecha-graph").join("graph.db")))
+        .unwrap_or_default()
 }
 
 /// One row of the rollup: everything recorded under one provider+model pair.
@@ -2895,5 +3135,51 @@ mod probe_readout_tests {
         let floors = Ok(Some((Summary::default(), 3)));
         assert_eq!(text_appraisals_json(&floors)["read"], false);
         assert!(text_appraisals_line(&floors).contains("floors"));
+    }
+
+    /// A chat's own jail never configures its delete: a `mecha.toml` the
+    /// model wrote there cannot relocate the outbox the delete purges, nor
+    /// make the conversation undeletable with a config that fails to load.
+    #[test]
+    fn a_chats_own_workspace_never_configures_its_delete() {
+        let home = crate::testenv::HomeGuard::new("forget-config");
+        let sessions = home.dir.join("sessions");
+        let jail = home.dir.join("work/web/chat-x");
+        std::fs::create_dir_all(&jail).unwrap();
+        std::fs::write(
+            jail.join("mecha.toml"),
+            "[outbox]\ndir = \"/tmp/elsewhere\"\n",
+        )
+        .unwrap();
+        let project = home.dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("mecha.toml"), "this is = = not toml").unwrap();
+        for (id, ws) in [
+            ("20260928T120000-jail", &jail),
+            ("20260928T120000-proj", &project),
+        ] {
+            mecha_core::session::Session::create(
+                &sessions,
+                mecha_core::session::SessionMeta {
+                    id: id.into(),
+                    created_at: chrono::Utc::now(),
+                    provider: "test".into(),
+                    model: "test".into(),
+                    workspace: ws.clone(),
+                    title: None,
+                    kind: Some(mecha_core::session::SessionKind::Test),
+                },
+            )
+            .unwrap();
+        }
+        let cfg = super::forget_config(&sessions, "20260928T120000-jail").unwrap();
+        assert_eq!(
+            cfg.outbox.dir, None,
+            "a chat's jail relocated the outbox its delete purges"
+        );
+        assert!(
+            super::forget_config(&sessions, "20260928T120000-proj").is_ok(),
+            "a project config that fails to load made the conversation undeletable"
+        );
     }
 }
