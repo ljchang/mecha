@@ -30,7 +30,8 @@ pub enum Cmd {
         #[arg(long, default_value = "auto")]
         mode: String,
         /// The whole extraction as JSON, including each page's text-layer
-        /// regions (boxes in PDF points).
+        /// regions and, for a transcript read through the layout stage, its
+        /// layout regions (boxes in PDF points).
         #[arg(long)]
         json: bool,
         /// Neither read nor write the cache.
@@ -95,11 +96,17 @@ pub async fn execute(args: Args) -> Result<()> {
             } else {
                 print!("{}", out.render(&file.display().to_string()));
             }
-            // A page that failed is printed in place; the exit status says so
-            // too, so a script cannot mistake a partial extraction for a whole.
-            let failed = out.pages.iter().filter(|p| p.ocr_error.is_some()).count();
+            if let Some(why) = &out.layout_unavailable {
+                eprintln!(
+                    "mecha: the layout stage is unavailable, OCR pages were read whole — {why}"
+                );
+            }
+            // A page that failed, or a region of one, is printed in place; the
+            // exit status says so too, so a script cannot mistake a partial
+            // extraction for a whole.
+            let failed = out.incomplete_pages();
             if failed > 0 {
-                bail!("{failed} page(s) could not be transcribed — see above");
+                bail!("{failed} page(s) could not be transcribed whole — see above");
             }
             Ok(())
         }

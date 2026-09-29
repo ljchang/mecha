@@ -32,12 +32,22 @@
 //! content: HTTP status, an `error` body, `finish_reason`, and content that is
 //! not empty (llama-server can answer HTTP 200 with nothing in it).
 //!
+//! **Tables go through a layout stage.** A transcript is read region by
+//! region: [`crate::layout`] finds the page's tables, formulas, headings and
+//! paragraphs (PP-DocLayoutV3, confined like the parser), each region is
+//! cropped from this process's own decode of the page and sent with the
+//! prompt the OCR model was trained for, and the page is assembled in the
+//! layout model's reading order. A layout stage that is configured but
+//! cannot run is named on every page it affects, and those pages are read
+//! whole — labelled so, never passed off as the layout reading.
+//!
 //! **Extraction is paid once per file.** Results are cached by the sha256 of
 //! the bytes that were actually rendered (the copy, not the path — a file that
 //! changes under the read cannot poison the entry), under
 //! `~/.mecha/documents/<sha256>/`, with the OCR transcripts keyed by model and
 //! pipeline so a model change never serves a stale reading.
 
+use crate::layout::{LayoutChild, LayoutModel, LayoutRegion, Task};
 use crate::sandbox::{Backend, Sandbox, SandboxConfig};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -49,8 +59,18 @@ use tokio_util::sync::CancellationToken;
 
 /// Bumped whenever the whole-page OCR recipe changes (prompt, render size,
 /// post-processing), so a cached transcript from an older recipe is not
-/// served as this one's. Part of every OCR cache key.
+/// served as this one's. Part of every whole-page OCR cache key.
 pub const OCR_PIPELINE: &str = "wp1";
+
+/// The layout recipe's version (render size, post-processing, prompts,
+/// assembly) — part of every layout-read cache key, beside the layout
+/// model's own hash, so a whole-page reading is never served as a layout
+/// one and a changed layout model never serves the old one's regions.
+pub const LAYOUT_PIPELINE: &str = "ly1";
+
+/// Region reads in flight at once: the OCR server's slot count (`-np 2`,
+/// `scripts/llama/mecha-ocr-server`). More would only queue there.
+pub const REGION_CONCURRENCY: usize = 2;
 
 /// The prompt PaddleOCR-VL is trained on for plain recognition. The model
 /// has six (`OCR:`, `Table Recognition:`, `Formula Recognition:`, `Chart
@@ -117,6 +137,20 @@ pub struct DocumentsConfig {
     /// Cached extractions not read for this many days are removed whenever a
     /// new one is written. `0` keeps them until `mecha document prune`.
     pub cache_days: u32,
+    /// Read OCR pages region by region through the layout model (design
+    /// §5). Off, every page is read whole — labelled so.
+    pub layout: bool,
+    /// The Python interpreter whose environment has `onnxruntime` and
+    /// `numpy`. Default `~/.mecha/layout/venv/bin/python`, which
+    /// `scripts/layout/install.sh` creates.
+    pub layout_python: Option<PathBuf>,
+    /// PP-DocLayoutV3's ONNX export. Default
+    /// `~/.mecha/layout/PP-DocLayoutV3.onnx`.
+    pub layout_model: Option<PathBuf>,
+    /// CPU threads for the layout model (it never touches the GPU).
+    pub layout_threads: u32,
+    /// Address-space ceiling for the layout worker, in MB.
+    pub layout_memory_mb: u64,
 }
 
 impl Default for DocumentsConfig {
@@ -135,6 +169,11 @@ impl Default for DocumentsConfig {
             memory_mb: 2048,
             cache: true,
             cache_days: 30,
+            layout: true,
+            layout_python: None,
+            layout_model: None,
+            layout_threads: 4,
+            layout_memory_mb: 4096,
         }
     }
 }
@@ -164,11 +203,33 @@ impl DocumentsConfig {
         if self.max_file_mb == 0 || self.max_pages == 0 || self.memory_mb == 0 {
             bail!("[documents] max_file_mb, max_pages and memory_mb must be greater than zero");
         }
+        if self.layout && !(1..=64).contains(&self.layout_threads) {
+            bail!("[documents] layout_threads must be between 1 and 64");
+        }
+        if self.layout && self.layout_memory_mb == 0 {
+            bail!("[documents] layout_memory_mb must be greater than zero");
+        }
         Ok(())
     }
 
     pub fn max_file_bytes(&self) -> u64 {
         self.max_file_mb.saturating_mul(1024 * 1024)
+    }
+
+    /// The layout worker's interpreter, configured or defaulted.
+    pub fn layout_python_path(&self) -> Result<PathBuf> {
+        match &self.layout_python {
+            Some(p) => Ok(p.clone()),
+            None => Ok(crate::work::mecha_home()?.join("layout/venv/bin/python")),
+        }
+    }
+
+    /// The layout model file, configured or defaulted.
+    pub fn layout_model_path(&self) -> Result<PathBuf> {
+        match &self.layout_model {
+            Some(p) => Ok(p.clone()),
+            None => Ok(crate::work::mecha_home()?.join("layout/PP-DocLayoutV3.onnx")),
+        }
     }
 }
 
@@ -470,6 +531,32 @@ impl Drop for Scratch {
     }
 }
 
+/// Address space, CPU seconds and the largest file a confined child may
+/// write, set between fork and exec and inherited through bwrap's exec by
+/// the program it runs — poppler, or the layout worker.
+pub(crate) fn limit(cmd: &mut tokio::process::Command, memory: u64, cpu: u64, fsize: u64) {
+    #[cfg(unix)]
+    unsafe {
+        // Raw syscalls only: this runs between fork and exec.
+        cmd.pre_exec(move || {
+            let set = |res, v: u64| {
+                let lim = libc::rlimit {
+                    rlim_cur: v as libc::rlim_t,
+                    rlim_max: v as libc::rlim_t,
+                };
+                if libc::setrlimit(res, &lim) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            };
+            set(libc::RLIMIT_AS, memory)?;
+            set(libc::RLIMIT_CPU, cpu)?;
+            set(libc::RLIMIT_FSIZE, fsize)?;
+            Ok(())
+        });
+    }
+}
+
 /// poppler, confined. One per extraction; every call is a fresh process.
 pub struct Renderer {
     sandbox: Sandbox,
@@ -505,30 +592,9 @@ impl Renderer {
             cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
             cmd.env("HOME", &scratch.dir);
         }
-        let memory = self.memory_bytes;
         let cpu = self.timeout.as_secs().saturating_add(5);
-        #[cfg(unix)]
-        unsafe {
-            // Inherited through bwrap's exec by the poppler process. Raw
-            // syscalls only: this runs between fork and exec.
-            cmd.pre_exec(move || {
-                let set = |res, v: u64| {
-                    let lim = libc::rlimit {
-                        rlim_cur: v as libc::rlim_t,
-                        rlim_max: v as libc::rlim_t,
-                    };
-                    if libc::setrlimit(res, &lim) != 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                };
-                set(libc::RLIMIT_AS, memory)?;
-                set(libc::RLIMIT_CPU, cpu)?;
-                // Bounds any one file the renderer writes (a page PNG).
-                set(libc::RLIMIT_FSIZE, 256 * 1024 * 1024)?;
-                Ok(())
-            });
-        }
+        // FSIZE bounds any one file the renderer writes (a page PNG).
+        limit(&mut cmd, self.memory_bytes, cpu, 256 * 1024 * 1024);
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -665,7 +731,16 @@ impl Renderer {
     /// One page as a PNG sized for the OCR projector, decoded and re-encoded
     /// here so nothing the renderer wrote reaches the model server verbatim.
     async fn page_png(&self, scratch: &Scratch, page: u32, size: (f32, f32)) -> Result<Vec<u8>> {
-        let dpi = ocr_dpi(size.0, size.1);
+        let img = self
+            .page_image(scratch, page, ocr_dpi(size.0, size.1))
+            .await?;
+        tokio::task::spawn_blocking(move || encode_png(&img)).await?
+    }
+
+    /// One page rendered at `dpi` and decoded here, under limits: the image
+    /// every later step — the layout model's tensor, each region's crop —
+    /// is made from, so none of them is the renderer's own bytes.
+    async fn page_image(&self, scratch: &Scratch, page: u32, dpi: u32) -> Result<image::RgbImage> {
         let name = format!("p{page}");
         self.run(
             scratch,
@@ -689,13 +764,13 @@ impl Renderer {
             .await
             .with_context(|| format!("the renderer wrote no image for page {page}"))?;
         let _ = tokio::fs::remove_file(&path).await;
-        tokio::task::spawn_blocking(move || reencode_png(&raw)).await?
+        tokio::task::spawn_blocking(move || decode_png(&raw)).await?
     }
 }
 
-/// Decode a PNG under explicit limits and write a fresh one: the page image
-/// the OCR server sees is always this process's own encoding.
-pub fn reencode_png(raw: &[u8]) -> Result<Vec<u8>> {
+/// Decode a PNG under explicit limits (8000 px a side, 512 MB) with the
+/// memory-safe `image` crate.
+pub fn decode_png(raw: &[u8]) -> Result<image::RgbImage> {
     let mut reader =
         image::ImageReader::with_format(std::io::Cursor::new(raw), image::ImageFormat::Png);
     let mut limits = image::Limits::default();
@@ -706,10 +781,39 @@ pub fn reencode_png(raw: &[u8]) -> Result<Vec<u8>> {
     let img = reader
         .decode()
         .context("the rendered page is not a valid PNG")?;
-    let rgb = img.to_rgb8();
+    Ok(img.to_rgb8())
+}
+
+/// A fresh PNG of an image this process holds.
+pub fn encode_png(img: &image::RgbImage) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    rgb.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)?;
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)?;
     Ok(out)
+}
+
+/// Decode a PNG under explicit limits and write a fresh one: the page image
+/// the OCR server sees is always this process's own encoding.
+pub fn reencode_png(raw: &[u8]) -> Result<Vec<u8>> {
+    encode_png(&decode_png(raw)?)
+}
+
+/// One region of a decoded page, as a fresh PNG no larger than the OCR
+/// projector's budget. `bbox` is in the image's pixels.
+pub fn crop_png(img: &image::RgbImage, bbox: [f32; 4]) -> Result<Vec<u8>> {
+    let (w, h) = (img.width(), img.height());
+    let x0 = (bbox[0].max(0.0).floor() as u32).min(w.saturating_sub(1));
+    let y0 = (bbox[1].max(0.0).floor() as u32).min(h.saturating_sub(1));
+    let x1 = (bbox[2].ceil().max(0.0) as u32).clamp(x0 + 1, w);
+    let y1 = (bbox[3].ceil().max(0.0) as u32).clamp(y0 + 1, h);
+    let mut crop = image::imageops::crop_imm(img, x0, y0, x1 - x0, y1 - y0).to_image();
+    let px = f64::from(crop.width()) * f64::from(crop.height());
+    if px > OCR_MAX_PIXELS {
+        let k = (OCR_MAX_PIXELS / px).sqrt();
+        let nw = ((f64::from(crop.width()) * k) as u32).max(1);
+        let nh = ((f64::from(crop.height()) * k) as u32).max(1);
+        crop = image::imageops::resize(&crop, nw, nh, image::imageops::FilterType::CatmullRom);
+    }
+    encode_png(&crop)
 }
 
 /// `pdfinfo -f 1 -l N` prints `Page    4 size: 612 x 792 pts` per page.
@@ -739,6 +843,18 @@ pub fn parse_page_sizes(text: &str, pages: u32) -> Vec<(f32, f32)> {
 
 // ── The OCR server ──────────────────────────────────────────────────────
 
+/// How a page's transcript was read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pipeline {
+    /// The whole page, one `OCR:` prompt — the only recipe before the
+    /// layout stage, so an entry without the field is this one.
+    #[default]
+    WholePage,
+    /// Region by region, through the layout model.
+    Layout,
+}
+
 /// One page's transcript, and what it cost.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OcrPage {
@@ -746,7 +862,33 @@ pub struct OcrPage {
     pub model: String,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// Wall clock for the page: rendering is not counted, the layout model
+    /// and every region read are.
     pub secs: f64,
+    #[serde(default)]
+    pub pipeline: Pipeline,
+    /// The layout model's regions, in reading order, each with what was
+    /// read there — boxes in PDF points, for a citation to open.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<LayoutRegion>,
+    /// The layout model's share of `secs`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub layout_secs: f64,
+    /// Why this page was read whole although the layout stage is
+    /// configured. Set when served, never cached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
+impl OcrPage {
+    /// Regions that were meant to be read and were not.
+    pub fn failed_regions(&self) -> usize {
+        self.regions.iter().filter(|r| r.error.is_some()).count()
+    }
 }
 
 pub struct OcrClient {
@@ -829,6 +971,12 @@ impl OcrClient {
     /// OCR one page image. Every way the answer can be empty or partial is an
     /// error here, so a caller never records a blank page as a transcript.
     pub async fn page(&self, png: &[u8]) -> Result<OcrPage> {
+        self.recognize(png, OCR_PROMPT).await
+    }
+
+    /// Read one image — a page or a region of one — with one of the model's
+    /// task prompts. The same envelope checks as [`OcrClient::page`].
+    pub async fn recognize(&self, png: &[u8], prompt: &str) -> Result<OcrPage> {
         use base64::Engine;
         let data = base64::engine::general_purpose::STANDARD.encode(png);
         let body = json!({
@@ -839,7 +987,7 @@ impl OcrClient {
                 "role": "user",
                 "content": [
                     {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{data}")}},
-                    {"type": "text", "text": OCR_PROMPT},
+                    {"type": "text", "text": prompt},
                 ],
             }],
         });
@@ -942,6 +1090,10 @@ pub fn parse_completion(status: u16, body: &str) -> Result<OcrPage> {
         prompt_tokens: usage("prompt_tokens"),
         completion_tokens: usage("completion_tokens"),
         secs: 0.0,
+        pipeline: Pipeline::WholePage,
+        regions: Vec::new(),
+        layout_secs: 0.0,
+        fallback: None,
     })
 }
 
@@ -1013,8 +1165,10 @@ impl Cache {
         self.root.join(sha)
     }
 
-    /// The OCR sub-key: model and pipeline, reduced to a safe file name.
-    pub fn ocr_key(model: &str) -> String {
+    /// The OCR sub-key: model and pipeline ([`OCR_PIPELINE`], or
+    /// [`LAYOUT_PIPELINE`] with the layout model's hash), reduced to a safe
+    /// file name.
+    pub fn ocr_key(model: &str, pipeline: &str) -> String {
         let clean: String = model
             .chars()
             .map(|c| {
@@ -1025,13 +1179,23 @@ impl Cache {
                 }
             })
             .collect();
-        format!("{clean}-{OCR_PIPELINE}")
+        let pipeline: String = pipeline
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        format!("{clean}-{pipeline}")
     }
 
-    fn ocr_path(&self, sha: &str, model: &str, page: u32) -> PathBuf {
+    fn ocr_path(&self, sha: &str, model: &str, pipeline: &str, page: u32) -> PathBuf {
         self.entry(sha)
             .join("ocr")
-            .join(Self::ocr_key(model))
+            .join(Self::ocr_key(model, pipeline))
             .join(format!("{page:05}.json"))
     }
 
@@ -1052,14 +1216,24 @@ impl Cache {
         )
     }
 
-    pub fn load_ocr(&self, sha: &str, model: &str, page: u32) -> Option<OcrPage> {
-        let p = self.ocr_path(sha, model, page);
+    pub fn load_ocr(&self, sha: &str, model: &str, pipeline: &str, page: u32) -> Option<OcrPage> {
+        let p = self.ocr_path(sha, model, pipeline, page);
         let page: OcrPage = serde_json::from_slice(&std::fs::read(&p).ok()?).ok()?;
-        (!page.markdown.trim().is_empty()).then_some(page)
+        (!page.markdown.trim().is_empty() && page.failed_regions() == 0).then_some(page)
     }
 
-    pub fn store_ocr(&self, sha: &str, model: &str, page: u32, ocr: &OcrPage) -> Result<()> {
-        write_atomic(&self.ocr_path(sha, model, page), &serde_json::to_vec(ocr)?)
+    pub fn store_ocr(
+        &self,
+        sha: &str,
+        model: &str,
+        pipeline: &str,
+        page: u32,
+        ocr: &OcrPage,
+    ) -> Result<()> {
+        write_atomic(
+            &self.ocr_path(sha, model, pipeline, page),
+            &serde_json::to_vec(ocr)?,
+        )
     }
 
     /// Remove entries whose `layer.json` was last read or written more than
@@ -1197,6 +1371,10 @@ pub struct Extraction {
     /// How poppler was confined, for the record.
     pub confinement: String,
     pub layer_cached: bool,
+    /// Why the layout stage could not be used in this call although it is
+    /// configured — the pages it affected say so too, and were read whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_unavailable: Option<String>,
 }
 
 impl Extraction {
@@ -1208,6 +1386,12 @@ impl Extraction {
             self.pages_total,
             &self.sha256[..12]
         );
+        if let Some(why) = &self.layout_unavailable {
+            out.push_str(&format!(
+                "(the layout stage is unavailable, so OCR pages below were read whole — tables and \
+                 headings in them are not reliable: {why})\n"
+            ));
+        }
         for p in &self.pages {
             if let Some(text) = &p.text {
                 out.push_str(&format!(
@@ -1222,8 +1406,13 @@ impl Extraction {
                 }
             }
             if let Some(ocr) = &p.ocr {
+                let how = match (ocr.pipeline, &ocr.fallback) {
+                    (Pipeline::Layout, _) => format!("read by region: {}", ocr.regions.len()),
+                    (Pipeline::WholePage, None) => "read whole".to_string(),
+                    (Pipeline::WholePage, Some(why)) => format!("read whole — {why}"),
+                };
                 out.push_str(&format!(
-                    "\n=== page {} of {} · OCR transcript ({}; a model's reading, not the file's text) ===\n",
+                    "\n=== page {} of {} · OCR transcript ({}, {how}; a model's reading, not the file's text) ===\n",
                     p.number, self.pages_total, ocr.model
                 ));
                 out.push_str(ocr.markdown.trim_end());
@@ -1249,6 +1438,17 @@ impl Extraction {
         }
         out
     }
+
+    /// Pages that were to be transcribed and were not wholly: a page that
+    /// failed, or one with a region that could not be read.
+    pub fn incomplete_pages(&self) -> usize {
+        self.pages
+            .iter()
+            .filter(|p| {
+                p.ocr_error.is_some() || p.ocr.as_ref().is_some_and(|o| o.failed_regions() > 0)
+            })
+            .count()
+    }
 }
 
 /// `[1,2,3,5,7,8]` → `1-3,5,7-8`.
@@ -1272,6 +1472,24 @@ pub fn compact_ranges(pages: &[u32]) -> String {
     out.join(",")
 }
 
+/// How one call's OCR pages are read, decided at its first OCR page.
+enum Stage {
+    /// `layout = false`.
+    WholePage,
+    /// The layout model is there; `key` is the cache's pipeline key and the
+    /// worker starts on the first page that is not cached.
+    Layout {
+        key: String,
+        worker: Option<Box<LayoutChild>>,
+    },
+    /// Configured and not usable, and why — every OCR page is read whole and
+    /// says so.
+    Unavailable(String),
+}
+
+/// The layout model's hash, remembered while the file is unchanged.
+type HashMemo = std::sync::Mutex<Option<(PathBuf, u64, std::time::SystemTime, String)>>;
+
 /// The extractor: config, the confined renderer, the OCR client if any, the
 /// cache if any. Cheap to build; holds no connection until used.
 pub struct Extractor {
@@ -1279,6 +1497,9 @@ pub struct Extractor {
     renderer: Renderer,
     ocr: Option<OcrClient>,
     cache: Option<Cache>,
+    /// `None` when `layout = false`, or its paths could not be resolved.
+    layout: Option<LayoutModel>,
+    layout_hash: HashMemo,
 }
 
 impl Extractor {
@@ -1291,16 +1512,85 @@ impl Extractor {
         } else {
             None
         };
+        let layout = if cfg.ocr && cfg.layout {
+            Some(LayoutModel::new(
+                cfg.layout_python_path()?,
+                cfg.layout_model_path()?,
+                cfg.confine,
+                cfg.layout_memory_mb,
+                cfg.layout_threads,
+                Duration::from_secs(cfg.page_timeout_secs.max(1)),
+            ))
+        } else {
+            None
+        };
         Ok(Extractor {
             renderer: Renderer::new(&cfg),
             ocr,
             cache,
+            layout,
+            layout_hash: std::sync::Mutex::new(None),
             cfg,
         })
     }
 
     pub fn config(&self) -> &DocumentsConfig {
         &self.cfg
+    }
+
+    /// The sha256 of the layout model file, read once per change of the file
+    /// — it is part of every layout cache key.
+    async fn layout_model_hash(&self, path: &Path) -> Result<String> {
+        let meta = std::fs::metadata(path)?;
+        let stamp = (path.to_path_buf(), meta.len(), meta.modified()?);
+        {
+            let memo = self.layout_hash.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((p, len, mtime, hash)) = memo.as_ref() {
+                if (p, *len, *mtime) == (&stamp.0, stamp.1, stamp.2) {
+                    return Ok(hash.clone());
+                }
+            }
+        }
+        let owned = path.to_path_buf();
+        let hash = tokio::task::spawn_blocking(move || -> Result<String> {
+            use std::io::Read;
+            let mut f = std::fs::File::open(&owned)?;
+            let mut h = Sha256::new();
+            let mut buf = vec![0u8; 1 << 20];
+            loop {
+                let n = f.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                h.update(&buf[..n]);
+            }
+            Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+        })
+        .await??;
+        *self.layout_hash.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((stamp.0, stamp.1, stamp.2, hash.clone()));
+        Ok(hash)
+    }
+
+    /// Decide how this call reads its OCR pages.
+    async fn stage(&self) -> Stage {
+        let Some(model) = &self.layout else {
+            return Stage::WholePage;
+        };
+        let found = match model.locate() {
+            Ok(f) => f,
+            Err(e) => return Stage::Unavailable(format!("{e:#}")),
+        };
+        match self.layout_model_hash(&found.model).await {
+            Ok(hash) => Stage::Layout {
+                key: format!("{LAYOUT_PIPELINE}-{}", &hash[..16]),
+                worker: None,
+            },
+            Err(e) => Stage::Unavailable(format!(
+                "cannot read the layout model {}: {e:#}",
+                found.model.display()
+            )),
+        }
     }
 
     /// Extract `pages` (a [`parse_pages`] spec) of the PDF in `bytes`.
@@ -1375,6 +1665,7 @@ impl Extractor {
         let mut ocr_budget = self.cfg.max_ocr_pages;
         let mut ready = false;
         let mut cancelled = false;
+        let mut stage: Option<Stage> = None;
         for n in wanted {
             if cancelled || cancel.is_some_and(|c| c.is_cancelled()) {
                 cancelled = true;
@@ -1417,11 +1708,16 @@ impl Extractor {
                             .get_or_insert_with(|| layer.text[n as usize - 1].clone());
                     }
                     Some(client) => {
-                        if let Some(hit) = self
-                            .cache
-                            .as_ref()
-                            .and_then(|c| c.load_ocr(&sha, client.model(), n))
-                        {
+                        if stage.is_none() {
+                            stage = Some(self.stage().await);
+                        }
+                        let st = stage.as_mut().expect("decided above");
+                        let size = layer
+                            .sizes
+                            .get(n as usize - 1)
+                            .copied()
+                            .unwrap_or((612.0, 792.0));
+                        if let Some(hit) = self.cached_ocr(&sha, client, st, n) {
                             page.ocr = Some(hit);
                             page.ocr_cached = true;
                         } else if ocr_budget == 0 {
@@ -1449,17 +1745,10 @@ impl Extractor {
                                     scratch.insert(Scratch::new(bytes)?)
                                 }
                             };
-                            let size = layer
-                                .sizes
-                                .get(n as usize - 1)
-                                .copied()
-                                .unwrap_or((612.0, 792.0));
-                            let work = async {
-                                match self.renderer.page_png(s, n, size).await {
-                                    Ok(png) => client.page(&png).await,
-                                    Err(e) => Err(e),
-                                }
-                            };
+                            let work = self.read_page(client, st, s, &sha, n, size);
+                            // Raced against the token: a cancel drops the page
+                            // mid-read — the region requests in flight and the
+                            // layout exchange with it — rather than waiting it out.
                             let Some(result) = until_cancelled(cancel, work).await else {
                                 cancelled = true;
                                 deferred.push(n);
@@ -1467,18 +1756,7 @@ impl Extractor {
                                 continue;
                             };
                             match result {
-                                Ok(ocr) => {
-                                    if let Some(cache) = &self.cache {
-                                        if let Err(e) =
-                                            cache.store_ocr(&sha, client.model(), n, &ocr)
-                                        {
-                                            tracing::warn!(
-                                                "document cache: page {n} not stored: {e:#}"
-                                            );
-                                        }
-                                    }
-                                    page.ocr = Some(ocr);
-                                }
+                                Ok(ocr) => page.ocr = Some(ocr),
                                 Err(e) => {
                                     page.ocr_error = Some(format!("{e:#}"));
                                     // A thin text layer is still the file's
@@ -1495,6 +1773,10 @@ impl Extractor {
             }
             out.push(page);
         }
+        let layout_unavailable = match stage {
+            Some(Stage::Unavailable(why)) => Some(why),
+            _ => None,
+        };
         Ok(Extraction {
             sha256: sha,
             pages_total: layer.pages,
@@ -1504,7 +1786,173 @@ impl Extractor {
             cancelled,
             confinement,
             layer_cached,
+            layout_unavailable,
         })
+    }
+
+    /// A cached transcript for this page under this call's recipe, labelled
+    /// as it is served.
+    fn cached_ocr(&self, sha: &str, client: &OcrClient, stage: &Stage, n: u32) -> Option<OcrPage> {
+        let cache = self.cache.as_ref()?;
+        match stage {
+            Stage::Layout { key, .. } => cache.load_ocr(sha, client.model(), key, n),
+            Stage::WholePage => cache.load_ocr(sha, client.model(), OCR_PIPELINE, n),
+            Stage::Unavailable(_) => {
+                let mut hit = cache.load_ocr(sha, client.model(), OCR_PIPELINE, n)?;
+                hit.fallback = Some("the layout stage is unavailable".into());
+                Some(hit)
+            }
+        }
+    }
+
+    /// Read one page that is not cached, by this call's recipe, and cache it
+    /// if it was read whole.
+    async fn read_page(
+        &self,
+        client: &OcrClient,
+        stage: &mut Stage,
+        s: &Scratch,
+        sha: &str,
+        n: u32,
+        size: (f32, f32),
+    ) -> Result<OcrPage> {
+        if let Stage::Layout { worker, .. } = stage {
+            if worker.is_none() {
+                let model = self.layout.as_ref().expect("a layout stage has a model");
+                match model.start().await {
+                    Ok(w) => *worker = Some(Box::new(w)),
+                    Err(e) => *stage = Stage::Unavailable(format!("{e:#}")),
+                }
+            }
+        }
+        let fallback = match stage {
+            Stage::Layout { key, worker } => {
+                let w = worker.as_mut().expect("started above");
+                let read = self.read_by_layout(client, w, s, n, size).await;
+                if read.is_err() {
+                    // A worker that failed mid-page is not trusted with the
+                    // next one: the next page starts a fresh one.
+                    *worker = None;
+                }
+                match read? {
+                    Some(ocr) => {
+                        if let (Some(cache), 0) = (&self.cache, ocr.failed_regions()) {
+                            // A cache is a saving, not a precondition.
+                            if let Err(e) = cache.store_ocr(sha, client.model(), key, n, &ocr) {
+                                tracing::warn!("document cache: page {n} not stored: {e:#}");
+                            }
+                        }
+                        return Ok(ocr);
+                    }
+                    None => Some("the layout model found no regions on this page".to_string()),
+                }
+            }
+            Stage::Unavailable(_) => Some("the layout stage is unavailable".to_string()),
+            Stage::WholePage => None,
+        };
+        let png = self.renderer.page_png(s, n, size).await?;
+        let mut ocr = client.page(&png).await?;
+        if let Some(cache) = &self.cache {
+            if let Err(e) = cache.store_ocr(sha, client.model(), OCR_PIPELINE, n, &ocr) {
+                tracing::warn!("document cache: page {n} not stored: {e:#}");
+            }
+        }
+        ocr.fallback = fallback;
+        Ok(ocr)
+    }
+
+    /// The layout reading of one page: regions found, each read with its own
+    /// prompt, assembled in reading order. `None` when the layout model finds
+    /// nothing to read, so the caller can read the page whole instead of
+    /// recording a blank one.
+    async fn read_by_layout(
+        &self,
+        client: &OcrClient,
+        worker: &mut LayoutChild,
+        s: &Scratch,
+        n: u32,
+        size: (f32, f32),
+    ) -> Result<Option<OcrPage>> {
+        use futures::StreamExt;
+        let dpi = crate::layout::layout_dpi(size.0, size.1);
+        let img = self.renderer.page_image(s, n, dpi).await?;
+        let started = Instant::now();
+        let found = worker.detect(&img).await.context("the layout stage")?;
+        let layout_secs = started.elapsed().as_secs_f64();
+        if found.is_empty() {
+            return Ok(None);
+        }
+        // Pixels of the render → PDF points, the frame the text layer's own
+        // regions use.
+        let pt = 72.0 / dpi as f32;
+        let mut regions: Vec<LayoutRegion> = found
+            .iter()
+            .map(|d| LayoutRegion {
+                label: d.label().to_string(),
+                score: d.score,
+                bbox: d.bbox.map(|v| v * pt),
+                markdown: None,
+                error: None,
+            })
+            .collect();
+        let mut jobs = Vec::new();
+        for (i, d) in found.iter().enumerate() {
+            let Some(prompt) = Task::of(d.label()).prompt() else {
+                continue;
+            };
+            if i >= crate::layout::MAX_REGIONS {
+                regions[i].error = Some(format!(
+                    "past the per-page limit of {} regions",
+                    crate::layout::MAX_REGIONS
+                ));
+                continue;
+            }
+            match crop_png(&img, d.bbox) {
+                Ok(png) => jobs.push((i, png, prompt)),
+                Err(e) => regions[i].error = Some(format!("{e:#}")),
+            }
+        }
+        // Boxed so the future's type names no closure lifetime — the tool's
+        // `async_trait` future must be `Send` for every one.
+        type Read<'a> = std::pin::Pin<
+            Box<dyn std::future::Future<Output = (usize, Result<OcrPage>)> + Send + 'a>,
+        >;
+        let reads: Vec<Read<'_>> = jobs
+            .into_iter()
+            .map(|(i, png, prompt)| -> Read<'_> {
+                Box::pin(async move { (i, client.recognize(&png, prompt).await) })
+            })
+            .collect();
+        let read: Vec<(usize, Result<OcrPage>)> = futures::stream::iter(reads)
+            .buffered(REGION_CONCURRENCY)
+            .collect()
+            .await;
+        let (mut prompt_tokens, mut completion_tokens) = (0, 0);
+        for (i, result) in read {
+            match result {
+                Ok(r) => {
+                    prompt_tokens += r.prompt_tokens;
+                    completion_tokens += r.completion_tokens;
+                    regions[i].markdown = Some(r.markdown);
+                }
+                Err(e) => regions[i].error = Some(format!("{e:#}")),
+            }
+        }
+        let markdown = crate::layout::assemble(&regions);
+        if markdown.trim().is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(OcrPage {
+            markdown,
+            model: client.model().to_string(),
+            prompt_tokens,
+            completion_tokens,
+            secs: started.elapsed().as_secs_f64(),
+            pipeline: Pipeline::Layout,
+            regions,
+            layout_secs,
+            fallback: None,
+        }))
     }
 }
 
@@ -1802,10 +2250,20 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
         assert_eq!(
-            Cache::ocr_key("paddleocr-vl-1.6"),
+            Cache::ocr_key("paddleocr-vl-1.6", OCR_PIPELINE),
             format!("paddleocr-vl-1.6-{OCR_PIPELINE}")
         );
-        assert_eq!(Cache::ocr_key("../x y"), format!(".._x_y-{OCR_PIPELINE}"));
+        assert_eq!(
+            Cache::ocr_key("../x y", OCR_PIPELINE),
+            format!(".._x_y-{OCR_PIPELINE}")
+        );
+        // A layout reading is another key from a whole-page one, and the
+        // pipeline part cannot climb out of the directory either.
+        assert_ne!(
+            Cache::ocr_key("m", &format!("{LAYOUT_PIPELINE}-0123abcd")),
+            Cache::ocr_key("m", OCR_PIPELINE)
+        );
+        assert_eq!(Cache::ocr_key("m", "../ly1"), "m-___ly1");
     }
 
     #[test]
@@ -1839,11 +2297,40 @@ mod tests {
             prompt_tokens: 1,
             completion_tokens: 2,
             secs: 0.5,
+            pipeline: Pipeline::WholePage,
+            regions: Vec::new(),
+            layout_secs: 0.0,
+            fallback: None,
         };
-        cache.store_ocr(&sha, "paddleocr-vl-1.6", 1, &ocr).unwrap();
-        assert_eq!(cache.load_ocr(&sha, "paddleocr-vl-1.6", 1), Some(ocr));
-        // Another model's transcript is another key.
-        assert!(cache.load_ocr(&sha, "other-model", 1).is_none());
+        let m = "paddleocr-vl-1.6";
+        cache.store_ocr(&sha, m, OCR_PIPELINE, 1, &ocr).unwrap();
+        assert_eq!(cache.load_ocr(&sha, m, OCR_PIPELINE, 1), Some(ocr.clone()));
+        // Another model's transcript is another key; so is the layout recipe's.
+        assert!(cache
+            .load_ocr(&sha, "other-model", OCR_PIPELINE, 1)
+            .is_none());
+        assert!(cache.load_ocr(&sha, m, LAYOUT_PIPELINE, 1).is_none());
+        // An entry written before the pipeline field existed reads as the
+        // whole-page recipe it was.
+        let old = r##"{"markdown":"# Old","model":"m","prompt_tokens":1,"completion_tokens":1,"secs":1.0}"##;
+        let old: OcrPage = serde_json::from_str(old).unwrap();
+        assert_eq!(old.pipeline, Pipeline::WholePage);
+        // A layout page with a region that failed is not served from the cache.
+        let partial = OcrPage {
+            pipeline: Pipeline::Layout,
+            regions: vec![LayoutRegion {
+                label: "table".into(),
+                score: 0.9,
+                bbox: [0.0; 4],
+                markdown: None,
+                error: Some("cut off".into()),
+            }],
+            ..ocr
+        };
+        cache
+            .store_ocr(&sha, m, LAYOUT_PIPELINE, 2, &partial)
+            .unwrap();
+        assert!(cache.load_ocr(&sha, m, LAYOUT_PIPELINE, 2).is_none());
 
         assert!(cache.prune(Duration::from_secs(3600)).unwrap().is_empty());
         let removed = cache.prune(Duration::ZERO).unwrap();
@@ -1903,10 +2390,92 @@ mod tests {
             cancelled: false,
             confinement: "bwrap".into(),
             layer_cached: false,
+            layout_unavailable: None,
         };
         let s = ex.render("papers/a.pdf");
         assert!(s.contains("page 1 of 3 · text layer"));
         assert!(s.contains("page 2 of 3 · OCR failed"));
         assert!(s.contains("pages not yet transcribed: 3"));
+        assert!(!s.contains("layout stage"));
+        assert_eq!(ex.incomplete_pages(), 1);
+    }
+
+    /// A layout reading, a whole-page one by choice, and a whole-page one
+    /// because the layout stage could not run are three different labels —
+    /// the last never passes for the first.
+    #[test]
+    fn a_transcript_says_how_it_was_read_and_a_fallback_says_why() {
+        let ocr = |pipeline, fallback: Option<&str>, regions| OcrPage {
+            markdown: "Ada's table".into(),
+            model: "paddleocr-vl-1.6".into(),
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            secs: 0.0,
+            pipeline,
+            regions,
+            layout_secs: 0.0,
+            fallback: fallback.map(str::to_string),
+        };
+        let page = |number, o| Page {
+            number,
+            text: None,
+            has_text_layer: false,
+            ocr: Some(o),
+            ocr_error: None,
+            ocr_cached: false,
+            regions: Vec::new(),
+        };
+        let region = |error: Option<&str>| LayoutRegion {
+            label: "table".into(),
+            score: 0.9,
+            bbox: [0.0; 4],
+            markdown: None,
+            error: error.map(str::to_string),
+        };
+        let mut ex = Extraction {
+            sha256: sha256_hex(b"x"),
+            pages_total: 3,
+            mode: Mode::Ocr,
+            pages: vec![
+                page(
+                    1,
+                    ocr(Pipeline::Layout, None, vec![region(None), region(None)]),
+                ),
+                page(2, ocr(Pipeline::WholePage, None, Vec::new())),
+                page(
+                    3,
+                    ocr(Pipeline::Layout, None, vec![region(Some("cut off"))]),
+                ),
+            ],
+            ocr_deferred: Vec::new(),
+            cancelled: false,
+            confinement: "bwrap".into(),
+            layer_cached: false,
+            layout_unavailable: None,
+        };
+        let s = ex.render("a.pdf");
+        assert!(
+            s.contains("page 1 of 3 · OCR transcript (paddleocr-vl-1.6, read by region: 2;"),
+            "{s}"
+        );
+        assert!(
+            s.contains("page 2 of 3 · OCR transcript (paddleocr-vl-1.6, read whole;"),
+            "{s}"
+        );
+        assert_eq!(
+            ex.incomplete_pages(),
+            1,
+            "a failed region makes a page incomplete"
+        );
+
+        ex.pages[1].ocr.as_mut().unwrap().fallback = Some("the layout stage is unavailable".into());
+        ex.layout_unavailable = Some("the layout model /m.onnx is not there".into());
+        let s = ex.render("a.pdf");
+        assert!(
+            s.contains("read whole — the layout stage is unavailable;"),
+            "{s}"
+        );
+        assert!(s.contains("the layout stage is unavailable, so OCR pages below were read whole"));
+        assert!(s.contains("/m.onnx is not there"));
     }
 }
