@@ -3199,10 +3199,11 @@ As those six installs left it (01:07Z; the 04:06Z entry below supersedes
 the binary and the page): `~/.cargo/bin/mecha` carried both `mecha/unlogged`
 (#376) and `Nothing was drawn.` (#384), and the page served through `:8443`
 was `index-BFFDu_fZ.js`, which carried the incognito answer gate. **The
-shared checkout is at `dbce699e`, checked 2026-09-29; main has since reached
-`8103d746` (#390, #391, #394).** `git diff --name-only dbce699e 8103d746`
-over `scripts/voice` and the launch scripts is empty, so the worker runs
-current code, but the next move is an ordinary fast-forward by the recipe. Four
+shared checkout was fast-forwarded `dbce699e` → `c6ae2c69` at 01:20Z (its
+reflog: `pull --ff-only`), and main has since reached `8103d746` (#390,
+#391, #394).** `git diff --name-only c6ae2c69 8103d746` over `scripts/voice`
+and the launch scripts is empty, so the worker runs current code, but the
+next move is an ordinary fast-forward by the recipe. Four
 Claude Code sessions still hold `mecha-graph-mcp` children on a deleted
 binary (pids 2006709, 52563, 53059 and 54331; each `/proc/<pid>/exe` reads
 `(deleted)`, checked 2026-09-29). They refresh when those sessions restart.
