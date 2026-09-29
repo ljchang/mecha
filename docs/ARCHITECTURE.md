@@ -810,6 +810,79 @@ its measurements are `docs/DOCUMENT-EXTRACTION-DESIGN.md`.
   never the path — and an OCR entry's key carries the model and
   `OCR_PIPELINE`; bump the pipeline when the prompt or render size changes.
 
+## Personas
+
+`persona.rs` is the store behind personas — characters the owner writes and
+talks to, kept apart from the assistant. `docs/PERSONA-DESIGN.md` is the
+contract. Build step 1 (the store and `mecha persona`) and the core of step 2
+(`persona::agent`: what a persona chat runs on) exist; the chat surface,
+memory and the web page come in later steps and read the store through this
+module.
+
+- **Separation is by location, never by session kind.** A persona's
+  transcripts go under `~/.mecha/personas/<persona>/sessions/`, which no
+  reader of `~/.mecha/sessions/` scans. `runlog::Scan::admits` admits every
+  kind it does not know, and older binaries cannot be taught otherwise, so a
+  `SessionKind::Persona` could be recorded but can exclude nothing.
+- **The owner's files are never rewritten by code.** `persona.toml`, the
+  Markdown, relationship templates, `groups.toml` and `about-me.md` are the
+  owner's; a starter is copied in once and a group is appended. Approval,
+  provenance, the browse lock and the version live in a machine-written
+  `state.toml` beside `persona.toml`, because the `toml` crate cannot edit a
+  file in place and `lock` would otherwise erase the owner's comments.
+- **Unknown keys fail the load; unknown values narrow.** `persona.toml` denies
+  unknown fields. An unknown value in a closed set loads as the narrowest variant
+  (`answers` → `files`, `user_facts` → `off`) and is reported in
+  `Persona::notes`. A persona folder without `state.toml` loads unapproved and
+  of untrusted origin, and `--yes` cannot approve it unread.
+- **Group membership lives once**, in each persona's `groups`. `groups.toml`
+  only declares groups; a persona naming an undeclared group is a broken link.
+- **Links are by name, resolved on load, broken ones named**
+  (`Store::problems`): relationship templates, groups, voice profiles, and the
+  image-library character, which must be approved. `create` refuses a
+  broken link, while a later hand edit is reported. A missing or empty
+  `## Core` is also reported, since the re-anchor needs it.
+- **A version covers what a chat renders**, including the text of the relationship templates it
+  names. `snapshot` copies those files to `versions/<digest>/` and appends
+  `versions/log.jsonl`, and it is idempotent. Editing `colleague.md` therefore
+  makes a new version of every persona that names it.
+- **Starters are offered once** (`relationships/.seeded`). An edited starter
+  keeps the edit, a deleted one stays deleted, and an upgrade adds only starters
+  not yet offered. They ship in the public crate, so a test holds them to the
+  design's §15 wording rules.
+- **Reserved names.** Persona folders sit beside `files/`, `groups/`,
+  `relationships/`, `voices/`, `scenarios/`, `removed/` and `sessions/`, so none of those
+  can name a persona. A `persona.toml` planted in one is a load error.
+- **The lock is the image library's.** It is a browse filter
+  (`Store::visible`), not encryption, and uses the library's `lock.toml`
+  password.
+- **A persona's tools are declared, never derived.** `Tool::for_persona`
+  returns the form a persona may have, and the default is `None`.
+  `Capabilities` has no axis for reading an owner store, and its default is
+  all-false, so a rule derived from it would make the next tool added
+  eligible by omission. `persona::agent::registry_for` builds a fresh
+  `Registry` from the pool. It admits only declared tools whose persona form
+  is not `Egress::Chosen` on this install, so `web_search` is refused where no
+  blind backend exists. It builds rather than narrows because
+  `RunContext::withheld` still offers a tool it refuses. `answers = "files"`
+  leaves out every untrusted-input tool.
+  `every_real_tool_declares_as_the_design_lists` checks every constructible
+  tool against the design's explicit list, on blind, chosen and mixed search
+  chains.
+- **`web_search`'s persona form is always the blind path.** It uses
+  `search_blind`, which means blind backends only at quick depth, whatever the
+  taint, and its schema has no `depth`. Egress is per depth, and the armed
+  narrowing never fires in a persona chat, which is private at most. The leak
+  guard is lifted for persona chats (`persona::agent::security`, D11).
+- **The system prompt is replaced, never appended to.** It is rendered from a
+  pinned version (`pin` / `load_version`), which is re-digested on read, so a
+  snapshot edited on disk is refused. The order is base block, date guidance,
+  relationship templates (front matter and comments stripped), identity, then
+  motivation. It is a function of the version alone. `agent_config`
+  destructures `AgentConfig` exhaustively and switches off every lever that
+  reads the charter, the board or the session corpus, so a new lever is a
+  compile error there until someone decides it.
+
 ## Security model
 
 **The full trifecta map lives in `docs/TRIFECTA.md`** — the four ways a

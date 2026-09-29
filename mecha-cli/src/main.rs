@@ -475,6 +475,11 @@ pub enum Command {
     /// approve a model's proposal, lock for browsing.
     Imagelib(commands::imagelib::Args),
 
+    /// Personas — characters you write and talk to, kept apart from the
+    /// assistant. Make one, edit who they are, lock, group; relationship
+    /// templates.
+    Persona(commands::persona::Args),
+
     /// Show the standing priorities in ~/.mecha/charter.toml, ranked highest
     /// first. Only a person edits a charter — `mecha charter edit` hands the
     /// file to $EDITOR — and never a model.
@@ -613,6 +618,7 @@ impl Command {
             | Command::Skills(_)
             | Command::Imagelib(_)
             | Command::Document(_)
+            | Command::Persona(_)
             | Command::Charter(_)
             | Command::Config(_)
             | Command::Model(_) => false,
@@ -680,6 +686,7 @@ impl Command {
             | Command::Skills(_)
             | Command::Imagelib(_)
             | Command::Document(_)
+            | Command::Persona(_)
             | Command::Charter(_)
             | Command::Config(_)
             | Command::Model(_) => false,
@@ -844,6 +851,7 @@ async fn dispatch() -> Result<()> {
         Command::Skills(args) => commands::skills::execute(&cli.global, args).await,
         Command::Imagelib(args) => commands::imagelib::execute(&cli.global, args).await,
         Command::Document(args) => commands::document::execute(args).await,
+        Command::Persona(args) => commands::persona::execute(&cli.global, args).await,
         Command::Charter(args) => commands::charter::execute(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
         Command::Config(args) => commands::config::execute(&cli.global, args).await,
