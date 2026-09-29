@@ -22,11 +22,27 @@ export function withUnlock(path, token) {
   return `${path}${sep}unlock=${encodeURIComponent(token)}`;
 }
 
+// The suffixes each builder below accepts, and so every endpoint this page
+// can reach. The docs demo's guard (`website/scripts/check-demo.mjs`) cannot
+// see through a builder — its scan wants a literal after `fetch(` — so it
+// imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
+// here: a new endpoint is added to this list or it throws, and the list is
+// then what `check-demo` holds the demo's routes to (review of #415).
+const PERSONA_SUFFIXES = ['/chats', '/resume'];
+const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel'];
+
+export const ENDPOINTS = [
+  '/api/personas',
+  ...PERSONA_SUFFIXES.map((s) => `/api/personas/X${s}`),
+  ...CHAT_SUFFIXES.map((s) => `/api/persona-chat/X${s}`),
+];
+
 export function listUrl(token) {
   return withUnlock('/api/personas', token);
 }
 
 export function personaUrl(name, suffix, token) {
+  if (!PERSONA_SUFFIXES.includes(suffix)) throw new Error(`not a persona endpoint: ${suffix}`);
   return withUnlock(`/api/personas/${encodeURIComponent(name)}${suffix}`, token);
 }
 
@@ -34,6 +50,7 @@ export function personaUrl(name, suffix, token) {
 // page can never address an assistant chat by mistake.
 export function chatUrl(key, suffix = '', token = null) {
   if (!isPersonaKey(key)) throw new Error(`not a persona chat key: ${key}`);
+  if (!CHAT_SUFFIXES.includes(suffix)) throw new Error(`not a persona chat endpoint: ${suffix}`);
   return withUnlock(`/api/persona-chat/${key}${suffix}`, token);
 }
 
@@ -70,8 +87,10 @@ function markDelivery(state, ids, delivery) {
 // the server may grow a kind this page does not draw yet.
 export function applyEvent(state, ev) {
   switch (ev?.type) {
-    case 'user':
-      return { ...flush(state), running: true, entries: [...flush(state).entries, { kind: 'user', text: ev.text }] };
+    case 'user': {
+      const s = flush(state);
+      return { ...s, running: true, entries: [...s.entries, { kind: 'user', text: ev.text }] };
+    }
     case 'queued':
       return {
         ...state,
@@ -94,6 +113,9 @@ export function applyEvent(state, ev) {
         ...state,
         entries: state.entries.map((e) => (e.kind === 'tool' && e.id === ev.id ? { ...e, is_error: ev.is_error } : e)),
       };
+    // A call refused before it ran: the row says so, with the reason.
+    case 'denied':
+      return { ...state, entries: [...state.entries, { kind: 'notice', text: `${ev.name} refused: ${ev.reason}` }] };
     case 'notice':
       return { ...state, entries: [...state.entries, { kind: 'notice', text: ev.text }] };
     case 'done': {

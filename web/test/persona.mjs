@@ -1,7 +1,7 @@
 // The Personas tab's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
 import {
-  isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent,
+  isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS,
 } from '../src/lib/persona.js';
 
 // Only a key the server could have minted is a persona chat's.
@@ -20,6 +20,13 @@ assert.equal(listUrl(null), '/api/personas');
 assert.equal(listUrl('abc'), '/api/personas?unlock=abc');
 assert.equal(personaUrl('devils_advocate', '/chats', null), '/api/personas/devils_advocate/chats');
 assert.equal(withUnlock('/x?a=1', 'z'), '/x?a=1&unlock=z');
+
+// A builder reaches only what ENDPOINTS lists — the list check-demo holds
+// the docs demo to — so a new endpoint cannot slip past that guard.
+assert.throws(() => personaUrl('mara', '/delete', null));
+assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
+assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
+assert.equal(ENDPOINTS.length, 7);
 
 assert.equal(relationshipLabel({ relationship: ['colleague', 'devils_advocate'] }), 'colleague · devils advocate');
 assert.equal(relationshipLabel({}), '');

@@ -138,27 +138,53 @@
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   }
 
+  // Read the transcript as the server holds it now.
+  async function reread(k) {
+    const res = await fetch(chatUrl(k, '', token));
+    if (!res.ok) throw new Error((await res.text()).trim());
+    const t = await res.json();
+    if (key !== k) return;
+    run = { ...emptyRun(t.entries ?? []), running: !!t.running };
+    scrollDown();
+  }
+
+  // The stream opens *before* the read, and a finished run is read again:
+  // a page attached mid-run cannot rebuild the part of the answer that
+  // streamed before it subscribed, and without the re-read that turn would
+  // read as a complete but truncated reply (review of #415; `Chat.svelte`
+  // argues the same hazard).
   async function attach(k) {
     close();
     key = k;
-    const res = await fetch(chatUrl(k, '', token));
-    if (!res.ok) {
-      error = (await res.text()).trim();
-      return;
-    }
-    const t = await res.json();
-    run = { ...emptyRun(t.entries ?? []), running: !!t.running };
-    source = new EventSource(chatUrl(k, '/events', token));
-    source.onmessage = (m) => {
+    const s = new EventSource(chatUrl(k, '/events', token));
+    source = s;
+    s.onmessage = (m) => {
+      let ev;
       try {
-        run = applyEvent(run, JSON.parse(m.data));
-        scrollDown();
-        if (!run.running) loadHistory();
+        ev = JSON.parse(m.data);
       } catch {
-        /* a malformed event is dropped, never drawn */
+        return; /* a malformed event is dropped, never drawn */
+      }
+      run = applyEvent(run, ev);
+      scrollDown();
+      if (ev.type === 'done') {
+        reread(k).catch((e) => (error = String(e?.message ?? e)));
+        loadHistory();
       }
     };
-    scrollDown();
+    // A stream the server ended (a relock, a restart) is said, not frozen.
+    s.onerror = () => {
+      if (s.readyState === 2 && source === s) {
+        error = 'this chat stopped updating — open it again';
+      }
+    };
+    try {
+      await reread(k);
+    } catch (e) {
+      close();
+      key = null;
+      error = String(e?.message ?? e);
+    }
   }
 
   async function start() {

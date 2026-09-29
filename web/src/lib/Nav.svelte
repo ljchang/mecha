@@ -65,6 +65,11 @@
     font-family: var(--mono);
     font-size: 9px;
     white-space: nowrap;
+    /* Below ~360px a share is narrower than `personas`: clip rather than
+       run into the neighbour. */
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: clip;
   }
   .nav-item.active {
     color: var(--accent-400);
