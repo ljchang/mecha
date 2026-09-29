@@ -1303,9 +1303,12 @@ written.
   - nothing reads an appraisal but the owner and the next appraiser (2c-2,
     2e, 2f);
   - the web session view shows no appraisal;
-  - sessions distilled before this build are never appraised (no backfill);
+  - sessions distilled before this build are never appraised (no backfill;
+    since built as `mecha distill --backfill-appraisals`, #388, 2026-09-29);
   - an appraisal whose follow-up failed is not retried once the session is
-    in the distill ledger.
+    in the distill ledger. Since #388, the backfill retries one whose
+    session 2e-1 still waits on. Any other failed follow-up is still never
+    retried.
 
 *2a-3 built — the counts-only appraiser retired into it* (R25).
 `appraise_with_model`, `AppraiserEvidence` and its brief, the verdict parser,
@@ -1750,9 +1753,16 @@ same decided interventions.
   was excluded as `NoAppraisal`: an ordering gap, not only the clean rate.
   `mecha distill --backfill-appraisals` appraises exactly those sessions,
   chosen by the pass's own predicate, and writes rows that predict nothing
-  (ARCHITECTURE.md, the appraisal section). What "no worse" requires (N,
-  margin, paired or not) is still unruled; the fixture-denial pilot (C) comes
-  after.
+  (ARCHITECTURE.md, the appraisal section). What "no worse" requires was
+  ruled on 2026-09-29 (R44).
+- **The backfill ran, and it did not unstarve 2e-1 (2026-09-29):** 8 of its
+  9 sessions were appraised and every one came out not clean, because an
+  appraisal takes the session-end taint (`SessionEvidence::of`), a
+  reflection takes the owner's correction, and these sessions had read mail
+  or the web. 2e-1 still has 0 eligible (16 interventions clean for the
+  reflector only). What is left is the fixture-denial pilot (C), with the
+  open question of whether synthetic evidence counts, or waiting for
+  sessions that stay clean end to end: the owner's call (HANDOFF).
 
 #### L7. Attribute a correction by what the run was given
 
