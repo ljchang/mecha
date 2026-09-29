@@ -593,6 +593,13 @@ async fn a_backfill_appraises_only_what_row_2e_1_waits_on_and_pushes_nothing() {
         out.contains("backfilled: written after the outcome"),
         "{out}"
     );
+    // A target it passed over is said beside the ones it appraised, not
+    // only when nothing is left (review of #388): juliet waits on the
+    // ordinary pass.
+    assert!(
+        out.contains("backfill: 1 session(s) to appraise; also 1 waiting on the ordinary pass"),
+        "{out}"
+    );
     // It reports the backfill it did, not a distill it did not do, and
     // logs no pass to a store it did not write (review of #388).
     assert!(
