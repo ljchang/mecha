@@ -310,6 +310,11 @@ pub struct Draft {
     /// The owner act expected next time, from R16's closed set — what 2b-2
     /// scores the prediction by.
     pub expected_act: Option<ExpectedAct>,
+    /// The harness did not ask for `expected_act` (ruling 1B,
+    /// [`withholds_expectation`]) — set by the producer, never by a model,
+    /// so a withheld prediction and one the appraiser simply left out are
+    /// not the same `None`.
+    pub expected_act_withheld: bool,
     /// Goal words the producer could not read as a pointer at all — counted
     /// on the record with the ones that did not resolve.
     pub unreadable_goals: usize,
@@ -338,6 +343,11 @@ pub struct SessionEvidence {
     /// the session's end as appraised (R37's window opens here). `None`
     /// where the file system could not say.
     ended_at: Option<DateTime<Utc>>,
+    /// The run called a [`TASK_LINKING_TOOLS`] tool — over every message it
+    /// ever had, not the post-compaction list: a task call a summarising
+    /// compaction evicted still tied the session to the task (review of
+    /// #378). Ruling 1B's write-time test reads it.
+    touched_tasks: bool,
 }
 
 impl SessionEvidence {
@@ -403,11 +413,17 @@ impl SessionEvidence {
             situation,
             packet: packet(ever),
             ended_at: None,
+            touched_tasks: touched_tasks(ever),
         }
     }
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Whether the run ever called a task-linking tool, compaction or not.
+    pub fn touched_tasks(&self) -> bool {
+        self.touched_tasks
     }
 
     pub fn origin(&self) -> Origin {
@@ -550,6 +566,11 @@ pub struct TextAppraisal {
         deserialize_with = "de_expected_act"
     )]
     pub expected_act: Option<ExpectedAct>,
+    /// The harness withheld the question ([`Draft::expected_act_withheld`]):
+    /// counted apart from a prediction the appraiser left out. Absent on a
+    /// row from before the field — not withheld.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expected_act_withheld: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub goal_hypotheses: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -729,6 +750,7 @@ impl TextAppraisal {
             // The structural half is kept even when the prose prediction is
             // empty: an expected act is a prediction on its own.
             expected_act: draft.expected_act.filter(|a| *a != ExpectedAct::Unknown),
+            expected_act_withheld: draft.expected_act_withheld,
             goal_hypotheses,
             lessons,
             goals_unresolved,
@@ -1701,6 +1723,85 @@ pub fn observe(
     }
 }
 
+/// Whether `session_id`'s output left the owner an act from R16's set to
+/// take: a draft to release, edit or reject, a task to close or reopen, a
+/// workflow to close or cancel. The outputs [`observe`] opens a window on,
+/// read more widely: any closure naming the session counts, not only the
+/// owner's, and a workflow counts when it ran the session at all
+/// ([`crate::workflow::Workflow::names_session`] — its `session_id`, a
+/// `started` event, an owner disposition), not only when the owner
+/// disposed of it during that session. Both widen "actionable", which keeps
+/// a hit in the rate — the direction this errs. Read at read time, so the
+/// workflow arm can narrow later: its history is bounded, and a `started`
+/// pruned from it is forgotten. Drafts resolve in place and closures are
+/// append-only, so those two arms are stable.
+///
+/// One act found is enough for `Some(true)`, whatever else could not be
+/// read — a task anchor proves it with the outbox unread. `Some(false)`
+/// needs every store read; with one unreadable and nothing found, the
+/// answer is `None` — unknown, never "nothing to act on".
+///
+/// A chat answer or a run that staged nothing offers none of them, so
+/// `no_act` is the only answer [`observe`] can return for it: a prediction
+/// of `no_act` there is a hit by construction. [`ScoreSummary::forced`]
+/// counts those, and the hit rate leaves them out.
+pub fn output_offers_act(
+    session_id: &str,
+    anchor: Option<&GoalRef>,
+    acts: &OwnerActs<'_>,
+) -> Option<bool> {
+    let drafted = acts.drafts.iter().any(|d| {
+        d.session_id.as_deref() == Some(session_id) && d.author() != crate::outbox::Author::Harness
+    });
+    let tasked = matches!(anchor, Some(GoalRef::Task(_)))
+        || acts
+            .closures
+            .iter()
+            .any(|c| c.sessions.iter().any(|s| s == session_id));
+    let tracked = acts.workflows.iter().any(|w| w.names_session(session_id));
+    if drafted || tasked || tracked {
+        return Some(true);
+    }
+    if acts.outbox_unreadable || acts.closures_unreadable || acts.workflows_unreadable {
+        return None;
+    }
+    Some(false)
+}
+
+/// The task-board tools whose call can tie a session to a task the owner
+/// closes or reopens later — a link [`output_offers_act`] cannot see when
+/// the appraisal is written, because the closure naming the session does
+/// not exist yet.
+pub const TASK_LINKING_TOOLS: [&str; 2] = ["kg_task_create", "kg_task_update"];
+
+/// Whether the run called a [`TASK_LINKING_TOOLS`] tool, under any MCP
+/// prefix.
+pub fn touched_tasks(messages: &[crate::message::Message]) -> bool {
+    messages.iter().flat_map(|m| m.content.iter()).any(|b| {
+        matches!(b, crate::message::Block::ToolUse { name, .. }
+            if TASK_LINKING_TOOLS
+                .iter()
+                .any(|t| name == t || name.ends_with(&format!("__{t}"))))
+    })
+}
+
+/// Whether the harness withholds the appraiser's `expected_act` (ruling 1B,
+/// 2026-09-28), judged when the appraisal is written. Stricter than
+/// [`output_offers_act`], which is a read-time test: at write time the
+/// owner's closures and workflow dispositions have not happened yet, and a
+/// row is written once, so a prediction withheld wrongly can never be
+/// scored. Withheld only when the output offers no act now *and* the run did
+/// nothing that could link it to one later — it touched no task. Unknown
+/// asks.
+pub fn withholds_expectation(
+    session_id: &str,
+    anchor: Option<&GoalRef>,
+    acts: &OwnerActs<'_>,
+    touched_tasks: bool,
+) -> bool {
+    !touched_tasks && output_offers_act(session_id, anchor, acts) == Some(false)
+}
+
 /// One appraisal's prediction, scored: its expected act against the act
 /// that happened. Written once per appraisal, when the act resolves, and
 /// never rewritten — a later charter edit that moves the patience does not
@@ -1777,14 +1878,29 @@ pub enum Scored {
 }
 
 /// Coverage of the appraisals' predictions: how many are scored, how many
-/// wait, and a hit rate only over scores that exist.
+/// wait, and a hit rate only over predictions known to have been able to
+/// miss.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ScoreSummary {
     pub appraisals: usize,
     /// Appraisals carrying a readable expected act.
     pub with_expectation: usize,
+    /// Appraisals the harness asked for no expected act (ruling 1B): the
+    /// output offered nothing to act on. Apart from `with_expectation`, and
+    /// from an appraisal that left the field out.
+    pub not_asked: usize,
     pub scored: usize,
     pub hits: usize,
+    /// Of the hits, those that could not have missed: a `no_act` prediction
+    /// on an output that offered the owner no act to take
+    /// ([`output_offers_act`]). Out of `hit_rate`'s numerator and
+    /// denominator both.
+    pub forced: usize,
+    /// Of the hits, `no_act` predictions whose output could not be
+    /// classified — an act store unreadable and no act found in what was
+    /// read. Neither forced nor known to have risked a miss: while any is on
+    /// record, `hit_rate` is `None` — an unjudged hit gets no rate.
+    pub forced_unknown: usize,
     /// Misses — surprises.
     pub surprises: usize,
     /// Of the surprises, those on clean appraisals.
@@ -1799,13 +1915,28 @@ pub struct ScoreSummary {
     /// Task outputs this reader could not window, because it read no board
     /// — the read-only readout; `mecha distill` reads it and scores them.
     pub board_not_read: usize,
-    /// `hits / scored`; `None` over no scores.
+    /// `(hits − forced) / (scored − forced)`: the rate over predictions
+    /// known to have been able to miss ([`ScoreSummary::could_miss`]).
+    /// `None` when there are none — a rate over forced hits alone would read
+    /// 100% for a predictor that never risked a miss — and `None` while any
+    /// hit is unclassified (`forced_unknown`).
     pub hit_rate: Option<f64>,
     /// Score lines that could not be read.
     pub skipped: usize,
     /// Appraisal lines that could not be read — each may have carried an
     /// expectation, so every count above is a floor when this is not zero.
     pub appraisals_unreadable: usize,
+}
+
+impl ScoreSummary {
+    /// Scored predictions known to have been able to miss: neither forced
+    /// nor unclassified. `hit_rate`'s denominator. Never underflows — both
+    /// are counted only on hits.
+    pub fn could_miss(&self) -> usize {
+        self.scored
+            .saturating_sub(self.forced)
+            .saturating_sub(self.forced_unknown)
+    }
 }
 
 impl AppraisalStore {
@@ -1934,6 +2065,9 @@ impl AppraisalStore {
         };
         for row in &rows {
             if !row.expected_act.is_some_and(|a| a != ExpectedAct::Unknown) {
+                if row.expected_act_withheld {
+                    s.not_asked += 1;
+                }
                 continue;
             }
             s.with_expectation += 1;
@@ -1941,6 +2075,16 @@ impl AppraisalStore {
                 s.scored += 1;
                 if score.hit {
                     s.hits += 1;
+                    if score.expected == ExpectedAct::NoAct {
+                        match output_offers_act(&row.session_id, row.anchor.as_ref(), acts) {
+                            Some(false) => s.forced += 1,
+                            // The store that decides "could miss" could not be
+                            // read: not forced, and not evidence that this one
+                            // could have missed.
+                            None => s.forced_unknown += 1,
+                            Some(true) => {}
+                        }
+                    }
                 } else {
                     s.surprises += 1;
                     if score.clean {
@@ -1957,7 +2101,13 @@ impl AppraisalStore {
                 ObservedAct::Act { .. } | ObservedAct::NoAct { .. } => s.resolved_unwritten += 1,
             }
         }
-        s.hit_rate = (s.scored > 0).then(|| s.hits as f64 / s.scored as f64);
+        let could_miss = s.could_miss();
+        // An unjudged hit withholds the rate outright: surprises are never
+        // classified, so dropping only the unjudged hits would leave a ratio
+        // over the surprises and the judged hits — a rate pushed down, not a
+        // dash (found on review of #377).
+        s.hit_rate = (could_miss > 0 && s.forced_unknown == 0)
+            .then(|| (s.hits - s.forced) as f64 / could_miss as f64);
         Ok(s)
     }
 }
@@ -2525,6 +2675,12 @@ mod tests {
     /// result, a steer, the agent's answer, the run record and — when given
     /// — a taint checkpoint after the last message.
     fn session(root: &Path, taint: Option<Taint>) -> PathBuf {
+        session_on(root, taint, Some(GoalRef::Task("t-budget".into())))
+    }
+
+    /// [`session`], anchored to `goal` — or to nothing, the chat answer that
+    /// leaves the owner no act to take.
+    fn session_on(root: &Path, taint: Option<Taint>, goal: Option<GoalRef>) -> PathBuf {
         let session = Session::create(
             root,
             SessionMeta {
@@ -2543,17 +2699,11 @@ mod tests {
                 tools: vec!["mail_search".into()],
                 rules_workspace: Some(PathBuf::from("/project")),
                 rules_surface: Some(SessionKind::Task),
-                rules_goal: Some(crate::situation::GoalKey::Named(GoalRef::Task(
-                    "t-budget".into(),
-                ))),
+                rules_goal: goal.clone().map(crate::situation::GoalKey::Named),
                 ..Default::default()
             }))
             .unwrap();
-        session
-            .append(&Record::GoalAnchor {
-                goal: Some(GoalRef::Task("t-budget".into())),
-            })
-            .unwrap();
+        session.append(&Record::GoalAnchor { goal }).unwrap();
         for m in [
             Message::user("find when the budget review is"),
             Message::assistant(vec![Block::ToolUse {
@@ -2605,6 +2755,7 @@ mod tests {
     /// turn, a judgment resting on both.
     fn draft() -> Draft {
         Draft {
+            expected_act_withheld: false,
             interpretation: "The run found the review date in the owner's mail and was asked \
                              to pass it on; it matters because the task is the budget review."
                 .into(),
@@ -4218,6 +4369,296 @@ mod tests {
 
         Marks::append(&dir, &mark(MarkAction::Unmark)).unwrap();
         assert_eq!(store.for_owner().unwrap().0.len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A `no_act` prediction on a run that left the owner nothing to act on
+    /// cannot miss, so it is a hit that says nothing: counted as forced and
+    /// kept out of the rate, where the task-anchored one — the owner could
+    /// have closed the task — stays in. Four such hits read "hit rate 100%"
+    /// on the live store before this (2026-09-28).
+    #[test]
+    fn a_no_act_hit_on_an_output_with_nothing_to_act_on_is_forced_and_out_of_the_rate() {
+        let root = temp_root("forced");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let expect_nothing = Draft {
+            expected_act: Some(ExpectedAct::NoAct),
+            ..draft()
+        };
+        let chat = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        store
+            .record(&chat, expect_nothing.clone(), "m", &known())
+            .unwrap();
+        let tasks = json!({"items": [{"id": "t-budget", "status": "next"}]});
+        let owner = OwnerActs {
+            board: BoardRead::Read(&tasks),
+            ..OwnerActs::default()
+        };
+        let later = Utc::now() + chrono::Duration::hours(72);
+
+        // Only the forced hit on record: scored, and no rate — not 100%.
+        let alone = store.score_due(&owner, later).unwrap();
+        assert_eq!((alone.scored, alone.hits, alone.forced), (1, 1, 1));
+        assert_eq!(
+            alone.hit_rate, None,
+            "a rate over forced hits alone is no rate"
+        );
+
+        // A task-anchored no_act could have missed: it is the rate.
+        let task = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        store.record(&task, expect_nothing, "m", &known()).unwrap();
+        let both = store.score_due(&owner, later).unwrap();
+        assert_eq!((both.scored, both.hits, both.forced), (2, 2, 1));
+        assert_eq!(both.hit_rate, Some(1.0));
+
+        // What makes an output actionable, and what makes it unknown.
+        assert_eq!(
+            output_offers_act(chat.session_id(), None, &owner),
+            Some(false)
+        );
+        let drafts = [draft_of(&root, chat.session_id(), "pending", None)];
+        assert_eq!(
+            output_offers_act(chat.session_id(), None, &acts(&drafts)),
+            Some(true),
+            "a staged draft is an act to take"
+        );
+        let blind = OwnerActs {
+            outbox_unreadable: true,
+            ..owner
+        };
+        assert_eq!(output_offers_act(chat.session_id(), None, &blind), None);
+        // A workflow the session ran and handed on: `session_id` names the
+        // later session and the only disposition is the later one's, yet the
+        // owner could have closed it inside the first one's run (review of
+        // #377).
+        let now = Utc::now();
+        let mut handed_on = crate::workflow::Workflow::new(
+            "flow-grant".into(),
+            "Prepare the grant reply".into(),
+            root.clone(),
+            now,
+        );
+        handed_on.record("started", chat.session_id(), now);
+        handed_on.record("started", "s-later", now);
+        handed_on.record("owner_closed", "Owner closed after verification", now);
+        handed_on.session_id = Some("s-later".into());
+        let flows = [handed_on];
+        let with_flow = OwnerActs {
+            workflows: &flows,
+            ..owner
+        };
+        assert_eq!(
+            output_offers_act(chat.session_id(), None, &with_flow),
+            Some(true)
+        );
+
+        // One act found decides it whatever else is unread: a task anchor
+        // with the outbox blind still could have missed.
+        assert_eq!(
+            output_offers_act(task.session_id(), task.anchor(), &blind),
+            Some(true)
+        );
+        // An unreadable store cannot call a hit forced, and cannot vouch that
+        // it could have missed: unclassified, and out of the rate both ways.
+        let unsure = store.score_summary(&blind, later).unwrap();
+        assert_eq!(
+            (unsure.forced, unsure.forced_unknown, unsure.could_miss()),
+            (0, 1, 1)
+        );
+        assert_eq!(unsure.hit_rate, None, "an unjudged hit withholds the rate");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Ruling 1B at write time: withheld only when the output offers no act
+    /// now and the run touched no task — a task tool can tie the session to
+    /// a closure that does not exist yet, and a row is written once. A
+    /// withheld row is counted as not asked, apart from an omission.
+    #[test]
+    fn an_expectation_is_withheld_only_when_nothing_could_link_the_output_to_an_act() {
+        use crate::message::{Block, Message};
+        let root = temp_root("withhold");
+        let dir = root.join("sessions");
+        let chat = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        let none = OwnerActs::default();
+        assert!(withholds_expectation(chat.session_id(), None, &none, false));
+        assert!(
+            !withholds_expectation(chat.session_id(), None, &none, true),
+            "a task the run touched may be closed later, naming it"
+        );
+        let blind = OwnerActs {
+            closures_unreadable: true,
+            ..none
+        };
+        assert!(
+            !withholds_expectation(chat.session_id(), None, &blind, false),
+            "unknown asks"
+        );
+
+        let call = |name: &str| {
+            vec![Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: name.into(),
+                input: json!({}),
+            }])]
+        };
+        assert!(touched_tasks(&call("kg_task_update")));
+        assert!(touched_tasks(&call("graph__kg_task_create")));
+        assert!(
+            !touched_tasks(&call("kg_task_list")),
+            "reading the board links nothing"
+        );
+        assert!(!touched_tasks(&call("mail_search")));
+
+        // A task call a summarising compaction evicted still counts: the
+        // evidence reads every message the run ever had (review of #378).
+        let compacted = {
+            use crate::session::{Record, Session, SessionKind, SessionMeta};
+            let session = Session::create(
+                &dir,
+                SessionMeta {
+                    id: Session::new_id(),
+                    created_at: Utc::now(),
+                    provider: "scripted".into(),
+                    model: "scripted".into(),
+                    workspace: dir.clone(),
+                    title: None,
+                    kind: Some(SessionKind::Web),
+                },
+            )
+            .unwrap();
+            for m in [
+                Message::user("put the review on the board"),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "kg_task_update".into(),
+                    input: json!({"id": "t-budget"}),
+                }]),
+                Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "updated".into(),
+                    is_error: false,
+                }]),
+                Message::assistant(vec![Block::text("Done.")]),
+            ] {
+                session.append(&Record::Message(m)).unwrap();
+            }
+            session
+                .append(&Record::Rewrite {
+                    messages: vec![
+                        Message::user("[summary] the review is on the board"),
+                        Message::assistant(vec![Block::text("Done.")]),
+                    ],
+                })
+                .unwrap();
+            session.path
+        };
+        let (transcript, evidence) = SessionEvidence::read_with_transcript(&compacted).unwrap();
+        assert!(
+            !touched_tasks(&transcript.convo.messages),
+            "compaction evicted it"
+        );
+        assert!(evidence.touched_tasks(), "but the run did touch the board");
+        assert!(!withholds_expectation(
+            evidence.session_id(),
+            None,
+            &none,
+            evidence.touched_tasks()
+        ));
+
+        // Stored: a withheld row is not asked; an omitted one is neither.
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        store
+            .record(
+                &chat,
+                Draft {
+                    expected_act: None,
+                    expected_act_withheld: true,
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let omitted = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        store
+            .record(
+                &omitted,
+                Draft {
+                    expected_act: None,
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let s = store.score_summary(&none, Utc::now()).unwrap();
+        assert_eq!((s.appraisals, s.with_expectation, s.not_asked), (2, 0, 1));
+        let rows = store.for_owner().unwrap().0;
+        assert!(rows.iter().any(|r| r.expected_act_withheld));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// With a surprise on record beside an unclassified hit, the rate is
+    /// withheld, not pushed down: surprises are never classified, so a
+    /// ratio that dropped only the unjudged hit would read 0% here where
+    /// the truth is 1 of 2 or unknown (found on review of #377).
+    #[test]
+    fn an_unclassified_hit_beside_a_surprise_withholds_the_rate() {
+        let root = temp_root("forced-surprise");
+        let dir = root.join("sessions");
+        let store = AppraisalStore::open(root.join("appraisals")).unwrap();
+        let chat = SessionEvidence::read(&session_on(&dir, clean_taint(), None)).unwrap();
+        store
+            .record(
+                &chat,
+                Draft {
+                    expected_act: Some(ExpectedAct::NoAct),
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let busy = SessionEvidence::read(&session(&dir, clean_taint())).unwrap();
+        store
+            .record(
+                &busy,
+                Draft {
+                    expected_act: Some(ExpectedAct::ReleasedUnchanged),
+                    ..draft()
+                },
+                "m",
+                &known(),
+            )
+            .unwrap();
+        let rejected_at = Utc::now() + chrono::Duration::hours(1);
+        let drafts = [draft_of(
+            &root,
+            busy.session_id(),
+            "rejected",
+            Some(rejected_at),
+        )];
+        let tasks = json!({"items": [{"id": "t-budget", "status": "next"}]});
+        let owner = OwnerActs {
+            board: BoardRead::Read(&tasks),
+            ..acts(&drafts)
+        };
+        let later = Utc::now() + chrono::Duration::hours(72);
+        // Scored while every store read: one forced hit, one surprise.
+        let read = store.score_due(&owner, later).unwrap();
+        assert_eq!((read.hits, read.forced, read.surprises), (1, 1, 1));
+        assert_eq!(read.hit_rate, Some(0.0), "the surprise alone could miss");
+
+        // The outbox then goes unreadable: the chat's hit can no longer be
+        // classified, and the rate is withheld rather than left at 0%.
+        let blind = OwnerActs {
+            outbox_unreadable: true,
+            ..owner
+        };
+        let s = store.score_summary(&blind, later).unwrap();
+        assert_eq!((s.forced, s.forced_unknown, s.surprises), (0, 1, 1));
+        assert_eq!(s.hit_rate, None);
         let _ = std::fs::remove_dir_all(&root);
     }
 

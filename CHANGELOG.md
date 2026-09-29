@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can mark, from your own terminal; a run's shell is refused. The verb names
   the session's graph episode, if it was distilled, for you to retract there.
 
+- **`mecha rules show <id>` finds a rule that consolidation dropped.** Learning
+  rewrites its rule set and leaves some rules out; they are not retired, so the
+  learner is never told they were harmful. Their text lives on in the proposal
+  that dropped them. `show` now answers from there: which proposal dropped the
+  rule, when, its last text, and its validation record. It says "never live"
+  for a rule only ever proposed. Read-only.
 - **Add and edit characters and styles from the Library tab.** **Add
   character** takes a portrait from your device, a name and a description.
   **Add style** takes a name and its text. **Edit** changes an approved
@@ -109,6 +115,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The owner's amendment to `INCOGNITO-DESIGN.md` §6.1 (2026-09-28).
 
 ### Fixed
+
+- **The appraisals' hit rate counts only predictions that could miss.** A
+  chat answer or a run that staged nothing leaves the owner no draft, task or
+  workflow to act on, so `no_act` is the only act that can be observed there
+  and predicting it is a hit by construction. `sessions appraise` read those
+  as "hit rate 100%" over four such scores; it now names them as forced and
+  prints no rate until a prediction risks a miss. Scoring, and the surprises
+  replay priority reads, are unchanged.
+
+- **The appraiser is not asked to predict an act where none can happen.**
+  When a run's output offers no draft, task or workflow, and the run never
+  touched a task, `mecha distill` leaves the expected act out of the
+  appraisal's question and drops one the reply carries anyway. The row
+  records that the harness withheld it, and `sessions appraise` counts
+  such rows as "not asked".
 
 - **A voice call whose browser never connects ends after 90 seconds**, not
   at the fifteen-minute idle timeout. Until now it held the speech models

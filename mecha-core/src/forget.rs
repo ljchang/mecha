@@ -604,6 +604,26 @@ fn purge_learning(roots: &Roots, id: &str, keep_distilled: bool, report: &mut Re
         return;
     }
     let result = with_lock(root, || {
+        // An interrupted rule change first (`LearningStore::commit_rules`),
+        // before anything below reads the rules or the proposals. Finishing
+        // it writes rules and a proposal that the purges below then see.
+        // Left pending, recovery would run *after* this forget and write back
+        // a proposal `purge_proposals` had just removed. A record recovery
+        // cannot finish is set aside, and scrubbed with the others below.
+        if !ids.is_empty() {
+            if let Err(e) = crate::learning::LearningStore::open(root.clone())
+                .and_then(|s| s.resume_interrupted())
+            {
+                report.residue.push(format!(
+                    "an interrupted rule change could not be finished before the purge ({e:#}); \
+                     its record was scrubbed in place"
+                ));
+            }
+        }
+        report.count(
+            "interrupted rule changes",
+            purge_commit_records(root, &ids)?,
+        );
         let mut ledgers = filter_lines(&root.join("mined.jsonl"), |l| l.trim() == id)?;
         if !keep_distilled {
             ledgers += filter_lines(&root.join("distilled.jsonl"), |l| l.trim() == id)?;
@@ -622,6 +642,10 @@ fn purge_learning(roots: &Roots, id: &str, keep_distilled: bool, report: &mut Re
         let mut validation = filter_jsonl(&root.join("validations.jsonl"), by_reflexion)?;
         validation += filter_jsonl(&root.join("validation-attempts.jsonl"), by_reflexion)?;
         report.count("validation ledger", validation);
+        report.count(
+            "artifact probes",
+            purge_probe_receipts(&root.join("artifact-probes"), id, &ids)?,
+        );
 
         report.count("proposals", purge_proposals(&root.join("proposals"), &ids)?);
         report.count("learned rules", purge_rules(&root.join("rules"), &ids)?);
@@ -652,6 +676,86 @@ fn purge_learning(roots: &Roots, id: &str, keep_distilled: bool, report: &mut Re
     if let Err(e) = result {
         report.errors.push(format!("learning store: {e:#}"));
     }
+}
+
+/// Artifact-task probe receipts (`probe.rs`, one file per repeat): each
+/// names the session replayed and the reflection measured, so one naming
+/// either is the forgotten conversation's and goes whole. A receipt that does
+/// not parse is left, and the residue scan names it if it holds the id.
+fn purge_probe_receipts(dir: &Path, id: &str, ids: &HashSet<String>) -> Result<usize> {
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    let mut n = 0;
+    for path in json_files(dir)? {
+        let Some(v) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        else {
+            continue;
+        };
+        let names_reflection = v
+            .get("reflection_id")
+            .and_then(Value::as_str)
+            .is_some_and(|r| ids.contains(r));
+        if field_is(&v, "session_id", id) || names_reflection {
+            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+/// The rule-change records (`commit.json`, and each
+/// `commit.unfinished.<when>.json` recovery set aside): the proposals'
+/// scrub, applied to the change and to the proposal it carries. A record is
+/// the owner's evidence of an interrupted change, so it is scrubbed rather
+/// than removed, even when nothing it names is left.
+fn purge_commit_records(root: &Path, ids: &HashSet<String>) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let mut n = 0;
+    for path in json_files(root)? {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name != crate::learning::COMMIT_FILE
+            && !name.starts_with(crate::learning::UNFINISHED_COMMIT_PREFIX)
+        {
+            continue;
+        }
+        let Some(mut v) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        else {
+            continue;
+        };
+        let mut changed = scrub_change(&mut v, ids);
+        if let Some(p) = v.get_mut("proposal") {
+            changed |= scrub_change(p, ids);
+        }
+        if changed {
+            write_replacing(&path, serde_json::to_string_pretty(&v)?.as_bytes())?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+/// `rules`, `rules_before` and `reflexion_ids` of one change or proposal,
+/// scrubbed of the forgotten reflections.
+fn scrub_change(v: &mut Value, ids: &HashSet<String>) -> bool {
+    let mut changed = false;
+    for key in ["rules", "rules_before"] {
+        if let Some(rules) = v.get_mut(key).and_then(Value::as_array_mut) {
+            changed |= scrub_rules(rules, ids);
+        }
+    }
+    if let Some(list) = v.get_mut("reflexion_ids").and_then(Value::as_array_mut) {
+        let before = list.len();
+        list.retain(|r| !r.as_str().is_some_and(|r| ids.contains(r)));
+        changed |= list.len() != before;
+    }
+    changed
 }
 
 /// Proposals: the forgotten reflections leave `reflexion_ids`, and a
