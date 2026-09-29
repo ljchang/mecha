@@ -13475,6 +13475,21 @@ mod tests {
         let partial = of(&skipped);
         assert_eq!(partial.rules_hash, None);
         assert!(partial.rule_ids.is_empty());
+        // Why it is unknown travels with the record, and replay says so
+        // rather than calling a run recorded today one from before the field.
+        assert_eq!(
+            partial.rules_skipped,
+            vec!["behavior: expected `=`".to_string()]
+        );
+        let back: crate::session::RunConfig =
+            serde_json::from_value(serde_json::to_value(&partial).unwrap()).unwrap();
+        let note = back.rules_arm_note(None);
+        assert!(
+            note.contains("did not parse") && note.contains("behavior"),
+            "{note}"
+        );
+        assert!(!note.contains("recorded before"), "{note}");
+        assert!(whole.rules_skipped.is_empty());
     }
 
     #[tokio::test]
