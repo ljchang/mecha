@@ -68,8 +68,18 @@ under 2026-09-28. Open, none of it blocking:
     policy, and a doc refresh.
   - D2, rules dropped in consolidation, awaits the owner.
 
-- #381's `forget_config` guard is redundant: `[outbox]` and `[messages]`
-  dirs are stripped from project layers, so it equals `load_global`.
+- #381's `forget_config` guard is redundant, and its own doc comment states
+  the opposite, false premise. The evidence:
+  - `forget::Roots::from_config` reads only `outbox.dir` and `messages.dir`;
+  - `config.rs`'s project-layer path drops `[outbox] dir` (with a warning)
+    and the whole `[messages]` table, pinned by
+    `a_project_layer_messages_section_is_stripped_but_a_global_one_is_kept`;
+  - so `forget_config` reduces to `load_global`.
+
+  The comment on `forget_config` in `mecha-cli/src/commands/sessions.rs`
+  says "`[outbox] dir` is not stripped from project layers", and that needs
+  correcting whichever way the guard is decided. Read the evidence before
+  the comment.
 - A failed final transcript removal shows no "delete again" button in the
   drawer. `mecha doctor` still reports it.
 - mecha-graph#25's round-16 minors are on the PR.
@@ -3185,13 +3195,14 @@ it replaced a binary or the dist, and built from a detached worktree.
   (`index-BFFDu_fZ.js`).** `mecha-slack`, `mecha-triggers`, `mecha-drain` and
   `mecha-serve` restarted at 01:07:24Z.
 
-As left: `~/.cargo/bin/mecha` carries both `mecha/unlogged` (#376) and
-`Nothing was drawn.` (#384), and the page served through `:8443` is
-`index-BFFDu_fZ.js`, which still carries the incognito answer gate. **The
-shared checkout is at `dbce699e`, behind `c6ae2c69`, which was
-`origin/main` at 01:40Z; #390 and #391 have merged since.**
-Nothing between them touches `scripts/voice`, so the worker runs current
-code, but the next move is an ordinary fast-forward by the recipe. Four
+As those six installs left it (01:07Z; the 04:06Z entry below supersedes
+the binary and the page): `~/.cargo/bin/mecha` carried both `mecha/unlogged`
+(#376) and `Nothing was drawn.` (#384), and the page served through `:8443`
+was `index-BFFDu_fZ.js`, which carried the incognito answer gate. **The
+shared checkout is at `dbce699e`, checked 2026-09-29; main has since reached
+`8103d746` (#390, #391, #394).** `git diff --name-only dbce699e 8103d746`
+over `scripts/voice` and the launch scripts is empty, so the worker runs
+current code, but the next move is an ordinary fast-forward by the recipe. Four
 Claude Code sessions still hold `mecha-graph-mcp` children on a deleted
 binary (pids 2006709, 52563, 53059 and 54331; each `/proc/<pid>/exe` reads
 `(deleted)`, checked 2026-09-29). They refresh when those sessions restart.
