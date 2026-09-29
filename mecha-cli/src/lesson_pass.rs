@@ -42,6 +42,10 @@ pub struct Tally {
     pub reflections_read: usize,
     /// Torn lines in the reflection store: a floor on every count below.
     pub reflections_skipped: usize,
+    /// Reflections from sessions the owner marked as experiments (ruling
+    /// 4D), set aside before pairing — said, so a pool the marks emptied
+    /// never reads as an empty store.
+    pub reflections_withdrawn: usize,
     /// Appraisals withheld by the clean door, and torn appraisal lines.
     pub appraisals_withheld: usize,
     pub appraisals_skipped: usize,
@@ -87,6 +91,7 @@ fn default_seed() -> u64 {
 struct Read {
     reflections: Vec<Reflexion>,
     reflections_skipped: usize,
+    reflections_withdrawn: usize,
     clean: mecha_core::appraisal_store::CleanRead,
     on_record: std::collections::BTreeSet<String>,
     appraisals_skipped: usize,
@@ -104,7 +109,7 @@ fn read_sources() -> Result<Read> {
     };
     // A session the owner marked as an experiment is no lesson source
     // (ruling 4D; review of #382). The ledger unread stops the pass.
-    let (reflections, _) =
+    let (reflections, reflections_withdrawn) =
         mecha_core::session::Marks::load(&mecha_core::session::Session::default_dir()?)?
             .keep_unmarked(reflections, |r| r.session_id.as_str());
     let (clean, on_record) =
@@ -118,6 +123,7 @@ fn read_sources() -> Result<Read> {
     Ok(Read {
         reflections,
         reflections_skipped,
+        reflections_withdrawn,
         clean,
         on_record,
         appraisals_skipped,
@@ -159,6 +165,7 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
     let mut tally = Tally {
         reflections_read: read.reflections.len(),
         reflections_skipped: read.reflections_skipped,
+        reflections_withdrawn: read.reflections_withdrawn,
         appraisals_withheld: read.clean.withheld,
         appraisals_skipped: read.appraisals_skipped,
         ..Tally::default()
@@ -359,6 +366,13 @@ fn print_tally(t: &Tally, seed: u64) {
             format!(
                 " ({} torn line(s) skipped, so these are floors)",
                 t.reflections_skipped
+            )
+        } else {
+            String::new()
+        } + &if t.reflections_withdrawn > 0 {
+            format!(
+                " (and {} from sessions you marked as experiments, set aside)",
+                t.reflections_withdrawn
             )
         } else {
             String::new()

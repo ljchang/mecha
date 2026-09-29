@@ -330,10 +330,11 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
     );
     // The owner's mark on it (ruling 4D): a line in the sessions' marks
     // ledger, keyed by the session id — a trace like any other.
+    let marks = crate::session::Marks::ledger(&roots.sessions);
     report.attempt(
         "session marks",
-        filter_jsonl(&crate::session::Marks::ledger(&roots.sessions), |v| {
-            field_is(v, "session_id", id)
+        with_lock(marks.parent().expect("the ledger has a directory"), || {
+            filter_jsonl(&marks, |v| field_is(v, "session_id", id))
         }),
     );
     report.attempt(
