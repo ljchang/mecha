@@ -1413,7 +1413,7 @@ impl LearningStore {
             .create(true)
             .append(true)
             .open(self.root.join(file))?;
-        writeln!(f, "{line}")?;
+        append_record(&mut f, line)?;
         Ok(())
     }
 
@@ -1822,9 +1822,14 @@ impl LearningStore {
     /// anything to the user's `$EDITOR` — the store's files staying humanly
     /// editable is a requirement, not an accident. The kernel drops the lock
     /// when the fd closes, crash included, so a dead pass can never wedge
-    /// the store. Read paths (prompt assembly, validate) do not take it:
-    /// a run start must never block on a learn pass, which is why every
-    /// rewrite in this module goes through a temp sibling and rename.
+    /// the store. Read paths (prompt assembly, and `validate`'s probes) do
+    /// not take it: a run start must never block on a learn pass, which is
+    /// why every rewrite in this module goes through a temp sibling and
+    /// rename. `validate` and `mail reflect` take it only around their
+    /// appends, never across a model call. A *hung* holder is another
+    /// matter: `reflect` and `learn` hold it across provider calls (their
+    /// passes are read-modify-writes of the whole pool), so a stuck provider
+    /// parks every other writer (`forget` included) until it returns.
     pub fn lock(&self) -> Result<StoreLock> {
         Ok(self.flock(true)?.expect("blocking flock returns held"))
     }
@@ -2613,6 +2618,20 @@ impl LearningStore {
         }
         Ok(out)
     }
+}
+
+/// One record, one `write`. `writeln!` writes the line and its newline in
+/// separate calls, so two processes appending at once could interleave into
+/// `AB\n\n` — one corrupt line that readers skip and the next rewrite
+/// deletes. A single `write_all` of the whole record keeps each append whole
+/// on an `O_APPEND` descriptor (in practice, for records this size, on a
+/// local filesystem); the store lock is what serialises appends with
+/// rewrites.
+fn append_record(w: &mut impl Write, line: &str) -> std::io::Result<()> {
+    let mut record = String::with_capacity(line.len() + 1);
+    record.push_str(line);
+    record.push('\n');
+    w.write_all(record.as_bytes())
 }
 
 /// Stable content hash of a rendered rules block. FNV-1a written out here
@@ -5133,6 +5152,29 @@ mod tests {
             "ref: refs/heads/main\n"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_appended_record_is_one_write_with_its_newline() {
+        // `writeln!` issued the line and the newline as two writes, which two
+        // concurrent appenders can interleave into one corrupt line.
+        struct Counting(Vec<Vec<u8>>);
+        impl std::io::Write for Counting {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut w = Counting(Vec::new());
+        append_record(&mut w, r#"{"id":"r1"}"#).unwrap();
+        assert_eq!(
+            w.0,
+            vec![b"{\"id\":\"r1\"}\n".to_vec()],
+            "not one whole record per write"
+        );
     }
 
     /// A pass leaves one `{"at", "message"}` line in `passes.jsonl`, in order,

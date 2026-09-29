@@ -116,7 +116,7 @@ export const ROUTES = [
   ['GET', /^\/api\/library\/source$/, () => ({ seed: 4002, suggest_locked: false, has_password: true })],
   // The demo sets no password, so the lock is the plain toggle.
   ['POST', /^\/api\/library\/unlock$/, () => ({ token: 'demo', idle_secs: 1800 })],
-  ['POST', /^\/api\/library\/(relock|save)$/, () => ({ ok: true, output: '' })],
+  ['POST', /^\/api\/library\/(relock|save|add|edit)$/, () => ({ ok: true, output: '' })],
   // `{kind}/{name}/{action}`: approve, reject, lock, unlock, remove.
   ['POST', /^\/api\/library\/[^/]+\/[^/]+\/[^/]+$/, () => ({ ok: true, output: '' })],
   ['GET', /^\/api\/proposals$/, () => fx.proposalStores],
