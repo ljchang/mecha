@@ -164,6 +164,9 @@ author, one writer, and nothing gained by a database.
 
 ## 7. Decisions for the owner
 
+**Ruled 2026-09-29:** the plan in §8 is adopted; D1 as recommended; D3
+adopted. **D2 stays open** — see the caveat under it.
+
 - **D1 — A hand-edited rules file that does not parse.** Keep failing every
   run start (a user rule silently not obeyed is a silently-degrading guard),
   or skip the file with a warning and a doctor finding? Recommendation: skip
@@ -175,7 +178,13 @@ author, one writer, and nothing gained by a database.
   drops rules it omits, and their text survives only in proposal snapshots.
   Retire them with a reason instead ("superseded in consolidation"), so the
   rule's history lives on the record? This is a learning-policy question,
-  not a storage one.
+  not a storage one. **Caveat before anyone builds it:** the learner is
+  shown retired rules as "IMMUTABLE, measured harmful — never restate or
+  re-derive", and the carry-forward inherits retirement onto any reworded
+  restatement; retiring a rule that was merely dropped would teach the
+  learner that a lesson it may still need is harmful. Keeping history this
+  way needs a distinct mark ("superseded", shown to nobody as harmful), not
+  retirement.
 - **D3 — The move trigger.** Adopt §6's trigger (cross-store queries or
   indexed retrieval at run start), so the database decision is made when it
   buys something, not before?
