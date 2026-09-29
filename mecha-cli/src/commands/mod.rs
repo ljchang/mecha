@@ -20,6 +20,7 @@ pub mod mail;
 pub mod model;
 pub mod msg;
 pub mod outbox;
+pub mod persona;
 pub mod polls;
 pub mod proposals;
 pub mod questions;
