@@ -1356,24 +1356,36 @@ impl ImageGenerate {
         })
     }
 
-    /// Record a near-copy of `original`; true when it is the second within
-    /// [`NEAR_COPY_WINDOW`].
+    /// Record an edit of `original` that kept its layout; true when the last
+    /// edit of it, inside [`NEAR_COPY_WINDOW`], kept it too.
     fn near_copy_again(&self, original: std::path::PathBuf) -> bool {
         let mut seen = self.near_copies.lock().unwrap_or_else(|p| p.into_inner());
         seen.retain(|_, at| at.elapsed() < NEAR_COPY_WINDOW);
         seen.insert(original, Instant::now()).is_some()
     }
 
-    /// What an edit that came back a near-copy of `edited` tells the model.
-    /// The retry edits the original — a near-copy's manifest names it, so a
-    /// chain of them keys on one picture and the second in a row says stop.
-    async fn near_copy(&self, ctx: &ToolCtx, edited: &str, similarity: f64) -> NearCopy {
+    /// An edit of `original` changed the layout, so the next one that does
+    /// not is the first in a row again (review of #408: a strike that only
+    /// ever accumulated called any later one "the second in a row").
+    fn layout_changed(&self, original: &std::path::Path) {
+        let mut seen = self.near_copies.lock().unwrap_or_else(|p| p.into_inner());
+        seen.remove(original);
+    }
+
+    /// The picture an edit of `edited` counts against: the one its manifest
+    /// says it kept the layout of, else itself — so a chain of near-copies
+    /// keys on one picture. Also the manifest, and the path the key resolves to.
+    async fn original_of(
+        &self,
+        ctx: &ToolCtx,
+        edited: &str,
+    ) -> (String, Option<Value>, std::path::PathBuf) {
         let own = read_manifest(ctx, edited).await;
         // A plain workspace path that resolves, or it is not used: the
         // manifest is a file in the workspace, and this text reaches the model.
         let original = own
             .as_ref()
-            .and_then(|m| m.get("near_copy_of")?.as_str())
+            .and_then(|m| m.get("same_layout_as")?.as_str())
             .filter(|p| {
                 p.len() <= 200
                     && p.chars()
@@ -1385,6 +1397,16 @@ impl ImageGenerate {
         let key = ctx
             .resolve(&original)
             .unwrap_or_else(|_| ctx.workspace.join(&original));
+        (original, own, key)
+    }
+
+    /// What an edit that kept the layout of `edited` tells the model. It
+    /// cannot say the edit failed: a recolour keeps the layout too, and only
+    /// the model knows which it asked for — so both notices lead with that,
+    /// and "stop" is only ever for a move or a pose (review of #408: a
+    /// second successful recolour was told it had not taken).
+    async fn near_copy(&self, ctx: &ToolCtx, edited: &str, similarity: f64) -> NearCopy {
+        let (original, own, key) = self.original_of(ctx, edited).await;
         let again = self.near_copy_again(key);
         let drawn = if original == edited {
             own
@@ -1392,6 +1414,11 @@ impl ImageGenerate {
             read_manifest(ctx, &original).await
         };
         let redraw = drawn.and_then(|m| self.library_redraw(&m));
+        let expected = format!(
+            " Its layout came back nearly the same as {edited}'s (similarity {similarity:.2}). \
+             After a change of colour, clothing or a small detail that is expected, and nothing \
+             is wrong."
+        );
         let notice = if again {
             let offer = redraw
                 .map(|r| {
@@ -1402,9 +1429,9 @@ impl ImageGenerate {
                 })
                 .unwrap_or_default();
             format!(
-                " Its layout came back nearly the same as {edited}'s again (similarity \
-                 {similarity:.2}), the second near-copy of {original} in a row. If the change was \
-                 a move or a pose, stop editing it and tell the user the edit did not take{offer}."
+                "{expected} But if the user asked to move someone, change a pose or rearrange \
+                 the picture, this is the second edit of {original} in a row that kept its \
+                 layout: stop editing it, and tell the user it did not take{offer}."
             )
         } else {
             let offer = redraw
@@ -1417,14 +1444,13 @@ impl ImageGenerate {
                 })
                 .unwrap_or_default();
             format!(
-                " Its layout came back nearly the same as {edited}'s (similarity \
-                 {similarity:.2}). That is expected when the change was a colour, clothing or a \
-                 small detail. If the user asked to move someone, change a pose or rearrange the \
-                 picture, the edit did not take, so do not say it did: call image_generate again \
-                 now, editing {original} rather than this result, with the prompt rewritten as \
-                 the parts to keep, named, and an instruction naming the change — e.g. \"Keep the \
-                 style, the background and the man unchanged. Have Maya stand up.\" A description \
-                 of the scene, or keeping the whole picture unchanged, returns it unchanged.{offer}"
+                "{expected} But if the user asked to move someone, change a pose or rearrange \
+                 the picture, the edit did not take, so do not say it did: call image_generate \
+                 again now, editing {original} rather than this result, with the prompt \
+                 rewritten as the parts to keep, named, and an instruction naming the change — \
+                 e.g. \"Keep the style, the background and the man unchanged. Have Maya stand \
+                 up.\" A description of the scene, or keeping the whole picture unchanged, \
+                 returns it unchanged.{offer}"
             )
         };
         NearCopy { original, notice }
@@ -1642,9 +1668,9 @@ impl Tool for ImageGenerate {
         "Generate an image with the local image model, or edit one, and save the result as a \
          PNG in the workspace. Takes about a minute. It renders text inside images well — put \
          the exact words in quotes. To edit, pass the picture's path in reference_images (one \
-         the user attached, or an earlier result) and write the prompt as an instruction naming \
-         the change and then what to keep, e.g. \"Keep the style, the background and the man \
-         unchanged. Have the woman stand up.\" Never describe the whole \
+         the user attached, or an earlier result) and write the prompt as the parts to keep, \
+         named, then an instruction naming the change, e.g. \"Keep the style, the background \
+         and the man unchanged. Have the woman stand up.\" Never describe the whole \
          scene or keep the whole picture unchanged: the edit model reads either as the picture \
          it already has, and returns it unchanged. The result is not shown to you. If image_view is among your tools, look at it only when the \
          task needs you to see it — the user asked you to check, compare or describe it, or an edit depends on \
@@ -2050,7 +2076,12 @@ impl Tool for ImageGenerate {
         };
         let near = match similarity {
             Some(r) if r >= NEAR_COPY_LAYOUT => Some(self.near_copy(ctx, &paths[0], r).await),
-            _ => None,
+            Some(_) => {
+                let (_, _, original) = self.original_of(ctx, &paths[0]).await;
+                self.layout_changed(&original);
+                None
+            }
+            None => None,
         };
         let size = match req.size {
             Some((w, h)) => format!("{w}×{h}"),
@@ -2068,7 +2099,7 @@ impl Tool for ImageGenerate {
             "reference_size": req.reference_size,
             "reference_images": if is_edit { json!(paths) } else { Value::Null },
             "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
-            "near_copy_of": near.as_ref().map(|n| &n.original),
+            "same_layout_as": near.as_ref().map(|n| &n.original),
             "cast": ask.as_ref().filter(|a| !a.cast.is_empty()).map(|a| a.cast.iter()
                 .zip(used.iter().filter(|u| u.kind == crate::imagelib::Kind::Character))
                 .map(|(m, u)| json!({
@@ -2119,15 +2150,10 @@ impl Tool for ImageGenerate {
                 .find(|u| u.kind == crate::imagelib::Kind::Style)
                 .map(|u| format!(" in style {} (v{})", u.name, u.version))
                 .unwrap_or_default();
-            // A near-copy is no base for the next edit; its notice names one.
-            let further = match &near {
-                Some(_) => String::new(),
-                None => format!(" To change it further, edit {path} next."),
-            };
             text.push_str(&format!(
                 "Edited {}{styled} into a {size} image in {secs} s (seed {}, {} steps) and saved \
-                 it to {path} in the workspace; the original is unchanged.{further} You have not \
-                 seen it, so do not describe what it shows.",
+                 it to {path} in the workspace; the original is unchanged. To change it further, \
+                 edit {path} next. You have not seen it, so do not describe what it shows.",
                 sources.join(", "),
                 req.seed,
                 req.steps
@@ -2266,8 +2292,9 @@ mod tests {
         /// The record an interrupted job reads back as, in place of an error
         /// with no outputs — one that finished as it was stopped.
         interrupted_record: Option<Value>,
-        /// What `/view` answers, in place of [`PNG`]'s undecodable bytes.
-        view: Option<Vec<u8>>,
+        /// What `/view` answers, in turn, in place of [`PNG`]'s undecodable
+        /// bytes; the last one answers every call after.
+        views: Vec<Vec<u8>>,
     }
 
     impl Default for Fake {
@@ -2281,7 +2308,7 @@ mod tests {
                 hang_up: None,
                 temp: None,
                 interrupted_record: None,
-                view: None,
+                views: Vec::new(),
             }
         }
     }
@@ -2296,7 +2323,7 @@ mod tests {
             hang_up,
             temp,
             interrupted_record,
-            view,
+            views,
         } = opts;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2306,6 +2333,7 @@ mod tests {
         // Like the real server: an interrupted job is written to the history
         // only after `/interrupt` has answered.
         let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let views = Arc::new(Mutex::new(std::collections::VecDeque::from(views)));
         tokio::spawn(async move {
             loop {
                 let Ok((mut sock, _)) = listener.accept().await else {
@@ -2317,7 +2345,7 @@ mod tests {
                 let prompt_body = prompt_body.clone();
                 let temp = temp.clone();
                 let interrupted_record = interrupted_record.clone();
-                let view = view.clone();
+                let views = Arc::clone(&views);
                 tokio::spawn(async move {
                     let mut req = Vec::new();
                     let mut tmp = [0u8; 8192];
@@ -2383,6 +2411,12 @@ mod tests {
                             json_reply(next)
                         }
                     } else if path.starts_with("/view?") {
+                        let mut views = views.lock().unwrap();
+                        let view = if views.len() > 1 {
+                            views.pop_front()
+                        } else {
+                            views.front().cloned()
+                        };
                         reply("200 OK", "image/png", view.as_deref().unwrap_or(PNG))
                     } else if path == "/upload/image" {
                         let sent = body
@@ -4297,7 +4331,7 @@ mod tests {
         let scene = picture(8, [240, 220, 40]);
         let (url, _) = fake_with(Fake {
             history: vec![done(), done()],
-            view: Some(scene.clone()),
+            views: vec![scene.clone()],
             ..Fake::default()
         })
         .await;
@@ -4324,14 +4358,14 @@ mod tests {
             "{}",
             out.content
         );
-        // A near-copy is no base for the next edit.
+        // A recolour keeps the layout too, so the result stays the next base.
         assert!(
-            !out.content.contains("To change it further"),
+            out.content.contains("To change it further"),
             "{}",
             out.content
         );
         let manifest = manifest_of(&dir, &out.content);
-        assert_eq!(manifest["near_copy_of"], "images/orig.png");
+        assert_eq!(manifest["same_layout_as"], "images/orig.png");
         assert!(manifest["layout_similarity"].as_f64().unwrap() > 0.99);
 
         // The retry edits the near-copy rather than the original: it still
@@ -4346,13 +4380,13 @@ mod tests {
             .unwrap();
         assert!(
             out.content
-                .contains("the second near-copy of images/orig.png in a row")
+                .contains("the second edit of images/orig.png in a row that kept its layout")
                 && out.content.contains("stop editing it"),
             "{}",
             out.content
         );
         assert_eq!(
-            manifest_of(&dir, &out.content)["near_copy_of"],
+            manifest_of(&dir, &out.content)["same_layout_as"],
             "images/orig.png"
         );
         std::fs::remove_dir_all(dir).ok();
@@ -4362,7 +4396,7 @@ mod tests {
     async fn an_edit_that_moved_something_reads_as_before() {
         let (url, _) = fake_with(Fake {
             history: vec![done()],
-            view: Some(picture(40, [240, 220, 40])),
+            views: vec![picture(40, [240, 220, 40])],
             ..Fake::default()
         })
         .await;
@@ -4384,7 +4418,7 @@ mod tests {
             out.content
         );
         let manifest = manifest_of(&dir, &out.content);
-        assert!(manifest["near_copy_of"].is_null());
+        assert!(manifest["same_layout_as"].is_null());
         assert!(manifest["layout_similarity"].as_f64().unwrap() < NEAR_COPY_LAYOUT);
         std::fs::remove_dir_all(dir).ok();
     }
@@ -4394,7 +4428,7 @@ mod tests {
         let scene = picture(8, [240, 220, 40]);
         let (url, _) = fake_with(Fake {
             history: vec![done(), done()],
-            view: Some(scene.clone()),
+            views: vec![scene.clone()],
             ..Fake::default()
         })
         .await;
@@ -4445,5 +4479,91 @@ mod tests {
         assert!(!out.content.contains("redraw"), "{}", out.content);
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
+    }
+
+    #[tokio::test]
+    async fn a_chain_of_recolours_is_never_told_it_did_not_take() {
+        // Two recolours in a row: each keeps the layout on purpose, so both
+        // notices say that is expected, and each result stays the next base
+        // (review of #408: the second was told to stop, and the pointer to
+        // the recoloured result was withheld).
+        let (url, _) = fake_with(Fake {
+            history: vec![done(), done()],
+            views: vec![picture(8, [120, 230, 120]), picture(8, [250, 170, 60])],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+        let t = tool(&url);
+        let out = t
+            .call(
+                json!({"prompt": "Keep the background unchanged. Make her dress green.",
+                       "reference_images": ["images/orig.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        let green = out.content.lines().next().unwrap()["image: ".len()..].to_string();
+        assert!(out.content.contains("nothing is wrong"), "{}", out.content);
+        let out = t
+            .call(
+                json!({"prompt": "Keep the background unchanged. Make her dress orange.",
+                       "reference_images": [green]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        let orange = out.content.lines().next().unwrap()["image: ".len()..].to_string();
+        assert!(
+            out.content
+                .contains("that is expected, and nothing is wrong")
+                && out
+                    .content
+                    .contains(&format!("To change it further, edit {orange} next")),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_moved_something_ends_the_run_of_near_copies() {
+        // Near-copy, then a real move, then a near-copy: the third is the
+        // first in a row again, so it says retry, not stop.
+        let scene = picture(8, [240, 220, 40]);
+        let (url, _) = fake_with(Fake {
+            history: vec![done(), done(), done()],
+            views: vec![scene.clone(), picture(40, [240, 220, 40]), scene.clone()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), &scene).unwrap();
+        let t = tool(&url);
+        let c = ctx(&dir);
+        let edit = || {
+            t.call(
+                json!({"prompt": "Keep the background unchanged. Have her stand up.",
+                       "reference_images": ["images/orig.png"]}),
+                &c,
+            )
+        };
+        assert!(edit()
+            .await
+            .unwrap()
+            .content
+            .contains("call image_generate again now"));
+        assert!(!edit().await.unwrap().content.contains("nearly the same"));
+        let out = edit().await.unwrap();
+        assert!(
+            out.content.contains("call image_generate again now")
+                && !out.content.contains("in a row"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -620,9 +620,14 @@ conversation, so the capabilities do not change. Three rules:
   is a workspace file. A recolour also keeps the layout (it scored 0.78–1.00
   where moves scored ≤ 0.67), which is why the tool reports rather than
   retries: only the model knows which it asked for, and a blind retry would
-  cost every recolour a minute. A near-copy records `near_copy_of`, so a
-  retry that edits the near-copy still counts against the original, and the
-  second within 15 minutes says stop and tell the owner.
+  cost every recolour a minute. For the same reason neither notice says the
+  edit failed: each leads with "expected after a colour or detail change",
+  and the result stays the next thing to edit. A near-copy records
+  `same_layout_as`, so a retry that edits the near-copy still counts against
+  the original. The second in a row within 15 minutes says stop and tell
+  the owner, if the change was a move. An edit of it that does change the
+  layout ends the row: a record that only accumulated called a second
+  successful recolour "did not take" (review of #408).
 - **The web chat's Edit button starts a sentence, it does not send one** —
   `Edit images/…png: ` in the input, cursor after it. The path is what lets
   the model name the right reference; the change is the owner's to describe.
