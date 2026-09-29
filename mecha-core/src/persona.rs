@@ -986,10 +986,9 @@ fn load_persona(dir: &Path, name: &str) -> Result<Persona> {
     }
     let state_path = dir.join("state.toml");
     let state = if state_path.is_file() {
-        match std::fs::read_to_string(&state_path)
-            .map_err(anyhow::Error::from)
-            .and_then(|s| toml::from_str::<State>(&s).map_err(anyhow::Error::from))
-        {
+        // The same door as every other file here: size cap, control
+        // characters, then the parse.
+        match read_prose(&state_path).and_then(|s| parse_toml::<State>(&s)) {
             Ok(s) => s,
             Err(e) => {
                 notes.push(format!(
@@ -1158,6 +1157,11 @@ pub fn seed_starters(dir: &Path) -> Result<Vec<String>> {
 /// with its folder and about-me made.
 pub fn add_group(dir: &Path, name: &str, description: &str) -> Result<()> {
     validate_name(name)?;
+    // Held to the loader's rule before it is written: one bad value makes
+    // the whole of groups.toml refuse to load, and every group link with it.
+    if forbidden_control(description).is_some() || description.contains('\n') {
+        bail!("a group's description is one line, without control characters");
+    }
     ensure_layout(dir)?;
     let store = Store::load(dir);
     if let Some(e) = store
@@ -2023,6 +2027,19 @@ mod tests {
         )
         .unwrap();
         assert!(Store::load(&dir).groups().is_empty());
+        // state.toml goes through the same door, and fails closed.
+        std::fs::write(dir.join("mara/identity.md"), "## Core\nDry.\n").unwrap();
+        let state = dir.join("mara/state.toml");
+        let text = std::fs::read_to_string(&state).unwrap();
+        std::fs::write(&state, text.replace("created = \"", "created = \"\\u001b")).unwrap();
+        let p = Store::load(&dir).get("mara").cloned().unwrap();
+        assert_eq!(p.state.status, Status::Candidate);
+        assert!(
+            p.notes.iter().any(|n| n.contains("state.toml")),
+            "{:?}",
+            p.notes
+        );
+        std::fs::write(&state, text).unwrap();
         // Tabs are Markdown, not an attack.
         std::fs::write(dir.join("mara/identity.md"), "## Core\n\tDry.\r\n").unwrap();
         assert!(Store::load(&dir).get("mara").is_some());
@@ -2263,6 +2280,11 @@ mod tests {
         assert!(dir.join("groups/work/files").is_dir());
         assert!(dir.join("groups/work/about-me.md").is_file());
         assert!(add_group(&dir, "work", "").is_err());
+        // A description the loader would refuse is refused at the door, and
+        // the file it would have broken still loads.
+        assert!(add_group(&dir, "play", "a\u{1b}[2J").is_err());
+        assert!(add_group(&dir, "play", "two\nlines").is_err());
+        assert_eq!(Store::load(&dir).groups().len(), 1);
         std::fs::remove_dir_all(dir).ok();
     }
 

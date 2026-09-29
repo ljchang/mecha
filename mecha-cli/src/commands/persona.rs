@@ -158,6 +158,10 @@ fn load_error(store: &Store, name: &str) -> Option<String> {
         .map(|e| e.why.clone())
 }
 
+fn lower_all(names: Vec<String>) -> Vec<String> {
+    names.into_iter().map(|n| n.trim().to_lowercase()).collect()
+}
+
 fn find<'a>(store: &'a Store, name: &str) -> Result<&'a Persona> {
     let name = name.trim().to_lowercase();
     if let Some(p) = store.get(&name) {
@@ -276,7 +280,7 @@ fn after_edit(dir: &Path, lib: &Library, name: &str, again: &str) -> Result<()> 
             "saved — `{name}` is v{}; new chats use it, open chats keep the version they began with",
             state.version
         ),
-        Err(_) => eprintln!("saved, but no new version could be taken:"),
+        Err(_) => eprintln!("saved, but no new version could be taken (the reason follows)"),
     }
     let store = Store::load(dir);
     if let Some(p) = store.get(name) {
@@ -382,10 +386,12 @@ fn run_with(
                 NewPersona {
                     name: name.trim().to_lowercase(),
                     display: display.unwrap_or_default(),
-                    relationships,
-                    character,
-                    voice,
-                    groups,
+                    // Names are lowercase everywhere they are typed, as
+                    // `group add` and `relationship edit` already make them.
+                    relationships: lower_all(relationships),
+                    character: character.map(|c| c.trim().to_lowercase()),
+                    voice: voice.map(|v| v.trim().to_lowercase()),
+                    groups: lower_all(groups),
                     locked,
                     origin: Origin::Owner,
                 },
