@@ -765,11 +765,22 @@ pub(crate) fn owner_acts(
 }
 
 /// One line of coverage: scored, hits and surprises, what waits, what is
-/// unknown — and a hit rate only over scores that exist.
+/// unknown — and a hit rate only over predictions known to have been able
+/// to miss.
 pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -> String {
+    // Ruling 1B: the appraisals the harness asked for no expected act, apart
+    // from any the appraiser left it out of.
+    let not_asked = if s.not_asked > 0 {
+        format!(
+            " · {} not asked: the output offered nothing to act on",
+            s.not_asked
+        )
+    } else {
+        String::new()
+    };
     if s.with_expectation == 0 {
         return format!(
-            "appraisals' predictions: none carries an expected act ({} appraisal(s) on record{})",
+            "appraisals' predictions: none carries an expected act ({} appraisal(s) on record{}){not_asked}",
             s.appraisals,
             if s.appraisals_unreadable > 0 {
                 format!(", {} unreadable", s.appraisals_unreadable)
@@ -779,17 +790,41 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
         );
     }
     format!(
-        "appraisals' predictions: {} scored of {} ({} hit, {} surprise(s), {} of them on clean \
+        "appraisals' predictions: {} scored of {} ({} hit{}, {} surprise(s), {} of them on clean \
          appraisals; {}) · {} waiting for the owner's act or the window · {} resolved, to be \
          scored on the next distill · {} unknown (a store or the patience could not be read) · \
          {} task output(s) awaiting distill's board read{}",
         s.scored,
         s.with_expectation,
         s.hits,
+        match (s.forced, s.forced_unknown) {
+            (0, 0) => String::new(),
+            (f, 0) =>
+                format!(" [{f} of them forced: `no_act` on a run that left nothing to act on]"),
+            (0, u) => format!(
+                " [{u} of them unclassified: an act store could not be read, so whether they \
+                 could miss is unknown]"
+            ),
+            (f, u) => format!(
+                " [{f} of them forced: `no_act` on a run that left nothing to act on; {u} \
+                 unclassified: an act store could not be read]"
+            ),
+        },
         s.surprises,
         s.clean_surprises,
         match s.hit_rate {
-            Some(r) => format!("hit rate {:.0}%", r * 100.0),
+            Some(r) => format!(
+                "hit rate {:.0}% over the {} that could miss",
+                r * 100.0,
+                s.could_miss()
+            ),
+            // The reason the rate is withheld, not a claim that nothing
+            // could miss: a surprise beside it did (review of #377).
+            None if s.forced_unknown > 0 => format!(
+                "no rate: {} hit(s) could not be classified",
+                s.forced_unknown
+            ),
+            None if s.scored > 0 => "no rate: none could miss".into(),
             None => "no rate".into(),
         },
         s.pending,
@@ -807,7 +842,7 @@ pub(crate) fn expectations_line(s: &mecha_core::appraisal_store::ScoreSummary) -
             )
         } else {
             String::new()
-        }
+        } + &not_asked
     )
 }
 
@@ -1021,7 +1056,19 @@ impl Appraiser {
             past_unreadable: clean.is_err(),
             known: cx.known,
         });
-        let answered = match distiller.appraise(turn, &inputs).await {
+        // Ruling 1B: an output with nothing for the owner to act on, now or
+        // through a task the run touched, is asked for no expected act. The
+        // stores the scorer reads, read the same way, so an unreadable one
+        // leaves the question asked.
+        let withhold = mecha_core::appraisal_store::withholds_expectation(
+            id,
+            evidence.anchor(),
+            &owner_acts(&self.stores),
+            // Every message the run ever had, from the evidence's one read:
+            // a task call compaction evicted still linked the session.
+            evidence.touched_tasks(),
+        );
+        let answered = match distiller.appraise(turn, &inputs, withhold).await {
             Ok(a) => a,
             Err(e) => {
                 eprintln!("· {id} — appraisal failed: {e:#}");
@@ -1083,5 +1130,93 @@ impl Appraiser {
                 tally.failed += 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::appraisal_store::ScoreSummary;
+
+    /// The readout's rate has three shapes, and the one that read "hit rate
+    /// 100%" over four forced hits on the live store (#377) must not come
+    /// back: forced hits are named, and a rate is printed only over the
+    /// predictions that could have missed.
+    #[test]
+    fn the_expectations_line_names_forced_hits_and_rates_only_what_could_miss() {
+        let base = ScoreSummary {
+            appraisals: 7,
+            with_expectation: 7,
+            ..ScoreSummary::default()
+        };
+
+        let forced = expectations_line(&ScoreSummary {
+            scored: 4,
+            hits: 4,
+            forced: 4,
+            pending: 3,
+            ..base.clone()
+        });
+        assert!(forced.contains("4 hit [4 of them forced"), "{forced}");
+        assert!(forced.contains("no rate: none could miss"), "{forced}");
+        assert!(
+            !forced.contains('%'),
+            "no percentage over forced hits: {forced}"
+        );
+
+        let rated = expectations_line(&ScoreSummary {
+            scored: 3,
+            hits: 2,
+            forced: 1,
+            surprises: 1,
+            hit_rate: Some(0.5),
+            ..base.clone()
+        });
+        assert!(rated.contains("1 of them forced"), "{rated}");
+        assert!(
+            rated.contains("hit rate 50% over the 2 that could miss"),
+            "{rated}"
+        );
+
+        // An unreadable act store: the hits are named as unclassified, and
+        // the withheld rate says why — never that nothing could miss, beside
+        // a surprise that did.
+        let blind = expectations_line(&ScoreSummary {
+            scored: 5,
+            hits: 4,
+            forced_unknown: 4,
+            surprises: 1,
+            ..base.clone()
+        });
+        assert!(blind.contains("4 of them unclassified"), "{blind}");
+        assert!(
+            blind.contains("no rate: 4 hit(s) could not be classified"),
+            "{blind}"
+        );
+        assert!(!blind.contains("none"), "{blind}");
+        assert!(!blind.contains("could miss)"), "{blind}");
+
+        // Ruling 1B: appraisals the harness asked for no expected act are
+        // named, on either branch, never folded into "none carries one".
+        let withheld = expectations_line(&ScoreSummary {
+            appraisals: 3,
+            with_expectation: 0,
+            not_asked: 3,
+            ..ScoreSummary::default()
+        });
+        assert!(
+            withheld.contains("3 not asked: the output offered nothing to act on"),
+            "{withheld}"
+        );
+        let beside = expectations_line(&ScoreSummary {
+            not_asked: 2,
+            ..base.clone()
+        });
+        assert!(beside.contains("2 not asked"), "{beside}");
+
+        let none = expectations_line(&base);
+        assert!(none.contains("0 scored of 7"), "{none}");
+        assert!(none.contains("; no rate)"), "{none}");
+        assert!(!none.contains("forced"), "{none}");
     }
 }

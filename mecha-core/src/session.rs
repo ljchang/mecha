@@ -446,6 +446,14 @@ pub struct RunConfig {
     pub rules_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rule_ids: Vec<String>,
+    /// Learned-rules files this run's block was rendered without, as
+    /// `domain: error` ([`crate::learning::RulesCarried::skipped`], D1 in
+    /// `docs/LEARNING-STORE-RESEARCH.md`). Non-empty means `rules_hash` is
+    /// `None` *for this reason*, which is a different fact from a record
+    /// that predates the field. It is also the one reader of the incident
+    /// that outlives the fix: doctor goes quiet once the file parses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules_skipped: Vec<String>,
     /// The workspace the rules block was matched against
     /// (`RulesCarried::workspace`) — the scope key a run presented, beside
     /// the jail in `workspace` above, which is what the run was confined to.
@@ -520,6 +528,14 @@ impl RunConfig {
     /// prefix block still in `system_prompt`, and its scoped set is
     /// *unknown*, never empty (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 1).
     pub fn rules_arm_note(&self, delivered: Option<&[Delivery]>) -> String {
+        if !self.rules_skipped.is_empty() {
+            return format!(
+                "learned rules: unknown — the prefix block was rendered without learned \
+                 rules that did not parse ({}), so which rules this run carried was not \
+                 recorded",
+                self.rules_skipped.join("; ")
+            );
+        }
         match (&self.rules_hash, delivered) {
             (None, _) => "learned rules: the prefix block as recorded in the system prompt; \
                           which rules were delivered mid-run is unknown (recorded before \
@@ -571,6 +587,7 @@ impl Default for RunConfig {
             experiment: None,
             rules_hash: None,
             rule_ids: Vec::new(),
+            rules_skipped: Vec::new(),
             rules_workspace: None,
             rules_surface: None,
             rules_goal: None,
@@ -610,6 +627,7 @@ impl RunConfig {
             .filter(|l| levers_off.contains(l))
             .collect();
         let cfg = agent.config();
+        let known = rules.filter(|r| r.skipped.is_empty());
         RunConfig {
             appraisal_evidence: agent.ctx().appraisal_evidence.as_ref().map(|b| {
                 serde_json::to_value(b.snapshot()).expect("appraisal evidence serializes")
@@ -649,8 +667,18 @@ impl RunConfig {
             sandbox_network: config.sandbox.network,
             levers_off: Some(levers_off),
             experiment: crate::experiment::ExperimentRef::from_env(),
-            rules_hash: rules.map(|r| r.hash.clone()),
-            rule_ids: rules.map(|r| r.rule_ids.clone()).unwrap_or_default(),
+            // A block rendered past a skipped file is not a measurement of
+            // the rule set: unknown, never the hash of what was left.
+            rules_hash: known.map(|r| r.hash.clone()),
+            rule_ids: known.map(|r| r.rule_ids.clone()).unwrap_or_default(),
+            rules_skipped: rules
+                .map(|r| {
+                    r.skipped
+                        .iter()
+                        .map(|s| format!("{}: {}", s.domain, s.error))
+                        .collect()
+                })
+                .unwrap_or_default(),
             rules_workspace: rules.and_then(|r| r.workspace.clone()),
             rules_surface: rules.and_then(|r| r.surface),
             rules_goal: rules.and_then(|r| r.goal.clone()),

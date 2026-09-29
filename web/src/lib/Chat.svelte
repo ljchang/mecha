@@ -1,6 +1,7 @@
 <script>
   import { tick } from 'svelte';
   import { apiFetch as fetch } from './api.js';
+  import { tameName, validName } from './library.js';
   import ModelChip from './ModelChip.svelte';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   // The chat view: a rendering of the conversation the server owns, plus a
@@ -1296,6 +1297,58 @@
 
   // Seed the input with the file to edit and leave the cursor after it.
   // Anything already typed is kept after the prefix, never replaced.
+  // Save to library: the picture becomes a recurring character. The server
+  // copies it in through the chat's jail and reads its seed from the
+  // manifest beside it; this form only names and describes it. The lock box
+  // starts checked when the picture was made from a locked character (the
+  // owner's ruling: inherited by default, and a tap unchecks it) — and when
+  // the answer cannot be had, it starts checked too, because there the safe
+  // default and the fallback are the same side (review of #385). Save waits
+  // until the answer is in. A password is optional: without one the Library
+  // tab's lock is a plain toggle, so locking here always has a way back.
+  let saving = $state(null);
+  async function startSave(path) {
+    saving = { path, name: '', description: '', locked: false, busy: false, msg: null, ready: false, inherited: false };
+    try {
+      const res = await fetch(`/api/library/source?key=${encodeURIComponent(key)}&path=${encodeURIComponent(path)}`);
+      if (saving?.path !== path) return;
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const src = await res.json();
+      saving.inherited = !!src.suggest_locked;
+      saving.locked = saving.inherited;
+    } catch (e) {
+      if (saving?.path !== path) return;
+      saving.locked = true;
+      saving.msg = `Could not check whether this picture used a locked character (${String(e?.message ?? e)}), so the lock box starts checked.`;
+    } finally {
+      if (saving?.path === path) saving.ready = true;
+    }
+  }
+  async function saveToLibrary() {
+    if (!saving) return;
+    saving.busy = true;
+    saving.msg = null;
+    try {
+      const res = await fetch('/api/library/save', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          key,
+          path: saving.path,
+          name: tameName(saving.name),
+          description: saving.description.trim(),
+          locked: saving.locked,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const name = tameName(saving.name);
+      saving = { ...saving, busy: false, msg: `Saved as ${name}. Name ${name} in a chat to draw them again.`, done: true };
+    } catch (e) {
+      saving.busy = false;
+      saving.msg = String(e?.message ?? e);
+    }
+  }
+
   function editImage(path) {
     const typed = draft.trim();
     draft = typed ? `Edit ${path}: ${typed}` : `Edit ${path}: `;
@@ -1871,6 +1924,25 @@
                person's to describe. The path is what lets the model pass the
                right file as the reference. -->
           <button class="genedit" onclick={() => editImage(picture)}>Edit</button>
+          {#if !incognito}
+            <!-- Not in an incognito chat: saving writes outside the room. -->
+            <button class="genedit" onclick={() => (saving?.path === picture ? (saving = null) : startSave(picture))}>Save to library</button>
+            {#if saving?.path === picture}
+              <form class="libsave" onsubmit={(e) => { e.preventDefault(); saveToLibrary(); }}>
+                {#if !saving.done}
+                  <input placeholder="name, e.g. maya" bind:value={saving.name} autocomplete="off" />
+                  <textarea rows="2" placeholder="a short description — include build and height" bind:value={saving.description}></textarea>
+                  <label class="libsave-lock">
+                    <input type="checkbox" bind:checked={saving.locked} />
+                    lock (hide while browsing)
+                    {#if saving.inherited}<span class="libsave-why">— made from a locked character</span>{/if}
+                  </label>
+                  <button class="genedit" disabled={!saving.ready || saving.busy || !validName(tameName(saving.name)) || !saving.description.trim()}>Save</button>
+                {/if}
+                {#if saving.msg}<div class="libsave-msg">{saving.msg}</div>{/if}
+              </form>
+            {/if}
+          {/if}
         {/if}
       {:else if entry.kind === 'notice'}
         <div class="notice">{entry.text}</div>
@@ -2789,6 +2861,11 @@
     margin: 4px 0 8px 18px;
     max-width: min(100%, 512px);
   }
+  .libsave { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; max-width: 420px; }
+  .libsave input:not([type='checkbox']), .libsave textarea { background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius); color: var(--text); font-family: var(--sans); font-size: 14px; padding: 9px 11px; }
+  .libsave-lock { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); flex-wrap: wrap; }
+  .libsave-why { color: var(--hazard); font-family: var(--mono); font-size: 11px; }
+  .libsave-msg { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
   .genedit {
     align-self: flex-start;
     margin: -4px 0 10px 18px;

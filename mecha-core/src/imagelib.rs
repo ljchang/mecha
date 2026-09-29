@@ -31,6 +31,11 @@ pub const MAX_STYLE_TEXT: usize = 1000;
 pub const MAX_CAST: usize = 4;
 /// `wearing` and `doing`, each.
 pub const MAX_CAST_FIELD: usize = 300;
+/// People in a scene who are no library character — a waiter, a crowd's
+/// front row. They carry no reference, so the four-reference ceiling (E3)
+/// does not bound them; four is what has been asked of the model alongside
+/// a cast, not a measured limit.
+pub const MAX_EXTRAS: usize = 4;
 /// Candidates waiting on the owner. A model that proposes in a loop fills a
 /// queue nobody reads; past this it is refused.
 pub const MAX_PENDING: usize = 50;
@@ -210,9 +215,52 @@ fn now() -> String {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("installing {}", path.display()))?;
+    write_atomic_mode(path, bytes, None)
+}
+
+/// Write-then-rename through a temp file that is new or not at all: a fresh
+/// random name, `create_new`, and no symlink followed. A fixed `.tmp` name
+/// opened with `create(true)` kept an existing file's mode — so a lock file
+/// promised 0600 could arrive with any mode — and wrote through a symlink
+/// planted there, which the rename then installed as the file itself (review
+/// of #385; `serve`'s `write_private_temp` is the same fix, #258).
+fn write_atomic_mode(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<()> {
+    use std::io::Write;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow!("{} has no file name", path.display()))?;
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+        if let Some(mode) = mode {
+            options.mode(mode);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    let written = (|| -> Result<()> {
+        let mut f = options
+            .open(&tmp)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        // A failed rename leaves a fresh random name behind each time, where
+        // the old fixed name left at most one: take it back (review of #385).
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("installing {}", path.display()));
+    }
     Ok(())
 }
 
@@ -508,6 +556,17 @@ pub fn approve(dir: &Path, kind: Kind, name: &str) -> Result<Entry> {
     Ok(entry)
 }
 
+/// Approve a candidate as it was *shown*: re-read at the moment of writing,
+/// and refused unless its [`shown_digest`] still matches what the approval
+/// surface displayed. The web door's form of `approve`'s "read it first".
+pub fn approve_as_shown(dir: &Path, kind: Kind, name: &str, shown: &str) -> Result<Entry> {
+    let entry = current(dir, kind, name)?;
+    if shown_digest(&entry) != shown {
+        bail!("`{name}` changed since it was shown; look at it again before approving");
+    }
+    approve(dir, kind, name)
+}
+
 /// The browse filter, per item.
 pub fn set_locked(dir: &Path, kind: Kind, name: &str, locked: bool) -> Result<Entry> {
     let mut entry = current(dir, kind, name)?;
@@ -632,6 +691,105 @@ pub fn remove(dir: &Path, kind: Kind, name: &str) -> Result<()> {
     Ok(())
 }
 
+// ─── The browse lock and approval binding ──────────────────────────────────
+
+/// The lock password's file: an argon2id hash, mode 0600, beside the entries.
+const LOCK_FILE: &str = "lock.toml";
+/// Shorter than this is refused when the password is set.
+pub const MIN_LOCK_PASSWORD: usize = 6;
+
+#[derive(Serialize, Deserialize)]
+struct LockFile {
+    /// A PHC-format argon2id string.
+    hash: String,
+}
+
+/// Whether a lock password has been set. Until one is, locked entries stay
+/// hidden while browsing and nothing can show them — the owner's ruling makes
+/// the lock a browse filter, and a filter with no key is still a filter.
+pub fn has_lock_password(dir: &Path) -> bool {
+    dir.join(LOCK_FILE).is_file()
+}
+
+/// Set (or replace) the lock password. The owner's act from the CLI only:
+/// the password is never typed into a chat, where it would land in a
+/// transcript, and never set from the page.
+pub fn set_lock_password(dir: &Path, password: &str) -> Result<()> {
+    use argon2::password_hash::{PasswordHasher, SaltString};
+    if password.chars().count() < MIN_LOCK_PASSWORD {
+        bail!("the lock password needs at least {MIN_LOCK_PASSWORD} characters");
+    }
+    // A v4 UUID's bytes from the OS generator — 122 random bits, six being
+    // the UUID's version and variant: no second RNG crate for one salt.
+    let salt = SaltString::encode_b64(uuid::Uuid::new_v4().as_bytes())
+        .map_err(|e| anyhow!("making a salt: {e}"))?;
+    let hash = argon2::Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| anyhow!("hashing the lock password: {e}"))?
+        .to_string();
+    std::fs::create_dir_all(dir)?;
+    let text = toml::to_string_pretty(&LockFile { hash })?;
+    write_atomic_mode(&dir.join(LOCK_FILE), text.as_bytes(), Some(0o600))
+        .context("writing the lock file")
+}
+
+/// Whether `password` is the lock password. `Ok(false)` when none is set;
+/// `Err` when the file cannot be read or parsed — an unreadable lock is a
+/// finding, never an open one.
+pub fn verify_lock_password(dir: &Path, password: &str) -> Result<bool> {
+    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+    let path = dir.join(LOCK_FILE);
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let file: LockFile =
+        toml::from_str(&std::fs::read_to_string(&path)?).context("reading the lock file")?;
+    let parsed =
+        PasswordHash::new(&file.hash).map_err(|e| anyhow!("the lock file is damaged: {e}"))?;
+    Ok(argon2::Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok())
+}
+
+/// What an approval surface showed the owner: a digest over the entry's kind,
+/// name, version and text. The web page sends back the digest of the text it
+/// displayed; approval proceeds only if it still matches, so an untrusted
+/// candidate is approved as *read*, not as whatever it says by the time the
+/// click lands.
+pub fn shown_digest(entry: &Entry) -> String {
+    let digest = sha2::Sha256::digest(
+        format!(
+            "{}/{}/v{}\n{}",
+            entry.kind.label(),
+            entry.name,
+            entry.version,
+            entry.text
+        )
+        .as_bytes(),
+    );
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// HMAC-SHA256 (RFC 2104) of a [`shown_digest`] under `key`, hex. The web
+/// door signs what it displays with a key only its process holds, so an
+/// approval can prove a page showed the text — a bare digest proves only
+/// that the text did not move, and anyone who can read the store can
+/// compute one (review of #385).
+pub fn sign_shown(key: &[u8; 32], digest: &str) -> String {
+    let mut block = [0u8; 64];
+    block[..32].copy_from_slice(key);
+    let pad = |b: u8| block.iter().map(|x| x ^ b).collect::<Vec<u8>>();
+    let inner = sha2::Sha256::new()
+        .chain_update(pad(0x36))
+        .chain_update(digest.as_bytes())
+        .finalize();
+    let outer = sha2::Sha256::new()
+        .chain_update(pad(0x5c))
+        .chain_update(inner)
+        .finalize();
+    outer.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 // ─── Compiling a scene ─────────────────────────────────────────────────────
 
 /// One person in a scene, as the model wrote them.
@@ -668,10 +826,12 @@ pub struct Compiled {
 pub const MAX_COMPILED_PROMPT: usize = 9_000;
 
 fn number(n: usize) -> &'static str {
-    ["no", "one", "two", "three", "four"]
-        .get(n)
-        .copied()
-        .unwrap_or("several")
+    [
+        "no", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    ]
+    .get(n)
+    .copied()
+    .unwrap_or("several")
 }
 
 fn missing(lib: &Library, kind: Kind, name: &str) -> String {
@@ -701,25 +861,70 @@ fn missing(lib: &Library, kind: Kind, name: &str) -> String {
     }
 }
 
+/// Empty, or only the refusal's own placeholder copied back — no answer.
+fn blank(s: &str) -> bool {
+    s.chars().all(|c| c == '…' || c == '.')
+}
+
 /// Compile a scene. Errors are sentences for the model.
 ///
 /// The prompt's shape is Qwen-Image 2.1's and each clause is a measurement:
 /// one person is "the person in the image" (the rewriter's rule for a single
-/// reference); two or more are `<image1>…` left to right with the head count
-/// stated (E2, E9: each reference slot tends to become a person); every
+/// reference); two or more are `<image1>…` left to right (E2, E9: each
+/// reference slot tends to become a person), each said to appear exactly
+/// once — with a total only when `extras` are counted into it (E11), since a
+/// total with no extras erased a person the scene described (E12); every
 /// person carries their stored description beside the pointer (E1) and what
 /// they are wearing and doing (E8: a reference supplies its own otherwise).
 pub fn compile(
     lib: &Library,
     scene: &str,
     cast: &[CastMember],
+    extras: &[String],
     style: Option<&str>,
 ) -> std::result::Result<Compiled, String> {
+    if extras.len() > MAX_EXTRAS {
+        return Err(format!(
+            "At most {MAX_EXTRAS} people in `extras`, not {}.",
+            extras.len()
+        ));
+    }
+    let extras: Vec<&str> = extras
+        .iter()
+        .map(|e| e.trim().trim_end_matches('.'))
+        .collect();
+    if extras.iter().any(|e| blank(e)) {
+        return Err(
+            "Each entry in `extras` is a person: what they look like and what they are doing."
+                .into(),
+        );
+    }
+    if extras.iter().any(|e| e.chars().count() > MAX_CAST_FIELD) {
+        return Err(format!(
+            "Each entry in `extras` is capped at {MAX_CAST_FIELD} characters."
+        ));
+    }
     if cast.len() > MAX_CAST {
         return Err(format!(
             "At most {MAX_CAST} people in `cast`, not {}.",
             cast.len()
         ));
+    }
+    // An extra is someone the library does not hold. One who names a cast
+    // member is that person again as "a new person not from any image": two
+    // slots for one face, the duplicate the rest of this shape prevents
+    // (review of #390).
+    for extra in &extras {
+        if let Some(name) = named_in(lib, extra)
+            .into_iter()
+            .find(|n| cast.iter().any(|m| m.name.trim().to_lowercase() == *n))
+        {
+            return Err(format!(
+                "`{name}` is in `cast` and also in `extras`; `extras` is for people who are \
+                 not in the library. Leave `{name}` in `cast` only, and put what they are \
+                 doing in their `doing`."
+            ));
+        }
     }
     let mut refs = Vec::with_capacity(cast.len());
     let mut used = Vec::new();
@@ -740,7 +945,8 @@ pub fn compile(
             .filter(|e| e.status == Status::Approved)
             .ok_or_else(|| missing(lib, Kind::Character, &name))?;
         let (wearing, doing) = (member.wearing.trim(), member.doing.trim());
-        if wearing.is_empty() || doing.is_empty() {
+        // A placeholder copied from a refusal's example is no answer.
+        if blank(wearing) || blank(doing) {
             return Err(format!(
                 "`{name}` needs `wearing` and `doing`: a reference supplies its own outfit and \
                  pose when the scene does not say."
@@ -796,17 +1002,51 @@ pub fn compile(
     } else {
         format!("{scene}.")
     };
-    match people.len() {
-        0 => {}
-        1 => prompt.push_str(&format!(
-            " {}. Exactly one person in the image. The image is an identity reference only; \
-             this is a new image with its own composition, pose and lighting.",
+    // Two measured rules. With extras, the head count counts everyone (E11):
+    // "Exactly three people" beside a scene with a waiter pushed him into the
+    // background, and counted as a new person he stood where the scene put
+    // him. Without extras, no total at all (E12): the model does not always
+    // use `extras` — a live run wrote the waiter into the prose — and there
+    // "Exactly two people" erased him outright, while "each appears exactly
+    // once; anyone else is a new person" drew him and, with four cast and no
+    // one else, still drew exactly four with no duplicate.
+    let others = extras.join("; ");
+    let m = extras.len();
+    let new_people = if m == 1 {
+        "one new person".to_string()
+    } else {
+        format!("{} new people", number(m))
+    };
+    match (people.len(), m) {
+        (0, 0) => {}
+        (0, _) => prompt.push_str(&format!(" Also in the scene: {others}.")),
+        (1, 0) => prompt.push_str(&format!(
+            " {}. The person from the image appears exactly once; anyone else the scene \
+             describes is a new person, not from the image. The image is an identity reference \
+             only; this is a new image with its own composition, pose and lighting.",
             capitalize(&people[0])
         )),
-        n => prompt.push_str(&format!(
-            " From left to right: {}. Exactly {} people in the image. All images serve as \
-             identity sources only; each person appears exactly once.",
+        (1, _) => prompt.push_str(&format!(
+            " {}. Also in the scene, not from the image: {others}. Exactly {} people in the \
+             image: the one from the image, exactly once, and {new_people} not from any image. \
+             The image is an identity reference only; this is a new image with its own \
+             composition, pose and lighting.",
+            capitalize(&people[0]),
+            number(1 + m)
+        )),
+        (n, 0) => prompt.push_str(&format!(
+            " From left to right: {}. Each of the {} people from the images appears exactly \
+             once; anyone else the scene describes is a new person, not from any image. All \
+             images serve as identity sources only.",
             people.join("; "),
+            number(n)
+        )),
+        (n, _) => prompt.push_str(&format!(
+            " From left to right: {}. Also in the scene, not from any image: {others}. Exactly \
+             {} people in the image: the {} from the images, each exactly once, and \
+             {new_people} not from any image. All images serve as identity sources only.",
+            people.join("; "),
+            number(n + m),
             number(n)
         )),
     }
@@ -832,16 +1072,29 @@ pub fn compile(
 /// characters up, then wrote their descriptions into the prompt and left
 /// `cast` out — and from words alone they came out as two strangers (ArcFace
 /// 0.02–0.17 against their portraits; E1 measured the same, 0.33).
+///
+/// **In order of first mention**, because the refusal hands these back as a
+/// `cast` to copy and cast order is left to right: sorted, "Maya and John"
+/// came back as `[john, maya]` and a copied retry swapped them (review of
+/// #384).
 pub fn named_in(lib: &Library, prompt: &str) -> Vec<String> {
-    let words: std::collections::BTreeSet<String> = prompt
+    let mut out: Vec<String> = Vec::new();
+    for word in prompt
         .split(|c: char| !(c.is_alphanumeric() || c == '-'))
         .filter(|w| !w.is_empty())
         .map(str::to_lowercase)
-        .collect();
-    lib.approved()
-        .filter(|e| e.kind == Kind::Character && words.contains(&e.name))
-        .map(|e| e.name.clone())
-        .collect()
+    {
+        if out.contains(&word) {
+            continue;
+        }
+        if lib
+            .get(Kind::Character, &word)
+            .is_some_and(|e| e.status == Status::Approved)
+        {
+            out.push(word);
+        }
+    }
+    out
 }
 
 /// Characters whose entries did not load, named as whole words in a prompt.
@@ -925,6 +1178,27 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+    #[test]
+    fn a_failed_install_leaves_no_temp_file_behind() {
+        let dir = scratch();
+        // A directory where the file should go: the write succeeds, the
+        // rename over it fails.
+        let path = dir.path().join("entry.toml");
+        std::fs::create_dir_all(path.join("occupied")).unwrap();
+        for _ in 0..2 {
+            assert!(write_atomic_mode(&path, b"x", Some(0o600)).is_err());
+        }
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            left,
+            ["entry.toml"],
+            "a temp file survived the failed rename"
+        );
+    }
+
     fn scratch() -> Scratch {
         let dir = std::env::temp_dir().join(format!("mecha-imagelib-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1097,7 +1371,7 @@ mod tests {
         std::fs::write(dir.path().join("characters/maya/entry.toml"), "not = [toml").unwrap();
         let (lib, errors) = Library::load(dir.path());
         assert_eq!(errors.len(), 1);
-        let why = compile(&lib, "x", &[member("maya")], None).unwrap_err();
+        let why = compile(&lib, "x", &[member("maya")], &[], None).unwrap_err();
         assert!(why.contains("could not be read"), "{why}");
     }
 
@@ -1151,6 +1425,92 @@ mod tests {
     }
 
     #[test]
+    fn the_lock_password_verifies_and_is_private_on_disk() {
+        let dir = scratch();
+        assert!(!has_lock_password(dir.path()));
+        assert!(!verify_lock_password(dir.path(), "anything").unwrap());
+        assert!(set_lock_password(dir.path(), "short").is_err());
+        set_lock_password(dir.path(), "correct horse").unwrap();
+        assert!(has_lock_password(dir.path()));
+        assert!(verify_lock_password(dir.path(), "correct horse").unwrap());
+        assert!(!verify_lock_password(dir.path(), "correct hors").unwrap());
+        let raw = std::fs::read_to_string(dir.path().join("lock.toml")).unwrap();
+        assert!(raw.contains("$argon2id$") && !raw.contains("correct horse"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join("lock.toml"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // A planted `lock.tmp` — a symlink to a file the planter owns — is
+        // neither written through nor installed as the lock.
+        #[cfg(unix)]
+        {
+            let decoy = dir.path().join("decoy");
+            std::fs::write(&decoy, "untouched").unwrap();
+            let _ = std::fs::remove_file(dir.path().join("lock.tmp"));
+            std::os::unix::fs::symlink(&decoy, dir.path().join("lock.tmp")).unwrap();
+            set_lock_password(dir.path(), "another horse").unwrap();
+            assert_eq!(std::fs::read_to_string(&decoy).unwrap(), "untouched");
+            assert!(!std::fs::symlink_metadata(dir.path().join("lock.toml"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert!(verify_lock_password(dir.path(), "another horse").unwrap());
+        }
+        // A damaged lock is a finding, never an open door.
+        std::fs::write(dir.path().join("lock.toml"), "hash = \"nonsense\"").unwrap();
+        assert!(verify_lock_password(dir.path(), "correct horse").is_err());
+    }
+
+    #[test]
+    fn the_shown_signature_is_rfc_2104_hmac_sha256() {
+        // Known answer from Python's `hmac` (key 0..31, message "abc").
+        let key: [u8; 32] = std::array::from_fn(|i| i as u8);
+        assert_eq!(
+            sign_shown(&key, "abc"),
+            "f0133729c4163dede81e21cd47839256da58171238c8a0d874397c73b14e1e47"
+        );
+        let other: [u8; 32] = std::array::from_fn(|i| 31 - i as u8);
+        assert_ne!(sign_shown(&key, "abc"), sign_shown(&other, "abc"));
+    }
+
+    #[test]
+    fn the_shown_digest_changes_with_the_text_and_the_version() {
+        let dir = scratch();
+        let e = create(dir.path(), character("theo", Origin::ModelUntrusted)).unwrap();
+        let before = shown_digest(&e);
+        let mut edited = e.clone();
+        edited.text.push_str(" and something else");
+        assert_ne!(before, shown_digest(&edited));
+        let mut bumped = e.clone();
+        bumped.version += 1;
+        assert_ne!(before, shown_digest(&bumped));
+        assert_eq!(before, shown_digest(&e));
+    }
+
+    #[test]
+    fn approval_as_shown_refuses_a_text_that_moved() {
+        let dir = scratch();
+        let e = create(dir.path(), character("theo", Origin::ModelUntrusted)).unwrap();
+        let shown = shown_digest(&e);
+        assert!(approve_as_shown(dir.path(), Kind::Character, "theo", "0000").is_err());
+        update(dir.path(), Kind::Character, "theo", None, None, Some(9)).unwrap();
+        // The seed moved, the version bumped: what was shown is not current.
+        assert!(approve_as_shown(dir.path(), Kind::Character, "theo", &shown).is_err());
+        let now = Library::load(dir.path())
+            .0
+            .get(Kind::Character, "theo")
+            .unwrap()
+            .clone();
+        let e = approve_as_shown(dir.path(), Kind::Character, "theo", &shown_digest(&now)).unwrap();
+        assert_eq!(e.status, Status::Approved);
+    }
+
+    #[test]
     fn candidates_are_capped() {
         let dir = scratch();
         for i in 0..MAX_PENDING {
@@ -1167,13 +1527,15 @@ mod tests {
         let dir = scratch();
         create(dir.path(), character("maya", Origin::Owner)).unwrap();
         let (lib, _) = Library::load(dir.path());
-        let c = compile(&lib, "a diner at night.", &[member("maya")], None).unwrap();
+        let c = compile(&lib, "a diner at night.", &[member("maya")], &[], None).unwrap();
         assert!(c
             .prompt
             .starts_with("a diner at night. The person in the image (maya, a person"));
         assert!(c.prompt.contains("wearing a yellow raincoat, laughing"));
-        assert!(c.prompt.contains("Exactly one person"));
-        let c = compile(&lib, "a surprise party!", &[member("maya")], None).unwrap();
+        assert!(c
+            .prompt
+            .contains("The person from the image appears exactly once"));
+        let c = compile(&lib, "a surprise party!", &[member("maya")], &[], None).unwrap();
         assert!(
             c.prompt.starts_with("a surprise party! The person"),
             "{}",
@@ -1193,12 +1555,14 @@ mod tests {
         create(dir.path(), style("noir")).unwrap();
         let (lib, _) = Library::load(dir.path());
         let cast = [member("maya"), member("John"), member("priya")];
-        let c = compile(&lib, "a diner booth", &cast, Some("noir")).unwrap();
+        let c = compile(&lib, "a diner booth", &cast, &[], Some("noir")).unwrap();
         let first = c.prompt.find("<image1> (maya").unwrap();
         let second = c.prompt.find("<image2> (john").unwrap();
         assert!(first < second);
         assert!(c.prompt.contains("<image3> (priya"));
-        assert!(c.prompt.contains("Exactly three people"));
+        assert!(c
+            .prompt
+            .contains("Each of the three people from the images appears exactly once"));
         assert!(c
             .prompt
             .ends_with("Style: high-contrast black and white film noir"));
@@ -1213,11 +1577,114 @@ mod tests {
     }
 
     #[test]
+    fn extras_are_counted_and_called_new_people() {
+        let dir = scratch();
+        for n in ["maya", "john", "priya"] {
+            create(dir.path(), character(n, Origin::Owner)).unwrap();
+        }
+        let (lib, _) = Library::load(dir.path());
+        let cast = [member("maya"), member("john"), member("priya")];
+        let waiter = vec!["a waiter in a white apron, pouring coffee.".to_string()];
+        let c = compile(&lib, "a diner booth", &cast, &waiter, None).unwrap();
+        assert!(
+            c.prompt.contains(
+                "Also in the scene, not from any image: a waiter in a white apron, pouring coffee."
+            ),
+            "{}",
+            c.prompt
+        );
+        assert!(
+            c.prompt.contains(
+                "Exactly four people in the image: the three from the images, each exactly \
+                 once, and one new person not from any image."
+            ),
+            "{}",
+            c.prompt
+        );
+        // Extras carry no reference.
+        assert_eq!(c.references.len(), 3);
+        // One cast member keeps the single-image wording, counted with the extras.
+        let two = vec!["a child".to_string(), "a dog walker".to_string()];
+        let c = compile(&lib, "a park", &[member("maya")], &two, None).unwrap();
+        assert!(
+            c.prompt.contains("The person in the image (maya"),
+            "{}",
+            c.prompt
+        );
+        assert!(
+            c.prompt.contains("Exactly three people in the image: the one from the image, exactly once, and two new people"),
+            "{}",
+            c.prompt
+        );
+        // No cast: extras are scene text, and no head count is claimed.
+        let c = compile(&lib, "a park", &[], &two, None).unwrap();
+        assert_eq!(
+            c.prompt,
+            "a park. Also in the scene: a child; a dog walker."
+        );
+        // No extras: no total that would forbid a person the prose describes.
+        let c = compile(&lib, "a park", &cast, &[], None).unwrap();
+        assert!(
+            c.prompt.contains(
+                "Each of the three people from the images appears exactly once; anyone else"
+            ),
+            "{}",
+            c.prompt
+        );
+    }
+
+    #[test]
+    fn a_cast_member_named_again_in_extras_is_refused() {
+        let dir = scratch();
+        for n in ["maya", "john"] {
+            create(dir.path(), character(n, Origin::Owner)).unwrap();
+        }
+        let (lib, _) = Library::load(dir.path());
+        let cast = [member("maya"), member("john")];
+        let why = compile(
+            &lib,
+            "a diner",
+            &cast,
+            &["John waving from the door".into()],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            why.contains("`john` is in `cast` and also in `extras`"),
+            "{why}"
+        );
+        // A stranger who shares no name with the cast is fine.
+        compile(
+            &lib,
+            "a diner",
+            &cast,
+            &["a waiter pouring coffee".into()],
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn an_extra_must_be_a_person_and_there_are_at_most_four() {
+        let dir = scratch();
+        create(dir.path(), character("maya", Origin::Owner)).unwrap();
+        let (lib, _) = Library::load(dir.path());
+        for bad in ["", "  ", "…", "..."] {
+            let why = compile(&lib, "x", &[member("maya")], &[bad.to_string()], None).unwrap_err();
+            assert!(why.contains("`extras`"), "{bad:?}: {why}");
+        }
+        let five: Vec<String> = (0..5).map(|i| format!("person {i}")).collect();
+        assert!(compile(&lib, "x", &[], &five, None)
+            .unwrap_err()
+            .contains("At most 4"));
+    }
+
+    #[test]
     fn candidates_never_compile() {
         let dir = scratch();
         create(dir.path(), character("maya", Origin::ModelClean)).unwrap();
         let (lib, _) = Library::load(dir.path());
-        let why = compile(&lib, "x", &[member("maya")], None).unwrap_err();
+        let why = compile(&lib, "x", &[member("maya")], &[], None).unwrap_err();
         assert!(why.contains("waiting for the owner's approval"), "{why}");
     }
 
@@ -1228,8 +1695,14 @@ mod tests {
         let (lib, _) = Library::load(dir.path());
         let mut m = member("maya");
         m.wearing = " ".into();
-        let why = compile(&lib, "x", &[m], None).unwrap_err();
+        let why = compile(&lib, "x", &[m], &[], None).unwrap_err();
         assert!(why.contains("wearing"), "{why}");
+        // The refusal's own placeholder, copied literally, is no answer.
+        let mut m = member("maya");
+        m.doing = "…".into();
+        assert!(compile(&lib, "x", &[m], &[], None)
+            .unwrap_err()
+            .contains("doing"));
     }
 
     #[test]
@@ -1239,14 +1712,14 @@ mod tests {
             create(dir.path(), character(n, Origin::Owner)).unwrap();
         }
         let (lib, _) = Library::load(dir.path());
-        assert!(compile(&lib, "x", &[member("a"), member("a")], None)
+        assert!(compile(&lib, "x", &[member("a"), member("a")], &[], None)
             .unwrap_err()
             .contains("twice"));
         let five: Vec<_> = ["a", "b", "c", "d", "e"]
             .iter()
             .map(|n| member(n))
             .collect();
-        assert!(compile(&lib, "x", &five, None)
+        assert!(compile(&lib, "x", &five, &[], None)
             .unwrap_err()
             .contains("At most 4"));
     }
@@ -1259,6 +1732,14 @@ mod tests {
         create(dir.path(), character("theo", Origin::ModelClean)).unwrap();
         let (lib, _) = Library::load(dir.path());
         assert_eq!(named_in(&lib, "Maya and John on a bench"), ["maya"]);
+        create(dir.path(), character("john", Origin::Owner)).unwrap();
+        let (lib, _) = Library::load(dir.path());
+        // First mention first, whatever the library's order; once each.
+        assert_eq!(
+            named_in(&lib, "Maya and John, then Maya again"),
+            ["maya", "john"]
+        );
+        assert_eq!(named_in(&lib, "John beside Maya"), ["john", "maya"]);
         // Whole words only; a candidate is not a character yet.
         assert!(named_in(&lib, "a mayan temple, joyful, theo").is_empty());
     }

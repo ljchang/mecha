@@ -109,6 +109,7 @@
     'graph entities': 'Graph entities',
     'rule proposals': 'Rule proposals',
     'harness changes': 'Harness',
+    'image candidates': 'Image library',
   };
   // A card that has a surface on this phone navigates to it; the ones that
   // are CLI-only stay flat rather than pretending — and a flat card prints
@@ -125,6 +126,7 @@
     'harness changes': 'review/harness',
     'rule proposals': 'review/rules',
     'graph entities': 'review/entities',
+    'image candidates': 'library/candidates',
   };
 </script>
 
