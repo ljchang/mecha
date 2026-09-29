@@ -667,6 +667,48 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// A snapshot naming a relationship that is a path is refused before
+    /// any read — not only by the re-digest after one (review of #409).
+    #[test]
+    fn a_snapshot_relationship_is_a_name_not_a_path() {
+        let dir = scratch();
+        super::super::create(&dir, &no_lib(), new("mara")).unwrap();
+        fill_core(&dir, "mara");
+        let pinned = pin(&dir, "mara").unwrap();
+        let toml = dir
+            .join("mara/versions")
+            .join(&pinned.digest)
+            .join("persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(
+            &toml,
+            format!("relationship = [\"../../../../etc/passwd\"]\n{text}"),
+        )
+        .unwrap();
+        let e = load_version(&dir, "mara", &pinned.digest).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("snapshot's `relationship`"),
+            "{e:#}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// `registry_for` refuses `egress >= Chosen`; that is exact while
+    /// `Chosen` is the top class. A class added above it fails here rather
+    /// than being admitted silently.
+    #[test]
+    fn chosen_is_the_widest_egress_class() {
+        for class in [Egress::None, Egress::Blind, Egress::Chosen] {
+            assert!(class <= Egress::Chosen);
+        }
+        assert_eq!(
+            [Egress::None, Egress::Blind, Egress::Chosen]
+                .into_iter()
+                .max(),
+            Some(Egress::Chosen)
+        );
+    }
+
     #[test]
     fn an_unapproved_persona_cannot_be_pinned() {
         let dir = scratch();

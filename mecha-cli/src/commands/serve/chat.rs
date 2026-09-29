@@ -374,6 +374,9 @@ impl ChatState {
                 routes.remove(key);
             }
         }
+        // Persona runs share `runs` but live in a map of their own: cancelled
+        // here too, or `drain` waits on them (found on review of #409).
+        self.personas.stop().await;
         self.runs.close();
     }
 
