@@ -250,7 +250,9 @@ The library holds entries; the model names them; code compiles.
   pasted verbatim, never paraphrased.
 - **Three rules the measurements added** (§8): identity references go at
   **512²** unless a full-size one is the canvas [E2]; **one reference per
-  character per call, and the head count stated** ("exactly two people"),
+  character per call, each appearing exactly once** (a stated total held
+  duplicates off in E9, and E12 found "each appears exactly once" alone does
+  too),
   because every slot tends to become a person [E2, E9];
   and **wardrobe, pose and expression are stated per person in every
   scene**, because a reference supplies its own when the text is silent
@@ -627,6 +629,31 @@ references, 25 steps, 1024².
   unnamed eight did not.
 - Face identity was unaffected by the extra references.
 
+**E11 — a person who is no library character** (2026-09-29; three cast
+portraits at 512², a waiter described in the scene, 25 steps, two seeds per
+arm). With the compiled head count counting only the cast ("Exactly three
+people"), the waiter was drawn in both images but moved to the background,
+behind the bar rather than at the table, and one image grew a fifth figure.
+With the waiter listed as "not from any image" and counted ("Exactly four
+people … and one new person"), he stood at the table pouring coffee in both.
+The cast's identity held either way (0.58–0.82), and the waiter's face
+matched none of them (0.03–0.13): a new person each time, as an extra should
+be. This is the evidence behind `image_generate`'s `extras`.
+
+**E12 — a count that forbids no one** (2026-09-29; 25 steps, two seeds per
+arm). A live run through the real model named Maya and John in `cast` and
+wrote the waiter into the prose instead of `extras`; the compiled "Exactly
+two people" erased him outright. The same shape with the cast's count but no
+total — "each of the three people from the images appears exactly once;
+anyone else the scene describes is a new person" — drew the waiter in both
+images (in the background, as E11's uncounted arm did), and four cast with no
+one else came back as exactly four faces, each the right person (0.63–0.80),
+no duplicate. So the compiler states no total unless `extras` are given, and
+counts them when they are. The one-reference case lost "Exactly one person
+in the image" on the same reasoning with no arm of its own: it is carried by
+inference from the three- and four-person arms, not measured, so a
+duplicate there is not a regression E12 covers.
+
 **Still open**, in the order they would change the design:
 
 - **E9b — build, re-run with fitted clothing** so build is visible, and
@@ -695,8 +722,9 @@ transcript; and the lock changes nothing at generation.
 1. **Build tier A**, with the measured rules: identity as a pointer plus
    the entry's short description; a tight 512² face crop as the reference;
    one reference per character per call; wardrobe, pose and expression
-   stated per person in every scene; the head count stated; up to four
-   people natively. A character is stored as an approved front portrait,
+   stated per person in every scene; each person exactly once, with a
+   total only when `extras` are counted [E11, E12]; up to four people
+   natively. A character is stored as an approved front portrait,
    the crop derived from it, and the description — build and height in the
    description, not a body reference [E8, E9]. The library store,
    `SceneSpec`-lite in the tool call, the per-model template, manifests,

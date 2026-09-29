@@ -1001,6 +1001,48 @@ fn collect_queues() -> Vec<Queue> {
         oldest,
     });
 
+    // The image library's candidates: characters and styles a model proposed,
+    // waiting on the owner's approval. Read directly, like the stores above,
+    // and kept off `backlog::Backlog`, which is recorded on every run — a new
+    // field there would move what every older row is compared against, the
+    // reason `requests_on_owner` sits beside it. A broken entry is a finding:
+    // it may be a candidate, so the depth is not claimed (`None`).
+    let (depth, detail, oldest) = match mecha_core::imagelib::Library::default_dir() {
+        Ok(dir) => {
+            let (lib, errors) = mecha_core::imagelib::Library::load(&dir);
+            let pending: Vec<_> = lib.candidates().collect();
+            let oldest = oldest_age(pending.iter().map(|e| e.created.as_str()));
+            if errors.is_empty() {
+                let characters = pending
+                    .iter()
+                    .filter(|e| e.kind == mecha_core::imagelib::Kind::Character)
+                    .count();
+                (
+                    Some(pending.len()),
+                    format!(
+                        "{characters} character(s), {} style(s) proposed by a model",
+                        pending.len() - characters
+                    ),
+                    oldest,
+                )
+            } else {
+                (
+                    None,
+                    format!("{} entr(ies) could not be read", errors.len()),
+                    oldest,
+                )
+            }
+        }
+        Err(e) => (None, format!("{e:#}"), None),
+    };
+    out.push(Queue {
+        name: "image candidates",
+        depth,
+        detail,
+        opens: "mecha imagelib list --all",
+        oldest,
+    });
+
     out
 }
 
@@ -1764,6 +1806,10 @@ mod tests {
             include_str!("../../../web/src/lib/Settings.svelte"),
             "const PANES =",
         );
+        let library_panes = js_string_array(
+            include_str!("../../../web/src/lib/library.js"),
+            "export const PANES =",
+        );
 
         // Every `name: "…"` in this file is a Queue row; keep it that way, or
         // this reads a literal that is not a queue.
@@ -1823,6 +1869,7 @@ mod tests {
             let panes = match view {
                 "review" => &review_panes,
                 "settings" => &settings_panes,
+                "library" => &library_panes,
                 // `graph`'s sub-hash is a search term, not a fixed pane.
                 _ => continue,
             };
