@@ -46,6 +46,16 @@ function emit(event) {
   stream?.push(event);
 }
 
+/** Replay a persona's scripted answer, the way `replay` does the assistant's. */
+function replayPersona(userText) {
+  emit({ type: 'user', text: userText, request_id: null, spoken: false });
+  let at = 0;
+  for (const [delay, event] of fx.personaScript) {
+    at += delay;
+    setTimeout(() => emit(event), at);
+  }
+}
+
 /** Replay `fixtures.script` into the open stream, on its own clock. */
 function replay(userText, request_id) {
   emit({ type: 'user', text: userText, request_id, spoken: false });
@@ -164,6 +174,31 @@ export const ROUTES = [
       fx.reflectionDetail['20260826T143000-7f21a9c4'],
   ],
   ['GET', /^\/api\/settings\/voice$/, () => fx.voice],
+
+  // Personas: their own door, as on the server (`persona_chat.rs`).
+  ['GET', /^\/api\/personas$/, () => fx.personas],
+  ['GET', /^\/api\/personas\/[^/]+\/chats$/, () => fx.personaHistory],
+  ['POST', /^\/api\/personas\/[^/]+\/chats$/, () => ({ key: 'p-0123456789ab', session: 'demo', refused: [] })],
+  ['POST', /^\/api\/personas\/[^/]+\/resume$/, () => ({ key: 'p-0123456789ab', refused: [] })],
+  ['GET', /^\/api\/persona-chat\/[^/]+$/, () => fx.personaTranscript],
+  // Never reached through `fetch` — `EventSource` is replaced below — and
+  // listed for `check-demo`, as the assistant's stream is.
+  ['GET', /^\/api\/persona-chat\/[^/]+\/events$/, () => text('')],
+  [
+    'POST',
+    /^\/api\/persona-chat\/[^/]+\/send$/,
+    async (_url, _params, init) => {
+      let typed = '';
+      try {
+        typed = JSON.parse(init?.body ?? '{}').text ?? '';
+      } catch {
+        /* still a send */
+      }
+      replayPersona(typed);
+      return { started: true };
+    },
+  ],
+  ['POST', /^\/api\/persona-chat\/[^/]+\/cancel$/, () => ({ cancelled: false })],
 
   ['GET', /^\/api\/sessions$/, () => fx.sessions],
   // The drawer's archive: nothing is filed away in the demo, and saying so

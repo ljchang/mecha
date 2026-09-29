@@ -8,6 +8,7 @@
     ['graph', 'M5 7a2 2 0 104 0 2 2 0 10-4 0M15 17a2 2 0 104 0 2 2 0 10-4 0M15 5.5a2 2 0 104 0 2 2 0 10-4 0M8.7 8.2l5.4 7.4M9 6.7l4-0.5', true],
     ['review', 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5', true],
     ['tasks', 'M4 6h2M4 12h2M4 18h2M9 6h11M9 12h11M9 18h11', true],
+    ['personas', 'M12 12a4 4 0 100-8 4 4 0 000 8zM4.5 20c.8-3.5 3.8-5.5 7.5-5.5s6.7 2 7.5 5.5', true],
     ['library', 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15.5 9.5h.01', true],
   ];
   // Settings deliberately takes no slot here: it is chrome, and the shell
@@ -47,7 +48,11 @@
     align-items: center;
     justify-content: center;
     gap: 3px;
-    min-width: 52px;
+    /* Shared, not fixed: eight places at a fixed 52px need 432px and pushed
+       the last tab off a 375px phone when Personas became the eighth. Each
+       now takes an equal share — about 45px there, still a thumb's width. */
+    flex: 1 1 0;
+    min-width: 0;
     min-height: 44px;
     color: var(--text-muted);
     background: none;
@@ -59,6 +64,7 @@
   .nav-item span {
     font-family: var(--mono);
     font-size: 9px;
+    white-space: nowrap;
   }
   .nav-item.active {
     color: var(--accent-400);
@@ -92,6 +98,8 @@
       padding: 14px 8px 76px;
     }
     .nav-item {
+      /* A column: sharing the height would stretch each to fill the rail. */
+      flex: none;
       width: 100%;
       padding: 10px 0;
       border-radius: var(--radius);

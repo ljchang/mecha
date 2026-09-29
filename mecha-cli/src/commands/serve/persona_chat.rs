@@ -256,11 +256,22 @@ impl PersonaChats {
         let rows: Vec<serde_json::Value> = store
             .visible(unlocked)
             .map(|p| {
+                // The linked character's portrait, by the library's own rule:
+                // approved only, and a locked one only with the live token.
+                let portrait = p
+                    .settings
+                    .character
+                    .as_deref()
+                    .and_then(|c| lib.get(mecha_core::imagelib::Kind::Character, c))
+                    .filter(|e| e.status == mecha_core::persona::Status::Approved)
+                    .filter(|e| !e.locked || unlocked)
+                    .and_then(|e| super::library::portrait_url(e, token.filter(|_| unlocked)));
                 serde_json::json!({
                     "name": p.name,
                     "display": p.display(),
                     "relationship": p.settings.relationship.0,
                     "character": p.settings.character,
+                    "portrait": portrait,
                     "version": p.state.version,
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     "locked": p.state.locked,
@@ -269,7 +280,12 @@ impl PersonaChats {
             })
             .collect();
         let hidden = store.all().len() - rows.len();
-        serde_json::json!({ "personas": rows, "hidden_locked": hidden })
+        serde_json::json!({
+            "personas": rows,
+            "hidden_locked": hidden,
+            "unlocked": unlocked,
+            "has_password": mecha_core::imagelib::has_lock_password(&library.dir),
+        })
     }
 
     /// Open a new chat with `name`, pinned to its current version: a
