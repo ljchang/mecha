@@ -633,6 +633,10 @@ fn purge_learning(roots: &Roots, id: &str, keep_distilled: bool, report: &mut Re
         let mut validation = filter_jsonl(&root.join("validations.jsonl"), by_reflexion)?;
         validation += filter_jsonl(&root.join("validation-attempts.jsonl"), by_reflexion)?;
         report.count("validation ledger", validation);
+        report.count(
+            "artifact probes",
+            purge_probe_receipts(&root.join("artifact-probes"), id, &ids)?,
+        );
 
         report.count("proposals", purge_proposals(&root.join("proposals"), &ids)?);
         report.count("learned rules", purge_rules(&root.join("rules"), &ids)?);
@@ -663,6 +667,34 @@ fn purge_learning(roots: &Roots, id: &str, keep_distilled: bool, report: &mut Re
     if let Err(e) = result {
         report.errors.push(format!("learning store: {e:#}"));
     }
+}
+
+/// Artifact-task probe receipts (`probe.rs`, one file per repeat): each
+/// names the session replayed and the reflection measured, so one naming
+/// either is the forgotten conversation's and goes whole. A receipt that does
+/// not parse is left, and the residue scan names it if it holds the id.
+fn purge_probe_receipts(dir: &Path, id: &str, ids: &HashSet<String>) -> Result<usize> {
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    let mut n = 0;
+    for path in json_files(dir)? {
+        let Some(v) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        else {
+            continue;
+        };
+        let names_reflection = v
+            .get("reflection_id")
+            .and_then(Value::as_str)
+            .is_some_and(|r| ids.contains(r));
+        if field_is(&v, "session_id", id) || names_reflection {
+            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// The rule-change records (`commit.json`, and each

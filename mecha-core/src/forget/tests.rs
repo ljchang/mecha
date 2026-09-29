@@ -149,6 +149,20 @@ fn seeded(home: &Path) -> Roots {
     write(&l.join("validation-attempts.jsonl"), &format!(
         "{{\"reflexion_id\":\"refl-gone\",\"arms\":[{{\"text\":\"{CANARY}\"}}]}}\n{{\"reflexion_id\":\"refl-kept\",\"arms\":[]}}\n"
     ));
+    // Artifact-task probe receipts (`probe.rs`): one per repeat, naming the
+    // session replayed and the reflection measured.
+    write(
+        &l.join("artifact-probes/a-gone.json"),
+        &format!(
+            r#"{{"method":"artifact_task_repeat","session_id":"{GONE}","reflection_id":"refl-gone"}}"#
+        ),
+    );
+    write(
+        &l.join("artifact-probes/a-kept.json"),
+        &format!(
+            r#"{{"method":"artifact_task_repeat","session_id":"{KEPT}","reflection_id":"refl-kept"}}"#
+        ),
+    );
     // An interrupted rule change (`LearningStore::commit_rules`) whose live
     // rules have since moved, so forget's resume sets it aside, and one that
     // was already set aside: both carry a rule the forgotten reflection
@@ -312,6 +326,7 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
         ("learning/mined_outbox.jsonl", "item-kept"),
         ("learning/validations.jsonl", "refl-kept"),
         ("learning/validation-attempts.jsonl", "refl-kept"),
+        ("learning/artifact-probes/a-kept.json", "refl-kept"),
         (
             "learning/commit.unfinished.20260928T070000.000Z.json",
             "Keep answers short.",

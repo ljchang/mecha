@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Add and edit characters and styles from the Library tab.** **Add
+  character** takes a portrait from your device, a name and a description.
+  **Add style** takes a name and its text. **Edit** changes an approved
+  entry's description or portrait, keeping the earlier version for pictures
+  already made from it. A portrait is resized and stripped of its photo
+  metadata before it leaves the device.
+
 - **People who aren't in your image library can share a scene with those who
   are.** Ask for "Maya and John at a diner, with a waiter pouring coffee" and
   the waiter is drawn as a new person, counted with your characters, so he
