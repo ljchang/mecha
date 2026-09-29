@@ -696,6 +696,11 @@ ignored with a warning. The design, and what was measured, is
 | `memory_mb` | integer | `2048` | Address-space ceiling for each parser process. |
 | `cache` | bool | `true` | Keep extractions under `~/.mecha/documents/`, by the file's sha256. |
 | `cache_days` | integer | `30` | Extractions not read for this long are removed when a new one is written. `0` keeps them until `mecha document prune`. |
+| `layout` | bool | `true` | Read OCR pages region by region: a layout model (PP-DocLayoutV3) finds the tables, formulas, headings and paragraphs, and each is read with its own prompt — tables come back as Markdown tables, headings marked. Off, or not installed, pages are read whole and the transcript says so. `scripts/layout/install.sh` installs it. |
+| `layout_python` | path | `~/.mecha/layout/venv/bin/python` | The interpreter that runs the layout model (it needs `onnxruntime` and `numpy`). It runs confined like the parser, CPU only. |
+| `layout_model` | path | `~/.mecha/layout/PP-DocLayoutV3.onnx` | The layout model file. Its hash is part of the cache key. |
+| `layout_threads` | integer | `4` | CPU threads for the layout model. |
+| `layout_memory_mb` | integer | `4096` | Address-space ceiling for the layout process. |
 
 `document_read` declares private data (your files) and untrusted input (a
 document's words are its author's): reading a PDF arms both legs of the

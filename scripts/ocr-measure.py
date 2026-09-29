@@ -68,7 +68,7 @@ def via_mecha(pdf, p):
                 "usage": {"prompt_tokens": o.get("prompt_tokens", 0), "completion_tokens": o.get("completion_tokens", 0)},
                 "pipeline": o.get("pipeline"), "layout_secs": o.get("layout_secs", 0.0), "ocr_secs": o.get("secs", 0.0),
                 "regions": len(regions), "tables": sum(1 for x in regions if x["label"] == "table"),
-                "failed_regions": sum(1 for x in regions if x.get("error"))}
+                "failed_regions": sum(1 for x in regions if x.get("error")), "ocr": o}
 def norm(s):
     s = re.sub(r"\\[()\[\]]", " ", s)            # LaTeX delimiters
     s = s.replace("$", " ")
@@ -117,5 +117,7 @@ for pdf in sorted(os.listdir("pdfs")):
                 row[k] = r[k]
         rows.append(row)
         open(f"{OUT}/{pdf}-{p}.md", "w").write(out)
+        if "ocr" in r:
+            json.dump(r["ocr"], open(f"{OUT}/{pdf}-{p}.json", "w"))
         print(json.dumps(row), flush=True)
 json.dump(rows, open(f"{OUT}/measure.json", "w"), indent=1)
