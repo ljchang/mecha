@@ -108,6 +108,12 @@ impl Tool for DocumentRead {
         {
             // The document's words: third-party content, whatever the page.
             Ok(ex) => Ok(ToolOutput::ok(ex.render(&shown)).from_outside()),
+            // A parser's diagnostics quote the document, so they are its
+            // words and taint like its pages (found on review) — the taint
+            // bit and `mark_untrusted_output` both key off `external`.
+            Err(e) if crate::document::carries_document_text(&e) => {
+                Ok(ToolOutput::err(format!("{shown}: {e:#}")).from_outside())
+            }
             // Our own guards and our own servers failing: not the document's
             // words, so not marked external (`ToolOutput::external`).
             Err(e) => Ok(ToolOutput::err(format!("{shown}: {e:#}"))),
