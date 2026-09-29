@@ -50,16 +50,15 @@ model (OpenAI's guidance is the opposite: restate the preserve list every
 call) the adapter compiles them differently, which is the draft's
 principle 10 earning its keep.
 
-> **Addendum, 2026-09-29 (#408; HISTORY, 2026-09-29):** the preservation
-> rule has now been tested on edits, and on this model it falls on
-> OpenAI's side, not Qwen's word. On 12 fixed seeds of one picnic edit
-> ("stand Maya up"): a caption of the scene stood her up 0 times; the bare
-> instruction 8; the kept parts named ("Keep the watercolor style, the
-> lake, willow tree, and red checkered blanket unchanged.") then the
-> instruction, 12. The blanket form, "Keep <image1> unchanged except: …",
-> gave 0 clean edits in 2 tries (1 near-copy, 1 partial). So the preserve
-> list compiles to named parts restated in the edit prompt, not one blanket
-> clause. The mask and the validator check are untested.
+> **Addendum, 2026-09-29 (#408):** the preservation rule has now been
+> tested on edits, and on this model it falls on OpenAI's side, not Qwen's
+> word: the kept parts named, then the instruction, stood a sitting woman up
+> on every one of 12 fixed seeds, where a caption of the scene did so on
+> none (HISTORY, 2026-09-29, has the full measurement). The blanket form,
+> "Keep <image1> unchanged except: …", gave no clean edit in 2 tries (1
+> near-copy, 1 partial). So the preserve list compiles to named parts,
+> restated in the edit prompt, not one blanket clause. The mask and the
+> validator check are untested.
 
 **Three more things the measurements found** (§8). A reference **fills in
 whatever the scene leaves unsaid** — wardrobe, pose, expression — so "a

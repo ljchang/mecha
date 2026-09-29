@@ -43,10 +43,9 @@ What is open:
   already says "do not describe what it shows", and the near-copy notice now
   gives it something true to say. Not acted on.
 - **What was not tested:** uploaded photos, small moves ("turn her head"),
-  long chains of edits, and any scene but the one picnic. `NEAR_COPY_LAYOUT`
-  (0.78) comes from that scene, with same-shape edits only. An edit that
-  passes a `size` unlike its reference's squashes both thumbnails, so it
-  reads as changed, which fails in the safe direction.
+  long chains of edits, and any scene but the one picnic, which is also the
+  only scene `NEAR_COPY_LAYOUT` was measured on (`ARCHITECTURE.md`, image
+  generation).
 - **"the scene" in a keep list:** three of the four final-wording chats
   wrote "Keep … the blanket, and the scene unchanged". One of the three came
   back a near-copy, and its retry, which named parts instead, worked. That
