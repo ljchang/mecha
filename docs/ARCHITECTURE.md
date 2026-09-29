@@ -955,6 +955,23 @@ module.
     `pre_tool` policy. A persona chat is not a delegation out of the assistant.
     It is a separate door with its own registry, and a hook would receive a
     persona's tool input and output. Do not "fix" the asymmetry.
+  - **The safety layer's model-free half** (`persona::safety`, §12) runs in
+    every persona chat, each piece switchable per persona by the owner.
+    - The crisis keyword tier reads the owner's words before anything runs.
+      On a hit the persona **pauses**: the message is recorded, the persona
+      does not answer it, and a plain voice sends `SAFE_MESSAGE`
+      (`WireEvent::Crisis`). That is the owner's ruling of 2026-09-29. A hit
+      within `CRISIS_COOLDOWN` of a pause does not pause again. Every hit is
+      a content-free line in `safety.jsonl`.
+    - The crisis state is reported as `degraded` ("keywords only") until the
+      model tiers exist, never as "passed".
+    - The Core is re-anchored every `REANCHOR_EVERY` turns, after a
+      compaction, and on a resumed chat's first turn. It is sent as a separate
+      block in the harness's registered voice (`REANCHOR_STEM` in
+      `is_harness_voice`), so no reader or page takes it for the owner's words.
+    - Dose records go to `dose.jsonl`, never with the words.
+    - `persona::agent::DISCLOSED` rides in the prompt only while
+      `disclosure` is on.
   - A locked persona's event stream ends with the unlock (`chat::sse_while`).
     A relock from any page, or the idle expiry, ends it at the next event.
   - `a_persona_turn_runs_on_its_own_prompt_and_tools_and_is_recorded_apart`

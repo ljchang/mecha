@@ -824,6 +824,12 @@ pub enum WireEvent {
     Notice {
         text: String,
     },
+    /// A persona chat's crisis sensor fired and the persona paused: the
+    /// plain voice's message, for the page's dismissible banner
+    /// (`persona_chat`, PERSONA-DESIGN.md §12.2).
+    Crisis {
+        text: String,
+    },
     /// The session's permission mode, whenever it changes. Structured, and
     /// deliberately not left to the notice beside it: the chip this drives
     /// tells a person whether the next write stops to ask, so deriving it
