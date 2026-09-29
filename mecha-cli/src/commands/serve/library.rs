@@ -114,7 +114,7 @@ impl LibraryState {
     }
 
     /// Whether `token` is a live unlock, refreshing its idle clock if so.
-    fn unlocked(&self, token: Option<&str>) -> bool {
+    pub(super) fn unlocked(&self, token: Option<&str>) -> bool {
         let Some(token) = token.filter(|t| !t.is_empty()) else {
             return false;
         };
@@ -128,6 +128,13 @@ impl LibraryState {
             }
             None => false,
         }
+    }
+
+    /// An unlock token, as `POST /api/library/unlock` grants one — for
+    /// the persona door's tests, which need the lock both ways.
+    #[cfg(test)]
+    pub(super) fn grant_for_tests(&self) -> String {
+        self.grant()
     }
 
     fn grant(&self) -> String {

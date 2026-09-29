@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use super::{
     current, digest_of, front_matter, parse_toml, read_prose, snapshot, strip_comments,
-    validate_persona_name, Answers, Settings, Status, VersionRecord,
+    validate_name, validate_persona_name, Answers, Settings, Status, VersionRecord,
 };
 use crate::config::{AgentConfig, SecurityConfig};
 use crate::tool::{Egress, Registry};
@@ -112,6 +112,9 @@ pub fn load_version(dir: &Path, name: &str, digest: &str) -> Result<Pinned> {
     ];
     let mut relationships = Vec::new();
     for r in &settings.relationship.0 {
+        // Validated before it becomes a path, as the live load does; the
+        // re-digest below would catch a tampered name, but only after a read.
+        validate_name(r).context("in the snapshot's `relationship`")?;
         let text = read_prose(&vdir.join("relationships").join(format!("{r}.md")))?;
         files.push((format!("relationships/{r}.md"), text.clone()));
         relationships.push((r.clone(), text));
@@ -235,7 +238,9 @@ pub fn registry_for(pool: &Registry, settings: &Settings) -> PersonaTools {
             continue;
         };
         let caps = form.capabilities();
-        if caps.egress == Egress::Chosen {
+        // `>=`, not `==`: exact today, and still exact if a class is ever
+        // added above `Chosen`.
+        if caps.egress >= Egress::Chosen {
             refused.push(refuse(
                 "here it could send to a destination the model names (for web_search: \
                  no backend with a fixed destination is configured)",

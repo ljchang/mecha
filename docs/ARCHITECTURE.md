@@ -850,6 +850,25 @@ module.
   destructures `AgentConfig` exhaustively and switches off every lever that
   reads the charter, the board or the session corpus, so a new lever is a
   compile error there until someone decides it.
+- **Persona chats on the web have a door of their own**
+  (`serve/persona_chat.rs`). They have their own session map, their own routes
+  (`/api/personas…`, `/api/persona-chat/{key}…`) and their own `p-` keys, and
+  `chat::ensure_session_as` refuses a `p-` key. So no assistant route can
+  re-create a persona chat in `~/.mecha/sessions/`. That refusal is tested
+  (`an_assistant_route_never_creates_a_persona_chat`).
+  - Transcripts go in `<persona>/sessions/`, with a `<id>.persona.json` pin
+    beside each one. It is a file rather than a session `Record`, which would
+    be a wire format every reader must learn. Resume renders the pinned
+    version.
+  - A persona turn skips the brief (the board), the homeostat, the outbox, the
+    workflow store, the appraisal readout and the model-written title. It runs
+    on `setup::persona_agent`: one agent per persona version and binding,
+    rebuilt when the binding moves.
+  - A locked persona and its chats answer 404 without the library's unlock
+    token. All `/api/persona*` responses are `no-store`.
+  - `a_persona_turn_runs_on_its_own_prompt_and_tools_and_is_recorded_apart`
+    checks the captured request. It must carry the persona's prompt, not the
+    assistant's, and only the tools that passed `registry_for`.
 
 ## Security model
 
