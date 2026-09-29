@@ -82,8 +82,12 @@ fn the_owners_act_is_read_inside_the_window_and_no_act_past_it() {
     let shells = resolved(base.clone(), "rejected", 1, Actor::OwnerApproved);
     assert_eq!(observe(&shells, window, now), Observed::Unknown);
     // An act after the window is not the act: the window closed on none.
-    let late = resolved(base, "sent", 3 * DAY - 1, Actor::Owner);
+    let late = resolved(base.clone(), "sent", 3 * DAY - 1, Actor::Owner);
     assert_eq!(observe(&late, window, now), Observed::NoAct);
+    // Released, and the delivery failed: still `pending`, never "no act".
+    let mut failed = base;
+    failed.error = Some("smtp refused".into());
+    assert_eq!(observe(&failed, window, now), Observed::Unknown);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -156,6 +160,17 @@ fn staging_forecasts_only_a_model_message_and_only_when_asked() {
             Provenance::default(),
         )
         .unwrap();
+    // The owner's own typed draft (`mecha mail send`: no staging session)
+    // is not forecast, and is not history either.
+    store
+        .stage(
+            "mail_send",
+            OutboxKind::Message,
+            json!({"to": "a@example.org", "body": "My own words."}),
+            Taint::default(),
+            Provenance::default(),
+        )
+        .unwrap();
     let (made, skipped) = load(&dir).unwrap();
     assert_eq!(skipped, 0);
     assert_eq!(made.len(), 1, "{made:?}");
@@ -165,7 +180,44 @@ fn staging_forecasts_only_a_model_message_and_only_when_asked() {
         (None, 0),
         "no settled history: no basis, never a guess"
     );
-    assert_eq!(store.items().unwrap().len(), 4, "the ledger is not an item");
+    assert_eq!(store.items().unwrap().len(), 5, "the ledger is not an item");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `record` forecasts from settled history, and never from the draft
+/// itself: its own staging time is `now`, which `base_rate` excludes, so a
+/// forecast can never read its own outcome (review of #401).
+#[test]
+fn a_forecast_rests_on_settled_history_and_never_on_its_own_draft() {
+    let dir = root("record");
+    let store = OutboxStore::open(&dir).unwrap();
+    let now = Utc::now();
+    let window = hours(2 * DAY);
+    let mut history = vec![
+        resolved(
+            draft(&store, "mail_send", false, 4 * DAY, now),
+            "rejected",
+            1,
+            Actor::Owner,
+        ),
+        resolved(
+            draft(&store, "mail_send", false, 4 * DAY, now),
+            "rejected",
+            1,
+            Actor::Owner,
+        ),
+    ];
+    let mut fresh = draft(&store, "mail_send", false, 0, now);
+    fresh.created_at = now.to_rfc3339();
+    // The draft's own record, already settled as a release, is in the
+    // history `record` is handed — as it is after `write_item`.
+    let mut own = resolved(fresh.clone(), "sent", 0, Actor::Owner);
+    own.created_at = fresh.created_at.clone();
+    history.push(own);
+    let f = record(&dir, &fresh, &history, Some(window))
+        .unwrap()
+        .unwrap();
+    assert_eq!((f.expected, f.basis), (Some(ExpectedAct::Rejected), 2));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

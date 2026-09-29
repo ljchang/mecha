@@ -82,11 +82,20 @@ pub fn ledger(outbox_root: &Path) -> PathBuf {
     outbox_root.join("forecasts").join("forecasts.jsonl")
 }
 
-/// Whether an item is a draft this forecasts: a message the model wrote,
-/// with a body — the drafts anticipation's staging prediction covers too.
+/// Whether an item is a draft this forecasts: a message a run drafted,
+/// with a body. `Author::Model` alone is not enough — `mecha mail send`
+/// stages the owner's own typed text through the same `stage`, as
+/// `author: model` — so the draft must also carry the session that staged
+/// it, which a run's route stamps and the owner's CLI does not (review of
+/// #401). One predicate for what is forecast, what counts as history, and
+/// what counts as unforecast.
 pub fn forecasts(item: &OutboxItem) -> bool {
     item.kind == OutboxKind::Message
         && item.author() == Author::Model
+        && item
+            .session_id
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
         && crate::outbox::DraftView::of(&item.args).body.is_some()
 }
 
@@ -121,6 +130,12 @@ pub fn observe(item: &OutboxItem, patience: chrono::Duration, now: DateTime<Utc>
         return Observed::Unknown;
     };
     let closes = staged + patience;
+    // A release whose delivery failed stays `pending` on purpose
+    // (`OutboxStore::record_error`): the owner acted and the wire did not.
+    // Not the owner's act by the stamps, and never "no act" (review of #401).
+    if item.status == "pending" && (!item.delivery_attempts.is_empty() || item.error.is_some()) {
+        return Observed::Unknown;
+    }
     if item.status == "pending" {
         return if now >= closes {
             Observed::NoAct
