@@ -4381,9 +4381,10 @@ What is open:
   sessions compare` (2d-1) and `mecha learn --compare-sources` (2e-1)**:
   `grep -c compare scripts/ruminate.sh` prints 9 at `2847fbfe`, and
   `~/.mecha/comparisons/comparisons.jsonl` held 2 rows on 2026-09-29. **2e-1
-  has decided nothing yet: 0 eligible in 35 regions.** Every clean steer and
-  denial came from a session distilled before the appraisal leg. #388's
-  backfill is the fix (the entry at the top). Unverified from here: whether
+  has decided nothing yet: 0 eligible.** #388's backfill has run, and it did
+  not fix this. Its sessions' appraisals all came out not clean, because an
+  appraisal takes the session-end taint (the entry at the top). Unverified
+  from here: whether
   the one-point smoke (`MECHA_SESSION_KIND=test mecha sessions compare -p
   local --points 1`) and `scripts/retirement-drill.sh`, owed after #333 and
   #338, have been run.
@@ -4395,14 +4396,16 @@ What is open:
   read on real data. 2e-5's appraisal-weighted half waits behind R20. Serving
   2e-4a's exemplars to drafting runs is a lever not yet built, and when it
   lands it arms `private_data` (the L2 entry).
-- **What phase 2 has on disk so far.** On 2026-09-29 `~/.mecha/appraisals/`
-  held `appraisals.jsonl` (6 lines) and `scores.jsonl` (3), and no
-  `counterfactuals.jsonl` (2d-3). That is the audit's 7 and 4, plus the
-  morning trigger's appraisal of 09-28, less the two probe sessions the owner
-  deleted (two appraisals and one score).
-  Every appraisal predicts `no_act`, which is #377's and #378's subject. Read `sessions
-  appraise` and `mecha sessions successes` after a few nights before
-  judging any phase-2 row on real data.
+- **What phase 2 has on disk so far.** At 22:20Z on 2026-09-29
+  `~/.mecha/appraisals/` held `appraisals.jsonl` (17 lines) and
+  `scores.jsonl` (4), and no `counterfactuals.jsonl` (2d-3). 8 of those
+  lines are the backfill's rows, which predict nothing. Earlier that day
+  the counts were 6 and 3: the audit's 7 and 4, plus the morning trigger's
+  appraisal of 09-28, less the two probe sessions the owner deleted (two
+  appraisals and one score). Every prediction the ordinary pass made was
+  `no_act`, which is what #377 and #378 addressed (merged and installed at
+  19:50Z). Read `sessions appraise` and `mecha sessions successes` after a
+  few nights before judging any phase-2 row on real data.
 - **2c-2's measured run is owed** (#320). `Lever::PastAppraisals` ships
   off, and the design asks for a `mecha exp` arm against a control at
   matched budget before it goes on, since retrieved memory can cost more
