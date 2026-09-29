@@ -767,8 +767,8 @@ cargo test --workspace && cargo clippy --all-targets --all-features
 
 **Latest measured figure, at `c6ae2c69` (2026-09-29, ~01:40 UTC, in a
 worktree): 3,584 tests, no failures, 4 ignored.** Main has moved since
-(#390, #391 and #394 add tests), so a run today gives a higher count. This is `cargo test --workspace`, without `MECHA_TEST_REQUIRE_BACKENDS`.
-By suite:
+(#390, #391, #394), so a run on today's main will not match it. This is
+`cargo test --workspace`, without `MECHA_TEST_REQUIRE_BACKENDS`. By suite:
 
 - `mecha-cli`: 1,018 unit tests (1 ignored) and 80 in its integration
   binaries, 22 of them `first_run`.
