@@ -245,13 +245,15 @@ sender, so the trifecta interlock has nothing to refuse** — the third leg is
 absent by construction, not guarded at run time. Persona memory still arms
 `private_data` (it is about the owner), and `block_sends_after_private` would
 then stop `web_search` after every recall. **The owner ruled that annoying
-(D11): a persona with `web_search` enabled keeps it after a recall.** The cost,
+(D11): a persona with `web_search` enabled keeps it after a recall** — so
+in a persona chat the leak guard never stops `web_search`, whatever the
+config says; the persona's `web_search` setting and `answers` (§10.4) are the
+switches. The cost,
 stated so it is chosen rather than discovered: a search query can carry
 something the persona remembers about the owner to the configured search
 backends — `Blind` means the query reaches the `[[search]]` chain and nobody
 else, not that it reaches no one. (`block_sends_after_private` is off by
-default in config, so D11 mostly keeps the default rather than loosening a
-guard that was on.)
+default in config anyway, so for most installs D11 changes nothing.)
 
 ### 3.4 One agent per persona
 
@@ -835,10 +837,15 @@ All of it rides in the message stream; nothing touches the system prompt
   episodes and facts, keyword and vector together, weighted toward recent —
   and folds the best few into that turn. The owner's words key the search,
   Kindroid's rule, so a persona does not steer what it is reminded of. Text
-  folded this way arrives in no tool result, so it arms taint the way other
-  harness-supplied content does — `Taint::arm_for_content`, with each
-  record's recorded origin — or recall would be exactly the laundering path
-  §9.6 rules out (found on review).
+  folded this way arrives in no tool result, so **the harness arms taint at
+  the fold itself**, the way the loop already does for a brief: always
+  `private` (it is memory of the owner), and `untrusted` when any folded
+  record's origin is not clean. The block opens with its own stem, and
+  `Taint::arm_for_content` learns it, so a resumed conversation whose taint
+  record was torn re-derives *both* — the origins are gone by then, and
+  unknown is never clean. (`arm_for_content` today arms only `private`, only
+  for images, briefs and appraisal stems — it cannot carry an origin, which
+  is why the fold must arm; found on review.)
 - **On demand**, two tools over this persona's stores only: `recall`
   (search episodes and facts) and `recall_open` (the transcript turns an
   episode points at).
@@ -1026,6 +1033,18 @@ content hash, so the same PDF in two folders is processed once. Replacing a
 paper with a new version keeps the old copy while any past chat cites it, so
 old citations still open.
 
+**What the file tools can reach, exactly** (found on review). A persona's
+`files/` sits beside its `sessions/` and `memory.db`, so the file tools are
+not rooted at the persona's folder — that jail would hand a persona its own
+transcripts and memory database. `file_search` and `file_read` resolve only
+inside the three `files/` folders this persona may read (its own, its
+groups', everyone's), each canonicalised and proved contained the way
+`ToolCtx::resolve` does for a workspace, and **read-only**: a persona reads
+its files, it does not edit them. Saving requested study material (§10.5) is
+the harness writing into the persona's own `files/`, not a model-held write
+path. The chat's own workspace — where uploads and generated images land —
+stays under `~/.mecha/work/`, as every chat's does.
+
 ### 10.3 Getting material in
 
 The owner adds files; **a model never fetches one.** That keeps §3.3's rule
@@ -1173,15 +1192,13 @@ the template too.
   `answers = "open"` and `web_search`, it is more** (found on review): the
   search query is itself an exfiltration channel (`search.rs`'s own header —
   the payload fits in `?q=`), a hostile file can instruct the persona to
-  search for something it remembers about the owner, and the guard that
-  would refuse it — `block_sends_after_private` — is off by default and D11
-  does not force it on for personas (a persona chat takes whatever the
-  config says). That is the three legs in one chat — private
+  search for something it remembers about the owner, and in a persona chat
+  the guard that would refuse it does not apply (D11, §3.3). That is the three legs in one chat — private
   (memory), untrusted (the file), a way out (the query, `Blind`: it reaches
   the configured search chain, not an attacker-chosen host, but a search
-  engine is not nobody). The owner's choices that close it: `answers =
-  "files"` for a persona whose files are not the owner's own, or no
-  `web_search`, or `block_sends_after_private` on.
+  engine is not nobody). The owner's switches that close it, both per
+  persona: `answers = "files"` for a persona whose files are not the owner's
+  own, or no `web_search` for it.
 - **Files never write a persona.** Material from a file reaching the memory
   writer (§9) is classified untrusted, and nothing in a file ever becomes
   persona definition text.
