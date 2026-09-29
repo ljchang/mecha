@@ -373,6 +373,11 @@ async fn lessons_from_both_sources_are_measured_per_region_and_nothing_is_learne
     assert_eq!(write["reflector"]["rate"], 1.0, "{report:#}");
     assert_eq!(write["reflector"]["pass"], 1);
     assert_eq!(write["reflector"]["improved"], 1);
+    // R44's gate rides the report: one decided pair is a pilot, and the
+    // pair the reflector won alone is counted (review of #400).
+    assert_eq!(report["gate"]["gate"], "pilot", "{report:#}");
+    assert_eq!(report["gate"]["decided"], 1, "{report:#}");
+    assert_eq!(report["total"]["reflector_only"], 1, "{report:#}");
     assert_eq!(write["appraisal"]["rate"], 0.0, "{report:#}");
     assert_eq!(write["appraisal"]["fail"], 1);
     assert_eq!(write["rules_free"]["rate"], 0.0);
@@ -438,6 +443,7 @@ async fn lessons_from_both_sources_are_measured_per_region_and_nothing_is_learne
     let again = region(readout, "fs_list,fs_write on tui");
     assert_eq!(again["reflector"]["rate"], 1.0, "{readout:#}");
     assert_eq!(again["appraisal"]["rate"], 0.0);
+    assert_eq!(readout["gate"]["gate"], "pilot", "{readout:#}");
     assert!(
         again["unavailable"].is_null(),
         "outside a pass, unavailable is unknown: {readout:#}"
@@ -457,6 +463,10 @@ async fn lessons_from_both_sources_are_measured_per_region_and_nothing_is_learne
         .unwrap();
     let text = String::from_utf8_lossy(&text.stdout);
     assert!(text.contains("lessons by source"), "{text}");
+    assert!(
+        text.contains("gate (2a-4, 2e-2): pilot — 1 decided of the 10 a verdict needs"),
+        "{text}"
+    );
     assert!(text.contains("reflector   100% (1 of 1 decided)"), "{text}");
     assert!(text.contains("appraisal   0% (0 of 1 decided)"), "{text}");
     assert!(

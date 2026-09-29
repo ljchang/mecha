@@ -406,26 +406,44 @@ fn rate_words(c: &lesson_source::SourceCounts) -> String {
 
 /// R25's gate in words: a pilot under the ruled minimum, else no worse or
 /// worse by the discordant pairs, with the counts it was decided on.
-pub(crate) fn gate_line(total: &lesson_source::RegionReport) -> String {
+pub(crate) fn gate_line(report: &Report) -> String {
     use lesson_source::{Gate, GATE_MAX_TRAIL, GATE_MIN_DECIDED};
+    let total = report.total();
     let pairs = format!(
         "discordant pairs: reflector alone {}, appraisal alone {}",
         total.reflector_only, total.appraisal_only
     );
-    match total.gate() {
+    // A lead is said as a lead: "trails by 0" would read as a tie.
+    let standing = |trail: usize| {
+        if total.appraisal_only > total.reflector_only {
+            format!(
+                "the appraisal leads by {}",
+                total.appraisal_only - total.reflector_only
+            )
+        } else {
+            format!("the appraisal trails by {trail}")
+        }
+    };
+    match report.gate() {
+        Gate::Floors { skipped } => format!(
+            "gate (2a-4, 2e-2): no verdict — {skipped} unreadable store line(s) make every count \
+             a floor; {pairs}"
+        ),
         Gate::Pilot { decided } => format!(
             "gate (2a-4, 2e-2): pilot — {decided} decided of the {GATE_MIN_DECIDED} a verdict \
              needs; {pairs}"
         ),
         Gate::NoWorse { trail } => format!(
-            "gate (2a-4, 2e-2): NO WORSE — over {} decided, the appraisal trails by {trail} \
-             (at most {GATE_MAX_TRAIL}); {pairs}",
-            total.decided
+            "gate (2a-4, 2e-2): NO WORSE — over {} decided, {} (at most {GATE_MAX_TRAIL} \
+             behind); {pairs}",
+            total.decided,
+            standing(trail)
         ),
         Gate::Worse { trail } => format!(
-            "gate (2a-4, 2e-2): WORSE — over {} decided, the appraisal trails by {trail} \
-             (more than {GATE_MAX_TRAIL}); {pairs}",
-            total.decided
+            "gate (2a-4, 2e-2): WORSE — over {} decided, {} (more than {GATE_MAX_TRAIL}); \
+             {pairs}",
+            total.decided,
+            standing(trail)
         ),
     }
 }
@@ -463,7 +481,7 @@ pub(crate) fn report_lines(report: &Report) -> Vec<String> {
     // R25's gate for 2a-4 and 2e-2, on the paired verdicts (the owner's
     // ruling of 2026-09-29): said on every readout, so a result is never
     // read off the rates by eye.
-    out.push(format!("  {}", gate_line(&total)));
+    out.push(format!("  {}", gate_line(report)));
     // A region where nothing is eligible has only exclusions to say, and a
     // store of followups would print a block of zeros per region: those are
     // folded into one line below (`--json` keeps every region).
@@ -566,7 +584,7 @@ pub(crate) fn report_json(report: &Report) -> serde_json::Value {
         o.insert("total".into(), t);
         o.insert(
             "gate".into(),
-            serde_json::to_value(total.gate()).unwrap_or_default(),
+            serde_json::to_value(report.gate()).unwrap_or_default(),
         );
     }
     v
@@ -592,21 +610,25 @@ pub(crate) fn on_record() -> std::result::Result<Option<Report>, String> {
 
 #[cfg(test)]
 mod tests {
-    use mecha_core::lesson_source::RegionReport;
+    use mecha_core::lesson_source::{RegionReport, Report};
 
     /// The gate is said in words on every readout, with the counts it was
     /// decided on (the owner's ruling of 2026-09-29).
     #[test]
     fn the_gate_line_says_pilot_no_worse_or_worse_with_its_pairs() {
-        let at = |decided, reflector_only, appraisal_only| {
-            super::gate_line(&RegionReport {
-                decided,
-                reflector_only,
-                appraisal_only,
-                ..RegionReport::default()
+        let at = |decided, reflector_only, appraisal_only, skipped_lines| {
+            super::gate_line(&Report {
+                regions: vec![RegionReport {
+                    decided,
+                    reflector_only,
+                    appraisal_only,
+                    ..RegionReport::default()
+                }],
+                skipped_lines,
+                ..Report::default()
             })
         };
-        let pilot = at(3, 1, 0);
+        let pilot = at(3, 1, 0, 0);
         assert!(
             pilot.contains("pilot — 3 decided of the 10 a verdict needs"),
             "{pilot}"
@@ -615,7 +637,13 @@ mod tests {
             pilot.contains("reflector alone 1, appraisal alone 0"),
             "{pilot}"
         );
-        assert!(at(10, 2, 0).contains("NO WORSE — over 10 decided, the appraisal trails by 2"));
-        assert!(at(10, 3, 0).contains("WORSE — over 10 decided, the appraisal trails by 3"));
+        assert!(at(10, 2, 0, 0).contains("NO WORSE — over 10 decided, the appraisal trails by 2"));
+        assert!(at(10, 3, 0, 0).contains("WORSE — over 10 decided, the appraisal trails by 3"));
+        // A lead is a lead, never "trails by 0".
+        let lead = at(12, 0, 5, 0);
+        assert!(lead.contains("the appraisal leads by 5"), "{lead}");
+        assert!(!lead.contains("trails by 0"), "{lead}");
+        // Floors: no verdict.
+        assert!(at(12, 5, 0, 2).contains("no verdict — 2 unreadable store line(s)"));
     }
 }
