@@ -31,6 +31,9 @@
 //! a route that stamps no session: `mecha batch` stamps none, and neither
 //! does an incognito chat, so their drafts are neither forecast nor counted
 //! as unforecast. That is by design, not a lost write.
+//!
+//! **A torn ledger line is repaired by hand.** Until it is, every forecast
+//! is `basis_unreadable`: counted on the readout, never guessed around.
 
 use crate::appraisal_store::ExpectedAct;
 use crate::closure::Actor;
