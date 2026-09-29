@@ -152,6 +152,7 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
         .transpose()?;
 
     let sessions = Session::list(&sessions_dir)?;
+    let listed_ids: Vec<String> = sessions.iter().map(|(m, _)| m.id.clone()).collect();
     // A test or stray experiment session must not become a graph episode —
     // the graph is the owner's memory (`session::split_admitted`).
     // Skipped sessions are never marked distilled, so this is every test or
@@ -180,10 +181,31 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
     // a later one is appraised — in one night's batch as across nights.
     todo.reverse();
     if todo.is_empty() {
-        if backfill.is_some() {
-            println!(
-                "nothing to backfill: no session's steer or denial waits only on an appraisal"
-            );
+        if let Some(targets) = &backfill {
+            // Say what the empty list is made of, never read it as zero: a
+            // target not yet distilled waits on the ordinary pass, and one
+            // whose transcript is gone cannot be appraised (review of #388).
+            let listed: std::collections::HashSet<&str> =
+                listed_ids.iter().map(String::as_str).collect();
+            let undistilled = targets
+                .iter()
+                .filter(|t| listed.contains(t.as_str()) && !done.contains(*t))
+                .count();
+            let missing = targets
+                .iter()
+                .filter(|t| !listed.contains(t.as_str()))
+                .count();
+            if targets.is_empty() {
+                println!(
+                    "nothing to backfill: no session's steer or denial waits only on an appraisal"
+                );
+            } else {
+                println!(
+                    "nothing to backfill now: {undistilled} session(s) wait on an appraisal but \
+                     are not distilled yet — the ordinary pass takes those — and {missing} \
+                     whose transcript is no longer in the session store"
+                );
+            }
         } else {
             println!("nothing to distill: every session is already in the graph's ledger");
         }
@@ -700,6 +722,16 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     }
 
+    // A backfill wrote nothing to the learning store, so it logs no pass
+    // there and reports what it did rather than a distill it did not do
+    // (review of #388).
+    if backfill.is_some() {
+        println!("backfill: nothing pushed to the graph, the ledger untouched, {skipped} skip(s)");
+        if appraiser.is_some() {
+            println!("{}", tally.line());
+        }
+        return Ok(());
+    }
     store.log_pass(&format!(
         "distill: {distilled} episode(s), {carriers} carrier(s), {skipped} skip(s)"
     ));

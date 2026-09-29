@@ -581,6 +581,9 @@ async fn a_backfill_appraises_only_what_row_2e_1_waits_on_and_pushes_nothing() {
         "{dry}"
     );
 
+    let passes =
+        || std::fs::read_to_string(home.join("learning").join("passes.jsonl")).unwrap_or_default();
+    let passes_before = passes();
     let asked_from = seen.lock().unwrap().len();
     let out = ok(
         &mecha(&home, &work, &["distill", "--backfill-appraisals"]).await,
@@ -590,6 +593,14 @@ async fn a_backfill_appraises_only_what_row_2e_1_waits_on_and_pushes_nothing() {
         out.contains("backfilled: written after the outcome"),
         "{out}"
     );
+    // It reports the backfill it did, not a distill it did not do, and
+    // logs no pass to a store it did not write (review of #388).
+    assert!(
+        out.contains("backfill: nothing pushed to the graph"),
+        "{out}"
+    );
+    assert!(!out.contains("distilled 0 session(s)"), "{out}");
+    assert_eq!(passes(), passes_before, "no pass logged");
 
     let store = AppraisalStore::open(home.join("appraisals")).unwrap();
     let (rows, _) = store.for_owner().unwrap();
@@ -614,6 +625,19 @@ async fn a_backfill_appraises_only_what_row_2e_1_waits_on_and_pushes_nothing() {
         std::fs::read_to_string(home.join("learning").join("distilled.jsonl")).unwrap(),
         ledger_before,
         "no session re-marked"
+    );
+
+    // Run again: golf is on record, and juliet waits on the ordinary pass —
+    // said so, never read as "nothing waits".
+    let again = ok(
+        &mecha(&home, &work, &["distill", "--backfill-appraisals"]).await,
+        "distill --backfill-appraisals, again",
+    );
+    assert!(
+        again.contains(
+            "nothing to backfill now: 1 session(s) wait on an appraisal but are not distilled yet"
+        ),
+        "{again}"
     );
 
     // India's appraisal came after golf ended: not shown as an earlier one.
