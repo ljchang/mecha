@@ -963,6 +963,12 @@ module.
       (`WireEvent::Crisis`). That is the owner's ruling of 2026-09-29. A hit
       within `CRISIS_COOLDOWN` of a pause does not pause again. Every hit is
       a content-free line in `safety.jsonl`.
+    - A message sent while a run is live passes through the same sensor
+      (`steer_or_pause`). A hit stops the run, and the hand-back records
+      the words, so the persona never answers them.
+    - The cooldown is held in memory per chat, so a restart or a resume
+      re-arms the pause. That is the safer direction, and it is chosen
+      rather than accidental.
     - The crisis state is reported as `degraded` ("keywords only") until the
       model tiers exist, never as "passed".
     - The Core is re-anchored every `REANCHOR_EVERY` turns, after a

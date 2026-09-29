@@ -94,6 +94,16 @@ assert.equal(taintLabel({ private: false, untrusted: false }), '');
 assert.equal(taintLabel(null), '');
 assert.equal(safetyLine({ crisis: 'degraded', disclosure: true, reanchor: true, dose: true }), 'crisis detection: keywords only');
 assert.equal(safetyLine({ crisis: 'off', disclosure: false, reanchor: true, dose: false }), 'crisis detection off · off: disclosure, dose');
+assert.equal(safetyLine({ crisis: 'degraded', disclosure: true, reanchor: true, dose: true, farewell: 'off' }), 'crisis detection: keywords only · off: farewell');
+// Two crisis cards get two ids, and a re-read keeps each card's own.
+{
+  let r = emptyRun();
+  r = applyEvent(r, { type: 'crisis', text: 'a' });
+  r = applyEvent(r, { type: 'crisis', text: 'b' });
+  const ids = r.entries.map((e) => e.id);
+  assert.equal(new Set(ids).size, 2);
+  assert.deepEqual(settle([{ kind: 'user', text: 'x' }], r).filter((e) => e.kind === 'crisis').map((e) => e.id), ids);
+}
 assert.equal(doseLine({ turns_today: 3, turns_7d: 12, late_night_7d: 2 }), '3 today · 12 this week · 2 late at night');
 assert.equal(doseLine({ turns_today: 0, turns_7d: 0, late_night_7d: 0 }), '0 today · 0 this week');
 assert.equal(doseLine(null), '');

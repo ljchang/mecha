@@ -31,9 +31,11 @@
   let run = $state(emptyRun());
   // The open chat's safety switches, as its transcript reports them (§12).
   let safety = $state(null);
-  // Crisis cards the owner has closed (by index); a closed one leaves a
-  // link to its resources rather than vanishing.
+  // Crisis cards the owner has closed, by id; a closed one leaves a link to
+  // its resources rather than vanishing.
   let dismissed = $state(new Set());
+  // The resources card opened from the chat's standing link.
+  let showResources = $state(false);
   // Attached while a run was streaming: that run's end is re-read, because
   // what streamed before the stream opened is only on the server.
   let partial = false;
@@ -176,6 +178,7 @@
     key = k;
     run = emptyRun();
     dismissed = new Set();
+    showResources = false;
     partial = false;
     const s = new EventSource(chatUrl(k, '/events', token));
     source = s;
@@ -426,8 +429,8 @@
           {:else if entry.kind === 'notice'}
             <div class="notice">{entry.text}</div>
           {:else if entry.kind === 'crisis'}
-            {#if dismissed.has(i)}
-              <button class="linkbtn" onclick={() => { dismissed.delete(i); dismissed = new Set(dismissed); }}>
+            {#if dismissed.has(entry.id)}
+              <button class="linkbtn" onclick={() => { dismissed.delete(entry.id); dismissed = new Set(dismissed); }}>
                 support resources
               </button>
             {:else}
@@ -435,13 +438,25 @@
                    on this message and did not answer it. -->
               <div class="crisis" role="alert">
                 <div class="crisistext">{entry.text}</div>
-                <button class="abtn" onclick={() => (dismissed = new Set([...dismissed, i]))}>Close</button>
+                <button class="abtn" onclick={() => (dismissed = new Set([...dismissed, entry.id]))}>Close</button>
               </div>
             {/if}
           {/if}
         {/each}
         {#if run.streaming}
           <div class="answer">{run.streaming}</div>
+        {/if}
+        {#if safety?.resources}
+          <!-- One tap away in every chat the sensor watches, whatever a
+               reload did to the card (review of #418). -->
+          {#if showResources}
+            <div class="crisis" role="note">
+              <div class="crisistext">{safety.resources}</div>
+              <button class="abtn" onclick={() => (showResources = false)}>Close</button>
+            </div>
+          {:else}
+            <button class="linkbtn quiet" onclick={() => (showResources = true)}>support resources</button>
+          {/if}
         {/if}
       {/if}
     </div>
@@ -493,6 +508,7 @@
   .crisis { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--accent-500); border-radius: var(--radius); padding: 14px; }
   .crisistext { font-size: 14px; line-height: 1.55; white-space: pre-wrap; color: var(--text); }
   .crisis .abtn { align-self: flex-start; }
+  .linkbtn.quiet { color: var(--text-muted); font-size: 11px; }
   .linkbtn { align-self: flex-start; background: none; border: none; padding: 0; color: var(--accent-400); font-size: 12px; text-decoration: underline; cursor: pointer; }
   .lockbtn { flex-shrink: 0; display: flex; align-items: center; justify-content: center; min-height: 40px; min-width: 40px; padding: 0; background: none; border: 1px solid var(--accent-900); border-radius: var(--radius-chip); color: var(--text-muted); cursor: pointer; }
   .lockbtn.on { color: var(--hazard); border-color: var(--hazard); }
