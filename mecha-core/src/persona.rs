@@ -33,6 +33,8 @@ use std::path::{Path, PathBuf};
 use crate::imagelib::{self, write_atomic_mode};
 pub use crate::imagelib::{Origin, Status};
 
+pub mod agent;
+
 /// A name — persona, relationship, group or voice: `[a-z0-9][a-z0-9_-]*`.
 pub const MAX_NAME: usize = 64;
 /// A display name, as the page and the prompt show it.
@@ -443,7 +445,11 @@ pub struct Suggest {
 }
 
 /// Split `+++ … +++` front matter off a template. No front matter is none.
-fn front_matter(text: &str) -> Result<(Suggest, &str)> {
+/// Line endings are read as LF: `read_prose` admits CRLF, and a template
+/// saved on Windows must not silently lose its suggestions and render its
+/// front matter into a prompt (found on review of #405).
+fn front_matter(text: &str) -> Result<(Suggest, String)> {
+    let text = text.replace("\r\n", "\n");
     let Some(rest) = text.strip_prefix("+++\n") else {
         return Ok((Suggest::default(), text));
     };
@@ -458,7 +464,7 @@ fn front_matter(text: &str) -> Result<(Suggest, &str)> {
         (&rest[..end.0], &rest[end.1..])
     };
     let suggest: Suggest = parse_toml(head).context("reading the front matter")?;
-    Ok((suggest, body))
+    Ok((suggest, body.to_string()))
 }
 
 // ─── The loaded store ──────────────────────────────────────────────────────
@@ -1574,21 +1580,22 @@ pub fn remove(dir: &Path, name: &str) -> Result<PathBuf> {
     Ok(to)
 }
 
+/// Fixtures shared by this module's tests and `agent`'s.
 #[cfg(test)]
-mod tests {
+mod tests_support {
     use super::*;
 
-    fn scratch() -> PathBuf {
+    pub fn scratch() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("mecha-persona-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    fn no_lib() -> imagelib::Library {
+    pub fn no_lib() -> imagelib::Library {
         imagelib::Library::load(&std::env::temp_dir().join("mecha-persona-no-such-lib")).0
     }
 
-    fn new(name: &str) -> NewPersona {
+    pub fn new(name: &str) -> NewPersona {
         NewPersona {
             name: name.into(),
             origin: Origin::Owner,
@@ -1596,7 +1603,7 @@ mod tests {
         }
     }
 
-    fn fill_core(dir: &Path, name: &str) {
+    pub fn fill_core(dir: &Path, name: &str) {
         let path = dir.join(name).join("identity.md");
         let text = std::fs::read_to_string(&path).unwrap().replace(
             "## Core\n",
@@ -1604,6 +1611,12 @@ mod tests {
         );
         std::fs::write(path, text).unwrap();
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tests_support::*;
+    use super::*;
 
     #[test]
     fn create_lays_out_the_store_and_takes_version_one() {
@@ -2309,6 +2322,9 @@ mod tests {
         assert_eq!(s.answers, Some(Answers::Files));
         assert_eq!(body, "# T\n");
         assert!(front_matter("+++\nanswers = \"files\"\n# never closed\n").is_err());
+        let (s, body) = front_matter("+++\r\nanswers = \"files\"\r\n+++\r\n# T\r\n").unwrap();
+        assert_eq!(s.answers, Some(Answers::Files), "CRLF front matter");
+        assert_eq!(body, "# T\n");
         assert!(front_matter("+++\ntool = []\n+++\n").is_err());
     }
 
