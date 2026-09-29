@@ -251,6 +251,17 @@ The decisions that are this design's rather than the owner's:
   manifest, and runs `add-character`. The lock box starts checked when the
   picture's manifest names a locked character (`GET /api/library/source`).
   Both routes refuse an incognito key.
+- **Add and edit from the tab (2026-09-29, the owner's ask).** An *Add
+  character* tile takes an uploaded portrait, a name and a description; *Add
+  style* takes a name and text; *Edit* on an approved entry takes a new
+  description or portrait. Each is `add-character`, `add-style` or `update`
+  as a CLI child, like every write here. The portrait is scaled to 1536 px on
+  its long edge and re-encoded as JPEG in the page, which drops the photo's
+  metadata before it leaves the device and costs nothing, since generation
+  sends it at 512² (E10). It travels base64 in the JSON body so the owner's
+  words never sit in a URL. Edit is refused on candidates: a proposal is
+  approved or rejected as the model wrote it, because rewriting a text is
+  what approves it (`update`), and an edit screen is not the place to read it.
 - **Candidates are a review-queue row, not a backlog field.** `mecha review
   queues` (and so the Home cards) gains `image candidates`, opening
   `#library/candidates`. It is not added to `backlog::Backlog`, which is
