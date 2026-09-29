@@ -1458,7 +1458,16 @@ fn forecasts_line(
     let s = match forecasts {
         Err(e) => return format!("draft forecasts: could not be read ({e})"),
         Ok(None) => return "draft forecasts (base rate, readout only): none on record".into(),
-        Ok(Some(s)) if s.forecasts == 0 && s.skipped == 0 => {
+        // "None" only when there is nothing else to say: a ledger of smoke
+        // runs alone can still carry an unforecast draft — a failed write —
+        // or an unreadable outbox (review of #401).
+        Ok(Some(s))
+            if s.forecasts == 0
+                && s.skipped == 0
+                && s.unforecast == 0
+                && s.tests_set_aside == 0
+                && !s.outbox_unreadable =>
+        {
             return "draft forecasts (base rate, readout only): none on record".into()
         }
         Ok(Some(s)) => s,
