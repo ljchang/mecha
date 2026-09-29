@@ -833,3 +833,79 @@ fn an_unreadable_mailbox_keeps_the_transcript_for_the_retry() {
         .join(format!("{GONE}.jsonl.forgetting"))
         .exists());
 }
+
+#[test]
+fn the_document_cache_is_named_because_delete_cannot_find_a_session_in_it() {
+    let home = scratch("documents");
+    let roots = Roots::under(&home.0);
+    let main = home.0.join("work/web/main");
+    session(&roots, GONE, &main, CANARY);
+    // An extracted PDF, keyed by the file's hash — nothing in it names the
+    // session that read it.
+    write(
+        &home.0.join("documents/0123abcd/layer.json"),
+        r#"{"sha256":"0123abcd"}"#,
+    );
+
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+
+    assert!(report.complete, "{:?}", report.errors);
+    assert!(
+        report
+            .residue
+            .iter()
+            .any(|r| r.contains(&roots.documents.display().to_string())),
+        "{:?}",
+        report.residue
+    );
+}
+
+#[test]
+fn no_document_cache_is_not_named() {
+    let home = scratch("no-documents");
+    let roots = Roots::under(&home.0);
+    let main = home.0.join("work/web/main");
+    session(&roots, GONE, &main, CANARY);
+
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+
+    assert!(!report.residue.iter().any(|r| r.contains("documents")));
+}
+
+#[test]
+fn a_relocated_document_cache_is_the_one_named() {
+    let home = scratch("documents-moved");
+    let mut roots = Roots::under(&home.0);
+    let elsewhere = home.0.join("elsewhere/doc-cache");
+    roots.documents = elsewhere.clone();
+    let main = home.0.join("work/web/main");
+    session(&roots, GONE, &main, CANARY);
+    write(
+        &elsewhere.join("0123abcd/layer.json"),
+        r#"{"sha256":"0123abcd"}"#,
+    );
+
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+
+    let shown = elsewhere.display().to_string();
+    assert!(
+        report.residue.iter().any(|r| r.contains(&shown)),
+        "{:?}",
+        report.residue
+    );
+}

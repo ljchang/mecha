@@ -1,0 +1,22 @@
+# The document-OCR llama-server (PaddleOCR-VL 1.6), on demand: started by
+# llama-ocr-proxy.service when a connection arrives on llama-ocr.socket,
+# stopped when the proxy idles out. No [Install] section on purpose — enabled
+# at boot it would be "needed" by default.target forever and never stop.
+[Unit]
+Description=llama-server for document OCR (PaddleOCR-VL 1.6, backend :18085)
+Documentation=file://%h/.local/bin/mecha-ocr-server
+StopWhenUnneeded=yes
+
+[Service]
+Type=exec
+Environment=MECHA_OCR_PORT=18085
+ExecStart=%h/.local/bin/mecha-ocr-server
+# Active only once /health answers ok: a starting server is not a ready one,
+# and the proxy is ordered after this unit's start job, ExecStartPost included.
+ExecStartPost=%h/.local/bin/mecha-wait-healthy 18085 120
+TimeoutStartSec=180
+# Deliberately not Restart=always, matching llama-local and llama-embed: a
+# server that cannot load should stay down and be visible, not loop.
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT

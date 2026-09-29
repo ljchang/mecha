@@ -6,6 +6,7 @@ pub mod corroborate;
 pub mod diagnose;
 pub mod distill;
 pub mod doctor;
+pub mod document;
 pub mod eval;
 pub mod exp;
 pub mod frontdoor;
