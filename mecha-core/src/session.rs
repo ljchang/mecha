@@ -2472,15 +2472,28 @@ impl Marks {
         Ok(Marks { latest })
     }
 
-    /// Append one mark, synced before it returns. No store lock, unlike the
-    /// appraisal and learning stores: only the owner writes here, at a
-    /// terminal (`mecha sessions mark` refuses every run's shell), and one
-    /// short line under `O_APPEND` does not interleave.
+    /// Append one mark, synced before it returns, under `<marks>/.lock` —
+    /// the lock `forget` takes to rewrite this ledger when a session is
+    /// deleted, so a mark made in that instant is not written to the file
+    /// the rewrite replaces and lost (review of #382).
     pub fn append(sessions_dir: &Path, mark: &Mark) -> Result<()> {
         use std::io::Write;
         let path = Marks::ledger(sessions_dir);
         let dir = path.parent().expect("the ledger has a directory");
         crate::create_private_dir(dir).with_context(|| format!("creating {}", dir.display()))?;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join(".lock"))
+            .with_context(|| format!("opening {}", dir.join(".lock").display()))?;
+        {
+            use std::os::unix::io::AsRawFd;
+            // SAFETY: flock on an fd we own, held open until `lock` drops.
+            if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return Err(std::io::Error::last_os_error()).context("locking the marks ledger");
+            }
+        }
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

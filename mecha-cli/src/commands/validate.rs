@@ -364,8 +364,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     };
     // A session the owner marked as an experiment probes nothing (ruling 4D;
     // review of #382). The ledger unread stops the run.
-    let (all, _) = mecha_core::session::Marks::load(&mecha_core::session::Session::default_dir()?)?
-        .keep_unmarked(store.reflexions()?, |r| r.session_id.as_str());
+    let (all, withdrawn) =
+        mecha_core::session::Marks::load(&mecha_core::session::Session::default_dir()?)?
+            .keep_unmarked(store.reflexions()?, |r| r.session_id.as_str());
     // The cover pool needs the corpus again; every other pass does not.
     let for_cover = (args.cover > 0).then(|| all.clone());
     let mut reflexions: Vec<_> = select_probe_corpus(all, &wanted_triggers, args.unprocessed_only);
@@ -500,6 +501,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 covering.len()
             );
         }
+    }
+    if withdrawn > 0 {
+        println!(
+            "{withdrawn} reflection(s) from sessions you marked as experiments set aside — \
+             not probed while the mark stands"
+        );
     }
     if reflexions.is_empty() {
         println!("no reflections to probe");
