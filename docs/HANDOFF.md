@@ -69,8 +69,9 @@ the backfill's result are in HISTORY under 2026-09-29; the install is in
   of the 8 were tainted from their first checkpoint. `mecha sessions
   appraise` now reads 0 eligible, with 16 interventions clean for the
   reflector only, 3 clean for neither and 1 whose session still has no
-  appraisal, so the R44 gate is "pilot, 0 of 10". Loosening the origin rule is not an option: appraisal
-  prose built from untrusted content is a paraphrase of it. The two options
+  appraisal, so the R44 gate is "pilot, 0 of 10". Loosening the origin rule
+  is not an option: appraisal prose built from untrusted content is a
+  paraphrase of it. The two options
   on the table are C, the fixture denial pilot (with the open question of
   whether synthetic evidence counts), or waiting for sessions that stay clean
   end to end. `mecha learn --compare-sources` was not run, since there is
@@ -4398,14 +4399,17 @@ What is open:
   lands it arms `private_data` (the L2 entry).
 - **What phase 2 has on disk so far.** At 22:20Z on 2026-09-29
   `~/.mecha/appraisals/` held `appraisals.jsonl` (17 lines) and
-  `scores.jsonl` (4), and no `counterfactuals.jsonl` (2d-3). 8 of those
-  lines are the backfill's rows, which predict nothing. Earlier that day
+  `scores.jsonl` (4), and no `counterfactuals.jsonl` (2d-3). Early that day
   the counts were 6 and 3: the audit's 7 and 4, plus the morning trigger's
   appraisal of 09-28, less the two probe sessions the owner deleted (two
-  appraisals and one score). Every prediction the ordinary pass made was
-  `no_act`, which is what #377 and #378 addressed (merged and installed at
-  19:50Z). Read `sessions appraise` and `mecha sessions successes` after a
-  few nights before judging any phase-2 row on real data.
+  appraisals and one score). Three ordinary appraisals followed that day.
+  The 11:01Z morning trigger's predicted `released_unchanged`, the first
+  prediction on record that was not `no_act`. A 17:40Z one predicted
+  `no_act`. A 20:28Z one, written after the 19:50Z install, is stamped
+  not asked, which is #378 on live data. Then came the backfill's 8 rows,
+  which predict nothing, and 09-27's appraisal was scored. Read `sessions
+  appraise` and `mecha sessions successes` after a few nights before
+  judging any phase-2 row on real data.
 - **2c-2's measured run is owed** (#320). `Lever::PastAppraisals` ships
   off, and the design asks for a `mecha exp` arm against a control at
   matched budget before it goes on, since retrieved memory can cost more

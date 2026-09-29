@@ -52,10 +52,12 @@ text tells the model "the user can" see the picture was obsolete, since
 installed, and the backfill that found 2e-1 starved.** The audit of
 2026-09-28 read a store in which every appraisal predicted `no_act`, the
 readout said "hit rate 100%", valence stood at +1.0 / −93.0, and 2e-1 had
-0 eligible interventions. The owner's rulings (1B, 4D, 2A→C, 3D→D,
-in-run prediction → a, and R44–R47 on 2026-09-29) each became one PR. 4B
-needed no code: model probes run in incognito from now on, and the two
-probe sessions already recorded were deleted outright.
+0 eligible interventions. The audit's hit-rate finding and the
+owner's rulings (1B, 4D, 2A→C, 3D→D, in-run prediction → a, and R44–R47 on
+2026-09-29) became these seven PRs, one per bullet. In-run prediction, R45,
+R46 and R47 are all #401. 4B needed no code: model probes run in incognito
+from now on, and the two probe sessions already recorded were deleted
+outright.
 - #377 counts a `no_act` hit on an output that offered nothing to act on
   (`output_offers_act`) as `forced`, keeps it out of `hit_rate`, and
   withholds the rate while any hit is `forced_unknown`.
