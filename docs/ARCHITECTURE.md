@@ -8237,9 +8237,15 @@ in five different ways. The design and its open steps are
   off today whose row is hidden, with why and the fix. **Every route is
   added through `serve::api()`'s `.at(path, owner, …)`** (`serve/gate.rs`),
   so none exists without an owner — `every_route_is_registered_with_its_owner`
-  refuses a bare `.route` — and two owners read the path: `ProposalStore`
+  refuses a bare `.route` — and two owners read a capture: `ProposalStore`
   (the `entities` store is the graph's, `harness` and `rules` are core) and
-  `ChatKey` (an incognito room's key is incognito's). The guard sits
+  `ChatKey` (an incognito room's key is incognito's). **They read it as the
+  handler does**, percent-decoded from the router's own match
+  (`RawPathParams`), and an unreadable capture fails closed: read from the
+  raw URI, `/api/proposals/%65ntities/…/accept` passed a graph that was off
+  and the handler, decoding it, wrote the graph (review of #451). `require`
+  refuses when the global configuration does not load — `imagelib` loads
+  none of its own, so failing open let its writes through. The guard sits
   **inside** `owner_guard`, so a stranger gets the owner's 403 and never
   learns what is off; the owner gets F4's `404 feature_off`, before the
   handler, so a read with a side effect does not happen. It reads a `Gate`

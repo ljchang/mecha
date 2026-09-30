@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::extract::{MatchedPath, Request, State};
+use axum::extract::{FromRequestParts, MatchedPath, RawPathParams, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -37,28 +37,30 @@ pub(super) enum Owner {
     Core,
     Of(Feature),
     /// `/api/proposals/{store}/…`: the `entities` store is the graph's, the
-    /// `harness` and `rules` stores are core — the path decides.
+    /// `harness` and `rules` stores are core — the `store` capture decides.
     ProposalStore,
     /// `/api/chat/{key}/…`: an incognito room's key is incognito's, every
-    /// other key the chat's.
+    /// other key the chat's — the `key` capture decides.
     ChatKey,
 }
 
 impl Owner {
-    /// The feature a request to this route belongs to, if any.
-    fn feature(self, path: &str) -> Option<Feature> {
-        let segment = |prefix: &str| {
-            path.strip_prefix(prefix)
-                .map(|rest| rest.split('/').next().unwrap_or(""))
-        };
+    /// The feature a request to this route belongs to, if any, given the
+    /// route's captures **as the handler will see them** — percent-decoded,
+    /// from the router's own match (`RawPathParams`). Reading the raw URI
+    /// instead let `/api/proposals/%65ntities/…` past a graph that is off,
+    /// into a handler that decodes it to `entities` and writes the graph
+    /// (review of #451). A capture that cannot be read fails closed: the
+    /// route is taken to be the feature's.
+    fn feature(self, capture: impl Fn(&str) -> Option<String>) -> Option<Feature> {
         match self {
             Owner::Core => None,
             Owner::Of(f) => Some(f),
-            Owner::ProposalStore => {
-                (segment("/api/proposals/") == Some("entities")).then_some(Feature::Graph)
-            }
-            Owner::ChatKey => segment("/api/chat/")
-                .is_some_and(|key| key.starts_with(super::incognito::KEY_PREFIX))
+            Owner::ProposalStore => capture("store")
+                .is_none_or(|store| store == "entities")
+                .then_some(Feature::Graph),
+            Owner::ChatKey => capture("key")
+                .is_none_or(|key| key.starts_with(super::incognito::KEY_PREFIX))
                 .then_some(Feature::Incognito),
         }
     }
@@ -137,8 +139,20 @@ pub(super) async fn guard(
         .extensions()
         .get::<MatchedPath>()
         .and_then(|m| owners.0.get(m.as_str()).copied());
+    let (mut parts, body) = request.into_parts();
+    let captures = RawPathParams::from_request_parts(&mut parts, &())
+        .await
+        .ok();
+    let request = Request::from_parts(parts, body);
+    let capture = |name: &str| {
+        captures
+            .as_ref()?
+            .iter()
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| v.to_string())
+    };
     let refusal = owner
-        .and_then(|o| o.feature(request.uri().path()))
+        .and_then(|o| o.feature(capture))
         .and_then(|f| gate.0.get(&f));
     match refusal {
         None => next.run(request).await,
