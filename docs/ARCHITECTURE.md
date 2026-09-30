@@ -8127,10 +8127,17 @@ in five different ways. The design and its open steps are
   `server_feature` places in a feature, only when that feature's switch is
   on — then builds from the session's settings as before, so a switched-on
   feature whose server is down still registers what it can and the tool list
-  does not move with uptime. A server that belongs to no feature connects as
-  it always has. A feature configured but switched off says so on stderr
-  once per build, as a tool that failed to build does. `mecha serve` refuses
-  without `web`, telling "predates the switch" from `web = false`.
+  does not move with uptime. `switched_on` walks `needs()` as `state` does,
+  so it cannot hand out a tool the readout shows `Blocked`. A server that
+  belongs to no feature connects as it always has. **The gate speaks only
+  when the run named the tool** (`--tool`): every verb that builds a
+  registry passes through it — the children `mecha serve` and Slack spawn
+  per request among them — so a line per build would repeat into the
+  journal forever, which is what `Cli::announces_features` keeps the
+  upgrade notice from doing (review of #445). Every command any surface
+  prints comes from one `enable_command`, which names every switch a
+  feature hangs on. `mecha serve` refuses without `web`, telling
+  "predates the switch" from `web = false`.
 - **A trial keeps what it carries.** `trial_env::config_at` fills a trial's
   unanswered switches so gating changes nothing an existing experiment
   connects: a feature whose server the trial declares or whose server

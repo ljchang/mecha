@@ -51,6 +51,11 @@ fn graph_wrapper(dir: &Path) -> PathBuf {
 }
 
 fn tools(home: &Home, features: &str) -> Vec<String> {
+    tools_with(home, features, &[]).0
+}
+
+/// The registry's tool names, and what the build said on stderr.
+fn tools_with(home: &Home, features: &str, extra: &[&str]) -> (Vec<String>, String) {
     let wrapper = graph_wrapper(&home.0);
     let board = home.0.join("board");
     std::fs::create_dir_all(&board).unwrap();
@@ -79,6 +84,7 @@ MECHA_FIXTURE_DIR = {board:?}
     .unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_mecha"))
         .args(["tools", "--json"])
+        .args(extra)
         .current_dir(home.0.join("work"))
         .env("MECHA_HOME", home.0.join("home"))
         .env("HOME", home.0.join("home"))
@@ -95,11 +101,13 @@ MECHA_FIXTURE_DIR = {board:?}
         String::from_utf8_lossy(&out.stderr)
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("--json is JSON");
-    v.as_array()
+    let names = v
+        .as_array()
         .unwrap()
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_string())
-        .collect()
+        .collect();
+    (names, String::from_utf8_lossy(&out.stderr).into_owned())
 }
 
 #[test]
@@ -142,4 +150,57 @@ fn a_feature_registers_only_when_its_switch_is_on() {
     assert!(!no.iter().any(|t| t == "web_search"), "{no:?}");
     assert!(no.iter().any(|t| t == "image_generate"), "{no:?}");
     assert!(!no.iter().any(|t| t.starts_with("kg_task")), "{no:?}");
+}
+
+/// A gated tool is said only when the run named it: every verb that builds a
+/// registry passes through the gate, including the children `mecha serve`
+/// spawns per request, so a line per build would repeat into the journal
+/// (review of #445).
+#[test]
+fn a_switched_off_tool_is_named_only_when_asked_for() {
+    let home = Home::new("quiet");
+    let (_, quiet) = tools_with(&home, "", &[]);
+    assert!(!quiet.contains("not switched on"), "{quiet}");
+    let (names, said) = tools_with(&home, "", &["--tool", "web_search"]);
+    assert!(!names.iter().any(|t| t == "web_search"));
+    assert!(
+        said.contains("web_search not registered") && said.contains("mecha features enable search"),
+        "{said}"
+    );
+}
+
+/// `mecha serve` refuses without `web`, and the two ways it can be
+/// unanswered read differently — one command from working, or the owner's
+/// choice (review of #445: the refusal was unmeasured).
+#[test]
+fn serve_refuses_without_web_and_says_which_way() {
+    for (features, expect) in [
+        ("", "predates the switch"),
+        ("[features]\nweb = false", "turned off"),
+    ] {
+        let home = Home::new(if features.is_empty() {
+            "serve-absent"
+        } else {
+            "serve-false"
+        });
+        std::fs::write(
+            home.0.join("home/config.toml"),
+            format!("[sandbox]\nkind = \"none\"\n[web]\nowner_login = \"someone\"\n{features}\n"),
+        )
+        .unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_mecha"))
+            .args(["serve", "--port", "0"])
+            .current_dir(home.0.join("work"))
+            .env("MECHA_HOME", home.0.join("home"))
+            .env("HOME", home.0.join("home"))
+            .env_remove("ANTHROPIC_API_KEY")
+            .output()
+            .expect("running mecha serve");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "serve started with {features:?}: {err}"
+        );
+        assert!(err.contains(expect), "{features:?}: {err}");
+    }
 }
