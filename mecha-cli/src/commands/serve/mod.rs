@@ -208,7 +208,8 @@ pub async fn execute(args: Args) -> Result<()> {
     // start (the voice call's other half, `/api/offer`, refuses per request).
     let calls = crate::commands::features::require(mecha_core::feature::Feature::Calls);
     if let (Err(e), port) = (&calls, args.voice_port) {
-        if port != 0 {
+        // Only where it would otherwise have been mounted (review of #452).
+        if port != 0 && state.chat.is_some() {
             eprintln!("note: the voice facade is not mounted — {e:#}");
         }
     }

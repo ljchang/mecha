@@ -139,6 +139,9 @@ pub(crate) fn human(bytes: u64) -> String {
 /// through the run's path jail, the CLI verb takes it from the user's own
 /// shell, and those are different boundaries on purpose (see the CLI verb).
 pub async fn send_file(path: &Path, comment: Option<&str>) -> Result<Sent> {
+    // The driver asks, not only the verb: the TUI's `/send` calls this
+    // directly (review of #452), as `/queues` reached the graph (#451).
+    crate::commands::features::require(mecha_core::feature::Feature::Slack)?;
     let cfg = mecha_core::config::Config::load_global()?;
     let max_bytes = cfg.slack.max_upload_mb.saturating_mul(1024 * 1024);
 
@@ -186,6 +189,31 @@ pub async fn send_file(path: &Path, comment: Option<&str>) -> Result<Sent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The drivers ask the switch themselves, before anything else: the TUI's
+    /// `/send` and `/remote-control` call them without going through
+    /// `mecha slack` (review of #452).
+    #[tokio::test]
+    async fn the_slack_drivers_refuse_when_slack_is_off() {
+        let home = crate::testenv::HomeGuard::new("slack-drivers-off");
+        std::fs::write(home.dir.join("config.toml"), "[features]\nslack = false\n").unwrap();
+        let sent = send_file(&home.dir.join("nothing.png"), None)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{sent:#}").contains("`mecha features enable slack`"),
+            "{sent:#}"
+        );
+        let attached =
+            crate::slack::remote::attach("desk", "session", &home.dir, "model", (false, false), 0)
+                .await
+                .err()
+                .expect("attach refused");
+        assert!(
+            format!("{attached:#}").contains("`mecha features enable slack`"),
+            "{attached:#}"
+        );
+    }
 
     const CAP: u64 = 25 * 1024 * 1024;
 

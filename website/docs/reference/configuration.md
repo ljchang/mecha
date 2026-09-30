@@ -460,8 +460,9 @@ password stay open whatever the switches say. Slack, personas, voice (with
 dictation, voice calls and cloning), incognito, the front door (its queue,
 its polls and its publishing server) and messages follow their switches the
 same way: their web pages answer `feature_off`, and `mecha slack`, `persona`,
-`msg`, `frontdoor`, `polls` and `voice-serve` refuse. What stays open:
-`slack status`, `auth`, `threads` and `unlink`, and `persona list`, `show`
+`msg`, `frontdoor`, `polls` and `voice-serve` refuse, and so do the TUI's
+`/send` and `/remote-control`. What stays open: `slack status`, `auth`,
+`threads`, `remote` (without `--sweep`) and `unlink`, and `persona list`, `show`
 and `group list` — reading what is there, setting Slack up, and deleting a
 binding. Changing an entry is refused, even a `remove` that only moves it
 aside. An
