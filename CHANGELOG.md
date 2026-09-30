@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Make and edit personas on the web.** The Personas tab has a New persona
+  form: name, relationship templates, a library portrait and groups. New
+  kinds of relationship (how someone in it behaves) and new groups can be
+  added from the same form. Each
+  persona has an Edit screen for who they are, what they want, and its
+  settings, saved exactly as you type them, comments included. A settings
+  file that would not load is refused and left as it was, and an edit made
+  elsewhere in the meantime is never overwritten. Lock and unlock from the
+  same screen.
+
+- **Personas: characters you write and talk to, in their own tab.** A new
+  Personas tab on the web page lists the personas you made with `mecha
+  persona`, each with its library portrait. Choose one to start a chat, with
+  an optional goal, or to pick up an earlier chat. Persona chats are kept
+  apart from your assistant. They cannot see your mail, calendar, graph or
+  other chats. Their transcripts live under the persona's own folder, where
+  nothing that learns from your sessions looks. A persona gets only the tools
+  it asked for that are safe for it: web search (fixed destinations only),
+  image generation and viewing, and the image library. A safety layer runs in
+  every persona chat:
+  - a line saying it is an AI;
+  - a crisis check on what you type, which pauses the persona and shows 988
+    and the Crisis Text Line;
+  - the persona's Core handed back to it on a cadence;
+  - usage meters.
+
+  Each can be switched off per persona in its `persona.toml`. The crisis
+  check reads keywords only for now, and the page says so.
+
 - **OCR reads tables whole.** With the layout stage installed
   (`scripts/layout/install.sh`), an OCR page is read region by region: a
   layout model (PP-DocLayoutV3, CPU, sandboxed like the PDF parser) finds
@@ -169,6 +198,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The owner's amendment to `INCOGNITO-DESIGN.md` §6.1 (2026-09-28).
 
 ### Fixed
+
+- **The document cache is private all the way down.** `~/.mecha/documents/`
+  and every directory under it are now created owner-only (0700), and every
+  file in it 0600. Before, only the per-file entry was, so the cache root and each entry's `ocr/`
+  folder were left at the umask default, and another local user could list
+  which PDFs had been read, by hash. An existing cache is tightened on its
+  next write. `mecha document prune` now fails on a cache it cannot read,
+  instead of reporting "removed 0" (#410).
 
 - **Image edits that move someone or change a pose no longer come back
   unchanged.** The cause was the prompt, not chance: the edit model returns

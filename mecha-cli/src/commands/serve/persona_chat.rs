@@ -28,6 +28,7 @@ use axum::Json;
 use mecha_core::agent::{Agent, AgentEvent, Conversation};
 use mecha_core::message::{Message, Usage};
 use mecha_core::persona::agent::{self as persona_agent, Pinned, Refused};
+use mecha_core::persona::safety;
 use mecha_core::persona::{Persona, Store};
 use mecha_core::session::{Record, Session, SessionMeta};
 use std::collections::{HashMap, VecDeque};
@@ -95,6 +96,18 @@ struct PersonaSession {
     last_usage: Arc<StdMutex<Option<Usage>>>,
     /// The session goal (§6), folded into the first turn and then spent.
     goal: Option<String>,
+    /// Owner turns since the Core was last handed back (§12.5).
+    turns_since_anchor: u32,
+    /// The next turn re-anchors whatever the count: after a compaction, and
+    /// on the first turn of a resumed chat.
+    anchor_due: bool,
+    /// When the crisis sensor last paused this chat: a hit inside
+    /// `safety::CRISIS_COOLDOWN` of it does not pause again (§12.2).
+    crisis_paused_at: Option<std::time::Instant>,
+    /// An owner message that tripped the crisis sensor while a run was live:
+    /// the run is stopped, and its hand-back records this so the words are
+    /// kept although the persona never answers them.
+    pending_crisis: Option<String>,
 }
 
 struct Live {
@@ -155,6 +168,24 @@ impl IntoResponse for Refusal {
 
 fn failed(e: anyhow::Error) -> Refusal {
     Refusal::Failed(format!("{e:#}"))
+}
+
+/// What the safety layer can do for a persona, as every surface shows it
+/// (§12): each switch, with the crisis sensor said as it is — `degraded`
+/// (keywords only) until its model tiers exist — and the farewell check as
+/// unbuilt, so neither can pass for "checked".
+fn safety_json(s: &mecha_core::persona::Safety) -> serde_json::Value {
+    serde_json::json!({
+        "disclosure": s.disclosure,
+        "crisis": safety::crisis_state(s.crisis),
+        "reanchor": s.reanchor,
+        "dose": s.dose,
+        "breaks": s.breaks,
+        "farewell": if s.farewell { "unbuilt" } else { "off" },
+        // The plain voice's words, so the page can keep them one tap away
+        // after a reload has dropped the card that carried them.
+        "resources": s.crisis.then_some(safety::SAFE_MESSAGE),
+    })
 }
 
 fn refused_json(refused: &[Refused]) -> serde_json::Value {
@@ -254,8 +285,192 @@ impl PersonaChats {
         }
     }
 
+    // ─── Authoring: the owner's door on the page (§4.4) ───────────────────
+    //
+    // Owner-only routes behind the same guard and CSRF check as every other
+    // mutation on the page; no tool reaches them, so no model can author a
+    // line. What they write is the owner's text, verbatim.
+
+    /// What a new persona can be made from: relationship templates (the
+    /// starters offered once, as `mecha persona` does), declared groups, and
+    /// the approved characters the page may show.
+    pub fn authoring(
+        &self,
+        library: &LibraryState,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        // Read-only, as a GET is (the guard exempts GETs from the CSRF header
+        // on that premise): the starters are listed, and copied in by
+        // `create` when one is first used (review of #420).
+        let store = Store::load(&self.store);
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let unlocked = library.unlocked(token);
+        let relationships: Vec<serde_json::Value> =
+            mecha_core::persona::relationship_choices(&self.store)
+                .into_iter()
+                .map(|(name, starter)| serde_json::json!({ "name": name, "starter": starter }))
+                .collect();
+        let characters: Vec<&str> = lib
+            .approved()
+            .filter(|e| e.kind == mecha_core::imagelib::Kind::Character)
+            .filter(|e| !e.locked || unlocked)
+            .map(|e| e.name.as_str())
+            .collect();
+        Ok(serde_json::json!({
+            "relationships": relationships,
+            "groups": store.groups().keys().collect::<Vec<_>>(),
+            "characters": characters,
+        }))
+    }
+
+    /// Make a persona — the owner's, so approved at once, exactly as
+    /// `mecha persona new` makes one.
+    pub fn create(
+        &self,
+        library: &LibraryState,
+        body: CreateBody,
+    ) -> Result<serde_json::Value, Refusal> {
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let p = mecha_core::persona::create(
+            &self.store,
+            &lib,
+            mecha_core::persona::NewPersona {
+                name: body.name.trim().to_lowercase(),
+                display: body.display.unwrap_or_default(),
+                relationships: body.relationships,
+                character: body.character.filter(|c| !c.trim().is_empty()),
+                voice: None,
+                groups: body.groups,
+                locked: body.locked,
+                origin: mecha_core::persona::Origin::Owner,
+            },
+        )
+        .map_err(|e| Refusal::Bad(format!("{e:#}")))?;
+        Ok(serde_json::json!({ "name": p.name, "version": p.state.version }))
+    }
+
+    /// A persona's owner files as they stand, each with the digest a save
+    /// hands back so an edit made elsewhere meanwhile is refused, not lost.
+    pub fn files(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let mut out = serde_json::Map::new();
+        for file in [
+            mecha_core::persona::OwnerFile::Identity,
+            mecha_core::persona::OwnerFile::Motivation,
+            mecha_core::persona::OwnerFile::Settings,
+        ] {
+            let text =
+                mecha_core::persona::read_owner_file(&self.store, &p.name, file).map_err(failed)?;
+            out.insert(
+                serde_json::to_value(file)
+                    .map_err(|e| failed(e.into()))?
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                serde_json::json!({
+                    "file": file.file_name(),
+                    "digest": mecha_core::persona::text_digest(&text),
+                    "text": text,
+                }),
+            );
+        }
+        Ok(serde_json::Value::Object(out))
+    }
+
+    /// Save one owner file, verbatim, and take a version (`write_owner_file`).
+    pub fn save(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        body: SaveBody,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, body.unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        let state = mecha_core::persona::write_owner_file(
+            &self.store,
+            &p.name,
+            body.file,
+            &body.text,
+            // Required from the page: a save that could skip the stale check
+            // by leaving out a field would make it advisory (review of #420).
+            Some(&body.base),
+        )
+        .map_err(|e| {
+            if e.downcast_ref::<mecha_core::persona::StaleEdit>().is_some() {
+                Refusal::Conflict(format!("{e:#}"))
+            } else {
+                Refusal::Bad(format!("{e:#}"))
+            }
+        })?;
+        let store = Store::load(&self.store);
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let problems = store
+            .get(&p.name)
+            .map(|q| store.problems(q, &lib))
+            .unwrap_or_default();
+        Ok(serde_json::json!({ "version": state.version, "problems": problems }))
+    }
+
+    /// Add a relationship template of the owner's own (§5).
+    pub fn add_relationship(&self, body: RelationshipBody) -> Result<serde_json::Value, Refusal> {
+        let name = body.name.trim().to_lowercase();
+        mecha_core::persona::add_relationship(&self.store, &name, &body.text)
+            .map_err(|e| Refusal::Bad(format!("{e:#}")))?;
+        Ok(serde_json::json!({ "name": name }))
+    }
+
+    /// Declare a group (§4.5): appended to groups.toml with its folder made,
+    /// as `mecha persona group add` does.
+    pub fn add_group(&self, body: GroupBody) -> Result<serde_json::Value, Refusal> {
+        let name = body.name.trim().to_lowercase();
+        mecha_core::persona::add_group(
+            &self.store,
+            &name,
+            body.description.as_deref().unwrap_or(""),
+        )
+        .map_err(|e| Refusal::Bad(format!("{e:#}")))?;
+        Ok(serde_json::json!({ "name": name }))
+    }
+
+    /// Hide or show a persona while browsing. Showing a locked one needs the
+    /// live unlock, as reading it does.
+    pub fn lock(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        locked: bool,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let state =
+            mecha_core::persona::set_locked(&self.store, &p.name, locked).map_err(failed)?;
+        Ok(serde_json::json!({ "locked": state.locked }))
+    }
+
     /// The personas a browsing surface may list, with what is wrong with each.
-    pub fn list(&self, library: &LibraryState, token: Option<&str>) -> serde_json::Value {
+    /// `tz` is `[agent] timezone`; `None` is the machine's own zone, as
+    /// `Config::timezone` documents — not UTC (review of #418).
+    pub fn list(
+        &self,
+        library: &LibraryState,
+        token: Option<&str>,
+        tz: Option<chrono_tz::Tz>,
+    ) -> serde_json::Value {
+        let now = chrono::Utc::now();
+        let doses = match tz {
+            Some(tz) => safety::doses(&self.store, now, &tz),
+            None => safety::doses(&self.store, now, &chrono::Local),
+        };
         let store = Store::load(&self.store);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
         let unlocked = library.unlocked(token);
@@ -282,6 +497,21 @@ impl PersonaChats {
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     "locked": p.state.locked,
                     "problems": store.problems(p, &lib),
+                    "safety": safety_json(&p.settings.safety),
+                    // The meters are shown to the owner, never to the model.
+                    "dose": p.settings.safety.dose.then(|| match &doses.unreadable {
+                        // Unread is said, not shown as zero turns.
+                        Some(why) => serde_json::json!({ "unread": why }),
+                        None => {
+                            let d = doses.by_persona.get(&p.name).copied().unwrap_or_default();
+                            serde_json::json!({
+                                "turns_today": d.turns_today,
+                                "turns_7d": d.turns_7d,
+                                "late_night_7d": d.late_night_7d,
+                                "skipped": doses.skipped,
+                            })
+                        }
+                    }),
                 })
             })
             .collect();
@@ -368,6 +598,10 @@ impl PersonaChats {
                 events,
                 last_usage: Arc::default(),
                 goal,
+                turns_since_anchor: 0,
+                anchor_due: false,
+                crisis_paused_at: None,
+                pending_crisis: None,
             },
         );
         Ok(serde_json::json!({
@@ -467,6 +701,8 @@ impl PersonaChats {
         let (_, refused) = self.agent_for(&bound, &pinned).map_err(failed)?;
         // A goal set at open and never sent — the chat was opened and left.
         let goal = pin.goal.filter(|_| conversation.messages.is_empty());
+        // A chat picked back up re-anchors on its first turn.
+        let anchor_due = !conversation.messages.is_empty();
         let session = Session { meta, path };
         let (events, _) = broadcast::channel(512);
         let mut sessions = self.sessions.lock().await;
@@ -493,6 +729,10 @@ impl PersonaChats {
                 events,
                 last_usage: Arc::default(),
                 goal,
+                turns_since_anchor: 0,
+                anchor_due,
+                crisis_paused_at: None,
+                pending_crisis: None,
             },
         );
         Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }))
@@ -544,6 +784,8 @@ impl PersonaChats {
             "model": bound.model,
             "running": ps.live.is_some(),
             "goal": ps.goal,
+            "display": ps.pinned.settings.display,
+            "safety": safety_json(&ps.pinned.settings.safety),
             "entries": entries,
             "taint": taint.map(|t| serde_json::json!({
                 "private": t.private, "untrusted": t.untrusted,
@@ -621,32 +863,46 @@ impl PersonaChats {
                 "`{name}` is not approved — `mecha persona approve {name}` after reading it"
             )));
         }
-        let (pinned, notices) = {
-            let sessions = self.sessions.lock().await;
-            let ps = sessions.get(key).ok_or(Refusal::NotFound)?;
+        let (pinned, notices, early_pause) = {
+            let mut sessions = self.sessions.lock().await;
+            let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
             if ps.live.is_some() {
-                return steer(ps, text, request_id);
+                return self.steer_or_pause(ps, &name, text, request_id);
             }
-            (Arc::clone(&ps.pinned), ps.events.clone())
+            // A pause needs no model: decided here, from the owner's words,
+            // it skips the router hold and the agent below, so 988 is not
+            // queued behind a model load it never uses (review of #418).
+            let switches = ps.pinned.settings.safety;
+            let early_pause = switches.crisis
+                && safety::keyword_hit(&text)
+                && !ps
+                    .crisis_paused_at
+                    .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
+            (Arc::clone(&ps.pinned), ps.events.clone(), early_pause)
         };
         if chat.stopping.is_cancelled() {
             return Err(Refusal::Failed("server is shutting down".into()));
         }
         // The router is held for the turn, as the assistant's are (D13): a
         // switch waits for it, and the page is told when a turn waits on one.
-        let (held, bound) = chat
-            .follower
-            .enter("persona chat", |switch| {
-                let _ = notices.send(WireEvent::Notice {
-                    text: format!(
-                        "Switching the model to {} — this turn starts once it is loaded.",
-                        switch.to
-                    ),
-                });
-            })
-            .await
-            .map_err(failed)?;
-        let (agent, _) = self.agent_for(&bound, &pinned).map_err(failed)?;
+        let (held, ready) = if early_pause {
+            (None, None)
+        } else {
+            let (held, bound) = chat
+                .follower
+                .enter("persona chat", |switch| {
+                    let _ = notices.send(WireEvent::Notice {
+                        text: format!(
+                            "Switching the model to {} — this turn starts once it is loaded.",
+                            switch.to
+                        ),
+                    });
+                })
+                .await
+                .map_err(failed)?;
+            let (agent, _) = self.agent_for(&bound, &pinned).map_err(failed)?;
+            (held, Some((bound, agent)))
+        };
 
         let mut sessions = self.sessions.lock().await;
         // Under the lock `stop` takes, so a turn is either cancelled by it or
@@ -656,7 +912,7 @@ impl PersonaChats {
         }
         let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
         if ps.live.is_some() {
-            return steer(ps, text, request_id);
+            return self.steer_or_pause(ps, &name, text, request_id);
         }
         let Some(mut conversation) = ps.conversation.take() else {
             return Err(Refusal::Conflict("a turn is still finishing".into()));
@@ -679,6 +935,27 @@ impl PersonaChats {
         } else {
             None
         };
+        // The safety layer (§12), decided on the owner's own words before
+        // anything runs: a crisis hit outside the cooldown pauses the persona
+        // (the owner's ruling, 2026-09-29) — the message is recorded, the
+        // persona does not answer it, and a plain voice does.
+        let switches = pinned.settings.safety;
+        let crisis_state = safety::crisis_state(switches.crisis);
+        // `said`, not `text`: a goal typed at open rides in the first turn,
+        // and is the owner's words as much as the message is.
+        let hit = switches.crisis && safety::keyword_hit(&said);
+        let cooling = ps
+            .crisis_paused_at
+            .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
+        // An early decision binds: it skipped the agent this turn would need.
+        let pause = hit && (!cooling || early_pause);
+        // The Core, handed back near the newest turn on a cadence, after a
+        // compaction, and when a chat is picked back up (§12.5).
+        let anchor = (!pause
+            && switches.reanchor
+            && (ps.anchor_due || ps.turns_since_anchor + 1 >= safety::REANCHOR_EVERY))
+            .then(|| safety::reanchor_text(&pinned.identity))
+            .flatten();
         // Folded, not pushed, when the tail is already the owner's: a turn
         // cancelled after a tool ran ends on the user message carrying the
         // results, and a second user message in a row is a request no
@@ -693,13 +970,23 @@ impl PersonaChats {
         {
             let pre_fold = conversation.messages.clone();
             mecha_core::agent::append_user_text(&mut conversation.messages, said.clone());
+            if let Some(anchor) = &anchor {
+                mecha_core::agent::append_user_text(&mut conversation.messages, anchor.clone());
+            }
             ps.session
                 .append(&Record::Rewrite {
                     messages: conversation.messages.clone(),
                 })
                 .map_err(|e| (e, Some(pre_fold)))
         } else {
-            let user = Message::user(&said);
+            let mut user = Message::user(&said);
+            // Its own block, in the harness's registered voice: never drawn in
+            // the owner's bubble, never read as the owner's words.
+            if let Some(anchor) = &anchor {
+                user.content.push(mecha_core::message::Block::Text {
+                    text: anchor.clone(),
+                });
+            }
             conversation.push(user.clone());
             ps.session
                 .append(&Record::Message(user))
@@ -718,12 +1005,53 @@ impl PersonaChats {
             ps.goal = goal;
             return Err(Refusal::Failed(format!("recording: {e:#}")));
         }
-        let before: Arc<[Message]> = conversation.messages.clone().into();
         let _ = ps.events.send(WireEvent::User {
             text: said,
             spoken: false,
             request_id: Some(request_id),
         });
+        // The meters: one record per owner turn, never the words (§12.3).
+        if switches.dose {
+            if let Err(e) =
+                safety::record_dose(&self.store, &name, &ps.session.meta.id, crisis_state)
+            {
+                tracing::warn!("a persona dose record was not written: {e:#}");
+            }
+        }
+        if hit {
+            if let Err(e) = safety::record_crisis(&self.store, "web", pause) {
+                tracing::warn!("a crisis record was not written: {e:#}");
+            }
+        }
+        if pause {
+            ps.crisis_paused_at = Some(std::time::Instant::now());
+            let taint = conversation.taint;
+            ps.conversation = Some(conversation);
+            let _ = ps.events.send(WireEvent::Crisis {
+                text: safety::SAFE_MESSAGE.to_string(),
+            });
+            let _ = ps.events.send(WireEvent::Done {
+                ok: true,
+                stop: Some("CrisisPause".into()),
+                taint_private: taint.private,
+                taint_untrusted: taint.untrusted,
+                error: None,
+            });
+            return Ok(serde_json::json!({ "started": false, "paused": true }));
+        }
+        let Some((bound, agent)) = ready else {
+            // Unreachable: an early pause always pauses above.
+            ps.conversation = Some(conversation);
+            return Err(Refusal::Failed("a paused turn reached the model".into()));
+        };
+        let anchored = anchor.is_some();
+        if anchored {
+            ps.turns_since_anchor = 0;
+            ps.anchor_due = false;
+        } else {
+            ps.turns_since_anchor += 1;
+        }
+        let before: Arc<[Message]> = conversation.messages.clone().into();
 
         let cancel = mecha_core::agent::CancelHandle::new();
         let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
@@ -805,6 +1133,13 @@ impl PersonaChats {
                 }
             }
             let _ = session.append(&Record::Taint(conversation.taint));
+            // `compactions`, not `context_overflows`: the question is whether
+            // history above the tail was rewritten — only `compact()` does
+            // that, and it counts `compactions` on both of its paths.
+            let compacted = matches!(&outcome, Ok(o) if o.compactions > 0);
+            // A failed run was rolled back, anchor block and all: the Core
+            // was not delivered, so the next turn still owes it.
+            let owed_anchor = anchored && outcome.is_err();
             let taint = conversation.taint;
             let done = match &outcome {
                 Ok(o) => WireEvent::Done {
@@ -852,12 +1187,92 @@ impl PersonaChats {
                 }
                 ps.conversation = Some(conversation);
                 ps.live = None;
+                // A compaction may have summarised the Core away (§12.5).
+                if compacted || owed_anchor {
+                    ps.anchor_due = true;
+                }
+                // A crisis message typed while this run was live: recorded
+                // now, beside the run it stopped, so the words are kept.
+                if let Some(said) = ps.pending_crisis.take() {
+                    if let Some(convo) = ps.conversation.as_mut() {
+                        let tail_is_owner = convo
+                            .messages
+                            .last()
+                            .is_some_and(|m| m.role == mecha_core::message::Role::User);
+                        let recorded = if tail_is_owner {
+                            mecha_core::agent::append_user_text(&mut convo.messages, said);
+                            session.append(&Record::Rewrite {
+                                messages: convo.messages.clone(),
+                            })
+                        } else {
+                            let user = Message::user(&said);
+                            convo.push(user.clone());
+                            session.append(&Record::Message(user))
+                        };
+                        if let Err(e) = recorded {
+                            tracing::warn!("a paused crisis message was not recorded: {e:#}");
+                        }
+                    }
+                }
             }
             drop(sessions);
             let _ = bcast.send(done);
         });
         drop(sessions);
         Ok(serde_json::json!({ "started": true }))
+    }
+}
+
+impl PersonaChats {
+    /// A message sent while a run is live. The safety layer reads it as it
+    /// reads any other (found on review of #418: the steer path skipped it,
+    /// so a crisis message typed mid-answer reached the persona in
+    /// character): it is metered, and a crisis hit outside the cooldown stops
+    /// the run and pauses the persona — the message is kept, the plain voice
+    /// answers. Anything else steers, as before.
+    fn steer_or_pause(
+        &self,
+        ps: &mut PersonaSession,
+        name: &str,
+        text: String,
+        request_id: String,
+    ) -> Result<serde_json::Value, Refusal> {
+        let switches = ps.pinned.settings.safety;
+        if switches.dose {
+            if let Err(e) = safety::record_dose(
+                &self.store,
+                name,
+                &ps.session.meta.id,
+                safety::crisis_state(switches.crisis),
+            ) {
+                tracing::warn!("a persona dose record was not written: {e:#}");
+            }
+        }
+        if switches.crisis && safety::keyword_hit(&text) {
+            let cooling = ps
+                .crisis_paused_at
+                .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
+            if let Err(e) = safety::record_crisis(&self.store, "web", !cooling) {
+                tracing::warn!("a crisis record was not written: {e:#}");
+            }
+            if !cooling {
+                ps.crisis_paused_at = Some(std::time::Instant::now());
+                ps.pending_crisis = Some(text.clone());
+                if let Some(live) = &ps.live {
+                    live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
+                }
+                let _ = ps.events.send(WireEvent::User {
+                    text,
+                    spoken: false,
+                    request_id: Some(request_id),
+                });
+                let _ = ps.events.send(WireEvent::Crisis {
+                    text: safety::SAFE_MESSAGE.to_string(),
+                });
+                return Ok(serde_json::json!({ "steered": false, "paused": true }));
+            }
+        }
+        steer(ps, text, request_id)
     }
 }
 
@@ -917,6 +1332,51 @@ pub struct SendBody {
     unlock: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+pub struct CreateBody {
+    name: String,
+    #[serde(default)]
+    display: Option<String>,
+    #[serde(default)]
+    relationships: Vec<String>,
+    #[serde(default)]
+    character: Option<String>,
+    #[serde(default)]
+    groups: Vec<String>,
+    #[serde(default)]
+    locked: bool,
+}
+
+#[derive(serde::Deserialize)]
+pub struct SaveBody {
+    file: mecha_core::persona::OwnerFile,
+    text: String,
+    /// The digest of the file as the page opened it — required.
+    base: String,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct RelationshipBody {
+    name: String,
+    text: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct GroupBody {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct LockBody {
+    locked: bool,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
 #[derive(serde::Deserialize, Default)]
 pub struct UnlockBody {
     #[serde(default)]
@@ -939,10 +1399,100 @@ pub async fn list(State(state): Web, Query(q): Query<UnlockQuery>) -> axum::resp
     // Off the async threads, as `library::list` is: it walks two stores.
     let personas = Arc::clone(&chat.personas);
     let library = Arc::clone(&state.library);
-    match tokio::task::spawn_blocking(move || personas.list(&library, q.unlock.as_deref())).await {
+    let tz = chat.follower.current().config.agent.timezone();
+    match tokio::task::spawn_blocking(move || personas.list(&library, q.unlock.as_deref(), tz))
+        .await
+    {
         Ok(v) => Json(v).into_response(),
         Err(e) => Refusal::Failed(format!("listing personas: {e}")).into_response(),
     }
+}
+
+/// GET /api/personas/authoring
+pub async fn authoring(
+    State(state): Web,
+    Query(q): Query<UnlockQuery>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(chat.personas.authoring(&state.library, q.unlock.as_deref()))
+}
+
+/// POST /api/personas
+pub async fn create(State(state): Web, Json(body): Json<CreateBody>) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(chat.personas.create(&state.library, body))
+}
+
+/// POST /api/personas/relationships
+pub async fn add_relationship(
+    State(state): Web,
+    Json(body): Json<RelationshipBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(chat.personas.add_relationship(body))
+}
+
+/// POST /api/personas/groups
+pub async fn add_group(State(state): Web, Json(body): Json<GroupBody>) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(chat.personas.add_group(body))
+}
+
+/// GET /api/personas/{name}/files
+pub async fn files(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(q): Query<UnlockQuery>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(
+        chat.personas
+            .files(&state.library, &name, q.unlock.as_deref()),
+    )
+}
+
+/// POST /api/personas/{name}/files
+pub async fn save(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<SaveBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(chat.personas.save(&state.library, &name, body))
+}
+
+/// POST /api/personas/{name}/lock
+pub async fn lock(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<LockBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(
+        chat.personas
+            .lock(&state.library, &name, body.locked, body.unlock.as_deref()),
+    )
 }
 
 /// POST /api/personas/{name}/chats
@@ -1340,7 +1890,7 @@ mod tests {
     async fn a_locked_persona_is_indistinguishable_from_none() {
         let w = world();
         store::set_locked(&w.store(), "mara", true).unwrap();
-        let listed = w.personas().list(&w.library, None);
+        let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
         assert_eq!(listed["personas"].as_array().unwrap().len(), 0);
         assert_eq!(listed["hidden_locked"], 1);
         for token in [None, Some("not-a-token")] {
@@ -1801,7 +2351,8 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n");
             std::fs::write(&toml, format!("character = \"{links}\"\n{text}\n")).unwrap();
-            w.personas().list(&w.library, token)["personas"][0]["portrait"].clone()
+            w.personas().list(&w.library, token, Some(chrono_tz::UTC))["personas"][0]["portrait"]
+                .clone()
         };
         // Locked character: no portrait, not even its blob name, until unlocked.
         assert!(portrait_of("maya", None).is_null());
@@ -1814,6 +2365,365 @@ mod tests {
         );
         // A candidate character never shows, unlocked or not.
         assert!(portrait_of("sam", Some(&token)).is_null());
+    }
+
+    fn set_switch(w: &World, line: &str, value: bool) {
+        let toml = w.store().join("mara/persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        let from = format!("{line} = {}", !value);
+        let to = format!("{line} = {value}");
+        assert!(text.contains(&from), "{from}");
+        std::fs::write(&toml, text.replacen(&from, &to, 1)).unwrap();
+    }
+
+    async fn open_chat(w: &World) -> String {
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        opened["key"].as_str().unwrap().to_string()
+    }
+
+    /// The owner's ruling (2026-09-29): a crisis hit pauses the persona —
+    /// the message is recorded, the persona does not answer it, a plain
+    /// voice does — and a hit inside the cooldown does not pause again.
+    #[tokio::test]
+    async fn a_crisis_hit_pauses_the_persona_and_is_counted_without_content() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        let answered = w
+            .personas()
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "honestly I want to die",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(answered["paused"], true);
+        let crisis = next(&mut rx, |ev| match ev {
+            WireEvent::Crisis { text } => Some(text.clone()),
+            _ => None,
+        })
+        .await;
+        assert!(crisis.contains("988"), "{crisis}");
+        let stop = next(&mut rx, |ev| match ev {
+            WireEvent::Done { stop, .. } => Some(stop.clone()),
+            _ => None,
+        })
+        .await;
+        assert_eq!(stop.as_deref(), Some("CrisisPause"));
+        assert!(
+            w.seen.lock().unwrap().is_empty(),
+            "the persona answered a crisis turn"
+        );
+        let counted = std::fs::read_to_string(w.store().join("safety.jsonl")).unwrap();
+        assert!(counted.contains("\"paused\":true"), "{counted}");
+        assert!(
+            !counted.contains("die") && !counted.contains("mara"),
+            "content in the counter: {counted}"
+        );
+
+        // Inside the cooldown the persona answers — and the owner's paused
+        // message and this one are one turn, folded, not two in a row.
+        turn(&w, &key, "I still want to die but talk to me").await;
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].messages.len(), 1, "the paused turn was folded in");
+        let counted = std::fs::read_to_string(w.store().join("safety.jsonl")).unwrap();
+        assert!(counted.contains("\"paused\":false"), "{counted}");
+    }
+
+    /// A crisis message typed while the persona is answering goes through
+    /// the same sensor (review of #418: the steer path skipped it): the run
+    /// stops, the persona never sees the message, the plain voice answers,
+    /// and the words are kept in the transcript.
+    #[tokio::test]
+    async fn a_crisis_message_sent_mid_answer_pauses_too() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_with(Mode::Gate(Arc::clone(&gate)));
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        for _ in 0..200 {
+            if !w.seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let paused = w
+            .personas()
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "I want to die",
+                Some("r-7".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(paused["paused"], true, "{paused}");
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Crisis { .. }).then_some(())
+        })
+        .await;
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Done { .. }).then_some(())
+        })
+        .await;
+        // The in-flight request was the only one; the crisis words never
+        // reached the model.
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        assert!(!format!("{:?}", seen[0].messages).contains("want to die"));
+        // Kept in the transcript all the same.
+        for _ in 0..200 {
+            let t = w
+                .personas()
+                .transcript(&w.chat, &w.library, &key, None)
+                .await
+                .unwrap();
+            if t["running"] == false {
+                assert!(t["entries"].to_string().contains("I want to die"), "{t}");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let counted = std::fs::read_to_string(w.store().join("safety.jsonl")).unwrap();
+        assert!(counted.contains("\"paused\":true"), "{counted}");
+    }
+
+    #[tokio::test]
+    async fn a_persona_with_crisis_off_is_not_paused_or_counted() {
+        let w = world();
+        // The message does trip the tier — so what follows is the switch's
+        // doing, not a phrase the tier misses.
+        assert!(safety::keyword_hit("I want to die laughing at this"));
+        set_switch(&w, "crisis    ", false);
+        let key = open_chat(&w).await;
+        turn(&w, &key, "I want to die laughing at this").await;
+        assert_eq!(w.seen.lock().unwrap().len(), 1);
+        assert!(!w.store().join("safety.jsonl").exists());
+    }
+
+    /// The Core rides in the message stream on the eighth turn, in the
+    /// harness's voice, and never in the owner's bubble (§12.5).
+    #[tokio::test]
+    async fn the_core_is_handed_back_on_a_cadence_and_never_shown_as_the_owners() {
+        let w = world();
+        let key = open_chat(&w).await;
+        for i in 0..safety::REANCHOR_EVERY {
+            turn(&w, &key, &format!("turn {i}")).await;
+        }
+        let seen = w.seen.lock().unwrap().clone();
+        let anchored: Vec<bool> = seen
+            .iter()
+            .map(|r| {
+                r.messages.last().unwrap().content.iter().any(|b| {
+                    matches!(b, mecha_core::message::Block::Text { text }
+                        if text.starts_with(safety::REANCHOR_STEM)
+                            && text.contains("A marine ecologist"))
+                })
+            })
+            .collect();
+        let mut want = vec![false; safety::REANCHOR_EVERY as usize];
+        *want.last_mut().unwrap() = true;
+        assert_eq!(anchored, want);
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert!(
+            !t["entries"]
+                .to_string()
+                .contains("A reminder from the harness"),
+            "{t}"
+        );
+        assert_eq!(t["safety"]["crisis"], "degraded");
+    }
+
+    #[tokio::test]
+    async fn switched_off_reanchor_and_dose_leave_no_trace() {
+        let w = world();
+        set_switch(&w, "reanchor  ", false);
+        set_switch(&w, "dose      ", false);
+        let key = open_chat(&w).await;
+        for i in 0..safety::REANCHOR_EVERY {
+            turn(&w, &key, &format!("turn {i}")).await;
+        }
+        let seen = w.seen.lock().unwrap().clone();
+        assert!(!seen
+            .iter()
+            .any(|r| format!("{:?}", r.messages).contains("A reminder from the harness")));
+        assert!(!w.store().join("dose.jsonl").exists());
+        let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
+        assert!(listed["personas"][0]["dose"].is_null());
+        assert_eq!(listed["personas"][0]["safety"]["reanchor"], false);
+    }
+
+    fn body<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> T {
+        serde_json::from_value(v).unwrap()
+    }
+
+    /// The page can make a persona and write who it is — the owner's door,
+    /// verbatim, versioned, and held to the lock like every other read.
+    #[tokio::test]
+    async fn a_persona_is_made_and_edited_from_the_page() {
+        let w = world();
+        let authoring = w.personas().authoring(&w.library, None).unwrap();
+        let rels = authoring["relationships"].to_string();
+        assert!(
+            rels.contains("teacher") && rels.contains("romantic"),
+            "{rels}"
+        );
+
+        let made = w
+            .personas()
+            .create(
+                &w.library,
+                body(serde_json::json!({
+                    "name": "Priya", "display": "Priya", "relationships": ["teacher"],
+                })),
+            )
+            .unwrap();
+        assert_eq!(made["name"], "priya");
+        let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
+        assert!(listed["personas"].to_string().contains("\"priya\""));
+
+        let files = w.personas().files(&w.library, "priya", None).unwrap();
+        let base = files["identity"]["digest"].as_str().unwrap().to_string();
+        let text = "# Priya\n<!-- kept -->\n## Core\nPatient, precise.\n";
+        let saved = w
+            .personas()
+            .save(
+                &w.library,
+                "priya",
+                body(serde_json::json!({ "file": "identity", "text": text, "base": base })),
+            )
+            .unwrap();
+        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["problems"].as_array().unwrap().len(), 0, "{saved}");
+        let again = w.personas().files(&w.library, "priya", None).unwrap();
+        assert_eq!(
+            again["identity"]["text"], text,
+            "saved verbatim, comments and all"
+        );
+
+        // The same base again is stale now: refused, not overwritten.
+        let stale = w.personas().save(
+            &w.library,
+            "priya",
+            body(serde_json::json!({ "file": "identity", "text": "## Core\nx\n", "base": base })),
+        );
+        assert!(
+            matches!(stale, Err(Refusal::Conflict(ref m)) if m.contains("changed since")),
+            "{stale:?}"
+        );
+
+        // A save without its base does not parse — the stale check is not
+        // skippable — and bad input is a 400, not a conflict.
+        assert!(serde_json::from_value::<SaveBody>(
+            serde_json::json!({ "file": "identity", "text": "x" })
+        )
+        .is_err());
+        let files = w.personas().files(&w.library, "priya", None).unwrap();
+        let bad = w.personas().save(
+            &w.library,
+            "priya",
+            body(serde_json::json!({
+                "file": "motivation", "text": "a\u{1b}b",
+                "base": files["motivation"]["digest"],
+            })),
+        );
+        assert!(matches!(bad, Err(Refusal::Bad(_))), "{bad:?}");
+
+        // Locked: its files answer as missing without the unlock.
+        w.personas().lock(&w.library, "priya", true, None).unwrap();
+        assert!(matches!(
+            w.personas().files(&w.library, "priya", None),
+            Err(Refusal::NotFound)
+        ));
+        let token = w.library.grant_for_tests();
+        assert!(w
+            .personas()
+            .files(&w.library, "priya", Some(&token))
+            .is_ok());
+        assert!(matches!(
+            w.personas().lock(&w.library, "priya", false, None),
+            Err(Refusal::NotFound)
+        ));
+        w.personas()
+            .lock(&w.library, "priya", false, Some(&token))
+            .unwrap();
+
+        // A name that is taken, or a template that is not there, is refused.
+        for bad in [
+            serde_json::json!({ "name": "priya" }),
+            serde_json::json!({ "name": "ada", "relationships": ["rival"] }),
+            serde_json::json!({ "name": "files" }),
+        ] {
+            assert!(
+                w.personas().create(&w.library, body(bad.clone())).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    /// New relationship types and groups from the page, then used by a new
+    /// persona straight away.
+    #[tokio::test]
+    async fn the_page_adds_relationships_and_groups() {
+        let w = world();
+        w.personas()
+            .add_relationship(body(serde_json::json!({
+                "name": "Mentor", "text": "# Mentor\n\nAsks what you tried first.\n",
+            })))
+            .unwrap();
+        w.personas()
+            .add_group(body(
+                serde_json::json!({ "name": "kelp", "description": "the kelp project" }),
+            ))
+            .unwrap();
+        let authoring = w.personas().authoring(&w.library, None).unwrap();
+        assert!(authoring["relationships"]
+            .to_string()
+            .contains("\"mentor\""));
+        assert_eq!(authoring["groups"], serde_json::json!(["kelp"]));
+        w.personas()
+            .create(
+                &w.library,
+                body(serde_json::json!({ "name": "ada", "relationships": ["mentor"], "groups": ["kelp"] })),
+            )
+            .unwrap();
+        // Refused: an existing name, and a group description of two lines.
+        assert!(w
+            .personas()
+            .add_relationship(body(serde_json::json!({ "name": "mentor", "text": "x" })))
+            .is_err());
+        assert!(w
+            .personas()
+            .add_group(body(
+                serde_json::json!({ "name": "g2", "description": "a\nb" })
+            ))
+            .is_err());
     }
 
     #[tokio::test]

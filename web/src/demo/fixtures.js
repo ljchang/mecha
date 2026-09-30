@@ -1650,9 +1650,9 @@ export const learningReport = {
 
 export const personas = {
   personas: [
-    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, problems: [] },
-    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, problems: [] },
-    { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, problems: ['identity.md\'s `## Core` section is empty'] },
+    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, problems: [], safety: { disclosure: true, crisis: 'degraded', reanchor: true, dose: true, breaks: false, farewell: 'unbuilt' }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
+    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, problems: [], safety: { disclosure: true, crisis: 'degraded', reanchor: true, dose: true, breaks: false, farewell: 'unbuilt' }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
+    { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false, breaks: false, farewell: 'off' }, dose: null },
   ],
   hidden_locked: 1,
   unlocked: false,
@@ -1674,6 +1674,8 @@ export const personaTranscript = {
   model: 'local',
   running: false,
   goal: null,
+  display: 'Mara',
+  safety: { disclosure: true, crisis: 'degraded', reanchor: true, dose: true, breaks: false, farewell: 'unbuilt' },
   entries: [
     { kind: 'user', text: 'I think the kelp survey can skip the winter transects this year.' },
     { kind: 'assistant', text: 'Before I agree — what would we lose? The winter transects are the only ones that catch the die-back before spring recruitment. Skipping them saves two field weeks, but it also means next year\'s comparison starts from a guess.' },
@@ -1688,3 +1690,20 @@ export const personaScript = [
   [260, { type: 'delta', text: 'if the autumn counts come in below last year\'s, we keep the winter transects.' }],
   [120, { type: 'done', ok: true, stop: 'EndTurn', taint_private: false, taint_untrusted: false, error: null }],
 ];
+
+// Authoring: what a new persona is made from, and one persona's own files.
+export const personaAuthoring = {
+  relationships: ['character', 'coach', 'collaborator', 'colleague', 'devils_advocate', 'friend', 'reflective', 'romantic', 'simulated', 'teacher'].map((name) => ({ name, starter: true })),
+  groups: ['kelp'],
+  characters: ['maya', 'john'],
+};
+
+export const personaFiles = {
+  identity: {
+    file: 'identity.md',
+    digest: '0'.repeat(64),
+    text: "# Mara\n\n<!-- Who Mara is, in your words. -->\n\n## Core\nA marine ecologist who distrusts easy answers.\n\n## How she talks\nDry and precise, with a running joke about kelp.\n",
+  },
+  motivation: { file: 'motivation.md', digest: '1'.repeat(64), text: "# What Mara wants\n\nThe kelp model published before the grant renewal.\n" },
+  settings: { file: 'persona.toml', digest: '2'.repeat(64), text: 'display      = "Mara"\nrelationship = "colleague"\ncharacter    = "maya"\ngroups       = ["kelp"]\n\n[tools]\nallow = ["web_search"]\n\n[safety]\ndisclosure = true\ncrisis     = true\n' },
+};

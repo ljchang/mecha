@@ -34,6 +34,7 @@ use crate::imagelib::{self, write_atomic_mode};
 pub use crate::imagelib::{Origin, Status};
 
 pub mod agent;
+pub mod safety;
 
 /// A name — persona, relationship, group or voice: `[a-z0-9][a-z0-9_-]*`.
 pub const MAX_NAME: usize = 64;
@@ -1561,6 +1562,199 @@ pub fn set_locked(dir: &Path, name: &str, locked: bool) -> Result<State> {
     Ok(state)
 }
 
+/// Add a relationship template — the owner's own, beside the starters (§5).
+/// Held to what the loader will accept (a name, the size cap, no control
+/// characters, front matter that parses), and made with an exclusive create,
+/// so an existing template — a starter the owner edited included — is never
+/// overwritten from here.
+pub fn add_relationship(dir: &Path, name: &str, text: &str) -> Result<()> {
+    validate_name(name)?;
+    if text.trim().is_empty() {
+        bail!("a relationship needs text: how someone in it behaves");
+    }
+    if text.len() as u64 > MAX_PROSE_BYTES {
+        bail!(
+            "a relationship template is capped at {} KB",
+            MAX_PROSE_BYTES / 1024
+        );
+    }
+    if let Some(c) = forbidden_control(text) {
+        bail!(
+            "the template would hold a control character (U+{:04X}); only newlines and tabs are allowed",
+            c as u32
+        );
+    }
+    front_matter(text).context("reading the template")?;
+    ensure_layout(dir)?;
+    if !write_new(&dir.join("relationships").join(format!("{name}.md")), text)? {
+        bail!("a relationship named `{name}` already exists");
+    }
+    Ok(())
+}
+
+/// One of the files of a persona the owner writes — what a surface other
+/// than `$EDITOR` (the web page) may edit, and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OwnerFile {
+    Settings,
+    Identity,
+    Motivation,
+}
+
+impl OwnerFile {
+    pub fn file_name(self) -> &'static str {
+        match self {
+            OwnerFile::Settings => "persona.toml",
+            OwnerFile::Identity => "identity.md",
+            OwnerFile::Motivation => "motivation.md",
+        }
+    }
+}
+
+/// A save made against a file that changed since it was opened — an edit
+/// made elsewhere. Typed, so a surface can tell it from bad input (a 409, not
+/// a 400).
+#[derive(Debug)]
+pub struct StaleEdit(pub OwnerFile);
+
+impl std::fmt::Display for StaleEdit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} changed since it was opened (an edit made elsewhere); open it again",
+            self.0.file_name()
+        )
+    }
+}
+
+impl std::error::Error for StaleEdit {}
+
+/// The relationship templates a new persona can name, read without writing:
+/// the owner's templates on disk, and each shipped starter not yet offered,
+/// which `create` copies in on first use. A starter the owner deleted stays
+/// deleted — it is in the offered ledger — so it is not listed again.
+pub fn relationship_choices(dir: &Path) -> Vec<(String, bool)> {
+    let store = Store::load(dir);
+    let offered: BTreeSet<String> = std::fs::read_to_string(dir.join("relationships").join(SEEDED))
+        .map(|s| {
+            s.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out: BTreeMap<String, bool> = store
+        .relationships()
+        .values()
+        .map(|r| (r.name.clone(), r.starter))
+        .collect();
+    for (name, _) in STARTERS {
+        if !offered.contains(name) {
+            out.entry(name.to_string()).or_insert(true);
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// A text's digest, as a page holds it to say which version of a file it
+/// opened.
+pub fn text_digest(text: &str) -> String {
+    sha2::Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// A persona's owner file as it stands (a missing motivation is empty).
+pub fn read_owner_file(dir: &Path, name: &str, file: OwnerFile) -> Result<String> {
+    validate_persona_name(name)?;
+    let path = dir.join(name).join(file.file_name());
+    if !dir.join(name).join("persona.toml").is_file() {
+        bail!("no persona named `{name}`");
+    }
+    if file == OwnerFile::Motivation && !path.exists() {
+        return Ok(String::new());
+    }
+    read_prose(&path)
+}
+
+/// Save the owner's text for one file **verbatim** — the text the owner
+/// wrote, comments and all, never a re-serialisation, so an edit from the
+/// page keeps the rule that code never rewrites an owner file (§4.4).
+///
+/// Refused, with the file left as it was: text over the size cap or holding
+/// a control character; a `base` that is not the digest of the file as it
+/// stands (an edit made elsewhere since the page opened it — neither side
+/// silently overwrites the other); and a save after which the persona would
+/// not load or could not be versioned (a misspelt key, a relationship that
+/// is not there). Otherwise a version is taken, and new chats use it.
+pub fn write_owner_file(
+    dir: &Path,
+    name: &str,
+    file: OwnerFile,
+    text: &str,
+    base: Option<&str>,
+) -> Result<State> {
+    validate_persona_name(name)?;
+    let pdir = dir.join(name);
+    if !pdir.join("persona.toml").is_file() {
+        bail!("no persona named `{name}`");
+    }
+    if text.len() as u64 > MAX_PROSE_BYTES {
+        bail!(
+            "{} is capped at {} KB",
+            file.file_name(),
+            MAX_PROSE_BYTES / 1024
+        );
+    }
+    if let Some(c) = forbidden_control(text) {
+        bail!(
+            "{} would hold a control character (U+{:04X}); only newlines and tabs are allowed",
+            file.file_name(),
+            c as u32
+        );
+    }
+    let path = pdir.join(file.file_name());
+    let old = if path.exists() {
+        Some(read_prose(&path)?)
+    } else {
+        None
+    };
+    if let Some(base) = base {
+        if text_digest(old.as_deref().unwrap_or("")) != base {
+            return Err(StaleEdit(file).into());
+        }
+    }
+    write_private(&path, text.as_bytes())?;
+    let restore = |why: anyhow::Error| -> anyhow::Error {
+        let put_back = match &old {
+            Some(old) => write_private(&path, old.as_bytes()),
+            None => std::fs::remove_file(&path).map_err(Into::into),
+        };
+        match put_back {
+            Ok(()) => why,
+            Err(e) => why.context(format!(
+                "and the previous {} could not be put back: {e:#}",
+                file.file_name()
+            )),
+        }
+    };
+    // The same door every reader uses, so what is saved is what loads.
+    let store = Store::load(dir);
+    if store.get(name).is_none() {
+        let why = store
+            .errors()
+            .iter()
+            .find(|e| e.path == pdir.join("persona.toml"))
+            .map(|e| e.why.clone())
+            .unwrap_or_else(|| "it did not load".into());
+        return Err(restore(anyhow!("not saved: {why}")));
+    }
+    snapshot(dir, name).map_err(|e| restore(e.context("not saved")))
+}
+
 /// Remove a persona — its whole folder, chats and memory included, moved
 /// aside under `removed/`, not deleted.
 pub fn remove(dir: &Path, name: &str) -> Result<PathBuf> {
@@ -2268,6 +2462,106 @@ mod tests {
         std::fs::write(dir.join("voices/mara/profile.toml"), "").unwrap();
         let e = approve(&dir, "mara").unwrap_err();
         assert_eq!(format!("{e}"), "no persona named `mara`");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The page's save: verbatim, versioned, and refused — with the file
+    /// left as it was — when stale, unloadable or unversionable.
+    #[test]
+    fn an_owner_file_is_saved_verbatim_or_not_at_all() {
+        let dir = scratch();
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        let before = read_owner_file(&dir, "mara", OwnerFile::Identity).unwrap();
+        let base = text_digest(&before);
+        let text = "# Mara\n<!-- a note the page must keep -->\n## Core\nDry.\n";
+        let state = write_owner_file(&dir, "mara", OwnerFile::Identity, text, Some(&base)).unwrap();
+        assert_eq!(state.version, 2);
+        assert_eq!(
+            read_owner_file(&dir, "mara", OwnerFile::Identity).unwrap(),
+            text
+        );
+
+        // Stale: opened before that save.
+        let e = write_owner_file(
+            &dir,
+            "mara",
+            OwnerFile::Identity,
+            "## Core\nx\n",
+            Some(&base),
+        )
+        .unwrap_err();
+        assert!(format!("{e}").contains("changed since"), "{e}");
+
+        // Unloadable settings: refused by name, and the file is as it was.
+        let settings = read_owner_file(&dir, "mara", OwnerFile::Settings).unwrap();
+        let bad = settings.replace("crisis     = true", "crsis = true");
+        let e = write_owner_file(&dir, "mara", OwnerFile::Settings, &bad, None).unwrap_err();
+        assert!(format!("{e:#}").contains("crsis"), "{e:#}");
+        assert_eq!(
+            read_owner_file(&dir, "mara", OwnerFile::Settings).unwrap(),
+            settings
+        );
+
+        // Loadable but unversionable (a template that is not there): same.
+        let missing = settings.replace(
+            "# relationship = \"colleague\"",
+            "relationship = \"rival\"\n# was",
+        );
+        assert!(write_owner_file(&dir, "mara", OwnerFile::Settings, &missing, None).is_err());
+        assert_eq!(
+            read_owner_file(&dir, "mara", OwnerFile::Settings).unwrap(),
+            settings
+        );
+
+        // Control characters never reach the file.
+        assert!(write_owner_file(&dir, "mara", OwnerFile::Motivation, "a\u{1b}[2J", None).is_err());
+        assert!(read_owner_file(&dir, "nobody", OwnerFile::Identity).is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_new_relationship_is_added_and_never_overwrites() {
+        let dir = scratch();
+        add_relationship(&dir, "mentor", "# Mentor\n\nAsks what you tried first.\n").unwrap();
+        let store = Store::load(&dir);
+        assert!(!store.relationships()["mentor"].starter);
+        // A starter the owner edited, and the one just made, both refuse.
+        assert!(add_relationship(&dir, "friend", "# Mine").is_err());
+        assert!(add_relationship(&dir, "mentor", "# Again").is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("relationships/mentor.md")).unwrap(),
+            "# Mentor\n\nAsks what you tried first.\n"
+        );
+        for (name, text) in [
+            ("Bad Name", "x"),
+            ("files-ok", ""),
+            ("ctl", "a\u{1b}b"),
+            ("fm", "+++\ntool = []\n+++\n# T"),
+        ] {
+            assert!(add_relationship(&dir, name, text).is_err(), "{name}");
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Listing what a persona can name writes nothing, and a deleted starter
+    /// is not offered again.
+    #[test]
+    fn relationship_choices_are_read_without_writing() {
+        let dir = scratch();
+        let fresh = relationship_choices(&dir);
+        assert_eq!(fresh.len(), STARTERS.len());
+        assert!(
+            !dir.join("relationships").exists(),
+            "listing wrote the store"
+        );
+        seed_starters(&dir).unwrap();
+        std::fs::remove_file(dir.join("relationships/coach.md")).unwrap();
+        add_relationship(&dir, "mentor", "# Mentor\n").unwrap();
+        let names: Vec<String> = relationship_choices(&dir)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(!names.contains(&"coach".to_string()) && names.contains(&"mentor".to_string()));
         std::fs::remove_dir_all(dir).ok();
     }
 
