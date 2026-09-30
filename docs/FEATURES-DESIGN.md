@@ -335,8 +335,18 @@ discovered later (found on review of #427):
 and one function that is the only place "is it on?" is answered:
 
 ```rust
-pub fn state(cfg: &Config, facts: &Facts, f: Feature) -> FeatureState
+pub fn state(facts: &feature::Facts, f: Feature) -> State
 ```
+
+**No `Config` parameter.** `feature::Facts` — its own type, not
+`onboarding::Facts`, which the CLI fills field by field for `setup` — is
+built by `Facts::read(home, &global)` and carries the global configuration
+itself, so a caller holding a project-layered `Config` has nowhere to hand
+it. As built in step 0 (#428). It matters for the `[[mcp]]`, `[[search]]`,
+`[tools]` and `default_provider` a project layer keeps; `[features]` itself
+is stripped from project layers, so for the bools a layered value would
+agree anyway. `setup` builds both `Facts` until step 4 has it iterate the
+registry.
 
 `FeatureState` keeps apart the things a bool would merge:
 
@@ -345,7 +355,7 @@ pub fn state(cfg: &Config, facts: &Facts, f: Feature) -> FeatureState
 | `Off` | not configured (or declined) | hidden | 404 `feature_off` | one sentence + the setup command | not registered |
 | `Blocked(Feature)` | configured, but something it needs is off | hidden, and Settings says what it waits on | 404 `feature_off`, naming the dependency | names the dependency | not registered |
 | `Unready(reason)` | enabled, but config or disk says it cannot work yet — settings missing or refused, no account authorised | **shown**, with a banner | 503 with the reason | the reason | whatever registration's own rule builds — nothing from an absent `[image]`; a mail server with no account still connects and says so per call |
-| `Down(reason)` | configured, and a probe found it not answering — **`--probe` only** | **shown**, with a banner | 503 with the reason | the reason | registered |
+| `Down(reason)` | configured, and a probe found it not answering — **`mecha features --probe` only** | — (never produced: the web reads `On`, and the handler's own error is what the owner sees) | — (a route cannot probe per request) | the reason | registered |
 | `On` | enabled and usable as far as config and disk can say | shown | normal | normal | registered |
 | `Unknown(reason)` | could not be read | **shown**, with a banner | normal | warns | registered |
 
@@ -415,6 +425,42 @@ Three rules carry the design:
    on configuration, not liveness — read in the step-0 audit, not in §1; the change is that they share one predicate with
    the other five readers, so they cannot drift apart.
 
+**When a switch takes effect.** A bool written by `mecha features enable`
+is read at different times by different readers, and the design says which,
+because "the config says yes and the running thing does not know it" is the
+one state this design otherwise refuses to leave unsaid (found on review of
+#427, pass 8):
+
+- **`/api/features` re-reads the global file on every request.** It is config
+  plus disk — cheap, no socket — so the nav, Home and Settings follow a flip
+  on the next page load for everything whose gate is a page or a route.
+- **Tools and `[[mcp]]` connections follow the next session**, never a live
+  flip: the tool list is the front of the cached prefix. So is `mecha serve`
+  itself for its routes' state, which it loads once. `mecha features enable
+  graph` says *"enabled — its tools arrive in the next session; restart
+  `mecha serve` for the web"*, and `/api/features` compares the file with
+  what the serving process loaded and marks a difference **pending restart**,
+  a row of its own rather than `On`. The same holds for `mecha slack
+  connect` and the units that load once (ruminate, front door).
+
+**The upgrade is announced.** An install that predates `[features]` has
+every bool absent and so every feature `Off`, and step 1 also moves tool
+registration to the registry — so without a word, one `cargo install` would
+stop mail, docs and the graph connecting and have `mecha serve` refuse to
+start. F6 has `mecha setup` offer the bools; nothing would tell anyone to run
+it. So, in step 1, the `tool_availability_notices` shape Hermes uses:
+
+- every start prints one line per feature whose **settings are present and
+  bool absent** — *"`mail`: configured but not enabled — `mecha features
+  enable mail` (or `mecha setup`)"* — on stderr, like the routed-outbox-name
+  warning that fires on every start;
+- `mecha features` shows that pair as its own row (settings present, switch
+  absent), not a bare `off`, as it does an off front door with requests
+  waiting;
+- `mecha serve` refusing for `web` tells *"this install predates the
+  switch — `mecha features enable web`"* apart from *"the web app is turned
+  off"*: the first is a one-command fix, the second a choice.
+
 `mecha doctor` stays what it is — no network, no model, the stores' distress.
 A feature that is `Down` is `mecha features --probe`'s to report, not the
 doctor's.
@@ -429,7 +475,11 @@ memory from a page load. So:
 
 - `/api/features` reads **configuration and the disk only** — config tables,
   binaries on PATH, credential stores, installed unit files. It never opens a
-  socket. Its states are `Off`, `Blocked`, `Unready`, `On` and `Unknown` —
+  socket, so a server that is down reads `On` there and the web app learns of
+  it from the failing request, not from a banner — the price of never waking
+  anything from a page load (found on review of #427, pass 8). A later
+  `?probe=1` could use exactly the load-free probes named below and nothing
+  else; it is not in this design. Its states are `Off`, `Blocked`, `Unready`, `On` and `Unknown` —
   every state but `Down`, which only a probe can produce.
 - `mecha features --probe` and `mecha setup` may probe, using only calls that
   load nothing: `served_props` / `GET /models` against the router, the
@@ -661,9 +711,9 @@ Three things make it deliberate rather than accidental:
   is as much a condition as which levers were off, so the experiment manifest
   and the session record carry the feature set beside `levers_off`, from the
   same registry — otherwise two arms that differ only in whether `[[search]]`
-  was present could otherwise be told apart only by `condition_hash`
-  (which folds the environment's config bytes, so it says *that* they
-  differ, not *what*). **Recorded with `levers_off`'s wire rule,
+  was present differ today only in effects — `RunConfig::tools`' tool names,
+  `condition_hash` — and `harness.rs`'s rule is to record *the switch, not
+  the effect*: `web`, `personas` and `voice` change no tool names at all. **Recorded with `levers_off`'s wire rule,
   not just beside it.** A feature set is a closed enum on an append-only
   store, so its loader is all-or-nothing like `session::lenient_levers`: one
   name a later build does not know collapses the whole set to `None`, because
@@ -785,7 +835,13 @@ Each step is a PR, and each leaves every surface working.
    writes it, refusing an enable whose dependency is off with the chained
    command; `mecha config init` writes the table in full; `[messages]
    enabled` read as an alias, and `Lever::Messages` reading the registry
-   (§5). F6's offer lands in `mecha setup` here, and
+   (§5). **`mecha features enable|disable` needs its own writer**: the only
+   config writer today, `setup::apply`, bails when the table header is
+   absent — the state every upgrading install is in — and a writer that
+   rewrote the file would drop a newer build's unknown key, the hazard this
+   step accepts warn-and-ignore to avoid. So it edits in place, creating
+   `[features]` when missing and touching only the one line. The upgrade
+   notices (§4.2) land here too. F6's offer lands in `mecha setup` here, and
    this machine's table is written in the same deploy. **An unknown key in
    `[features]` warns and is ignored, unlike every other config table**:
    `deny_unknown_fields` everywhere else makes a typo a startup failure, but
@@ -801,8 +857,9 @@ Each step is a PR, and each leaves every surface working.
    not connected — since that is the step that could otherwise make a tool
    disappear unannounced.
 2. **`/api/features` and the web app.** Nav, Home cards, the voice button and
-   Dictate take their answer from it; Settings → Features. No route changes
-   yet, so a stale page still works.
+   Dictate take their answer from it; Settings → Features. The endpoint
+   re-reads the global file per request and marks *pending restart* (§4.2).
+   No route changes yet, so a stale page still works.
 3. **One guard for routes and CLI verbs.** Every route group and verb names
    its owner; the five failure shapes become `feature_off` / 503. The
    side-effecting reads stop. The layer goes inside `owner_guard`, and the
