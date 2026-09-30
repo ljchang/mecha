@@ -1701,7 +1701,30 @@ export const personaFiles = {
     file: 'identity.md',
     digest: '0'.repeat(64),
     text: "# Mara\n\n<!-- Who Mara is, in your words. -->\n\n## Core\nA marine ecologist who distrusts easy answers.\n\n## How she talks\nDry and precise, with a running joke about kelp.\n",
+    // The shapes `mdform::split` and `persona::settings_form` serve.
+    form: {
+      doc: {
+        title: 'Mara',
+        note: 'Who Mara is, in your words.',
+        body: '',
+        sections: [
+          { heading: 'Core', note: '', body: 'A marine ecologist who distrusts easy answers.' },
+          { heading: 'How she talks', note: '', body: 'Dry and precise, with a running joke about kelp.' },
+        ],
+      },
+      fixed: ['Core'],
+    },
   },
-  motivation: { file: 'motivation.md', digest: '1'.repeat(64), text: "# What Mara wants\n\nThe kelp model published before the grant renewal.\n" },
-  settings: { file: 'persona.toml', digest: '2'.repeat(64), text: 'display      = "Mara"\nrelationship = "colleague"\ncharacter    = "maya"\ngroups       = ["kelp"]\n\n[tools]\nallow = ["web_search"]\n\n[safety]\ndisclosure = true\ncrisis     = true\n' },
+  motivation: {
+    file: 'motivation.md',
+    digest: '1'.repeat(64),
+    text: "# What Mara wants\n\nThe kelp model published before the grant renewal.\n",
+    form: { doc: { title: 'What Mara wants', note: '', body: 'The kelp model published before the grant renewal.', sections: [] }, fixed: [] },
+  },
+  settings: { file: 'persona.toml', digest: '2'.repeat(64), text: 'display      = "Mara"\nrelationship = "colleague"\ncharacter    = "maya"\ngroups       = ["kelp"]\n\n[tools]\nallow = ["web_search"]\n\n[safety]\ndisclosure = true\ncrisis     = true\n',
+    form: {
+      form: {"sections": [{"title": "Who they are", "fields": [{"path": "display", "label": "Name", "help": "How the persona is shown and addressed.", "kind": "text", "max": 80, "optional": true, "placeholder": "the folder name"}, {"path": "relationship", "label": "Relationship", "help": "Templates that shape how it relates to you.", "kind": "chips", "options": [{"value": "character", "label": "character"}, {"value": "coach", "label": "coach"}, {"value": "collaborator", "label": "collaborator"}, {"value": "colleague", "label": "colleague"}, {"value": "devils_advocate", "label": "devils_advocate"}, {"value": "friend", "label": "friend"}, {"value": "reflective", "label": "reflective"}, {"value": "romantic", "label": "romantic"}, {"value": "simulated", "label": "simulated"}, {"value": "teacher", "label": "teacher"}], "free": false}, {"path": "groups", "label": "Groups", "help": "Groups share what you tell them with every member.", "kind": "chips", "options": [{"value": "kelp", "label": "kelp"}], "free": false}, {"path": "character", "label": "Portrait", "kind": "choice", "options": [{"value": "maya", "label": "maya"}, {"value": "john", "label": "john"}], "none": "No portrait"}]}, {"title": "Model and tools", "fields": [{"path": "model", "label": "Model", "help": "Not built yet: saved now; chats use the model picked in the chat.", "unbuilt": true, "kind": "text", "max": 128, "optional": true, "placeholder": "the model the chip picks"}, {"path": "tools.allow", "label": "Tools", "help": "A tool a persona may never have, or one that could send somewhere the model names, is refused when a chat starts.", "kind": "chips", "options": [], "free": true}, {"path": "files.answers", "label": "Answers from", "kind": "choice", "options": [{"value": "open", "label": "Files and tools"}, {"value": "files", "label": "Files only", "help": "Tools that read the web are withheld."}]}]}, {"title": "Safety", "help": "On by default. Turning one off affects this persona only.", "fields": [{"path": "safety.disclosure", "label": "Disclosure", "help": "Every chat opens by saying this is an AI character you wrote.", "kind": "toggle"}, {"path": "safety.crisis", "label": "Crisis check", "help": "A message that suggests risk of self-harm pauses the persona and shows crisis resources.", "kind": "toggle"}, {"path": "safety.reanchor", "label": "Re-anchor", "help": "Every few turns, and after a gap, it is reminded who it is.", "kind": "toggle"}, {"path": "safety.dose", "label": "Time spent", "help": "Counts turns per day and late at night, shown on the persona.", "kind": "toggle"}, {"path": "safety.breaks", "label": "Break reminders", "help": "Not built yet: saved now, used once it is.", "unbuilt": true, "kind": "toggle"}, {"path": "safety.farewell", "label": "Farewell check", "help": "Not built yet: saved now, used once it is.", "unbuilt": true, "kind": "toggle"}]}, {"title": "Memory", "help": "Not built yet: saved now, used once it is.", "unbuilt": true, "fields": [{"path": "memory.episodic", "label": "Past conversations", "kind": "toggle"}, {"path": "memory.semantic", "label": "Facts it learns", "kind": "toggle"}, {"path": "memory.user_facts", "label": "Facts about you", "kind": "choice", "options": [{"value": "shared", "label": "Shared"}, {"value": "own", "label": "Its own"}, {"value": "off", "label": "None"}]}, {"path": "memory.about_me", "label": "About-me notes", "kind": "toggle"}, {"path": "memory.self_update", "label": "Self-update", "help": "Sections of its identity evolve; never Core or a fixed one.", "kind": "toggle"}, {"path": "memory.fixed", "label": "Fixed sections", "kind": "chips", "options": [], "free": true}]}]},
+      values: {"display": "Mara", "relationship": ["colleague"], "groups": ["kelp"], "character": "maya", "model": null, "tools.allow": ["web_search"], "files.answers": "open", "safety.disclosure": true, "safety.crisis": true, "safety.reanchor": true, "safety.dose": true, "safety.breaks": false, "safety.farewell": true, "memory.episodic": true, "memory.semantic": true, "memory.user_facts": "shared", "memory.about_me": true, "memory.self_update": false, "memory.fixed": []},
+    },
+  },
 };
