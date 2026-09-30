@@ -179,11 +179,18 @@ The parts that bite hardest:
 
 - **`-c` is divided across slots**, so `context_window` must equal `-c / -np`,
   not `-c`. Confirm from the startup line (`n_ctx_slot = …`), not by arithmetic.
-- **Two servers, one model each at a time** — :8080 chat (a router since
-  2026-09-27: several presets, one resident), :8081 embeddings. A process
-  holds one model at a time, so pointing both at one port sends embedding
-  requests to the chat model — and on the router, a swap would evict the
-  embedder.
+- **Three servers, one model each at a time** — :8080 chat (a router since
+  2026-09-27: several presets, one resident), :8081 embeddings, :8085
+  document OCR. A process holds one model at a time, so pointing two roles at
+  one port sends embedding or OCR requests to the chat model — and on the
+  router, a swap would evict whichever was resident there. **:8081 and :8085
+  are on demand since 2026-09-29**: a systemd socket holds each port from
+  boot, the first request starts the model (2.96 s to healthy for OCR, 4.1 s
+  to a first embedding, both measured that day), and the model stops after
+  ten idle minutes (`MECHA_LLAMA_IDLE`, on the `*-proxy.service` unit). A
+  slow first answer is that load, and an "is it up?" probe must outwait the
+  start its own request triggers — mecha-graph's 1.5 s probe read every cold
+  embedder as absent until #26 (`Embedder::health_within`).
 - **`max_tokens` must sit comfortably above `--reasoning-budget`**, or the
   thinking block eats the allowance and the reply is HTTP 200 with an empty
   `content`. Any client here refuses that by name rather than treating it as an
