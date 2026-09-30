@@ -4,7 +4,9 @@
 > `mecha features`) is #428, which changes no surface's behaviour. The owner
 > ruled F1–F4 and F6 the same day (§7): the switch is a `[features]` table of
 > bools — not a table's presence, which this doc first recommended — and §5
-> is written to that ruling. F5 is open and blocks only step 6.
+> is written to that ruling. F5 is open and blocks only step 6. Step 8 (how
+> to add a feature, in `ARCHITECTURE.md` and `CLAUDE.md`) is the owner's
+> addition.
 
 **2026-09-30.** One question: *how does a new user install only the parts of
 mecha they want — and how do `mecha setup`, the web app, the CLI, the API and
@@ -333,14 +335,21 @@ pub fn state(cfg: &Config, facts: &Facts, f: Feature) -> FeatureState
 |---|---|---|---|---|---|
 | `Off` | not configured (or declined) | hidden | 404 `feature_off` | one sentence + the setup command | not registered |
 | `Blocked(Feature)` | configured, but something it needs is off | hidden, and Settings says what it waits on | 404 `feature_off`, naming the dependency | names the dependency | not registered |
-| `Unready(reason)` | configured, not answering | **shown**, with a banner | 503 with the reason | the reason | registered |
-| `On` | configured and, where probed, answering | shown | normal | normal | registered |
+| `Unready(reason)` | enabled, but config or disk says it cannot work yet — settings missing or refused, no account authorised | **shown**, with a banner | 503 with the reason | the reason | whatever registration's own rule builds — nothing from an absent `[image]`; a mail server with no account still connects and says so per call |
+| `Down(reason)` | configured, and a probe found it not answering — **`--probe` only** | **shown**, with a banner | 503 with the reason | the reason | registered |
+| `On` | enabled and usable as far as config and disk can say | shown | normal | normal | registered |
 | `Unknown(reason)` | could not be read | **shown**, with a banner | normal | warns | registered |
 
 Three rules carry the design:
 
-- **Tools follow configuration, never liveness.** `Unready` still registers
-  its tools. The tool list is the front of the cached prefix and is built
+- **Tools follow configuration, never liveness.** `Down` still registers
+  its tools. (`Unready` is a configuration fact, so it follows the same rule
+  from the other side: registration builds what the settings allow, and an
+  absent settings table allows nothing — the existing rule that "a tool that
+  always errors is worse than no tool at all".) Two states rather than one,
+  because the first is readable from config and the second needs a probe,
+  and a reader that must never probe (§4.3) has to be able to tell them
+  apart (found on review of #427). The tool list is the front of the cached prefix and is built
   once per session; a server that is down for a minute must not change the
   bytes of every request after it. A tool whose server is down already
   returns `is_error` and the model routes around it.
@@ -398,7 +407,7 @@ Three rules carry the design:
    the other five readers, so they cannot drift apart.
 
 `mecha doctor` stays what it is — no network, no model, the stores' distress.
-A feature that is `Unready` is `mecha features --probe`'s to report, not the
+A feature that is `Down` is `mecha features --probe`'s to report, not the
 doctor's.
 
 ### 4.3 Probing without waking anything
@@ -411,7 +420,8 @@ memory from a page load. So:
 
 - `/api/features` reads **configuration and the disk only** — config tables,
   binaries on PATH, credential stores, installed unit files. It never opens a
-  socket. Its states are `Off`, `Blocked`, `On (not probed)` and `Unknown`.
+  socket. Its states are `Off`, `Blocked`, `Unready`, `On` and `Unknown` —
+  every state but `Down`, which only a probe can produce.
 - `mecha features --probe` and `mecha setup` may probe, using only calls that
   load nothing: `served_props` / `GET /models` against the router, the
   systemd unit state for a socket-activated server, ComfyUI's
@@ -494,7 +504,8 @@ parent's settings, where they already live.
 | ↳ `calls` | Spoken conversation | `[voice] offer_target` | `voice` | voice-call button |
 | ↳ `cloning` | New voices | `[voice] voices_dir` | `voice` | Settings → Voice → clone |
 | `incognito` | A chat that leaves no trace | a local provider without fallbacks (`provider_is_local`) | `web` | Chat's incognito toggle |
-| `frontdoor` | Inbound requests, publishing, polls | a global `[[mcp]]` entry running `factory-publish` | `mail` | Review → Front door, Home card, `frontdoor`, `polls` |
+| `frontdoor` | Inbound requests and polls | `factory-publish` on PATH — its drain fills `~/.mecha/requests` | — | Review → Front door, Home card, `frontdoor`, `polls` |
+| ↳ `publishing` | The model's publishing tools | a global `[[mcp]]` entry running `factory-publish` | `frontdoor` | the `factory__*` tools |
 | `messages` | Messages between sessions | — (`[messages]` keeps its tunables) | — | `message_send`, `mecha msg` |
 
 Notes on the rows that change:
@@ -505,7 +516,7 @@ Notes on the rows that change:
   the Parakeet and worker URLs become config for the first time — which a
   new user needs anyway, since theirs will not be this machine's.
   `voices_dir` moves from `[web]` with a one-release alias.
-- **The four server rows (`mail`, `docs`, `graph`, `frontdoor`) read the
+- **The four server rows (`mail`, `docs`, `graph`, `publishing`) read the
   entry, not the tools.** Which tools a server exposes is known only after
   `connect` spawns it and `tools/list` answers, and the registered names
   then depend on `prefix_tools` — so "exposes `mail_*`" is not a fact
@@ -514,14 +525,32 @@ Notes on the rows that change:
   an enabled `[[mcp]]` entry whose `command` runs the known program; whether
   the tools answered is `--probe`'s question. With `mail = false`, that
   entry is not connected at all — the bool gates the server, not just the
-  tab. (Step 0 found the front door is an `[[mcp]]` server here — `factory`
-  runs `factory-publish` — which replaced an earlier guess at `[outbox]
-  publish_tools`.)
+  tab. **The entries are read from the global layer, and the type says so**:
+  `state` takes them from `Facts::mcp`, which `Facts::read` fills from the
+  global config, never from the `Config` a caller holds — every reader but
+  `mecha features` holds a project-layered one, and a doc comment asking
+  each to comply would be kept by some (found on review of #427).
+- **The front door is two rows.** Its queue is filled by `factory-publish
+  drain`, a binary on PATH, and read by the Review page and `mecha frontdoor`
+  with no MCP entry at all; the entry exists only to give the model
+  publishing tools. Keyed on the entry alone, an install with a running
+  drain and no entry would hide a live queue of strangers' requests. Neither
+  half needs mail — only booking settlement reads the mail ledger, and that
+  fails closed on its own (found on review of #427 and #428).
 - **`[messages] enabled` becomes an alias** for `[features] messages`, read
   for one release and **or**-ed in: both default to `false`, so the alias
   can only keep on what was already on — it cannot switch messaging on for a
   table present only to raise `pending_cap`, which is the fail-open case a
-  presence rule would have had.
+  presence rule would have had. **`Lever::Messages` follows it.** The lever
+  is defined as `--no-messages` or `[messages] enabled = false`
+  (`harness.rs`), and is recorded in every `RunStats` row and eval
+  scorecard; after the move it reads `--no-messages` or the registry's
+  `messages` state, and a test asserts the lever and the feature never
+  disagree — otherwise a run with no mailbox records messaging as on, the
+  wrong condition `levers_off` exists to prevent. The same test covers
+  `Lever::Mcp` beside the four server bools: the lever forces every server
+  off, a bool gates one, and the recorded feature set says which bool was on
+  whatever the lever did (found on review of #427).
 
 `[features]` and every new settings table are **three edits** each, not two:
 `Config`, `ConfigLayer`, and `ConfigLayer::apply`, plus the project-layer
@@ -554,11 +583,22 @@ Three things make it deliberate rather than accidental:
   one on later.
 - **A trial's features are a condition of the trial.** A trial home's config
   already comes from its environment (`trial_env`), so its features follow
-  that environment's `[features]` table with no second switch. But which features were on
+  that environment's `[features]` table with no second switch. **An
+  environment may set `[features]`**, though a project layer may not: it is
+  stripped at `LayerTrust::Project` and deliberately **not** added to
+  `trial_env::OPERATOR_ONLY_TABLES`. That is safe for a reason the project
+  case lacks — a trial home never inherits the operator's servers (the
+  2026-09-23 rule `trial_env` exists for), so an environment's `graph = true`
+  can connect only a server the environment itself declared, and with none
+  declared it reads `Unready`, never the operator's graph. A test pins that
+  negative. Turning features off is how a trial is made light; this is the
+  switch it uses (found on review of #427). But which features were on
   is as much a condition as which levers were off, so the experiment manifest
   and the session record carry the feature set beside `levers_off`, from the
   same registry — otherwise two arms that differ only in whether `[[search]]`
-  was present read as identical. **Recorded with `levers_off`'s wire rule,
+  was present could otherwise be told apart only by `condition_hash`
+  (which folds the environment's config bytes, so it says *that* they
+  differ, not *what*). **Recorded with `levers_off`'s wire rule,
   not just beside it.** A feature set is a closed enum on an append-only
   store, so its loader is all-or-nothing like `session::lenient_levers`: one
   name a later build does not know collapses the whole set to `None`, because
@@ -679,7 +719,8 @@ Each step is a PR, and each leaves every surface working.
    first and the settings second; `mecha features enable|disable <id>`
    writes it, refusing an enable whose dependency is off with the chained
    command; `mecha config init` writes the table in full; `[messages]
-   enabled` read as an alias. F6's offer lands in `mecha setup` here, and
+   enabled` read as an alias, and `Lever::Messages` reading the registry
+   (§5). F6's offer lands in `mecha setup` here, and
    this machine's table is written in the same deploy. **Tool registration
    switches to the registry in this step** — a server whose feature is off is
    not connected — since that is the step that could otherwise make a tool
@@ -706,6 +747,33 @@ Each step is a PR, and each leaves every surface working.
    `scripts/llama/install.sh` pattern), with no `/home/<user>` or checkout
    path in any unit. The router, ComfyUI and Chatterbox get units in the repo
    for the first time.
+8. **How to add a feature, written down** — the owner, 2026-09-30: *"we
+   should make sure we document design pattern for adding new features in
+   docs and Claude.md."* A new `docs/ARCHITECTURE.md` §Features holds the
+   checklist and the incident behind each line; it is **opened in step 1 and
+   extended by every step after**, so each line is written by the step that
+   learned it rather than reconstructed at the end. The checklist, as far as
+   this design knows it:
+   - a `Feature` variant, with its `id` (a wire name: never renamed), label,
+     `part_of` and `requires`, listed after everything it needs;
+   - a key in `[features]`, and `mecha config init` writing it;
+   - its settings table, if any: `Config`, `ConfigLayer`, `apply`, and the
+     `merge_file` project strip — four places, and the nested-layer test;
+   - an `own_state` arm that asks **what registration asks** (`[tools]`,
+     the loopback validators, `SearchBackendConfig::problem`), never a
+     field's presence;
+   - its tools registered through the registry; its route group and CLI
+     verbs naming it as owner; its web entries keyed on its `id`;
+   - a setup step, and its `Recommendation` rows with their evidence;
+   - if it replaces a config switch a `harness::Lever` reads, the lever
+     follows it.
+
+   `CLAUDE.md` gets **one bullet**, not the checklist — it rides in every
+   agent's context — under Conventions: *a new optional feature starts at
+   `ARCHITECTURE.md` §Features*, with the one incident that earns the line.
+   The table-driven test in "How to know it works" is what makes the
+   checklist enforceable rather than advisory: a feature missing a step
+   fails it.
 
 ### How to know it works
 
