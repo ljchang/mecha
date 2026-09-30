@@ -196,6 +196,38 @@ impl Feature {
     /// set `true` for which this is `false`. Exhaustive, so a new variant does
     /// not compile until it decides — the list is a function, not a fourth
     /// hand-kept list.
+    /// Whether switching this off turns something off *today* — its tools
+    /// are unregistered, its server is not started, or its surface refuses.
+    /// The rest (Slack, personas, voice, incognito, the front door's queue)
+    /// wait for the route and verb guards of FEATURES-DESIGN.md §9 step 3, and
+    /// the upgrade notice must not call them off while they work (found on
+    /// review of #445). Exhaustive: a step that gates one flips its arm.
+    pub fn gated(self) -> bool {
+        match self {
+            Feature::Web
+            | Feature::Mail
+            | Feature::Docs
+            | Feature::Graph
+            | Feature::Search
+            | Feature::Documents
+            | Feature::Image => true,
+            Feature::Slack
+            | Feature::Personas
+            | Feature::Voice
+            | Feature::Incognito
+            | Feature::Frontdoor
+            | Feature::Messages => false,
+            Feature::Tasks
+            | Feature::Ocr
+            | Feature::Layout
+            | Feature::Library
+            | Feature::Dictate
+            | Feature::Calls
+            | Feature::Cloning
+            | Feature::Publishing => self.switch_owner().gated(),
+        }
+    }
+
     pub fn switchable_from_environment(self) -> bool {
         match self {
             // A binary on PATH, and the trial's own `requests` store under
@@ -355,20 +387,23 @@ pub fn enable_command(cfg: &Config, f: Feature) -> String {
     // order, which lists what a feature needs before it. `dictate` needs
     // `voice` (its parent) and `web` (its requirement); the owner's own
     // switch is always named, so the command is never empty.
-    fn collect(f: Feature, into: &mut Vec<Feature>) {
+    // Visited-guarded, so it terminates by construction rather than because
+    // the graph happens to be a shallow DAG (review of #445).
+    fn collect(f: Feature, seen: &mut Vec<Feature>, into: &mut Vec<Feature>) {
+        if seen.contains(&f) {
+            return;
+        }
+        seen.push(f);
         let owner = f.switch_owner();
         if !into.contains(&owner) {
             into.push(owner);
         }
-        for n in f.needs() {
-            collect(n, into);
-        }
-        for n in owner.needs() {
-            collect(n, into);
+        for n in f.needs().chain(owner.needs()) {
+            collect(n, seen, into);
         }
     }
     let mut hung = Vec::new();
-    collect(f, &mut hung);
+    collect(f, &mut Vec::new(), &mut hung);
     let owner = f.switch_owner();
     let ids: Vec<&str> = Feature::ALL
         .iter()
@@ -377,6 +412,24 @@ pub fn enable_command(cfg: &Config, f: Feature) -> String {
         .map(|g| g.id())
         .collect();
     format!("mecha features enable {}", ids.join(" "))
+}
+
+/// Why `server` must not be started: `Some` when it belongs to a feature whose
+/// switch is not on. Every door that connects a server itself rather than
+/// through `prepare_tools` asks this first — `distill`, `gossip`, `vet` and
+/// `corroborate` find the graph server by name and spawn it directly, and
+/// with `graph = false` they went on writing the owner's graph while
+/// `mecha tasks`, gated, had no board (found on review of #445).
+pub fn server_refusal(cfg: &Config, server: &McpServerConfig) -> Option<String> {
+    let f = server_feature(server)?;
+    (!switched_on(cfg, f)).then(|| {
+        format!(
+            "[[mcp]] `{}` belongs to `{}`, which is not switched on in [features] — `{}`",
+            server.name,
+            f.switch_owner().id(),
+            enable_command(cfg, f)
+        )
+    })
 }
 
 /// The feature an `[[mcp]]` server belongs to, by the program its `command`
@@ -1521,6 +1574,23 @@ mod tests {
             let args: Vec<String> = cmd.split_whitespace().skip(3).map(String::from).collect();
             plan_enable(&empty, &args).unwrap_or_else(|e| panic!("{}: {cmd}: {e}", f.id()));
         }
+    }
+
+    #[test]
+    fn a_server_in_a_switched_off_feature_is_refused_by_name() {
+        let mut cfg = Config::default();
+        let graph = mcp("graph", "/somewhere/mecha-graph-mcp");
+        let other = mcp("notes", "python3");
+        let why = server_refusal(&cfg, &graph).expect("graph is not switched on");
+        assert!(why.contains("mecha features enable graph"), "{why}");
+        assert_eq!(server_refusal(&cfg, &other), None, "a server in no feature");
+        cfg.features.0.insert("graph".into(), true);
+        assert_eq!(server_refusal(&cfg, &graph), None);
+        // A part's server is refused under its owner's name.
+        let publish = mcp("factory", "factory-publish");
+        assert!(server_refusal(&cfg, &publish)
+            .unwrap()
+            .contains("`frontdoor`"));
     }
 
     /// The writer edits in place: comments, other tables and a newer build's

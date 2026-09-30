@@ -204,3 +204,37 @@ fn serve_refuses_without_web_and_says_which_way() {
         assert!(err.contains(expect), "{features:?}: {err}");
     }
 }
+
+/// The verbs that start the graph server themselves — `distill`, `gossip`,
+/// `vet`, `corroborate` — ask the switch too, so `graph = false` is not
+/// answered one way by `mecha tasks` and the other by `mecha vet` (review of
+/// #445). `vet` needs no arguments, so it stands for the four; the refusal
+/// comes before any server is spawned or any provider built.
+#[test]
+fn a_verb_that_starts_the_graph_itself_refuses_when_it_is_off() {
+    let home = Home::new("vet");
+    let wrapper = graph_wrapper(&home.0);
+    for features in ["", "[features]\ngraph = false"] {
+        std::fs::write(
+            home.0.join("home/config.toml"),
+            format!(
+                "[sandbox]\nkind = \"none\"\n[[mcp]]\nname = \"graph\"\ncommand = {wrapper:?}\nsandbox = false\n{features}\n"
+            ),
+        )
+        .unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_mecha"))
+            .args(["vet"])
+            .current_dir(home.0.join("work"))
+            .env("MECHA_HOME", home.0.join("home"))
+            .env("HOME", home.0.join("home"))
+            .env_remove("ANTHROPIC_API_KEY")
+            .output()
+            .expect("running mecha vet");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{features:?}: {err}");
+        assert!(
+            err.contains("belongs to `graph`, which is not switched on"),
+            "{features:?}: {err}"
+        );
+    }
+}

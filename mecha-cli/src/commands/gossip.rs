@@ -88,6 +88,9 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
             args.server
         );
     };
+    if let Some(why) = mecha_core::feature::server_refusal(&cfg, server_cfg) {
+        bail!("{why}");
+    }
 
     let sandbox = mecha_core::sandbox::Sandbox::new(cfg.sandbox.clone());
     let client = Arc::new(

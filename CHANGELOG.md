@@ -264,10 +264,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   install, answer the switches:** run `mecha setup`, or the one
   `mecha features enable …` line a session prints when it starts — it names
   everything this install had set up. An MCP server that belongs to no
-  feature starts as before. Experiment trials keep what they carry: a feature
-  whose server a trial declares, or whose server the manifest brings in with
-  `live_servers`, is on unless the environment says `false`, and search
-  follows your own switch.
+  feature starts as before; the graph server stays off for `distill`,
+  `gossip`, `vet` and `corroborate` too. Slack, personas, voice, incognito
+  and the front door's queue keep working for now whatever their switch
+  says, and the start-up line tells them apart. Experiment trials keep their
+  graph: it is on when the environment declares its own graph server or the
+  manifest brings yours in with `live_servers`, unless the environment says
+  `false`; search follows your own switch.
 
 - **The learning store no longer uses git.** `~/.mecha/learning/` is plain
   files: opening it no longer runs `git init` or writes a `.gitignore`, and a

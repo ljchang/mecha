@@ -48,6 +48,9 @@ pub async fn run(global: &crate::GlobalOpts, args: &VetArgs) -> Result<()> {
     let Some(server_cfg) = cfg.mcp.iter().find(|c| c.name == args.server) else {
         anyhow::bail!("no [[mcp]] server named '{}' in config", args.server);
     };
+    if let Some(why) = mecha_core::feature::server_refusal(&cfg, server_cfg) {
+        anyhow::bail!("{why}");
+    }
     let sandbox = mecha_core::sandbox::Sandbox::new(cfg.sandbox.clone());
     let client = Arc::new(
         mecha_core::mcp::McpClient::connect(server_cfg, &sandbox, &cwd)

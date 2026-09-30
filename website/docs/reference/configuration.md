@@ -439,10 +439,16 @@ messages = false   # messages between sessions on this machine
 ```
 
 The switch is the only switch; a settings table such as `[image]` or
-`[documents]` is only settings. A feature whose switch is not `true` is off:
-its tools are not registered and its MCP server is not started, and
-`mecha serve` will not start without `web = true`. An `[[mcp]]` server that
-belongs to no feature starts as it always has. A feature switched on without the settings it
+`[documents]` is only settings. What a switch that is not `true` turns off
+today: web search, image generation and the character library, and PDF
+extraction are not registered; the mail, docs, graph and publishing MCP
+servers are not started, by any command — including `distill`, `gossip`,
+`vet` and `corroborate`, which start the graph server themselves; and
+`mecha serve` will not start without `web = true`. Slack, personas, voice,
+incognito and the front door's queue are listed here now, and follow their
+switch once their commands and web pages are guarded; until then they work
+whatever it says, and `mecha features` and the start-up line say so. An
+`[[mcp]]` server that belongs to no feature starts as it always has. A feature switched on without the settings it
 needs reads **unready** in `mecha features`, with what is missing; one switched
 off keeps its settings for later. A key that is absent is unanswered, and reads
 off. A key this build does not know — a newer build's feature, or a typo — is

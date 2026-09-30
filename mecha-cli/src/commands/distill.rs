@@ -273,6 +273,9 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
             args.server
         );
     };
+    if let Some(why) = mecha_core::feature::server_refusal(&cfg, server_cfg) {
+        bail!("{why}");
+    }
 
     let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
     let provider = mecha_core::provider::build(provider_cfg)?;
@@ -862,6 +865,9 @@ async fn board_for_scoring(
     let Some(server_cfg) = cfg.mcp.iter().find(|c| c.name == server) else {
         return (Err(format!("no [[mcp]] server named '{server}'")), zone);
     };
+    if let Some(why) = mecha_core::feature::server_refusal(&cfg, server_cfg) {
+        return (Err(why), zone);
+    }
     let sandbox = mecha_core::sandbox::Sandbox::new(cfg.sandbox.clone());
     let client = match mecha_core::mcp::McpClient::connect(server_cfg, &sandbox, &cwd).await {
         Ok(c) => c,

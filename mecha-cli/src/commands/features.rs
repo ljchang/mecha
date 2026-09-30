@@ -135,12 +135,23 @@ fn notice_line(announced: &[feature::Announcement]) -> Option<String> {
     if announced.is_empty() {
         return None;
     }
-    let named: Vec<String> = announced
+    let name = |a: &feature::Announcement| match &a.caveat {
+        Some(why) => format!("{} ({why})", a.id.id()),
+        None => a.id.id().to_string(),
+    };
+    // Split by what an unanswered switch does *today*: `Feature::gated` says
+    // which are already off, and the rest still work until their surfaces
+    // are guarded — calling those off would be a readout saying off while
+    // the thing is on (found on review of #445).
+    let off: Vec<String> = announced
         .iter()
-        .map(|a| match &a.caveat {
-            Some(why) => format!("{} ({why})", a.id.id()),
-            None => a.id.id().to_string(),
-        })
+        .filter(|a| a.id.gated())
+        .map(name)
+        .collect();
+    let working: Vec<String> = announced
+        .iter()
+        .filter(|a| !a.id.gated())
+        .map(name)
         .collect();
     let mut ids: Vec<&str> = Vec::new();
     for a in announced {
@@ -150,11 +161,19 @@ fn notice_line(announced: &[feature::Announcement]) -> Option<String> {
             }
         }
     }
+    let mut parts = Vec::new();
+    if !off.is_empty() {
+        parts.push(format!("off until switched on: {}", off.join(", ")));
+    }
+    if !working.is_empty() {
+        parts.push(format!(
+            "still working, but will be off once their surfaces follow the switch: {}",
+            working.join(", ")
+        ));
+    }
     Some(format!(
-        // Tools and servers follow the switch (FEATURES-DESIGN §9, step 1b), so
-        // an unanswered one is off in this very session.
-        "set up here but not switched on in [features], so off: {} — `mecha features enable {}`, or `mecha setup` to answer each",
-        named.join(", "),
+        "set up here but not switched on in [features] — {} — `mecha features enable {}`, or `mecha setup` to answer each",
+        parts.join("; "),
         ids.join(" ")
     ))
 }
@@ -223,8 +242,13 @@ mod tests {
             },
         ])
         .unwrap();
+        // Mail is gated today; incognito is not yet, and is not called off.
         assert!(
-            line.contains("mail (no account is authorised), incognito"),
+            line.contains("off until switched on: mail (no account is authorised)"),
+            "{line}"
+        );
+        assert!(
+            line.contains("will be off once their surfaces follow the switch: incognito"),
             "{line}"
         );
         assert!(
