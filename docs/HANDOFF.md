@@ -2047,7 +2047,7 @@ scopes widened, and both are recorded in each account's `oauth.json` under
 
 | Account | Provider | Grant | Expiry |
 |---|---|---|---|
-| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | none observed — consented 2026-09-17, after the project was published to production, and still refreshing on 2026-09-30 (day 13; a Testing grant is revoked on day 7) |
+| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | none observed — `granted_at` in that account's `oauth.json` reads 2026-09-17T02:10:19Z, after the 2026-09-16 publish, and the grant was still refreshing on 2026-09-30 (day 13; a Testing grant is revoked on day 7) |
 | `dartmouth` | Outlook | `Mail.ReadWrite`, `Mail.Read`, `Mail.Send`, `Calendars.ReadWrite` | none — permanent |
 
 All of this is settled. The publish is in
@@ -2892,7 +2892,10 @@ boundary — a run earlier that day saying nothing is correct, not broken.
 Neither date above has arrived yet, as of 2026-09-17. It was still minted
 while the project was in Testing, so it keeps the seven-day clock whatever
 the app's status is now — the publish on 2026-09-16 changed only what
-*future* consents get (`HISTORY.md`, 2026-09-16).
+*future* consents get (`HISTORY.md`, 2026-09-16). **Superseded again:** a
+re-consent on 2026-09-17T02:10:19Z (`granted_at`), after the publish,
+replaced the 09-15 grant, and it was still live on day 13. See *Mail OAuth
+grants* above and `HISTORY.md`, 2026-09-30.
 
 **2026-09-16, 19:44Z, mecha-7b: #238 (the clock, asked per turn) merged at
 `42c359f1` and deployed.** `~/.cargo/bin/mecha` reinstalled from mecha `main`

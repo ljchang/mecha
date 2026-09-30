@@ -261,6 +261,16 @@ cd <clean worktree>/web && npm ci && npm run build
 rsync -a --delete dist/ ~/.mecha/web/dist/
 ```
 
+**When the same range changes the binary too, restart `mecha-serve` first
+and rsync last:** step 1's install, then the restart (step 2, once
+`~/.mecha/holds` is clear), then this rsync. `mecha serve` reads assets per
+request, so a new page reaches the phone the moment it lands, and a new page
+on the old binary can fail silently in the unsafe direction. On 2026-09-30
+#429's modal sent a `mask` that the old `image_generate` ignored, so for
+about two minutes a painted edit would have redone the whole picture. If a
+hold keeps serve up, keep the old dist live until it clears. An asset-only
+change needs no restart, so the order does not matter for one.
+
 **Before that rsync, ask what is deployed — the dist may be another
 lane's live test.** `git tag -l deployed-local` in the main checkout names
 the commit whose build is on the box when a session deployed something
@@ -273,8 +283,9 @@ reverted a surface the owner was live-testing. If the dist is not what
 you are about to install, announce to the live sessions before replacing
 it.
 
-Then restart `mecha-serve.service` (step 2). Verify the *served* page, not
-the directory: the 8443 door returning 200 with the new bundle hash.
+For an asset-only change, restart nothing. With a binary change, the restart
+already came before the rsync, as above. Either way, verify the *served* page,
+not the directory: the 8443 door returning 200 with the new bundle hash.
 
 **`web/public/` lands at `dist` root, and one of those files is
 load-bearing.** `voice-uplink-transform.js` is the buffered uplink's tap
