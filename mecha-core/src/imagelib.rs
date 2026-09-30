@@ -875,10 +875,22 @@ pub fn demote_unknown(
     cast: &[CastMember],
 ) -> (Vec<CastMember>, Vec<String>, Vec<String>) {
     let (mut kept, mut extras, mut names) = (Vec::new(), Vec::new(), Vec::new());
+    let cast_names: Vec<String> = cast.iter().map(|m| m.name.trim().to_lowercase()).collect();
     for member in cast {
         let name = member.name.trim().to_lowercase();
         let dir = lib.dir.join(Kind::Character.dir()).join(&name);
-        let traced = name.is_empty()
+        // Words naming a library character who is not in this cast would
+        // draw that character from words — what `named_in` refuses everywhere
+        // else: `Maya.` for maya, or a `doing` naming someone uncast (review
+        // of #434). Such a member stays in the cast, where its refusal says
+        // what to fix. A name in the cast is fine: "pouring coffee for maya".
+        let said = format!("{} {} {}", member.name, member.wearing, member.doing);
+        let names_someone = named_in(lib, &said)
+            .into_iter()
+            .chain(broken_named_in(lib, &said))
+            .any(|n| !cast_names.contains(&n));
+        let traced = !name.chars().any(char::is_alphanumeric)
+            || names_someone
             || lib.get(Kind::Character, &name).is_some()
             || lib
                 .errors
@@ -1254,6 +1266,41 @@ mod tests {
         assert_eq!(kept, ["maya", "wren", "theo"]);
         assert_eq!(extras, ["Sam, wearing a coat, waving"]);
         assert_eq!(names, ["Sam"]);
+
+        // A library character in another spelling, a `doing` naming someone
+        // uncast, and a name of no letters all stay, to be refused; an action
+        // naming someone in the cast does not stop a demotion.
+        let with = |name: &str, doing: &str| CastMember {
+            name: name.into(),
+            wearing: "a coat".into(),
+            doing: doing.into(),
+        };
+        let (kept, extras, _) = demote_unknown(
+            &lib,
+            &[
+                with("Maya.", "laughing"),
+                with("Sam", "waving at maya"),
+                with(".", "…"),
+            ],
+        );
+        let kept: Vec<&str> = kept.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(kept, ["Maya.", "Sam", "."], "{extras:?}");
+        let (kept, extras, _) = demote_unknown(
+            &lib,
+            &[with("maya", "laughing"), with("Sam", "waving at maya")],
+        );
+        assert_eq!(kept.len(), 1);
+        assert_eq!(extras, ["Sam, wearing a coat, waving at maya"]);
+
+        // Four written extras and one demoted is five people who are not
+        // library characters: refused, saying why.
+        let four: Vec<String> = (0..4).map(|i| format!("a stranger {i}")).collect();
+        let err =
+            compile_with(&lib, "a park", &[], &four, &["Sam, waving".into()], None).unwrap_err();
+        assert!(
+            err.contains("are not in the library and are drawn as extras"),
+            "{err}"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
