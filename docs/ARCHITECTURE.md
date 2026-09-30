@@ -8170,15 +8170,18 @@ in five different ways. The design and its open steps are
   publishing server (`factory-publish`) together — never one half first.
   `mecha serve` refuses
   without `web`, telling "predates the switch" from `web = false`.
-- **A trial keeps what it carries, and `graph` is the only default.**
-  `trial_env::config_at` fills a trial's unanswered `graph` switch on when
-  the environment declares its own graph server or `live_servers` brings
-  the operator's in, so gating changes nothing an existing experiment
-  connects, and `search` follows the operator's own switch as its backends
-  do. Nothing else defaults: a `mecha-mail` or `mecha-docs` an environment
-  declares runs on the operator's credentials, which `switchable_from_environment` refuses, and a default
-  would assert on the environment's behalf what it may not (review of
-  #445). The environment's own answer stands.
+- **A trial keeps what it carries.** `trial_env::config_at` fills a trial's
+  unanswered `graph` switch on when the environment declares its own graph
+  server or `live_servers` brings the operator's in, and its `frontdoor`
+  switch when the environment declares a `factory-publish` server (since the
+  front door is gated whole, #452), so gating changes nothing an existing
+  experiment connects; `search` follows the operator's own switch as its
+  backends do. Nothing else defaults: a `mecha-mail` or `mecha-docs` an
+  environment declares runs on the operator's credentials, which
+  `switchable_from_environment` refuses, and a default would assert on the
+  environment's behalf what it may not (review of #445) — the front door is
+  the one switch an environment may set, so defaulting it asserts nothing it
+  could not. The environment's own answer stands.
 - **`messages` has one runtime answer.** `apply` writes `[features] messages`
   into `[messages] enabled` and drops it from the map, rather than or-ing two
   fields as the design proposed: `Lever::Messages` and every experiment arm

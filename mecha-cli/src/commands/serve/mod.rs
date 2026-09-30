@@ -1531,7 +1531,10 @@ mod tests {
     /// core route ran its real handler — `model cancel` spawned the test
     /// binary as a child (review of #451). The real router is held to the same
     /// answer below for one route of every owner kind, each refused before
-    /// its handler can run.
+    /// its handler can run. Every non-core route must refuse: a feature added
+    /// with routes but its guards still to come (`gated() == false`) fails
+    /// here, loudly — declare its routes with its guards, or teach this test
+    /// the exception.
     #[tokio::test]
     async fn an_off_feature_s_routes_answer_feature_off_and_nothing_else_does() {
         use mecha_core::feature::{Feature, Refusal};
