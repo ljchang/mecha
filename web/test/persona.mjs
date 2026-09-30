@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
-  taintLabel, safetyLine, doseLine, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine,
+  taintLabel, safetyLine, doseLine, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
 } from '../src/lib/persona.js';
 
 // Only a key the server could have minted is a persona chat's.
@@ -180,6 +180,18 @@ assert.equal(keptCharacter('maya', undefined), '');
     { kind: 'tool', name: 'web_search', is_error: false },
   ];
   assert.equal(toolStatus(later, 0), 'failed');
+}
+
+// A page re-read mid-run puts back the tool still running, from the
+// server's own report of it — not a start the page invented.
+{
+  const working = { id: 't9', name: 'image_generate', since: '2026-09-30T04:00:00Z' };
+  const entries = withWorking([{ kind: 'user', text: 'a picture?' }], working);
+  const run = { ...emptyRun(entries), running: true };
+  assert.equal(waitingLine(run, 'Stella', Date.parse('2026-09-30T04:01:24Z')), 'drawing a picture… 1:24');
+  // Not twice, and not when nothing is running.
+  assert.equal(withWorking(entries, working).length, entries.length);
+  assert.equal(withWorking(entries, null), entries);
 }
 
 console.log('persona: ok');

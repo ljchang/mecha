@@ -129,6 +129,32 @@ struct Live {
     /// is what is left to say it (found on review of #409; the assistant's
     /// `Live` carries it for the same reason).
     taint: mecha_core::agent::Taint,
+    /// The tool the run is waiting on — id, name and when it began — so a
+    /// page reloaded during a long image render still says "drawing a
+    /// picture… 1:24" rather than "typing" (review of #431). Set and cleared
+    /// by the run's event forwarder ([`track_working`]).
+    working: Arc<StdMutex<Option<serde_json::Value>>>,
+}
+
+/// Keep `slot` naming the tool a run is waiting on: set when a call starts,
+/// cleared when that call's result arrives.
+fn track_working(slot: &StdMutex<Option<serde_json::Value>>, event: &AgentEvent) {
+    let Ok(mut slot) = slot.lock() else { return };
+    match event {
+        AgentEvent::ToolCall { id, name, .. } => {
+            *slot = Some(serde_json::json!({
+                "id": id,
+                "name": name,
+                "since": chrono::Utc::now().to_rfc3339(),
+            }));
+        }
+        AgentEvent::ToolResult { id, .. } => {
+            if slot.as_ref().is_some_and(|w| w["id"] == *id) {
+                *slot = None;
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Beside each transcript: which persona version the chat is pinned to, so
@@ -885,7 +911,17 @@ impl PersonaChats {
             return Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }));
         }
         let key = new_key();
-        let workspace = self.work.join(&key);
+        // The workspace the chat began in, as its session records it: a
+        // resumed chat keeps its pictures, and the persona can edit one it
+        // drew before a restart (owner, 2026-09-30 — a resume under a new
+        // key had given the same chat an empty workspace). Only a directory
+        // directly in the persona work dir is trusted; anything else gets a
+        // fresh one.
+        let workspace = if session.meta.workspace.parent() == Some(self.work.as_path()) {
+            session.meta.workspace.clone()
+        } else {
+            self.work.join(&key)
+        };
         mecha_core::create_private_dir(&workspace).map_err(|e| failed(e.into()))?;
         sessions.insert(
             key.clone(),
@@ -956,6 +992,10 @@ impl PersonaChats {
             "running": ps.live.is_some(),
             "goal": ps.goal,
             "crisis_shown": ps.crisis_shown,
+            "working": ps
+                .live
+                .as_ref()
+                .and_then(|l| l.working.lock().ok().and_then(|w| w.clone())),
             "display": ps.pinned.settings.display,
             // The switches as they stand, not as pinned: they are read live.
             "safety": safety_json(
@@ -1258,6 +1298,7 @@ impl PersonaChats {
         let cancel = mecha_core::agent::CancelHandle::new();
         let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
         let queued_ids: Arc<StdMutex<VecDeque<String>>> = Arc::default();
+        let working: Arc<StdMutex<Option<serde_json::Value>>> = Arc::default();
         let mut history_taint = conversation.taint;
         history_taint.arm_for_content(&before);
         ps.live = Some(Live {
@@ -1266,6 +1307,7 @@ impl PersonaChats {
             queued_ids: Arc::clone(&queued_ids),
             history: Arc::clone(&before),
             taint: history_taint,
+            working: Arc::clone(&working),
         });
         if let Some(h) = &held {
             let c = cancel.clone();
@@ -1302,6 +1344,7 @@ impl PersonaChats {
                 let bcast = bcast.clone();
                 tokio::spawn(async move {
                     while let Some(event) = rx.recv().await {
+                        track_working(&working, &event);
                         if let AgentEvent::QueuedInput(_) = &event {
                             if let Some(request_id) =
                                 queued_ids.lock().ok().and_then(|mut ids| ids.pop_front())
@@ -2559,6 +2602,73 @@ mod tests {
         );
         // The resumed turn carried the earlier conversation.
         assert!(seen[1].messages.len() >= 3);
+    }
+
+    /// A chat resumed after a restart keeps its workspace, so a picture the
+    /// persona drew before is still there to edit (owner, 2026-09-30).
+    #[tokio::test]
+    async fn a_resumed_chat_keeps_its_workspace() {
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let id = opened["session"].as_str().unwrap().to_string();
+        let first = w.personas().sessions.lock().await[&key].workspace.clone();
+        std::fs::create_dir_all(first.join("images")).unwrap();
+        std::fs::write(first.join("images/drawn.png"), b"png").unwrap();
+
+        w.personas().sessions.lock().await.clear();
+        let resumed = w
+            .personas()
+            .resume(&w.chat, &w.library, "mara", &id, None)
+            .await
+            .unwrap();
+        let key2 = resumed["key"].as_str().unwrap().to_string();
+        assert_ne!(key, key2);
+        let again = w.personas().sessions.lock().await[&key2].workspace.clone();
+        assert_eq!(again, first);
+        assert!(again.join("images/drawn.png").is_file());
+    }
+
+    /// The tool a run waits on is named until its result arrives.
+    #[test]
+    fn the_working_slot_follows_a_call_to_its_result() {
+        let slot = StdMutex::new(None);
+        track_working(
+            &slot,
+            &AgentEvent::ToolCall {
+                id: "t1".into(),
+                name: "image_generate".into(),
+                input: serde_json::json!({}),
+            },
+        );
+        let held = slot.lock().unwrap().clone().unwrap();
+        assert_eq!(held["name"], "image_generate");
+        assert!(held["since"].as_str().is_some());
+        // Another call's result does not clear it; its own does.
+        track_working(
+            &slot,
+            &AgentEvent::ToolResult {
+                id: "t0".into(),
+                name: "x".into(),
+                is_error: false,
+                content: String::new(),
+            },
+        );
+        assert!(slot.lock().unwrap().is_some());
+        track_working(
+            &slot,
+            &AgentEvent::ToolResult {
+                id: "t1".into(),
+                name: "image_generate".into(),
+                is_error: false,
+                content: String::new(),
+            },
+        );
+        assert!(slot.lock().unwrap().is_none());
     }
 
     /// A persona turn mid-generation is cancelled at shutdown, so the drain
