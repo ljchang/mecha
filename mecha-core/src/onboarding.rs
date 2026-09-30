@@ -1096,6 +1096,16 @@ pub fn mail_store_dir() -> Option<PathBuf> {
     Some(dirs::home_dir()?.join(".mecha").join("mail"))
 }
 
+/// A legacy per-provider store (`mecha-google`, `mecha-outlook`) by
+/// `token::provider_path`'s rule: `$<env_var>`, else `~/.mecha/<provider>`
+/// under the real home — never `$MECHA_HOME/<provider>`.
+pub fn legacy_store_dir(provider: &str, env_var: &str) -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var(env_var) {
+        return Some(PathBuf::from(dir));
+    }
+    Some(dirs::home_dir()?.join(".mecha").join(provider))
+}
+
 /// `mecha-docs`' account store: always `~/.mecha/docs` under the real home
 /// (`google::docs::docs_home`), which honours neither variable.
 pub fn docs_store_dir() -> Option<PathBuf> {

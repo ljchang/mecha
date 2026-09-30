@@ -32,7 +32,8 @@ pub async fn execute(args: Args) -> Result<()> {
     let mut findings = doctor::examine(&home, chrono::Utc::now());
 
     // The systemd check lives here rather than in core: it shells out, and
-    // `examine` stays a pure function over store roots. A dead-auth finding
+    // `examine` stays a function over store roots (the mecha home, and the
+    // mail crate's, located by `MailStores::of_owner`). A dead-auth finding
     // reorders the advice — restarting a unit that will refail teaches
     // nothing — so the unit findings are built with that knowledge.
     let dead_auth = findings
