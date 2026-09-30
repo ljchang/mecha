@@ -41,6 +41,15 @@
 //! cannot run is named on every page it affects, and those pages are read
 //! whole — labelled so, never passed off as the layout reading.
 //!
+//! **An image is a one-page document with no text layer.** A photo of a
+//! page or a screenshot (PNG, JPEG, WebP, GIF — the bytes decide, never the
+//! name) skips poppler: it is decoded here by the same memory-safe `image`
+//! crate under the same limits, turned upright by its own EXIF orientation,
+//! laid on white where it is transparent, and handed to the same layout and
+//! OCR stages a rendered page goes through, scaled down to their budgets and
+//! never up. Everything after the pixels — the cache, the caps, the labels,
+//! the third-party marking — is the PDF path's.
+//!
 //! **Extraction is paid once per file.** Results are cached by the sha256 of
 //! the bytes that were actually rendered (the copy, not the path — a file that
 //! changes under the read cannot poison the entry), under
@@ -493,6 +502,70 @@ pub fn looks_like_pdf(bytes: &[u8]) -> bool {
         .any(|w| w == b"%PDF-")
 }
 
+/// What a file is, by its bytes. The name is a claim, as it is for a PDF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Pdf,
+    /// A picture of text, in a format this build decodes.
+    Image(image::ImageFormat),
+}
+
+impl Kind {
+    /// How the file is named in a rendering's header.
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Pdf => "PDF",
+            Kind::Image(image::ImageFormat::Png) => "PNG image",
+            Kind::Image(image::ImageFormat::Jpeg) => "JPEG image",
+            Kind::Image(image::ImageFormat::WebP) => "WebP image",
+            Kind::Image(image::ImageFormat::Gif) => "GIF image",
+            Kind::Image(_) => "image",
+        }
+    }
+
+    pub fn is_image(self) -> bool {
+        matches!(self, Kind::Image(_))
+    }
+}
+
+/// The file's kind, or why it cannot be read — naming the formats a phone or
+/// a scanner hands over that this build does not decode, so the refusal says
+/// what to do rather than only "no". An image's signature is checked first:
+/// it sits at offset 0, where `%PDF-` may be anywhere in the first kilobyte.
+pub fn kind_of(bytes: &[u8]) -> Result<Kind> {
+    use image::ImageFormat as F;
+    match image::guess_format(bytes) {
+        Ok(f @ (F::Png | F::Jpeg | F::WebP | F::Gif)) => return Ok(Kind::Image(f)),
+        Ok(F::Tiff) => {
+            bail!("a TIFF image, which this build does not read — convert it to PDF, PNG or JPEG")
+        }
+        _ => {}
+    }
+    if looks_like_pdf(bytes) {
+        return Ok(Kind::Pdf);
+    }
+    if is_heif(bytes) {
+        bail!(
+            "a HEIC/HEIF photo, which this build does not read — share it as a JPEG instead \
+             (on an iPhone: Settings › Camera › Formats › Most Compatible)"
+        );
+    }
+    bail!(
+        "neither a PDF nor a PNG, JPEG, WebP or GIF image (no %PDF- header in the first \
+         kilobyte and no image signature; the file's bytes decide, not its name)"
+    )
+}
+
+/// An ISO-BMFF file whose brand is one of HEIF's (HEIC, AVIF and kin).
+fn is_heif(bytes: &[u8]) -> bool {
+    bytes.len() >= 12
+        && &bytes[4..8] == b"ftyp"
+        && matches!(
+            &bytes[8..12],
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"heim" | b"heis" | b"mif1" | b"msf1" | b"avif"
+        )
+}
+
 /// The render resolution that makes a `w × h` point page fit the OCR
 /// projector's pixel budget, clamped to 50–300 dpi.
 pub fn ocr_dpi(width_pt: f32, height_pt: f32) -> u32 {
@@ -531,6 +604,15 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// Where a page's pixels come from: the confined renderer over a PDF's
+/// scratch copy, or an image decoded here ([`decode_image`]). The layout and
+/// OCR stages take either, so an image goes through the same reading as a
+/// scanned page.
+enum Source {
+    Pdf(Scratch),
+    Image(std::sync::Arc<image::RgbImage>),
 }
 
 /// Address space, CPU seconds and the largest file a confined child may
@@ -770,20 +852,73 @@ impl Renderer {
     }
 }
 
+/// The limits every decode here runs under: 8000 px a side, 512 MB.
+fn decode_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8000);
+    limits.max_image_height = Some(8000);
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    limits
+}
+
 /// Decode a PNG under explicit limits (8000 px a side, 512 MB) with the
 /// memory-safe `image` crate.
 pub fn decode_png(raw: &[u8]) -> Result<image::RgbImage> {
     let mut reader =
         image::ImageReader::with_format(std::io::Cursor::new(raw), image::ImageFormat::Png);
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(8000);
-    limits.max_image_height = Some(8000);
-    limits.max_alloc = Some(512 * 1024 * 1024);
-    reader.limits(limits);
+    reader.limits(decode_limits());
     let img = reader
         .decode()
         .context("the rendered page is not a valid PNG")?;
     Ok(img.to_rgb8())
+}
+
+/// Decode an image of text as a page: under the same limits as a rendered
+/// page, turned upright by its own EXIF orientation (a phone saves a portrait
+/// page sideways and says so in a tag — read sideways, OCR fails), and laid
+/// on white where it is transparent, since a screenshot's transparent
+/// background would otherwise become black behind black text.
+pub fn decode_image(raw: &[u8], format: image::ImageFormat) -> Result<image::RgbImage> {
+    use image::ImageDecoder;
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(raw), format);
+    reader.limits(decode_limits());
+    let what = Kind::Image(format).label();
+    let mut decoder = reader
+        .into_decoder()
+        .with_context(|| format!("this {what} could not be decoded"))?;
+    // A missing or unreadable tag is an upright picture, which most are.
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder)
+        .with_context(|| format!("this {what} could not be decoded"))?;
+    img.apply_orientation(orientation);
+    if !img.color().has_alpha() {
+        return Ok(img.to_rgb8());
+    }
+    let rgba = img.to_rgba8();
+    let mut out = image::RgbImage::new(rgba.width(), rgba.height());
+    for (o, p) in out.pixels_mut().zip(rgba.pixels()) {
+        let a = u32::from(p[3]);
+        let over = |c: u8| ((u32::from(c) * a + 255 * (255 - a) + 127) / 255) as u8;
+        *o = image::Rgb([over(p[0]), over(p[1]), over(p[2])]);
+    }
+    Ok(out)
+}
+
+/// `img` scaled down to at most `max_pixels`, never up, and the factor it was
+/// scaled by. A small screenshot is sent as it is: enlarging it adds no
+/// detail the model could read.
+pub fn fit_pixels(img: &image::RgbImage, max_pixels: f64) -> (image::RgbImage, f32) {
+    let px = f64::from(img.width()) * f64::from(img.height());
+    if px <= max_pixels || px <= 0.0 {
+        return (img.clone(), 1.0);
+    }
+    let k = (max_pixels / px).sqrt();
+    let nw = ((f64::from(img.width()) * k) as u32).max(1);
+    let nh = ((f64::from(img.height()) * k) as u32).max(1);
+    let small = image::imageops::resize(img, nw, nh, image::imageops::FilterType::CatmullRom);
+    (small, nw as f32 / img.width() as f32)
 }
 
 /// A fresh PNG of an image this process holds.
@@ -1405,6 +1540,9 @@ pub fn carries_document_text(e: &anyhow::Error) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Extraction {
     pub sha256: String,
+    /// What the file is, by its bytes: `PDF`, `PNG image`, ….
+    #[serde(default = "pdf_label")]
+    pub format: String,
     pub pages_total: u32,
     pub mode: Mode,
     pub pages: Vec<Page>,
@@ -1423,12 +1561,17 @@ pub struct Extraction {
     pub layout_unavailable: Option<String>,
 }
 
+fn pdf_label() -> String {
+    Kind::Pdf.label().to_string()
+}
+
 impl Extraction {
     /// The text a model or a terminal reads. Page by page; each part labelled
     /// with where it came from.
     pub fn render(&self, name: &str) -> String {
         let mut out = format!(
-            "document: {name} · {} page(s) · sha256 {}\n",
+            "document: {name} · {} · {} page(s) · sha256 {}\n",
+            self.format,
             self.pages_total,
             &self.sha256[..12]
         );
@@ -1661,21 +1804,51 @@ impl Extractor {
                 self.cfg.max_file_mb
             );
         }
-        if !looks_like_pdf(bytes) {
-            bail!("not a PDF (no %PDF- header in the first kilobyte)");
+        let kind = kind_of(bytes)?;
+        let image = kind.is_image();
+        // An image's only text is a reading of it: no text layer to fall back
+        // on, so a mode that wants one, or no OCR at all, cannot be served.
+        if image && mode == Mode::Text {
+            bail!("an image has no text layer — ask for mode `auto` or `ocr`");
+        }
+        if image && self.ocr.is_none() {
+            bail!("OCR is off ([documents] ocr = false), and an image has no text without it");
         }
         if matches!(mode, Mode::Ocr | Mode::Both) && self.ocr.is_none() {
             bail!("OCR is off ([documents] ocr = false) — ask for mode `text`");
         }
         let sha = sha256_hex(bytes);
-        let mut scratch: Option<Scratch> = None;
-        let confinement = self.renderer.sandbox.backend().as_str().to_string();
+        let mut source: Option<Source> = None;
+        let confinement = if image {
+            // Nothing is parsed out of process: the decode is this one's.
+            "none (decoded in-process by the image crate)".to_string()
+        } else {
+            self.renderer.sandbox.backend().as_str().to_string()
+        };
 
         let (layer, layer_cached) = match self.cache.as_ref().and_then(|c| c.load_layer(&sha)) {
             Some(layer) => (layer, true),
+            None if image => {
+                let img = self.open(kind, bytes).await?;
+                let Source::Image(img) = source.insert(img) else {
+                    unreachable!("an image opens as an image")
+                };
+                // One page, sized in its own pixels — the frame its layout
+                // regions are reported in — with no text layer.
+                let layer = Layer {
+                    sha256: sha.clone(),
+                    pages: 1,
+                    sizes: vec![(img.width() as f32, img.height() as f32)],
+                    text: vec![String::new()],
+                    regions: vec![Vec::new()],
+                };
+                self.keep_layer(&layer);
+                (layer, false)
+            }
             None => {
-                self.renderer.preflight().await?;
-                let s = scratch.insert(Scratch::new(bytes)?);
+                let Source::Pdf(s) = source.insert(self.open(kind, bytes).await?) else {
+                    unreachable!("a PDF opens as a PDF")
+                };
                 let sizes = self.renderer.info(s, self.cfg.max_pages).await?;
                 let n = sizes.len();
                 let text = self.renderer.text_layer(s, n).await?;
@@ -1690,17 +1863,7 @@ impl Extractor {
                     text,
                     regions,
                 };
-                if let Some(cache) = &self.cache {
-                    // A cache is a saving, not a precondition: a full disk
-                    // must not turn a good extraction into an error.
-                    if let Err(e) = cache.store_layer(&layer) {
-                        tracing::warn!("document cache: text layer not stored: {e:#}");
-                    }
-                    if self.cfg.cache_days > 0 {
-                        let _ = cache
-                            .prune(Duration::from_secs(u64::from(self.cfg.cache_days) * 86_400));
-                    }
-                }
+                self.keep_layer(&layer);
                 (layer, false)
             }
         };
@@ -1719,8 +1882,8 @@ impl Extractor {
                 continue;
             }
             let has_text = layer.has_text(n);
-            let want_text =
-                matches!(mode, Mode::Text | Mode::Both) || (mode == Mode::Auto && has_text);
+            let want_text = !image
+                && (matches!(mode, Mode::Text | Mode::Both) || (mode == Mode::Auto && has_text));
             let want_ocr =
                 matches!(mode, Mode::Ocr | Mode::Both) || (mode == Mode::Auto && !has_text);
             let mut page = Page {
@@ -1784,12 +1947,9 @@ impl Extractor {
                                 }
                                 ready = true;
                             }
-                            let s = match scratch.as_mut() {
+                            let s = match source.as_ref() {
                                 Some(s) => s,
-                                None => {
-                                    self.renderer.preflight().await?;
-                                    scratch.insert(Scratch::new(bytes)?)
-                                }
+                                None => source.insert(self.open(kind, bytes).await?),
                             };
                             // One bound for the whole page: each region read
                             // carries its own timeout, and a page of many
@@ -1836,8 +1996,12 @@ impl Extractor {
                                     // own words: shown when OCR failed, not
                                     // dropped behind the error (found on
                                     // review) — the ocr = false branch's rule.
-                                    page.text
-                                        .get_or_insert_with(|| layer.text[n as usize - 1].clone());
+                                    // An image has none to show.
+                                    if !image {
+                                        page.text.get_or_insert_with(|| {
+                                            layer.text[n as usize - 1].clone()
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -1852,6 +2016,7 @@ impl Extractor {
         };
         Ok(Extraction {
             sha256: sha,
+            format: kind.label().to_string(),
             pages_total: layer.pages,
             mode,
             pages: out,
@@ -1861,6 +2026,74 @@ impl Extractor {
             layer_cached,
             layout_unavailable,
         })
+    }
+
+    /// The file's pixels, ready to read: a PDF's confined scratch copy (the
+    /// confinement proved first — no unconfined fallback), or an image
+    /// decoded here, off the async runtime.
+    async fn open(&self, kind: Kind, bytes: &[u8]) -> Result<Source> {
+        match kind {
+            Kind::Pdf => {
+                self.renderer.preflight().await?;
+                Ok(Source::Pdf(Scratch::new(bytes)?))
+            }
+            Kind::Image(format) => {
+                let raw = bytes.to_vec();
+                let img = tokio::task::spawn_blocking(move || decode_image(&raw, format)).await??;
+                Ok(Source::Image(std::sync::Arc::new(img)))
+            }
+        }
+    }
+
+    /// Store a text layer and prune old entries. A cache is a saving, not a
+    /// precondition: a full disk must not turn a good extraction into an error.
+    fn keep_layer(&self, layer: &Layer) {
+        if let Some(cache) = &self.cache {
+            if let Err(e) = cache.store_layer(layer) {
+                tracing::warn!("document cache: text layer not stored: {e:#}");
+            }
+            if self.cfg.cache_days > 0 {
+                let _ = cache.prune(Duration::from_secs(u64::from(self.cfg.cache_days) * 86_400));
+            }
+        }
+    }
+
+    /// One page as the layout stage reads it, and the factor from its pixels
+    /// to the page's own frame (PDF points; an image's own pixels).
+    async fn layout_image(
+        &self,
+        s: &Source,
+        n: u32,
+        size: (f32, f32),
+    ) -> Result<(image::RgbImage, f32)> {
+        match s {
+            Source::Pdf(scratch) => {
+                let dpi = crate::layout::layout_dpi(size.0, size.1);
+                let img = self.renderer.page_image(scratch, n, dpi).await?;
+                Ok((img, 72.0 / dpi as f32))
+            }
+            Source::Image(img) => {
+                let img = std::sync::Arc::clone(img);
+                let (small, k) = tokio::task::spawn_blocking(move || {
+                    fit_pixels(&img, crate::layout::LAYOUT_MAX_PIXELS)
+                })
+                .await?;
+                Ok((small, 1.0 / k))
+            }
+        }
+    }
+
+    /// One page as a fresh PNG within the OCR projector's budget, for a
+    /// whole-page reading.
+    async fn page_png(&self, s: &Source, n: u32, size: (f32, f32)) -> Result<Vec<u8>> {
+        match s {
+            Source::Pdf(scratch) => self.renderer.page_png(scratch, n, size).await,
+            Source::Image(img) => {
+                let img = std::sync::Arc::clone(img);
+                tokio::task::spawn_blocking(move || encode_png(&fit_pixels(&img, OCR_MAX_PIXELS).0))
+                    .await?
+            }
+        }
     }
 
     /// A cached transcript for this page under this call's recipe, labelled
@@ -1884,7 +2117,7 @@ impl Extractor {
         &self,
         client: &OcrClient,
         stage: &mut Stage,
-        s: &Scratch,
+        s: &Source,
         sha: &str,
         n: u32,
         size: (f32, f32),
@@ -1923,7 +2156,7 @@ impl Extractor {
             Stage::Unavailable(_) => Some("the layout stage is unavailable".to_string()),
             Stage::WholePage => None,
         };
-        let png = self.renderer.page_png(s, n, size).await?;
+        let png = self.page_png(s, n, size).await?;
         let mut ocr = client.page(&png).await?;
         ocr.fallback = fallback;
         if let Some(cache) = &self.cache {
@@ -1959,13 +2192,12 @@ impl Extractor {
         &self,
         client: &OcrClient,
         worker: &mut LayoutChild,
-        s: &Scratch,
+        s: &Source,
         n: u32,
         size: (f32, f32),
     ) -> Result<Option<OcrPage>> {
         use futures::StreamExt;
-        let dpi = crate::layout::layout_dpi(size.0, size.1);
-        let img = self.renderer.page_image(s, n, dpi).await?;
+        let (img, pt) = self.layout_image(s, n, size).await?;
         let started = Instant::now();
         let found = worker.detect(&img).await.context("the layout stage")?;
         let layout_secs = started.elapsed().as_secs_f64();
@@ -1977,9 +2209,8 @@ impl Extractor {
         if !found.iter().any(|d| Task::of(d.label()).prompt().is_some()) {
             return Ok(None);
         }
-        // Pixels of the render → PDF points, the frame the text layer's own
-        // regions use.
-        let pt = 72.0 / dpi as f32;
+        // Pixels of the render → the page's own frame (PDF points, the frame
+        // the text layer's regions use; an image's own pixels), by `pt`.
         let mut regions: Vec<LayoutRegion> = found
             .iter()
             .map(|d| LayoutRegion {
@@ -2068,6 +2299,7 @@ async fn until_cancelled<F: std::future::Future>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     /// The sandbox's own refusal is ours; anything poppler said is the
     /// document's.
@@ -2095,6 +2327,230 @@ mod tests {
         assert!(!carries_document_text(&anyhow!(
             "not a PDF (no %PDF- header in the first kilobyte)"
         )));
+    }
+
+    /// An image of `w × h` in `format`: a red block in its top-left quarter
+    /// on white, and, for a JPEG, an EXIF orientation tag if asked.
+    fn picture(w: u32, h: u32, format: image::ImageFormat, orientation: Option<u16>) -> Vec<u8> {
+        use image::ImageEncoder;
+        let img = image::RgbImage::from_fn(w, h, |x, y| {
+            if x < w / 2 && y < h / 2 {
+                image::Rgb([220, 20, 20])
+            } else {
+                image::Rgb([255, 255, 255])
+            }
+        });
+        let mut out = Vec::new();
+        match orientation {
+            None => img
+                .write_to(&mut std::io::Cursor::new(&mut out), format)
+                .unwrap(),
+            Some(o) => {
+                // A big-endian TIFF block with one IFD entry: 0x0112, SHORT.
+                let mut exif =
+                    b"MM\x00\x2a\x00\x00\x00\x08\x00\x01\x01\x12\x00\x03\x00\x00\x00\x01".to_vec();
+                exif.extend_from_slice(&o.to_be_bytes());
+                exif.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+                let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90);
+                enc.set_exif_metadata(exif).unwrap();
+                enc.write_image(&img, w, h, image::ExtendedColorType::Rgb8)
+                    .unwrap();
+            }
+        }
+        out
+    }
+
+    /// The bytes decide what a file is — an image's signature first, since
+    /// `%PDF-` may sit anywhere in a PDF's first kilobyte — and the formats a
+    /// phone or a scanner hands over that this build cannot read are named,
+    /// with what to do instead.
+    #[test]
+    fn a_file_is_known_by_its_bytes_and_unreadable_images_are_named() {
+        use image::ImageFormat as F;
+        for f in [F::Png, F::Jpeg, F::Gif, F::WebP] {
+            assert_eq!(
+                kind_of(&picture(8, 8, f, None)).unwrap(),
+                Kind::Image(f),
+                "{f:?}"
+            );
+        }
+        assert_eq!(kind_of(b"%PDF-1.7\n").unwrap(), Kind::Pdf);
+        // A PNG that says %PDF- in its first kilobyte is still a PNG.
+        let mut png = picture(8, 8, F::Png, None);
+        png.splice(20..20, b"%PDF-".iter().copied());
+        assert!(matches!(kind_of(&png), Ok(Kind::Image(F::Png))));
+        let heic = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic";
+        let e = kind_of(heic).unwrap_err().to_string();
+        assert!(e.contains("HEIC") && e.contains("JPEG"), "{e}");
+        let e = kind_of(b"II*\x00\x08\x00\x00\x00").unwrap_err().to_string();
+        assert!(e.contains("TIFF"), "{e}");
+        let e = kind_of(b"hello").unwrap_err().to_string();
+        assert!(e.contains("neither a PDF nor"), "{e}");
+    }
+
+    /// A phone saves a portrait page sideways and says so in a tag: read
+    /// without it, the OCR model gets the page on its side.
+    #[test]
+    fn a_photo_is_turned_upright_by_its_own_orientation_tag() {
+        // Stored 64 × 32 with the red block top-left; tag 6 = turn 90°
+        // clockwise to display, so it is 32 × 64 with the block top-right.
+        let jpeg = picture(64, 32, image::ImageFormat::Jpeg, Some(6));
+        let img = decode_image(&jpeg, image::ImageFormat::Jpeg).unwrap();
+        assert_eq!((img.width(), img.height()), (32, 64));
+        let red = |p: &image::Rgb<u8>| p[0] > 150 && p[1] < 100 && p[2] < 100;
+        assert!(
+            red(img.get_pixel(28, 4)),
+            "top-right: {:?}",
+            img.get_pixel(28, 4)
+        );
+        assert!(
+            !red(img.get_pixel(4, 4)),
+            "top-left: {:?}",
+            img.get_pixel(4, 4)
+        );
+        // No tag: as stored.
+        let plain = picture(64, 32, image::ImageFormat::Jpeg, None);
+        let img = decode_image(&plain, image::ImageFormat::Jpeg).unwrap();
+        assert_eq!((img.width(), img.height()), (64, 32));
+    }
+
+    /// A transparent screenshot's background is laid on white, or black text
+    /// on it would be read as black on black.
+    #[test]
+    fn a_transparent_image_is_read_on_white() {
+        let mut img = image::RgbaImage::new(4, 1);
+        img.put_pixel(0, 0, image::Rgba([0, 0, 0, 0])); // transparent
+        img.put_pixel(1, 0, image::Rgba([0, 0, 0, 255])); // black ink
+        img.put_pixel(2, 0, image::Rgba([0, 0, 0, 128])); // half
+        let mut png = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let out = decode_image(&png, image::ImageFormat::Png).unwrap();
+        assert_eq!(out.get_pixel(0, 0), &image::Rgb([255, 255, 255]));
+        assert_eq!(out.get_pixel(1, 0), &image::Rgb([0, 0, 0]));
+        assert_eq!(out.get_pixel(2, 0), &image::Rgb([127, 127, 127]));
+    }
+
+    /// A photo is scaled down to a stage's budget; a small screenshot is
+    /// sent as it is, never enlarged.
+    #[test]
+    fn an_image_is_scaled_down_to_the_budget_never_up() {
+        let big = image::RgbImage::new(4000, 3000);
+        let (small, k) = fit_pixels(&big, OCR_MAX_PIXELS);
+        assert!(f64::from(small.width()) * f64::from(small.height()) <= OCR_MAX_PIXELS);
+        assert!((small.width() as f32 / 4000.0 - k).abs() < 1e-6);
+        // Aspect kept, to a pixel.
+        assert!((small.width() as f32 / small.height() as f32 - 4.0 / 3.0).abs() < 0.01);
+        let tiny = image::RgbImage::new(300, 200);
+        let (same, k) = fit_pixels(&tiny, OCR_MAX_PIXELS);
+        assert_eq!((same.width(), same.height(), k), (300, 200, 1.0));
+    }
+
+    /// A server answering each connection with the next canned response, and
+    /// keeping every request body — what the OCR model was actually sent.
+    fn recording_server(responses: Vec<String>) -> (u16, Arc<Mutex<Vec<Vec<u8>>>>) {
+        use std::io::{BufRead, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let keep = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for r in responses {
+                let Ok((conn, _)) = listener.accept() else {
+                    return;
+                };
+                let mut reader = std::io::BufReader::new(conn);
+                let mut len = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; len];
+                let _ = reader.read_exact(&mut body);
+                keep.lock().unwrap().push(body);
+                let _ = reader.get_mut().write_all(r.as_bytes());
+            }
+        });
+        (port, seen)
+    }
+
+    /// A photographed page, end to end: one page, no text layer, read by the
+    /// OCR model upright and within its budget, labelled as an image and as a
+    /// reading — and cached, so the second read asks no server at all.
+    #[test]
+    fn a_photographed_page_is_read_by_ocr_upright_and_cached() {
+        use base64::Engine;
+        let completion = r#"{"model":"paddleocr-vl-1.6","choices":[{"finish_reason":"stop","message":{"content":"Hello Mara"}}],"usage":{"prompt_tokens":900,"completion_tokens":4}}"#;
+        let (port, seen) = recording_server(vec![
+            http("200 OK", "", r#"{"status":"ok"}"#),
+            http("200 OK", "", completion),
+        ]);
+        let root = std::env::temp_dir().join(format!("mecha-doc-image-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cfg = DocumentsConfig {
+            ocr_url: format!("http://127.0.0.1:{port}"),
+            layout: false,
+            ..DocumentsConfig::default()
+        };
+        let ex = Extractor::new(cfg, Some(Cache::new(root.clone()))).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // A sideways 1600 × 1200 photo: 1.9 MP, over the 1 MP budget.
+        let jpeg = picture(1600, 1200, image::ImageFormat::Jpeg, Some(6));
+        let got = rt
+            .block_on(ex.extract(&jpeg, "1-5", Mode::Auto, false, None))
+            .unwrap();
+        assert_eq!((got.pages_total, got.pages.len()), (1, 1));
+        assert_eq!(got.format, "JPEG image");
+        let page = &got.pages[0];
+        assert!(page.text.is_none() && !page.has_text_layer);
+        assert_eq!(page.ocr.as_ref().unwrap().markdown, "Hello Mara");
+        let shown = got.render("inbox/page.jpg");
+        assert!(
+            shown.contains("JPEG image") && shown.contains("OCR transcript"),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains("text layer (the file's own words)"),
+            "{shown}"
+        );
+
+        // What the model was sent: upright (taller than wide) and in budget.
+        let bodies = seen.lock().unwrap().clone();
+        let request: Value = serde_json::from_slice(bodies.last().unwrap()).unwrap();
+        let url = request["messages"][0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|c| c["image_url"]["url"].as_str())
+            .unwrap()
+            .to_string();
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(url.strip_prefix("data:image/png;base64,").unwrap())
+            .unwrap();
+        let sent = decode_png(&png).unwrap();
+        assert!(
+            sent.height() > sent.width(),
+            "{}×{}",
+            sent.width(),
+            sent.height()
+        );
+        assert!(f64::from(sent.width()) * f64::from(sent.height()) <= OCR_MAX_PIXELS);
+
+        // Cached: the server has nothing left to answer, and is not asked.
+        let again = rt
+            .block_on(ex.extract(&jpeg, "all", Mode::Auto, false, None))
+            .unwrap();
+        assert!(again.layer_cached && again.pages[0].ocr_cached);
+        assert_eq!(again.pages[0].ocr.as_ref().unwrap().markdown, "Hello Mara");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// A tiny HTTP server answering each connection with the next canned
@@ -2300,9 +2756,19 @@ mod tests {
             .unwrap_err();
         assert!(e.to_string().contains("max_file_mb"), "{e}");
         let e = rt
-            .block_on(ex.extract(b"GIF89a not a pdf", "all", Mode::Text, false, None))
+            .block_on(ex.extract(b"plain words, not a pdf", "all", Mode::Text, false, None))
             .unwrap_err();
-        assert!(e.to_string().contains("not a PDF"), "{e}");
+        assert!(e.to_string().contains("neither a PDF nor"), "{e}");
+        // An image is readable only by OCR, so with OCR off it is refused by
+        // name before it is decoded, as is a text-layer read of one.
+        let e = rt
+            .block_on(ex.extract(b"GIF89a an image", "all", Mode::Auto, false, None))
+            .unwrap_err();
+        assert!(e.to_string().contains("OCR is off"), "{e}");
+        let e = rt
+            .block_on(ex.extract(b"GIF89a an image", "all", Mode::Text, false, None))
+            .unwrap_err();
+        assert!(e.to_string().contains("no text layer"), "{e}");
         let e = rt
             .block_on(ex.extract(b"%PDF-1.4", "all", Mode::Ocr, false, None))
             .unwrap_err();
@@ -2523,6 +2989,7 @@ mod tests {
     fn the_render_labels_each_source_and_never_shows_a_blank_as_a_transcript() {
         let ex = Extraction {
             sha256: sha256_hex(b"x"),
+            format: pdf_label(),
             pages_total: 3,
             mode: Mode::Auto,
             pages: vec![
@@ -2593,6 +3060,7 @@ mod tests {
         };
         let mut ex = Extraction {
             sha256: sha256_hex(b"x"),
+            format: pdf_label(),
             pages_total: 3,
             mode: Mode::Ocr,
             pages: vec![

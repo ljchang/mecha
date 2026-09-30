@@ -310,7 +310,7 @@ pub fn agent_config(base: &AgentConfig, system: String) -> AgentConfig {
         timezone,
         compact_keep_recent,
         loop_guard,
-        boredom: _,
+        boredom,
         compact_validate,
         step_escalation: _,
         step_checks: _,
@@ -328,7 +328,12 @@ pub fn agent_config(base: &AgentConfig, system: String) -> AgentConfig {
         system_prompt: Some(system),
         system_prompt_file: None,
         // The run's mechanics carry over: limits, model settings, caching,
-        // compaction, the clock's zone, the loop guard.
+        // compaction, the clock's zone, the loop guard, and boredom — which
+        // only ever speaks to a tool returning the same thing three times.
+        // It was off here as coaching for task work; then the first persona
+        // chats resent one refused `image_generate` forty times a run, and
+        // its notice is what turned both such runs in the assistant's corpus
+        // around (2026-09-30).
         max_turns,
         max_tokens,
         effort,
@@ -344,8 +349,7 @@ pub fn agent_config(base: &AgentConfig, system: String) -> AgentConfig {
         compact_validate,
         predictive_compaction,
         carried_state,
-        // Coaching for task work: a conversation is not going nowhere.
-        boredom: false,
+        boredom,
         // Plan steps and their checks: task machinery a chat does not run.
         step_escalation: false,
         step_checks: false,
@@ -914,11 +918,18 @@ mod tests {
                 || c.contrast_evidence
                 || c.sensors_in_brief
                 || c.appraisals_in_brief
-                || c.boredom
                 || c.step_checks
                 || c.step_escalation)
         );
         assert_eq!((c.max_turns, c.cache_prompt), (7, true));
+        // Boredom reads no store: it follows the base, so `--no-boredom`
+        // and eval's lever reach a persona chat too.
+        assert!(c.boredom);
+        let quiet = AgentConfig {
+            boredom: false,
+            ..base.clone()
+        };
+        assert!(!agent_config(&quiet, "persona".into()).boredom);
         let s = security(&SecurityConfig {
             block_sends_after_private: true,
             ..SecurityConfig::default()

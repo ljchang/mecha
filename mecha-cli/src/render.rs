@@ -203,8 +203,10 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                                     StopCause::OutputTokenBudget => "raise --max-output-tokens",
                                     StopCause::CostBudget => "raise --max-cost",
                                     // Not a budget: raising a ceiling won't
-                                    // unstick it. Starting over will.
-                                    StopCause::Loop => "the task did not survive compaction; retry, or raise the compaction threshold",
+                                    // unstick it. Starting over will — true
+                                    // of both of the guard's triggers, where
+                                    // the compaction threshold is only one's.
+                                    StopCause::Loop => "it was stuck repeating one call; start over, or ask differently",
                                     // Also not a budget. The per-turn budget
                                     // went to reasoning before the answer
                                     // started, so raising it buys a longer
