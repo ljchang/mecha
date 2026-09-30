@@ -39,7 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Drop or attach files in a persona chat.** Drag files onto the Personas
   tab, or use the paperclip, just as in the main chat. Files land in the
   chat's own `inbox/` and are named in your message. A picture is also shown
-  to the persona when its model can see images.
+  to the persona when its model can see images, and the chat is marked as
+  holding something private from that turn on — including a turn the crisis
+  pause held, and after a restart.
 
 - **Personas can read PDFs.** Add `"document_read"` to a persona's
   `[tools] allow` and it can read a PDF dropped into its chat. It gets the
