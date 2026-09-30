@@ -60,8 +60,8 @@ the charter and the scheduler.
 
 Nothing in it mentions `[image]`, `[documents]` (OCR and layout), voice,
 personas, `[[search]]`, the web app, the embeddings server, or the front door.
-Two of the four steps that do exist check the wrong thing: `mail` and `graph`
-look for a binary on PATH (`onboarding::on_path`) and never for the `[[mcp]]`
+Three of the four steps that do exist check the wrong thing: `mail`, `docs`
+and `graph` look for a binary on PATH (`onboarding::on_path`) and never for the `[[mcp]]`
 entry that actually puts the tools on the surface — an installed binary with
 no entry reads as done.
 
@@ -360,7 +360,7 @@ registry.
 | `Off` | not configured (or declined) | hidden | 404 `feature_off` | one sentence + the setup command | not registered |
 | `Blocked(Feature)` | configured, but something it needs is off — the **first** unmet need in `needs()` order (the parent, then `requires`) | hidden, and Settings says what it waits on | 404 `feature_off`, naming that dependency | names it; `mecha features enable` chains every unmet one (`mecha features enable web dictate`) | not registered |
 | `Unready(reason)` | enabled, but config or disk says it cannot work yet — settings missing or refused, no account authorised | **shown**, with a banner | 503 with the reason | the reason | whatever registration's own rule builds — nothing from an absent `[image]`; a mail server with no account still connects and says so per call |
-| `Down(reason)` | configured, and a probe found it not answering — **`mecha features --probe` only** | — (never produced: the web reads `On`, and the handler's own error is what the owner sees) | — (a route cannot probe per request) | the reason | registered |
+| `Down(reason)` | configured, and a probe found it not answering — **`mecha features --probe` only**, and so not a variant `state(facts, f)` returns: like *pending restart* (§4.2), it is the probe's annotation over an `On` row, added with the probe itself | — (never produced: the web reads `On`, and the handler's own error is what the owner sees) | — (a route cannot probe per request) | the reason | registered |
 | `On` | enabled and usable as far as config and disk can say | shown | normal | normal | registered |
 | `Unknown(reason)` | could not be read | **shown**, with a banner | normal | warns | registered |
 
@@ -713,7 +713,7 @@ Three things make it deliberate rather than accidental:
   in, not by who happens to supply them: a feature whose table is in
   `trial_env::OPERATOR_ONLY_TABLES` (`web`, `slack`, `image`, `messages` —
   whose switch is the alias of `[messages] enabled` — and, once step 1 and
-  step 5 add them, `documents` and `personas`) or in
+  step 5 add them, `documents`, `voice` and `personas`) or in
   `MACHINE_TABLES`
   (`search`, whose backends and keys `config_at` copies from the operator —
   `Egress::Chosen` at deep search, with nothing to degrade to `Unready`)
@@ -895,7 +895,7 @@ Each step is a PR, and each leaves every surface working.
    owner-guard tests gain an off feature's route (§4.2 item 4).
 4. **Setup iterates the registry.** A step per feature, `mecha setup
    <feature>`, `mecha setup --minimal`, dependencies offered first, and the
-   `[[mcp]]` checks that `mail` and `graph` are missing today.
+   `[[mcp]]` checks that `mail`, `docs` and `graph` are missing today.
    **Experiments** record the feature set beside `levers_off`, with a
    `lenient_features` loader of `lenient_levers`' all-or-nothing shape, and
    an environment's `requires` refuses a trial that lacks one (§5.1).
