@@ -4704,6 +4704,9 @@ fn fetch_selected_poll(modal: &mut polls::PollsModal) {
 /// PATH, because it is another crate's binary — and its absence is named,
 /// not mumbled.
 fn factory_cli(args: &[&str]) -> Result<String> {
+    // Every caller is `/polls` (close, status, fetch), which reaches the
+    // gate over the network: the front door's (review of #452).
+    crate::commands::features::require(mecha_core::feature::Feature::Frontdoor)?;
     let out = std::process::Command::new("factory-publish")
         .args(args)
         .stdin(std::process::Stdio::null())

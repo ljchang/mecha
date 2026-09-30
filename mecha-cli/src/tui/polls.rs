@@ -305,6 +305,9 @@ impl PollRow {
 /// The creation records, newest first. The directory not existing is not an
 /// error — it is a machine that has never created a poll.
 pub fn load() -> anyhow::Result<Vec<PollRow>> {
+    // The driver asks, as `mecha polls` does: `/polls` reads the records
+    // in-process (review of #452).
+    crate::commands::features::require(mecha_core::feature::Feature::Frontdoor)?;
     let dir = mecha_core::work::mecha_home()?
         .join("factory")
         .join("polls");
@@ -385,6 +388,30 @@ fn row(record: &serde_json::Value) -> Option<PollRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `/polls`' drivers ask the switch, as `mecha polls` does: with the
+    /// front door off the modal does not list, and `pick_next` — which the
+    /// TUI calls directly and which rewrites a poll's record — refuses
+    /// (review of #452).
+    #[test]
+    fn the_poll_drivers_refuse_when_the_front_door_is_off() {
+        let home = crate::testenv::HomeGuard::new("tui-polls-off");
+        std::fs::write(
+            home.dir.join("config.toml"),
+            "[features]\nfrontdoor = false\n",
+        )
+        .unwrap();
+        let listed = load().err().expect("the modal refuses");
+        assert!(
+            format!("{listed:#}").contains("`mecha features enable frontdoor`"),
+            "{listed:#}"
+        );
+        let picked = crate::commands::polls::pick_next("poll-1").unwrap_err();
+        assert!(
+            format!("{picked:#}").contains("`mecha features enable frontdoor`"),
+            "{picked:#}"
+        );
+    }
 
     fn record() -> serde_json::Value {
         serde_json::json!({
