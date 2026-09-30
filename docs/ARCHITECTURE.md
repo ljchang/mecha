@@ -8408,8 +8408,8 @@ The things that decide the design:
   information, so narrow is the fail-safe direction. Nothing is removed
   (dropping a `tool_result` block is a 400), and what it frees counts toward
   the same-turn re-ask like any other pass's. Distinct from the loop guard, which
-  stops a run that has already gone wrong and only after a compaction; this
-  runs before there is anything to stop.
+  stops a run that has already gone wrong; this runs before there is
+  anything to stop.
 - **The cut has to be legal, not convenient.** A `tool_result` whose `tool_use`
   is gone is a 400, and that is the whole run. Tool results arrive in the user
   message right after the assistant turn that asked for them, so the only safe
@@ -8436,6 +8436,17 @@ The things that decide the design:
   bounded hard — once per rung, once per turn, three times per run — because a
   model is measurably likelier to fail a step when its context holds its own
   earlier errors, which makes nagging a stuck run a way of keeping it stuck.
+- **One loop the guard watches without a compaction: the same call refused
+  the same way in five consecutive turns** (`LoopGuard::REFUSED_REPEATS`),
+  under the same switch and the same `StopCause::Loop`. An error that does
+  not move under an unchanged call cannot be a poll. The dormancy above
+  asked for a measurement, and this is it (2026-09-30, 1,031 transcripts,
+  3,187 tool turns). At five it fires once: a persona chat that resent one
+  refused `image_generate` forty times a run, twice, holding the GPU while
+  another chat drew. At three it would also have stopped two mail runs that
+  recovered on the next turn, after boredom's notice named the repeat. So
+  the stop is two turns past that notice, and persona chats now carry
+  boredom from the base config rather than switching it off.
 - **The record is searchable after the summary.** `tool/recall.rs` registers
   `recall` on the session-recording front-ends (chat, the TUI, resumed runs):
   it searches the union of everything the transcript ever recorded — including

@@ -1122,21 +1122,41 @@ pub fn owner_text(message: &Message) -> String {
 /// and expensive, because a stuck run there is burning the largest prompts it
 /// will ever send. Keyed on call *and* result: identical arguments with a
 /// changing result is polling, and a poll must never grade as stuck.
+///
+/// **One loop it watches without a compaction: the same call refused the
+/// same way, turn after turn** ([`LoopGuard::REFUSED_REPEATS`]). That
+/// is the measurement the dormancy asks for. Across 1,031 transcripts
+/// (3,187 tool turns, 2026-09-30), five identical errors in consecutive turns
+/// happened once — a persona chat that resent one refused `image_generate`
+/// forty times, twice, holding the GPU while another chat drew. At three
+/// it would also have stopped two mail runs that recovered on the next turn,
+/// after boredom's notice named the repeat, which is why the stop waits for
+/// the notice to be ignored twice. An error cannot be a poll the way a
+/// changing result is: the answer did not move, and neither did the call.
 struct LoopGuard {
     enabled: bool,
     armed: bool,
     recent: std::collections::VecDeque<u64>,
+    /// Errored call-and-result digests, with how many consecutive turns each
+    /// has come back in. A turn without one ends its streak.
+    refused: std::collections::HashMap<u64, u32>,
 }
 
 impl LoopGuard {
     /// How many prior calls a repeat is checked against.
     const WINDOW: usize = 3;
 
+    /// Consecutive turns one identical call may come back with one identical
+    /// error before the run ends: boredom speaks at its third
+    /// (`boredom::STUCK`), and two more are the notice ignored.
+    const REFUSED_REPEATS: u32 = 5;
+
     fn new(enabled: bool) -> Self {
         LoopGuard {
             enabled,
             armed: false,
             recent: std::collections::VecDeque::new(),
+            refused: std::collections::HashMap::new(),
         }
     }
 
@@ -1166,6 +1186,24 @@ impl LoopGuard {
             }
         }
         repeated
+    }
+
+    /// Record one turn's *errored* calls; true when one identical call has
+    /// now come back with one identical error in
+    /// [`Self::REFUSED_REPEATS`] consecutive turns. Watched whether or not a
+    /// compaction armed the guard, and off with it. Per turn, as above: two
+    /// in one batch count once.
+    fn observe_refusals(&mut self, turn: impl IntoIterator<Item = u64>) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let this: std::collections::HashSet<u64> = turn.into_iter().collect();
+        let prior = std::mem::take(&mut self.refused);
+        self.refused = this
+            .into_iter()
+            .map(|d| (d, prior.get(&d).copied().unwrap_or(0) + 1))
+            .collect();
+        self.refused.values().any(|&n| n >= Self::REFUSED_REPEATS)
     }
 
     fn digest(name: &str, input: &Value, result: &str) -> u64 {
@@ -2796,36 +2834,51 @@ impl Agent {
                         .map(|(id, name, input)| (id, (name, input)))
                         .collect();
                     //
-                    // One walk, two consumers, for the reason the byte
+                    // One walk, three consumers, for the reason the byte
                     // measurement above is taken once: pairing every result
-                    // with its call renders each input, and both readers need
-                    // the same three values. They key differently on purpose —
+                    // with its call renders each input, and every reader needs
+                    // the same values. They key differently on purpose —
                     // the guard on the exact call, boredom on the *target*, so
                     // two tools that read one file and get the same bytes count
-                    // as the same thing learned twice.
-                    let outcomes: Vec<(&str, &Value, &str)> = results
+                    // as the same thing learned twice. Only the guard's refusal
+                    // streak reads the error flag.
+                    let outcomes: Vec<(&str, &Value, &str, bool)> = results
                         .iter()
                         .filter_map(|block| {
                             let Block::ToolResult {
                                 tool_use_id,
                                 content,
-                                ..
+                                is_error,
                             } = block
                             else {
                                 return None;
                             };
                             let &(name, input) = inputs.get(tool_use_id.as_str())?;
-                            Some((name, input, content.as_str()))
+                            Some((name, input, content.as_str(), *is_error))
                         })
                         .collect();
 
                     if loop_guard.observe_turn(
-                        outcomes
-                            .iter()
-                            .map(|(name, input, content)| LoopGuard::digest(name, input, content)),
+                        outcomes.iter().map(|(name, input, content, _)| {
+                            LoopGuard::digest(name, input, content)
+                        }),
                     ) {
                         tracing::warn!(
                             "identical call and result repeated after a compaction; stopping"
+                        );
+                        loop_detected = true;
+                    }
+                    if loop_guard.observe_refusals(
+                        outcomes
+                            .iter()
+                            .filter(|o| o.3)
+                            .map(|(name, input, content, _)| {
+                                LoopGuard::digest(name, input, content)
+                            }),
+                    ) {
+                        tracing::warn!(
+                            repeats = LoopGuard::REFUSED_REPEATS,
+                            "one call refused identically, turn after turn; stopping"
                         );
                         loop_detected = true;
                     }
@@ -2833,7 +2886,7 @@ impl Agent {
                     // that has stopped teaching the run anything, named while
                     // there is still something to do about it.
                     let bored =
-                        boredom.observe_turn(outcomes.iter().map(|(name, input, content)| {
+                        boredom.observe_turn(outcomes.iter().map(|(name, input, content, _)| {
                             (*name, crate::boredom::Boredom::key(name, input, content))
                         }));
 
@@ -11423,6 +11476,9 @@ mod tests {
         agent.cfg.compact_keep_recent = 50;
         agent.cfg.max_turns = 10;
         agent.cfg.force_final_answer = false;
+        // The collapse pass alone: six identical failures are one past what
+        // the loop guard lets a run make (`LoopGuard::REFUSED_REPEATS`).
+        agent.cfg.loop_guard = false;
 
         let mut convo = Conversation::user("fix the call site");
         agent.run(&mut convo, None).await.unwrap();
@@ -12121,6 +12177,111 @@ mod tests {
             StopCause::Completed,
             "the off switch did not take"
         );
+    }
+
+    /// Always refuses, the same way: an expected failure the model is meant
+    /// to route around, as `image_generate` refuses a character named
+    /// outside `cast`.
+    struct Refuse;
+
+    #[async_trait]
+    impl Tool for Refuse {
+        fn name(&self) -> &str {
+            "refuse"
+        }
+        fn description(&self) -> &str {
+            "refuses"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::err("Nothing was drawn: put them in `cast`."))
+        }
+    }
+
+    fn refused_calls(n: usize) -> Vec<CompletionResponse> {
+        (0..n)
+            .map(|i| {
+                assistant(
+                    vec![Block::ToolUse {
+                        id: format!("x{i}"),
+                        name: "refuse".into(),
+                        input: json!({"prompt": "Maya in the garden"}),
+                    }],
+                    StopReason::ToolUse,
+                )
+            })
+            .collect()
+    }
+
+    /// The loop the first persona chats hit (2026-09-30): one refused call,
+    /// resent unchanged until `max_turns`. With no compaction, the fifth
+    /// identical refusal ends the run as a loop — and the run still answers,
+    /// through the tool-less final turn every ceiling takes.
+    #[tokio::test]
+    async fn one_call_refused_identically_turn_after_turn_stops_the_run() {
+        let mut turns = refused_calls(5);
+        turns.push(assistant(
+            vec![Block::text("I couldn't draw it.")],
+            StopReason::EndTurn,
+        ));
+        let (mut agent, _) = agent_with(turns, PermissionMode::Allow);
+        agent.registry_mut().insert(Arc::new(Refuse));
+        let mut convo = Conversation::user("draw yourself");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Loop);
+        assert_eq!(outcome.tool_calls.len(), 5);
+        assert_eq!(outcome.text, "I couldn't draw it.");
+    }
+
+    /// Four is still the model's to work out: the two mail runs in the
+    /// corpus recovered on the turn after boredom's notice at three.
+    #[tokio::test]
+    async fn four_identical_refusals_are_not_yet_a_loop() {
+        let mut turns = refused_calls(4);
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) = agent_with(turns, PermissionMode::Allow);
+        agent.registry_mut().insert(Arc::new(Refuse));
+        let mut convo = Conversation::user("draw yourself");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+        assert_eq!(outcome.text, "done");
+    }
+
+    #[test]
+    fn the_refusal_streak_is_consecutive_identical_and_per_turn() {
+        let fire = |turns: &[&[u64]], enabled: bool| {
+            let mut g = LoopGuard::new(enabled);
+            turns
+                .iter()
+                .map(|t| g.observe_refusals(t.iter().copied()))
+                .collect::<Vec<_>>()
+        };
+        // Five in a row fires on the fifth, never armed by a compaction.
+        assert_eq!(
+            fire(&[&[1], &[1], &[1], &[1], &[1]], true),
+            [false, false, false, false, true]
+        );
+        // A turn without it — a different error, or none (a success never
+        // reaches this reader) — ends the streak.
+        assert!(!fire(&[&[1], &[1], &[2], &[1], &[1], &[1]], true)
+            .into_iter()
+            .any(|f| f));
+        assert!(!fire(&[&[1], &[1], &[], &[1], &[1], &[1]], true)
+            .into_iter()
+            .any(|f| f));
+        // Twice in one batch is one turn's worth.
+        assert!(!fire(&[&[1, 1], &[1, 1]], true).into_iter().any(|f| f));
+        // Beside other calls it still counts.
+        assert!(fire(&[&[1, 2], &[1, 3], &[1], &[4, 1], &[1]], true)[4]);
+        // Off is off.
+        assert!(!fire(&[&[1u64][..]; 6], false).into_iter().any(|f| f));
     }
 
     #[tokio::test]

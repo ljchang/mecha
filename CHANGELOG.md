@@ -312,6 +312,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A chat no longer resends a refused call for minutes.** If a tool
+  refuses the same call the same way, turn after turn, the run now stops
+  after five tries. You get an answer saying what could not be done, instead
+  of up to forty identical attempts. One persona chat did this with a
+  picture, twice, and held the GPU while another chat was drawing. Persona
+  chats also get the note the assistant already had: after three identical
+  results, the model is told that nothing is being learned and to try
+  another way, which is what rescued the assistant's two such runs.
+  `[agent] loop_guard = false` switches the stop off.
+
 - **A name not in the image library no longer blocks a picture.** When
   the assistant names someone in a picture who isn't a library character,
   they are drawn from the description it gave, as an extra, and the result
