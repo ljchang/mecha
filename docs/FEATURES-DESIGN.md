@@ -488,7 +488,12 @@ it. So, in step 1, the `tool_availability_notices` shape Hermes uses:
   `mecha features enable mail` (or `mecha setup`)"* — on stderr, like the
   routed-outbox-name warning that fires on every start. "Would otherwise be
   usable" is the full `state` with every switch **absent from** `[features]`
-  treated as on — and it iterates only features that *have* a switch
+  treated as on — **not** a settings table being present: four features'
+  evidence is not a table at all — `slack` a token store, `personas` a
+  non-empty store, `voice` an installed unit file (installed, not running: a
+  socket-activated unit is idle until asked, and §4.3 reads unit files, never
+  sockets), `frontdoor` a binary on PATH — and a table-keyed notice could not
+  fire for any of them. It iterates only features that *have* a switch
   (`part_of().is_none()`), since a part has no bool to announce and `enable`
   refuses a part id by name. The substitution covers every absent switch,
   not just the one being announced, because on this install the dependencies
@@ -496,23 +501,20 @@ it. So, in step 1, the `tool_availability_notices` shape Hermes uses:
   short-circuit it to `Blocked`, so the line would never print. An explicit
   `false` is an answer, not an unanswered question, and is never substituted:
   an owner who wrote `web = false` is not told to enable `incognito` on every
-  start (found on review of #435, passes 3 and 4) — **not** a
-  settings table being present: four features' evidence is not a table at
-  all — `slack` a token store, `personas` a non-empty store, `voice` an
-  installed unit file (installed, not running: a socket-activated unit is
-  idle until asked, and §4.3 reads unit files, never sockets), `frontdoor` a
-  binary on PATH — and a table-keyed notice could not fire for any of them.
-  The notice and F6's detector are one function. **Two obligations on step 1
+  start (found on review of #435, passes 3 and 4). The notice and F6's
+  detector are one function. **Two obligations on step 1
   before it can key on this** (found on review of #435): `personas` and
   `voice` are unconditional `On` in step 0 ("no switch yet"), so step 1 must
   give them the evidence named here first, or both lines print on every
-  light install forever; and because it is `state`, not `own_state`, a
-  feature whose dependency is off (`incognito` without `web`) is announced
-  with the dependency first — *"`incognito`: needs `web` — `mecha features
+  light install forever; and a feature whose dependency's bool is **also
+  absent** (`incognito` with no `web` key) is announced with the dependency
+  first, because the substitution holds only inside the notice — on disk
+  `web` is still absent, and `enable incognito` alone would land in
+  `Blocked` — *"`incognito`: needs `web` — `mecha features
   enable web incognito`"* — never offered alone into a `Blocked` it cannot
   leave;
-- `mecha features` shows that pair as its own row (settings present, switch
-  absent), not a bare `off`, as it does an off front door with requests
+- `mecha features` shows that case as its own row (switch absent, would
+  otherwise be usable), not a bare `off`, as it does an off front door with requests
   waiting;
 - `mecha serve` refusing for `web` tells *"this install predates the
   switch — `mecha features enable web`"* apart from *"the web app is turned
@@ -800,11 +802,14 @@ Three things make it deliberate rather than accidental:
   reason, never ignored with a warning: a warning fails open in exactly the
   way the `requires` bullet below exists to close — the arm would run without
   the feature it asked for and be scored anyway. An environment may set any
-  key to `false`. Three tests pin it: `graph = true`, `search = true` or
+  key to `false`. Four tests pin it: `graph = true`, `search = true` or
   `messages = true` in an environment file refuses the trial; `graph` absent
-  with a manifest carrying no graph server reads off; and `graph = false`
-  beside `live_servers = ["graph"]` reads off (found on review of #427,
-  passes 4 and 5, and #435). Turning features off is how a trial is made light; this is the switch
+  with a manifest carrying no graph server reads off; `graph = false` beside
+  `live_servers = ["graph"]` reads off; and — the positive, and the only one
+  a step-1 default of `false` would fail — `graph` **absent** beside
+  `live_servers = ["graph"]` reads **on**, so existing `live_servers`
+  experiments keep their graph (found on review of #427, passes 4 and 5,
+  and #435). Turning features off is how a trial is made light; this is the switch
   it uses. But which features were on
   is as much a condition as which levers were off, so the experiment manifest
   and the session record carry the feature set beside `levers_off`, from the
@@ -886,7 +891,9 @@ Rules:
   of everything enabled and reports llmfit's ratio band against the machine's
   memory, with `null` for any feature whose peak is unmeasured. On a
   `Discrete` machine that is **two sums against two totals** — the GPU's
-  memory and the host's — never one: a single sum would pass a chat model
+  memory and the host's — never one, and a `null` is per pool: a row whose
+  `host` is `Unmeasured` nulls the host sum and leaves the GPU sum standing,
+  never the reverse and never both: a single sum would pass a chat model
   that does not fit the card and fail an OCR server that fits host RAM with
   room to spare (found on review of #435). This is why
   `residency` is on the row: an on-demand OCR server costs nothing until a
