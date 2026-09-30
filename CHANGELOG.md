@@ -199,6 +199,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The document cache is private all the way down.** `~/.mecha/documents/`
+  and every directory under it are now created owner-only (0700), and every
+  file in it 0600. Before, only the per-file entry was, so the cache root and each entry's `ocr/`
+  folder were left at the umask default, and another local user could list
+  which PDFs had been read, by hash. An existing cache is tightened on its
+  next write. `mecha document prune` now fails on a cache it cannot read,
+  instead of reporting "removed 0" (#410).
+
 - **Image edits that move someone or change a pose no longer come back
   unchanged.** The cause was the prompt, not chance: the edit model returns
   the same picture when the prompt describes the whole scene or asks to keep
