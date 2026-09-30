@@ -3202,6 +3202,11 @@ mod tests {
     #[test]
     fn the_legacy_stores_follow_the_mail_crates_rule() {
         use crate::onboarding::legacy_store_dir;
+        // The crate's one environment lock: the blocks below move the real
+        // mail-store variables, which `feature::Facts::read` reads from other
+        // threads — a `setenv` racing a `getenv` is a data race on `environ`,
+        // not just a window (review of #432).
+        let _lock = crate::work::tests::lock();
         // A variable nothing else reads, so no parallel test races it. An
         // empty value is a configured empty path, not the fallback — that is
         // `token::provider_path`'s rule, mirrored as it is, though
@@ -3219,11 +3224,9 @@ mod tests {
         );
         assert_eq!(set, PathBuf::from("/tmp/somewhere-else"));
 
-        // `of_owner` names the mail crate's variables. In this crate they are
-        // read by `onboarding`'s store helpers, which other tests reach
-        // (`feature::Facts::read`) — none of them asserts on a mail store, so
-        // the window is harmless today; each block restores before it
-        // asserts, so a failure cannot leak the variable onward.
+        // `of_owner` names the mail crate's variables. Held under the lock
+        // above; each block also restores before it asserts, so a failure
+        // cannot leak the variable into the tests after it.
         let restore = std::env::var("MECHA_GOOGLE_DIR").ok();
         std::env::set_var("MECHA_GOOGLE_DIR", "/tmp/google-elsewhere");
         let legacy = MailStores::of_owner().legacy;
