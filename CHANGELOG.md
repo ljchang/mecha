@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **An experiment environment can no longer set `[documents]`.** A project's
+  `mecha.toml` was already stripped of it, but an environment's `config.toml`
+  — which arrives with a checkout — could point OCR at a remote server or run
+  the PDF parser unconfined. `mecha exp` now refuses such a file, as it does
+  `[image]`, `[messages]`, `[slack]`, `[web]` and `[harness]`.
+
 ### Added
 
 - **The charter editor keeps your comments.** Saving the charter from the
