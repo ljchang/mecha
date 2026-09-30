@@ -310,17 +310,31 @@ impl PersonaChats {
                 .into_iter()
                 .map(|(name, starter)| serde_json::json!({ "name": name, "starter": starter }))
                 .collect();
-        let characters: Vec<&str> = lib
-            .approved()
-            .filter(|e| e.kind == mecha_core::imagelib::Kind::Character)
-            .filter(|e| !e.locked || unlocked)
-            .map(|e| e.name.as_str())
-            .collect();
+        let characters = visible_characters(&lib, unlocked);
         Ok(serde_json::json!({
             "relationships": relationships,
             "groups": store.groups().keys().collect::<Vec<_>>(),
             "characters": characters,
         }))
+    }
+
+    /// What the settings form offers, from the stores as they stand — built
+    /// the same way for the page's GET and for checking its save, so a save
+    /// is held to the choices the page was shown.
+    fn form(&self, library: &LibraryState, token: Option<&str>) -> mecha_core::tomlform::Form {
+        let store = Store::load(&self.store);
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        mecha_core::persona::settings_form(&mecha_core::persona::FormChoices {
+            relationships: mecha_core::persona::relationship_choices(&self.store)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect(),
+            groups: store.groups().keys().cloned().collect(),
+            characters: visible_characters(&lib, library.unlocked(token))
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        })
     }
 
     /// Make a persona — the owner's, so approved at once, exactly as
@@ -368,6 +382,23 @@ impl PersonaChats {
         ] {
             let text =
                 mecha_core::persona::read_owner_file(&self.store, &p.name, file).map_err(failed)?;
+            // The settings file also comes as a form. One the form cannot
+            // read (a hand edit that does not load) comes without it, and
+            // why: the page edits it as text until it loads again.
+            let form = if file == mecha_core::persona::OwnerFile::Settings {
+                let form = self.form(library, token);
+                match mecha_core::persona::settings_values(&form, &text) {
+                    Ok(values) => serde_json::json!({ "form": form, "values": values }),
+                    Err(e) => serde_json::json!({ "problem": format!("{e:#}") }),
+                }
+            } else {
+                // Markdown: the file split into its parts (`mdform`), and the
+                // sections it must keep.
+                serde_json::json!({
+                    "doc": mecha_core::mdform::split(&text),
+                    "fixed": mecha_core::persona::fixed_sections(file),
+                })
+            };
             out.insert(
                 serde_json::to_value(file)
                     .map_err(|e| failed(e.into()))?
@@ -378,6 +409,7 @@ impl PersonaChats {
                     "file": file.file_name(),
                     "digest": mecha_core::persona::text_digest(&text),
                     "text": text,
+                    "form": form,
                 }),
             );
         }
@@ -394,16 +426,45 @@ impl PersonaChats {
         let p = self
             .visible(library, name, body.unlock.as_deref())
             .ok_or(Refusal::NotFound)?;
-        let state = mecha_core::persona::write_owner_file(
-            &self.store,
-            &p.name,
-            body.file,
-            &body.text,
-            // Required from the page: a save that could skip the stale check
-            // by leaving out a field would make it advisory (review of #420).
-            Some(&body.base),
-        )
-        .map_err(|e| {
+        // Required from the page either way: a save that could skip the stale
+        // check by leaving out a field would make it advisory (review of #420).
+        let saved = match (body.text, body.changes, body.doc) {
+            (None, None, Some(doc)) => mecha_core::persona::edit_markdown(
+                &self.store,
+                &p.name,
+                body.file,
+                &doc,
+                &body.base,
+            ),
+            (Some(text), None, None) => mecha_core::persona::write_owner_file(
+                &self.store,
+                &p.name,
+                body.file,
+                &text,
+                Some(&body.base),
+            ),
+            (None, Some(changes), None)
+                if body.file == mecha_core::persona::OwnerFile::Settings =>
+            {
+                let form = self.form(library, body.unlock.as_deref());
+                mecha_core::persona::edit_settings(
+                    &self.store,
+                    &p.name,
+                    &form,
+                    &changes,
+                    &body.base,
+                )
+            }
+            (None, Some(_), None) => {
+                return Err(Refusal::Bad("only persona.toml is edited as a form".into()))
+            }
+            _ => {
+                return Err(Refusal::Bad(
+                    "a save carries one of `text`, `changes` or `doc`".into(),
+                ))
+            }
+        };
+        let state = saved.map_err(|e| {
             if e.downcast_ref::<mecha_core::persona::StaleEdit>().is_some() {
                 Refusal::Conflict(format!("{e:#}"))
             } else {
@@ -1347,10 +1408,29 @@ pub struct CreateBody {
     locked: bool,
 }
 
+/// The approved characters the viewer may see: every one when the library is
+/// unlocked, the unlocked ones otherwise.
+fn visible_characters(lib: &mecha_core::imagelib::Library, unlocked: bool) -> Vec<&str> {
+    lib.approved()
+        .filter(|e| e.kind == mecha_core::imagelib::Kind::Character)
+        .filter(|e| !e.locked || unlocked)
+        .map(|e| e.name.as_str())
+        .collect()
+}
+
 #[derive(serde::Deserialize)]
 pub struct SaveBody {
     file: mecha_core::persona::OwnerFile,
-    text: String,
+    /// The whole file, verbatim — or `changes`, a form's `{path: value}`
+    /// set in place (`tomlform`), or `doc`; exactly one.
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    changes: Option<serde_json::Map<String, serde_json::Value>>,
+    /// A Markdown file's form (`mdform::Doc`), written in its canonical
+    /// layout.
+    #[serde(default)]
+    doc: Option<mecha_core::mdform::Doc>,
     /// The digest of the file as the page opened it — required.
     base: String,
     #[serde(default)]
@@ -2654,6 +2734,100 @@ mod tests {
             })),
         );
         assert!(matches!(bad, Err(Refusal::Bad(_))), "{bad:?}");
+
+        // The settings file comes as a form too, and a form's changes save
+        // in place — the template's comments still there after.
+        let files = w.personas().files(&w.library, "priya", None).unwrap();
+        let settings = &files["settings"];
+        assert_eq!(settings["form"]["values"]["safety.crisis"], true);
+        assert!(
+            settings["form"]["form"]["sections"]
+                .as_array()
+                .unwrap()
+                .len()
+                >= 4
+        );
+        assert!(files["identity"]["form"]["doc"].is_object());
+        let saved = w
+            .personas()
+            .save(
+                &w.library,
+                "priya",
+                body(serde_json::json!({
+                    "file": "settings", "changes": { "safety.dose": false },
+                    "base": settings["digest"],
+                })),
+            )
+            .unwrap();
+        assert_eq!(saved["version"], 3);
+        let after = w.personas().files(&w.library, "priya", None).unwrap();
+        let text = after["settings"]["text"].as_str().unwrap();
+        assert!(text.contains("dose       = false"), "{text}");
+        assert!(text.contains("# all on by default"), "{text}");
+        assert_eq!(after["settings"]["form"]["values"]["safety.dose"], false);
+
+        // Exactly one of text and changes; a form only for persona.toml; and
+        // only what the form offers — each a 400, nothing written.
+        let base = after["settings"]["digest"].clone();
+        for bad in [
+            serde_json::json!({ "file": "settings", "base": base }),
+            serde_json::json!({ "file": "settings", "text": text, "changes": {}, "base": base }),
+            serde_json::json!({ "file": "identity", "changes": {}, "base": after["identity"]["digest"] }),
+            serde_json::json!({ "file": "settings", "changes": { "tools.deny": [] }, "base": base }),
+            serde_json::json!({ "file": "settings", "changes": { "groups": ["strangers"] }, "base": base }),
+        ] {
+            let refused = w.personas().save(&w.library, "priya", body(bad.clone()));
+            assert!(
+                matches!(refused, Err(Refusal::Bad(_))),
+                "{bad} → {refused:?}"
+            );
+        }
+        let unchanged = w.personas().files(&w.library, "priya", None).unwrap();
+        assert_eq!(unchanged["settings"]["text"], after["settings"]["text"]);
+
+        // Identity comes as its parts; saved from them in one layout, and
+        // `## Core` cannot be dropped.
+        let files = w.personas().files(&w.library, "priya", None).unwrap();
+        let mut doc = files["identity"]["form"]["doc"].clone();
+        assert_eq!(
+            files["identity"]["form"]["fixed"],
+            serde_json::json!(["Core"])
+        );
+        assert_eq!(doc["sections"][0]["heading"], "Core");
+        doc["sections"][0]["body"] = "Patient, exact.".into();
+        doc["sections"][0]["note"] = "never softer".into();
+        let saved = w
+            .personas()
+            .save(
+                &w.library,
+                "priya",
+                body(serde_json::json!({
+                    "file": "identity", "doc": doc, "base": files["identity"]["digest"],
+                })),
+            )
+            .unwrap();
+        assert_eq!(saved["problems"].as_array().unwrap().len(), 0, "{saved}");
+        let text = w.personas().files(&w.library, "priya", None).unwrap()["identity"]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            text.contains("## Core\n\n<!-- never softer -->\n\nPatient, exact.\n"),
+            "{text}"
+        );
+        assert!(text.contains("<!-- kept -->"), "{text}");
+        let files = w.personas().files(&w.library, "priya", None).unwrap();
+        let mut doc = files["identity"]["form"]["doc"].clone();
+        doc["sections"][0]["heading"] = "Centre".into();
+        let refused = w.personas().save(
+            &w.library,
+            "priya",
+            body(serde_json::json!({ "file": "identity", "doc": doc, "base": files["identity"]["digest"] })),
+        );
+        assert!(
+            matches!(refused, Err(Refusal::Bad(ref m)) if m.contains("Core")),
+            "{refused:?}"
+        );
 
         // Locked: its files answer as missing without the unlock.
         w.personas().lock(&w.library, "priya", true, None).unwrap();

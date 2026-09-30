@@ -1,0 +1,91 @@
+/* The owner-file forms' look — `TomlForm.svelte` and `MdForm.svelte` share
+ * it, so every file the owner edits from the page reads as one surface.
+ * Global and `tf-` prefixed rather than scoped, because two components draw
+ * the same controls. */
+.tf { display: flex; flex-direction: column; gap: 14px; }
+.tf-sec { background: var(--bg); border: 1px solid var(--accent-900); border-radius: 12px; overflow: hidden; }
+.tf-sec header { padding: 14px 16px 10px; }
+.tf-sec h3 { margin: 0; font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-300); }
+.tf-sec header .tf-help { margin: 4px 0 0; }
+.tf-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px 16px; padding: 12px 16px; border-top: 1px solid var(--accent-900); }
+.tf-row.stack { grid-template-columns: 1fr; }
+.tf-label { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.tf-name { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); }
+.tf-help { font-size: 12px; line-height: 1.4; color: var(--text-muted); }
+.tf-opthelp { grid-column: 1 / -1; }
+.tf-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-400); flex-shrink: 0; }
+
+.tf-switch { position: relative; width: 44px; height: 26px; padding: 0; border-radius: 13px; border: 1px solid var(--accent-700); background: var(--surface); cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+.tf-switch[aria-checked='true'] { background: var(--accent-400); border-color: var(--accent-400); }
+.tf-knob { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: var(--text-muted); transition: transform 0.15s, background 0.15s; }
+.tf-switch[aria-checked='true'] .tf-knob { transform: translateX(18px); background: var(--void); }
+.tf-switch:focus-visible, .tf-seg button:focus-visible, .tf-chip:focus-visible { outline: 2px solid var(--accent-300); outline-offset: 2px; }
+
+.tf-seg { display: inline-flex; padding: 2px; gap: 2px; background: var(--void); border: 1px solid var(--accent-900); border-radius: 8px; }
+.tf-seg button { min-height: 32px; padding: 0 12px; border: none; border-radius: 6px; background: transparent; color: var(--text-muted); font-size: 13px; cursor: pointer; white-space: nowrap; }
+.tf-seg button.on { background: var(--accent-900); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent-700); }
+
+.tf-select { position: relative; display: inline-flex; align-items: center; color: var(--text-muted); }
+.tf-select select { appearance: none; min-height: 36px; min-width: 150px; max-width: 220px; padding: 0 32px 0 12px; background: var(--void); border: 1px solid var(--accent-900); border-radius: 8px; color: var(--text); font-family: var(--sans); font-size: 13px; }
+.tf-select svg { position: absolute; right: 10px; pointer-events: none; }
+
+.tf-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.tf-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; background: transparent; border: 1px solid var(--accent-900); border-radius: 16px; color: var(--text-muted); font-size: 13px; cursor: pointer; }
+.tf-chip.on { background: var(--accent-900); border-color: var(--accent-700); color: var(--text); }
+.tf-chip svg { color: var(--accent-400); }
+.tf-add { display: inline-flex; align-items: center; height: 32px; border: 1px dashed var(--accent-700); border-radius: 16px; overflow: hidden; }
+.tf-add input { width: 96px; height: 100%; padding: 0 4px 0 12px; background: transparent; border: none; color: var(--text); font-family: var(--mono); font-size: 12px; outline: none; }
+.tf-add button { display: flex; align-items: center; justify-content: center; width: 30px; height: 100%; background: transparent; border: none; color: var(--accent-400); cursor: pointer; }
+.tf-add button:disabled { color: var(--text-muted); opacity: 0.5; }
+
+.tf-text { width: 100%; min-height: 40px; padding: 0 12px; background: var(--void); border: 1px solid var(--accent-900); border-radius: 8px; color: var(--text); font-family: var(--sans); font-size: 14px; }
+.tf-text:focus, .tf-select select:focus { outline: none; border-color: var(--accent-500); }
+
+.tf-bar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 10px; padding: 12px 0 4px; background: linear-gradient(transparent, var(--void) 30%); }
+.tf-count { flex: 1; font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+.tf-bar.live .tf-count { color: var(--accent-300); }
+.tf-btn { min-height: 40px; padding: 0 18px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: 8px; color: var(--text); font-size: 14px; cursor: pointer; }
+.tf-btn.primary { background: var(--accent-400); border: none; color: var(--void); font-weight: 500; }
+.tf-btn:disabled { opacity: 0.45; cursor: default; }
+.tf button:disabled { cursor: default; }
+
+/* Markdown files: one page, not a stack of cards — the writing is the
+ * content, and each section's controls wait behind one ⋯ menu. */
+.tf-page { display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--accent-900); border-radius: 14px; padding: 6px 0 4px; }
+.tf-part { display: flex; flex-direction: column; gap: 6px; padding: 16px 18px 12px; }
+.tf-part + .tf-part { border-top: 1px solid color-mix(in srgb, var(--accent-900) 70%, transparent); }
+.tf-top { padding-top: 12px; }
+.tf-headrow { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+.tf-title { flex: 1; min-width: 0; padding: 0; background: transparent; border: none; color: var(--text); font-family: var(--sans); font-size: 24px; font-weight: 650; letter-spacing: -0.01em; outline: none; }
+.tf-hash { font-family: var(--mono); font-size: 13px; color: var(--accent-700); }
+.tf-heading { flex: 1; min-width: 0; padding: 0; background: transparent; border: none; color: var(--text); font-family: var(--sans); font-size: 17px; font-weight: 600; outline: none; }
+.tf-title::placeholder, .tf-heading::placeholder { color: var(--text-muted); font-weight: 400; }
+.tf-pinned { display: flex; align-items: center; gap: 8px; }
+.tf-pinned svg { color: var(--accent-400); }
+.tf-caption { margin: -4px 0 2px; font-size: 12px; line-height: 1.45; color: var(--text-muted); }
+.tf-menuwrap { position: relative; margin-left: auto; }
+.tf-more { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; margin-right: -10px; padding: 0; background: transparent; border: none; border-radius: 10px; color: var(--text-muted); cursor: pointer; }
+.tf-more:hover:not(:disabled), .tf-more[aria-expanded='true'] { background: var(--surface); color: var(--text); }
+.tf-menu { position: absolute; top: 44px; right: -6px; z-index: 4; display: flex; flex-direction: column; min-width: 210px; padding: 6px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: 12px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); }
+.tf-item { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px; background: transparent; border: none; border-radius: 8px; color: var(--text); font-size: 14px; text-align: left; cursor: pointer; }
+.tf-item svg { color: var(--text-muted); }
+.tf-item:hover:not(:disabled) { background: var(--accent-900); }
+.tf-item:disabled { opacity: 0.35; }
+.tf-item.danger, .tf-item.danger svg { color: var(--hazard); }
+.tf-note { padding: 4px 0 4px 12px; border-left: 2px solid var(--accent-700); }
+/* Text boxes: no ligatures — Inter and JetBrains Mono both draw `->` as an
+ * arrow, which read to the owner as autocorrect. */
+.tf-area { display: block; width: 100%; padding: 0; resize: none; overflow: hidden; background: transparent; border: none; color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.6; outline: none; font-variant-ligatures: none; font-feature-settings: 'calt' 0, 'liga' 0; }
+.tf-area::placeholder { color: color-mix(in srgb, var(--text-muted) 70%, transparent); }
+.tf-notearea { font-size: 13px; line-height: 1.5; color: var(--text-muted); font-style: italic; }
+.tf-body { margin: 2px -8px 0; padding: 6px 8px; border-radius: 8px; transition: background 0.15s; }
+.tf-body:focus { background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.tf-addsec { display: flex; align-items: center; gap: 8px; min-height: 48px; margin: 4px 10px 6px; padding: 0 8px; background: transparent; border: none; border-radius: 10px; color: var(--accent-400); font-size: 14px; cursor: pointer; }
+.tf-addsec:hover:not(:disabled) { background: var(--surface); }
+.tf-wrong { font-size: 12px; color: var(--hazard); }
+.tf-text, .tf-add input { font-variant-ligatures: none; font-feature-settings: 'calt' 0, 'liga' 0; }
+.tf-btn.ghost { background: transparent; border-color: transparent; color: var(--text-muted); padding: 0 8px; }
+.tf-count { display: flex; align-items: center; gap: 8px; }
+.tf-count .tf-dot { display: inline-block; }
+/* A switch the harness does not read yet: still settable, visibly quieter. */
+.tf-row.unbuilt .tf-name, .tf-row.unbuilt .tf-switch, .tf-row.unbuilt .tf-seg { opacity: 0.55; }

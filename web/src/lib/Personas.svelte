@@ -1,6 +1,10 @@
 <script>
   import { tick, untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
+  import TomlForm from './TomlForm.svelte';
+  import MdForm from './MdForm.svelte';
+  import { repairComments, changesOf } from './tomlform.js';
+  import { isDirty as mdDirty } from './mdform.js';
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
     taintLabel, safetyLine, doseLine, authoringUrl, personaName, OWNER_FILES,
@@ -361,18 +365,61 @@
     editing.saved = null;
   }
 
-  async function saveFile() {
+  // Every owner file is edited as a form — persona.toml as typed fields
+  // (`TomlForm`), the Markdown as a title and sections (`MdForm`) — unless
+  // the owner chose text, or the server could not read it into one.
+  // "Edit as text" is per file and stays the escape hatch.
+  const current = $derived(editing ? editing.files[editing.file] : null);
+  const hasForm = $derived(Boolean(current?.form?.form || current?.form?.doc));
+  const asForm = $derived(hasForm && !current.asText);
+  const textDirty = $derived(editing ? editing.text !== current.text : false);
+  const formDirty = $derived.by(() => {
+    const f = current?.form;
+    if (!f || !current.formDraft) return false;
+    if (f.form) return Object.keys(changesOf(f.form, f.values, current.formDraft)).length > 0;
+    return mdDirty(f.doc, current.formDraft, f.fixed ?? []);
+  });
+
+  // Switch between the form and the text. Refused while the side being left
+  // holds unsaved changes — each saves against the file as it stands, so
+  // one would silently lose the other's edits.
+  function setAsText(on) {
+    current.asText = on;
+    // Text mode starts from the file as saved, never a stale text draft.
+    if (on) editing.text = current.draft ?? current.text;
+    editing.saved = null;
+  }
+
+  // What the page labels each Markdown form with.
+  const MD_LABELS = {
+    identity: {
+      title: 'Name',
+      body: 'Text before the sections',
+      fixed: { Core: 'Who they are at heart — never changed on its own, and re-read to them in long chats.' },
+    },
+    motivation: { title: 'Title', body: 'What they want and value, in your words' },
+  };
+
+  const saveText = () => saveFile({
+    // A phone's "smart" dashes break a Markdown comment; put it back.
+    text: editing.file === 'settings' ? editing.text : repairComments(editing.text),
+  });
+  const saveForm = (changes) => saveFile({ changes });
+  const saveDoc = (doc) => saveFile({ doc });
+
+  async function saveFile(payload) {
     busy = true;
     error = '';
     try {
       const res = await fetch(personaUrl(chosen.name, '/files', null), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ file: editing.file, text: editing.text, base: editing.base, unlock: token ?? undefined }),
+        body: JSON.stringify({ file: editing.file, ...payload, base: editing.base, unlock: token ?? undefined }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       const saved = await res.json();
       const file = editing.file;
+      const asText = Object.fromEntries(Object.entries(editing.files).map(([f, v]) => [f, v.asText]));
       // What was typed in the other files survives this save (review of #420).
       const drafts = Object.fromEntries(
         Object.entries(editing.files)
@@ -381,6 +428,7 @@
       );
       await load();
       await openEditor(file);
+      for (const [f, t] of Object.entries(asText)) editing.files[f].asText = t;
       for (const [f, d] of Object.entries(drafts)) editing.files[f].draft = d;
       editing.saved = `saved — now v${saved.version}; new chats use it`;
       // A save can succeed and still leave something to fix — a group not
@@ -641,23 +689,76 @@
             <button class="chipbtn" class:active={editing.file === file} onclick={() => pickFile(file)}>{label}</button>
           {/each}
         </div>
-        <textarea class="editbox filebox" spellcheck="true" bind:value={editing.text}></textarea>
-        <div class="barnote">
-          {#if editing.file === 'identity'}
-            <code>## Core</code> is who they are at heart — never changed on its own, and re-read to them in long chats.
-          {:else if editing.file === 'settings'}
-            Relationship, portrait, tools and the safety switches — a setting that would not load is refused, and the file stays as it was.
-          {:else}
-            Their wants and values, as part of who they are.
+        <div class="modeline">
+          {#if current.form?.problem}
+            <span class="warnline">The form can't read this file — {current.form.problem}. Fix it as text.</span>
+          {:else if asForm}
+            <button
+              class="linkbtn"
+              disabled={formDirty}
+              title={formDirty ? 'Save or discard the changes first' : ''}
+              onclick={() => setAsText(true)}
+            >Edit as text</button>
+          {:else if hasForm}
+            <button
+              class="linkbtn"
+              disabled={textDirty}
+              title={textDirty ? 'Save or undo the text first' : ''}
+              onclick={() => setAsText(false)}
+            >Edit as form</button>
           {/if}
-          Text inside <code>&lt;!-- --&gt;</code> is a note to yourself: kept, never sent to a chat.
+        </div>
+        {#if asForm && current.form.form}
+          {#key current.digest}
+            <TomlForm
+              form={current.form.form}
+              values={current.form.values}
+              bind:draft={current.formDraft}
+              {busy}
+              onsave={saveForm}
+              onclose={() => (editing = null)}
+            />
+          {/key}
+        {:else if asForm}
+          {#key `${editing.file}:${current.digest}`}
+            <MdForm
+              doc={current.form.doc}
+              fixed={current.form.fixed ?? []}
+              labels={MD_LABELS[editing.file] ?? {}}
+              bind:draft={current.formDraft}
+              {busy}
+              onsave={saveDoc}
+              onclose={() => (editing = null)}
+            />
+          {/key}
+        {:else}
+          <textarea
+            class="editbox filebox"
+            spellcheck={editing.file !== 'settings'}
+            autocorrect="off"
+            autocapitalize="off"
+            bind:value={editing.text}
+          ></textarea>
+        {/if}
+        <div class="barnote">
+          {#if asForm && editing.file === 'settings'}
+            Changes are set in place in <code>persona.toml</code> — your comments in it stay.
+          {:else if asForm}
+            Saved in one tidy layout. Notes stay in the file as comments and never reach a chat.
+          {:else if editing.file === 'settings'}
+            A setting that would not load is refused, and the file stays as it was. A line starting with <code>#</code> is a note to yourself.
+          {:else}
+            Text inside <code>&lt;!-- --&gt;</code> is a note to yourself: kept, never sent to a chat.
+          {/if}
         </div>
         {#if editing.saved}<div class="barnote ok">{editing.saved}</div>{/if}
         {#each editing.problems ?? [] as problem}<div class="warnline">{problem}</div>{/each}
-        <div class="btnrow">
-          <button class="abtn" onclick={() => (editing = null)}>Close</button>
-          <button class="abtn primary" disabled={busy || editing.text === editing.files[editing.file].text} onclick={saveFile}>Save</button>
-        </div>
+        {#if !asForm}
+          <div class="btnrow">
+            <button class="abtn" onclick={() => (editing = null)}>Close</button>
+            <button class="abtn primary" disabled={busy || !textDirty} onclick={saveText}>Save</button>
+          </div>
+        {/if}
       {:else if !key}
         <div class="btnrow">
           <button class="abtn" onclick={() => openEditor('identity')}>Edit</button>
@@ -832,7 +933,12 @@
   .lockline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
   .btnrow { display: flex; gap: 10px; }
   .btnrow .abtn { flex: 1; }
-  .filebox { min-height: 50vh; font-family: var(--mono); font-size: 13px; line-height: 1.5; resize: vertical; }
+  /* No ligatures: JetBrains Mono draws `-->` as an arrow, and a comment's
+   * close must look like what it is — the owner reported it as autocorrect. */
+  .filebox { min-height: 50vh; font-family: var(--mono); font-size: 13px; line-height: 1.5; resize: vertical; font-variant-ligatures: none; font-feature-settings: 'calt' 0, 'liga' 0; }
+  .modeline { display: flex; justify-content: flex-end; min-height: 20px; }
+  .linkbtn { background: none; border: none; padding: 4px 0; color: var(--accent-400); font-size: 12px; cursor: pointer; }
+  .linkbtn:disabled { color: var(--text-muted); cursor: default; }
   .barnote.ok { color: var(--accent-400); }
   .startbox .editbox { flex: 1; margin-bottom: 0; }
   .editbox { width: 100%; background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius); color: var(--text); font-family: var(--sans); font-size: 15px; padding: 12px 14px; box-sizing: border-box; }
