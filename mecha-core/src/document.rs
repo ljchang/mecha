@@ -1319,10 +1319,29 @@ fn touch(path: &Path) {
 
 /// Write `bytes` beside `path` and rename into place. The directories are
 /// the caller's to create — [`Cache::write_private`] makes them owner-only.
+///
+/// The file is created 0600, never the umask default: it holds a document's
+/// text or its transcript, which is more private than the hash-named listing
+/// #410 was about, and a private store's files are owner-only as well as its
+/// directories (found on review). `create_new` refuses to follow or reuse a
+/// file already at the temporary name.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
     let dir = path.parent().context("a cache path has a parent")?;
     let tmp = dir.join(format!(".tmp-{}", uuid::Uuid::new_v4().simple()));
-    std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&tmp)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    file.write_all(bytes)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    drop(file);
     std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
@@ -2343,8 +2362,9 @@ mod tests {
     }
 
     /// Every directory from the cache root to a stored file is owner-only,
-    /// even a root that already existed at the umask default: the root's
-    /// listing names every PDF the owner read, by hash (#410).
+    /// and so is the file, even under a root that already existed at the
+    /// umask default: the root's listing names every PDF the owner read, by
+    /// hash (#410), and the file holds its text.
     #[cfg(unix)]
     #[test]
     fn the_whole_cache_path_is_owner_only() {
@@ -2368,6 +2388,9 @@ mod tests {
         };
         cache.store_ocr(&sha, "m", OCR_PIPELINE, 1, &ocr).unwrap();
         let file = cache.ocr_path(&sha, "m", OCR_PIPELINE, 1);
+        // The file too: it holds the document's text.
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{} is {mode:o}", file.display());
         let mut at = file.parent().unwrap().to_path_buf();
         loop {
             let mode = std::fs::metadata(&at).unwrap().permissions().mode() & 0o777;
