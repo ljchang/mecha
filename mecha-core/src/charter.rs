@@ -1085,6 +1085,32 @@ setpoint = 0
 ]"#;
     // sensor-kinds:end
 
+    /// The fields a list save's row carries, as the page sends them
+    /// (`charter-toml.js`'s `toRows`) and `form` declares them. Both sides
+    /// assert against their own literal, and the `Rows` fence refuses a
+    /// field it does not declare, so a rename on either side would 422 every
+    /// list save behind a green gate (review of #439). This literal is
+    /// asserted equal to `form()`'s fields below, and
+    /// `website/scripts/check-charter-toml.mjs` reads it out of this file and
+    /// asserts `toRows` sends exactly these — the chain across the boundary.
+    // charter-form-fields:begin
+    const CHARTER_FORM_FIELDS: &str = r#"["id","text","sensor.kind","sensor.setpoint"]"#;
+    // charter-form-fields:end
+
+    #[test]
+    fn the_marked_form_fields_are_what_the_form_declares() {
+        let pinned: Vec<String> = serde_json::from_str(CHARTER_FORM_FIELDS).unwrap();
+        let form = form();
+        let crate::tomlform::Kind::Rows { fields, .. } = &form.sections[0].fields[0].kind else {
+            panic!("the charter form is one list of rows");
+        };
+        let declared: Vec<&str> = fields.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            declared, pinned,
+            "update the charter-form-fields literal (and `toRows`) with the form"
+        );
+    }
+
     /// The macro's wire word and `serde`'s `snake_case` are two spellings
     /// of one name; every kind round-trips through both.
     #[test]

@@ -84,9 +84,6 @@
     original = snapshot();
   }
 
-  /// Split the document at its first `[[line]]`. A `#` that opens a *line* is
-  /// a comment; one inside a string value never can be, since the value is on
-  /// the right of an `=`.
   // We have no trustworthy document: the GET failed, or answered with its own
   // error, or reported a parse failure over bytes it never managed to read.
   // Nothing that can write may render — not the list (whose empty state

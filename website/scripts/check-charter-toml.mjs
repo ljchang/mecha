@@ -12,7 +12,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { slugify } from '../../web/src/lib/charter-toml.js';
+import { slugify, toRows } from '../../web/src/lib/charter-toml.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const fail = (msg) => {
@@ -47,4 +47,19 @@ eq(
   'the demo fixture offers a sensor-kind list that mecha-core no longer serves'
 );
 
-console.log(`check-charter-toml: ${checks} checks, the page and mecha-core agree on ids and sensor kinds`);
+// --- the fields a list save sends ----------------------------------------
+// `toRows` is what the page sends and `charter::form` what the server's
+// fence accepts; a field renamed on one side refuses every list save while
+// both sides' own tests pass (review of #439). The literal between the
+// markers is asserted equal to `form()`'s fields in Rust; here `toRows` is
+// asserted to send exactly those, sensor and all.
+const fieldsMarked = /\/\/ charter-form-fields:begin[\s\S]*?r#"([\s\S]*?)"#;[\s\S]*?\/\/ charter-form-fields:end/.exec(rs);
+if (!fieldsMarked) fail('could not find the charter-form-fields markers in mecha-core/src/charter.rs');
+const pinnedFields = JSON.parse(fieldsMarked[1]);
+const [sent] = toRows([{ id: 'a', text: 't', sensor: { kind: 'outbox_age', setpoint: '24h' }, reading: {}, uid: 1 }]);
+const sentFields = Object.entries(sent).flatMap(([k, v]) =>
+  v && typeof v === 'object' ? Object.keys(v).map((sub) => `${k}.${sub}`) : [k]
+);
+eq(JSON.stringify(sentFields), JSON.stringify(pinnedFields), 'toRows sends fields the charter form does not declare, or misses one it does');
+
+console.log(`check-charter-toml: ${checks} checks, the page and mecha-core agree on ids, row fields and sensor kinds`);
