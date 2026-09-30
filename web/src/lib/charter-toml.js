@@ -1,130 +1,28 @@
-// The charter document, as bytes.
+// The charter's rows, as the settings page edits them.
 //
-// Extracted from `SettingsCharter.svelte` so it can be tested: these are the
-// functions that decide what reaches `~/.mecha/charter.toml`, and inside a
-// component the only way to exercise them was to drive a browser. Two
-// languages describe this file — these functions write it, `Charter::parse`
-// decides whether it loads — so `website/scripts/check-charter-toml.mjs`
-// pins the agreement against the sample `charter.rs` reads back.
+// The page never writes TOML. It sends its rows — `toRows` — and the server
+// sets them in place in `~/.mecha/charter.toml` (`charter::form` over
+// `tomlform`), keeping the owner's comments, among the lines as well as above
+// them, and each untouched value exactly as written. What is left here is the
+// page's half: turning the server's lines into editor rows, naming problems
+// before a save, and whether a reading still describes its sensor. (The
+// JavaScript serialiser that used to live here regenerated every table, so a
+// comment among the lines could not survive a save, and a second script had
+// to keep it agreeing with the Rust reader.)
 
-/// Always a single-line basic string: unambiguous, and it matches how the
-/// file is already written.
-///
-/// Escapes backslash, quote, newline, carriage return and tab — not the other
-/// control characters TOML forbids in a basic string (U+0000-U+0008,
-/// U+000B-U+000C, U+000E-U+001F, U+007F). That is deliberate rather than
-/// missed: one of those reaching here would be refused by the server's
-/// `Charter::parse` with a 422 that keeps the draft open, so the failure is
-/// closed and nothing typed is lost. Escaping them here would let a
-/// character no owner can type into the file instead.
-export const esc = (s) =>
-  '"' +
-  String(s)
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t') +
-  '"';
-
-/// The header is preserved — every comment and its text — and only the
-/// `[[line]]` tables are generated. Not quite byte-for-byte: `splitHeader`
-/// trims trailing whitespace and exactly one blank line is re-emitted before
-/// the tables, so a header ending in several blank lines comes back with one.
-/// The promise that matters is that nothing the owner wrote is lost.
-///
-/// A line's `sensor` (`{kind, setpoint}`, as the server serves it) is written
-/// back as a `[line.sensor]` sub-table with the owner's own setpoint
-/// spelling, always as a string — `setpoint = 3` on disk comes back as
-/// `setpoint = "3"`, which the reader types identically. A sensor reaches
-/// here two ways — read from the file, or typed by the owner in the form —
-/// and is written the same way either way; a sensor without a kind writes
-/// no table, which is why `sensorProblems` names one before a save
-/// (GOAL-SYSTEM-DESIGN §11.1: the parser, this serialiser and the template
-/// move together).
-export function serialize(header, lines) {
-  const out = [];
-  if (header.trim()) out.push(header, '');
-  for (const l of lines) {
-    out.push('[[line]]', `id = ${esc(l.id.trim())}`, `text = ${esc(l.text.trim())}`);
-    if (l.sensor && l.sensor.kind) {
-      out.push(
-        '[line.sensor]',
-        `kind = ${esc(String(l.sensor.kind).trim())}`,
-        `setpoint = ${esc(String(l.sensor.setpoint ?? '').trim())}`
-      );
-    }
-    out.push('');
-  }
-  return out.join('\n').replace(/\n+$/, '\n');
-}
-
-/// Does a comment open anywhere in this text?
-///
-/// Takes a whole text rather than a row, because a multi-line string spans
-/// rows and a row read in isolation cannot tell an opening delimiter from a
-/// closing one: `""" # note` looks like a `#` *inside* a string when it is
-/// really the comment after that string ends. `splitHeader` therefore hands
-/// the entire tail below the first `[[line]]` over in one go — applying this
-/// per row was the bug.
-///
-/// A comment below that point cannot survive a save, since the tables are
-/// regenerated, so finding one is what makes the list editor stand down.
-export function hasComment(text) {
-  const s = String(text);
-  let i = 0;
-  const skipTo = (close, escapes) => {
-    while (i < s.length && !s.startsWith(close, i)) {
-      if (escapes && s[i] === '\\') i++;
-      i++;
-    }
-    i += close.length;
-  };
-  while (i < s.length) {
-    if (s[i] === '#') return true;
-    if (s.startsWith('"""', i)) {
-      i += 3;
-      skipTo('"""', true);
-    } else if (s.startsWith("'''", i)) {
-      i += 3;
-      skipTo("'''", false);
-    } else if (s[i] === '"' || s[i] === "'") {
-      // A single-line string ends at a newline as well as at its own quote:
-      // an unterminated one must not swallow the rest of the document and
-      // hide every comment below it.
-      const q = s[i];
-      i++;
-      while (i < s.length && s[i] !== q && s[i] !== '\n') {
-        if (q === '"' && s[i] === '\\') i++;
-        i++;
-      }
-      i++;
-    } else {
-      i++;
-    }
-  }
-  return false;
-}
-
-/// Split the document at its first `[[line]]`. Everything above it is the
-/// owner's own writing and survives a save untouched; a comment below it
-/// cannot, so the list editor refuses the document rather than rewriting it.
-/// Tables are found by `/^\s*\[\[/`, so a charter written as an inline array
-/// (`line = [{ id = "a", text = "b" }]`) lands wholly in the "header" and a
-/// save would emit a duplicate `line` key. That fails closed — `Charter::parse`
-/// refuses it with a 422 and the draft stays open — and nothing writes that
-/// shape, so it is left alone rather than handled.
-export function splitHeader(src) {
-  const rows = (src ?? '').split('\n');
-  const first = rows.findIndex((r) => /^\s*\[\[/.test(r));
-  if (first === -1) return { header: rows.join('\n').replace(/\s+$/, ''), blocked: null };
-  const commented = hasComment(rows.slice(first).join('\n'));
-  return {
-    header: rows.slice(0, first).join('\n').replace(/\s+$/, ''),
-    blocked: commented
-      ? 'This charter has comments in among its lines. Editing it as a list would rewrite the tables and drop them, so it opens as TOML instead.'
-      : null,
-  };
+/// What a list save sends: each row as the charter form takes it — id and
+/// text trimmed, a sensor as its kind and setpoint (the owner's spelling,
+/// trimmed) or `null`. Nothing else: the reading, the render key and what it
+/// was read for are the page's, and the server refuses any other field.
+export function toRows(lines) {
+  return lines.map((l) => ({
+    id: String(l.id ?? '').trim(),
+    text: String(l.text ?? '').trim(),
+    sensor:
+      l.sensor && String(l.sensor.kind ?? '').trim()
+        ? { kind: String(l.sensor.kind).trim(), setpoint: String(l.sensor.setpoint ?? '').trim() }
+        : null,
+  }));
 }
 
 /// A starting point for a new line's id, derived from text the owner typed.
@@ -144,8 +42,8 @@ export const slugify = (t) =>
 /// The editor's rows from the server's `lines` — one place, so a field the
 /// server adds beside `sensor` is carried or dropped on purpose rather than
 /// by which literal someone last edited. `sensor` is copied down to its two
-/// keys because `serialize` writes it back; `reading` is carried for display
-/// and is never serialised (the first cut rebuilt the row without it, and the
+/// keys because `toRows` sends them back; `reading` is carried for display
+/// and is never sent (the first cut rebuilt the row without it, and the
 /// settings page was the one surface of three showing no reading — found on
 /// review). `nextUid` hands each row its editor-local key.
 export function rows(lines, nextUid) {
@@ -177,8 +75,8 @@ export function readingStands(line) {
   );
 }
 
-/// What a half-filled sensor would cost silently: `serialize` writes no table
-/// for a sensor without a kind, so a form the owner opened and left empty
+/// What a half-filled sensor would cost silently: `toRows` sends no sensor
+/// for one without a kind, so a form the owner opened and left empty
 /// would vanish on save with nothing said, and a kind with no setpoint would
 /// reach the server only to be refused after the two-tap save. Said here
 /// instead, beside the line, before the save is armed.
@@ -200,17 +98,4 @@ export function sensorProblems(lines) {
     }
   }
   return out;
-}
-
-/// The one shape `serialize` loses: a sensor with no kind writes no table.
-/// Kept apart from `sensorProblems`, which also names what the *server*
-/// refuses with the draft kept — an empty setpoint, two lines of one kind —
-/// because only a drop should close the TOML escape hatch; the rest keep
-/// it open exactly as an empty id or text does (found on review: the hatch
-/// was gated on every sensor problem, and a duplicate kind told the owner a
-/// half-filled sensor would be dropped when nothing would).
-export function sensorsWouldDrop(lines) {
-  return lines
-    .map((l, i) => (l.sensor && !String(l.sensor.kind ?? '').trim() ? i + 1 : null))
-    .filter((n) => n !== null);
 }

@@ -3,11 +3,11 @@
 // `npm test` in web/. Plain node, like `queue-logic.mjs` and for the same
 // reason. `rows` is the one place a server field becomes an editor row, and
 // the shape it must keep is two-sided: `sensor` narrowed to exactly the keys
-// `serialize` writes back, and `reading` carried for display — the field the
+// `toRows` sends back, and `reading` carried for display — the field the
 // first cut dropped, leaving the browser the one charter surface with no
 // reading while the payload had one.
 import assert from 'node:assert/strict';
-import { readingStands, rows, sensorProblems, sensorsWouldDrop, serialize } from '../src/lib/charter-toml.js';
+import { readingStands, rows, sensorProblems, toRows } from '../src/lib/charter-toml.js';
 
 let uid = 0;
 const next = () => ++uid;
@@ -34,19 +34,19 @@ assert.equal(out[1].reading.over, true);
 assert.equal(rows([{ id: 'x', text: 'y', sensor: { kind: 'outbox_waiting', setpoint: '3' } }], next)[0].reading, null);
 assert.deepEqual(rows(undefined, next), []);
 
-// The reading never reaches the file: serialising the rows writes the
-// sensor's two keys and nothing of the reading.
-const toml = serialize('', out);
-assert.match(toml, /kind = "outbox_age"/);
-assert.match(toml, /setpoint = "24h"/);
-assert.doesNotMatch(toml, /reading|observed|past the/);
+// The reading never reaches the file: a save sends each row's id, text and
+// the sensor's two keys, and nothing of the reading or the render key.
+assert.deepEqual(toRows(out), [
+  { id: 'plain', text: 'No sensor.', sensor: null },
+  { id: 'waits', text: 'Keep it short.', sensor: { kind: 'outbox_age', setpoint: '24h' } },
+]);
 
 
-// A sensor the owner typed in the form is written exactly as one read from
-// the file — the same two keys — and a half-filled one is named before the
-// save rather than dropped silently by `serialize`.
-const typed = [{ id: 'q', text: 'Answer fast.', sensor: { kind: 'question_latency', setpoint: '12h' }, reading: null }];
-assert.match(serialize('', typed), /\[line\.sensor\]\nkind = "question_latency"\nsetpoint = "12h"/);
+// A sensor the owner typed in the form is sent exactly as one read from
+// the file — the same two keys, trimmed — and a half-filled one is named
+// before the save rather than dropped silently by `toRows`.
+const typed = [{ id: ' q ', text: 'Answer fast. ', sensor: { kind: 'question_latency', setpoint: ' 12h' }, reading: null }];
+assert.deepEqual(toRows(typed), [{ id: 'q', text: 'Answer fast.', sensor: { kind: 'question_latency', setpoint: '12h' } }]);
 assert.deepEqual(sensorProblems(typed), []);
 assert.deepEqual(sensorProblems([{ id: 'a', text: 't', sensor: { kind: '', setpoint: '' } }]), [
   "Line 1's sensor needs a kind and a setpoint, or remove it.",
@@ -56,9 +56,9 @@ assert.deepEqual(sensorProblems([{ id: 'a', text: 't', sensor: { kind: 'outbox_a
 ]);
 assert.deepEqual(sensorProblems([{ id: 'a', text: 't', sensor: { kind: '', setpoint: '3' } }]), ["Line 1's sensor has no kind."]);
 assert.deepEqual(sensorProblems([{ id: 'a', text: 't', sensor: null }, { id: 'b', text: 'u' }]), []);
-// And an empty sensor writes no table: the problem above is the only thing
+// And an empty sensor is sent as none: the problem above is the only thing
 // standing between the owner and a silent drop.
-assert.doesNotMatch(serialize('', [{ id: 'a', text: 't', sensor: { kind: '', setpoint: '' } }]), /line\.sensor/);
+assert.equal(toRows([{ id: 'a', text: 't', sensor: { kind: '', setpoint: '' } }])[0].sensor, null);
 
 
 // The reading stands beside the sensor it was computed against and stands
@@ -89,18 +89,5 @@ assert.deepEqual(
   ['Lines 1 and 3 both carry a outbox_age sensor — keep one.']
 );
 
-
-// Only a kindless sensor closes the TOML hatch: the other problems serialise
-// faithfully and the server refuses them with the draft kept.
-assert.deepEqual(
-  sensorsWouldDrop([
-    { id: 'a', text: 't', sensor: { kind: '', setpoint: '5' } },
-    { id: 'b', text: 'u', sensor: { kind: 'outbox_age', setpoint: '' } },
-    { id: 'c', text: 'v', sensor: { kind: 'outbox_age', setpoint: '48h' } },
-    { id: 'd', text: 'w', sensor: null },
-    { id: '', text: '' },
-  ]),
-  [1]
-);
 
 console.log('charter-rows: ok');

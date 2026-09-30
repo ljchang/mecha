@@ -773,6 +773,7 @@ export const questions = {
 // --- settings ------------------------------------------------------------
 
 export const charter = {
+  digest: '4'.repeat(64),
   // The file's real shape: `[[line]]` tables with `id` and `text`, header
   // comments above them. `CharterLine` denies unknown fields, so the
   // `[[priority]]`/`name`/`detail` this fixture used to carry is a document
@@ -833,7 +834,7 @@ text = "A refusal on Monday is a kindness. A refusal on Friday is a problem I ha
   // re-derives this, so editing `prompt_block`'s header prose will drift it
   // silently. Re-measure rather than adjust by eye if that happens.
   char_count: 716,
-  budget: 2000,
+  budget: 2500,
   over_budget: false,
   parse_error: null,
   error: null,

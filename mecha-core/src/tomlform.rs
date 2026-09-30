@@ -22,7 +22,7 @@
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::{Map, Value as Json};
-use toml_edit::{Array, DocumentMut, Item, Table, Value};
+use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, Value};
 
 /// The most entries a chip field may hold.
 pub const MAX_CHIPS: usize = 64;
@@ -65,12 +65,16 @@ pub struct Field {
 pub enum Kind {
     /// A boolean.
     Toggle,
-    /// One line of text. With `optional`, an empty value removes the key.
+    /// Text: one line, or with `multiline` several (newlines and tabs, no
+    /// other control characters). With `optional`, an empty value removes
+    /// the key.
     Text {
         max: usize,
         optional: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         placeholder: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        multiline: bool,
     },
     /// One of a closed set. With `none`, that label offers leaving the key
     /// out (sent as `null`).
@@ -81,6 +85,16 @@ pub enum Kind {
     },
     /// A list of names. With `free`, names beyond `options` may be typed.
     Chips { options: Vec<Opt>, free: bool },
+    /// A list of tables (`[[line]]`), one row per table, matched by the
+    /// `key` field, so a row that is edited keeps its comments and a row
+    /// that moves carries them with it. `fields` are paths within a row
+    /// (`text`, `sensor.kind`); a row's sub-table sent as `null` is removed.
+    /// Sent whole, in order: the list is what the file will hold.
+    Rows {
+        key: String,
+        fields: Vec<Field>,
+        max_rows: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -172,7 +186,15 @@ impl Field {
         match (&self.kind, v) {
             (Kind::Toggle, Json::Bool(_)) => Ok(v.clone()),
             (Kind::Text { optional: true, .. }, Json::Null) => Ok(Json::Null),
-            (Kind::Text { max, optional, .. }, Json::String(s)) => {
+            (
+                Kind::Text {
+                    max,
+                    optional,
+                    multiline,
+                    ..
+                },
+                Json::String(s),
+            ) => {
                 let s = s.trim();
                 if s.is_empty() && *optional {
                     return Ok(Json::Null);
@@ -180,8 +202,13 @@ impl Field {
                 if s.chars().count() > *max {
                     bail!("`{path}` is at most {max} characters");
                 }
-                if s.chars().any(char::is_control) {
-                    bail!("`{path}` is one line, with no control characters");
+                let allowed = |c: char| *multiline && (c == '\n' || c == '\t');
+                if s.chars().any(|c| c.is_control() && !allowed(c)) {
+                    bail!(if *multiline {
+                        format!("`{path}` holds a control character")
+                    } else {
+                        format!("`{path}` is one line, with no control characters")
+                    });
                 }
                 Ok(Json::String(s.to_string()))
             }
@@ -214,6 +241,82 @@ impl Field {
                     }
                 }
                 Ok(Json::from(out))
+            }
+            (
+                Kind::Rows {
+                    key,
+                    fields,
+                    max_rows,
+                },
+                Json::Array(rows),
+            ) => {
+                if rows.len() > *max_rows {
+                    bail!("`{path}` holds at most {max_rows} rows");
+                }
+                // A row may only carry what `fields` declares: the fence,
+                // one level down.
+                let tops: Vec<&str> = fields
+                    .iter()
+                    .map(|f| f.path.split('.').next().unwrap_or(""))
+                    .collect();
+                let mut seen: Vec<String> = Vec::new();
+                let mut out = Vec::with_capacity(rows.len());
+                for row in rows {
+                    let Some(obj) = row.as_object() else {
+                        bail!("each row of `{path}` is an object");
+                    };
+                    if let Some(extra) = obj.keys().find(|k| !tops.contains(&k.as_str())) {
+                        bail!("`{extra}` is not a field of a `{path}` row");
+                    }
+                    let mut clean = Map::new();
+                    for f in fields {
+                        let (parent, leaf) = match f.path.split_once('.') {
+                            Some((p, l)) => (Some(p), l),
+                            None => (None, f.path.as_str()),
+                        };
+                        let got = match parent {
+                            None => obj.get(leaf).cloned().unwrap_or(Json::Null),
+                            Some(p) => match obj.get(p) {
+                                // The whole sub-table absent: nothing to check.
+                                None | Some(Json::Null) => {
+                                    clean.insert(p.to_string(), Json::Null);
+                                    continue;
+                                }
+                                Some(sub) => sub.get(leaf).cloned().unwrap_or(Json::Null),
+                            },
+                        };
+                        let checked = Field {
+                            path: format!("{path}[].{}", f.path),
+                            ..f.clone()
+                        }
+                        .check(&got)?;
+                        match parent {
+                            None => {
+                                clean.insert(leaf.to_string(), checked);
+                            }
+                            Some(p) => {
+                                let sub = clean
+                                    .entry(p.to_string())
+                                    .or_insert_with(|| Json::Object(Map::new()));
+                                if let Some(sub) = sub.as_object_mut() {
+                                    sub.insert(leaf.to_string(), checked);
+                                }
+                            }
+                        }
+                    }
+                    let id = clean
+                        .get(key)
+                        .and_then(Json::as_str)
+                        .filter(|s| !s.is_empty())
+                        .with_context(|| format!("each row of `{path}` needs a `{key}`"))?
+                        .to_string();
+                    if seen.contains(&id) {
+                        bail!("two rows of `{path}` have the {key} `{id}`");
+                    }
+                    seen.push(id);
+                    out.push(Json::Object(clean));
+                }
+                Ok(Json::Array(out))
             }
             _ => bail!("`{path}` cannot be set to {v}"),
         }
@@ -262,13 +365,235 @@ pub fn apply(form: &Form, text: &str, changes: &Map<String, Json>) -> Result<Str
         checked.push((path, field.check(v)?));
     }
     for (path, v) in checked {
-        if v.is_null() {
+        if let Some(Field {
+            kind: Kind::Rows { key, .. },
+            ..
+        }) = form.field(path)
+        {
+            set_rows(
+                &mut doc,
+                path,
+                key,
+                v.as_array().map(Vec::as_slice).unwrap_or(&[]),
+            )?;
+        } else if v.is_null() {
             remove(&mut doc, path)?;
         } else {
             set(doc.as_table_mut(), path, &v)?;
         }
     }
     Ok(doc.to_string())
+}
+
+/// The comment lines anywhere in `t` — above its header, above its keys,
+/// trailing its values, and in its sub-tables — for a table that is going,
+/// so its comments are handed on rather than deleted.
+fn comments_of(t: &Table) -> String {
+    fn take(out: &mut String, raw: Option<&toml_edit::RawString>) {
+        for line in raw.and_then(|r| r.as_str()).unwrap_or("").lines() {
+            if let Some(at) = line.find('#') {
+                out.push_str(line[at..].trim_end());
+                out.push('\n');
+            }
+        }
+    }
+    let mut out = String::new();
+    take(&mut out, t.decor().prefix());
+    for (k, item) in t.iter() {
+        if let Some((key, _)) = t.get_key_value(k) {
+            take(&mut out, key.leaf_decor().prefix());
+        }
+        match item {
+            Item::Value(v) => take(&mut out, v.decor().suffix()),
+            Item::Table(sub) => out.push_str(&comments_of(sub)),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Does the file's item already say `v`? Compared as text, so an owner's
+/// `setpoint = 3` is the form's `"3"` and a `'''literal'''` string is its
+/// value: an unchanged field is left exactly as the owner wrote it, rather
+/// than re-quoted on every save.
+fn same_value(item: Option<&Item>, v: &Json) -> bool {
+    let Some(item) = item.and_then(Item::as_value) else {
+        return false;
+    };
+    let have = match item {
+        Value::String(s) => s.value().to_string(),
+        Value::Integer(i) => i.value().to_string(),
+        Value::Float(f) => f.value().to_string(),
+        Value::Boolean(b) => b.value().to_string(),
+        _ => return false,
+    };
+    match v {
+        Json::String(s) => *s == have,
+        Json::Bool(b) => b.to_string() == have,
+        Json::Number(n) => n.to_string() == have,
+        _ => false,
+    }
+}
+
+/// Set a list of tables to `rows`, in their order. A row whose key the file
+/// already holds is edited in place; a table whose key is gone is removed
+/// and its comments handed to the next table kept, or the end of the file;
+/// a new key is a new table. Then every table and sub-table is renumbered,
+/// since `toml_edit` writes tables in the order of their parsed positions
+/// and would otherwise put a moved row back where it was.
+fn set_rows(doc: &mut DocumentMut, path: &str, key: &str, rows: &[Json]) -> Result<()> {
+    let wanted: Vec<&str> = rows
+        .iter()
+        .filter_map(|r| r.get(key).and_then(Json::as_str))
+        .collect();
+    // A file of comments only (a charter's template) holds them all as the
+    // document's trailing text, which is written *after* every table: taken
+    // here, it goes above the first row instead.
+    let root_empty = doc.as_table().is_empty();
+    let root = doc.as_table_mut();
+    let fresh_header = if root.get(path).is_none() {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        root.insert(path, Item::ArrayOfTables(ArrayOfTables::new()));
+        root_empty
+    } else {
+        false
+    };
+    let aot = root
+        .get_mut(path)
+        .and_then(Item::as_array_of_tables_mut)
+        .with_context(|| format!("`{path}` is not a list of tables in the file"))?;
+    let base = aot.iter().filter_map(Table::position).min().unwrap_or(1);
+    let mut old = Vec::with_capacity(aot.len());
+    while !aot.is_empty() {
+        old.push(aot.remove(0));
+    }
+    // With no values above the list, `toml_edit` keeps the file's header on
+    // the first table: it belongs to the list, not to that row, so it stays
+    // at the top whichever row comes first now.
+    let header = old.first_mut().map(|t| {
+        let h = t
+            .decor()
+            .prefix()
+            .and_then(|r| r.as_str())
+            .unwrap_or("")
+            .to_string();
+        t.decor_mut().set_prefix("\n");
+        h
+    });
+    let mut carried = String::new();
+    let mut kept: Vec<(String, Table)> = Vec::new();
+    for mut t in old {
+        let k = t.get(key).and_then(Item::as_str).map(str::to_string);
+        match k {
+            Some(k) if wanted.contains(&k.as_str()) && !kept.iter().any(|(x, _)| *x == k) => {
+                if !carried.is_empty() {
+                    let prefix = t
+                        .decor()
+                        .prefix()
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    t.decor_mut().set_prefix(format!("{carried}{prefix}"));
+                    carried.clear();
+                }
+                kept.push((k, t));
+            }
+            _ => carried.push_str(&comments_of(&t)),
+        }
+    }
+    for row in rows {
+        let Some(k) = row.get(key).and_then(Json::as_str) else {
+            continue;
+        };
+        let mut t = match kept.iter().position(|(x, _)| x == k) {
+            Some(at) => kept.remove(at).1,
+            None => Table::new(),
+        };
+        let Some(obj) = row.as_object() else { continue };
+        for (name, v) in obj {
+            match v {
+                Json::Null => {
+                    // A sub-table sent as null goes, its comments handed on.
+                    if let Some(Item::Table(sub)) = t.get(name) {
+                        carried.push_str(&comments_of(sub));
+                    }
+                    t.remove(name);
+                }
+                Json::Object(sub) => {
+                    for (leaf, v) in sub {
+                        if v.is_null() {
+                            if let Some(Item::Table(st)) = t.get_mut(name) {
+                                st.remove(leaf);
+                            }
+                        } else if !same_value(t.get(name).and_then(|st| st.get(leaf)), v) {
+                            set(&mut t, &format!("{name}.{leaf}"), v)?;
+                        }
+                    }
+                }
+                v if same_value(t.get(name), v) => {}
+                v => set(&mut t, name, v)?,
+            }
+        }
+        aot.push(t);
+    }
+    let header = header.or_else(|| fresh_header.then(String::new));
+    if let (Some(header), Some(first)) = (header, aot.get_mut(0)) {
+        let own = first
+            .decor()
+            .prefix()
+            .and_then(|r| r.as_str())
+            .unwrap_or("")
+            .to_string();
+        let own = own.trim_start_matches('\n');
+        let joined = if own.is_empty() {
+            header
+        } else {
+            format!("{}\n\n{own}", header.trim_end())
+        };
+        first.decor_mut().set_prefix(joined);
+    }
+    let mut at = base;
+    for t in aot.iter_mut() {
+        t.set_position(Some(at));
+        at += 1;
+        for (_, item) in t.iter_mut() {
+            if let Some(sub) = item.as_table_mut() {
+                sub.set_position(Some(at));
+                at += 1;
+            }
+        }
+    }
+    if fresh_header {
+        let top = doc.trailing().as_str().unwrap_or("").to_string();
+        doc.set_trailing("");
+        if let Some(first) = doc
+            .as_table_mut()
+            .get_mut(path)
+            .and_then(Item::as_array_of_tables_mut)
+            .and_then(|a| a.get_mut(0))
+        {
+            let own = first
+                .decor()
+                .prefix()
+                .and_then(|r| r.as_str())
+                .unwrap_or("")
+                .to_string();
+            let top = top.trim_end();
+            let joined = if top.is_empty() {
+                own
+            } else {
+                format!("{top}\n\n{}", own.trim_start_matches('\n'))
+            };
+            first.decor_mut().set_prefix(joined);
+        }
+    }
+    if !carried.is_empty() {
+        let end = doc.trailing().as_str().unwrap_or("").to_string();
+        doc.set_trailing(format!("{end}{carried}"));
+    }
+    Ok(())
 }
 
 /// Remove a key, keeping the owner's comments on it. `toml_edit` holds a
@@ -517,6 +842,7 @@ mod tests {
                             max: 40,
                             optional: true,
                             placeholder: None,
+                            multiline: false,
                         },
                     ))
                     .field(Field::new(
@@ -650,6 +976,7 @@ crisis = true # keep this one
                     max: 9,
                     optional: true,
                     placeholder: None,
+                    multiline: false,
                 },
             ))],
         };
@@ -702,6 +1029,152 @@ crisis = true # keep this one
         .unwrap();
         assert_eq!(comment_lines(&out), comment_lines(file), "{out}");
         assert!(toml::from_str::<toml::Table>(&out).is_ok(), "{out}");
+    }
+
+    fn rows_form() -> Form {
+        let text = |max, multiline| Kind::Text {
+            max,
+            optional: false,
+            placeholder: None,
+            multiline,
+        };
+        Form {
+            sections: vec![Section::new("Lines").field(Field::new(
+                "line",
+                "Lines",
+                Kind::Rows {
+                    key: "id".into(),
+                    fields: vec![
+                        Field::new("id", "Id", text(60, false)),
+                        Field::new("text", "Text", text(2000, true)),
+                        Field::new(
+                            "sensor.kind",
+                            "Sensor",
+                            Kind::Choice {
+                                options: vec![Opt::new("outbox_waiting", "Outbox waiting")],
+                                none: None,
+                            },
+                        ),
+                        Field::new("sensor.setpoint", "Setpoint", text(40, false)),
+                    ],
+                    max_rows: 3,
+                },
+            ))],
+        }
+    }
+
+    const CHARTER: &str = "\
+# The owner's charter.
+# Order is rank.
+
+[[line]]
+# why this one matters
+id = \"ship\"
+text = \"Ship the paper\"  # the big one
+
+[[line]]
+id = \"sleep\"
+text = \"Sleep eight hours\"
+
+[line.sensor]
+kind = \"outbox_waiting\"
+setpoint = 3
+";
+
+    fn lines(out: &str) -> Vec<String> {
+        let t: toml::Table = toml::from_str(out).expect(out);
+        t["line"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn rows(v: Json) -> Map<String, Json> {
+        changes(json!({ "line": v }))
+    }
+
+    /// A list of tables edited from the form: rows matched by id, comments
+    /// kept on the rows that stay and handed on from the rows that go, the
+    /// order the page sent, and an unchanged value left as the owner wrote it.
+    #[test]
+    fn rows_are_edited_in_place_reordered_added_and_removed() {
+        let ship = json!({"id": "ship", "text": "Ship the paper", "sensor": null});
+        let sleep = json!({"id": "sleep", "text": "Sleep eight hours",
+                           "sensor": {"kind": "outbox_waiting", "setpoint": "3"}});
+        // The same list is the same bytes: `setpoint = 3` stays a number.
+        assert_eq!(
+            apply(&rows_form(), CHARTER, &rows(json!([ship, sleep]))).unwrap(),
+            CHARTER
+        );
+
+        // Reordered: the rows swap, each with its own comments.
+        let out = apply(&rows_form(), CHARTER, &rows(json!([sleep, ship]))).unwrap();
+        assert_eq!(lines(&out), ["sleep", "ship"], "{out}");
+        assert_eq!(comment_lines(&out), comment_lines(CHARTER), "{out}");
+        assert!(out.starts_with("# The owner's charter."), "{out}");
+        assert!(out.contains("setpoint = 3"), "{out}");
+        let why = out.find("# why this one matters").unwrap();
+        assert!(
+            why > out.find("id = \"sleep\"").unwrap(),
+            "the comment moved with ship: {out}"
+        );
+
+        // Edited: the text changes, its trailing comment stays.
+        let edited = json!({"id": "ship", "text": "Ship the paper by Friday", "sensor": null});
+        let out = apply(&rows_form(), CHARTER, &rows(json!([edited, sleep]))).unwrap();
+        assert!(
+            out.contains("text = \"Ship the paper by Friday\"  # the big one"),
+            "{out}"
+        );
+
+        // Removed and added: ship's comments are handed on, walk is new, and
+        // sleep's sensor goes with its sub-table.
+        let walk = json!({"id": "walk", "text": "Walk\ntwice", "sensor": null});
+        let bare = json!({"id": "sleep", "text": "Sleep eight hours", "sensor": null});
+        let out = apply(&rows_form(), CHARTER, &rows(json!([bare, walk]))).unwrap();
+        assert_eq!(lines(&out), ["sleep", "walk"], "{out}");
+        assert_eq!(comment_lines(&out), comment_lines(CHARTER), "{out}");
+        assert!(!out.contains("[line.sensor]"), "{out}");
+        let back: toml::Table = toml::from_str(&out).unwrap();
+        assert_eq!(back["line"][1]["text"].as_str(), Some("Walk\ntwice"));
+
+        // A changed setpoint is written; a new sensor is a new sub-table.
+        let sensed = json!({"id": "ship", "text": "Ship the paper",
+                            "sensor": {"kind": "outbox_waiting", "setpoint": "5"}});
+        let out = apply(&rows_form(), CHARTER, &rows(json!([sensed]))).unwrap();
+        let back: toml::Table = toml::from_str(&out).expect(&out);
+        assert_eq!(
+            back["line"][0]["sensor"]["setpoint"].as_str(),
+            Some("5"),
+            "{out}"
+        );
+
+        // From no list at all: the header stays, the rows follow it.
+        let header = "# Only comments so far.\n";
+        let out = apply(&rows_form(), header, &rows(json!([walk]))).unwrap();
+        assert!(out.starts_with(header), "{out}");
+        assert_eq!(lines(&out), ["walk"]);
+    }
+
+    #[test]
+    fn a_row_the_form_does_not_offer_is_refused_whole() {
+        let ok = json!({"id": "a", "text": "x", "sensor": null});
+        for bad in [
+            json!([{"id": "a", "text": "x", "rank": 1}]),
+            json!([ok, {"id": "a", "text": "y", "sensor": null}]),
+            json!([{"id": "", "text": "x", "sensor": null}]),
+            json!([{"id": "a", "text": "x", "sensor": {"kind": "made_up", "setpoint": "1"}}]),
+            json!([{"id": "a b\u{1b}", "text": "x", "sensor": null}]),
+            json!([ok, {"id": "b", "text": "x"}, {"id": "c", "text": "x"}, {"id": "d", "text": "x"}]),
+            json!({"id": "a"}),
+        ] {
+            assert!(
+                apply(&rows_form(), CHARTER, &rows(bad.clone())).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
