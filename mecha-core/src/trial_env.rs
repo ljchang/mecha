@@ -305,11 +305,7 @@ impl Environment {
             .iter()
             .filter(|s| !s.disabled)
             .filter_map(feature::server_feature)
-            .map(|f| {
-                std::iter::successors(Some(f), |g| g.part_of())
-                    .last()
-                    .unwrap_or(f)
-            })
+            .map(Feature::switch_owner)
             .collect();
         for f in carried {
             cfg.features.0.entry(f.id().to_string()).or_insert(true);

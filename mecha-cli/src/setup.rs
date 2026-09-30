@@ -1400,29 +1400,33 @@ async fn prepare_tools_carrying(
 
     // Each optional feature registers only when its `[features]` switch is on
     // (FEATURES-DESIGN.md §4.2 item 6): the switch from the owner, the
-    // settings from this session's config as before. A feature configured
-    // but switched off says so once, as a tool that failed to build does; one
-    // with no settings at all stays quiet, or a light install would hear
-    // about everything it never set up.
+    // settings from this session's config as before.
+    //
+    // **Said here only when the run named the tool** (`--tool`), the one
+    // case where its absence would surprise. Every verb that builds a
+    // registry passes through here, including the children `mecha serve`
+    // and Slack spawn per request, so a line per build would repeat into the
+    // journal forever; an unanswered switch is announced once per session or
+    // service start instead (`Cli::announces_features`), and an explicit
+    // `false` is the owner's answer (found on review of #445).
     use mecha_core::feature::{self, Feature};
     let feature_on = |f: Feature| feature::switched_on(&cfg, f);
-    // Named by the feature that owns the switch — a part (`publishing`) has
-    // none, and `enable` refuses a part by name.
-    let switched_off = |f: Feature, what: &str| {
-        let owner = std::iter::successors(Some(f), |g| g.part_of())
-            .last()
-            .unwrap_or(f);
-        eprintln!(
-            "mecha: {what} — `{}` is not switched on in [features] \
-             (`mecha features enable {}`)",
-            owner.id(),
-            owner.id()
-        )
+    let asked_for = |tool: &str| opts.tools.iter().any(|t| t == tool);
+    let switched_off = |f: Feature, tool: &str| {
+        if asked_for(tool) {
+            eprintln!(
+                "mecha: {tool} not registered — `{}` is not switched on in [features] \
+                 (`{}`)",
+                f.switch_owner().id(),
+                feature::enable_command(&cfg, f)
+            )
+        }
     };
     // Search is only registered when a backend is configured — an agent with a
     // `web_search` tool that always errors is worse than no tool at all.
     if !cfg.search.is_empty() && !feature_on(Feature::Search) {
-        switched_off(Feature::Search, "web_search not registered");
+        switched_off(Feature::Search, "web_search");
+        switched_off(Feature::Search, "web_open");
     }
     if !cfg.search.is_empty() && feature_on(Feature::Search) {
         let (chain, errors) = build_search_chain(&cfg.search);
@@ -1459,7 +1463,7 @@ async fn prepare_tools_carrying(
     // then be false — said loudly, since a tool missing from the list is
     // otherwise indistinguishable from one never configured.
     if cfg.image.is_some() && !feature_on(Feature::Image) {
-        switched_off(Feature::Image, "image_generate not registered");
+        switched_off(Feature::Image, "image_generate");
     }
     if let Some(image) = cfg.image.clone().filter(|_| feature_on(Feature::Image)) {
         let wants = opts.tools.is_empty() || opts.tools.iter().any(|t| t == "image_generate");
@@ -1524,7 +1528,7 @@ async fn prepare_tools_carrying(
     // `[tools]` narrows it like any builtin. An incognito chat never offers
     // it: its cache writes outside the room (`incognito::ALLOWED_BUILTINS`).
     if cfg.documents.is_some() && !feature_on(Feature::Documents) {
-        switched_off(Feature::Documents, "document_read not registered");
+        switched_off(Feature::Documents, "document_read");
     }
     if let Some(docs) = cfg
         .documents
@@ -1563,11 +1567,8 @@ async fn prepare_tools_carrying(
         .iter()
         .filter(|c| !opts.no_mcp_servers.iter().any(|n| n == &c.name))
         .filter(|c| match feature::server_feature(c) {
-            Some(f) if !c.disabled && !feature_on(f) => {
-                switched_off(f, &format!("[[mcp]] `{}` not started", c.name));
-                false
-            }
-            _ => true,
+            Some(f) => feature_on(f),
+            None => true,
         })
         .cloned()
         .collect();

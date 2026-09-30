@@ -179,6 +179,14 @@ impl Feature {
         self.part_of().is_none()
     }
 
+    /// The feature whose bool decides this one: itself, or for a part the
+    /// top of its `part_of` chain (`layout` → `ocr` → `documents`).
+    pub fn switch_owner(self) -> Feature {
+        std::iter::successors(Some(self), |g| g.part_of())
+            .last()
+            .unwrap_or(self)
+    }
+
     /// Whether an experiment environment's `config.toml` may switch this on.
     ///
     /// **An environment may switch a feature on only if it could configure
@@ -327,10 +335,48 @@ pub fn switch(cfg: &Config, f: Feature) -> Option<Switch> {
 /// server's uptime. `cfg` may be a project-layered config: `[features]` is
 /// stripped from project layers, so its switches are the global file's.
 pub fn switched_on(cfg: &Config, f: Feature) -> bool {
-    let owner = std::iter::successors(Some(f), |g| g.part_of())
-        .last()
-        .unwrap_or(f);
-    switch(cfg, owner) == Some(Switch::On)
+    // Its own bool (a part has none), and every need's — a parent and each
+    // `requires` edge — so it answers as `state` does for the switch half,
+    // config-only, and cannot register a tool `mecha features` shows
+    // `Blocked` (found on review of #445).
+    let own = match switch(cfg, f) {
+        Some(s) => s == Switch::On,
+        None => true,
+    };
+    own && f.needs().all(|n| switched_on(cfg, n))
+}
+
+/// The command that switches `f` on: its owner, and every `requires` edge of
+/// the owner that is not on, first — the one spelling every surface prints,
+/// so none prints a command `plan_enable` refuses (#443, #445).
+pub fn enable_command(cfg: &Config, f: Feature) -> String {
+    // Every switch `f` hangs on — its owner's and, through `needs`, each
+    // parent's and requirement's owner — that is not on, in `Feature::ALL`
+    // order, which lists what a feature needs before it. `dictate` needs
+    // `voice` (its parent) and `web` (its requirement); the owner's own
+    // switch is always named, so the command is never empty.
+    fn collect(f: Feature, into: &mut Vec<Feature>) {
+        let owner = f.switch_owner();
+        if !into.contains(&owner) {
+            into.push(owner);
+        }
+        for n in f.needs() {
+            collect(n, into);
+        }
+        for n in owner.needs() {
+            collect(n, into);
+        }
+    }
+    let mut hung = Vec::new();
+    collect(f, &mut hung);
+    let owner = f.switch_owner();
+    let ids: Vec<&str> = Feature::ALL
+        .iter()
+        .filter(|g| hung.contains(g))
+        .filter(|g| **g == owner || switch(cfg, **g) != Some(Switch::On))
+        .map(|g| g.id())
+        .collect();
+    format!("mecha features enable {}", ids.join(" "))
 }
 
 /// The feature an `[[mcp]]` server belongs to, by the program its `command`
@@ -477,16 +523,7 @@ pub fn state(facts: &Facts, f: Feature) -> State {
     // The fix names every dependency that is not on either, because `enable`
     // refuses a feature alone when its requirement is off — the row must
     // not print a command the same binary rejects (found on review of #443).
-    let fix = || {
-        let mut ids: Vec<&str> = f
-            .requires()
-            .iter()
-            .filter(|d| switch(&facts.config, **d) != Some(Switch::On))
-            .map(|d| d.id())
-            .collect();
-        ids.push(f.id());
-        format!("mecha features enable {}", ids.join(" "))
-    };
+    let fix = || enable_command(&facts.config, f);
     match switch(&facts.config, f) {
         Some(Switch::Off) => return off("turned off in [features]", fix()),
         Some(Switch::Absent) => return off("not enabled in [features]", fix()),
@@ -1449,6 +1486,40 @@ mod tests {
             };
             let args: Vec<String> = fix.split_whitespace().skip(3).map(String::from).collect();
             plan_enable(&cfg, &args).unwrap_or_else(|e| panic!("{fix}: {e}"));
+        }
+    }
+
+    /// `switched_on` answers as `state` does for the switch half — its own
+    /// bool and every need's — so registration cannot hand out a tool
+    /// `mecha features` shows `Blocked`; and `enable_command` names every
+    /// switch a feature hangs on (review of #445).
+    #[test]
+    fn switched_on_and_its_command_follow_every_need() {
+        let mut cfg = Config::default();
+        cfg.features.0.insert("incognito".into(), true);
+        assert!(!switched_on(&cfg, Feature::Incognito), "web is not on");
+        cfg.features.0.insert("web".into(), true);
+        assert!(switched_on(&cfg, Feature::Incognito));
+        // A part: its parent's switch and its requirement's.
+        assert!(!switched_on(&cfg, Feature::Dictate), "voice is not on");
+        assert_eq!(
+            enable_command(&cfg, Feature::Dictate),
+            "mecha features enable voice"
+        );
+        cfg.features.0.remove("web");
+        assert_eq!(
+            enable_command(&cfg, Feature::Dictate),
+            "mecha features enable web voice"
+        );
+        cfg.features.0.insert("voice".into(), true);
+        cfg.features.0.insert("web".into(), true);
+        assert!(switched_on(&cfg, Feature::Dictate));
+        // Every command it prints is one `enable` accepts.
+        let empty = Config::default();
+        for &f in Feature::ALL {
+            let cmd = enable_command(&empty, f);
+            let args: Vec<String> = cmd.split_whitespace().skip(3).map(String::from).collect();
+            plan_enable(&empty, &args).unwrap_or_else(|e| panic!("{}: {cmd}: {e}", f.id()));
         }
     }
 
