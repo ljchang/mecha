@@ -861,6 +861,47 @@ fn missing(lib: &Library, kind: Kind, name: &str) -> String {
     }
 }
 
+/// Cast members the library has no trace of, moved to extras: a name the
+/// model put in `cast` that is no character here is someone to draw from
+/// what the model wrote, not a reason to draw nothing (owner, 2026-09-30:
+/// "a named character that isn't in the image library … blocks image
+/// generation when it shouldn't"). Only a name with **no** trace moves: a
+/// candidate or an entry that did not load stays in the cast, where its own
+/// refusal says what is wrong, since drawing a stranger in its place would
+/// be the substitution the cast exists to prevent. Returns the cast that
+/// stays, the extras the moved ones became, and their names.
+pub fn demote_unknown(
+    lib: &Library,
+    cast: &[CastMember],
+) -> (Vec<CastMember>, Vec<String>, Vec<String>) {
+    let (mut kept, mut extras, mut names) = (Vec::new(), Vec::new(), Vec::new());
+    for member in cast {
+        let name = member.name.trim().to_lowercase();
+        let dir = lib.dir.join(Kind::Character.dir()).join(&name);
+        let traced = name.is_empty()
+            || lib.get(Kind::Character, &name).is_some()
+            || lib
+                .errors
+                .iter()
+                .any(|e| e.path.parent() == Some(dir.as_path()));
+        if traced {
+            kept.push(member.clone());
+            continue;
+        }
+        let mut described = member.name.trim().to_string();
+        let (wearing, doing) = (member.wearing.trim(), member.doing.trim());
+        if !wearing.is_empty() && !blank(wearing) {
+            described.push_str(&format!(", wearing {wearing}"));
+        }
+        if !doing.is_empty() && !blank(doing) {
+            described.push_str(&format!(", {doing}"));
+        }
+        extras.push(described.chars().take(MAX_CAST_FIELD).collect());
+        names.push(member.name.trim().to_string());
+    }
+    (kept, extras, names)
+}
+
 /// Empty, or only the refusal's own placeholder copied back — no answer.
 fn blank(s: &str) -> bool {
     s.chars().all(|c| c == '…' || c == '.')

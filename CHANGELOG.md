@@ -211,6 +211,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A name not in the image library no longer blocks a picture.** When
+  the assistant names someone in a picture who isn't a library character,
+  they are drawn from the description it gave, as an extra, and the result
+  says so. A character waiting for approval is still refused, and persona
+  chats are unchanged.
+
 - **A locked page no longer says how much it is hiding.** The personas grid
   drew a `hidden · N` tile and the image library a "N locked entries hidden"
   line, which told whoever held the phone there was something to find. Both

@@ -1334,6 +1334,9 @@ pub struct ImageGenerate {
     /// held here, only a number and a time.
     near_copies: std::sync::Mutex<std::collections::HashMap<u64, Instant>>,
     near_copy_salt: std::collections::hash_map::RandomState,
+    /// The persona form (`for_persona`): a cast name the library does not
+    /// hold is refused, as before, rather than drawn as an extra.
+    persona: bool,
 }
 
 /// An edit that came back a near-copy: the picture a retry should edit, and
@@ -1362,6 +1365,7 @@ impl ImageGenerate {
             library_dir: crate::imagelib::Library::default_dir().ok(),
             near_copies: Default::default(),
             near_copy_salt: Default::default(),
+            persona: false,
         })
     }
 
@@ -1662,8 +1666,18 @@ impl Tool for ImageGenerate {
 
     /// Eligible for a persona (`docs/PERSONA-DESIGN.md` §3.3): its request goes only
     /// to the loopback image server `[image]` names, and it reads no owner store.
+    /// Eligible, in a form that keeps refusing a cast name the library does
+    /// not hold: an unknown name is not drawn as an extra in a persona chat.
     fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
-        Some(self)
+        Some(Arc::new(ImageGenerate {
+            cfg: self.cfg.clone(),
+            backend: Arc::clone(&self.backend),
+            generation: Arc::clone(&self.generation),
+            library_dir: self.library_dir.clone(),
+            near_copies: Default::default(),
+            near_copy_salt: Default::default(),
+            persona: true,
+        }))
     }
 
     fn description(&self) -> &str {
@@ -1916,6 +1930,7 @@ impl Tool for ImageGenerate {
         // description verbatim beside its pointer.
         let mut used = Vec::new();
         let mut source_seeds = Vec::new();
+        let mut drawn_as_extras: Vec<String> = Vec::new();
         if let Some(ask) = &ask {
             let lib = match &self.library_dir {
                 Some(dir) => crate::imagelib::Library::load(dir).0,
@@ -1933,11 +1948,23 @@ impl Tool for ImageGenerate {
                     ))
                 }
             };
+            // A name the library does not hold is drawn as an extra, from what
+            // the model wrote, rather than refusing the picture — except in a
+            // persona chat, which refuses it as before.
+            let (cast, extras) = if self.persona {
+                (ask.cast.clone(), ask.extras.clone())
+            } else {
+                let (kept, moved, names) = crate::imagelib::demote_unknown(&lib, &ask.cast);
+                drawn_as_extras = names;
+                let mut extras = ask.extras.clone();
+                extras.extend(moved);
+                (kept, extras)
+            };
             let compiled = match crate::imagelib::compile(
                 &lib,
                 &req.prompt,
-                &ask.cast,
-                &ask.extras,
+                &cast,
+                &extras,
                 ask.style.as_deref(),
             ) {
                 Ok(compiled) => compiled,
@@ -2146,6 +2173,21 @@ impl Tool for ImageGenerate {
                  not seen it, so do not describe what it shows.",
                 req.seed, req.steps, req.seed
             ));
+            if !drawn_as_extras.is_empty() {
+                let names: Vec<String> = drawn_as_extras.iter().map(|n| format!("`{n}`")).collect();
+                text.push_str(&format!(
+                    " {} {} not in the image library, so {} drawn as {} from what you wrote, \
+                     not from a portrait.",
+                    names.join(", "),
+                    if names.len() == 1 { "is" } else { "are" },
+                    if names.len() == 1 { "was" } else { "were" },
+                    if names.len() == 1 {
+                        "an extra"
+                    } else {
+                        "extras"
+                    },
+                ));
+            }
         } else {
             let sources: Vec<&str> = req.references.iter().map(|r| r.path.as_str()).collect();
             let styled = used
@@ -3815,6 +3857,111 @@ mod tests {
             {"name": "maya", "wearing": "a yellow raincoat", "doing": "laughing"},
             {"name": "john", "wearing": "a flannel shirt", "doing": "smiling"}
         ])
+    }
+
+    /// A cast name the library does not hold is drawn as an extra from what
+    /// the model wrote, not a refused picture (owner, 2026-09-30); a candidate
+    /// still refuses, since a stranger in its place is a substitution; and the
+    /// persona form refuses an unknown name as before, drawing nothing.
+    #[tokio::test]
+    async fn an_unknown_cast_name_is_drawn_as_an_extra_outside_a_persona_chat() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya"]);
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb([1, 2, 3]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Character,
+                name: "wren".into(),
+                text: "wren, proposed by a model".into(),
+                portrait: Some(png.into_inner()),
+                source_seed: None,
+                origin: crate::imagelib::Origin::ModelClean,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let t = Arc::new(tool(&url).with_library_dir(lib.clone()));
+        let cast = json!([
+            {"name": "maya", "wearing": "a yellow raincoat", "doing": "laughing"},
+            {"name": "Sam", "wearing": "a denim jacket", "doing": "pouring coffee"}
+        ]);
+        let out = t
+            .call(
+                json!({"prompt": "a diner booth at night", "cast": cast}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("`Sam` is not in the image library, so was drawn as an extra"),
+            "{}",
+            out.content
+        );
+        let submitted = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|l| l.starts_with("POST /prompt"))
+            .cloned()
+            .unwrap();
+        assert!(
+            submitted.contains("Sam, wearing a denim jacket, pouring coffee"),
+            "{submitted}"
+        );
+        assert!(
+            submitted.contains("The person in the image (maya, a memorable face)"),
+            "{submitted}"
+        );
+
+        // A candidate is a known name: refused, not drawn as a stranger.
+        let out = t
+            .call(
+                json!({"prompt": "a diner", "cast": [{"name": "wren", "wearing": "a coat", "doing": "reading"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("waiting for the owner's approval"),
+            "{}",
+            out.content
+        );
+
+        // The persona form: an unknown name is refused, and nothing is drawn.
+        let before = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .count();
+        let persona = Arc::clone(&t).for_persona().unwrap();
+        let out = persona
+            .call(
+                json!({"prompt": "a diner booth at night", "cast": cast}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("No approved character named `sam`"),
+            "{}",
+            out.content
+        );
+        let after = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .count();
+        assert_eq!(before, after, "the persona form drew");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
     }
 
     #[tokio::test]
