@@ -82,6 +82,52 @@ impl EvalCase {
              shared fixture",
             self.id
         );
+        // A picture that would be skipped at the door — not an image, past the
+        // cap, a path out of the workspace — leaves the case graded on a
+        // prompt naming something the model was never shown: refused here,
+        // not discovered in a scorecard (review of #450). Whether each file
+        // exists and decodes is checked against the fixture before the run
+        // (`check_attachments`).
+        anyhow::ensure!(
+            self.attach.len() <= crate::image::MAX_ATTACHED_IMAGES,
+            "case `{}` attaches {} pictures; at most {} ride on a turn",
+            self.id,
+            self.attach.len(),
+            crate::image::MAX_ATTACHED_IMAGES
+        );
+        for path in &self.attach {
+            let p = Path::new(path);
+            anyhow::ensure!(
+                !path.trim().is_empty()
+                    && p.is_relative()
+                    && p.components()
+                        .all(|c| matches!(c, std::path::Component::Normal(_))),
+                "case `{}` attaches `{path}`: a path relative to the fixture, with no `..`",
+                self.id
+            );
+            anyhow::ensure!(
+                crate::message::image_media_type(p).is_some(),
+                "case `{}` attaches `{path}`, which is not a PNG, JPEG, GIF or WebP — only \
+                 pictures ride on a turn",
+                self.id
+            );
+        }
+        Ok(())
+    }
+
+    /// Every picture this case attaches, read from `fixture` exactly as the
+    /// run will read it: an error naming the first that is missing or does not
+    /// decode, so a moved fixture fails the run rather than a case's grade.
+    pub fn check_attachments(&self, fixture: &Path) -> Result<()> {
+        for path in &self.attach {
+            let shown = crate::image::attached_images(fixture, std::slice::from_ref(path));
+            anyhow::ensure!(
+                shown.len() == 1,
+                "case `{}` attaches `{path}`, which could not be read from {} as a picture",
+                self.id,
+                fixture.display()
+            );
+        }
         Ok(())
     }
 }
@@ -1415,6 +1461,49 @@ mod tests {
             compact_at_tokens: None,
             attach: Vec::new(),
         }
+    }
+
+    /// A picture that would never reach the model is refused before the run,
+    /// never discovered as a failed grade (review of #450): a path out of the
+    /// fixture, a file that is not a picture, one past the cap, and — against
+    /// the fixture — one that is missing or does not decode.
+    #[test]
+    fn an_attachment_that_cannot_reach_the_model_is_refused_up_front() {
+        let with = |paths: &[&str]| EvalCase {
+            attach: paths.iter().map(|p| p.to_string()).collect(),
+            ..case(Expect::default())
+        };
+        assert!(with(&["inbox/page.jpg", "inbox/b.PNG"]).validate().is_ok());
+        for bad in [
+            &["/etc/page.png"][..],
+            &["../page.png"],
+            &["inbox/notes.txt"],
+            &[""],
+        ] {
+            assert!(with(bad).validate().is_err(), "{bad:?} was accepted");
+        }
+        let many: Vec<String> = (0..=crate::image::MAX_ATTACHED_IMAGES)
+            .map(|i| format!("p{i}.png"))
+            .collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert!(with(&refs).validate().is_err(), "past the cap was accepted");
+
+        let dir = std::env::temp_dir().join(format!("mecha-eval-attach-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 4)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(dir.join("inbox/ok.png"), &png).unwrap();
+        std::fs::write(dir.join("inbox/broken.png"), b"not a png").unwrap();
+        assert!(with(&["inbox/ok.png"]).check_attachments(&dir).is_ok());
+        let e = with(&["inbox/ok.png", "inbox/missing.png"])
+            .check_attachments(&dir)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("missing.png"), "{e}");
+        assert!(with(&["inbox/broken.png"]).check_attachments(&dir).is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -193,7 +193,10 @@ where
             let paths = item.attach.clone();
             tokio::task::spawn_blocking(move || crate::image::attached_images(&workspace, &paths))
                 .await
-                .unwrap_or_default()
+                .unwrap_or_else(|e| {
+                    tracing::warn!("attachments not read: {e}");
+                    Vec::new()
+                })
         } else {
             Vec::new()
         };
