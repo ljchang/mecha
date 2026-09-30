@@ -252,7 +252,7 @@ fn a_switched_off_feature_s_verbs_refuse_with_one_sentence() {
     let run = |features: &str, argv: &[&str]| {
         std::fs::write(
             home.0.join("home/config.toml"),
-            format!("[sandbox]\nkind = \"none\"\n[documents]\n{features}\n"),
+            format!("[sandbox]\nkind = \"none\"\n{features}\n"),
         )
         .unwrap();
         let out = Command::new(env!("CARGO_BIN_EXE_mecha"))
@@ -297,8 +297,13 @@ fn a_switched_off_feature_s_verbs_refuse_with_one_sentence() {
     ] {
         let err = run(off, argv);
         assert!(err.contains(sentence), "{argv:?} off:\n{err}");
+        // What only a refusal prints: the enable command. (" is off (" is
+        // also in the unconfigured-documents message, a different finding.)
         let err = run(on, argv);
-        assert!(!err.contains(" is off ("), "{argv:?} on:\n{err}");
+        assert!(
+            !err.contains("`mecha features enable"),
+            "{argv:?} on:\n{err}"
+        );
     }
     for argv in [
         &["imagelib", "list"][..],
@@ -307,7 +312,7 @@ fn a_switched_off_feature_s_verbs_refuse_with_one_sentence() {
     ] {
         let err = run(off, argv);
         assert!(
-            !err.contains(" is off ("),
+            !err.contains("`mecha features enable"),
             "{argv:?} must stay open:\n{err}"
         );
     }
