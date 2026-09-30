@@ -116,7 +116,13 @@ export function toolStatus(entries, i) {
   const e = entries[i];
   if (e.is_error == null) return 'running';
   if (!e.is_error) return 'done';
-  const again = entries.slice(i + 1).some((x) => x.kind === 'tool' && x.name === e.name);
+  // Within the same turn only: the owner's next message ends the search, or
+  // a failure reads "retried" because the tool ran again days later
+  // (review of #431).
+  const after = entries.slice(i + 1);
+  const turnEnd = after.findIndex((x) => x.kind === 'user');
+  const sameTurn = turnEnd === -1 ? after : after.slice(0, turnEnd);
+  const again = sameTurn.some((x) => x.kind === 'tool' && x.name === e.name);
   return again ? 'retried' : 'failed';
 }
 

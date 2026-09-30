@@ -45,8 +45,11 @@
   let crisisShown = $state(false);
   // A clock for the waiting line, ticking only while a run is live.
   let now = $state(Date.now());
+  // On `running` alone, not the whole run: `run` is replaced on every
+  // streamed word, and the tick would restart with each (review of #431).
+  const running = $derived(run.running);
   $effect(() => {
-    if (!run.running) return;
+    if (!running) return;
     now = Date.now();
     const tick = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(tick);
@@ -664,7 +667,10 @@
   </span>
 {/snippet}
 
-<svelte:window onclick={(e) => menuOpen && !e.target.closest?.('.menuwrap') && (menuOpen = false)} />
+<svelte:window
+  onclick={(e) => menuOpen && !e.target.closest?.('.menuwrap') && (menuOpen = false)}
+  onkeydown={(e) => e.key === 'Escape' && (menuOpen = false)}
+/>
 
 <div class="page">
   <header class="head">

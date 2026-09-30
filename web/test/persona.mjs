@@ -170,9 +170,16 @@ assert.equal(keptCharacter('maya', undefined), '');
   assert.equal(waitingLine(r, 'Stella', 99_000), null);
   r = applyEvent(r, { type: 'done', ok: true });
   assert.equal(waitingLine(r, 'Stella', 99_000), null);
-  // A lone failure stays a failure.
+  // A lone failure stays a failure — and a same-named call in a later turn
+  // is not its retry.
   const lone = [{ kind: 'tool', name: 'web_search', is_error: true }];
   assert.equal(toolStatus(lone, 0), 'failed');
+  const later = [
+    { kind: 'tool', name: 'web_search', is_error: true },
+    { kind: 'user', text: 'something else' },
+    { kind: 'tool', name: 'web_search', is_error: false },
+  ];
+  assert.equal(toolStatus(later, 0), 'failed');
 }
 
 console.log('persona: ok');

@@ -978,6 +978,30 @@ impl SearchBackendConfig {
         }
         self.api_key.clone().filter(|k| !k.is_empty())
     }
+
+    /// Why this backend cannot be built, in `build_search_chain`'s words, or
+    /// `None` when it can — config and environment only, no network. The
+    /// chain builder drops such a backend and registers no `web_search` when
+    /// none is left, so `mecha features` asks this rather than reading
+    /// "a backend is listed" as "search works" (found on review of #428). A
+    /// test beside `build_search_chain` holds the two to the same answer.
+    pub fn problem(&self) -> Option<String> {
+        match self.kind.as_str() {
+            "exa" | "tavily" => self.resolve_api_key().is_none().then(|| {
+                format!(
+                    "no API key (set api_key_env, e.g. {}_API_KEY)",
+                    self.kind.to_uppercase()
+                )
+            }),
+            "searxng" => self
+                .base_url
+                .is_none()
+                .then(|| "searxng needs `base_url` pointing at your instance".to_string()),
+            other => Some(format!(
+                "unknown search backend {other:?} (expected: exa, tavily, searxng)"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1153,6 +1177,37 @@ impl ConfigLayer {
             }
         }
     }
+}
+
+/// Whether this process's chat provider may serve an incognito chat: a
+/// local server on this machine, with no fallbacks. A cloud provider keeps
+/// the text on someone else's servers; a fallback would re-send the whole
+/// conversation there on a transient local error, silently (INCOGNITO-DESIGN.md
+/// §6.1).
+pub fn provider_is_local(config: &Config, provider_name: &str) -> std::result::Result<(), String> {
+    let Some(provider) = config.providers.get(provider_name) else {
+        return Err(format!("the provider `{provider_name}` is not configured"));
+    };
+    if !provider.fallbacks.is_empty() {
+        return Err(format!(
+            "the provider `{provider_name}` has fallbacks ({}), which could send the \
+             conversation elsewhere",
+            provider.fallbacks.join(", ")
+        ));
+    }
+    // `imagegen::is_loopback`, the one definition of "on this machine" —
+    // this was a line-for-line copy of it until the move (review of #428).
+    let loopback = provider
+        .base_url
+        .as_deref()
+        .and_then(|u| reqwest::Url::parse(u).ok())
+        .is_some_and(|u| crate::imagegen::is_loopback(&u));
+    if !loopback {
+        return Err(format!(
+            "the provider `{provider_name}` is not a server on this machine"
+        ));
+    }
+    Ok(())
 }
 
 impl Config {
