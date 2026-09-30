@@ -672,8 +672,11 @@ conversation, so the capabilities do not change. Three rules:
   look unchanged. Measured seamless, and landing 8 of 8 local edits, in
   `IMAGE-REGION-EDIT-RESEARCH.md` §4. It under-edits a pose, which is left
   to a plain edit or a library redraw. A mask that marks nothing, or was
-  painted over a picture of another shape, is refused before the GPU, and
-  `size` with a mask is refused, because the canvas is the picture.
+  painted over a picture of another shape, is refused before the GPU. A
+  `size` beside a mask is set aside and said, never refused, because the
+  canvas is the picture. The first live run refused it, and the local model
+  read the refusal as the mask being at fault and retried without the mask:
+  a whole-picture edit of a picture the owner had painted a region on.
 
 The model sees what it made on request — `image_view` on the result's path
 (§Images) — and the result hands the seed back: revising is an edited prompt
