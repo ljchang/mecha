@@ -124,6 +124,10 @@ mod tests {
         assert_eq!(image["shown"], false);
         assert_eq!(image["next"], "mecha features enable image");
         assert_eq!(image["pending"], false);
+        // Whether its guard has landed, which the web keys a refusal's
+        // consequences on (a flat card, a pane sent home).
+        assert_eq!(image["gated"], true);
+        assert_eq!(row(&body, "frontdoor")["gated"], false);
         // Switched off since start: pending the other way.
         let body = super::body(&facts, &[Feature::Web, Feature::Image]);
         assert_eq!(row(&body, "image")["pending"], true);
@@ -158,11 +162,12 @@ mod tests {
         };
         let views = map("VIEW_FEATURE");
         let queues = map("QUEUE_FEATURE");
+        let panes = map("PANE_FEATURE");
         assert!(
-            views.len() >= 5 && queues.len() >= 5,
-            "{views:?} {queues:?}"
+            views.len() >= 5 && queues.len() >= 5 && panes.len() >= 3,
+            "{views:?} {queues:?} {panes:?}"
         );
-        for (key, id) in views.iter().chain(&queues) {
+        for (key, id) in views.iter().chain(&queues).chain(&panes) {
             assert!(
                 Feature::parse(id).is_some(),
                 "`{key}: {id}` names no feature"
@@ -218,12 +223,12 @@ mod tests {
         assert!(ids >= 9 && used_views >= 2, "{ids} ids, {used_views} views");
     }
 
-    /// Home keeps the Questions card, the workflows line and a queue's card
-    /// while anything waits, whatever a switch says — so each place they
-    /// land must open even when its view's feature is hidden, or the tap
-    /// bounces back to Home and the waiting thing has no door (review of
-    /// #449). Every `view/sub` destination Home names inside a feature's
-    /// view is in `OPENS_ANYWAY`.
+    /// Home keeps the Questions card and the workflows line whatever a
+    /// switch says — so each place they land must open even when its view's
+    /// feature is hidden, or the tap bounces back to Home and the waiting
+    /// thing has no door (review of #449). Every `view/sub` destination Home
+    /// names inside a feature's view is in `OPENS_ANYWAY`, except a queue
+    /// card's own, which goes flat when its feature is off (step 3).
     #[test]
     fn every_place_home_lands_opens_whatever_its_view_s_switch_says() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/src/lib");
@@ -266,9 +271,44 @@ mod tests {
             landings.iter().any(|l| l == "tasks/waiting"),
             "the Questions card's landing was not found: {landings:?}"
         );
+        // A queue card with a feature of its own goes flat when that
+        // feature is off (its pane's routes answer `feature_off`), so its
+        // landing need not open anyway: the queue names in QUEUE_FEATURE, and
+        // Home's `queueTargets` maps each to its landing.
+        let flat_when_off: Vec<String> = {
+            let start = js.find("export const QUEUE_FEATURE = {").unwrap();
+            let block = &js[start..start + js[start..].find("};").unwrap()];
+            // Only a queue whose feature refuses when off goes flat; one hidden
+            // before its guard lands stays a door, so its landing is not
+            // exempt (review of #451).
+            let queues: Vec<&str> = block
+                .lines()
+                .skip(1)
+                .filter_map(|l| {
+                    let (k, v) = l.trim().trim_end_matches(',').split_once(": ")?;
+                    let f = Feature::parse(v.trim_matches('\''))?;
+                    f.gated().then_some(k.trim_matches('\''))
+                })
+                .collect();
+            let start = home.find("const queueTargets = {").unwrap();
+            let targets = &home[start..start + home[start..].find("};").unwrap()];
+            targets
+                .lines()
+                .filter_map(|l| {
+                    let (k, v) = l.trim().trim_end_matches(',').split_once(": ")?;
+                    queues
+                        .contains(&k.trim_matches('\''))
+                        .then(|| v.trim_matches('\'').to_string())
+                })
+                .collect()
+        };
+        assert!(
+            flat_when_off.iter().any(|l| l == "library/candidates"),
+            "{flat_when_off:?}"
+        );
         for l in &landings {
             let (view, _) = l.split_once('/').unwrap();
-            if views.iter().any(|v| v == view) {
+            if views.iter().any(|v| v == view) && !flat_when_off.contains(l) {
                 assert!(
                     opens.contains(l),
                     "Home lands on `{l}`, inside a feature's view, and OPENS_ANYWAY does not list it"

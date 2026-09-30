@@ -8232,6 +8232,55 @@ in five different ways. The design and its open steps are
   that is not ready. Settings → Features lists every
   row with its command and runs none of them (design §8). No route changed
   in this step — a stale page still works, and the guards are step 3's.
+- **One refusal, on every surface** (step 3a). `feature::refusal` answers
+  for a route and a verb alike: a feature `Feature::gated` says is switched
+  off today whose row is hidden, with why and the fix. **Every route is
+  added through `serve::api()`'s `.at(path, owner, …)`** (`serve/gate.rs`),
+  so none exists without an owner — `every_route_is_registered_with_its_owner`
+  refuses a bare `.route` — and two owners read a capture: `ProposalStore`
+  (the `entities` store is the graph's, `harness` and `rules` are core) and
+  `ChatKey` (an incognito room's key is incognito's). **They read it as the
+  handler does**, percent-decoded from the router's own match
+  (`RawPathParams`), and an unreadable capture fails closed: read from the
+  raw URI, `/api/proposals/%65ntities/…/accept` passed a graph that was off
+  and the handler, decoding it, wrote the graph (review of #451). `require`
+  refuses when the global configuration does not load — `imagelib` loads
+  none of its own, so failing open let its writes through. The guard sits
+  **inside** `owner_guard`, so a stranger gets the owner's 403 and never
+  learns what is off; the owner gets F4's `404 feature_off`, before the
+  handler, so a read with a side effect does not happen. **It reads the
+  global file on every request** to a feature's route (config plus disk, no
+  socket): a start-time snapshot 404'd a feature enabled while `serve` ran —
+  its tab already shown — and kept a disabled one writing until a restart
+  (review of #451). Only the chat's tools load once; `/api/features`' 
+  `pending` marks that. Verbs call `features::require(f)` from
+  the global file before anything else: `mail`, `tasks`, `kg`, `review`
+  (all but `queues`, the cross-feature reader), `document extract`, and the
+  `imagelib` writes. **What is never refused:** reading a store you hold
+  (`imagelib list`/`show`), deleting data (`document prune`/`forget`), and
+  what another feature shares — the library's lock password, unlock, relock
+  and portraits, which Personas uses (ruling L1: the library follows
+  `image`, and `[tools]` withholds only the model's library tools). The
+  graph's own verbs and routes ran `mecha-graph` directly, past
+  `prepare_tools` — three drivers: `review::graph_cli`, the web's
+  `board::graph_verb`, and the TUI's `graph_cli` / `graph_cli_raw` (`/queues`
+  and the entity modal) — so before this `graph = false` still let `review
+  accept`, the web's entity create and merge, and the TUI's accept keys and
+  merges write the owner's graph. The CLI's and the TUI's drivers ask
+  `require` themselves; the web's two (`board::graph_verb`,
+  `proposals::run`) are behind the route guard, which asks per request. A
+  new driver sits behind one or the other — a route with a graph owner, or
+  `require` before it spawns. A graph tool missing from a run's surface now names the
+  switch when that is the cause (`features::graph_tool_absent`), not
+  `[[mcp]]`. **The web keys a refusal's consequences on the row's `gated`**,
+  never on `shown` alone (`features.js` `refuses`): Home's queue card for a
+  feature that refuses is flat, with its command, and a feature's pane in a
+  core view (`PANE_FEATURE`: Review's graph queue, entities, front door) is
+  sent home — but a feature hidden before its guard lands keeps its door,
+  or the front door's queue, still filling, had none (review of #451). 3b's
+  flip moves the page with the routes, with no web edit. **3b is a flip, not a build:** the five
+  features `gated` still answers `false` for already declare their routes'
+  owner, and pass until their arm flips with their verbs guarded.
 - **An environment may only narrow.** `trial_env::config_at` refuses an
   environment's `[features]` key set `true` unless
   `Feature::switchable_from_environment` — an exhaustive match, today only
@@ -8272,6 +8321,10 @@ the full checklist this grows into as each build step lands.
    offering another of its sub-views. Give an `own_state` arm's
    missing-settings case an `off` with the fix; `state` makes it `Unready`
    for a switched feature, so the tab stays.
+7. Its routes added with `.at(path, Owner::Of(Feature::X), …)` in
+   `serve::api()`, and its verbs starting with `features::require(Feature::X)`
+   — except what only reads a store, deletes data, or is shared with another
+   feature. Its `gated` arm says whether all of that is on.
 
 ## Context, and knowing how much is left
 

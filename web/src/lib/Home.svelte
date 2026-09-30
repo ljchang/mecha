@@ -2,7 +2,7 @@
   import { apiFetch as fetch } from './api.js';
   import { needsYou, fyi, actionable, workflowGroups, healthLine, queueCount } from './home-view.js';
   import { features } from './features.svelte.js';
-  import { isShown, queueCardShown, QUEUE_FEATURE } from './features.js';
+  import { isShown, refuses, queueCardShown, QUEUE_FEATURE } from './features.js';
   // Home is counts and doors. One card per place, a number, a tap into the
   // tab that has the rest — and nothing that tab already shows. The cards
   // never move: where Mail is today is where it is tomorrow, which is what
@@ -198,8 +198,18 @@
     <div class="machine">
       {#each machine as q (q.queue)}
         {@const to = queueTargets[q.queue]}
-        {#if to}
-          {@const fix = offFix(q.queue)}
+        {@const fix = offFix(q.queue)}
+        {#if fix && refuses(features.rows, QUEUE_FEATURE[q.queue])}
+          <!-- Kept because something waits, but its feature is off and its
+               routes refuse: the pane would answer `feature_off`, so the card
+               is flat and says what turns it on rather than offering a dead
+               tap. Off but not yet guarded, it stays a door (below). -->
+          <div class="card small flat">
+            <span class="row"><span class="label">{queueLabels[q.queue] ?? q.queue}</span><span class="count">{dash(q.depth)}</span></span>
+            <span class="sub" title={q.detail}>{q.detail}</span>
+            <span class="sub off">switched off — <code>{fix}</code></span>
+          </div>
+        {:else if to}
           <button class="card small" class:zero={q.depth === 0} onclick={() => navigate(to)}>
             <span class="row"><span class="label">{queueLabels[q.queue] ?? q.queue}</span><span class="count">{dash(q.depth)}</span></span>
             <span class="sub" title={q.detail}>{q.detail}</span>

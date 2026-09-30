@@ -256,6 +256,16 @@ fn read_picture(path: &PathBuf) -> Result<Vec<u8>> {
 }
 
 pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
+    // The library follows `image` (ruling L1). Its reads stay open — a store
+    // on disk is the owner's to look at — and so does the lock password,
+    // which Personas' locks share (the web's unlock routes are core for the
+    // same reason). What adds to, changes or removes an entry is refused.
+    if !matches!(
+        args.cmd,
+        Cmd::List { .. } | Cmd::Show { .. } | Cmd::SetLockPassword
+    ) {
+        super::features::require(mecha_core::feature::Feature::Library)?;
+    }
     let dir = Library::default_dir()?;
     run(&dir, args.cmd)
 }

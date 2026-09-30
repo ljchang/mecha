@@ -26,6 +26,23 @@ export const VIEW_FEATURE = {
 };
 
 /**
+ * Panes of a core view that belong to a feature: a link to one whose feature
+ * refuses lands on Home, as a hidden view's does — its routes answer
+ * `feature_off` — and the view does not offer it. One whose feature is hidden
+ * but not yet guarded still opens (`refuses`).
+ */
+export const PANE_FEATURE = {
+  'review/graph': 'graph',
+  'review/entities': 'graph',
+  'review/frontdoor': 'frontdoor',
+};
+
+/** The feature `view/sub` belongs to: its pane's, else its view's, else none. */
+export function featureOf(view, sub) {
+  return PANE_FEATURE[`${view}/${sub}`] ?? VIEW_FEATURE[view] ?? null;
+}
+
+/**
  * Home's queue cards, by the backlog's wire name. The outbox and questions
  * are core stores and appear nowhere here.
  */
@@ -43,13 +60,15 @@ export const QUEUE_FEATURE = {
  * workflows, both on the board's page but read from core stores — and the
  * landing of a queue card kept because something waits in it. Redirecting
  * these would keep the card and refuse the tap: the Questions card would
- * land on Home with its runs still waiting (found on review of #449).
+ * land on Home with its runs still waiting (found on review of #449). A
+ * queue card kept for what waits in an off feature is flat instead (Home),
+ * because its pane's routes answer `feature_off`.
  * `every_place_home_lands_opens_whatever_its_view_s_switch_says` holds
  * Home's destinations to this list, and a view these admit offers only the
  * sub-views that open (`opens`), or its own controls would bounce the same
  * way one level in.
  */
-export const OPENS_ANYWAY = ['tasks/waiting', 'tasks/workflows', 'library/candidates'];
+export const OPENS_ANYWAY = ['tasks/waiting', 'tasks/workflows'];
 
 /** Whether `view/sub` opens even with its view's feature hidden. */
 export function opensAnyway(view, sub) {
@@ -62,7 +81,7 @@ export function opensAnyway(view, sub) {
  * ask before offering a way to another of its sub-views.
  */
 export function opens(rows, view, sub) {
-  return isShown(rows, VIEW_FEATURE[view]) || opensAnyway(view, sub);
+  return isShown(rows, featureOf(view, sub)) || opensAnyway(view, sub);
 }
 
 /** `/api/features`'s body as a map from id to row, or null when unanswered. */
@@ -70,6 +89,19 @@ export function index(body) {
   const rows = body?.features;
   if (!Array.isArray(rows)) return null;
   return new Map(rows.map((r) => [r.id, r]));
+}
+
+/**
+ * Whether `id` is off *and refuses*: hidden, and its guard has landed
+ * (`gated`), so its routes answer `feature_off`. What a refusal forces — a
+ * flat Home card, a pane sent home — keys on this, never on `isShown`
+ * alone: a feature hidden before its guard lands still works, and its door
+ * must stay (review of #451: the front door's queue lost its only one).
+ */
+export function refuses(rows, id) {
+  if (!id || !rows) return false;
+  const row = rows.get(id);
+  return !!row && row.shown === false && row.gated === true;
 }
 
 /** Whether `id` is shown. `id` null is core, always shown. */

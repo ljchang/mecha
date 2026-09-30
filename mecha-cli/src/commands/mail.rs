@@ -374,6 +374,7 @@ pub enum Cmd {
 }
 
 pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
+    super::features::require(mecha_core::feature::Feature::Mail)?;
     match args.cmd.unwrap_or(Cmd::List {
         all: false,
         aged: false,
@@ -2553,8 +2554,9 @@ async fn task(
         .or_else(|| rec.verdict.as_ref().and_then(|v| v.deadline.clone()));
 
     let prepared = setup::prepare_tools(global, false).await?;
-    let create = find_tool(&prepared.registry, "kg_task_create")
-        .context("no knowledge-graph server in this configuration — is `[[mcp]]` enabled?")?;
+    let create = find_tool(&prepared.registry, "kg_task_create").with_context(|| {
+        super::features::graph_tool_absent(mecha_core::feature::Feature::Tasks, "kg_task_create")
+    })?;
     let ctx = tool_ctx(&prepared);
 
     // **The way back to the mail that asked.** The board's whole failure

@@ -445,8 +445,18 @@ The switch is the only switch; a settings table such as `[image]` or
 today: web search, image generation and the character library, and PDF
 extraction are not registered; the mail, docs and graph MCP servers are
 not started, by any command — including `distill`, `gossip`,
-`vet` and `corroborate`, which start the graph server themselves; and
-`mecha serve` will not start without `web = true`. Slack, personas, voice,
+`vet` and `corroborate`, which start the graph server themselves; the web
+app's routes for mail, the knowledge graph (with its review queue and
+entity proposals), the task board and the library answer `404` with
+`{"error": "feature_off", "feature": …, "why": …, "fix": …}`; the commands
+that belong to them — `mecha mail`, `tasks`, `kg`, `review` (all but
+`queues`), `document extract`, and the `imagelib` commands that change an
+entry — refuse with one sentence and the command that turns the feature on;
+and `mecha serve` will not start without `web = true`. The library is part of
+image: it is on whenever image is, and `[tools]` withholding `image_library`
+or `image_library_propose` only keeps those tools from the model. Reading the
+library, pruning or forgetting cached extractions, and the library's lock
+password stay open whatever the switches say. Slack, personas, voice,
 incognito and the front door (its queue and its publishing server) are listed here now, and follow their
 switch once their commands and web pages are guarded; until then they work
 whatever it says, and `mecha features` and the start-up line say so. An

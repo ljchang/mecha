@@ -13,10 +13,18 @@
 > `/api/features`, and the web app showing and hiding by its rows, with
 > Settings → Features; building it found that `state` answered `Off` for a
 > switched-on feature missing its settings, which §5 calls `Unready`, and
-> fixed that in core. One deliberate departure from §5: `[features] messages` is
+> fixed that in core — merged as #449. **Step 3 is split by feature, not by
+> surface**, so no feature is ever half-gated: 3a guards the features whose
+> switches already turn something off (mail, docs, graph and its board,
+> search, documents, image and its library) on every route and verb, with
+> every route declaring its owner; 3b guards Slack, personas, voice,
+> incognito and the front door whole, by flipping `Feature::gated`. Ruling
+> L1 (2026-09-30): the library follows `image` — `[tools]` withholds only the
+> model's library tools, never the page; the library's lock and portrait
+> routes are core, because Personas uses them. One deliberate departure from §5: `[features] messages` is
 > applied *into* `[messages] enabled` rather than or-ed with it, so experiment
-> levers keep one field (ARCHITECTURE §Features says why). Steps 3–8 are
-> unbuilt. The owner
+> levers keep one field (ARCHITECTURE §Features says why). Step 3b and
+> steps 4–8 are unbuilt. The owner
 > ruled F1–F6 the same day (§7): the switch is a `[features]` table of
 > bools — not a table's presence, which this doc first recommended — and §5
 > is written to that ruling; F5 is `hardware.md`'s four tiers, in two

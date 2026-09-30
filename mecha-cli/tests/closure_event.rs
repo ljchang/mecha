@@ -56,8 +56,12 @@ impl Fixture {
             .to_string(),
         )
         .unwrap();
+        // The board is the graph's (`tasks` is its part), and `mecha tasks`
+        // asks the switch before anything else (FEATURES-DESIGN.md step 3a):
+        // this fixture exercises a board that is switched on.
         let config = format!(
-            "[[mcp]]\nname = \"graph\"\ncommand = \"python3\"\nargs = [{:?}]\nprefix_tools = false\n\
+            "[features]\ngraph = true\n\
+             [[mcp]]\nname = \"graph\"\ncommand = \"python3\"\nargs = [{:?}]\nprefix_tools = false\n\
              [mcp.env]\nMECHA_FIXTURE_DIR = {:?}\n{extra_config}",
             board_server().display().to_string(),
             store.display().to_string(),

@@ -17,6 +17,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A feature that is off refuses the same way everywhere.** With mail, the
+  knowledge graph (and its task board), PDF extraction or image generation
+  switched off in `[features]`, the web app's routes for them answer `404`
+  with `{"error": "feature_off", "feature": …, "why": …, "fix": …}` — only to
+  the owner; anyone else still gets `403` and learns nothing — and their
+  commands (`mecha mail`, `tasks`, `kg`, `review` except `queues`, `document
+  extract`, and the `imagelib` commands that change an entry) refuse with one
+  sentence, such as *"Mail and calendar is off (turned off in [features]) —
+  `mecha features enable mail`"*. They used to fail in five different ways,
+  and the graph's review queue, `mecha review accept` and the web's entity
+  create and merge **still wrote the graph** with `graph = false`. A missing
+  graph tool now names the switch when that is why, not `[[mcp]]`. `mecha
+  batch` prints the upgrade line, as `run` does. On Home, a review queue
+  whose feature is off shows its count and the command, and no longer opens
+  a page that cannot load. The switches are read on every request and
+  every command, so enabling or disabling a feature takes effect at once, on
+  the web too; only the web chat's tools wait for `mecha serve` to restart
+  (Settings → Features lists the switches waiting on one).
+
 - **Eval cases can attach pictures.** `"attach": [...]` in a case puts
   images on its first turn as pixels, exactly as a web-chat upload does, so
   a case can measure what a model does with a picture it can already see.
@@ -307,6 +326,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it.
 
 ### Changed
+
+- **The character library follows image generation.** It is on whenever
+  `image` is — its page, its routes, `mecha imagelib` — and `[tools]`
+  disabling `image_library` or `image_library_propose` now only keeps those
+  tools from the model, as `[tools]` does for every tool, instead of taking
+  the Library page with it. `mecha features` says which library tools the
+  model is missing. The library's lock password and its unlock, relock and
+  portrait routes stay open whatever the switches say, because Personas uses
+  them.
 
 - **`mecha features` reads a switched-on feature with missing settings as
   unready, not off.** `image = true` with no `[image]` table, or mail with no

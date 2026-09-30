@@ -18,6 +18,7 @@
 //! `openWorldHint: false`, so none of it is a send.
 
 use anyhow::{bail, Context, Result};
+use mecha_core::feature::Feature;
 use serde_json::{json, Value};
 
 use crate::setup::{find_tool, staged_ids, tool_ctx, withhold_tool};
@@ -188,6 +189,7 @@ pub enum Cmd {
 }
 
 pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
+    super::features::require(Feature::Tasks)?;
     match args.cmd.unwrap_or(Cmd::List {
         closed: false,
         json: false,
@@ -315,9 +317,8 @@ async fn call_in(
     tool: &str,
     args: Value,
 ) -> Result<Value> {
-    let found = find_tool(registry, tool).with_context(|| {
-        format!("no knowledge-graph server in this configuration — `{tool}` is not on the tool surface. Is `[[mcp]]` enabled?")
-    })?;
+    let found = find_tool(registry, tool)
+        .with_context(|| super::features::graph_tool_absent(Feature::Tasks, tool))?;
     let out = found.call(args, ctx).await?;
     if out.is_error {
         bail!("{}{}", tool_rejected_prefix(tool), out.content.trim());
@@ -355,8 +356,8 @@ async fn write_with_outcome(
 ) -> std::result::Result<Value, WriteFailure> {
     let Some(found) = find_tool(&prepared.registry, tool) else {
         return Err(WriteFailure::Refused(anyhow::anyhow!(
-            "no knowledge-graph server in this configuration — `{tool}` is not on the tool \
-             surface. Is `[[mcp]]` enabled?"
+            "{}",
+            super::features::graph_tool_absent(Feature::Tasks, tool)
         )));
     };
     outcome_of(tool, found.call(args, &tool_ctx(prepared)).await)
@@ -2681,10 +2682,7 @@ async fn work(
     // this file — no second reader of a schema that lives in another repo.
     let list = find_tool(prepared.agent.registry(), "kg_task_list")
         .cloned()
-        .context(
-            "no knowledge-graph server in this configuration — `kg_task_list` is not on the \
-             tool surface. Is `[[mcp]]` enabled?",
-        )?;
+        .with_context(|| super::features::graph_tool_absent(Feature::Tasks, "kg_task_list"))?;
     let out = list.call(json!({ "include_closed": true }), &tctx).await?;
     if out.is_error {
         bail!("kg_task_list: {}", out.content.trim());
