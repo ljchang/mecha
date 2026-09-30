@@ -358,7 +358,7 @@ registry.
 | State | Meaning | Web | Routes | CLI | Tools |
 |---|---|---|---|---|---|
 | `Off` | not configured (or declined) | hidden | 404 `feature_off` | one sentence + the setup command | not registered |
-| `Blocked(Feature)` | configured, but something it needs is off — the **first** unmet need in `needs()` order (the parent, then `requires`) | hidden, and Settings says what it waits on | 404 `feature_off`, naming that dependency | names it; `mecha features enable` chains every unmet one (`mecha features enable web dictate`) | not registered |
+| `Blocked(Feature)` | configured, but something it needs is off — the **first** unmet need in `needs()` order (the parent, then `requires`) | hidden, and Settings says what it waits on | 404 `feature_off`, naming that dependency | names it; `mecha features enable` names every unmet switch in its chained command (`dictate` is off because `web` is: `mecha features enable web`) | not registered |
 | `Unready(reason)` | enabled, but config or disk says it cannot work yet — settings missing or refused, no account authorised | **shown**, with a banner | 503 with the reason | the reason | whatever registration's own rule builds — nothing from an absent `[image]`; a mail server with no account still connects and says so per call |
 | `Down(reason)` | configured, and a probe found it not answering — **`mecha features --probe` only**, and so not a variant `state(facts, f)` returns: like *pending restart* (§4.2), it is the probe's annotation over an `On` row, added with the probe itself | — (never produced: the web reads `On`, and the handler's own error is what the owner sees) | — (a route cannot probe per request) | the reason | registered |
 | `On` | enabled and usable as far as config and disk can say | shown | normal | normal | registered |
@@ -392,8 +392,11 @@ Three rules carry the design:
    it reads only config and the disk. **`mecha features enable|disable
    <id>`** writes the bool into the global `[features]` table (`codex
    features enable`); an enable whose dependency is off is refused with the
-   chained command (`mecha features enable web voice`), as Claude Code
-   refuses a disable that would break another plugin.
+   chained command (`mecha features enable web incognito`), as Claude Code
+   refuses a disable that would break another plugin. A **part** id (`ocr`,
+   `dictate`, `library`) has no bool, so `enable ocr` is refused by name and
+   points at the parent's switch and the setting that turns the part on
+   (`[documents] ocr = true`).
 2. **`mecha setup`** iterates the registry instead of the hand-written
    `integration_steps`. Every optional feature becomes a declinable step, and
    **`mecha setup <feature>`** runs just that one (Hermes and OpenClaw both
@@ -717,7 +720,15 @@ Three things make it deliberate rather than accidental:
   `MACHINE_TABLES`
   (`search`, whose backends and keys `config_at` copies from the operator —
   `Egress::Chosen` at deep search, with nothing to degrade to `Unready`)
-  cannot be turned on from an environment. A new settings table gets the
+  cannot be turned on from an environment. **Nor can `mail` or `docs`**,
+  though their `[[mcp]]` entry is environment-declarable: their account
+  stores are found by the mail crate's rule — `~/.mecha/{mail,docs}` under the
+  real home, never `$MECHA_HOME` (`onboarding::mail_store_dir`, #428) — so an
+  environment that declared a `mecha-mail` entry and set `mail = true` would
+  read `On` against the owner's live mailbox. The test is therefore not only
+  the tables' trust but **where the feature's credentials live**: a feature
+  whose credentials are the operator's, wherever its entry is declared, is
+  operator-only to switch on (found on review of #427, pass 13). A new settings table gets the
   same test the day it is added (§9 step 8). An environment that sets such a
   key to `true` is **refused at load**, with `config_at`'s `ensure!` and its
   reason. **`[documents]` is not on `OPERATOR_ONLY_TABLES` today**, though
