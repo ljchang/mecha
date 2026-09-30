@@ -158,8 +158,11 @@ assert.equal(keptCharacter('priya', undefined), '');
 {
   let r = applyEvent(emptyRun(), { type: 'user', text: 'a picture?' });
   assert.equal(waitingLine(r, 'Maya', 0), 'Maya is typing');
-  r = { ...r, entries: withWorking(r.entries, { id: 't1', name: 'image_generate', since: '1970-01-01T00:00:01Z' }) };
-  assert.equal(waitingLine(r, 'Maya', 85_000), 'drawing a picture… 1:24');
+  // The server says 84 s have passed; the page's own clock does the rest,
+  // whatever the server's clock reads.
+  r = { ...r, entries: withWorking(r.entries, { id: 't1', name: 'image_generate', since: '2099-01-01T00:00:00Z', elapsed_ms: 84_000 }, 1_000_000) };
+  assert.equal(waitingLine(r, 'Maya', 1_000_000), 'drawing a picture… 1:24');
+  assert.equal(waitingLine(r, 'Maya', 1_010_000), 'drawing a picture… 1:34');
   r = applyEvent(r, { type: 'tool_result', id: 't1', name: 'image_generate', is_error: true });
   r = applyEvent(r, { type: 'tool', id: 't2', name: 'image_generate' });
   assert.equal(toolStatus(r.entries, 1), 'retried');
@@ -192,10 +195,10 @@ assert.equal(keptCharacter('priya', undefined), '');
 // A page re-read mid-run puts back the tool still running, from the
 // server's own report of it — not a start the page invented.
 {
-  const working = { id: 't9', name: 'image_generate', since: '2026-09-30T04:00:00Z' };
-  const entries = withWorking([{ kind: 'user', text: 'a picture?' }], working);
+  const working = { id: 't9', name: 'image_generate', since: '2026-09-30T04:00:00Z', elapsed_ms: 84_000 };
+  const entries = withWorking([{ kind: 'user', text: 'a picture?' }], working, 5_000);
   const run = { ...emptyRun(entries), running: true };
-  assert.equal(waitingLine(run, 'Maya', Date.parse('2026-09-30T04:01:24Z')), 'drawing a picture… 1:24');
+  assert.equal(waitingLine(run, 'Maya', 5_000), 'drawing a picture… 1:24');
   // Not twice, and not when nothing is running.
   assert.equal(withWorking(entries, working).length, entries.length);
   assert.equal(withWorking(entries, null), entries);

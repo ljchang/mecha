@@ -998,7 +998,18 @@ impl PersonaChats {
             "working": ps
                 .live
                 .as_ref()
-                .and_then(|l| l.working.lock().ok().and_then(|w| w.last().cloned())),
+                .and_then(|l| l.working.lock().ok().and_then(|w| w.last().cloned()))
+                // How long it has run, by this server's clock: the page adds
+                // it to its own, so a phone whose clock disagrees still counts
+                // from the right moment (review of #431).
+                .map(|mut w| {
+                    let elapsed = w["since"]
+                        .as_str()
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_milliseconds().max(0));
+                    w["elapsed_ms"] = serde_json::json!(elapsed);
+                    w
+                }),
             "display": ps.pinned.settings.display,
             // The switches as they stand, not as pinned: they are read live.
             "safety": safety_json(
