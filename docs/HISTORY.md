@@ -55,6 +55,20 @@ by mecha-d7 (main `c599c802`). Between the dist rsync at 04:29Z and the serve
 restart, the new page ran against the old binary, which ignored `mask` and
 would have edited the whole picture.
 
+**2026-09-30 — the `personal` Google grant outlived seven days.** The
+project was published to production on 2026-09-16, and `personal` was
+re-consented on 2026-09-17 (`granted_at` 2026-09-17T02:10:19Z in its
+`oauth.json`, replacing the 09-15 grant). On 2026-09-30 (day 13) its
+refresh token was still minting access tokens, and a live read-only
+`mecha mail calendars` answered. A grant minted in Testing is revoked on day 7. So the guard the handoff had
+kept for exactly this, `grant_lifetime_days = 7` on that account in
+`~/.mecha/mail/accounts.toml`, came out, as its own note said to once a
+grant was observed past day eight. The owner removed it; the backup is
+`accounts.toml.bak-2026-09-30`. `mecha doctor` went from one mail finding
+("sign-in has expired") to none. The finding had been a declared lifetime,
+never a failure. The clock is a property of the grant rather than the app,
+so only a consent made after publishing could have shown this.
+
 **2026-09-29 — PDFs as a tool, a layout stage for tables, model servers
 that start on demand, and the persona design (#403, #404, #406,
 mecha-graph #26).** Merged and installed the same evening; the install is
@@ -1115,6 +1129,8 @@ marketing pages, and pruning them as unused would break the consent screen
 with nothing to say why. What this does *not* settle is in HANDOFF: the
 seven-day clock belongs to the grant rather than the app, so the `personal`
 grant minted 2026-09-15 keeps its own expiry and still owes a re-consent.
+(Closed on 2026-09-30: the 2026-09-17 re-consent outlived seven days; see
+that entry.)
 The console states were observed by `mecha-41` and are not verifiable from a
 shell; the DNS row and the three branding URLs were re-checked
 independently.

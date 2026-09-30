@@ -252,6 +252,13 @@ environment's `config.toml` may not set `default_provider`, `[providers]`,
 and your standing rules, so an environment cannot lift a `forbid` any more
 than an arm can.
 
+**Nor may it name where your things go.** An environment directory arrives with
+a checkout, so its `config.toml` may not set `[documents]`, `[harness]`,
+`[image]`, `[messages]`, `[slack]` or `[web]` either — the OCR server your
+documents are sent to and the PDF parser's sandbox, the image server, the
+mailbox, the Slack and web surfaces. `mecha exp` refuses the file rather than
+dropping the table, so a trial never runs on settings it did not ask for.
+
 **Servers get their own data.** A server in the environment's config that
 writes `${STORE}` in an `env` value or an argument gets a store directory
 under the trial home, and `${STORE}` becomes its path. The default

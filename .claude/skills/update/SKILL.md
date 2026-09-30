@@ -261,6 +261,16 @@ cd <clean worktree>/web && npm ci && npm run build
 rsync -a --delete dist/ ~/.mecha/web/dist/
 ```
 
+**When the same range changes the binary too, restart `mecha-serve` first
+and rsync last:** step 1's install, then the restart (step 2, whose hold
+check is what "clear" means here), then this rsync. `mecha serve` reads assets per
+request, so a new page reaches the phone the moment it lands, and a new page
+on the old binary can fail silently in the unsafe direction. On 2026-09-30
+#429's modal sent a `mask` that the old `image_generate` ignored, so for
+about two minutes a painted edit would have redone the whole picture. If a
+hold keeps serve up, keep the old dist live until it clears. An asset-only
+change needs no restart, so the order does not matter for one.
+
 **Before that rsync, ask what is deployed — the dist may be another
 lane's live test.** `git tag -l deployed-local` in the main checkout names
 the commit whose build is on the box when a session deployed something
@@ -273,8 +283,9 @@ reverted a surface the owner was live-testing. If the dist is not what
 you are about to install, announce to the live sessions before replacing
 it.
 
-Then restart `mecha-serve.service` (step 2). Verify the *served* page, not
-the directory: the 8443 door returning 200 with the new bundle hash.
+For an asset-only change, restart nothing. With a binary change, the restart
+already came before the rsync, as above. Either way, verify the *served* page,
+not the directory: the 8443 door returning 200 with the new bundle hash.
 
 **`web/public/` lands at `dist` root, and one of those files is
 load-bearing.** `voice-uplink-transform.js` is the buffered uplink's tap
@@ -305,12 +316,42 @@ a bare `304` with no `ETag` means the binary answering predates the bump.
 ### 2. The long-running services
 
 These hold an open file handle on the old binary and must be restarted *after*
-step 1:
+step 1 — and not through a run in flight. **Read `~/.mecha/holds` first:**
+each file is a run holding the model (`hold.rs`), and its pid says which
+unit it lives in:
+
+```bash
+for f in ~/.mecha/holds/*.hold; do [ -e "$f" ] || continue
+  # The pid is in the name (`{pid}-{uuid}.hold`), as `hold::pid_of` reads
+  # it: an unreadable hold is still a hold, never a stale one.
+  name=$(basename "$f"); pid=${name%%-*}
+  what=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["what"])' "$f" \
+         2>/dev/null) || what='(unreadable, still a hold)'
+  printf '%s  %s  ' "$name" "$what"
+  tail -1 /proc/$pid/cgroup 2>/dev/null || echo "(pid $pid gone: a stale file)"
+done
+```
+
+A hold whose cgroup is a unit you are about to restart is somebody's live
+run. On 2026-09-30 it was the owner's persona chat in `mecha-serve`. Wait
+for it to clear, or restart the other units now and that one after. A hold
+in a unit you are not restarting does not block; on 2026-09-30 that was
+`mecha-ruminate`'s nightly `validate`. A new page waiting on this restart
+stays unpublished until it happens (step 1b).
 
 ```bash
 systemctl --user restart mecha-slack.service mecha-triggers.service \
                          mecha-drain.service mecha-serve.service \
                          mecha-voice-worker.service
+```
+
+With a hold in `mecha-serve`, restart the rest now and serve once it clears:
+
+```bash
+systemctl --user restart mecha-slack.service mecha-triggers.service \
+                         mecha-drain.service mecha-voice-worker.service
+# later, when the check above prints nothing in mecha-serve.service:
+systemctl --user restart mecha-serve.service
 ```
 
 **`mecha-serve` and `mecha-voice-worker` were missing from this list until
