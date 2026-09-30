@@ -1360,7 +1360,11 @@ const MASK_FEATHER_SIGMA: f32 = 8.0;
 /// where a near-copy is looked for.
 #[derive(Debug, Clone)]
 pub struct MaskPlan {
+    /// The picture at its edit canvas: the original itself, not a resample,
+    /// when the two sizes agree — as they do for every picture this tool made.
     pub picture: image::RgbImage,
+    /// The picture's own size, before any resize to the canvas.
+    pub source: (u32, u32),
     pub soft: image::GrayImage,
     pub bounds: (u32, u32, u32, u32),
 }
@@ -1388,7 +1392,14 @@ pub fn prepare_mask(
         ));
     }
     let (cw, ch) = edit_canvas(pw, ph, resolution);
-    let picture = resize(&picture.to_rgb8(), cw, ch, FilterType::Lanczos3);
+    // Resampled only when the sizes differ. (The `image` crate's `resize`
+    // already returns an exact copy at the same size; the skip says so here
+    // rather than leaning on that.)
+    let picture = if (cw, ch) == (pw, ph) {
+        picture.to_rgb8()
+    } else {
+        resize(&picture.to_rgb8(), cw, ch, FilterType::Lanczos3)
+    };
     let hard = image::GrayImage::from_fn(cw, ch, {
         let luma = resize(&mask.to_luma8(), cw, ch, FilterType::Triangle);
         move |x, y| {
@@ -1421,6 +1432,17 @@ pub fn prepare_mask(
             0
         }])
     });
+    // A dab too small to survive the grow step would leave the sampler
+    // nothing to redraw and the composite nothing to change, while the result
+    // said the painted area was redrawn: refused, like an empty mask (review
+    // of #429).
+    if !grown.pixels().any(|p| p.0[0] > 0) {
+        return Err(
+            "The painted area is too small to edit: ask the user to paint over more of \
+             what should change."
+                .into(),
+        );
+    }
     let soft = fast_blur(&grown, MASK_FEATHER_SIGMA);
     // Painted pixels stay fully redrawn, whatever the blur did to them.
     let soft = image::GrayImage::from_fn(cw, ch, |x, y| {
@@ -1428,6 +1450,7 @@ pub fn prepare_mask(
     });
     Ok(MaskPlan {
         picture,
+        source: (pw, ph),
         soft,
         bounds,
     })
@@ -2450,11 +2473,21 @@ impl Tool for ImageGenerate {
                 req.seed,
                 req.steps
             ));
-            if let Some(mask) = &mask_path {
-                text.push_str(&format!(
-                    " Only the area painted in {mask} was redrawn; everything outside it is the \
-                     original, pixel for pixel."
-                ));
+            if let (Some(mask), Some(plan)) = (&mask_path, &plan) {
+                let (cw, ch) = plan.picture.dimensions();
+                text.push_str(&if plan.source == (cw, ch) {
+                    format!(
+                        " Only the area painted in {mask} was redrawn; everything outside it is \
+                         the original, pixel for pixel."
+                    )
+                } else {
+                    let (pw, ph) = plan.source;
+                    format!(
+                        " Only the area painted in {mask} was redrawn. The picture is \
+                         {pw}×{ph} and was edited at {cw}×{ch}, its edit size, as any edit of it \
+                         is; outside the painted area the result is the original at that size."
+                    )
+                });
             }
             if let Some(near) = &near {
                 text.push_str(&near.notice);
@@ -5105,5 +5138,53 @@ mod tests {
             "{seen:?}"
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_canvas_sized_picture_keeps_its_own_bytes_outside_the_mask() {
+        // The claim is "the original, pixel for pixel": measured against the
+        // source file itself, not the prepared canvas, which the other tests
+        // compare against (review of #429). A generated picture is already
+        // canvas-sized, and this is the case the claim is made for.
+        let source = image::RgbImage::from_fn(1344, 768, |x, y| {
+            image::Rgb([
+                (x * 7 % 251) as u8,
+                (y * 13 % 241) as u8,
+                ((x ^ y) % 239) as u8,
+            ])
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        source.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let plan = prepare_mask(
+            png.get_ref(),
+            &mask_png(1344, 768, (300, 300, 500, 500)),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(plan.source, (1344, 768));
+        let green = image::RgbImage::from_pixel(1344, 768, image::Rgb([10, 200, 30]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        green
+            .write_to(&mut result, image::ImageFormat::Png)
+            .unwrap();
+        let out = composite_masked(result.get_ref(), &plan).unwrap();
+        let out = image::load_from_memory(&out).unwrap().to_rgb8();
+        let unchanged = out
+            .enumerate_pixels()
+            .filter(|(x, y, _)| plan.soft.get_pixel(*x, *y).0[0] == 0)
+            .all(|(x, y, p)| p == source.get_pixel(x, y));
+        assert!(unchanged, "an unpainted pixel differs from the source file");
+    }
+
+    #[test]
+    fn a_dab_too_small_to_survive_the_grow_is_refused() {
+        // One painted pixel on a picture the canvas scales 16×: after the
+        // grow step nothing is left, so nothing would be redrawn.
+        let big = image::RgbImage::from_pixel(1344, 768, image::Rgb([90, 90, 90]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        big.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let err =
+            prepare_mask(png.get_ref(), &mask_png(1344, 768, (10, 10, 11, 11)), 1024).unwrap_err();
+        assert!(err.contains("too small to edit"), "{err}");
     }
 }
