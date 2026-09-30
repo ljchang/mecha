@@ -433,9 +433,10 @@ impl PersonaChats {
         })?;
         let store = Store::load(&self.store);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let unlocked = library.unlocked(body.unlock.as_deref());
         let problems = store
             .get(&p.name)
-            .map(|q| store.problems(q, &lib))
+            .map(|q| unnamed(store.problems(q, &lib), hidden_character(q, &lib, unlocked)))
             .unwrap_or_default();
         Ok(serde_json::json!({ "version": state.version, "problems": problems }))
     }
@@ -498,13 +499,22 @@ impl PersonaChats {
         let rows: Vec<serde_json::Value> = store
             .visible(unlocked)
             .map(|p| {
-                // The linked character's portrait, by the library's own rule:
-                // approved only, and a locked one only with the live token.
-                let portrait = p
+                let linked = p
                     .settings
                     .character
                     .as_deref()
-                    .and_then(|c| lib.get(mecha_core::imagelib::Kind::Character, c))
+                    .and_then(|c| lib.get(mecha_core::imagelib::Kind::Character, c));
+                // A visible persona linked to a locked character does not name
+                // it to a locked page: a name says more than the count the
+                // owner ruled out (2026-09-30). The link itself is untouched.
+                let hidden = hidden_character(p, &lib, unlocked);
+                let character = match hidden {
+                    Some(_) => None,
+                    None => p.settings.character.as_deref(),
+                };
+                // The linked character's portrait, by the library's own rule:
+                // approved only, and a locked one only with the live token.
+                let portrait = linked
                     .filter(|e| e.status == mecha_core::persona::Status::Approved)
                     .filter(|e| !e.locked || unlocked)
                     .and_then(|e| super::library::portrait_url(e, token.filter(|_| unlocked)));
@@ -512,12 +522,12 @@ impl PersonaChats {
                     "name": p.name,
                     "display": p.display(),
                     "relationship": p.settings.relationship.0,
-                    "character": p.settings.character,
+                    "character": character,
                     "portrait": portrait,
                     "version": p.state.version,
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     "locked": p.state.locked,
-                    "problems": store.problems(p, &lib),
+                    "problems": unnamed(store.problems(p, &lib), hidden),
                     "safety": safety_json(&p.settings.safety, None),
                     // The meters are shown to the owner, never to the model.
                     "dose": p.settings.safety.dose.then(|| match &doses.unreadable {
@@ -536,10 +546,10 @@ impl PersonaChats {
                 })
             })
             .collect();
-        let hidden = store.all().len() - rows.len();
+        // No count of what is hidden: "one hidden" is the lock telling on
+        // itself. A locked page reads exactly like one with nothing locked.
         serde_json::json!({
             "personas": rows,
-            "hidden_locked": hidden,
             "unlocked": unlocked,
             "has_password": mecha_core::imagelib::has_lock_password(&library.dir),
         })
@@ -1689,6 +1699,43 @@ pub async fn list(State(state): Web, Query(q): Query<UnlockQuery>) -> axum::resp
     }
 }
 
+/// The name of a persona's linked character when the lock hides it from
+/// this viewer. Fails closed: on a locked page the name is shown only for an
+/// entry that loads *and* is unlocked — `Library::load` drops a damaged
+/// entry, and "could not read it" must not read as "not locked" (#430's
+/// review found the same shape there).
+fn hidden_character<'a>(
+    p: &'a Persona,
+    lib: &mecha_core::imagelib::Library,
+    unlocked: bool,
+) -> Option<&'a str> {
+    if unlocked {
+        return None;
+    }
+    let c = p.settings.character.as_deref()?;
+    match lib.get(mecha_core::imagelib::Kind::Character, c) {
+        Some(e) if !e.locked => None,
+        _ => Some(c),
+    }
+}
+
+/// Problems as a viewer may read them: one that names a character the lock
+/// hides is left out, not reworded — a locked candidate's "names character
+/// `x`, which is a candidate" would say what the nulled `character` does not
+/// (review of #425). The owner reads it again once unlocked.
+fn unnamed(problems: Vec<String>, hidden: Option<&str>) -> Vec<String> {
+    match hidden {
+        Some(c) => {
+            let quoted = format!("`{c}`");
+            problems
+                .into_iter()
+                .filter(|s| !s.contains(&quoted))
+                .collect()
+        }
+        None => problems,
+    }
+}
+
 /// GET /api/personas/authoring
 pub async fn authoring(
     State(state): Web,
@@ -2247,7 +2294,7 @@ mod tests {
         store::set_locked(&w.store(), "mara", true).unwrap();
         let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
         assert_eq!(listed["personas"].as_array().unwrap().len(), 0);
-        assert_eq!(listed["hidden_locked"], 1);
+        assert!(listed.get("hidden_locked").is_none(), "{listed}");
         for token in [None, Some("not-a-token")] {
             let refused = w
                 .personas()
@@ -2670,7 +2717,8 @@ mod tests {
 
     /// A persona's card shows its character's portrait only by the library's
     /// rule: approved, and a locked one only with the live token — a locked
-    /// character's blob name must not reach a page that is not unlocked.
+    /// character's blob name must not reach a page that is not unlocked, and
+    /// neither must its name (owner ruling, 2026-09-30).
     #[tokio::test]
     async fn a_portrait_is_shown_by_the_librarys_rule() {
         let w = world();
@@ -2682,6 +2730,7 @@ mod tests {
         for (name, origin, locked) in [
             ("maya", mecha_core::imagelib::Origin::Owner, true),
             ("sam", mecha_core::imagelib::Origin::ModelClean, false),
+            ("wren", mecha_core::imagelib::Origin::ModelClean, true),
         ] {
             mecha_core::imagelib::create(
                 &lib_dir,
@@ -2697,7 +2746,7 @@ mod tests {
             )
             .unwrap();
         }
-        let portrait_of = |links: &str, token: Option<&str>| {
+        let row_of = |links: &str, token: Option<&str>| {
             let toml = w.store().join("mara/persona.toml");
             let text = std::fs::read_to_string(&toml).unwrap();
             let text = text
@@ -2706,12 +2755,72 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n");
             std::fs::write(&toml, format!("character = \"{links}\"\n{text}\n")).unwrap();
-            w.personas().list(&w.library, token, Some(chrono_tz::UTC))["personas"][0]["portrait"]
-                .clone()
+            w.personas().list(&w.library, token, Some(chrono_tz::UTC))["personas"][0].clone()
         };
-        // Locked character: no portrait, not even its blob name, until unlocked.
-        assert!(portrait_of("maya", None).is_null());
+        let portrait_of =
+            |links: &str, token: Option<&str>| row_of(links, token)["portrait"].clone();
+        // Locked character: no portrait, not even its blob name, until
+        // unlocked — and no name either, while the link itself stays put.
+        let locked = row_of("maya", None);
+        assert!(locked["portrait"].is_null());
+        assert!(locked["character"].is_null(), "{locked}");
+        assert!(!locked.to_string().contains("maya"), "{locked}");
+        let text = std::fs::read_to_string(w.store().join("mara/persona.toml")).unwrap();
+        assert!(
+            text.contains("character = \"maya\""),
+            "the link is hidden, not cut"
+        );
         let token = w.library.grant_for_tests();
+        assert_eq!(row_of("maya", Some(&token))["character"], "maya");
+        // A link the lock does not cover is named as ever.
+        assert_eq!(row_of("sam", None)["character"], "sam");
+        // A locked *candidate*: its problem names it, so the problem is left
+        // out while locked and back once unlocked (review of #425).
+        let locked = row_of("wren", None);
+        assert!(!locked.to_string().contains("wren"), "{locked}");
+        let problems = row_of("wren", Some(&token))["problems"].to_string();
+        assert!(problems.contains("`wren`"), "{problems}");
+        // A damaged entry is dropped by `Library::load`: unreadable is not
+        // unlocked, so a locked page does not name it either.
+        mecha_core::imagelib::create(
+            &lib_dir,
+            mecha_core::imagelib::NewEntry {
+                kind: mecha_core::imagelib::Kind::Character,
+                name: "ivy".into(),
+                text: "tall".into(),
+                portrait: Some(png.clone()),
+                source_seed: None,
+                origin: mecha_core::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            row_of("ivy", None)["character"],
+            "ivy",
+            "readable and unlocked: named"
+        );
+        let damaged = lib_dir.join("characters/ivy/entry.toml");
+        assert!(damaged.exists(), "{}", damaged.display());
+        std::fs::write(&damaged, "not = [toml").unwrap();
+        let row = row_of("ivy", None);
+        assert!(!row.to_string().contains("ivy"), "{row}");
+        assert_eq!(row_of("ivy", Some(&token))["character"], "ivy");
+        // A save from the locked page answers with the same filtered problems.
+        let files = w.personas().files(&w.library, "mara", None).unwrap();
+        let saved = w
+            .personas()
+            .save(
+                &w.library,
+                "mara",
+                body(serde_json::json!({
+                    "file": "identity",
+                    "text": files["identity"]["text"],
+                    "base": files["identity"]["digest"],
+                })),
+            )
+            .unwrap();
+        assert!(!saved.to_string().contains("wren"), "{saved}");
         let shown = portrait_of("maya", Some(&token));
         let url = shown.as_str().expect("unlocked: the portrait is shown");
         assert!(

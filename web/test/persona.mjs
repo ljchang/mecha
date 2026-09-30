@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle,
-  taintLabel, safetyLine, doseLine, personaName, authoringUrl, OWNER_FILES,
+  taintLabel, safetyLine, doseLine, personaName, authoringUrl, keptCharacter, OWNER_FILES,
 } from '../src/lib/persona.js';
 
 // Only a key the server could have minted is a persona chat's.
@@ -129,5 +129,12 @@ assert.deepEqual(s.entries, [{ kind: 'notice', text: 'model unavailable' }]);
 // An event this page does not know changes nothing.
 const before = emptyRun([{ kind: 'user', text: 'x' }]);
 assert.equal(applyEvent(before, { type: 'affect', label: 'calm' }), before);
+
+// A relock drops a locked portrait the form had chosen; an unlock keeps
+// whatever was chosen, since the list only grows.
+assert.equal(keptCharacter('maya', ['john', 'maya']), 'maya');
+assert.equal(keptCharacter('stella', ['john', 'maya']), '');
+assert.equal(keptCharacter('', ['john']), '');
+assert.equal(keptCharacter('maya', undefined), '');
 
 console.log('persona: ok');
