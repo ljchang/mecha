@@ -409,7 +409,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where it used to be refused or drawn as a stranger; an extra that names the
   persona in passing is refused before drawing, saying how to fix it; `self`
   beside the character's name drops only the duplicate it made; and the
-  library is read once per call instead of twice.
+  library is read once for the self-cast and the guard instead of once each.
 
 - **A chat no longer resends a refused call for minutes.** If a tool
   refuses the same call the same way, turn after turn, the run now stops
