@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
-  taintLabel, safetyLine, doseLine, personaName, authoringUrl, OWNER_FILES,
+  taintLabel, safetyLine, doseLine, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine,
 } from '../src/lib/persona.js';
 
 // Only a key the server could have minted is a persona chat's.
@@ -100,9 +100,13 @@ assert.deepEqual(s.entries.map((e) => e.delivery), ['delivered', 'discarded']);
 assert.equal(taintLabel({ private: true, untrusted: true }), 'private + untrusted');
 assert.equal(taintLabel({ private: false, untrusted: false }), '');
 assert.equal(taintLabel(null), '');
-assert.equal(safetyLine({ crisis: 'degraded', disclosure: true, reanchor: true, dose: true }), 'crisis detection: keywords only');
+assert.equal(safetyLine({ crisis: 'on', disclosure: true, reanchor: true, dose: true }), 'crisis detection on');
+assert.equal(safetyLine({ crisis: 'enabled' }), 'crisis detection: keywords + a model check on each message');
+assert.equal(safetyLine({ crisis: 'degraded', disclosure: true, reanchor: true, dose: true }), 'crisis detection: keywords only (the model check could not answer)');
+// A state this page does not know reads as the cautious one, never as "on".
+assert.ok(safetyLine({ crisis: 'judged-v2' }).includes('keywords only'));
 assert.equal(safetyLine({ crisis: 'off', disclosure: false, reanchor: true, dose: false }), 'crisis detection off · off: disclosure, dose');
-assert.equal(safetyLine({ crisis: 'degraded', disclosure: true, reanchor: true, dose: true, farewell: 'off' }), 'crisis detection: keywords only · off: farewell');
+assert.equal(safetyLine({ crisis: 'on', disclosure: true, reanchor: true, dose: true, farewell: 'off' }), 'crisis detection on · off: farewell');
 // Two crisis cards get two ids, and a re-read keeps each card's own.
 {
   let r = emptyRun();
@@ -139,6 +143,36 @@ assert.equal(applyEvent(before, { type: 'affect', label: 'calm' }), before);
     motivation: { asText: true, formDraft: { title: 'y' } },
     settings: { asText: undefined, formDraft: { 'safety.dose': false } },
   });
+}
+
+// A relock drops a locked portrait the form had chosen; an unlock keeps
+// whatever was chosen, since the list only grows.
+assert.equal(keptCharacter('maya', ['john', 'maya']), 'maya');
+assert.equal(keptCharacter('stella', ['john', 'maya']), '');
+assert.equal(keptCharacter('', ['john']), '');
+assert.equal(keptCharacter('maya', undefined), '');
+
+// A slow run says what it is doing; a refused-then-retried call is not
+// "failed" (owner, 2026-09-30).
+{
+  let r = applyEvent(emptyRun(), { type: 'user', text: 'a picture?' });
+  assert.equal(waitingLine(r, 'Stella', 0), 'Stella is typing');
+  r = applyEvent(r, { type: 'tool', id: 't1', name: 'image_generate', started: 1000 });
+  assert.equal(waitingLine(r, 'Stella', 85_000), 'drawing a picture… 1:24');
+  r = applyEvent(r, { type: 'tool_result', id: 't1', name: 'image_generate', is_error: true });
+  r = applyEvent(r, { type: 'tool', id: 't2', name: 'image_generate', started: 90_000 });
+  assert.equal(toolStatus(r.entries, 1), 'retried');
+  assert.equal(toolStatus(r.entries, 2), 'running');
+  r = applyEvent(r, { type: 'tool_result', id: 't2', name: 'image_generate', is_error: false });
+  assert.equal(toolStatus(r.entries, 2), 'done');
+  assert.equal(waitingLine(r, 'Stella', 99_000), 'Stella is typing');
+  r = applyEvent(r, { type: 'delta', text: 'Here' });
+  assert.equal(waitingLine(r, 'Stella', 99_000), null);
+  r = applyEvent(r, { type: 'done', ok: true });
+  assert.equal(waitingLine(r, 'Stella', 99_000), null);
+  // A lone failure stays a failure.
+  const lone = [{ kind: 'tool', name: 'web_search', is_error: true }];
+  assert.equal(toolStatus(lone, 0), 'failed');
 }
 
 console.log('persona: ok');

@@ -1020,8 +1020,23 @@ module.
     - The cooldown is held in memory per chat, so a restart or a resume
       re-arms the pause. That is the safer direction, and it is chosen
       rather than accidental.
-    - The crisis state is reported as `degraded` ("keywords only") until the
-      model tiers exist, never as "passed".
+    - The crisis sensor's model tier, `persona::judge` (asked about every
+      owner message; §12.2's classifier gate before it is deferred, not
+      dropped), is a quarantined
+      screen shaped by the Columbia scale. It runs alongside every turn and
+      every steer that the keywords passed, outside the cooldown. A concern
+      found while the persona is still answering stops the run and pauses
+      it. A concern that lands later still sends the warning and is counted
+      with `paused: false`, because what the persona already said stands.
+      Records carry `tier: judge` and the judge's revision.
+    - An error, refusal, empty answer, unreadable answer, or no answer within
+      `JUDGE_WAIT` is `Verdict::Unchecked`, never `Clear`. The chat's state
+      becomes `degraded` ("keywords only") until the judge answers again,
+      and the change is announced both ways. `CrisisState` has `Off`, `On`
+      and `Degraded`, with no "passed".
+    - The safety switches are read live from the persona's current settings
+      on every turn, so switching a protection back on reaches an open chat.
+      The prompt stays pinned to the chat's version.
     - The Core is re-anchored every `REANCHOR_EVERY` turns, after a
       compaction, and on a resumed chat's first turn. It is sent as a separate
       block in the harness's registered voice (`REANCHOR_STEM` in

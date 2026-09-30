@@ -218,17 +218,12 @@ pub async fn list(State(state): St, Query(q): Query<UnlockQuery>) -> Response {
     let Ok((lib, errors, has_password)) = loaded else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "reading the library\n").into_response();
     };
-    let mut hidden = 0usize;
+    // No count of what is hidden goes out: "one hidden" tells whoever holds
+    // the phone there is something to find, which is what the lock is for.
     let entries: Vec<serde_json::Value> = lib
         .all()
         .iter()
-        .filter(|e| {
-            let show = !e.locked || unlocked;
-            if !show {
-                hidden += 1;
-            }
-            show
-        })
+        .filter(|e| !e.locked || unlocked)
         .map(|e| {
             serde_json::json!({
                 "kind": kind_label(e.kind),
@@ -247,7 +242,6 @@ pub async fn list(State(state): St, Query(q): Query<UnlockQuery>) -> Response {
     no_store(
         Json(serde_json::json!({
             "entries": entries,
-            "hidden_locked": hidden,
             "unlocked": unlocked,
             "has_password": has_password,
             "unreadable": errors.len(),
@@ -1087,7 +1081,10 @@ mod route_tests {
         assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
         let list = json(r).await;
         assert_eq!(names(&list), ["maya", "sam"]);
-        assert_eq!(list["hidden_locked"], 1);
+        assert!(
+            list.get("hidden_locked").is_none(),
+            "a count of hidden entries says there is something to find"
+        );
         assert_eq!(list["has_password"], true);
 
         let wrong = f
@@ -1355,7 +1352,11 @@ mod route_tests {
         std::fs::remove_file(f.dir.join("lock.toml")).unwrap();
         let list = json(f.app.clone().oneshot(get("/api/library")).await.unwrap()).await;
         assert_eq!(list["has_password"], false);
-        assert_eq!(list["hidden_locked"], 1, "still hidden until the toggle");
+        assert_eq!(
+            names(&list),
+            ["maya", "sam"],
+            "still hidden until the toggle"
+        );
         let r = f
             .app
             .clone()
