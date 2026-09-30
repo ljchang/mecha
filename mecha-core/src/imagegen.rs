@@ -1577,6 +1577,20 @@ pub fn layout_similarity_painted(
 const SELF_WEARING: &str = "the clothes the scene describes";
 const SELF_DOING: &str = "what the scene describes";
 
+/// `text` within `imagelib::MAX_CAST_FIELD` characters, cut at a word where
+/// it has to be cut at all.
+fn capped(text: &str) -> String {
+    let max = crate::imagelib::MAX_CAST_FIELD;
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(max).collect();
+    match cut.rfind(char::is_whitespace) {
+        Some(at) if at > 0 => cut[..at].trim_end().to_string(),
+        _ => cut,
+    }
+}
+
 /// A prompt that opens with the persona's name (`name_words` long), read for
 /// what it wears and does: the rest of the first clause is what it is doing,
 /// and a "wearing …" clause is what it wears. "Maya [removed],
@@ -1915,12 +1929,7 @@ impl ImageGenerate {
     /// is left to the guard, and an unknown cast name is still refused.
     /// `Err` is an expected failure for the model to route around: `self`
     /// asked of a persona with no character.
-    fn cast_self(
-        &self,
-        ask: &mut Option<LibraryAsk>,
-        prompt: &str,
-        add: bool,
-    ) -> Result<(), String> {
+    fn cast_self(&self, ask: &mut Option<LibraryAsk>, prompt: &str) -> Result<(), String> {
         let Some(who) = &self.self_as else {
             return Ok(());
         };
@@ -1966,7 +1975,7 @@ impl ImageGenerate {
                 });
             }
         }
-        let Some(c) = character.filter(|_| add) else {
+        let Some(c) = character else {
             return Ok(());
         };
         if ask.as_ref().is_some_and(|a| {
@@ -2013,10 +2022,12 @@ impl ImageGenerate {
         } else {
             (None, None)
         };
+        // Within the compiler's cap: over it, the call is refused over a
+        // field the model never wrote, and it resends (review of #444).
         let me = crate::imagelib::CastMember {
             name: c,
-            wearing: wearing.unwrap_or_else(|| SELF_WEARING.to_string()),
-            doing: doing.unwrap_or_else(|| SELF_DOING.to_string()),
+            wearing: capped(wearing.as_deref().unwrap_or(SELF_WEARING)),
+            doing: capped(doing.as_deref().unwrap_or(SELF_DOING)),
         };
         match ask.as_mut() {
             // Left to right, as the cast is read: before the first member the
@@ -2336,11 +2347,11 @@ impl Tool for ImageGenerate {
         // guard below, and no self cast here.
         let waived = matches!(input.get("cast"), Some(Value::Array(a)) if a.is_empty());
         // A persona drawing itself: before the guard below, which would
-        // otherwise refuse the persona for naming itself (§8.6). `self` in
-        // `cast` is resolved on an edit too; the persona is only *added* to a
-        // new picture, since an edit's people carry their own identity.
-        if !waived {
-            if let Err(why) = self.cast_self(&mut ask, &req.prompt, !is_edit) {
+        // otherwise refuse the persona for naming itself (§8.6). Not on an
+        // edit: its people carry their own identity, and `request` refuses a
+        // cast beside `reference_images` anyway.
+        if !is_edit && !waived {
+            if let Err(why) = self.cast_self(&mut ask, &req.prompt) {
                 return Ok(refused(why));
             }
         }
@@ -4685,6 +4696,21 @@ mod tests {
             read("Maya swearing loudly at the sky"),
             (None, Some("swearing loudly at the sky".into()))
         );
+        // Over the compiler's cap: cut at a word, within it.
+        let long = format!("Maya, wearing {}", "a very long rain jacket ".repeat(30));
+        let full = self_clauses(&long, 1).0.unwrap();
+        let w = capped(&full);
+        assert!(
+            w.chars().count() <= crate::imagelib::MAX_CAST_FIELD,
+            "{}",
+            w.len()
+        );
+        // A whole-word prefix: what follows the cut in the original is a space.
+        assert!(
+            full.starts_with(&w) && full[w.len()..].starts_with(' '),
+            "{w}"
+        );
+        assert_eq!(capped("short"), "short");
         // Lowercasing "İ" makes it longer: no panic, and the right slice.
         assert_eq!(
             read("Maya İstanbul skyline behind her wearing é coat"),
