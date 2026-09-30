@@ -1837,6 +1837,9 @@ pub fn edit_settings(
 ) -> Result<State> {
     let text = read_owner_file(dir, name, OwnerFile::Settings)?;
     let edited = crate::tomlform::apply(form, &text, changes)?;
+    // Before the write, not after: `write_owner_file` refuses a persona that
+    // names a template not on disk, so a starter must be copied in first. A
+    // refused save leaves it seeded — idempotent, and what `create` does.
     if changes.contains_key("relationship") {
         seed_starters(dir)?;
     }
@@ -2764,7 +2767,6 @@ mod tests {
         let after = read_owner_file(&dir, "mara", OwnerFile::Settings).unwrap();
         let comments = |t: &str| t.lines().filter(|l| l.contains('#')).count();
         assert_eq!(comments(&after), comments(&before), "{after}");
-        eprintln!("{after}");
         let v = settings_values(&form, &after).unwrap();
         assert_eq!(v["safety.breaks"], json!(true));
         assert_eq!(v["relationship"], json!([starter]));

@@ -951,7 +951,9 @@ module.
   `POST /api/personas` creates one (the owner's, approved at once, exactly as
   `mecha persona new`). `GET`/`POST /api/personas/{name}/files` read and save
   `identity.md`, `motivation.md` and `persona.toml` three ways, exactly one
-  per save: `text`, **as the owner typed it, comments and all**; `changes`,
+  per save: `text`, **as the owner typed it, comments and all** (the page
+  repairs one thing first: a phone's smart dash in a comment's `<!--` or
+  `-->`, only while a comment is open); `changes`,
   a form's `{path: value}` that `tomlform::apply` sets **in place** with
   `toml_edit` — every comment stays, and a path or value the form
   (`persona::settings_form`) does not offer is refused; or `doc`, a Markdown

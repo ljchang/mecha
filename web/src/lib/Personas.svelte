@@ -7,7 +7,7 @@
   import { isDirty as mdDirty } from './mdform.js';
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
-    taintLabel, safetyLine, doseLine, authoringUrl, personaName, OWNER_FILES,
+    taintLabel, safetyLine, doseLine, authoringUrl, personaName, OWNER_FILES, keptEdits,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -462,17 +462,12 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       const saved = await res.json();
       const file = editing.file;
-      const asText = Object.fromEntries(Object.entries(editing.files).map(([f, v]) => [f, v.asText]));
-      // What was typed in the other files survives this save (review of #420).
-      const drafts = Object.fromEntries(
-        Object.entries(editing.files)
-          .filter(([f, v]) => f !== file && v.draft != null && v.draft !== v.text)
-          .map(([f, v]) => [f, v.draft]),
-      );
+      // What was typed in the other files — as text or in a form — survives
+      // this save (reviews of #420 and #430).
+      const kept = keptEdits(editing.files, file);
       await load();
       await openEditor(file);
-      for (const [f, t] of Object.entries(asText)) editing.files[f].asText = t;
-      for (const [f, d] of Object.entries(drafts)) editing.files[f].draft = d;
+      for (const [f, v] of Object.entries(kept)) Object.assign(editing.files[f], v);
       editing.saved = `saved — now v${saved.version}; new chats use it`;
       // A save can succeed and still leave something to fix — a group not
       // declared, a Core left empty: said here, not dropped.

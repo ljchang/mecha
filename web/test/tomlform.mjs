@@ -53,5 +53,8 @@ assert.deepEqual(addChip(['a'], '   '), ['a']);
 assert.equal(repairComments('<!— a note —>'), '<!-- a note -->');
 assert.equal(repairComments('<!–note–>'), '<!--note-->');
 assert.equal(repairComments('Dry — and kind.'), 'Dry — and kind.');
+// A dashed arrow in prose is not a comment's close, and is left alone.
+assert.equal(repairComments('A —> B, then <!— note —>'), 'A —> B, then <!-- note -->');
+assert.equal(repairComments('<!-- kept --> and —> stays'), '<!-- kept --> and —> stays');
 
 console.log('tomlform: ok');
