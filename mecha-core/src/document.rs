@@ -1212,7 +1212,7 @@ impl Cache {
     }
 
     pub fn store_layer(&self, layer: &Layer) -> Result<()> {
-        write_atomic(
+        self.write_private(
             &self.entry(&layer.sha256).join("layer.json"),
             &serde_json::to_vec(layer)?,
         )
@@ -1232,7 +1232,7 @@ impl Cache {
         page: u32,
         ocr: &OcrPage,
     ) -> Result<()> {
-        write_atomic(
+        self.write_private(
             &self.ocr_path(sha, model, pipeline, page),
             &serde_json::to_vec(ocr)?,
         )
@@ -1242,8 +1242,14 @@ impl Cache {
     /// `max_age` ago. Returns the sha256s removed.
     pub fn prune(&self, max_age: Duration) -> Result<Vec<String>> {
         let mut removed = Vec::new();
-        let Ok(entries) = std::fs::read_dir(&self.root) else {
-            return Ok(removed);
+        // A missing cache is an empty one; an unreadable one is not — `mecha
+        // document prune` is where `sessions forget`'s residue sends the
+        // owner, and "removed 0" over a store it could not read would be a
+        // clean bill it had not earned (#410).
+        let entries = match std::fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(removed),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", self.root.display())),
         };
         let now = std::time::SystemTime::now();
         for entry in entries.flatten() {
@@ -1267,6 +1273,30 @@ impl Cache {
         Ok(removed)
     }
 
+    /// Write `bytes` to `path` atomically, with every directory from the
+    /// cache root down to the file owner-only (0700).
+    ///
+    /// Not just the file's own directory: the root lists one entry per PDF,
+    /// named by the file's hash, so a root left at the umask default (0755,
+    /// or 0775 under a group umask) lets any local user confirm which
+    /// documents the owner read (#410). A permission that cannot be set is an
+    /// error, not a warning — the callers already treat a failed store as a
+    /// skipped cache write, which is the right outcome for a cache that
+    /// cannot be kept private.
+    fn write_private(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        let dir = path.parent().context("a cache path has a parent")?;
+        let below = dir
+            .strip_prefix(&self.root)
+            .context("a cache path is under the cache root")?;
+        let mut at = self.root.clone();
+        crate::create_private_dir(&at).with_context(|| format!("securing {}", at.display()))?;
+        for part in below.components() {
+            at.push(part);
+            crate::create_private_dir(&at).with_context(|| format!("securing {}", at.display()))?;
+        }
+        write_atomic(path, bytes)
+    }
+
     /// Remove one file's entry. `true` when there was one.
     pub fn forget(&self, sha: &str) -> Result<bool> {
         if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -1287,15 +1317,10 @@ fn touch(path: &Path) {
     }
 }
 
+/// Write `bytes` beside `path` and rename into place. The directories are
+/// the caller's to create — [`Cache::write_private`] makes them owner-only.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path.parent().context("a cache path has a parent")?;
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // The owner's documents: nobody else on the machine reads the cache.
-        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-    }
     let tmp = dir.join(format!(".tmp-{}", uuid::Uuid::new_v4().simple()));
     std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))?;
@@ -2315,6 +2340,66 @@ mod tests {
             Cache::ocr_key("m", OCR_PIPELINE)
         );
         assert_eq!(Cache::ocr_key("m", "../ly1"), "m-___ly1");
+    }
+
+    /// Every directory from the cache root to a stored file is owner-only,
+    /// even a root that already existed at the umask default: the root's
+    /// listing names every PDF the owner read, by hash (#410).
+    #[cfg(unix)]
+    #[test]
+    fn the_whole_cache_path_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mecha-doc-private-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o775)).unwrap();
+        let cache = Cache::new(dir.clone());
+        let sha = sha256_hex(b"a private document");
+        let ocr = OcrPage {
+            markdown: "# Title".into(),
+            model: "m".into(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            secs: 0.1,
+            pipeline: Pipeline::WholePage,
+            regions: Vec::new(),
+            layout_secs: 0.0,
+            fallback: None,
+        };
+        cache.store_ocr(&sha, "m", OCR_PIPELINE, 1, &ocr).unwrap();
+        let file = cache.ocr_path(&sha, "m", OCR_PIPELINE, 1);
+        let mut at = file.parent().unwrap().to_path_buf();
+        loop {
+            let mode = std::fs::metadata(&at).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{} is {mode:o}", at.display());
+            if at == dir {
+                break;
+            }
+            at.pop();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cache that is missing prunes nothing; one that cannot be read is an
+    /// error, never "removed 0" (#410).
+    #[cfg(unix)]
+    #[test]
+    fn prune_refuses_to_report_an_unreadable_cache_clean() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mecha-doc-unreadable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let missing = Cache::new(dir.join("absent"));
+        assert!(missing.prune(Duration::ZERO).unwrap().is_empty());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = Cache::new(dir.clone());
+        let result = unreadable.prune(Duration::ZERO);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        // Root can read anything; the test means nothing there.
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(result.is_err(), "{result:?}");
+        }
     }
 
     #[test]
