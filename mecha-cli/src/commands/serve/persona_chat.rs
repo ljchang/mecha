@@ -133,24 +133,21 @@ struct Live {
     /// page reloaded during a long image render still says "drawing a
     /// picture… 1:24" rather than "typing" (review of #431). Set and cleared
     /// by the run's event forwarder ([`track_working`]).
-    working: Arc<StdMutex<Option<serde_json::Value>>>,
+    working: Arc<StdMutex<Vec<serde_json::Value>>>,
 }
 
-/// Keep `slot` naming the tool a run is waiting on: set when a call starts,
-/// cleared when that call's result arrives.
-fn track_working(slot: &StdMutex<Option<serde_json::Value>>, event: &AgentEvent) {
+/// Keep `slot` naming the tool a run is waiting on: every call that has
+/// started and not yet returned — tools in one turn run concurrently — and
+/// the transcript reports the latest of them.
+fn track_working(slot: &StdMutex<Vec<serde_json::Value>>, event: &AgentEvent) {
     let Ok(mut slot) = slot.lock() else { return };
     match event {
-        AgentEvent::ToolCall { id, name, .. } => {
-            *slot = Some(serde_json::json!({
-                "id": id,
-                "name": name,
-                "since": chrono::Utc::now().to_rfc3339(),
-            }));
-        }
-        AgentEvent::ToolResult { id, .. } if slot.as_ref().is_some_and(|w| w["id"] == *id) => {
-            *slot = None;
-        }
+        AgentEvent::ToolCall { id, name, .. } => slot.push(serde_json::json!({
+            "id": id,
+            "name": name,
+            "since": chrono::Utc::now().to_rfc3339(),
+        })),
+        AgentEvent::ToolResult { id, .. } => slot.retain(|w| w["id"] != *id),
         _ => {}
     }
 }
@@ -993,7 +990,7 @@ impl PersonaChats {
             "working": ps
                 .live
                 .as_ref()
-                .and_then(|l| l.working.lock().ok().and_then(|w| w.clone())),
+                .and_then(|l| l.working.lock().ok().and_then(|w| w.last().cloned())),
             "display": ps.pinned.settings.display,
             // The switches as they stand, not as pinned: they are read live.
             "safety": safety_json(
@@ -1296,7 +1293,7 @@ impl PersonaChats {
         let cancel = mecha_core::agent::CancelHandle::new();
         let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
         let queued_ids: Arc<StdMutex<VecDeque<String>>> = Arc::default();
-        let working: Arc<StdMutex<Option<serde_json::Value>>> = Arc::default();
+        let working: Arc<StdMutex<Vec<serde_json::Value>>> = Arc::default();
         let mut history_taint = conversation.taint;
         history_taint.arm_for_content(&before);
         ps.live = Some(Live {
@@ -2634,39 +2631,30 @@ mod tests {
     /// The tool a run waits on is named until its result arrives.
     #[test]
     fn the_working_slot_follows_a_call_to_its_result() {
-        let slot = StdMutex::new(None);
-        track_working(
-            &slot,
-            &AgentEvent::ToolCall {
-                id: "t1".into(),
-                name: "image_generate".into(),
-                input: serde_json::json!({}),
-            },
-        );
-        let held = slot.lock().unwrap().clone().unwrap();
-        assert_eq!(held["name"], "image_generate");
-        assert!(held["since"].as_str().is_some());
-        // Another call's result does not clear it; its own does.
-        track_working(
-            &slot,
-            &AgentEvent::ToolResult {
-                id: "t0".into(),
-                name: "x".into(),
-                is_error: false,
-                content: String::new(),
-            },
-        );
-        assert!(slot.lock().unwrap().is_some());
-        track_working(
-            &slot,
-            &AgentEvent::ToolResult {
-                id: "t1".into(),
-                name: "image_generate".into(),
-                is_error: false,
-                content: String::new(),
-            },
-        );
-        assert!(slot.lock().unwrap().is_none());
+        let slot = StdMutex::new(Vec::new());
+        let call = |id: &str, name: &str| AgentEvent::ToolCall {
+            id: id.into(),
+            name: name.into(),
+            input: serde_json::json!({}),
+        };
+        let result = |id: &str| AgentEvent::ToolResult {
+            id: id.into(),
+            name: "x".into(),
+            is_error: false,
+            content: String::new(),
+        };
+        track_working(&slot, &call("t1", "image_generate"));
+        track_working(&slot, &call("t2", "web_search"));
+        assert_eq!(slot.lock().unwrap().len(), 2);
+        // The later call returning first leaves the earlier one named: two
+        // calls in one turn run at once (review of #431).
+        track_working(&slot, &result("t2"));
+        let held = slot.lock().unwrap().clone();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0]["name"], "image_generate");
+        assert!(held[0]["since"].as_str().is_some());
+        track_working(&slot, &result("t1"));
+        assert!(slot.lock().unwrap().is_empty());
     }
 
     /// A persona turn mid-generation is cancelled at shutdown, so the drain
