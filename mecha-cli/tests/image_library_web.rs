@@ -185,7 +185,10 @@ kind = "none"
     assert!(r.status().is_success(), "{}", r.text().await.unwrap());
     let v = list(None).await;
     assert_eq!(names(&v), ["john", "sam"]);
-    assert_eq!(v["hidden_locked"], 1);
+    assert!(
+        v.get("hidden_locked").is_none(),
+        "no count of what is hidden"
+    );
 
     // No password set: the toggle opens for the asking, and a locked entry
     // is unlocked only with it.
@@ -202,7 +205,6 @@ kind = "none"
     assert!(r.status().is_success(), "{}", r.text().await.unwrap());
     let v = list(None).await;
     assert!(names(&v).contains(&"maya".to_string()));
-    assert_eq!(v["hidden_locked"], 0);
 
     // Remove: moved aside, its portrait kept (a manifest may name it).
     let r = post("/api/library/character/john/remove", serde_json::json!({})).await;

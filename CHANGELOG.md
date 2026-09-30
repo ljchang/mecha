@@ -199,6 +199,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A locked page no longer says how much it is hiding.** The personas grid
+  drew a `hidden · N` tile and the image library a "N locked entries hidden"
+  line, which told whoever held the phone there was something to find. Both
+  are gone, and so is the `hidden_locked` count in `/api/personas` and
+  `/api/library` behind them: a locked page now reads exactly like one with
+  nothing locked, as a locked entry's own URL already answered 404 like a
+  missing one.
 - **Unlocking on the new-persona form now offers locked characters as
   portraits.** The form read its character list once, when it opened, so
   the lock button refreshed the persona grid and left the portrait list as
