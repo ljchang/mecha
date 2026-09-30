@@ -442,6 +442,15 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// [`for_persona`](Tool::for_persona), for one persona in particular: the
+    /// form a tool takes when it needs to know *who* it is serving.
+    /// `image_generate` is the one that does — it draws "self" as the
+    /// persona's linked character (`docs/PERSONA-DESIGN.md` §8.6). Every other
+    /// tool's form is the same for every persona, which is the default.
+    fn for_persona_as(self: Arc<Self>, _who: &PersonaSelf) -> Option<Arc<dyn Tool>> {
+        self.for_persona()
+    }
+
     /// Does this tool do its work in a conversation of its own?
     ///
     /// The fourth method in the family with
@@ -539,6 +548,16 @@ pub trait Tool: Send + Sync {
 pub struct CarriedState {
     pub label: String,
     pub body: String,
+}
+
+/// Who a persona is, as the tools that need it see it: its folder name, the
+/// name it is shown by, and the image-library character it looks like, if
+/// any (`docs/PERSONA-DESIGN.md` §4.2, §8.6).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PersonaSelf {
+    pub name: String,
+    pub display: String,
+    pub character: Option<String>,
 }
 
 /// What a tool is allowed to touch.

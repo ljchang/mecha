@@ -17,6 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A persona draws itself (PERSONA-DESIGN §8.6).** In a persona chat,
+  `image_generate` knows who "self" is: a prompt that names the persona — by
+  its linked character, its folder name or the name it is shown by — gets
+  that character cast, and `"name": "self"` in `cast` means it too. It used
+  to be refused for naming a library character without `cast`, and the local
+  model resent the same call: 82 of 87 calls in the first live chat. When the
+  prompt opens with the persona, `doing` and `wearing` come from its first
+  clauses; otherwise they point at the scene. Only the persona's own
+  character is added, another library name is still refused, and `self` on
+  a persona with no character is an expected failure.
+
+- **"No picture was made in this reply."** The persona page says it under a
+  turn whose `image_generate` calls all failed, read off the tool rows, so a
+  reply saying "here you go" over nothing is not the last word.
+
 - **Every optional feature has a switch: `[features]`.** The global
   `config.toml` gains a `[features]` table with one `true`/`false` per
   feature — web, Slack, mail, docs, the graph, search, PDF extraction, image

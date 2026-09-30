@@ -238,6 +238,21 @@ pub struct PersonaTools {
 /// third-party content — out of the registry, so the model is never offered
 /// it.
 pub fn registry_for(pool: &Registry, settings: &Settings) -> PersonaTools {
+    // No folder name, but the settings' display name and character still
+    // reach each tool's persona form, as [`registry_as`] passes them.
+    registry_as(pool, "", settings)
+}
+
+/// [`registry_for`], for the persona named `name`: each tool is asked for
+/// its form for *this* persona ([`crate::tool::Tool::for_persona_as`]), so
+/// `image_generate` knows that "self" is the persona's linked character
+/// (§8.6). The one a live chat is built with.
+pub fn registry_as(pool: &Registry, name: &str, settings: &Settings) -> PersonaTools {
+    let who = crate::tool::PersonaSelf {
+        name: name.to_string(),
+        display: settings.display.trim().to_string(),
+        character: settings.character.clone().filter(|c| !c.trim().is_empty()),
+    };
     let mut registry = Registry::new();
     let mut refused = Vec::new();
     for name in &settings.tools.allow {
@@ -249,7 +264,7 @@ pub fn registry_for(pool: &Registry, settings: &Settings) -> PersonaTools {
             refused.push(refuse("not available on this install"));
             continue;
         };
-        let Some(form) = Arc::clone(tool).for_persona() else {
+        let Some(form) = Arc::clone(tool).for_persona_as(&who) else {
             refused.push(refuse("a persona may never have it"));
             continue;
         };
@@ -395,6 +410,61 @@ mod tests {
         async fn call(&self, _: Value, _: &ToolCtx) -> Result<ToolOutput> {
             Ok(ToolOutput::ok("ok"))
         }
+    }
+
+    /// A tool that records who it was built for.
+    struct Asks(Mutex<Option<crate::tool::PersonaSelf>>);
+
+    #[async_trait]
+    impl Tool for Asks {
+        fn name(&self) -> &str {
+            "image_generate"
+        }
+        fn description(&self) -> &str {
+            "stub"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+            Some(self as Arc<dyn Tool>)
+        }
+        fn for_persona_as(
+            self: Arc<Self>,
+            who: &crate::tool::PersonaSelf,
+        ) -> Option<Arc<dyn Tool>> {
+            *self.0.lock().unwrap() = Some(who.clone());
+            Some(self as Arc<dyn Tool>)
+        }
+        async fn call(&self, _: Value, _: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok("ok"))
+        }
+    }
+
+    /// The live chat's registry tells each tool which persona it serves, so
+    /// `image_generate` can draw "self" as the linked character (§8.6); a
+    /// blank character is none.
+    #[test]
+    fn a_persona_registry_says_who_the_persona_is() {
+        let asks = Arc::new(Asks(Mutex::new(None)));
+        let mut pool = Registry::new();
+        pool.insert(Arc::clone(&asks) as Arc<dyn Tool>);
+        let mut s = settings(&["image_generate"], Answers::Open);
+        s.display = " Maya ".into();
+        s.character = Some("maya".into());
+        let built = registry_as(&pool, "maya", &s);
+        assert_eq!(names(&built.registry), ["image_generate"]);
+        assert_eq!(
+            asks.0.lock().unwrap().clone(),
+            Some(crate::tool::PersonaSelf {
+                name: "maya".into(),
+                display: "Maya".into(),
+                character: Some("maya".into()),
+            })
+        );
+        s.character = Some("  ".into());
+        registry_as(&pool, "maya", &s);
+        assert_eq!(asks.0.lock().unwrap().as_ref().unwrap().character, None);
     }
 
     fn settings(allow: &[&str], answers: Answers) -> Settings {
