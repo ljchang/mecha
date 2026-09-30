@@ -8422,10 +8422,10 @@ The things that decide the design:
   distinct from `MaxTurns`, because "hit the turn limit" reads as the task
   being too big when a stuck run is a different problem. Keyed on call *and*
   result: polling (same arguments, changing result) never trips it. This
-  check is dormant until a compaction on purpose — repeated calls in ordinary work are the
-  model's business, and the failure this catches is specifically the run
-  re-living what a summary dropped, at the largest prompts it will ever
-  send. Gradeable via `expect.stop_cause: "loop"`; no shipped case asserts
+  check is dormant until a compaction on purpose — repeated calls in
+  ordinary work are the model's business, and the failure this catches is
+  specifically the run re-living what a summary dropped, at the largest
+  prompts it will ever send. Gradeable via `expect.stop_cause: "loop"`; no shipped case asserts
   it, because a case cannot reliably make a model loop, and a case that
   asserts an outcome it may never exercise is worse than no case.
   **It is the last rung of a ladder now, not the only one** — `boredom.rs`
@@ -8448,10 +8448,13 @@ The things that decide the design:
   recovered on the next turn, after boredom's first notice named the
   repeat. So both of boredom's notices reach the model before the stop, and
   persona chats now carry boredom from the base config rather than
-  switching it off. A call the harness refused (the approver, a hook, a
-  policy, the interlock: `denied` in the trace) never counts, because
-  appraisal scores `Loop` against the run and a well-defended run must not
-  read as a stuck one.
+  switching it off. For **both** triggers, a call the harness refused this
+  turn (the approver, a hook, a policy, the interlock: `denied` in the
+  trace) never counts, because appraisal scores `Loop` against the run and
+  a well-defended run must not read as a stuck one. A call refused once and
+  let through later still counts when it then fails. An invented tool name
+  (`unknown`, not `denied`) does count: seven turns of one is a stuck
+  model.
 - **The record is searchable after the summary.** `tool/recall.rs` registers
   `recall` on the session-recording front-ends (chat, the TUI, resumed runs):
   it searches the union of everything the transcript ever recorded — including

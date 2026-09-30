@@ -204,8 +204,8 @@ because compaction is lossy. Set it to roughly two thirds of the model's context
 window, or set `context_window` on the provider and let it be derived.
 
 `loop_guard`'s repeat check is dormant until a compaction has happened; its
-other trigger, one call failing identically seven turns in a row, is not, and
-never counts a call you or a policy refused. Identical arguments with a
+other trigger, one call failing identically seven turns in a row, is not.
+Neither counts a call you or a policy refused. Identical arguments with a
 *changing* result is polling and never trips it. The distinct `StopCause::Loop` is
 what separates "stuck" from "the task was too big".
 
