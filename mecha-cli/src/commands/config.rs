@@ -58,14 +58,45 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&path, STARTER)
-                .with_context(|| format!("writing {}", path.display()))?;
+            // `[features]` in the global file only: a project layer is
+            // stripped of it, so written there it would be a warning on every
+            // load and a switch that does nothing.
+            let text = if project {
+                STARTER.to_string()
+            } else {
+                format!("{STARTER}{FEATURES_STARTER}")
+            };
+            std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
             println!("wrote {}", path.display());
         }
     }
 
     Ok(())
 }
+
+/// Every optional feature, listed and off — the light install, and the list
+/// a new user reads to learn what exists (FEATURES-DESIGN.md §5, ruling F1).
+/// `mecha features enable <id>` flips one in place; `mecha features` says
+/// what each needs besides its switch.
+pub const FEATURES_STARTER: &str = r#"
+# Optional features. Every one is off until switched on here or with
+# `mecha features enable <id>`; `mecha features` shows what each still needs.
+# Global file only: a project's mecha.toml cannot switch a feature on.
+[features]
+web = false        # the web app (`mecha serve`)
+slack = false      # Slack remote control
+mail = false       # mail and calendar
+docs = false       # Google Docs, Sheets and Slides
+graph = false      # the knowledge graph and the task board
+search = false     # web search and open
+documents = false  # PDF extraction (OCR and layout are [documents] settings)
+image = false      # image generation and the character library
+personas = false   # characters you write and talk to
+voice = false      # dictation and voice calls
+incognito = false  # a web chat that leaves no trace
+frontdoor = false  # inbound requests, polls and publishing
+messages = false   # messages between sessions on this machine
+"#;
 
 /// A commented starting point rather than a dump of defaults — the point of the
 /// file is to show what's adjustable.
@@ -220,3 +251,39 @@ mark_untrusted_output = true
 # # Its kg_* tools carry their own namespace; skip the graph__ prefix.
 # prefix_tools = false
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::feature::Feature;
+
+    /// The starter lists every feature with a switch, all off, and nothing
+    /// else — so a new feature does not ship missing from the list a new user
+    /// reads to learn what exists, and the file still loads.
+    #[test]
+    fn the_global_starter_lists_every_switch_off() {
+        let text = format!("{STARTER}{FEATURES_STARTER}");
+        let cfg: Config = toml::from_str(&text).expect("the starter loads");
+        let table: toml::Table = toml::from_str(&text).unwrap();
+        let listed: Vec<&str> = table["features"]
+            .as_table()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| {
+                assert_eq!(v.as_bool(), Some(false), "`{k}` ships off");
+                k.as_str()
+            })
+            .collect();
+        let mut switches: Vec<&str> = Feature::ALL
+            .iter()
+            .filter(|f| f.has_switch())
+            .map(|f| f.id())
+            .collect();
+        let mut listed_sorted = listed.clone();
+        listed_sorted.sort();
+        switches.sort();
+        assert_eq!(listed_sorted, switches);
+        assert!(!cfg.messages.enabled);
+        assert!(cfg.features.0.values().all(|on| !on));
+    }
+}

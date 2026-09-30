@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every optional feature has a switch: `[features]`.** The global
+  `config.toml` gains a `[features]` table with one `true`/`false` per
+  feature — web, Slack, mail, docs, the graph, search, PDF extraction, image
+  generation, personas, voice, incognito, the front door and messages.
+  `mecha features enable <id>` and `disable <id>` edit it in place, keeping
+  your comments; `mecha config init` writes it with everything off. An install
+  from before the table has every switch unanswered, so `mecha features` marks
+  what you have set up as "not enabled, but set up here", a session or service
+  prints one line naming them when it starts, and `mecha setup` offers each.
+  Nothing is turned off by the switch yet: this release only records your
+  answers. A project's `mecha.toml` cannot set the table, and an experiment
+  environment may only switch features off (and the front door on).
+
 - **The charter editor keeps your comments.** Saving the charter from the
   web page now changes only what you changed: comments above and among the
   lines stay, a line you drag takes its comments with it (a comment right

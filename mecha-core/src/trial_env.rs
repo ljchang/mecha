@@ -189,6 +189,42 @@ impl Environment {
                 path.display()
             );
         }
+        // `[features]` is the one table checked per key: an environment may
+        // turn any feature off — that is how a trial is made light — but on
+        // only what it could configure itself (`Feature::
+        // switchable_from_environment`, FEATURES-DESIGN.md §5.1). Refused,
+        // never dropped: a warning would let the arm run without the feature
+        // it asked for and be scored anyway. An unknown key is refused too:
+        // here a typo changes a trial, not a machine several builds share.
+        if let Some(features) = table.get("features") {
+            let features = features.as_table().with_context(|| {
+                format!("{}: `features` must be a table of bools", path.display())
+            })?;
+            for (key, value) in features {
+                let f = crate::feature::Feature::parse(key)
+                    .filter(|f| f.has_switch())
+                    .with_context(|| {
+                        format!(
+                            "{}: `[features] {key}` is not a feature with a switch — \
+                             `mecha features` lists them",
+                            path.display()
+                        )
+                    })?;
+                let on = value.as_bool().with_context(|| {
+                    format!(
+                        "{}: `[features] {key}` must be true or false",
+                        path.display()
+                    )
+                })?;
+                anyhow::ensure!(
+                    !on || f.switchable_from_environment(),
+                    "{}: `[features] {key} = true` may not come from an experiment \
+                     environment — its settings or credentials are the operator's; an \
+                     environment may only turn it off",
+                    path.display()
+                );
+            }
+        }
         // A stored server's name is a directory under the home and a
         // `remove_dir_all` target on every fresh trial: one plain
         // component, as `Fixtures::validate` requires of a fixture server
@@ -843,6 +879,37 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
             let env = env_at(tmp.path(), body);
             let err = env.base_config(&operator(), tmp.path()).unwrap_err();
             assert!(format!("{err:#}").contains("checkout"), "{body}: {err:#}");
+        }
+    }
+
+    /// `[features]` in an environment may turn anything off and switch on
+    /// only the front door (FEATURES-DESIGN.md §5.1) — in particular not
+    /// `messages`, which would reach `[messages] enabled` round the
+    /// operator-only table, and not `graph`, which a manifest's
+    /// `live_servers` can carry in from the operator.
+    #[test]
+    fn an_environment_may_only_narrow_features() {
+        for body in [
+            "[features]\nmessages = true",
+            "[features]\ngraph = true",
+            "[features]\nmail = true",
+            "[features]\nsearch = true",
+            "[features]\nnot_a_feature = false",
+            "[features]\nocr = false",
+            "[features]\nweb = \"yes\"",
+        ] {
+            let tmp = Scratch::new();
+            let env = env_at(tmp.path(), body);
+            assert!(env.base_config(&operator(), tmp.path()).is_err(), "{body}");
+        }
+        for body in [
+            "[features]\nfrontdoor = true",
+            "[features]\ngraph = false\nmail = false\nweb = false",
+        ] {
+            let tmp = Scratch::new();
+            let env = env_at(tmp.path(), body);
+            env.base_config(&operator(), tmp.path())
+                .unwrap_or_else(|e| panic!("{body}: {e:#}"));
         }
     }
 
