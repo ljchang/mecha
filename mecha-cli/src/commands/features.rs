@@ -272,10 +272,10 @@ mod tests {
         let text = render(&rows, &[]);
         assert!(text.contains("\n  tasks "), "{text}");
         assert!(text.contains("\n    layout "), "{text}");
-        // Switched on without settings is unready, never a block on what
-        // depends on it; a part off by its parent's missing table is.
+        // Switched on without settings is unready, parts included, and never
+        // a block on what depends on it (review of #449, pass 3).
         assert!(text.contains("unready"), "{text}");
-        assert!(text.contains("needs ocr"), "{text}");
+        assert!(!text.contains("blocked"), "{text}");
         assert!(text.contains("→ add a [documents] table"), "{text}");
         assert!(text.contains("→ add an [image] table"), "{text}");
     }

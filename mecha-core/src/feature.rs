@@ -1048,11 +1048,15 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             },
         },
         // Reached with no `[documents]` too: switched on without it, the
-        // parent is `Unready`, which blocks nothing — so the part says the
-        // table is missing, never a setting that is not there to be false.
-        Feature::Ocr if cfg.documents.is_none() => {
-            off("no [documents] table", "add a [documents] table")
-        }
+        // parent is `Unready`, which blocks nothing. A missing table is "not
+        // set up yet", not the owner's no to OCR, so the part is unready
+        // beside its parent — shown, blocking nothing — as the library is
+        // beside a table-less `image` (review of #449, pass 3). `off` here
+        // hid OCR and blocked layout under an unready parent.
+        Feature::Ocr if cfg.documents.is_none() => State::Unready {
+            reason: "no [documents] table".into(),
+            fix: Some("add a [documents] table".into()),
+        },
         Feature::Ocr => match &cfg.documents {
             Some(d) if d.ocr => match crate::document::ocr_url(&d.ocr_url) {
                 Ok(url) => on(url.to_string()),
@@ -1062,6 +1066,11 @@ fn own_state(facts: &Facts, f: Feature) -> State {
                 },
             },
             _ => off("[documents] ocr = false", "set [documents] ocr = true"),
+        },
+        // As `ocr`: no table is "not set up yet", never `layout = false`.
+        Feature::Layout if cfg.documents.is_none() => State::Unready {
+            reason: "no [documents] table".into(),
+            fix: Some("add a [documents] table".into()),
         },
         Feature::Layout => match &cfg.documents {
             Some(d) if d.layout => on("region by region"),
@@ -1480,6 +1489,17 @@ mod tests {
             row(Feature::Dictate).next.as_deref(),
             Some("mecha features enable web voice")
         );
+
+        // Switched on with no table: the parent and both parts are unready
+        // and shown — a missing table blocks nothing, as with `image`.
+        cfg.features.0.insert("documents".into(), true);
+        let rows = all(&facts(&cfg));
+        let row = |f: Feature| rows.iter().find(|r| r.id == f).unwrap();
+        for f in [Feature::Documents, Feature::Ocr, Feature::Layout] {
+            assert_eq!(row(f).state.word(), "unready", "{}", f.id());
+            assert!(row(f).shown, "{}", f.id());
+            assert_eq!(row(f).next.as_deref(), Some("add a [documents] table"));
+        }
 
         // A part off by its own setting: hidden, and its dependent's next
         // command is that setting — not `enable documents`, already on.

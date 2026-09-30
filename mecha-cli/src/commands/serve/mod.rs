@@ -1230,6 +1230,53 @@ mod tests {
         }
     }
 
+    /// `/api/features` end to end, the one seam its unit tests skip: the
+    /// owner's request reaches the handler, the global file is read from
+    /// the home on each request — an edit lands on the next read, no
+    /// restart — and the envelope is what the page indexes.
+    #[tokio::test]
+    async fn the_features_route_reads_the_global_file_on_every_request() {
+        let home = crate::testenv::HomeGuard::new("serve-features");
+        let read = || async {
+            let response = test_router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/features")
+                        .header("Tailscale-User-Login", "owner@example.com")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+        };
+        let personas = |body: &serde_json::Value| {
+            body["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == "personas")
+                .cloned()
+                .unwrap()
+        };
+        let before = read().await;
+        assert_eq!(personas(&before)["shown"], false, "{before:#}");
+        assert!(before["unknown_switches"].as_array().unwrap().is_empty());
+        std::fs::write(
+            home.dir.join("config.toml"),
+            "[features]\npersonas = true\n",
+        )
+        .unwrap();
+        let after = read().await;
+        assert_eq!(personas(&after)["state"], "on", "{after:#}");
+        // This test's serve loaded no switch at start: the flip is pending.
+        assert_eq!(personas(&after)["pending"], true);
+    }
+
     #[tokio::test]
     async fn the_settings_routes_sit_behind_the_owner_guard() {
         // The charter save is the only write on the web surface that lands
