@@ -433,9 +433,10 @@ impl PersonaChats {
         })?;
         let store = Store::load(&self.store);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let unlocked = library.unlocked(body.unlock.as_deref());
         let problems = store
             .get(&p.name)
-            .map(|q| store.problems(q, &lib))
+            .map(|q| unnamed(store.problems(q, &lib), hidden_character(q, &lib, unlocked)))
             .unwrap_or_default();
         Ok(serde_json::json!({ "version": state.version, "problems": problems }))
     }
@@ -2774,6 +2775,21 @@ mod tests {
         assert!(!locked.to_string().contains("wren"), "{locked}");
         let problems = row_of("wren", Some(&token))["problems"].to_string();
         assert!(problems.contains("`wren`"), "{problems}");
+        // A save from the locked page answers with the same filtered problems.
+        let files = w.personas().files(&w.library, "mara", None).unwrap();
+        let saved = w
+            .personas()
+            .save(
+                &w.library,
+                "mara",
+                body(serde_json::json!({
+                    "file": "identity",
+                    "text": files["identity"]["text"],
+                    "base": files["identity"]["digest"],
+                })),
+            )
+            .unwrap();
+        assert!(!saved.to_string().contains("wren"), "{saved}");
         let shown = portrait_of("maya", Some(&token));
         let url = shown.as_str().expect("unlocked: the portrait is shown");
         assert!(

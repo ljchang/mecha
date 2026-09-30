@@ -119,6 +119,8 @@
   async function relock() {
     const t = token;
     token = null;
+    // Off the screen now, before the grid's round trip, not after it.
+    if (making && authoring) authoring = { ...authoring, characters: [] };
     // A locked persona's chat closes with the lock: the lock hides (§8.3).
     if (chosen?.locked) back();
     await load();
