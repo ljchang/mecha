@@ -8454,8 +8454,8 @@ The things that decide the design:
   information, so narrow is the fail-safe direction. Nothing is removed
   (dropping a `tool_result` block is a 400), and what it frees counts toward
   the same-turn re-ask like any other pass's. Distinct from the loop guard, which
-  stops a run that has already gone wrong and only after a compaction; this
-  runs before there is anything to stop.
+  stops a run that has already gone wrong; this runs before there is
+  anything to stop.
 - **The cut has to be legal, not convenient.** A `tool_result` whose `tool_use`
   is gone is a 400, and that is the whole run. Tool results arrive in the user
   message right after the assistant turn that asked for them, so the only safe
@@ -8467,11 +8467,11 @@ The things that decide the design:
   three calls after any compaction, stops the run with `StopCause::Loop` —
   distinct from `MaxTurns`, because "hit the turn limit" reads as the task
   being too big when a stuck run is a different problem. Keyed on call *and*
-  result: polling (same arguments, changing result) never trips it. Dormant
-  until a compaction on purpose — repeated calls in ordinary work are the
-  model's business, and the failure this catches is specifically the run
-  re-living what a summary dropped, at the largest prompts it will ever
-  send. Gradeable via `expect.stop_cause: "loop"`; no shipped case asserts
+  result: polling (same arguments, changing result) never trips it. This
+  check is dormant until a compaction on purpose — repeated calls in
+  ordinary work are the model's business, and the failure this catches is
+  specifically the run re-living what a summary dropped, at the largest
+  prompts it will ever send. Gradeable via `expect.stop_cause: "loop"`; no shipped case asserts
   it, because a case cannot reliably make a model loop, and a case that
   asserts an outcome it may never exercise is worse than no case.
   **It is the last rung of a ladder now, not the only one** — `boredom.rs`
@@ -8482,6 +8482,25 @@ The things that decide the design:
   bounded hard — once per rung, once per turn, three times per run — because a
   model is measurably likelier to fail a step when its context holds its own
   earlier errors, which makes nagging a stuck run a way of keeping it stuck.
+- **One loop the guard watches without a compaction: the same call refused
+  the same way in seven consecutive turns** (`LoopGuard::REFUSED_REPEATS`,
+  one past boredom's last rung), under the same switch and the same
+  `StopCause::Loop`. An error that does not move under an unchanged call
+  cannot be a poll. The dormancy above asked for a measurement, and this is
+  it (2026-09-30, 1,031 transcripts, 3,187 tool turns). Anywhere from four
+  to seven it fires once: a persona chat that resent one refused
+  `image_generate` forty times a run, twice, holding the GPU while another
+  chat drew. At three it would also have stopped two mail runs that
+  recovered on the next turn, after boredom's first notice named the
+  repeat. So both of boredom's notices reach the model before the stop, and
+  persona chats now carry boredom from the base config rather than
+  switching it off. For **both** triggers, a call the harness refused this
+  turn (the approver, a hook, a policy, the interlock: `denied` in the
+  trace) never counts, because appraisal scores `Loop` against the run and
+  a well-defended run must not read as a stuck one. A call refused once and
+  let through later still counts when it then fails. An invented tool name
+  (`unknown`, not `denied`) does count: seven turns of one is a stuck
+  model.
 - **The record is searchable after the summary.** `tool/recall.rs` registers
   `recall` on the session-recording front-ends (chat, the TUI, resumed runs):
   it searches the union of everything the transcript ever recorded — including
