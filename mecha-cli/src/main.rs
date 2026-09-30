@@ -370,7 +370,8 @@ pub enum Command {
     ///
     /// Read from the config and the disk only — no network, so a server that
     /// starts on demand is never woken to be asked. Exit 0 whatever it finds:
-    /// an install with features off is not a broken one.
+    /// an install with features off is not a broken one. A config file that
+    /// does not parse is an error, not a list.
     Features(commands::features::Args),
 
     /// Read every store — no network, no model, no tokens — and report what
