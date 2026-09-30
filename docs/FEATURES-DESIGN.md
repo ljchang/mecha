@@ -487,10 +487,16 @@ it. So, in step 1, the `tool_availability_notices` shape Hermes uses:
   would otherwise be usable** — *"`mail`: configured but not enabled —
   `mecha features enable mail` (or `mecha setup`)"* — on stderr, like the
   routed-outbox-name warning that fires on every start. "Would otherwise be
-  usable" is the full `state` with **every** switch in `[features]` treated
-  as on — the substitution is global, or a feature's dependencies, still
-  absent on exactly this install, would short-circuit it to `Blocked` and
-  eight of the parts and dependents would never be announced (#435) — **not** a
+  usable" is the full `state` with every switch **absent from** `[features]`
+  treated as on — and it iterates only features that *have* a switch
+  (`part_of().is_none()`), since a part has no bool to announce and `enable`
+  refuses a part id by name. The substitution covers every absent switch,
+  not just the one being announced, because on this install the dependencies
+  are absent too: substituting `incognito` alone would leave `web` off and
+  short-circuit it to `Blocked`, so the line would never print. An explicit
+  `false` is an answer, not an unanswered question, and is never substituted:
+  an owner who wrote `web = false` is not told to enable `incognito` on every
+  start (found on review of #435, passes 3 and 4) — **not** a
   settings table being present: four features' evidence is not a table at
   all — `slack` a token store, `personas` a non-empty store, `voice` an
   installed unit file (installed, not running: a socket-activated unit is
@@ -999,11 +1005,13 @@ Each step is a PR, and each leaves every surface working.
    review of #427, pass 11). A study that needs a different cooldown asks the
    operator.
 6. **Recommendations**: the rows, the probe that sums memory, and a test that
-   `hardware.md` matches them. `hardware.md` changes first: today it has one
-   unified tier table and a note that no VRAM/RAM split is needed, and F5's
-   second column (a separate GPU beside system RAM) makes that note false —
-   the page gains the column, with every discrete cell marked `Arithmetic` or
-   `Unmeasured` until someone measures one. Fix the embeddings page.
+   `hardware.md` matches them. `hardware.md` changes first: its tier
+   sections (`### 16 GB` … `### 128 GB and up`) describe one pool, though
+   the page's own description already says "unified-memory or VRAM tier". It
+   gains F5's discrete column, with every discrete cell marked `Arithmetic`
+   or `Unmeasured` until someone measures one. The Mac note that "unified
+   memory has no separate GPU pool" stays: it is scoped to Macs and still
+   true (#435). Fix the embeddings page.
 7. **Installers**: one `scripts/<feature>/install.sh` per feature that needs a
    service, each with `--remove`, copying rather than symlinking (the
    `scripts/llama/install.sh` pattern), with no `/home/<user>` or checkout
