@@ -43,6 +43,10 @@
   // offered only after one (owner ruling, 2026-09-30).
   let chatModel = $state('');
   let crisisShown = $state(false);
+  // The AI tag is what the `disclosure` switch shows (§12.1): on unless the
+  // owner turned it off for this persona. The open chat's live switch wins
+  // over the list's reading of the persona.
+  const disclosed = $derived((safety ?? chosen?.safety)?.disclosure !== false);
   // A clock for the waiting line, ticking only while a run is live.
   let now = $state(Date.now());
   // On `running` alone, not the whole run: `run` is replaced on every
@@ -686,7 +690,7 @@
         <!-- The name and the AI tag, nothing more (owner, 2026-09-30).
              Disclosure is the harness's, not the persona's (§12.1). -->
         <div class="who">
-          <span class="pname">{chosen.display} <span class="ai">AI</span></span>
+          <span class="pname">{chosen.display}{#if disclosed}<span class="ai">AI</span>{/if}</span>
         </div>
       {:else}
         <div class="grow"></div>
@@ -914,7 +918,7 @@
             <div class="herochips">
               <!-- Disclosure is the harness's (§12.1): this is an AI, on the
                    page that reads most like a contact. -->
-              <span class="ai">AI</span>
+              {#if disclosed}<span class="ai">AI</span>{/if}
               {#if chosen.locked}<svg class="glyph" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="hidden behind the library lock"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>{/if}
               {#each chosen.relationship ?? [] as r}<span class="rchip">{r.replaceAll('_', ' ')}</span>{/each}
               <span class="ver">v{chosen.version}</span>
@@ -1162,7 +1166,7 @@
   .prow:hover, .hrow:hover:not(:disabled) { background: var(--surface); }
   .pbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
   .prel { font-size: 13px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .prow .badge { margin: 0; }
+  .prow .badge { margin: 0; align-self: center; }
   .chev { flex-shrink: 0; color: var(--accent-500); }
   .hero { display: flex; align-items: center; gap: 16px; padding: 8px 0 4px; }
   .herotext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -1199,5 +1203,5 @@
   .dots i:nth-child(3) { animation-delay: 0.4s; }
   @keyframes blink { 0%, 80%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
   @media (prefers-reduced-motion: reduce) { .dots i { animation: none; opacity: 0.7; } }
-  .pname .ai { font-family: var(--mono); font-size: 10px; font-weight: 400; line-height: 1.4; }
+  .pname .ai { font-family: var(--mono); font-size: 10px; font-weight: 400; line-height: 1.4; margin-left: 6px; }
 </style>
