@@ -55,17 +55,23 @@ export function turnsWithoutPicture(entries, running = false) {
   let asked = 0;
   let drawn = 0;
   let open = 0;
-  const close = (end) => {
-    if (end >= 0 && asked > 0 && drawn === 0 && open === 0) out.add(end);
+  // Under the turn's last reply or tool row: a page-only notice or crisis
+  // card that `settle` carries after the server's entries is not the reply
+  // (review of #444).
+  let last = -1;
+  const close = () => {
+    if (last >= 0 && asked > 0 && drawn === 0 && open === 0) out.add(last);
     asked = drawn = open = 0;
+    last = -1;
   };
   entries.forEach((entry, i) => {
-    if (entry.kind === 'user' && !entry.queued && !entry.steered) close(i - 1);
+    if (entry.kind === 'user' && !entry.queued && !entry.steered) close();
+    if (entry.kind === 'assistant' || entry.kind === 'tool') last = i;
     if (entry.kind !== 'tool' || entry.name !== 'image_generate') return;
     asked += 1;
     if (entry.is_error === false) drawn += 1;
     else if (entry.is_error !== true) open += 1;
   });
-  if (!running) close(entries.length - 1);
+  if (!running) close();
   return out;
 }

@@ -1871,7 +1871,7 @@ pub fn persona_provider(
 ///
 /// What it takes from `bound` is the run's mechanics — the provider, the
 /// model, the window, the tool context's limits. What it never takes is
-/// anything of the owner's: its registry is `persona::agent::registry_for`
+/// anything of the owner's: its registry is `persona::agent::registry_as`
 /// over the assistant's pool (declared tools only, none that can aim), its
 /// system prompt replaces the assistant's (no charter, skills or learned
 /// rules), its config switches off every lever that reads an owner store,

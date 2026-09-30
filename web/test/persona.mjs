@@ -271,6 +271,9 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
     { kind: 'assistant', text: 'Done!' },
   ];
   assert.deepEqual([...turnsWithoutPicture(reloaded)], [4], 'the note stays under the reply');
+  // A page-only notice carried after the server's entries is not the reply.
+  const noticed = [...reloaded, { kind: 'notice', text: 'upload failed' }];
+  assert.deepEqual([...turnsWithoutPicture(noticed)], [4], 'not under the notice');
 }
 
 console.log('persona: ok');
