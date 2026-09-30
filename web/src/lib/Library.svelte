@@ -383,9 +383,6 @@
     {#if !form && !open && data && shown.length === 0 && pane === 'characters'}
       <div class="empty">No characters yet. Add one from a portrait, or tap <b>Save to library</b> under a picture in chat.</div>
     {/if}
-    {#if data?.hidden_locked && !token && !form}
-      <div class="hidden">{data.hidden_locked} locked {data.hidden_locked === 1 ? 'entry' : 'entries'} hidden</div>
-    {/if}
     {#if data?.unreadable}
       <div class="warnline">{data.unreadable} {data.unreadable === 1 ? 'entry' : 'entries'} could not be read — <code>mecha imagelib list</code></div>
     {/if}
@@ -468,7 +465,6 @@
   .abtn:disabled { opacity: 0.5; }
   .barnote { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
   .empty { color: var(--text-muted); font-size: 14px; padding: 24px 0; text-align: center; line-height: 1.6; }
-  .hidden { font-family: var(--mono); font-size: 11px; color: var(--text-muted); text-align: center; padding: 8px 0; }
   .warnline { font-size: 12px; color: var(--hazard); line-height: 1.45; }
   .editbox { width: 100%; background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius); color: var(--text); font-family: var(--sans); font-size: 15px; padding: 12px 14px; box-sizing: border-box; margin-bottom: 12px; }
   .scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 5; }

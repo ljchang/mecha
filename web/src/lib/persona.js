@@ -49,6 +49,13 @@ export function authoringUrl(token) {
   return withUnlock('/api/personas/authoring', token);
 }
 
+// The portrait a half-made persona keeps when the character list changes
+// under it — a relock takes locked characters out of the list, and a choice
+// the page can no longer show must not be sent as if it could.
+export function keptCharacter(chosen, characters) {
+  return chosen && (characters ?? []).includes(chosen) ? chosen : '';
+}
+
 // A name as the store will hold it — or null when it cannot be one: the
 // server says why on create, this only saves a round trip for the obvious.
 export function personaName(typed) {
@@ -190,7 +197,14 @@ export function taintLabel(taint) {
 // is, so "keywords only" never reads as a check that passed.
 export function safetyLine(safety) {
   if (!safety) return '';
-  const crisis = safety.crisis === 'off' ? 'crisis detection off' : 'crisis detection: keywords only';
+  // Three states, each said as it is: both tiers answering, keywords only
+  // because the model check could not answer, or switched off.
+  const crisis = {
+    off: 'crisis detection off',
+    on: 'crisis detection on',
+    // A persona's own setting, before any chat has asked the judge.
+    enabled: 'crisis detection: keywords + a model check on each message',
+  }[safety.crisis] ?? 'crisis detection: keywords only (the model check could not answer)';
   const off = ['disclosure', 'reanchor', 'dose'].filter((k) => safety[k] === false);
   // The farewell check arrives as a state, not a flag (review of #418).
   if (safety.farewell === 'off') off.push('farewell');
