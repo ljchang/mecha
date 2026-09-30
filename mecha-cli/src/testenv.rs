@@ -27,6 +27,13 @@ const STORE_OVERRIDES: [&str; 4] = [
     "MECHA_COMPARISONS_DIR",
 ];
 
+/// The lock alone, for a test that moves some *other* process-global
+/// variable (`$MECHA_MAIL_DIR`) and must not race a test moving the same one
+/// — every such test in this binary takes this, or none of them is safe.
+pub(crate) fn lock() -> MutexGuard<'static, ()> {
+    ENV.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub(crate) struct HomeGuard {
     _lock: MutexGuard<'static, ()>,
     previous: Option<String>,

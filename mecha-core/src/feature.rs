@@ -760,6 +760,9 @@ mod tests {
     /// reads nothing else: the global-only rule is the signature's.
     #[test]
     fn a_row_reads_only_the_configuration_facts_carry() {
+        // `Facts::read` reads the mail-store variables, which doctor's tests
+        // move; take the crate's one environment lock.
+        let _lock = crate::work::tests::lock();
         let with_graph = Config {
             mcp: vec![mcp("graph", "mecha-graph-mcp")],
             ..Config::default()
