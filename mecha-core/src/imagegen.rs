@@ -199,6 +199,10 @@ pub struct Request {
     /// library portraits go at [`crate::imagelib::REFERENCE_SIZE`], because
     /// four at 1024² doubled the time and 512² held identity (research E2, E10).
     pub reference_size: u32,
+    /// Where an edit may change the picture: white is redrawn, black is kept
+    /// — the owner painted it, and it arrives here already sized to the
+    /// canvas and softened (`prepare_mask`). `None` redraws the whole frame.
+    pub mask: Option<Reference>,
 }
 
 /// The reference size for an edit: the canvas at full detail.
@@ -472,7 +476,18 @@ pub async fn forget_trail(cfg: &ImageConfig, entries: &[TrailEntry]) -> Result<(
 /// the sequence as latents) and, unless a size was asked for, its own latent
 /// output is the canvas: sized to the first reference, because sampling at
 /// any other size shifts the edit (the node's own guidance).
-pub fn comfy_graph(cfg: &ImageConfig, req: &Request, uploaded: &[String]) -> Value {
+///
+/// With a `mask` (an uploaded mask's server name) the canvas is the first
+/// reference itself, VAE-encoded, and the sampler redraws only where the mask
+/// is white (`SetLatentNoiseMask`); the result is composited back over the
+/// original in mecha's own code, so nothing outside the mask moves
+/// (`IMAGE-REGION-EDIT-RESEARCH.md`, approach C).
+pub fn comfy_graph(
+    cfg: &ImageConfig,
+    req: &Request,
+    uploaded: &[String],
+    mask: Option<&str>,
+) -> Value {
     let mut encode = json!({
         "clip": ["clip", 0], "prompt": req.prompt, "negative_prompt": req.negative,
         "resolution": req.reference_size});
@@ -493,13 +508,24 @@ pub fn comfy_graph(cfg: &ImageConfig, req: &Request, uploaded: &[String]) -> Val
     if !uploaded.is_empty() {
         encode["vae"] = json!(["vae", 0]);
     }
-    let canvas = match req.size {
-        Some((width, height)) => {
+    let canvas = match (mask, uploaded.first(), req.size) {
+        (Some(mask), Some(_), _) => {
+            graph["maskimg"] =
+                json!({"class_type": "LoadImage", "inputs": {"image": format!("{mask} [temp]")}});
+            graph["mask"] = json!({"class_type": "ImageToMask", "inputs": {
+                "image": ["maskimg", 0], "channel": "red"}});
+            graph["source"] = json!({"class_type": "VAEEncode", "inputs": {
+                "pixels": ["ref1", 0], "vae": ["vae", 0]}});
+            graph["masked"] = json!({"class_type": "SetLatentNoiseMask", "inputs": {
+                "samples": ["source", 0], "mask": ["mask", 0]}});
+            json!(["masked", 0])
+        }
+        (_, _, Some((width, height))) => {
             graph["latent"] = json!({"class_type": "EmptyLatentImage", "inputs": {
                 "width": width, "height": height, "batch_size": 1}});
             json!(["latent", 0])
         }
-        None => json!(["encode", 2]),
+        _ => json!(["encode", 2]),
     };
     graph["encode"] = json!({"class_type": "TextEncodeQwenImage21", "inputs": encode});
     graph["sample"] = json!({"class_type": "KSampler", "inputs": {
@@ -949,8 +975,8 @@ impl ComfyUi {
             })
         };
         self.preflight(cfg).await?;
-        let mut uploaded = Vec::with_capacity(req.references.len());
-        for reference in &req.references {
+        let mut uploaded = Vec::with_capacity(req.references.len() + 1);
+        for reference in req.references.iter().chain(req.mask.iter()) {
             let asked = format!(
                 "mecha-{:08x}{:08x}.{}",
                 fresh_seed(),
@@ -978,11 +1004,16 @@ impl ComfyUi {
         // server mints its own, which is written down as soon as it answers.
         let asked = uuid::Uuid::new_v4().to_string();
         record(TrailEntry::Job(asked.clone()))?;
+        // The mask is uploaded last, and is no reference.
+        let (refs, mask) = match req.mask {
+            Some(_) => (&uploaded[..uploaded.len() - 1], uploaded.last()),
+            None => (&uploaded[..], None),
+        };
+        let graph = comfy_graph(cfg, req, refs, mask.map(String::as_str));
         let submitted = self
             .post_json(
                 "prompt",
-                &json!({"prompt": comfy_graph(cfg, req, &uploaded), "client_id": "mecha",
-                        "prompt_id": asked}),
+                &json!({"prompt": graph, "client_id": "mecha", "prompt_id": asked}),
             )
             .await;
         let (status, body) = match submitted {
@@ -1296,6 +1327,168 @@ pub fn layout_similarity(a: &[u8], b: &[u8]) -> Option<f64> {
     (vx > 0.0 && vy > 0.0).then(|| cov / (vx * vy).sqrt())
 }
 
+/// The canvas an edit samples on for a picture `w`×`h` at `resolution`: the
+/// encoder's own sizing (`TextEncodeQwenImage21`, about `resolution`² pixels,
+/// aspect kept, multiples of 32, Python's round-half-even). A masked edit
+/// resizes the picture to exactly this before it is uploaded, so the encoded
+/// canvas, the reference the encoder sees and the composite all line up.
+pub fn edit_canvas(w: u32, h: u32, resolution: u32) -> (u32, u32) {
+    fn round_half_even(x: f64) -> f64 {
+        let r = x.round();
+        if (x - x.trunc()).abs() == 0.5 {
+            2.0 * (x / 2.0).round()
+        } else {
+            r
+        }
+    }
+    let (res, ratio) = (f64::from(resolution), f64::from(w) / f64::from(h));
+    let side = |v: f64| ((round_half_even(v / 32.0) * 32.0) as u32).max(32);
+    (
+        side((res * res * ratio).sqrt()),
+        side((res * res / ratio).sqrt()),
+    )
+}
+
+/// Grow the painted area by about 24 px and feather its edge by about 16,
+/// at the canvas's scale — the setting measured seamless
+/// (`IMAGE-REGION-EDIT-RESEARCH.md` §4).
+const MASK_GROW_SIGMA: f32 = 12.0;
+const MASK_FEATHER_SIGMA: f32 = 8.0;
+
+/// What a masked edit is built from: the picture at canvas size, the
+/// softened mask for the composite, and the painted area's bounds, which is
+/// where a near-copy is looked for.
+#[derive(Debug, Clone)]
+pub struct MaskPlan {
+    pub picture: image::RgbImage,
+    pub soft: image::GrayImage,
+    pub bounds: (u32, u32, u32, u32),
+}
+
+/// Size the picture to its edit canvas and turn the owner's painted mask into
+/// the one the sampler and the composite use. Refused, with a sentence for
+/// the model, when the mask marks nothing or was painted over a picture of
+/// another shape — a mask is only meaningful over the picture it was drawn
+/// on.
+pub fn prepare_mask(
+    picture: &[u8],
+    mask: &[u8],
+    resolution: u32,
+) -> std::result::Result<MaskPlan, String> {
+    use image::imageops::{fast_blur, resize, FilterType};
+    let picture = crate::image::decode(picture, "the picture").map_err(|e| format!("{e:#}"))?;
+    let mask = crate::image::decode(mask, "the mask").map_err(|e| format!("{e:#}"))?;
+    let (pw, ph) = (picture.width(), picture.height());
+    let (mw, mh) = (mask.width(), mask.height());
+    let (pr, mr) = (f64::from(pw) / f64::from(ph), f64::from(mw) / f64::from(mh));
+    if (pr / mr - 1.0).abs() > 0.02 {
+        return Err(format!(
+            "The mask is {mw}×{mh} but the picture is {pw}×{ph}: a mask has to be painted \
+             over the picture it edits."
+        ));
+    }
+    let (cw, ch) = edit_canvas(pw, ph, resolution);
+    let picture = resize(&picture.to_rgb8(), cw, ch, FilterType::Lanczos3);
+    let hard = image::GrayImage::from_fn(cw, ch, {
+        let luma = resize(&mask.to_luma8(), cw, ch, FilterType::Triangle);
+        move |x, y| {
+            image::Luma([if luma.get_pixel(x, y).0[0] > 127 {
+                255
+            } else {
+                0
+            }])
+        }
+    });
+    let mut bounds: Option<(u32, u32, u32, u32)> = None;
+    for (x, y, p) in hard.enumerate_pixels() {
+        if p.0[0] > 0 {
+            let b = bounds.get_or_insert((x, y, x + 1, y + 1));
+            *b = (b.0.min(x), b.1.min(y), b.2.max(x + 1), b.3.max(y + 1));
+        }
+    }
+    let Some(bounds) = bounds else {
+        return Err(
+            "The mask marks nothing: its painted (white) area is empty. Ask the user to \
+             paint the part to change."
+                .into(),
+        );
+    };
+    let grown = fast_blur(&hard, MASK_GROW_SIGMA);
+    let grown = image::GrayImage::from_fn(cw, ch, |x, y| {
+        image::Luma([if grown.get_pixel(x, y).0[0] > 10 {
+            255
+        } else {
+            0
+        }])
+    });
+    let soft = fast_blur(&grown, MASK_FEATHER_SIGMA);
+    // Painted pixels stay fully redrawn, whatever the blur did to them.
+    let soft = image::GrayImage::from_fn(cw, ch, |x, y| {
+        image::Luma([soft.get_pixel(x, y).0[0].max(hard.get_pixel(x, y).0[0])])
+    });
+    Ok(MaskPlan {
+        picture,
+        soft,
+        bounds,
+    })
+}
+
+/// A PNG of `image`, for an upload or the saved result.
+fn png_bytes<P, C>(image: &image::ImageBuffer<P, C>) -> std::result::Result<Vec<u8>, String>
+where
+    P: image::Pixel + image::PixelWithColorType,
+    [P::Subpixel]: image::EncodableLayout,
+    C: std::ops::Deref<Target = [P::Subpixel]>,
+{
+    let mut out = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut out, image::ImageFormat::Png)
+        .map_err(|e| format!("could not encode a PNG: {e}"))?;
+    Ok(out.into_inner())
+}
+
+/// Lay the server's result over the original through the soft mask: every
+/// pixel the owner did not paint (outside the grown, feathered edge) comes
+/// back exactly as it was. The result is sized to the canvas first, should
+/// the server have answered at another size.
+pub fn composite_masked(result: &[u8], plan: &MaskPlan) -> std::result::Result<Vec<u8>, String> {
+    let (w, h) = plan.picture.dimensions();
+    let result = crate::image::decode(result, "the result").map_err(|e| format!("{e:#}"))?;
+    let result = if (result.width(), result.height()) == (w, h) {
+        result.to_rgb8()
+    } else {
+        image::imageops::resize(
+            &result.to_rgb8(),
+            w,
+            h,
+            image::imageops::FilterType::Lanczos3,
+        )
+    };
+    let out = image::RgbImage::from_fn(w, h, |x, y| {
+        let m = u16::from(plan.soft.get_pixel(x, y).0[0]);
+        let (o, r) = (plan.picture.get_pixel(x, y).0, result.get_pixel(x, y).0);
+        image::Rgb(std::array::from_fn(|c| {
+            ((u16::from(o[c]) * (255 - m) + u16::from(r[c]) * m + 127) / 255) as u8
+        }))
+    });
+    png_bytes(&out)
+}
+
+/// [`layout_similarity`] of two pictures within `bounds` only: where a
+/// masked edit may have changed anything. Outside it the composite has put
+/// the original back, so a whole-frame reading would call every masked edit
+/// a near-copy.
+pub fn layout_similarity_within(a: &[u8], b: &[u8], bounds: (u32, u32, u32, u32)) -> Option<f64> {
+    let crop = |bytes: &[u8]| -> Option<Vec<u8>> {
+        let picture = crate::image::decode(bytes, "the picture").ok()?;
+        let (x0, y0, x1, y1) = bounds;
+        let (x1, y1) = (x1.min(picture.width()), y1.min(picture.height()));
+        (x1 > x0 && y1 > y0).then_some(())?;
+        png_bytes(&picture.crop_imm(x0, y0, x1 - x0, y1 - y0).to_rgb8()).ok()
+    };
+    layout_similarity(&crop(a)?, &crop(b)?)
+}
+
 /// The manifest beside a workspace picture, when it has one: read through
 /// the jail, bounded, and only ever used for names checked elsewhere.
 async fn read_manifest(ctx: &ToolCtx, png: &str) -> Option<Value> {
@@ -1342,6 +1535,11 @@ struct NearCopy {
     original: String,
     notice: String,
 }
+
+/// A call's input, validated: the request, the reference paths and the mask's
+/// path still to read through the jail (reading needs the run's workspace),
+/// and what it asks of the image library.
+type Parsed = (Request, Vec<String>, Option<LibraryAsk>, Option<String>);
 
 /// What a call asked of the image library: people and a style, by name.
 #[derive(Debug, Clone, Default)]
@@ -1516,10 +1714,7 @@ impl ImageGenerate {
     /// The call's input, validated, the reference paths still to read —
     /// reading needs the run's workspace, which [`Self::call`] has — and what
     /// it asks of the image library, compiled there too.
-    fn request(
-        &self,
-        input: &Value,
-    ) -> std::result::Result<(Request, Vec<String>, Option<LibraryAsk>), String> {
+    fn request(&self, input: &Value) -> std::result::Result<Parsed, String> {
         let prompt = input
             .get("prompt")
             .and_then(Value::as_str)
@@ -1602,6 +1797,26 @@ impl ImageGenerate {
                     .into(),
             );
         }
+        let mask = match input.get("mask") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) if s.trim().is_empty() => None,
+            Some(Value::String(s)) => Some(s.trim().to_string()),
+            Some(_) => return Err("`mask` must be the path of the mask the user painted.".into()),
+        };
+        if mask.is_some() && references.is_empty() {
+            return Err(
+                "`mask` marks part of the picture being edited: pass that picture in \
+                        reference_images too."
+                    .into(),
+            );
+        }
+        if mask.is_some() && input.get("size").is_some_and(|v| !v.is_null()) {
+            return Err(
+                "`size` cannot be combined with `mask`: a masked edit keeps the \
+                        picture's own shape."
+                    .into(),
+            );
+        }
         let ask =
             (!cast.is_empty() || !extras.is_empty() || style.is_some()).then_some(LibraryAsk {
                 cast,
@@ -1631,9 +1846,11 @@ impl ImageGenerate {
                 seed,
                 references: Vec::new(),
                 reference_size: EDIT_REFERENCE_SIZE,
+                mask: None,
             },
             references,
             ask,
+            mask,
         ))
     }
 
@@ -1674,7 +1891,10 @@ impl Tool for ImageGenerate {
          named, then an instruction naming the change, e.g. \"Keep the style, the background \
          and the man unchanged. Have the woman stand up.\" Never describe the whole \
          scene or keep the whole picture unchanged: the edit model reads either as the picture \
-         it already has, and returns it unchanged. The result is not shown to you. If image_view is among your tools, look at it only when the \
+         it already has, and returns it unchanged. If the user's message names a mask (a picture \
+         they painted over the part to change), pass it as mask, with the picture in \
+         reference_images, and write only the change: everything outside the mask is kept \
+         exactly. The result is not shown to you. If image_view is among your tools, look at it only when the \
          task needs you to see it — the user asked you to check, compare or describe it, or an edit depends on \
          what is where — not to confirm that it worked. To draw the owner's recurring characters, name \
          them in cast, left to right, with what each is wearing and doing (image_library lists who \
@@ -1705,6 +1925,10 @@ impl Tool for ImageGenerate {
                     "items": {"type": "string"},
                     "maxItems": MAX_REFERENCES,
                     "description": "Workspace paths of images to edit or draw from — an attached picture (inbox/...) or an earlier result (images/...). The first is the one being edited; refer to them as <image1>, <image2> in the prompt."
+                },
+                "mask": {
+                    "type": "string",
+                    "description": "Workspace path of a mask the user painted over the first reference: white is redrawn, the rest is kept pixel for pixel. Pass it exactly as the user's message names it; never make one up."
                 },
                 "seed": {
                     "type": "integer",
@@ -1760,7 +1984,7 @@ impl Tool for ImageGenerate {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let (mut req, paths, ask) = match self.request(&input) {
+        let (mut req, paths, ask, mask_path) = match self.request(&input) {
             Ok(parsed) => parsed,
             Err(why) => return Ok(refused(why)),
         };
@@ -1911,6 +2135,43 @@ impl Tool for ImageGenerate {
             Ok(references) => references,
             Err(why) => return Ok(refused(why)),
         };
+        // The owner's painted mask: read through the jail like a reference,
+        // then sized with the picture to the edit canvas and softened, off
+        // the runtime. Both go up at canvas size, so the encoder's reference,
+        // the encoded canvas and the composite line up pixel for pixel.
+        let plan = match &mask_path {
+            None => None,
+            Some(raw) => {
+                let mask = match read_references(ctx, std::slice::from_ref(raw)).await {
+                    Ok(mut read) => read.remove(0),
+                    Err(why) => return Ok(refused(why)),
+                };
+                let picture = req.references[0].bytes.clone();
+                let resolution = req.reference_size;
+                let prepared = tokio::task::spawn_blocking(move || {
+                    let plan = prepare_mask(&picture, &mask.bytes, resolution)?;
+                    let picture = png_bytes(&plan.picture)?;
+                    // Grey in every channel; the graph reads its red one.
+                    let soft =
+                        png_bytes(&image::DynamicImage::ImageLuma8(plan.soft.clone()).to_rgb8())?;
+                    Ok::<_, String>((plan, picture, soft))
+                })
+                .await;
+                let (plan, picture, soft) = match prepared {
+                    Ok(Ok(prepared)) => prepared,
+                    Ok(Err(why)) => return Ok(refused(why)),
+                    Err(e) => return Ok(refused(format!("The mask could not be prepared: {e}"))),
+                };
+                req.references[0].bytes = picture;
+                req.references[0].ext = "png";
+                req.mask = Some(Reference {
+                    path: raw.clone(),
+                    bytes: soft,
+                    ext: "png",
+                });
+                Some(plan)
+            }
+        };
         // The library's half: the model named who and what style; this code
         // writes how they look — each portrait as a reference at 512², each
         // description verbatim beside its pointer.
@@ -2052,6 +2313,29 @@ impl Tool for ImageGenerate {
                 )));
             }
         };
+        // A masked edit keeps everything the owner did not paint: the result
+        // is laid over the original here, in mecha's code, not the server's.
+        let bytes = match &plan {
+            None => bytes,
+            Some(plan) => {
+                let plan = plan.clone();
+                match tokio::task::spawn_blocking(move || composite_masked(&bytes, &plan)).await {
+                    Ok(Ok(bytes)) => bytes,
+                    Ok(Err(why)) => {
+                        return Ok(ToolOutput::err(format!(
+                            "The image was made but could not be laid over the original: \
+                             {why}. Nothing was saved.{left}"
+                        )))
+                    }
+                    Err(e) => {
+                        return Ok(ToolOutput::err(format!(
+                            "The image was made but could not be laid over the original: \
+                             {e}. Nothing was saved.{left}"
+                        )))
+                    }
+                }
+            }
+        };
         let path = match save(ctx, req.seed, &bytes).await {
             Ok(path) => path,
             Err(e) => {
@@ -2069,10 +2353,14 @@ impl Tool for ImageGenerate {
         // for a move, or for a recolour that keeps the layout on purpose.
         let similarity = if is_edit {
             let (was, now) = (req.references[0].bytes.clone(), bytes.clone());
-            tokio::task::spawn_blocking(move || layout_similarity(&was, &now))
-                .await
-                .ok()
-                .flatten()
+            let bounds = plan.as_ref().map(|p| p.bounds);
+            tokio::task::spawn_blocking(move || match bounds {
+                Some(bounds) => layout_similarity_within(&was, &now, bounds),
+                None => layout_similarity(&was, &now),
+            })
+            .await
+            .ok()
+            .flatten()
         } else {
             None
         };
@@ -2101,6 +2389,7 @@ impl Tool for ImageGenerate {
             "size": req.size,
             "reference_size": req.reference_size,
             "reference_images": if is_edit { json!(paths) } else { Value::Null },
+            "mask": mask_path,
             "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
             "same_layout_as": near.as_ref().map(|n| &n.original),
             "cast": ask.as_ref().filter(|a| !a.cast.is_empty()).map(|a| a.cast.iter()
@@ -2161,6 +2450,12 @@ impl Tool for ImageGenerate {
                 req.seed,
                 req.steps
             ));
+            if let Some(mask) = &mask_path {
+                text.push_str(&format!(
+                    " Only the area painted in {mask} was redrawn; everything outside it is the \
+                     original, pixel for pixel."
+                ));
+            }
             if let Some(near) = &near {
                 text.push_str(&near.notice);
             }
@@ -2515,8 +2810,9 @@ mod tests {
         // Runs in a read-only chat without an approval (the owner's ruling).
         assert!(t.read_only());
         // And the schema has nowhere to put a destination. `reference_images`
-        // names *sources*, and each goes through the path jail: reading a
-        // workspace file into a loopback server sends nothing anywhere.
+        // and `mask` name *sources*, and each goes through the path jail:
+        // reading a workspace file into a loopback server sends nothing
+        // anywhere.
         // `cast` and `style` name library entries, resolved by this code in
         // the owner's store — names, never paths or addresses.
         let schema = t.input_schema();
@@ -2528,6 +2824,7 @@ mod tests {
             [
                 "cast",
                 "extras",
+                "mask",
                 "negative_prompt",
                 "prompt",
                 "reference_images",
@@ -2559,8 +2856,9 @@ mod tests {
             seed: 7,
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
+            mask: None,
         };
-        let g = comfy_graph(&cfg, &req, &[]);
+        let g = comfy_graph(&cfg, &req, &[], None);
         let mut classes: Vec<_> = g
             .as_object()
             .unwrap()
@@ -2632,7 +2930,7 @@ mod tests {
         assert!(t
             .request(&json!({"prompt": "x", "reference_images": five}))
             .is_err());
-        let (r, paths, _) = t
+        let (r, paths, _, _) = t
             .request(&json!({"prompt": " a fox ", "size": "portrait", "seed": 3}))
             .unwrap();
         assert_eq!(
@@ -2641,9 +2939,9 @@ mod tests {
         );
         assert_eq!(r.steps, 40);
         // No size: square for a new image, the reference's shape for an edit.
-        let (r, _, _) = t.request(&json!({"prompt": "x"})).unwrap();
+        let (r, _, _, _) = t.request(&json!({"prompt": "x"})).unwrap();
         assert_eq!(r.size, Some((1024, 1024)));
-        let (r, paths, _) = t
+        let (r, paths, _, _) = t
             .request(&json!({"prompt": "x", "reference_images": ["inbox/me.jpg"]}))
             .unwrap();
         assert_eq!((r.size, paths), (None, vec!["inbox/me.jpg".to_string()]));
@@ -2660,8 +2958,9 @@ mod tests {
             seed: 9,
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
+            mask: None,
         };
-        let g = comfy_graph(&cfg, &req, &["a.png".into(), "b.jpg".into()]);
+        let g = comfy_graph(&cfg, &req, &["a.png".into(), "b.jpg".into()], None);
         assert_eq!(g["ref1"]["class_type"], "LoadImage");
         assert_eq!(g["ref1"]["inputs"]["image"], "a.png [temp]");
         assert_eq!(g["ref2"]["inputs"]["image"], "b.jpg [temp]");
@@ -2679,7 +2978,7 @@ mod tests {
             size: Some((1344, 768)),
             ..req
         };
-        let g = comfy_graph(&cfg, &sized, &["a.png".into()]);
+        let g = comfy_graph(&cfg, &sized, &["a.png".into()], None);
         assert_eq!(g["sample"]["inputs"]["latent_image"], json!(["latent", 0]));
         assert_eq!(g["latent"]["inputs"]["width"], 1344);
         // And text-to-image has no references, no VAE on the encoder.
@@ -2687,7 +2986,7 @@ mod tests {
             size: Some((1024, 1024)),
             ..sized
         };
-        let g = comfy_graph(&cfg, &plain, &[]);
+        let g = comfy_graph(&cfg, &plain, &[], None);
         assert!(g.get("ref1").is_none() && g["encode"]["inputs"].get("vae").is_none());
     }
 
@@ -4583,6 +4882,227 @@ mod tests {
                 && !out.content.contains("in a row"),
             "{}",
             out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A `w`×`h` mask, white inside `(x0, y0, x1, y1)`.
+    fn mask_png(w: u32, h: u32, (x0, y0, x1, y1): (u32, u32, u32, u32)) -> Vec<u8> {
+        let img = image::GrayImage::from_fn(w, h, |x, y| {
+            image::Luma([if (x0..x1).contains(&x) && (y0..y1).contains(&y) {
+                255
+            } else {
+                0
+            }])
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        png.into_inner()
+    }
+
+    #[test]
+    fn the_edit_canvas_is_the_encoders_own_sizing() {
+        // `TextEncodeQwenImage21` at resolution 1024: about a megapixel, the
+        // aspect kept, multiples of 32 — checked against the node's source.
+        assert_eq!(edit_canvas(1344, 768, 1024), (1344, 768));
+        assert_eq!(edit_canvas(1024, 1024, 1024), (1024, 1024));
+        assert_eq!(edit_canvas(768, 1344, 1024), (768, 1344));
+        assert_eq!(edit_canvas(4000, 3000, 1024), (1184, 896));
+        assert_eq!(edit_canvas(64, 64, 1024), (1024, 1024));
+    }
+
+    #[test]
+    fn a_masked_graph_resamples_only_under_the_mask() {
+        let cfg = ImageConfig::default();
+        let req = Request {
+            prompt: "Make the dress green.".into(),
+            negative: String::new(),
+            size: None,
+            steps: 40,
+            seed: 9,
+            references: Vec::new(),
+            reference_size: EDIT_REFERENCE_SIZE,
+            mask: None,
+        };
+        let g = comfy_graph(&cfg, &req, &["pic.png".into()], Some("m.png"));
+        assert_eq!(g["maskimg"]["inputs"]["image"], "m.png [temp]");
+        assert_eq!(g["mask"]["class_type"], "ImageToMask");
+        assert_eq!(g["source"]["class_type"], "VAEEncode");
+        assert_eq!(g["source"]["inputs"]["pixels"], json!(["ref1", 0]));
+        assert_eq!(g["masked"]["class_type"], "SetLatentNoiseMask");
+        assert_eq!(g["sample"]["inputs"]["latent_image"], json!(["masked", 0]));
+        // The mask is no reference: the encoder sees the picture alone.
+        let enc = &g["encode"]["inputs"];
+        assert_eq!(enc["images.image_1"], json!(["ref1", 0]));
+        assert!(enc.get("images.image_2").is_none(), "{enc}");
+        // Without one, nothing of it is in the graph.
+        let g = comfy_graph(&cfg, &req, &["pic.png".into()], None);
+        assert!(g.get("masked").is_none() && g.get("maskimg").is_none());
+    }
+
+    #[test]
+    fn a_mask_needs_its_picture_and_keeps_its_shape() {
+        let t = tool("http://127.0.0.1:1");
+        let err = t
+            .request(&json!({"prompt": "x", "mask": "inbox/m.png"}))
+            .unwrap_err();
+        assert!(err.contains("reference_images"), "{err}");
+        let err = t
+            .request(&json!({"prompt": "x", "mask": "inbox/m.png",
+                             "reference_images": ["images/a.png"], "size": "square"}))
+            .unwrap_err();
+        assert!(
+            err.contains("`size` cannot be combined with `mask`"),
+            "{err}"
+        );
+        assert!(t
+            .request(&json!({"prompt": "x", "mask": 3, "reference_images": ["images/a.png"]}))
+            .is_err());
+        let (_, _, _, mask) = t
+            .request(&json!({"prompt": "x", "mask": " inbox/m.png ",
+                             "reference_images": ["images/a.png"]}))
+            .unwrap();
+        assert_eq!(mask.as_deref(), Some("inbox/m.png"));
+    }
+
+    #[test]
+    fn a_prepared_mask_grows_feathers_and_refuses_nothing_or_a_misfit() {
+        let picture = picture(8, [240, 220, 40]);
+        let plan = prepare_mask(&picture, &mask_png(64, 64, (0, 16, 16, 56)), 1024).unwrap();
+        assert_eq!(plan.picture.dimensions(), (1024, 1024));
+        assert_eq!(plan.soft.dimensions(), (1024, 1024));
+        // Painted pixels are fully redrawn; the edge is grown, then feathered;
+        // far away nothing is.
+        assert_eq!(plan.bounds, (0, 256, 256, 896));
+        assert_eq!(plan.soft.get_pixel(128, 576).0[0], 255);
+        let just_outside = plan.soft.get_pixel(266, 576).0[0];
+        assert!(just_outside > 0 && just_outside < 255, "{just_outside}");
+        assert_eq!(plan.soft.get_pixel(800, 576).0[0], 0);
+        assert_eq!(plan.soft.get_pixel(128, 100).0[0], 0);
+
+        let err = prepare_mask(&picture, &mask_png(64, 64, (0, 0, 0, 0)), 1024).unwrap_err();
+        assert!(err.contains("marks nothing"), "{err}");
+        let err = prepare_mask(&picture, &mask_png(128, 64, (0, 0, 10, 10)), 1024).unwrap_err();
+        assert!(err.contains("painted over the picture it edits"), "{err}");
+    }
+
+    #[test]
+    fn the_composite_keeps_every_unpainted_pixel_exactly() {
+        let picture = picture(8, [240, 220, 40]);
+        let plan = prepare_mask(&picture, &mask_png(64, 64, (0, 16, 16, 56)), 1024).unwrap();
+        let green = image::RgbImage::from_pixel(64, 64, image::Rgb([10, 200, 30]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        green
+            .write_to(&mut result, image::ImageFormat::Png)
+            .unwrap();
+        let out = composite_masked(result.get_ref(), &plan).unwrap();
+        let out = image::load_from_memory(&out).unwrap().to_rgb8();
+        assert_eq!(out.dimensions(), (1024, 1024));
+        // Outside the grown, feathered edge: the original, to the byte.
+        for (x, y) in [(800, 576), (512, 100), (1000, 1000), (300, 50)] {
+            assert_eq!(
+                out.get_pixel(x, y),
+                plan.picture.get_pixel(x, y),
+                "({x},{y})"
+            );
+        }
+        // Inside what was painted: the result.
+        assert_eq!(out.get_pixel(128, 576).0, [10, 200, 30]);
+    }
+
+    #[tokio::test]
+    async fn a_masked_edit_uploads_the_mask_and_keeps_the_rest_of_the_picture() {
+        let green = image::RgbImage::from_pixel(64, 64, image::Rgb([10, 200, 30]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        green
+            .write_to(&mut result, image::ImageFormat::Png)
+            .unwrap();
+        let (url, seen) = fake_with(Fake {
+            history: vec![done()],
+            views: vec![result.into_inner()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        let original = picture(8, [240, 220, 40]);
+        std::fs::write(dir.join("images/orig.png"), &original).unwrap();
+        std::fs::write(
+            dir.join("inbox/mask.png"),
+            mask_png(64, 64, (0, 16, 16, 56)),
+        )
+        .unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"prompt": "Make her dress green.", "reference_images": ["images/orig.png"],
+                       "mask": "inbox/mask.png"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("Only the area painted in inbox/mask.png was redrawn"),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(uploads, 2, "the picture and its mask");
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(submitted.contains("SetLatentNoiseMask"), "{submitted}");
+        // The saved picture: the original outside the mask, the result inside.
+        let png = out
+            .content
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("image: ")
+            .unwrap();
+        let saved = image::load_from_memory(&std::fs::read(dir.join(png)).unwrap())
+            .unwrap()
+            .to_rgb8();
+        let canvas = prepare_mask(&original, &mask_png(64, 64, (0, 16, 16, 56)), 1024).unwrap();
+        assert_eq!(
+            saved.get_pixel(800, 576),
+            canvas.picture.get_pixel(800, 576)
+        );
+        assert_eq!(saved.get_pixel(128, 576).0, [10, 200, 30]);
+        assert_eq!(manifest_of(&dir, &out.content)["mask"], "inbox/mask.png");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_empty_mask_is_refused_before_the_gpu() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+        std::fs::write(dir.join("inbox/mask.png"), mask_png(64, 64, (0, 0, 0, 0))).unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"prompt": "x", "reference_images": ["images/orig.png"],
+                       "mask": "inbox/mask.png"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.starts_with("Nothing was drawn."),
+            "{}",
+            out.content
+        );
+        assert!(out.content.contains("marks nothing"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            !seen.iter().any(|l| l.starts_with("POST /prompt")),
+            "{seen:?}"
         );
         std::fs::remove_dir_all(dir).ok();
     }

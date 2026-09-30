@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Paint the part of a picture to change.** The web chat's Edit button now
+  opens a modal: paint or draw a box over what should change, say what to do,
+  send. Only the painted area is redrawn. Everything else comes back exactly
+  as it was, pixel for pixel, so "make her dress green" no longer nudges the
+  rest of the scene. With nothing painted, the whole picture is edited, as
+  before. Local swaps, recolours and details land reliably this way. To
+  move someone or change a pose, use a plain edit or redraw from the library.
+
 - **Make and edit personas on the web.** The Personas tab has a New persona
   form: name, relationship templates, a library portrait and groups. New
   kinds of relationship (how someone in it behaves) and new groups can be
