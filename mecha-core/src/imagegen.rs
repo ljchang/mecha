@@ -1371,9 +1371,9 @@ pub struct MaskPlan {
 
 /// Size the picture to its edit canvas and turn the owner's painted mask into
 /// the one the sampler and the composite use. Refused, with a sentence for
-/// the model, when the mask marks nothing or was painted over a picture of
-/// another shape — a mask is only meaningful over the picture it was drawn
-/// on.
+/// the model, when the mask marks nothing, or its shape differs from the
+/// picture's by more than 2% — the one check a file can bear out; that it was
+/// painted over *this* picture is the page's pairing of the two names.
 pub fn prepare_mask(
     picture: &[u8],
     mask: &[u8],
@@ -1427,6 +1427,10 @@ pub fn prepare_mask(
                 .into(),
         );
     };
+    // The grow is a blur thresholded low: with σ = 12, "> 10" reaches about
+    // 21 px past the painted edge. The threshold moves with the sigma; change
+    // them together. (The 16 in `hard` above is coverage after a resize, not
+    // this.)
     let grown = fast_blur(&hard, MASK_GROW_SIGMA);
     let grown = image::GrayImage::from_fn(cw, ch, |x, y| {
         image::Luma([if grown.get_pixel(x, y).0[0] > 10 {
@@ -1500,19 +1504,63 @@ pub fn composite_masked(result: &[u8], plan: &MaskPlan) -> std::result::Result<V
     png_bytes(&out)
 }
 
-/// [`layout_similarity`] of two pictures within `bounds` only: where a
-/// masked edit may have changed anything. Outside it the composite has put
-/// the original back, so a whole-frame reading would call every masked edit
-/// a near-copy.
-pub fn layout_similarity_within(a: &[u8], b: &[u8], bounds: (u32, u32, u32, u32)) -> Option<f64> {
-    let crop = |bytes: &[u8]| -> Option<Vec<u8>> {
+/// [`layout_similarity`] over what was painted only: both pictures and the
+/// soft mask are cropped to the painted bounds and reduced to the same
+/// 32×32 thumbnail grid, and only the cells the mask mostly covers are
+/// correlated. The bounds alone would not do: the composite puts the
+/// original back over most of a stroke's bounding box, and those identical
+/// cells would call a masked edit that worked a near-copy (review of #429).
+/// `None` when fewer than 16 cells are painted enough to read, which is no
+/// reading, not a low one.
+pub fn layout_similarity_painted(
+    a: &[u8],
+    b: &[u8],
+    soft: &image::GrayImage,
+    bounds: (u32, u32, u32, u32),
+) -> Option<f64> {
+    use image::imageops::{resize, FilterType};
+    let (x0, y0, x1, y1) = bounds;
+    let (x1, y1) = (x1.min(soft.width()), y1.min(soft.height()));
+    (x1 > x0 && y1 > y0).then_some(())?;
+    let (w, h) = (x1 - x0, y1 - y0);
+    let thumb = |bytes: &[u8]| -> Option<Vec<f64>> {
         let picture = crate::image::decode(bytes, "the picture").ok()?;
-        let (x0, y0, x1, y1) = bounds;
-        let (x1, y1) = (x1.min(picture.width()), y1.min(picture.height()));
-        (x1 > x0 && y1 > y0).then_some(())?;
-        png_bytes(&picture.crop_imm(x0, y0, x1 - x0, y1 - y0).to_rgb8()).ok()
+        if (picture.width(), picture.height()) != soft.dimensions() {
+            return None;
+        }
+        let cell = resize(
+            &picture.crop_imm(x0, y0, w, h).to_luma8(),
+            32,
+            32,
+            FilterType::Triangle,
+        );
+        Some(cell.pixels().map(|p| f64::from(p.0[0])).collect())
     };
-    layout_similarity(&crop(a)?, &crop(b)?)
+    let cover = resize(
+        &image::imageops::crop_imm(soft, x0, y0, w, h).to_image(),
+        32,
+        32,
+        FilterType::Triangle,
+    );
+    let (ta, tb) = (thumb(a)?, thumb(b)?);
+    let (x, y): (Vec<f64>, Vec<f64>) = cover
+        .pixels()
+        .zip(ta.iter().zip(&tb))
+        .filter(|(c, _)| c.0[0] >= 200)
+        .map(|(_, (a, b))| (*a, *b))
+        .unzip();
+    if x.len() < 16 {
+        return None;
+    }
+    let n = x.len() as f64;
+    let (mx, my) = (x.iter().sum::<f64>() / n, y.iter().sum::<f64>() / n);
+    let (mut cov, mut vx, mut vy) = (0.0, 0.0, 0.0);
+    for (a, b) in x.iter().zip(&y) {
+        cov += (a - mx) * (b - my);
+        vx += (a - mx) * (a - mx);
+        vy += (b - my) * (b - my);
+    }
+    (vx > 0.0 && vy > 0.0).then(|| cov / (vx * vy).sqrt())
 }
 
 /// The manifest beside a workspace picture, when it has one: read through
@@ -1630,7 +1678,17 @@ impl ImageGenerate {
     /// the model knows which it asked for — so both notices lead with that,
     /// and "stop" is only ever for a move or a pose (review of #408: a
     /// second successful recolour was told it had not taken).
-    async fn near_copy(&self, ctx: &ToolCtx, edited: &str, similarity: f64) -> NearCopy {
+    ///
+    /// A masked edit's notice keeps the mask: its retry passes the same mask
+    /// again, and it offers no library redraw, which would redraw the whole
+    /// frame the owner painted a region to protect (review of #429).
+    async fn near_copy(
+        &self,
+        ctx: &ToolCtx,
+        edited: &str,
+        similarity: f64,
+        mask: Option<&str>,
+    ) -> NearCopy {
         let key = self.near_copy_key(ctx, edited);
         let again = self.strikes().insert(key, Instant::now()).is_some();
         let (original, own) = self.original_of(ctx, edited).await;
@@ -1640,6 +1698,30 @@ impl ImageGenerate {
             read_manifest(ctx, &original).await
         };
         let redraw = drawn.and_then(|m| self.library_redraw(&m));
+        if let Some(mask) = mask {
+            let expected = format!(
+                " Inside the painted area its layout came back nearly the same as {edited}'s \
+                 (similarity {similarity:.2}). After a change of colour, clothing or a small \
+                 detail that is expected, and nothing is wrong."
+            );
+            let notice = if again {
+                format!(
+                    "{expected} But if the user asked to move someone or change a pose, the \
+                     painted area has now kept its layout through two edits in a row: stop, tell \
+                     the user it did not take, and suggest a plain edit without the mask, or a \
+                     redraw from the library."
+                )
+            } else {
+                format!(
+                    "{expected} But if the user asked to move someone or change a pose, the edit \
+                     did not take, so do not say it did: call image_generate again now with \
+                     {original} in reference_images and the same mask, {mask}, and the prompt \
+                     rewritten as an instruction naming the change. A pose under a mask often \
+                     keeps its layout; if it does again, tell the user so."
+                )
+            };
+            return NearCopy { original, notice };
+        }
         let expected = format!(
             " Its layout came back nearly the same as {edited}'s (similarity {similarity:.2}). \
              After a change of colour, clothing or a small detail that is expected, and nothing \
@@ -2379,9 +2461,9 @@ impl Tool for ImageGenerate {
         // for a move, or for a recolour that keeps the layout on purpose.
         let similarity = if is_edit {
             let (was, now) = (req.references[0].bytes.clone(), bytes.clone());
-            let bounds = plan.as_ref().map(|p| p.bounds);
-            tokio::task::spawn_blocking(move || match bounds {
-                Some(bounds) => layout_similarity_within(&was, &now, bounds),
+            let painted = plan.as_ref().map(|p| (p.soft.clone(), p.bounds));
+            tokio::task::spawn_blocking(move || match painted {
+                Some((soft, bounds)) => layout_similarity_painted(&was, &now, &soft, bounds),
                 None => layout_similarity(&was, &now),
             })
             .await
@@ -2391,7 +2473,10 @@ impl Tool for ImageGenerate {
             None
         };
         let near = match similarity {
-            Some(r) if r >= NEAR_COPY_LAYOUT => Some(self.near_copy(ctx, &paths[0], r).await),
+            Some(r) if r >= NEAR_COPY_LAYOUT => Some(
+                self.near_copy(ctx, &paths[0], r, mask_path.as_deref())
+                    .await,
+            ),
             // A changed layout ends the row for the picture it was made from.
             Some(_) => {
                 let key = self.near_copy_key(ctx, &paths[0]);
@@ -5212,5 +5297,96 @@ mod tests {
         .unwrap();
         assert_eq!(plan.picture.dimensions(), (1184, 896));
         assert_eq!(plan.source, (2368, 1776));
+    }
+
+    #[test]
+    fn a_masked_reading_counts_only_painted_cells() {
+        // Two painted squares in a 640² bounding box: 80% of the box is
+        // restored by the composite, identical in both pictures. Inverted
+        // inside the squares, the edit plainly worked — and a reading over
+        // the whole box would be dominated by the restored cells.
+        let source = image::RgbImage::from_fn(1344, 768, |x, y| {
+            let v = ((x / 8 + y / 5) % 200) as u8 + 20;
+            image::Rgb([v, v, v])
+        });
+        let mut hard = image::GrayImage::new(1344, 768);
+        for (x, y, p) in hard.enumerate_pixels_mut() {
+            let a = (300..500).contains(&x) && (64..264).contains(&y);
+            let b = (740..940).contains(&x) && (504..704).contains(&y);
+            p.0[0] = if a || b { 255 } else { 0 };
+        }
+        let edited = image::RgbImage::from_fn(1344, 768, |x, y| {
+            let o = source.get_pixel(x, y).0;
+            if hard.get_pixel(x, y).0[0] > 0 {
+                image::Rgb([255 - o[0], 255 - o[1], 255 - o[2]])
+            } else {
+                image::Rgb(o)
+            }
+        });
+        let png = |img: &image::RgbImage| {
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        let bounds = (300, 64, 940, 704);
+        let r = layout_similarity_painted(&png(&source), &png(&edited), &hard, bounds).unwrap();
+        assert!(r < 0.0, "inverted where painted reads as changed: {r}");
+        let same = layout_similarity_painted(&png(&source), &png(&source), &hard, bounds).unwrap();
+        assert!(same > 0.99, "{same}");
+        // A sliver paints too few cells to read at all.
+        let mut sliver = image::GrayImage::new(1344, 768);
+        for y in 64..704 {
+            sliver.put_pixel(300, y, image::Luma([255]));
+        }
+        assert_eq!(
+            layout_similarity_painted(&png(&source), &png(&edited), &sliver, bounds),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_masked_near_copy_retries_with_the_same_mask() {
+        // The server hands back the picture unchanged: inside the painted
+        // area nothing moved. The notice must keep the mask, and offer no
+        // whole-picture retry or library redraw (review of #429).
+        let original = picture(8, [240, 220, 40]);
+        let (url, _) = fake_with(Fake {
+            history: vec![done()],
+            views: vec![original.clone()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), &original).unwrap();
+        std::fs::write(
+            dir.join("inbox/mask.png"),
+            mask_png(64, 64, (0, 16, 16, 56)),
+        )
+        .unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"prompt": "Have her stand up.", "reference_images": ["images/orig.png"],
+                       "mask": "inbox/mask.png"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("Inside the painted area its layout came back nearly the same")
+                && out.content.contains("the same mask, inbox/mask.png"),
+            "{}",
+            out.content
+        );
+        assert!(
+            !out.content.contains("no reference_images or seed")
+                && !out.content.contains("Or redraw it from the library"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 }
