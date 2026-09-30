@@ -146,6 +146,14 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         // below rather than swallowed — a checklist that quietly stopped
         // honouring your answers would be the worse half of this feature.
         declined: declined.clone().unwrap_or_default(),
+        // Read against the global config, as `mecha features` reads it.
+        feature_offers: mecha_core::config::Config::load_global()
+            .map(|global| {
+                mecha_core::feature::announcements(&mecha_core::feature::Facts::read(
+                    &home, &global,
+                ))
+            })
+            .unwrap_or_default(),
     };
 
     let steps = onboarding::plan(&cfg, &name, &facts);
