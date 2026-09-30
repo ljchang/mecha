@@ -25,8 +25,8 @@
 //!   skipped on exactly the machines it is for.
 //! - **Nothing depends on the developer's machine.** Provider credentials are
 //!   removed from the child's environment, and every assertion about
-//!   *status* is confined to steps whose answer comes from `MECHA_HOME`
-//!   (which is empty and ours) rather than from `PATH` (which is not) — a
+//!   *status* is confined to steps whose answer comes from `MECHA_HOME` and
+//!   `HOME` (both empty and ours) rather than from `PATH` (which is not) — a
 //!   contributor with `mecha-mail` installed and one without must both pass.
 //!   The probe makes this sharper rather than looser: whether anything is
 //!   serving on :8080 is a fact about the developer's box, so the one
@@ -98,6 +98,13 @@ fn run(home: &Home, args: &[&str], with_key: bool) -> Output {
     cmd.args(args)
         .current_dir(&home.work)
         .env("MECHA_HOME", home.path())
+        // The mail and docs account stores are found by the mail crate's
+        // rule — `$MECHA_MAIL_DIR`, else `~/.mecha/{mail,docs}` under the
+        // real home — never under `MECHA_HOME` (`onboarding::mail_store_dir`).
+        // So the home is ours too, or a developer's authorised mailbox turns
+        // `docs` from missing into done on their machine only.
+        .env("HOME", home.path())
+        .env_remove("MECHA_MAIL_DIR")
         // A developer's own key would make `provider-credential` disappear
         // and the test pass for the wrong reason on their machine and fail
         // in CI. Removed rather than blanked: an empty value is a
@@ -610,6 +617,38 @@ fn no_step_detail_carries_its_source_indentation() {
             s["id"]
         );
     }
+}
+
+/// `mecha features` on a fresh install is the light install: it exits 0 —
+/// features being off is not a failure — and no row is `unknown` or
+/// `unready`, which on an empty home could only mean a store read the wrong
+/// place or a config that failed to load. Rows that depend on `PATH` (the
+/// front door on a machine with `factory-publish`) may be on; the web app,
+/// whose answer comes only from our empty config, is off.
+#[test]
+fn features_on_a_fresh_install_exits_zero_with_nothing_unknown() {
+    let home = Home::new("features");
+    let out = mecha(&home, &["features", "--json"]);
+    assert!(
+        out.status.success(),
+        "exit {:?}: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).expect("--json is JSON");
+    let rows = rows.as_array().expect("an array of rows");
+    assert!(!rows.is_empty());
+    for row in rows {
+        let state = row["state"].as_str().expect("every row names its state");
+        assert!(
+            matches!(state, "on" | "off" | "blocked"),
+            "`{}` is {state} on a fresh install: {row}",
+            row["id"]
+        );
+    }
+    let web = rows.iter().find(|r| r["id"] == "web").expect("a web row");
+    assert_eq!(web["state"], "off");
+    assert!(web["fix"].is_string(), "an off row says how to turn it on");
 }
 
 /// `--undecline` puts a step back, so "never" is a preference rather than a

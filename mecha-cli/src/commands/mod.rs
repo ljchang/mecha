@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod document;
 pub mod eval;
 pub mod exp;
+pub mod features;
 pub mod frontdoor;
 pub mod gossip;
 pub mod harness;
