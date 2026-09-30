@@ -33,6 +33,12 @@ d = draftOf(doc, ['Core']);
 d.sections[1].note = 'ends --> here';
 assert.equal(problems(d, ['Core']).length, 1);
 
+// A heading or title the server would refuse is named before the save.
+d = draftOf(doc, ['Core']);
+d.sections[1].heading = 'Reef <!--';
+d.title = 'Mara -->';
+assert.equal(problems(d, ['Core']).length, 2);
+
 // Phone dashes in a comment are put back on the way out.
 d = draftOf(doc, ['Core']);
 d.sections[0].body = 'Dry. <!— aside —>';
