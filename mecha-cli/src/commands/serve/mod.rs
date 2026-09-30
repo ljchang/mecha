@@ -41,6 +41,7 @@ use mecha_core::config::Config;
 mod archive;
 mod board;
 mod chat;
+mod features;
 mod files;
 mod frontdoor;
 pub(crate) mod incognito;
@@ -103,6 +104,10 @@ struct WebState {
     voices_dir: Option<Arc<PathBuf>>,
     /// The image library's directory and the unlocks granted to it.
     library: Arc<library::LibraryState>,
+    /// The features whose switch was on when this process loaded its
+    /// config — what its chat's tools were built from, and what
+    /// `/api/features` compares the file against to mark a row pending.
+    features_at_start: Arc<Vec<mecha_core::feature::Feature>>,
 }
 
 pub async fn execute(args: Args) -> Result<()> {
@@ -182,6 +187,7 @@ pub async fn execute(args: Args) -> Result<()> {
         library: Arc::new(library::LibraryState::new(
             mecha_core::imagelib::Library::default_dir()?,
         )),
+        features_at_start: features::switched_at_start(&config),
     };
     // 127.0.0.1 by construction — the address is not configurable.
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -419,6 +425,10 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/chat/{key}/file", get(files::download))
         // The chip (§14 step 5). The owner's only: every route here is behind
         // `owner_guard`, and no tool reaches these.
+        // What is on, for the nav, Home and Settings → Features to show and
+        // hide by (FEATURES-DESIGN.md §9 step 2): an inventory of the
+        // install, so behind the owner guard like everything here.
+        .route("/api/features", get(features::list))
         .route("/api/model", get(model::state))
         .route("/api/model/use", axum::routing::post(model::switch))
         .route("/api/model/cancel", axum::routing::post(model::cancel))
@@ -1150,6 +1160,7 @@ mod tests {
                     std::env::temp_dir()
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
                 ),
+                features_at_start: Arc::default(),
                 review: Arc::new(review::ReviewState {
                     outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
                     sessions_dir: None,
@@ -1219,6 +1230,53 @@ mod tests {
         }
     }
 
+    /// `/api/features` end to end, the one seam its unit tests skip: the
+    /// owner's request reaches the handler, the global file is read from
+    /// the home on each request — an edit lands on the next read, no
+    /// restart — and the envelope is what the page indexes.
+    #[tokio::test]
+    async fn the_features_route_reads_the_global_file_on_every_request() {
+        let home = crate::testenv::HomeGuard::new("serve-features");
+        let read = || async {
+            let response = test_router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/features")
+                        .header("Tailscale-User-Login", "owner@example.com")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+        };
+        let personas = |body: &serde_json::Value| {
+            body["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == "personas")
+                .cloned()
+                .unwrap()
+        };
+        let before = read().await;
+        assert_eq!(personas(&before)["shown"], false, "{before:#}");
+        assert!(before["unknown_switches"].as_array().unwrap().is_empty());
+        std::fs::write(
+            home.dir.join("config.toml"),
+            "[features]\npersonas = true\n",
+        )
+        .unwrap();
+        let after = read().await;
+        assert_eq!(personas(&after)["state"], "on", "{after:#}");
+        // This test's serve loaded no switch at start: the flip is pending.
+        assert_eq!(personas(&after)["pending"], true);
+    }
+
     #[tokio::test]
     async fn the_settings_routes_sit_behind_the_owner_guard() {
         // The charter save is the only write on the web surface that lands
@@ -1245,6 +1303,10 @@ mod tests {
             ("GET", "/api/settings/voice"),
             ("POST", "/api/settings/voice/clone?name=x"),
             ("POST", "/api/settings/voice/clone/delete"),
+            // Every feature, its state and the command that turns it on:
+            // an inventory of the install, which a probe without the
+            // header must not learn (FEATURES-DESIGN.md §4.2 item 4).
+            ("GET", "/api/features"),
         ] {
             let response = test_router()
                 .oneshot(
@@ -1475,6 +1537,7 @@ mod tests {
                     std::env::temp_dir()
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
                 ),
+                features_at_start: Arc::default(),
                 review: Arc::new(review::ReviewState {
                     outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
                     sessions_dir: None,
@@ -1505,6 +1568,7 @@ mod tests {
                     std::env::temp_dir()
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
                 ),
+                features_at_start: Arc::default(),
                 review: Arc::new(review::ReviewState {
                     outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
                     sessions_dir: None,
@@ -2052,6 +2116,7 @@ mod boundary_tests {
             WebState {
                 owner_login: Arc::new("owner@example.com".into()),
                 chat: Some(chat),
+                features_at_start: Arc::default(),
                 review: Arc::new(review::ReviewState {
                     outbox_root: PathBuf::new(),
                     sessions_dir: None,

@@ -1,6 +1,8 @@
 <script>
   import { apiFetch as fetch } from './api.js';
   import Dictate from './Dictate.svelte';
+  import { features } from './features.svelte.js';
+  import { opens } from './features.js';
   import Workflows from './Workflows.svelte';
   import { isActionable } from './home-view.js';
   // The GTD board, over `mecha tasks …` — which reaches the graph's own
@@ -759,7 +761,9 @@
     <aside class="drawer">
       <div class="drawer-head"><span class="drawer-title">Views</span></div>
       <div class="drawer-scroll">
-        {#each filters as [name, _, blurb]}
+        <!-- Only the views that open: with the board off, the page opens
+             for a run's question (OPENS_ANYWAY) and nothing else here does. -->
+        {#each filters.filter(([n]) => opens(features.rows, 'tasks', n === 'actionable' ? null : n)) as [name, _, blurb]}
           <button class="drow" class:dactive={filter === name} onclick={() => { navigate(name === 'actionable' ? 'tasks' : `tasks/${name}`); drawer = false; closureNote = null; }}>
             <span class="dname">{name}</span>
             <span class="dcount">{count(name) || ''}</span>

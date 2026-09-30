@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and on one hard page it transcribed as well as the OCR model did. So
   pictures stay read from pixels; `document_read` is there when asked for.
 
+- **The web app shows only what is switched on.** Its tabs, Home's Mail and
+  Tasks cards, the voice-call button, every dictation mic, the incognito
+  buttons and Review's Graph queue and Front door tabs follow `[features]`,
+  read afresh on each page load from a new `GET /api/features` (the same rows
+  as `mecha features --json`). A feature that is switched on but not ready
+  keeps its tab, marked, with what is missing above it; a link to a hidden
+  page lands on Home with one line saying so. **Settings → Features** lists
+  every feature, off ones included, with the command that turns it on, and
+  says which switches `mecha serve` has not picked up yet. A Home queue with
+  anything waiting stays even when its feature is off. No route refuses
+  anything yet.
+
 - **Read a photo or screenshot of a page.** `document_read` and
   `mecha document extract` now take PNG, JPEG, WebP and GIF as well as PDF.
   A picture is read as one page by the local OCR model, through the same
@@ -295,6 +307,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it.
 
 ### Changed
+
+- **`mecha features` reads a switched-on feature with missing settings as
+  unready, not off.** `image = true` with no `[image]` table, or mail with no
+  `[[mcp]]` entry, is something you said yes to, and now reads **unready**
+  with the fix — and no longer hides the parts under it, which read unready
+  beside it rather than on. A part turned off by its own setting
+  (`[documents] ocr = false`) still reads off. A blocked row now prints the
+  command that unblocks it, and `--json` rows carry `shown` and `next`. The
+  start-up line for an install from before `[features]` can now name a
+  feature that is set up but not yet usable, with the reason beside it —
+  `mecha features enable documents` for a `[documents]` table whose
+  `document_read` is turned off in `[tools]`, or `mecha features enable mail`
+  for a mail `[[mcp]]` entry whose `mecha-mail` is not installed. The switch
+  alone will not make those work; the reason says what will.
 
 - **A feature whose switch is not on is off.** Web search, image generation,
   PDF extraction and the mail, docs and graph servers register or
