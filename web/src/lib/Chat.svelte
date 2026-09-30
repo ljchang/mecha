@@ -8,6 +8,8 @@
   import { pictureOf, repeatedPictures } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
+  import { features } from './features.svelte.js';
+  import { isShown } from './features.js';
   // The chat view: a rendering of the conversation the server owns, plus a
   // live SSE feed of the run in flight. Sending during a run steers it —
   // the server folds the text into the tool-results turn.
@@ -1548,10 +1550,13 @@
       <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
     </button>
     <!-- Beside +, with its own icon (design §7): the same one tap away, and
-         never mistaken for it. -->
+         never mistaken for it. Only where incognito is on
+         (FEATURES-DESIGN.md §5). -->
+    {#if isShown(features.rows, 'incognito')}
     <button class="newbtn header incog" onclick={newIncognito} title="new incognito chat — nothing from it is kept" aria-label="new incognito chat">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10h18M6 10l1.6-4.2A1.5 1.5 0 019 5h6a1.5 1.5 0 011.4.8L18 10" /><circle cx="7.5" cy="15.5" r="2.5" /><circle cx="16.5" cy="15.5" r="2.5" /><path d="M10 15.5h4" /></svg>
     </button>
+    {/if}
     <span class="title" title={incognito ? 'incognito' : key}>{incognito ? 'Incognito' : heading}</span>
     <div class="meta">
       <!-- §6.2's readout on the typed surface. The voice logo's tint only
@@ -1654,7 +1659,9 @@
     <aside class="drawer" class:docked>
       <div class="drawer-head">
         <span class="drawer-title">Sessions</span>
-        <button class="newbtn incog" onclick={newIncognito} title="nothing from it is kept">incognito</button>
+        {#if isShown(features.rows, 'incognito')}
+          <button class="newbtn incog" onclick={newIncognito} title="nothing from it is kept">incognito</button>
+        {/if}
         <button class="newbtn" onclick={newSession}>
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
           new
@@ -2159,7 +2166,9 @@
       ></textarea>
       <!-- In an incognito chat too: the worker holds its log silence for
            the call and vouches for it, and the server admits a spoken turn
-           into the chat only on that word (design §3.4). -->
+           into the chat only on that word (design §3.4). Only where calls
+           are on (FEATURES-DESIGN.md §5). -->
+      {#if isShown(features.rows, 'calls')}
       <button
         class="round voice"
         onclick={startVoice}
@@ -2167,6 +2176,7 @@
       >
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="var(--accent-400)" stroke-width="1.8" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /></svg>
       </button>
+      {/if}
       {#if running}
         <button class="round stop" onclick={cancel} title="stop at the next safe point">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>

@@ -1730,3 +1730,59 @@ export const personaFiles = {
     },
   },
 };
+
+// --- features ------------------------------------------------------------
+
+// `/api/features`: the registry's rows, shaped as `feature::all` serialises
+// them (the state flattened in, `shown` and `next` beside it, `pending` from
+// serve). A full install — everything on but messaging — so the tour shows
+// every tab, and Settings → Features shows what an off row looks like.
+const on = (id, label, detail, extra = {}) => ({
+  id,
+  label,
+  part_of: null,
+  requires: [],
+  state: 'on',
+  detail,
+  switch: extra.part_of ? null : 'on',
+  in_use: false,
+  shown: true,
+  next: null,
+  pending: false,
+  ...extra,
+});
+export const features = {
+  features: [
+    on('web', 'The web app', 'serving the page you are looking at'),
+    on('slack', 'Slack remote control', 'tokens stored'),
+    on('mail', 'Mail and calendar', '[[mcp]] `mail`, 2 account(s)'),
+    on('docs', 'Google Docs, Sheets and Slides', '[[mcp]] `docs`, 1 account(s)'),
+    on('graph', 'Knowledge graph', '[[mcp]] `graph`'),
+    on('tasks', 'Task board', "rides the graph's kg_task_* tools", { part_of: 'graph' }),
+    on('search', 'Web search', 'searxng'),
+    on('documents', 'PDF extraction', '[documents]'),
+    on('ocr', 'OCR', 'http://127.0.0.1:8085/', { part_of: 'documents' }),
+    on('layout', 'Page layout', 'region by region', { part_of: 'ocr' }),
+    on('image', 'Image generation', 'http://127.0.0.1:8188/'),
+    on('library', 'Character and style library', '~/.mecha/imagelib', { part_of: 'image' }),
+    on('personas', 'Personas', '~/.mecha/personas'),
+    on('voice', 'Voice', "`mecha voice-serve`, and `mecha serve`'s voice flags"),
+    on('dictate', 'Dictation', "the web app's speech to text", { part_of: 'voice', requires: ['web'] }),
+    on('calls', 'Voice calls', "`mecha serve`'s --offer-target", { part_of: 'voice', requires: ['web'] }),
+    on('cloning', 'Voice cloning', '~/voices', { part_of: 'voice', requires: ['web'] }),
+    on('incognito', 'Incognito chat', 'provider `local`', { requires: ['web'] }),
+    on('frontdoor', 'Front door (inbound requests)', '`factory-publish` on PATH'),
+    on('publishing', 'Publishing tools', '[[mcp]] `factory`', { part_of: 'frontdoor' }),
+    {
+      ...on('messages', 'Messages between sessions', null),
+      state: 'off',
+      detail: undefined,
+      reason: 'not enabled in [features]',
+      fix: 'mecha features enable messages',
+      switch: 'absent',
+      shown: false,
+      next: 'mecha features enable messages',
+    },
+  ],
+  unknown_switches: [],
+};

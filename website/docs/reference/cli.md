@@ -1632,7 +1632,7 @@ mecha features disable <id>...
 
 | Flag | Description |
 |---|---|
-| `--json` | Machine output: one object per feature, with `state` one of `on`, `off`, `blocked`, `unready`, `unknown`, its `switch` (`on`, `off`, `absent`, or null for a part) and `in_use`. |
+| `--json` | Machine output: one object per feature, with `state` one of `on`, `off`, `blocked`, `unready`, `unknown`, its `switch` (`on`, `off`, `absent`, or null for a part), `in_use`, `shown` (whether the web app shows it) and `next` (the command or config change that brings it on, or null). |
 
 Every optional feature has a switch in the global `config.toml`'s `[features]`
 table (see [Configuration](/docs/reference/configuration#features)), and the
@@ -1641,8 +1641,10 @@ whatever its settings say. With the switch on, the row reads its settings.
 **on** and **off** are what they say; an off row carries the command or config
 change that turns it on. **blocked** means something it needs is off — `layout`
 needs `ocr`, dictation in the browser needs the web app — and names the
-dependency. **unready** means a fact on disk says it cannot work yet, such as
-mail with no mailbox authorised. **unknown** means a store could not be read,
+dependency, with the command that turns it on. **unready** means it is switched
+on but cannot work yet — its settings are missing, such as `image = true` with
+no `[image]` table, or a fact on disk says so, such as mail with no mailbox
+authorised. **unknown** means a store could not be read,
 which is a finding, never the same as off. Parts of a feature (`tasks` under
 `graph`, `ocr` under `documents`) are indented under it and have no switch of
 their own.
@@ -1669,12 +1671,12 @@ install, not a broken one. A global `config.toml` that does not parse is an
 error (exit 1), since no row could be read from it; a `[features]` key this
 build does not know is reported and ignored. Mail, docs, the graph and
 publishing count as on only when an enabled `[[mcp]]` entry in the global config
-has a `command` naming their binary; an entry that starts the server through a
-wrapper script reads off. An installed binary alone puts no tool on the surface,
-and a project's `mecha.toml` never changes the answer. A row that has a tool
-reads on only where that tool would register: turned off in `[tools]`, an image
-or OCR server off this machine, or a search backend with no key reads off or
-unready, not on.
+has a `command` naming their binary; switched on, an entry that starts the
+server through a wrapper script reads unready. An installed binary alone puts no
+tool on the surface, and a project's `mecha.toml` never changes the answer. A
+row that has a tool reads on only where that tool would register: turned off in
+`[tools]`, an image or OCR server off this machine, or a search backend with no
+key reads unready — or off, for a part such as the library — not on.
 
 ## `diagnose`
 
