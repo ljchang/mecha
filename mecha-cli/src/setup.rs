@@ -1884,7 +1884,7 @@ pub fn persona_agent(
     provider: Box<dyn mecha_core::provider::Provider>,
 ) -> Result<(Agent, Vec<mecha_core::persona::agent::Refused>)> {
     use mecha_core::persona::agent as persona;
-    let tools = persona::registry_for(bound.agent.registry(), &pinned.settings);
+    let tools = persona::registry_as(bound.agent.registry(), &pinned.name, &pinned.settings);
     let system = persona::system_prompt(pinned)?;
     let ctx = bound.agent.ctx();
     let agent = Agent::new(

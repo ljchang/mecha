@@ -41,3 +41,30 @@ export function repeatedPictures(entries) {
   });
   return again;
 }
+
+// Where a turn asked for pictures and got none: the index of the turn's last
+// entry, for a plain line under it. Read off the tool rows' own results, so
+// a reply that says "here you go" over nothing cannot stand as the last word
+// (2026-09-30: seven refused calls, then "Here you go"). A turn runs from one
+// message the owner sent to the next; a steer folded into the run (`queued`)
+// is not a new turn. A turn still running, or with a call still out, is not
+// judged yet.
+export function turnsWithoutPicture(entries, running = false) {
+  const out = new Set();
+  let asked = 0;
+  let drawn = 0;
+  let open = 0;
+  const close = (end) => {
+    if (end >= 0 && asked > 0 && drawn === 0 && open === 0) out.add(end);
+    asked = drawn = open = 0;
+  };
+  entries.forEach((entry, i) => {
+    if (entry.kind === 'user' && !entry.queued) close(i - 1);
+    if (entry.kind !== 'tool' || entry.name !== 'image_generate') return;
+    asked += 1;
+    if (entry.is_error === false) drawn += 1;
+    else if (entry.is_error !== true) open += 1;
+  });
+  if (!running) close(entries.length - 1);
+  return out;
+}
