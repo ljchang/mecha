@@ -1918,13 +1918,10 @@ impl ImageGenerate {
                     .into(),
             );
         }
-        if mask.is_some() && input.get("size").is_some_and(|v| !v.is_null()) {
-            return Err(
-                "`size` cannot be combined with `mask`: a masked edit keeps the \
-                        picture's own shape."
-                    .into(),
-            );
-        }
+        // A masked edit keeps the picture's own shape, so a `size` beside a
+        // mask is set aside and said, as a seed on an edit is — never refused:
+        // the local model read that refusal as the mask being the problem and
+        // retried without it, a whole-picture edit (live run of #429).
         let ask =
             (!cast.is_empty() || !extras.is_empty() || style.is_some()).then_some(LibraryAsk {
                 cast,
@@ -1932,6 +1929,7 @@ impl ImageGenerate {
                 style,
             });
         let size = match input.get("size").and_then(Value::as_str) {
+            _ if mask.is_some() => None,
             // An edit follows its first reference's shape unless asked not to.
             None if !references.is_empty() => None,
             None => Some(Size::Square),
@@ -2036,7 +2034,7 @@ impl Tool for ImageGenerate {
                 },
                 "mask": {
                     "type": "string",
-                    "description": "Workspace path of a mask the user painted over the first reference: white is redrawn, the rest is kept pixel for pixel. Pass it exactly as the user's message names it; never make one up."
+                    "description": "Workspace path of a mask the user painted over the first reference: white is redrawn, the rest is kept pixel for pixel. Pass it exactly as the user's message names it; never make one up, never drop it on a retry, and do not open it with image_view — it is for this tool, not for you to look at."
                 },
                 "seed": {
                     "type": "integer",
@@ -2561,6 +2559,12 @@ impl Tool for ImageGenerate {
                 req.seed,
                 req.steps
             ));
+            if mask_path.is_some() && input.get("size").is_some_and(|v| !v.is_null()) {
+                text.push_str(
+                    " (The size asked for was not used: a masked edit keeps the picture's own \
+                     shape.)",
+                );
+            }
             if let (Some(mask), Some(plan)) = (&mask_path, &plan) {
                 let (cw, ch) = plan.picture.dimensions();
                 text.push_str(&if plan.source == (cw, ch) {
@@ -5069,14 +5073,13 @@ mod tests {
             .request(&json!({"prompt": "x", "mask": "inbox/m.png"}))
             .unwrap_err();
         assert!(err.contains("reference_images"), "{err}");
-        let err = t
+        // A size beside a mask is set aside, never refused: a refusal read as
+        // "the mask is the problem" and was retried without it (live run).
+        let (r, _, _, mask) = t
             .request(&json!({"prompt": "x", "mask": "inbox/m.png",
                              "reference_images": ["images/a.png"], "size": "square"}))
-            .unwrap_err();
-        assert!(
-            err.contains("`size` cannot be combined with `mask`"),
-            "{err}"
-        );
+            .unwrap();
+        assert_eq!((r.size, mask.as_deref()), (None, Some("inbox/m.png")));
         assert!(t
             .request(&json!({"prompt": "x", "mask": 3, "reference_images": ["images/a.png"]}))
             .is_err());
@@ -5160,7 +5163,7 @@ mod tests {
         let out = tool(&url)
             .call(
                 json!({"prompt": "Make her dress green.", "reference_images": ["images/orig.png"],
-                       "mask": "inbox/mask.png"}),
+                       "mask": "inbox/mask.png", "size": "landscape"}),
                 &ctx(&dir),
             )
             .await
@@ -5168,7 +5171,8 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         assert!(
             out.content
-                .contains("Only the area painted in inbox/mask.png was redrawn"),
+                .contains("Only the area painted in inbox/mask.png was redrawn")
+                && out.content.contains("The size asked for was not used"),
             "{}",
             out.content
         );
