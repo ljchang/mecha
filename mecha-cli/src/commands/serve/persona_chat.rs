@@ -285,6 +285,168 @@ impl PersonaChats {
         }
     }
 
+    // ─── Authoring: the owner's door on the page (§4.4) ───────────────────
+    //
+    // Owner-only routes behind the same guard and CSRF check as every other
+    // mutation on the page; no tool reaches them, so no model can author a
+    // line. What they write is the owner's text, verbatim.
+
+    /// What a new persona can be made from: relationship templates (the
+    /// starters offered once, as `mecha persona` does), declared groups, and
+    /// the approved characters the page may show.
+    pub fn authoring(
+        &self,
+        library: &LibraryState,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        mecha_core::persona::ensure_layout(&self.store).map_err(failed)?;
+        let store = Store::load(&self.store);
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let unlocked = library.unlocked(token);
+        let relationships: Vec<serde_json::Value> = store
+            .relationships()
+            .values()
+            .map(|r| serde_json::json!({ "name": r.name, "starter": r.starter }))
+            .collect();
+        let characters: Vec<&str> = lib
+            .approved()
+            .filter(|e| e.kind == mecha_core::imagelib::Kind::Character)
+            .filter(|e| !e.locked || unlocked)
+            .map(|e| e.name.as_str())
+            .collect();
+        Ok(serde_json::json!({
+            "relationships": relationships,
+            "groups": store.groups().keys().collect::<Vec<_>>(),
+            "characters": characters,
+        }))
+    }
+
+    /// Make a persona — the owner's, so approved at once, exactly as
+    /// `mecha persona new` makes one.
+    pub fn create(
+        &self,
+        library: &LibraryState,
+        body: CreateBody,
+    ) -> Result<serde_json::Value, Refusal> {
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let p = mecha_core::persona::create(
+            &self.store,
+            &lib,
+            mecha_core::persona::NewPersona {
+                name: body.name.trim().to_lowercase(),
+                display: body.display.unwrap_or_default(),
+                relationships: body.relationships,
+                character: body.character.filter(|c| !c.trim().is_empty()),
+                voice: None,
+                groups: body.groups,
+                locked: body.locked,
+                origin: mecha_core::persona::Origin::Owner,
+            },
+        )
+        .map_err(|e| Refusal::Bad(format!("{e:#}")))?;
+        Ok(serde_json::json!({ "name": p.name, "version": p.state.version }))
+    }
+
+    /// A persona's owner files as they stand, each with the digest a save
+    /// hands back so an edit made elsewhere meanwhile is refused, not lost.
+    pub fn files(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let mut out = serde_json::Map::new();
+        for file in [
+            mecha_core::persona::OwnerFile::Identity,
+            mecha_core::persona::OwnerFile::Motivation,
+            mecha_core::persona::OwnerFile::Settings,
+        ] {
+            let text =
+                mecha_core::persona::read_owner_file(&self.store, &p.name, file).map_err(failed)?;
+            out.insert(
+                serde_json::to_value(file)
+                    .map_err(|e| failed(e.into()))?
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                serde_json::json!({
+                    "file": file.file_name(),
+                    "digest": mecha_core::persona::text_digest(&text),
+                    "text": text,
+                }),
+            );
+        }
+        Ok(serde_json::Value::Object(out))
+    }
+
+    /// Save one owner file, verbatim, and take a version (`write_owner_file`).
+    pub fn save(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        body: SaveBody,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, body.unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        let state = mecha_core::persona::write_owner_file(
+            &self.store,
+            &p.name,
+            body.file,
+            &body.text,
+            body.base.as_deref(),
+        )
+        .map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
+        let store = Store::load(&self.store);
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let problems = store
+            .get(&p.name)
+            .map(|q| store.problems(q, &lib))
+            .unwrap_or_default();
+        Ok(serde_json::json!({ "version": state.version, "problems": problems }))
+    }
+
+    /// Add a relationship template of the owner's own (§5).
+    pub fn add_relationship(&self, body: RelationshipBody) -> Result<serde_json::Value, Refusal> {
+        let name = body.name.trim().to_lowercase();
+        mecha_core::persona::add_relationship(&self.store, &name, &body.text)
+            .map_err(|e| Refusal::Bad(format!("{e:#}")))?;
+        Ok(serde_json::json!({ "name": name }))
+    }
+
+    /// Declare a group (§4.5): appended to groups.toml with its folder made,
+    /// as `mecha persona group add` does.
+    pub fn add_group(&self, body: GroupBody) -> Result<serde_json::Value, Refusal> {
+        let name = body.name.trim().to_lowercase();
+        mecha_core::persona::add_group(
+            &self.store,
+            &name,
+            body.description.as_deref().unwrap_or(""),
+        )
+        .map_err(|e| Refusal::Bad(format!("{e:#}")))?;
+        Ok(serde_json::json!({ "name": name }))
+    }
+
+    /// Hide or show a persona while browsing. Showing a locked one needs the
+    /// live unlock, as reading it does.
+    pub fn lock(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        locked: bool,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let state =
+            mecha_core::persona::set_locked(&self.store, &p.name, locked).map_err(failed)?;
+        Ok(serde_json::json!({ "locked": state.locked }))
+    }
+
     /// The personas a browsing surface may list, with what is wrong with each.
     /// `tz` is `[agent] timezone`; `None` is the machine's own zone, as
     /// `Config::timezone` documents — not UTC (review of #418).
@@ -1160,6 +1322,52 @@ pub struct SendBody {
     unlock: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+pub struct CreateBody {
+    name: String,
+    #[serde(default)]
+    display: Option<String>,
+    #[serde(default)]
+    relationships: Vec<String>,
+    #[serde(default)]
+    character: Option<String>,
+    #[serde(default)]
+    groups: Vec<String>,
+    #[serde(default)]
+    locked: bool,
+}
+
+#[derive(serde::Deserialize)]
+pub struct SaveBody {
+    file: mecha_core::persona::OwnerFile,
+    text: String,
+    /// The digest of the file as the page opened it.
+    #[serde(default)]
+    base: Option<String>,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct RelationshipBody {
+    name: String,
+    text: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct GroupBody {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct LockBody {
+    locked: bool,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
 #[derive(serde::Deserialize, Default)]
 pub struct UnlockBody {
     #[serde(default)]
@@ -1189,6 +1397,93 @@ pub async fn list(State(state): Web, Query(q): Query<UnlockQuery>) -> axum::resp
         Ok(v) => Json(v).into_response(),
         Err(e) => Refusal::Failed(format!("listing personas: {e}")).into_response(),
     }
+}
+
+/// GET /api/personas/authoring
+pub async fn authoring(
+    State(state): Web,
+    Query(q): Query<UnlockQuery>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(chat.personas.authoring(&state.library, q.unlock.as_deref()))
+}
+
+/// POST /api/personas
+pub async fn create(State(state): Web, Json(body): Json<CreateBody>) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(chat.personas.create(&state.library, body))
+}
+
+/// POST /api/personas/relationships
+pub async fn add_relationship(
+    State(state): Web,
+    Json(body): Json<RelationshipBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(chat.personas.add_relationship(body))
+}
+
+/// POST /api/personas/groups
+pub async fn add_group(State(state): Web, Json(body): Json<GroupBody>) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(chat.personas.add_group(body))
+}
+
+/// GET /api/personas/{name}/files
+pub async fn files(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(q): Query<UnlockQuery>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(
+        chat.personas
+            .files(&state.library, &name, q.unlock.as_deref()),
+    )
+}
+
+/// POST /api/personas/{name}/files
+pub async fn save(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<SaveBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(chat.personas.save(&state.library, &name, body))
+}
+
+/// POST /api/personas/{name}/lock
+pub async fn lock(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<LockBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(
+        chat.personas
+            .lock(&state.library, &name, body.locked, body.unlock.as_deref()),
+    )
 }
 
 /// POST /api/personas/{name}/chats
@@ -2273,6 +2568,136 @@ mod tests {
         let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
         assert!(listed["personas"][0]["dose"].is_null());
         assert_eq!(listed["personas"][0]["safety"]["reanchor"], false);
+    }
+
+    fn body<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> T {
+        serde_json::from_value(v).unwrap()
+    }
+
+    /// The page can make a persona and write who it is — the owner's door,
+    /// verbatim, versioned, and held to the lock like every other read.
+    #[tokio::test]
+    async fn a_persona_is_made_and_edited_from_the_page() {
+        let w = world();
+        let authoring = w.personas().authoring(&w.library, None).unwrap();
+        let rels = authoring["relationships"].to_string();
+        assert!(
+            rels.contains("teacher") && rels.contains("romantic"),
+            "{rels}"
+        );
+
+        let made = w
+            .personas()
+            .create(
+                &w.library,
+                body(serde_json::json!({
+                    "name": "Priya", "display": "Priya", "relationships": ["teacher"],
+                })),
+            )
+            .unwrap();
+        assert_eq!(made["name"], "priya");
+        let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
+        assert!(listed["personas"].to_string().contains("\"priya\""));
+
+        let files = w.personas().files(&w.library, "priya", None).unwrap();
+        let base = files["identity"]["digest"].as_str().unwrap().to_string();
+        let text = "# Priya\n<!-- kept -->\n## Core\nPatient, precise.\n";
+        let saved = w
+            .personas()
+            .save(
+                &w.library,
+                "priya",
+                body(serde_json::json!({ "file": "identity", "text": text, "base": base })),
+            )
+            .unwrap();
+        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["problems"].as_array().unwrap().len(), 0, "{saved}");
+        let again = w.personas().files(&w.library, "priya", None).unwrap();
+        assert_eq!(
+            again["identity"]["text"], text,
+            "saved verbatim, comments and all"
+        );
+
+        // The same base again is stale now: refused, not overwritten.
+        let stale = w.personas().save(
+            &w.library,
+            "priya",
+            body(serde_json::json!({ "file": "identity", "text": "## Core\nx\n", "base": base })),
+        );
+        assert!(
+            matches!(stale, Err(Refusal::Conflict(ref m)) if m.contains("changed since")),
+            "{stale:?}"
+        );
+
+        // Locked: its files answer as missing without the unlock.
+        w.personas().lock(&w.library, "priya", true, None).unwrap();
+        assert!(matches!(
+            w.personas().files(&w.library, "priya", None),
+            Err(Refusal::NotFound)
+        ));
+        let token = w.library.grant_for_tests();
+        assert!(w
+            .personas()
+            .files(&w.library, "priya", Some(&token))
+            .is_ok());
+        assert!(matches!(
+            w.personas().lock(&w.library, "priya", false, None),
+            Err(Refusal::NotFound)
+        ));
+        w.personas()
+            .lock(&w.library, "priya", false, Some(&token))
+            .unwrap();
+
+        // A name that is taken, or a template that is not there, is refused.
+        for bad in [
+            serde_json::json!({ "name": "priya" }),
+            serde_json::json!({ "name": "ada", "relationships": ["rival"] }),
+            serde_json::json!({ "name": "files" }),
+        ] {
+            assert!(
+                w.personas().create(&w.library, body(bad.clone())).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    /// New relationship types and groups from the page, then used by a new
+    /// persona straight away.
+    #[tokio::test]
+    async fn the_page_adds_relationships_and_groups() {
+        let w = world();
+        w.personas()
+            .add_relationship(body(serde_json::json!({
+                "name": "Mentor", "text": "# Mentor\n\nAsks what you tried first.\n",
+            })))
+            .unwrap();
+        w.personas()
+            .add_group(body(
+                serde_json::json!({ "name": "kelp", "description": "the kelp project" }),
+            ))
+            .unwrap();
+        let authoring = w.personas().authoring(&w.library, None).unwrap();
+        assert!(authoring["relationships"]
+            .to_string()
+            .contains("\"mentor\""));
+        assert_eq!(authoring["groups"], serde_json::json!(["kelp"]));
+        w.personas()
+            .create(
+                &w.library,
+                body(serde_json::json!({ "name": "ada", "relationships": ["mentor"], "groups": ["kelp"] })),
+            )
+            .unwrap();
+        // Refused: an existing name, and a group description of two lines.
+        assert!(w
+            .personas()
+            .add_relationship(body(serde_json::json!({ "name": "mentor", "text": "x" })))
+            .is_err());
+        assert!(w
+            .personas()
+            .add_group(body(
+                serde_json::json!({ "name": "g2", "description": "a\nb" })
+            ))
+            .is_err());
     }
 
     #[tokio::test]

@@ -28,11 +28,14 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel'];
 
 export const ENDPOINTS = [
   '/api/personas',
+  '/api/personas/authoring',
+  '/api/personas/relationships',
+  '/api/personas/groups',
   ...PERSONA_SUFFIXES.map((s) => `/api/personas/X${s}`),
   ...CHAT_SUFFIXES.map((s) => `/api/persona-chat/X${s}`),
 ];
@@ -40,6 +43,26 @@ export const ENDPOINTS = [
 export function listUrl(token) {
   return withUnlock('/api/personas', token);
 }
+
+// What a new persona can be made from: templates, groups, characters.
+export function authoringUrl(token) {
+  return withUnlock('/api/personas/authoring', token);
+}
+
+// A name as the store will hold it — or null when it cannot be one: the
+// server says why on create, this only saves a round trip for the obvious.
+export function personaName(typed) {
+  const name = (typed ?? '').trim().toLowerCase();
+  const reserved = ['files', 'groups', 'relationships', 'voices', 'scenarios', 'removed', 'sessions'];
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) && !reserved.includes(name) ? name : null;
+}
+
+// The three files the page edits, in the order it shows them.
+export const OWNER_FILES = [
+  ['identity', 'Who they are'],
+  ['motivation', 'What they want'],
+  ['settings', 'Settings'],
+];
 
 export function personaUrl(name, suffix, token) {
   if (!PERSONA_SUFFIXES.includes(suffix)) throw new Error(`not a persona endpoint: ${suffix}`);
