@@ -165,6 +165,11 @@ sets the price of *verification*, not of publishing. Untested as of this
 writing; `HANDOFF.md` holds the reopening and what the click will
 settle.
 
+*Amended 2026-09-30:* the click settled it. The project was published on
+2026-09-16, `personal` re-consented on 2026-09-17, and that grant was still
+refreshing on day 13, so `HANDOFF.md` no longer records a seven-day
+re-consent (`HISTORY.md`, 2026-09-30).
+
 **The documents work does not have to inherit that.** Verification is
 assessed against a *consent screen's* scope set, and a consent screen
 belongs to a Cloud project. A second project asking only for
