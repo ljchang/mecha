@@ -51,7 +51,8 @@
     painted = any;
   }
   const canSend = $derived(!busy && words.trim().length > 0);
-  const dirty = $derived(ops.length > 0 || words.trim() !== initial.trim());
+  // Work is paint or words: an eraser tap on nothing is neither (review of #429).
+  const dirty = $derived(painted || words.trim() !== initial.trim());
 
   function loaded() {
     natural = { width: img.naturalWidth, height: img.naturalHeight };
@@ -135,8 +136,15 @@
     return toNatural(e.clientX, e.clientY, view.getBoundingClientRect(), natural);
   }
 
+  // One pointer draws at a time: a second finger, or a thumb resting on the
+  // glass, would otherwise take over the stroke in flight, draw a line
+  // between the two, and leave the first stroke's dot out of the undo
+  // history (review of #429).
+  let drawing = null;
+
   function down(e) {
-    if (!natural || busy || e.button > 0) return;
+    if (!natural || busy || live || e.button > 0) return;
+    drawing = e.pointerId;
     view.setPointerCapture(e.pointerId);
     start = point(e);
     if (tool === 'box') {
@@ -149,7 +157,7 @@
   }
 
   function move(e) {
-    if (!live) return;
+    if (!live || e.pointerId !== drawing) return;
     const p = point(e);
     if (live.kind === 'box') {
       live = { kind: 'box', ...boxFrom(start, p) };
@@ -161,10 +169,11 @@
     render();
   }
 
-  function up() {
-    if (!live) return;
+  function up(e) {
+    if (!live || e.pointerId !== drawing) return;
     const op = live;
     live = null;
+    drawing = null;
     if (op.kind === 'box' && (op.w < 2 || op.h < 2)) {
       render();
       return;
