@@ -53,6 +53,7 @@
   // `attach`'s first read is noticed (`Chat.svelte`'s `doneSeq`).
   let doneSeq = 0;
   let refused = $state([]);
+  let menuOpen = $state(false);
   let goal = $state('');
   let input = $state('');
   let source = null;
@@ -139,7 +140,42 @@
     source = null;
   }
 
+  // The composer grows with what is typed, up to its max-height.
+  function grow(node) {
+    // Empty keeps the stylesheet's one-line height: measured at mount, before
+    // the flex row has given it a width, the placeholder wraps and reads tall.
+    const fit = () => {
+      node.style.height = '';
+      if (!node.value) return;
+      node.style.height = 'auto';
+      node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
+    };
+    requestAnimationFrame(fit);
+    node.addEventListener('input', fit);
+    return { update: fit, destroy: () => node.removeEventListener('input', fit) };
+  }
+
+  // An earlier chat's title, unless it is only the automatic one.
+  function chatTitle(h) {
+    const t = (h.title ?? '').trim();
+    return t && !/^persona:/i.test(t) ? t : '';
+  }
+
+  // One step back at a time: out of a chat or the editor to the persona,
+  // and from the persona to the list. The chat's "Done" button was this.
   function back() {
+    if (key) {
+      close();
+      key = null;
+      run = emptyRun();
+      loadHistory();
+      return;
+    }
+    if (editing) {
+      editing = null;
+      return;
+    }
+    menuOpen = false;
     close();
     making = null;
     editing = null;
@@ -545,17 +581,32 @@
   };
 </script>
 
+{#snippet avatar(p, size)}
+  <span class="avatar" style="width:{size}px;height:{size}px;font-size:{Math.round(size * 0.42)}px">
+    {#if p.portrait}<img src={p.portrait} alt="" />{:else}{p.display.slice(0, 1).toUpperCase()}{/if}
+  </span>
+{/snippet}
+
+<svelte:window onclick={(e) => menuOpen && !e.target.closest?.('.menuwrap') && (menuOpen = false)} />
+
 <div class="page">
   <header class="head">
     {#if chosen}
       <button class="backbtn" aria-label="all personas" onclick={back}>
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7" /></svg>
       </button>
+      <!-- On the persona's own page the hero says who; the header only
+           needs the way back. -->
+      {#if key || editing}
+      {@render avatar(chosen, 32)}
       <div class="who">
-        <span class="dtitle">{chosen.display}</span>
+        <span class="pname">{chosen.display}</span>
         <!-- Disclosure is the harness's, not the persona's (§12.1). -->
         <span class="meta"><span class="ai">AI</span>{#if relationshipLabel(chosen)} · {relationshipLabel(chosen)}{/if} · v{chosen.version}</span>
       </div>
+      {:else}
+        <div class="grow"></div>
+      {/if}
       {#if key && taintLabel(run.taint)}
         <!-- What this conversation has touched. With the leak guard lifted
              for personas (D11), this is what is left to say it. -->
@@ -563,6 +614,12 @@
       {/if}
     {:else}
       <div class="dtitle grow">Personas</div>
+      {#if !making}
+        <button class="newbtn" onclick={startMaking}>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          New
+        </button>
+      {/if}
     {/if}
     <button
       class="lockbtn"
@@ -650,36 +707,39 @@
   {:else if !chosen}
     <div class="scroll">
       {#if data && personas.length === 0 && !data.hidden_locked}
-        <div class="empty">No personas yet — make one with New persona.</div>
+        <div class="empty">
+          No personas yet.
+          <button class="abtn primary" onclick={startMaking}>Make your first persona</button>
+        </div>
       {/if}
-      <div class="grid">
-        <button class="tile addtile" onclick={startMaking}>
-          <div class="addmark"><svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></div>
-          <span class="tname">New persona</span>
-        </button>
+      <!-- A contacts list, not a wall of tiles: who they are to you reads at
+           a glance, and a phone shows a dozen rather than three. -->
+      <div class="plist">
         {#each personas as p (p.name)}
-          <button class="tile" onclick={() => choose(p)}>
-            {#if p.portrait}
-              <img src={p.portrait} alt={p.display} />
-            {:else}
-              <div class="noimg">{p.display.slice(0, 1).toUpperCase()}</div>
-            {/if}
-            <span class="tname">{p.display}{#if p.locked} <svg class="glyph" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>{/if}</span>
-            <span class="trel">{relationshipLabel(p) || 'no relationship'}</span>
+          <button class="prow" onclick={() => choose(p)}>
+            {@render avatar(p, 48)}
+            <span class="pbody">
+              <span class="pname">
+                {p.display}
+                {#if p.locked}<svg class="glyph" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-label="hidden behind the library lock"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>{/if}
+              </span>
+              <span class="prel">{relationshipLabel(p) || 'no relationship'}</span>
+            </span>
             {#if !p.approved}
               <span class="badge">not approved</span>
             {:else if p.problems.length}
               <span class="badge">{p.problems.length} to fix</span>
             {/if}
+            <svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
           </button>
         {/each}
-        {#if data?.hidden_locked}
-          <div class="tile hiddentile" aria-label="locked personas hidden">
-            <div class="noimg hiddencount"><svg class="glyph" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg> {data.hidden_locked}</div>
-            <span class="tname">hidden</span>
-          </div>
-        {/if}
       </div>
+      {#if data?.hidden_locked}
+        <button class="hiddenline" onclick={() => (data?.has_password ? (sheet = true) : unlock())}>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>
+          {data.hidden_locked} hidden — unlock to show
+        </button>
+      {/if}
     </div>
   {:else}
     <div class="scroll" bind:this={scroller}>
@@ -760,10 +820,36 @@
           </div>
         {/if}
       {:else if !key}
-        <div class="btnrow">
-          <button class="abtn" onclick={() => openEditor('identity')}>Edit</button>
-          <button class="abtn" disabled={busy} onclick={() => setLocked(!chosen.locked)}>{chosen.locked ? 'Unlock' : 'Lock'}</button>
-        </div>
+        <!-- A profile: the persona first, one primary action, and the rest
+             quieter (design critique: Edit and Lock outranked starting a chat). -->
+        <section class="hero">
+          {@render avatar(chosen, 72)}
+          <div class="herotext">
+            <div class="heroname">{chosen.display}</div>
+            <div class="herochips">
+              {#each chosen.relationship ?? [] as r}<span class="rchip">{r.replaceAll('_', ' ')}</span>{/each}
+              <span class="ver">v{chosen.version}</span>
+            </div>
+          </div>
+          <div class="herotools">
+            <button class="iconbtn" aria-label="Edit {chosen.display}" title="Edit" onclick={() => openEditor('identity')}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4" /></svg>
+            </button>
+            <div class="menuwrap">
+              <button class="iconbtn" aria-label="More" aria-haspopup="menu" aria-expanded={menuOpen} onclick={() => (menuOpen = !menuOpen)}>
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg>
+              </button>
+              {#if menuOpen}
+                <div class="menu" role="menu">
+                  <button role="menuitem" class="mitem" disabled={busy} onclick={() => { menuOpen = false; setLocked(!chosen.locked); }}>
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>
+                    {chosen.locked ? 'Stop hiding behind the library lock' : 'Hide behind the library lock'}
+                  </button>
+                </div>
+              {/if}
+            </div>
+          </div>
+        </section>
         {#if !chosen.approved}
           <div class="warnline">
             {chosen.display} is not approved — <code>mecha persona approve {chosen.name}</code> after reading them.
@@ -772,30 +858,53 @@
         {#each chosen.problems as problem}
           <div class="warnline">{problem}</div>
         {/each}
-        <div class="barnote">
-          {safetyLine(chosen.safety)}{#if doseLine(chosen.dose)}<br />{doseLine(chosen.dose)}{/if}
-        </div>
         <div class="startbox">
           <input
             class="editbox"
-            placeholder="What you want from this chat (optional)"
+            placeholder="A goal for this chat (optional)"
             maxlength="2000"
             bind:value={goal}
           />
-          <button class="abtn primary" disabled={busy || !chosen.approved} onclick={start}>New chat</button>
+          <button class="abtn primary wide" disabled={busy || !chosen.approved} onclick={start}>Start a chat</button>
+        </div>
+        <div class="status">
+          <span class="stat">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z" /></svg>
+            {safetyLine(chosen.safety)}
+          </span>
+          {#if doseLine(chosen.dose)}
+            <span class="stat">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></svg>
+              {doseLine(chosen.dose)}
+            </span>
+          {/if}
         </div>
         {#if history.length}
-          <div class="earlier">earlier</div>
-          {#each history as h (h.id)}
-            <button class="card rowbtn" disabled={busy} onclick={() => resume(h.id)}>
-              <span class="rowtop"><span class="topic">{when(h.created)}</span><span class="when">{clock(h.created)}</span></span>
-            </button>
-          {/each}
+          <div class="earlier">Earlier chats</div>
+          <div class="plist">
+            {#each history as h (h.id)}
+              <button class="hrow" disabled={busy} onclick={() => resume(h.id)}>
+                <!-- A chat's own title when it has one; the automatic
+                     "persona: Mara" says nothing a row here does not. -->
+                {#if chatTitle(h)}
+                  <span class="htitle">{chatTitle(h)}</span>
+                  <span class="when">{when(h.created)} · {clock(h.created)}</span>
+                {:else}
+                  <span class="htitle">{when(h.created)}</span>
+                  <span class="when">{clock(h.created)}</span>
+                {/if}
+                <svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+              </button>
+            {/each}
+          </div>
         {/if}
       {:else}
         {#if safety?.disclosure}
           <!-- The harness says it, not the persona (§12.1). -->
-          <div class="disclosure">{chosen.display} is an AI playing a character you wrote.</div>
+          <div class="disclosure">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 11v5M12 8h.01" /></svg>
+            {chosen.display} is an AI playing a character you wrote.
+          </div>
         {/if}
         {#if refused.length}
           <div class="barnote">
@@ -847,20 +956,26 @@
     </div>
     {#if key}
       <div class="composer">
-        <textarea
-          class="editbox"
-          rows="2"
-          placeholder={`Say something to ${chosen.display}`}
-          bind:value={input}
-          onkeydown={onKey}
-        ></textarea>
-        <!-- Send stays during a run: it steers, and a phone has no Enter to
-             spare for that. -->
-        <button class="abtn primary" disabled={!input.trim()} onclick={send}>{run.running ? 'Steer' : 'Send'}</button>
+        <div class="cfield">
+          <textarea
+            rows="1"
+            use:grow={input}
+            placeholder={`Say something to ${chosen.display}`}
+            aria-label={`Message to ${chosen.display}`}
+            bind:value={input}
+            onkeydown={onKey}
+          ></textarea>
+          <!-- Send stays during a run: it steers, and a phone has no Enter to
+               spare for that. -->
+          <button class="send" aria-label={run.running ? 'Steer' : 'Send'} title={run.running ? 'Steer' : 'Send'} disabled={!input.trim()} onclick={send}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+          </button>
+        </div>
         {#if run.running}
-          <button class="abtn" onclick={stop}>Stop</button>
+          <button class="stopbtn" aria-label="Stop" title="Stop" onclick={stop}>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+          </button>
         {/if}
-        <button class="abtn" onclick={() => { close(); key = null; run = emptyRun(); loadHistory(); }}>Done</button>
       </div>
     {/if}
   {/if}
@@ -889,7 +1004,7 @@
      "this is an AI" is not a security posture. */
   .ai { color: var(--text-muted); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 0 5px; margin-right: 2px; }
   .chip.taint { flex-shrink: 0; font-family: var(--mono); font-size: 10px; color: var(--hazard); border: 1px solid var(--hazard); border-radius: var(--radius-chip); padding: 2px 6px; }
-  .disclosure { font-size: 12px; color: var(--text-muted); border: 1px solid var(--accent-900); border-radius: var(--radius); padding: 8px 12px; }
+  .disclosure { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; color: var(--text-muted); padding: 2px 0 6px; }
   .crisis { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--accent-500); border-radius: var(--radius); padding: 14px; }
   .crisistext { font-size: 14px; line-height: 1.55; white-space: pre-wrap; color: var(--text); }
   .crisis .abtn { align-self: flex-start; }
@@ -901,21 +1016,9 @@
   .scroll { flex: 1; overflow-y: auto; padding: 14px var(--gutter); display: flex; flex-direction: column; gap: 10px; }
   .scroll > * { flex-shrink: 0; }
   .pad { padding: 8px var(--gutter) 0; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
-  .tile { display: flex; flex-direction: column; gap: 4px; padding: 0 0 10px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); overflow: hidden; cursor: pointer; color: var(--text); text-align: left; font: inherit; }
-  .tile img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
-  .noimg { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; color: var(--accent-400); font-family: var(--mono); font-size: 28px; }
-  .hiddentile { cursor: default; border-style: dashed; }
-  .hiddentile .noimg { font-size: 14px; color: var(--text-muted); }
-  .tname { font-family: var(--mono); font-size: 12px; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .trel { font-size: 11px; color: var(--text-muted); padding: 0 10px; }
   .badge { align-self: flex-start; margin: 2px 10px 0; font-family: var(--mono); font-size: 10px; color: var(--hazard); border: 1px solid var(--hazard); border-radius: var(--radius-chip); padding: 1px 6px; }
-  .card { background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); }
-  .rowbtn { text-align: left; padding: 12px 14px; cursor: pointer; color: var(--text); font: inherit; }
-  .rowtop { display: flex; align-items: center; gap: 8px; }
-  .topic { font-family: var(--mono); font-size: 13px; }
   .when { font-family: var(--mono); font-size: 10px; color: var(--accent-700); margin-left: auto; }
-  .earlier { font-family: var(--mono); font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+  .earlier { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-300); margin-top: 14px; }
   .startbox { display: flex; gap: 10px; }
   .form { display: flex; flex-direction: column; gap: 12px; max-width: 520px; }
   .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text); }
@@ -923,13 +1026,10 @@
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .chipbtn { min-height: 36px; padding: 0 12px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); color: var(--text-muted); font-family: var(--mono); font-size: 12px; cursor: pointer; }
   .chipbtn.active { color: var(--text); background: var(--accent-900); border-color: var(--accent-700); }
-  .addtile { border-style: dashed; }
   .newchip { border-style: dashed; color: var(--accent-400); }
   .adding { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; padding: 10px; border: 1px solid var(--accent-900); border-radius: var(--radius); }
   .adding .editbox { font-size: 14px; }
   .glyph { vertical-align: -1px; color: var(--text-muted); }
-  .hiddencount { display: flex; align-items: center; gap: 6px; font-size: 16px; }
-  .addmark { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; color: var(--accent-400); font-size: 40px; font-weight: 300; }
   .lockline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
   .btnrow { display: flex; gap: 10px; }
   .btnrow .abtn { flex: 1; }
@@ -953,7 +1053,6 @@
   .tool.err { color: var(--hazard); }
   .notice { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
   .composer { display: flex; gap: 8px; align-items: flex-end; padding: 10px var(--gutter) 14px; border-top: 1px solid var(--accent-900); }
-  .composer .editbox { flex: 1; resize: none; font-size: 14px; }
   .barnote { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
   .empty { color: var(--text-muted); font-size: 14px; padding: 24px 0; text-align: center; line-height: 1.6; }
   .warnline { font-size: 12px; color: var(--hazard); line-height: 1.45; }
@@ -962,4 +1061,46 @@
   .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--accent-500); border-radius: 16px 16px 0 0; padding: 14px var(--gutter) 28px; display: flex; flex-direction: column; gap: 12px; z-index: 6; }
   .sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-900); align-self: center; }
   .sheet-text { font-size: 15px; font-weight: 500; }
+  .avatar { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 50%; background: linear-gradient(145deg, var(--accent-700), var(--accent-900)); color: var(--accent-100); font-family: var(--sans); font-weight: 600; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .pname { display: flex; align-items: center; gap: 6px; font-family: var(--sans); font-size: 15px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .newbtn { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 14px; background: var(--accent-400); border: none; border-radius: 20px; color: var(--void); font-size: 14px; font-weight: 500; cursor: pointer; }
+  .plist { display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--accent-900); border-radius: 14px; overflow: hidden; }
+  .prow, .hrow { display: flex; align-items: center; gap: 14px; min-height: 72px; padding: 10px 14px 10px 16px; background: transparent; border: none; text-align: left; color: var(--text); cursor: pointer; }
+  .prow + .prow, .hrow + .hrow { border-top: 1px solid var(--accent-900); }
+  .prow:hover, .hrow:hover:not(:disabled) { background: var(--surface); }
+  .pbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .prel { font-size: 13px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prow .badge { margin: 0; }
+  .chev { flex-shrink: 0; color: var(--accent-700); }
+  .hiddenline { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; margin-top: 4px; background: none; border: none; color: var(--text-muted); font-size: 13px; cursor: pointer; }
+  .hero { display: flex; align-items: center; gap: 16px; padding: 8px 0 4px; }
+  .herotext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+  .heroname { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; color: var(--text); }
+  .herochips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .rchip { padding: 3px 10px; border-radius: 12px; background: var(--accent-900); color: var(--accent-100); font-size: 12px; }
+  .ver { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+  .herotools { display: flex; align-self: flex-start; gap: 2px; }
+  .iconbtn { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; background: transparent; border: none; border-radius: 10px; color: var(--text-muted); cursor: pointer; }
+  .iconbtn:hover, .iconbtn[aria-expanded='true'] { background: var(--surface); color: var(--text); }
+  .menuwrap { position: relative; }
+  .menu { position: absolute; top: 46px; right: 0; z-index: 4; min-width: 250px; padding: 6px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: 12px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); }
+  .mitem { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 0 12px; background: transparent; border: none; border-radius: 8px; color: var(--text); font-size: 14px; text-align: left; cursor: pointer; }
+  .mitem svg { color: var(--text-muted); flex-shrink: 0; }
+  .mitem:hover { background: var(--accent-900); }
+  .startbox { flex-direction: column; margin-top: 6px; }
+  .abtn.wide { width: 100%; }
+  .status { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+  .stat { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+  .stat svg { color: var(--accent-500); flex-shrink: 0; }
+  .htitle { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hrow { min-height: 56px; }
+  .hrow .when { margin: 0; font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+  .composer .cfield { flex: 1; display: flex; align-items: flex-end; gap: 6px; padding: 6px 6px 6px 14px; background: var(--surface); border: 1px solid var(--accent-700); border-radius: 22px; }
+  .composer .cfield:focus-within { border-color: var(--accent-500); }
+  .composer textarea { flex: 1; width: 100%; min-width: 0; height: 36px; max-height: 160px; padding: 8px 0; box-sizing: border-box; resize: none; background: transparent; border: none; color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.35; text-align: left; outline: none; font-variant-ligatures: none; }
+  .send, .stopbtn { flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border: none; border-radius: 50%; cursor: pointer; }
+  .send { background: var(--accent-400); color: var(--void); }
+  .send:disabled { background: var(--accent-900); color: var(--text-muted); cursor: default; }
+  .stopbtn { width: 44px; height: 44px; background: var(--surface); border: 1px solid var(--accent-900); color: var(--text); }
 </style>
