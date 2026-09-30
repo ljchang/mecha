@@ -8732,6 +8732,19 @@ What a case can ask for beyond the defaults:
   and quietly changing what every other case may do.
 - `"compact_at_tokens": N` — force compaction for this case alone. Same reason:
   turning it on globally would change what every other case is measuring.
+- `"attach": ["inbox/page.jpg", …]` — pictures in the case's workspace put on
+  the first turn as pixels, exactly as a web-chat upload is
+  (`image::attached_images`, one implementation for the chat, the persona
+  chat and `batch::run_with`): only for a model that can see, capped and
+  read through the jail, and arming `private`. The prompt names them, as the
+  chat's message does. Without it a case can only name a picture by path,
+  which asks what a model does with a picture it *cannot* see — a different
+  question, and not the one an owner's upload poses. `mecha eval` refuses a
+  set that attaches pictures to a model that cannot see, and a picture that
+  does not read from the fixture; `mecha exp` refuses a task that attaches
+  any, since its trial is a child `mecha run` that cannot carry pixels. A
+  check naming a tool the run does not offer is warned about before the run
+  (`eval::unoffered_tools`), since it passes or fails on that absence.
 - `"prompt": ["...", "..."]` — several turns on **one conversation**. A single
   prompt cannot express anything that only goes wrong across turns, which is
   most of what the harness guarantees: taint accumulating, a transcript growing
