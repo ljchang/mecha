@@ -306,14 +306,14 @@ impl Environment {
             .filter(|s| !s.disabled)
             .filter_map(feature::server_feature)
             .map(Feature::switch_owner)
-            // §5.1 rules on `graph` alone. Every other feature a server can
-            // name — mail, docs, the front door through `factory-publish` —
-            // runs on credentials that are the operator's wherever the
-            // entry was declared (the mail crate's stores sit under the real
-            // home whatever `$MECHA_HOME` says), which is exactly what
-            // `switchable_from_environment` refuses; defaulting it here would
-            // assert on the environment's behalf what it may not (found on
-            // review of #445).
+            // §5.1 rules on `graph` alone. The only other features a server
+            // can name, mail and docs, run on credentials that are the
+            // operator's wherever the entry was declared (the mail crate's
+            // stores sit under the real home whatever `$MECHA_HOME` says),
+            // which is exactly what `switchable_from_environment` refuses;
+            // defaulting them here would assert on the environment's behalf
+            // what it may not (found on review of #445). `factory-publish`
+            // names no feature until the front door is gated whole.
             .filter(|f| *f == Feature::Graph)
             .collect();
         for f in carried {

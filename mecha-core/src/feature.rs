@@ -187,19 +187,11 @@ impl Feature {
             .unwrap_or(self)
     }
 
-    /// Whether an experiment environment's `config.toml` may switch this on.
-    ///
-    /// **An environment may switch a feature on only if it could configure
-    /// it**, judged by where the feature's settings and credentials live, not
-    /// by who supplies them (FEATURES-DESIGN.md §5.1). An environment arrives
-    /// with a checkout; `trial_env::config_at` refuses any `[features]` key
-    /// set `true` for which this is `false`. Exhaustive, so a new variant does
-    /// not compile until it decides — the list is a function, not a fourth
-    /// hand-kept list.
     /// Whether switching this off turns something off *today* — its tools
     /// are unregistered, its server is not started, or its surface refuses.
-    /// The rest (Slack, personas, voice, incognito, the front door's queue)
-    /// wait for the route and verb guards of FEATURES-DESIGN.md §9 step 3, and
+    /// The rest (Slack, personas, voice, incognito, the front door — its queue
+    /// and its publishing server together) wait for the route and verb guards
+    /// of FEATURES-DESIGN.md §9 step 3, and
     /// the upgrade notice must not call them off while they work (found on
     /// review of #445). Exhaustive: a step that gates one flips its arm.
     pub fn gated(self) -> bool {
@@ -228,6 +220,15 @@ impl Feature {
         }
     }
 
+    /// Whether an experiment environment's `config.toml` may switch this on.
+    ///
+    /// **An environment may switch a feature on only if it could configure
+    /// it**, judged by where the feature's settings and credentials live, not
+    /// by who supplies them (FEATURES-DESIGN.md §5.1). An environment arrives
+    /// with a checkout; `trial_env::config_at` refuses any `[features]` key
+    /// set `true` for which this is `false`. Exhaustive, so a new variant does
+    /// not compile until it decides — the list is a function, not a fourth
+    /// hand-kept list.
     pub fn switchable_from_environment(self) -> bool {
         match self {
             // A binary on PATH, and the trial's own `requests` store under
@@ -441,7 +442,10 @@ pub fn server_feature(server: &McpServerConfig) -> Option<Feature> {
         "mecha-mail" => Some(Feature::Mail),
         "mecha-docs" => Some(Feature::Docs),
         "mecha-graph-mcp" => Some(Feature::Graph),
-        "factory-publish" => Some(Feature::Publishing),
+        // Not `factory-publish` yet: gating the publishing server while the
+        // front door's queue stays ungated made the notice call the front
+        // door "still working" with half of it gone. Both halves follow the
+        // switch together in §9 step 3 (found on review of #445).
         _ => None,
     }
 }
@@ -1586,11 +1590,10 @@ mod tests {
         assert_eq!(server_refusal(&cfg, &other), None, "a server in no feature");
         cfg.features.0.insert("graph".into(), true);
         assert_eq!(server_refusal(&cfg, &graph), None);
-        // A part's server is refused under its owner's name.
+        // The publishing server is not gated yet: the front door is gated
+        // whole in step 3, never one half before the other.
         let publish = mcp("factory", "factory-publish");
-        assert!(server_refusal(&cfg, &publish)
-            .unwrap()
-            .contains("`frontdoor`"));
+        assert_eq!(server_refusal(&cfg, &publish), None);
     }
 
     /// The writer edits in place: comments, other tables and a newer build's

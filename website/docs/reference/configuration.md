@@ -441,11 +441,11 @@ messages = false   # messages between sessions on this machine
 The switch is the only switch; a settings table such as `[image]` or
 `[documents]` is only settings. What a switch that is not `true` turns off
 today: web search, image generation and the character library, and PDF
-extraction are not registered; the mail, docs, graph and publishing MCP
-servers are not started, by any command — including `distill`, `gossip`,
+extraction are not registered; the mail, docs and graph MCP servers are
+not started, by any command — including `distill`, `gossip`,
 `vet` and `corroborate`, which start the graph server themselves; and
 `mecha serve` will not start without `web = true`. Slack, personas, voice,
-incognito and the front door's queue are listed here now, and follow their
+incognito and the front door (its queue and its publishing server) are listed here now, and follow their
 switch once their commands and web pages are guarded; until then they work
 whatever it says, and `mecha features` and the start-up line say so. An
 `[[mcp]]` server that belongs to no feature starts as it always has. A feature switched on without the settings it
