@@ -40,21 +40,27 @@ describes the registry and is the checklist for adding a feature. Open:
     `trial_env::OPERATOR_ONLY_TABLES`, and correcting that constant's "the
     five" comment;
   - `Feature::switchable_from_environment`.
+  Step 1 ships in two PRs: **1a** adds the table, the writer, the notice and
+  the environment refusal, and gates nothing. **1b** gates registration and
+  connections on the switch, so the notice and this machine's table are in
+  place before anything can turn off. `[documents]`'s trust gap went
+  separately as #441.
   `personas` and `voice` still read "always on" in step 0, and step 1 must
   give them real evidence before the notice keys on it (§4.2). Three
   decisions the design leaves to step 1, from #435's last pass:
-  - which `state`s count as "usable" for the notice and F6's offer. `On`
-    only is the safe reading. `Unknown` must never be announced, or F6
-    writes `slack = true` off a store it could not read. `Unready` (mail with
-    no account) needs a ruling;
+  - which `state`s count as "usable" for the notice and F6's offer — **ruled
+    by the owner 2026-09-30: `On` and `Unready`, each with its reason**
+    ("mail: configured but not enabled — no account authorised yet").
+    `Unknown` is never announced, or F6 would write `slack = true` off a store
+    it could not read;
   - F6's row in §7 still lists presence evidence ("an `[image]` table"),
     while §4.2 says the detector is `state`. Code it as `state`, because
     presence is what step 0 already paid for;
   - the test "`graph` absent with no manifest server reads off" should also
     say the environment declares no graph server of its own.
-- **A real gap today, independent of step 1:** `[documents]` is stripped from
-  project layers but missing from `OPERATOR_ONLY_TABLES`. An experiment
-  environment can set `ocr_url` and `confine = false` now.
+- **#441** (open) closes a gap that exists today: `[documents]` is stripped
+  from project layers but was missing from `OPERATOR_ONLY_TABLES`, so an
+  experiment environment could set a remote `ocr_url` and `confine = "none"`.
 - **Minor, from the #428/#432/#433 reviews:**
   - The `incognito` row asks `provider_is_local` of `default_provider`, not
     the bound router preset.
