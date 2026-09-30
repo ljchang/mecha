@@ -67,6 +67,8 @@
     flex: 1 1 0;
     min-width: 0;
     min-height: 44px;
+    /* The frame the unready mark sits against. */
+    position: relative;
     color: var(--text-muted);
     background: none;
     border: none;
@@ -85,9 +87,6 @@
   }
   .nav-item.active {
     color: var(--accent-400);
-  }
-  .nav-item {
-    position: relative;
   }
   /* Switched on, not working yet: a mark, never a grey-out. */
   .mark {

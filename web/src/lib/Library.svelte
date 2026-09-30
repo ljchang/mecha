@@ -1,6 +1,8 @@
 <script>
   import { untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
+  import { features } from './features.svelte.js';
+  import { opens } from './features.js';
   import {
     PANES, paneOf, entriesFor, counts, originLabel, listUrl, tameName,
     TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody,
@@ -229,7 +231,9 @@
 <div class="page">
   <header class="head">
     <div class="chips">
-      {#each PANES as p}
+      <!-- Only the panes that open: with the library off, its candidates
+           pane opens for what waits in it (OPENS_ANYWAY), and no other. -->
+      {#each PANES.filter((p) => opens(features.rows, 'library', p)) as p}
         <button class="chipbtn" class:active={pane === p} onclick={() => { open = null; closeForm(); navigate(`library/${p}`); }}>
           {label[p]}<span class="chipcount">{data ? tally[p] : '—'}</span>
         </button>

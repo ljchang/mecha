@@ -66,7 +66,9 @@ pub(super) fn body(facts: &Facts, loaded: &[Feature]) -> serde_json::Value {
         .into_iter()
         .map(|row| {
             let pending = feature::switched_on(&facts.config, row.id) != loaded.contains(&row.id);
-            let mut v = serde_json::to_value(&row).unwrap_or_default();
+            // A row that did not serialise would reach the page with no
+            // `id`, which `isShown` reads as shown: never swallowed.
+            let mut v = serde_json::to_value(&row).expect("a feature row serialises");
             v["pending"] = pending.into();
             v
         })
@@ -172,6 +174,48 @@ mod tests {
                 "Home.svelte does not label the queue `{queue}`"
             );
         }
+
+        // And every id written inline in a component — the buttons and tabs
+        // most of this hiding is done by — for the same reason: `'frontdor'`
+        // would leave its tab up with the feature off and every suite green
+        // (review of #449, pass 2). `opens` takes a view, held to the map.
+        let web = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/src");
+        let mut sources = vec![web.join("App.svelte")];
+        sources.extend(
+            std::fs::read_dir(&root)
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "svelte")),
+        );
+        let literals = |text: &str, call: &str| -> Vec<String> {
+            text.match_indices(call)
+                .filter_map(|(i, _)| {
+                    let rest = &text[i + call.len()..];
+                    Some(rest[..rest.find('\'')?].to_string())
+                })
+                .collect()
+        };
+        let (mut ids, mut used_views) = (0, 0);
+        for path in &sources {
+            let text = std::fs::read_to_string(path).unwrap();
+            let name = path.file_name().unwrap().to_string_lossy();
+            for id in literals(&text, "isShown(features.rows, '") {
+                assert!(
+                    Feature::parse(&id).is_some(),
+                    "{name}: `{id}` names no feature"
+                );
+                ids += 1;
+            }
+            for view in literals(&text, "opens(features.rows, '") {
+                assert!(
+                    views.iter().any(|(v, _)| *v == view),
+                    "{name}: `{view}` is not a view VIEW_FEATURE maps"
+                );
+                used_views += 1;
+            }
+        }
+        assert!(ids >= 9 && used_views >= 2, "{ids} ids, {used_views} views");
     }
 
     /// Home keeps the Questions card, the workflows line and a queue's card

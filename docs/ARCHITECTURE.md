@@ -8261,13 +8261,17 @@ the full checklist this grows into as each build step lands.
    settings and credentials live, never by who supplies them.
 5. A row in `mecha features`' docs (`reference/cli.md`) if its off state has a
    fix worth naming, and its key in `reference/configuration.md` §`[features]`.
-6. Its web surfaces keyed on its `id` in `web/src/lib/features.js` —
-   `VIEW_FEATURE` for a nav place, `QUEUE_FEATURE` for a Home queue card —
-   and an `isShown(features.rows, '<id>')` around any button or tab it owns.
-   Give an `own_state` arm's missing-settings case an `off` with the fix;
-   `state` makes it `Unready` for a switched feature, so the tab stays.
    The tests in `feature::tests` cover order, ids and the empty machine
    without further edits.
+6. Its web surfaces keyed on its `id` in `web/src/lib/features.js` —
+   `VIEW_FEATURE` for a nav place, `QUEUE_FEATURE` for a Home queue card —
+   and an `isShown(features.rows, '<id>')` around any button or tab it owns,
+   written as a literal so `every_feature_the_web_app_names_is_a_registry_id`
+   can hold it to the registry. A place Home keeps whatever the switch says
+   goes in `OPENS_ANYWAY`, and a view's own controls ask `opens` before
+   offering another of its sub-views. Give an `own_state` arm's
+   missing-settings case an `off` with the fix; `state` makes it `Unready`
+   for a switched feature, so the tab stays.
 
 ## Context, and knowing how much is left
 
