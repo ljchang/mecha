@@ -10,8 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **A cleaner Personas tab.** Personas are listed like contacts: avatar,
-  name and relationship, with New in the header and hidden personas as one
-  line at the foot. A persona's page leads with who they are and one
+  name and relationship, with New in the header. A persona's page leads with who they are and one
   Start a chat button; Edit is a pencil, and hiding behind the library lock
   moves into a menu. Earlier chats show their title when they have one. In
   a chat, the send button sits inside the message box and the back arrow

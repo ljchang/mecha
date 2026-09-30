@@ -706,7 +706,9 @@
     </div>
   {:else if !chosen}
     <div class="scroll">
-      {#if data && personas.length === 0 && !data.hidden_locked}
+      <!-- No count of what the lock hides (owner ruling, 2026-09-30, #425):
+           a page with every persona locked reads like one with none. -->
+      {#if data && personas.length === 0}
         <div class="empty">
           No personas yet.
           <button class="abtn primary" onclick={startMaking}>Make your first persona</button>
@@ -734,12 +736,6 @@
           </button>
         {/each}
       </div>
-      {#if data?.hidden_locked}
-        <button class="hiddenline" onclick={() => (data?.has_password ? (sheet = true) : unlock())}>
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>
-          {data.hidden_locked} hidden — unlock to show
-        </button>
-      {/if}
     </div>
   {:else}
     <div class="scroll" bind:this={scroller}>
@@ -1073,7 +1069,6 @@
   .prel { font-size: 13px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .prow .badge { margin: 0; }
   .chev { flex-shrink: 0; color: var(--accent-700); }
-  .hiddenline { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; margin-top: 4px; background: none; border: none; color: var(--text-muted); font-size: 13px; cursor: pointer; }
   .hero { display: flex; align-items: center; gap: 16px; padding: 8px 0 4px; }
   .herotext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
   .heroname { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; color: var(--text); }
