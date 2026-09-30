@@ -14,6 +14,39 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-30 — modular installs: the design, and `mecha features` (#427,
+#428, #432, #433).** The owner asked how a new user installs only the parts
+they want: Slack, the web app, image generation, personas, OCR and voice
+optional, an off feature hidden from the web app and refused by the CLI, and
+model recommendations per feature. `FEATURES-DESIGN.md` (#427, fourteen
+review passes) is the authority. It reads Hermes and OpenClaw from source and
+six other systems from their docs. The owner ruled all six questions the
+same day. F1 is a `[features]` table of bools that ships all `false`, which
+overruled the doc's first recommendation of table presence, because a user
+has to be able to see what exists. F5 is `hardware.md`'s four tiers in two
+columns: unified memory, and a separate GPU beside system RAM.
+
+#428 (`d1da01aa`) is step 0, read-only:
+- `mecha_core::feature` holds a closed `Feature` enum of 21 features and
+  parts and five `State`s: on, off, blocked, unready, unknown.
+- `state(facts, f)` takes no `Config`. `Facts::read` carries the global one,
+  so a project `mecha.toml` cannot decide what the install has on.
+- Each row asks what registration asks: `ToolsConfig::registers`, the
+  loopback validators, `DocumentsConfig::validate`, and
+  `SearchBackendConfig::problem`, which is new and held to
+  `build_search_chain` by a test. It never reads a field's presence.
+- `mecha features [--json]` lists them, with the fix for each off row.
+- `ARCHITECTURE.md` §Features holds the invariants and an "Adding a feature"
+  checklist.
+
+Step 0 found `setup` counting mail accounts under `$MECHA_HOME`, where the
+mail crate never looks. #432 (`5664f245`) moved the rule to
+`onboarding::{mail,docs,legacy}_store_dir`, and made doctor
+(`MailStores::of_owner`), Slack's import check and the booking sweep find
+each store by its owner's rule. #433 (`c599c802`) fixed one test's temp
+directory. Deployed by the mecha-d7 lane at `5664f245` and `c599c802`.
+On this machine `mecha features` reads 20 of 21 rows on; `messages` is off.
+
 **2026-09-30 — paint the part of a picture to change (#424, #429).** The
 owner asked for the web chat's Edit button to become a modal where areas can
 be painted. `IMAGE-REGION-EDIT-RESEARCH.md` (#424) measured the ways to
@@ -10282,6 +10315,20 @@ day.** mecha-graph's first CI used `stable`; Rust 1.98 added
 `chunks_exact_to_as_chunks` and the job went red on code the PR had not
 touched. Pin the toolchain and move it in its own change.
 
+**A reader of another program's store must find it by that program's rule.**
+The mail crate finds its registry by `$MECHA_MAIL_DIR`, else `~/.mecha/mail`
+under the real home, and ignores `$MECHA_HOME`. mecha read it as
+`mecha_home().join("mail")` in five places: `frontdoor::mail_dir` first,
+then `setup`, doctor, Slack's import check, and the booking sweep reading
+mecha's `requests` from the other side. Each agreed with the writer only
+while neither variable was set. So trials, tests and any relocated install
+read a directory nobody writes, and the doctor reported a dead login as all
+clear. Resolve a foreign store through a helper that copies the owner's rule
+(`onboarding::mail_store_dir`), and pin it with a test that sets the
+owner's variable. Test harnesses must isolate `HOME` too, not only
+`MECHA_HOME`, or the fallback lands on the developer's real store (#428,
+#432).
+
 ### A merge, made under a standing authorization, can race a fix in flight elsewhere
 
 **A background fork was given "merge PRs once they pass review" and merged
@@ -10304,6 +10351,12 @@ authorization is a green light for the git state, not a substitute for
 asking whether anyone nearby has unpushed work against the same PR** — a
 `SendMessage` before the merge ("about to merge #86, anyone got fixes in
 flight?") would have cost one round trip and avoided the whole repair.
+
+It recurred on 2026-09-30. Another lane, on the owner's "Do it", merged #428
+and then #432, the latter at `0d972f76` while the owning session was
+answering #432's review. That fix was pushed a minute later to a closed PR
+and needed #433 to reach `main`. The merge also landed #428 ahead of the
+design doc its comments cite (#427).
 
 ## Design notes worth keeping
 
