@@ -148,10 +148,8 @@ fn track_working(slot: &StdMutex<Option<serde_json::Value>>, event: &AgentEvent)
                 "since": chrono::Utc::now().to_rfc3339(),
             }));
         }
-        AgentEvent::ToolResult { id, .. } => {
-            if slot.as_ref().is_some_and(|w| w["id"] == *id) {
-                *slot = None;
-            }
+        AgentEvent::ToolResult { id, .. } if slot.as_ref().is_some_and(|w| w["id"] == *id) => {
+            *slot = None;
         }
         _ => {}
     }
