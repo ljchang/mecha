@@ -3,11 +3,13 @@
   import { apiFetch as fetch } from './api.js';
   import TomlForm from './TomlForm.svelte';
   import MdForm from './MdForm.svelte';
+  import ModelChip from './ModelChip.svelte';
   import { repairComments, changesOf } from './tomlform.js';
   import { isDirty as mdDirty } from './mdform.js';
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
-    taintLabel, safetyLine, doseLine, authoringUrl, personaName, OWNER_FILES, keptEdits,
+    taintLabel, safetyLine, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
+    toolStatus, waitingLine,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -35,6 +37,20 @@
   let run = $state(emptyRun());
   // The open chat's safety switches, as its transcript reports them (§12).
   let safety = $state(null);
+  // The model the open chat's agent is bound to, for the chip (the same
+  // picker as the assistant's chat: one model serves every surface), and
+  // whether this chat has shown a crisis card — the support resources are
+  // offered only after one (owner ruling, 2026-09-30).
+  let chatModel = $state('');
+  let crisisShown = $state(false);
+  // A clock for the waiting line, ticking only while a run is live.
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!run.running) return;
+    now = Date.now();
+    const tick = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(tick);
+  });
   // Crisis cards the owner has closed, by id; a closed one leaves a link to
   // its resources rather than vanishing.
   let dismissed = $state(new Set());
@@ -112,6 +128,7 @@
       token = (await res.json()).token;
       sheet = false;
       await load();
+      await rereadAuthoring();
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {
@@ -123,9 +140,12 @@
   async function relock() {
     const t = token;
     token = null;
+    // Off the screen now, before the grid's round trip, not after it.
+    if (making && authoring) authoring = { ...authoring, characters: [] };
     // A locked persona's chat closes with the lock: the lock hides (§8.3).
     if (chosen?.locked) toList();
     await load();
+    await rereadAuthoring();
     if (t) {
       fetch('/api/library/relock', {
         method: 'POST',
@@ -230,6 +250,8 @@
     if (key !== k || gen !== readGen) return;
     run = { ...emptyRun(settle(t.entries, run), t.taint ?? null), running: !!t.running };
     safety = t.safety ?? null;
+    chatModel = t.model ?? '';
+    crisisShown = !!t.crisis_shown;
     scrollDown();
     return t;
   }
@@ -243,9 +265,10 @@
     close();
     key = k;
     run = emptyRun();
-    // Or the previous chat's disclosure line and resources show for a round
-    // trip (review of #418).
+    // Or the previous chat's resources show for a round trip (review of #418).
     safety = null;
+    crisisShown = false;
+    chatModel = '';
     dismissed = new Set();
     showResources = false;
     partial = false;
@@ -302,15 +325,59 @@
 
   // ─── Authoring ───────────────────────────────────────────────────────
 
+  // Every read of the form's lists is numbered, as `reread` numbers the
+  // transcript's: the lock button is live while one is in flight, and an
+  // unlocked answer landing after a relock's would put locked characters
+  // back in the portrait list of a locked page (review of #425).
+  let authoringGen = 0;
+
   async function startMaking() {
     error = '';
+    const gen = ++authoringGen;
+    const issued = token;
     try {
       const res = await fetch(authoringUrl(token));
       if (!res.ok) throw new Error((await res.text()).trim());
-      authoring = await res.json();
+      const lists = await res.json();
+      if (gen !== authoringGen) return;
+      // The lock moved while the form was opening, and with no form open
+      // then, nothing re-read the lists for it. An answer read under the
+      // other lock is never shown, not even until the re-read lands.
+      authoring = issued === token ? lists : null;
       making = { name: '', display: '', relationships: [], character: '', groups: [], locked: false };
     } catch (e) {
       error = String(e?.message ?? e);
+      return;
+    }
+    if (issued !== token) await rereadAuthoring();
+  }
+
+  // The form's lists follow the lock: `authoring` was read when the form
+  // opened, so an unlock after that left locked characters out of the
+  // portrait list, and a relock left them in.
+  async function rereadAuthoring() {
+    if (!making) return;
+    const gen = ++authoringGen;
+    // Reading under the lock: the list on screen may name locked characters,
+    // so it goes now, not when the answer lands — the rule `startMaking`
+    // keeps for the same race (review of #425). The choice itself waits for
+    // the answer, so a relock never costs an unlocked pick.
+    if (!token && authoring) authoring = { ...authoring, characters: [] };
+    try {
+      const res = await fetch(authoringUrl(token));
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const lists = await res.json();
+      // Cancelled, or overtaken by a newer read, while this one was in flight.
+      if (!making || gen !== authoringGen) return;
+      authoring = lists;
+      making.character = keptCharacter(making.character, authoring.characters);
+    } catch (e) {
+      error = String(e?.message ?? e);
+      // No answer: keep only a choice the list on screen still offers, which
+      // after a relock is none — never a locked pick the page now hides.
+      if (making && gen === authoringGen) {
+        making.character = keptCharacter(making.character, authoring?.characters);
+      }
     }
   }
 
@@ -342,8 +409,13 @@
         ),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
-      const reread = await fetch(authoringUrl(token));
-      if (reread.ok) authoring = await reread.json();
+      // The one reader of the lists once the form is open, so the new name
+      // arrives under the same numbering and portrait check a lock change
+      // uses — its own read took a newer number than a relock's and skipped
+      // the check (review of #425).
+      await rereadAuthoring();
+      // Cancelled while the add was in flight: no form left to pick it for.
+      if (!making) return;
       if (relationship) making.relationships = [...making.relationships, name];
       else making.groups = [...making.groups, name];
       adding = null;
@@ -597,18 +669,18 @@
 <div class="page">
   <header class="head">
     {#if chosen}
-      <button class="backbtn" aria-label={key ? `end the chat with ${chosen.display}` : editing ? 'close the editor' : 'all personas'} onclick={back}>
+      <button class="backbtn" aria-label={key ? `leave the chat with ${chosen.display}` : editing ? 'close the editor' : 'all personas'} onclick={back}>
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7" /></svg>
       </button>
       <!-- On the persona's own page the hero says who; the header only
            needs the way back. -->
       {#if key || editing}
-      {@render avatar(chosen, 32)}
-      <div class="who">
-        <span class="pname">{chosen.display}</span>
-        <!-- Disclosure is the harness's, not the persona's (§12.1). -->
-        <span class="meta"><span class="ai">AI</span>{#if relationshipLabel(chosen)} · {relationshipLabel(chosen)}{/if} · v{chosen.version}</span>
-      </div>
+        {@render avatar(chosen, 32)}
+        <div class="who">
+          <span class="pname">{chosen.display}</span>
+          <!-- Disclosure is the harness's, not the persona's (§12.1). -->
+          <span class="meta"><span class="ai">AI</span>{#if relationshipLabel(chosen)} · {relationshipLabel(chosen)}{/if} · v{chosen.version}</span>
+        </div>
       {:else}
         <div class="grow"></div>
       {/if}
@@ -625,6 +697,9 @@
           New
         </button>
       {/if}
+    {/if}
+    {#if key && chatModel}
+      <ModelChip model={chatModel} />
     {/if}
     <button
       class="lockbtn"
@@ -722,26 +797,26 @@
       <!-- A contacts list, not a wall of tiles: who they are to you reads at
            a glance, and a phone shows a dozen rather than three. -->
       {#if personas.length}
-      <div class="plist">
-        {#each personas as p (p.name)}
-          <button class="prow" onclick={() => choose(p)}>
-            {@render avatar(p, 48)}
-            <span class="pbody">
-              <span class="pname">
-                {p.display}
-                {#if p.locked}<svg class="glyph" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="hidden behind the library lock"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>{/if}
+        <div class="plist">
+          {#each personas as p (p.name)}
+            <button class="prow" onclick={() => choose(p)}>
+              {@render avatar(p, 48)}
+              <span class="pbody">
+                <span class="pname">
+                  {p.display}
+                  {#if p.locked}<svg class="glyph" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="hidden behind the library lock"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>{/if}
+                </span>
+                <span class="prel">{relationshipLabel(p) || 'no relationship'}</span>
               </span>
-              <span class="prel">{relationshipLabel(p) || 'no relationship'}</span>
-            </span>
-            {#if !p.approved}
-              <span class="badge">not approved</span>
-            {:else if p.problems.length}
-              <span class="badge">{p.problems.length} to fix</span>
-            {/if}
-            <svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
-          </button>
-        {/each}
-      </div>
+              {#if !p.approved}
+                <span class="badge">not approved</span>
+              {:else if p.problems.length}
+                <span class="badge">{p.problems.length} to fix</span>
+              {/if}
+              <svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+          {/each}
+        </div>
       {/if}
     </div>
   {:else}
@@ -904,13 +979,8 @@
           </div>
         {/if}
       {:else}
-        {#if safety?.disclosure}
-          <!-- The harness says it, not the persona (§12.1). -->
-          <div class="disclosure">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 11v5M12 8h.01" /></svg>
-            {chosen.display} is an AI playing a character you wrote.
-          </div>
-        {/if}
+        <!-- No banner: the "AI" tag in the header says it (owner ruling,
+             2026-09-30; the §12.1 disclosure stays in the harness's voice). -->
         {#if refused.length}
           <div class="barnote">
             Not given here: {refused.map((r) => `${r.tool} (${r.why})`).join('; ')}.
@@ -924,7 +994,10 @@
           {:else if entry.kind === 'assistant'}
             <div class="answer">{entry.text}</div>
           {:else if entry.kind === 'tool'}
-            <div class="tool" class:err={entry.is_error}>{entry.name}{entry.is_error ? ' — failed' : ''}</div>
+            {@const status = toolStatus(run.entries, i)}
+            <div class="tool" class:err={status === 'failed'}>
+              {entry.name}{status === 'failed' ? ' — failed' : status === 'retried' ? ' — retried' : ''}
+            </div>
           {:else if entry.kind === 'notice'}
             <div class="notice">{entry.text}</div>
           {:else if entry.kind === 'crisis'}
@@ -945,9 +1018,17 @@
         {#if run.streaming}
           <div class="answer">{run.streaming}</div>
         {/if}
-        {#if safety?.resources}
-          <!-- One tap away in every chat the sensor watches, whatever a
-               reload did to the card (review of #418). -->
+        {#if waitingLine(run, chosen.display, now)}
+          <!-- A slow local model must never look broken (owner, 2026-09-30). -->
+          <div class="waiting" role="status" aria-live="polite">
+            <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            {waitingLine(run, chosen.display, now)}
+          </div>
+        {/if}
+        {#if safety?.resources && (crisisShown || run.entries.some((e) => e.kind === 'crisis'))}
+          <!-- Offered once this chat has shown a crisis card, and from then
+               on one tap away whatever a reload did to the card (owner ruling,
+               2026-09-30; review of #418). -->
           {#if showResources}
             <div class="crisis" role="note">
               <div class="crisistext">{safety.resources}</div>
@@ -1004,12 +1085,11 @@
   .grow { flex: 1; }
   .who { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .dtitle { font-family: var(--mono); font-size: 13px; color: var(--accent-400); overflow-wrap: anywhere; }
-  .meta { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+  .meta { font-family: var(--mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* Muted, not amber: amber is the taint chip's (Chat.svelte's rule), and
      "this is an AI" is not a security posture. */
   .ai { color: var(--text-muted); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 0 5px; margin-right: 2px; }
   .chip.taint { flex-shrink: 0; font-family: var(--mono); font-size: 10px; color: var(--hazard); border: 1px solid var(--hazard); border-radius: var(--radius-chip); padding: 2px 6px; }
-  .disclosure { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; color: var(--text-muted); padding: 2px 0 6px; }
   .crisis { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--accent-500); border-radius: var(--radius); padding: 14px; }
   .crisistext { font-size: 14px; line-height: 1.55; white-space: pre-wrap; color: var(--text); }
   .crisis .abtn { align-self: flex-start; }
@@ -1077,7 +1157,7 @@
   .pbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
   .prel { font-size: 13px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .prow .badge { margin: 0; }
-  .chev { flex-shrink: 0; color: var(--accent-700); }
+  .chev { flex-shrink: 0; color: var(--accent-500); }
   .hero { display: flex; align-items: center; gap: 16px; padding: 8px 0 4px; }
   .herotext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
   .heroname { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; color: var(--text); }
@@ -1106,4 +1186,11 @@
   .send { background: var(--accent-400); color: var(--void); }
   .send:disabled { background: var(--accent-900); color: var(--text-muted); cursor: default; }
   .stopbtn { width: 44px; height: 44px; background: var(--surface); border: 1px solid var(--accent-900); color: var(--text); }
+  .waiting { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-muted); padding: 2px 0; }
+  .dots { display: inline-flex; gap: 4px; }
+  .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-400); animation: blink 1.2s infinite ease-in-out; }
+  .dots i:nth-child(2) { animation-delay: 0.2s; }
+  .dots i:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+  @media (prefers-reduced-motion: reduce) { .dots i { animation: none; opacity: 0.7; } }
 </style>

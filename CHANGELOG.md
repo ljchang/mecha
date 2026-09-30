@@ -15,7 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moves into a menu. Earlier chats show the goal they
   were opened with. In
   a chat, the send button sits inside the message box and the back arrow
-  ends the chat (the Done button is gone).
+  ends the chat (the Done button is gone). The chat shows the model chip,
+  the same picker as the main chat. While a reply is on its way, a line
+  says the persona is typing, or what it is doing and for how long, such as
+  "drawing a picture… 1:24". A tool call the persona retried reads as
+  retried, not failed. The support-resources link appears only after a
+  crisis warning in that chat, and the banner at the top of each chat is
+  gone; the AI tag in the header stays.
 
 - **Persona files edit as forms.** A persona's Edit screen is now a form on
   every tab. Settings are switches, choices and name chips: relationship,
@@ -53,8 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - the persona's Core handed back to it on a cadence;
   - usage meters.
 
-  Each can be switched off per persona in its `persona.toml`. The crisis
-  check reads keywords only for now, and the page says so.
+  Each can be switched off per persona in its `persona.toml`, and a switch
+  reaches chats already open. Behind the keywords, a model check screens
+  each message you send, including one sent while the persona is answering,
+  and pauses the persona if it finds a concern the keywords missed. When
+  that check cannot answer, the page says crisis detection is on keywords
+  only until it can.
 
 - **OCR reads tables whole.** With the layout stage installed
   (`scripts/layout/install.sh`), an OCR page is read region by region: a
@@ -217,6 +227,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A locked page no longer says how much it is hiding.** The personas grid
+  drew a `hidden · N` tile and the image library a "N locked entries hidden"
+  line, which told whoever held the phone there was something to find. Both
+  are gone, and so is the `hidden_locked` count in `/api/personas` and
+  `/api/library` behind them: a locked page now reads exactly like one with
+  nothing locked, as a locked entry's own URL already answered 404 like a
+  missing one. The persona list no longer names a locked character that a
+  visible persona uses as its portrait either (`character` is `null` in
+  `/api/personas` until unlocked, a problem line naming it is left out of the
+  list and of a save's answer, and an entry that will not load counts as
+  locked); the link itself is kept.
+- **Unlocking on the new-persona form now offers locked characters as
+  portraits.** The form read its character list once, when it opened, so
+  the lock button refreshed the persona grid and left the portrait list as
+  it was; it now re-reads the list on every lock change, and a relock drops
+  a locked portrait the form had already chosen.
 - **The document cache is private all the way down.** `~/.mecha/documents/`
   and every directory under it are now created owner-only (0700), and every
   file in it 0600. Before, only the per-file entry was, so the cache root and each entry's `ocr/`

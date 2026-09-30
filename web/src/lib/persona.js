@@ -49,6 +49,13 @@ export function authoringUrl(token) {
   return withUnlock('/api/personas/authoring', token);
 }
 
+// The portrait a half-made persona keeps when the character list changes
+// under it — a relock takes locked characters out of the list, and a choice
+// the page can no longer show must not be sent as if it could.
+export function keptCharacter(chosen, characters) {
+  return chosen && (characters ?? []).includes(chosen) ? chosen : '';
+}
+
 // A name as the store will hold it — or null when it cannot be one: the
 // server says why on create, this only saves a round trip for the obvious.
 export function personaName(typed) {
@@ -102,6 +109,43 @@ export function relationshipLabel(p) {
 
 // The state a streamed run folds into: the transcript so far, the answer
 // still arriving, and whether a run is live.
+// What a tool row says. A call the tool refused with instructions and the
+// persona then made again reads as retried, not failed — "failed" twice
+// before a picture arrived read as broken to the owner (2026-09-30).
+export function toolStatus(entries, i) {
+  const e = entries[i];
+  if (e.is_error == null) return 'running';
+  if (!e.is_error) return 'done';
+  const again = entries.slice(i + 1).some((x) => x.kind === 'tool' && x.name === e.name);
+  return again ? 'retried' : 'failed';
+}
+
+const DOING = {
+  image_generate: 'drawing a picture',
+  image_view: 'looking at an image',
+  web_search: 'searching the web',
+  fs_read: 'reading a file',
+};
+
+const clockOf = (ms) => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+
+// The line under a run that has not answered yet, so a slow local model
+// never looks broken (owner, 2026-09-30): the tool it is waiting on and for
+// how long, else that the persona is typing. Nothing once text streams, and
+// nothing when no run is live.
+export function waitingLine(run, display, now) {
+  if (!run?.running || run.streaming) return null;
+  const pending = [...(run.entries ?? [])].reverse().find((e) => e.kind === 'tool' && e.is_error == null);
+  if (pending) {
+    const doing = DOING[pending.name] ?? `using ${pending.name}`;
+    return pending.started ? `${doing}… ${clockOf(now - pending.started)}` : `${doing}…`;
+  }
+  return `${display} is typing`;
+}
+
 export function emptyRun(entries = [], taint = null) {
   // `crisisSeq` carries on past the entries it numbered, so ids never repeat
   // within a page's life of the chat.
@@ -165,7 +209,9 @@ export function applyEvent(state, ev) {
       return { ...state, running: true, streaming: (state.streaming ?? '') + ev.text };
     case 'tool': {
       const s = flush(state);
-      return { ...s, entries: [...s.entries, { kind: 'tool', id: ev.id, name: ev.name, is_error: null }] };
+      // `started` is the page's clock, for the "drawing a picture… 1:24"
+      // line: a local model can take minutes on an image.
+      return { ...s, entries: [...s.entries, { kind: 'tool', id: ev.id, name: ev.name, is_error: null, started: ev.started ?? Date.now() }] };
     }
     case 'tool_result':
       return {
@@ -208,7 +254,14 @@ export function taintLabel(taint) {
 // is, so "keywords only" never reads as a check that passed.
 export function safetyLine(safety) {
   if (!safety) return '';
-  const crisis = safety.crisis === 'off' ? 'crisis detection off' : 'crisis detection: keywords only';
+  // Three states, each said as it is: both tiers answering, keywords only
+  // because the model check could not answer, or switched off.
+  const crisis = {
+    off: 'crisis detection off',
+    on: 'crisis detection on',
+    // A persona's own setting, before any chat has asked the judge.
+    enabled: 'crisis detection: keywords + a model check on each message',
+  }[safety.crisis] ?? 'crisis detection: keywords only (the model check could not answer)';
   const off = ['disclosure', 'reanchor', 'dose'].filter((k) => safety[k] === false);
   // The farewell check arrives as a state, not a flag (review of #418).
   if (safety.farewell === 'off') off.push('farewell');
