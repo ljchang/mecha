@@ -111,16 +111,21 @@ pub const CRISIS_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(
 pub enum CrisisState {
     /// The owner switched it off for this persona.
     Off,
-    /// Only the keyword tier runs: the model tiers are unbuilt (2c-2), or
-    /// cannot reach a model.
+    /// Both tiers: the keywords, and the judge (`persona::judge`), which
+    /// answered the last time it was asked.
+    On,
+    /// Only the keyword tier: the judge could not answer — no model, a
+    /// refusal, an empty or unreadable reply. Said, never read as `On`.
     Degraded,
 }
 
-pub fn crisis_state(crisis_on: bool) -> CrisisState {
-    if crisis_on {
-        CrisisState::Degraded
-    } else {
-        CrisisState::Off
+/// The crisis sensor's state for a chat: `judge_ok` is whether the judge
+/// answered the last time it was asked (true before it has been asked).
+pub fn crisis_state(crisis_on: bool, judge_ok: bool) -> CrisisState {
+    match (crisis_on, judge_ok) {
+        (false, _) => CrisisState::Off,
+        (true, true) => CrisisState::On,
+        (true, false) => CrisisState::Degraded,
     }
 }
 
@@ -153,14 +158,31 @@ fn append_line(path: &Path, line: &str) -> Result<()> {
     writeln!(f, "{line}").with_context(|| format!("writing {}", path.display()))
 }
 
+/// Which tier made a crisis record, and the detector's revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    Keyword,
+    Judge,
+}
+
+impl Tier {
+    fn names(self) -> (&'static str, &'static str) {
+        match self {
+            Tier::Keyword => ("keyword", DETECTOR),
+            Tier::Judge => ("judge", super::judge::JUDGE),
+        }
+    }
+}
+
 /// Count a crisis hit. `dir` is the persona store.
-pub fn record_crisis(dir: &Path, surface: &str, paused: bool) -> Result<()> {
+pub fn record_crisis(dir: &Path, surface: &str, tier: Tier, paused: bool) -> Result<()> {
+    let (tier, detector) = tier.names();
     let record = CrisisRecord {
         at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         check: "crisis".into(),
-        tier: "keyword".into(),
+        tier: tier.into(),
         surface: surface.into(),
-        detector: DETECTOR.into(),
+        detector: detector.into(),
         paused,
     };
     append_line(&dir.join("safety.jsonl"), &serde_json::to_string(&record)?)
@@ -185,6 +207,7 @@ pub struct DoseRecord {
 #[serde(rename_all = "snake_case")]
 pub enum CrisisStateWire {
     Off,
+    On,
     #[default]
     #[serde(other)]
     Degraded,
@@ -194,6 +217,7 @@ impl From<CrisisState> for CrisisStateWire {
     fn from(s: CrisisState) -> Self {
         match s {
             CrisisState::Off => CrisisStateWire::Off,
+            CrisisState::On => CrisisStateWire::On,
             CrisisState::Degraded => CrisisStateWire::Degraded,
         }
     }
@@ -368,7 +392,7 @@ mod tests {
     fn the_crisis_record_carries_no_content() {
         let dir = std::env::temp_dir().join(format!("mecha-safety-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        record_crisis(&dir, "web", true).unwrap();
+        record_crisis(&dir, "web", Tier::Keyword, true).unwrap();
         let text = std::fs::read_to_string(dir.join("safety.jsonl")).unwrap();
         let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
         let keys: Vec<&str> = value
