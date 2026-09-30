@@ -1237,8 +1237,9 @@ fn render_settings(new: &NewPersona, tools: &[String], answers: Answers) -> Stri
         many => format!("relationship = {}\n", quoted_list(many)),
     };
     format!(
-        "# {name}: the settings the code reads. Yours — mecha never rewrites this\n\
-         # file. Who they are lives in identity.md, what they want in motivation.md.\n\
+        "# {name}: the settings the code reads. Yours — only you change it, here\n\
+         # or in the page's form, which sets values in place and keeps comments.\n\
+         # Who they are lives in identity.md, what they want in motivation.md.\n\
          # docs/PERSONA-DESIGN.md §4.3 explains each field.\n\
          \n\
          display      = {display}\n\
@@ -1657,6 +1658,356 @@ pub fn relationship_choices(dir: &Path) -> Vec<(String, bool)> {
         }
     }
     out.into_iter().collect()
+}
+
+/// The names a settings form offers beside its fixed choices, read from the
+/// stores where the form is built — the relationships a persona can name
+/// ([`relationship_choices`]), the declared groups, the characters the
+/// viewer may see.
+#[derive(Debug, Clone, Default)]
+pub struct FormChoices {
+    pub relationships: Vec<String>,
+    pub groups: Vec<String>,
+    pub characters: Vec<String>,
+}
+
+/// Said on every switch the harness stores and does not read yet, so a form
+/// never shows a toggle that silently does nothing.
+const UNBUILT: &str = "Not built yet: saved now, used once it is.";
+
+/// `persona.toml` as a form (`tomlform`): every key [`Settings`] reads
+/// except `voice`, whose profiles are not built. Edited in place — the
+/// owner's comments stay — and saved through [`edit_settings`].
+pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
+    use crate::tomlform::{Field, Form, Kind, Opt, Section};
+    let text = |max, placeholder: &str| Kind::Text {
+        max,
+        optional: true,
+        placeholder: Some(placeholder.to_string()),
+    };
+    Form {
+        sections: vec![
+            Section::new("Who they are")
+                .field(
+                    Field::new("display", "Name", text(MAX_DISPLAY, "the folder name"))
+                        .help("How the persona is shown and addressed."),
+                )
+                .field(
+                    Field::new(
+                        "relationship",
+                        "Relationship",
+                        Kind::Chips {
+                            options: Opt::names(&c.relationships),
+                            free: false,
+                        },
+                    )
+                    .help("Templates that shape how it relates to you."),
+                )
+                .field(
+                    Field::new(
+                        "groups",
+                        "Groups",
+                        Kind::Chips {
+                            options: Opt::names(&c.groups),
+                            free: false,
+                        },
+                    )
+                    .help("Groups share what you tell them with every member."),
+                )
+                .field(Field::new(
+                    "character",
+                    "Portrait",
+                    Kind::Choice {
+                        options: Opt::names(&c.characters),
+                        none: Some("No portrait".into()),
+                    },
+                )),
+            Section::new("Model and tools")
+                // Read by nothing yet: persona chats follow the model the
+                // chat's chip (and every other surface) has picked.
+                .field(
+                    Field::new("model", "Model", text(128, "the model the chip picks"))
+                        .help("Not built yet: saved now; chats use the model picked in the chat.")
+                        .unbuilt(),
+                )
+                .field(
+                    Field::new(
+                        "tools.allow",
+                        "Tools",
+                        Kind::Chips {
+                            options: Vec::new(),
+                            free: true,
+                        },
+                    )
+                    .help(
+                        "A tool a persona may never have, or one that could send \
+                         somewhere the model names, is refused when a chat starts.",
+                    ),
+                )
+                .field(Field::new(
+                    "files.answers",
+                    "Answers from",
+                    Kind::Choice {
+                        options: vec![
+                            Opt::new("open", "Files and tools"),
+                            Opt::new("files", "Files only")
+                                .help("Tools that read the web are withheld."),
+                        ],
+                        none: None,
+                    },
+                )),
+            Section::new("Safety")
+                .help("On by default. Turning one off affects this persona only.")
+                .field(
+                    Field::toggle("safety.disclosure", "Disclosure")
+                        .help("Every chat opens by saying this is an AI character you wrote."),
+                )
+                .field(Field::toggle("safety.crisis", "Crisis check").help(
+                    "A message that suggests risk of self-harm pauses the persona \
+                     and shows crisis resources.",
+                ))
+                .field(
+                    Field::toggle("safety.reanchor", "Re-anchor")
+                        .help("Every few turns, and after a gap, it is reminded who it is."),
+                )
+                .field(
+                    Field::toggle("safety.dose", "Time spent")
+                        .help("Counts turns per day and late at night, shown on the persona."),
+                )
+                .field(
+                    Field::toggle("safety.breaks", "Break reminders")
+                        .help(UNBUILT)
+                        .unbuilt(),
+                )
+                .field(
+                    Field::toggle("safety.farewell", "Farewell check")
+                        .help(UNBUILT)
+                        .unbuilt(),
+                ),
+            Section::new("Memory")
+                .help(UNBUILT)
+                .unbuilt()
+                .field(Field::toggle("memory.episodic", "Past conversations"))
+                .field(Field::toggle("memory.semantic", "Facts it learns"))
+                .field(Field::new(
+                    "memory.user_facts",
+                    "Facts about you",
+                    Kind::Choice {
+                        options: vec![
+                            Opt::new("shared", "Shared"),
+                            Opt::new("own", "Its own"),
+                            Opt::new("off", "None"),
+                        ],
+                        none: None,
+                    },
+                ))
+                .field(Field::toggle("memory.about_me", "About-me notes"))
+                .field(
+                    Field::toggle("memory.self_update", "Self-update")
+                        .help("Sections of its identity evolve; never Core or a fixed one."),
+                )
+                .field(Field::new(
+                    "memory.fixed",
+                    "Fixed sections",
+                    Kind::Chips {
+                        options: Vec::new(),
+                        free: true,
+                    },
+                )),
+        ],
+    }
+}
+
+/// A form's values for this `persona.toml`, read through [`Settings`] so a
+/// key the file leaves out shows its default.
+pub fn settings_values(
+    form: &crate::tomlform::Form,
+    text: &str,
+) -> Result<serde_json::Map<String, serde_json::Value>> {
+    let settings: Settings = parse_toml(text)?;
+    Ok(crate::tomlform::values(
+        form,
+        &serde_json::to_value(settings)?,
+    ))
+}
+
+/// Apply a form's changes to `persona.toml` in place and save it through
+/// [`write_owner_file`] — the same size, control-character, stale-`base`
+/// and must-still-load checks a text save gets. A starter relationship
+/// named for the first time is copied in first, as `create` does.
+pub fn edit_settings(
+    dir: &Path,
+    name: &str,
+    form: &crate::tomlform::Form,
+    changes: &serde_json::Map<String, serde_json::Value>,
+    base: &str,
+) -> Result<State> {
+    let text = read_owner_file(dir, name, OwnerFile::Settings)?;
+    let edited = crate::tomlform::apply(form, &text, changes)?;
+    // Before the write, not after: `write_owner_file` refuses a persona that
+    // names a template not on disk, so a starter must be copied in first. A
+    // refused save leaves it seeded — idempotent, and what `create` does.
+    if changes.contains_key("relationship") {
+        seed_starters(dir)?;
+    }
+    write_owner_file(dir, name, OwnerFile::Settings, &edited, Some(base))
+}
+
+/// Is this line a root-table `character = …` assignment? Line-based on
+/// purpose, so a file that no longer parses is redacted all the same: every
+/// line before the first `[table]` header whose key is `character`, bare or
+/// quoted. A `# character = …` comment is not one.
+fn is_character_line(line: &str) -> bool {
+    let t = line.trim_start();
+    let key = t
+        .strip_prefix("character")
+        .or_else(|| t.strip_prefix("\"character\""))
+        .or_else(|| t.strip_prefix("'character'"));
+    matches!(key, Some(rest) if rest.trim_start().starts_with('='))
+}
+
+/// The root-table lines of a TOML text, by index: those before the first
+/// `[table]` or `[[array]]` header.
+fn root_lines(text: &str) -> usize {
+    text.lines()
+        .position(|l| l.trim_start().starts_with('['))
+        .unwrap_or(usize::MAX)
+}
+
+/// The lines, first and last inclusive, that a root `character = …` spans:
+/// from its key to the end of its value, however many lines that is (a
+/// `"""` string), read with `toml_edit`'s span-keeping parser. A text that
+/// does not parse falls back to the line, and every line after it while a
+/// multi-line string it opened is still open — never to less (review of
+/// #430: a line-based cut left the rest of a multi-line value served).
+fn character_lines(text: &str) -> Option<(usize, usize)> {
+    let line_of = |at: usize| text[..at.min(text.len())].matches('\n').count();
+    if let Ok(doc) = toml_edit::Document::parse(text) {
+        let spanned = doc
+            .as_table()
+            .get_key_value("character")
+            .and_then(|(k, v)| Some((k.span()?.start, v.span()?.end)));
+        match spanned {
+            Some((start, end)) => return Some((line_of(start), line_of(end.saturating_sub(1)))),
+            None if doc.as_table().get("character").is_none() => return None,
+            None => {}
+        }
+    }
+    let root = root_lines(text);
+    let lines: Vec<&str> = text.lines().collect();
+    let first = (0..lines.len().min(root)).find(|&i| is_character_line(lines[i]))?;
+    let opens = ["\"\"\"", "'''"]
+        .into_iter()
+        .find(|q| lines[first].matches(q).count() % 2 == 1);
+    let last = match opens {
+        Some(q) => (first + 1..lines.len())
+            .find(|&i| lines[i].contains(q))
+            .unwrap_or(lines.len() - 1),
+        None => first,
+    };
+    Some((first, last))
+}
+
+/// A line index at or near `want` where a root `key = value` can go in
+/// `text`: never inside a value that spans lines (a multi-line array or
+/// string the owner reformatted on the page), and never past the first table
+/// header. A text that does not parse takes line 0, before anything (review
+/// of #430: the disk's line number, spliced into the client's text, could
+/// land mid-value and break the save or cut the link).
+fn root_boundary(text: &str, want: usize) -> usize {
+    let Ok(doc) = toml_edit::Document::parse(text) else {
+        return 0;
+    };
+    let line_of = |at: usize| text[..at.min(text.len())].matches('\n').count();
+    let mut first_table = usize::MAX;
+    let mut spans = Vec::new();
+    for (name, item) in doc.as_table().iter() {
+        let Some(span) = item.span() else { continue };
+        if item.is_value() {
+            let start = doc
+                .as_table()
+                .key(name)
+                .and_then(|k| k.span())
+                .map_or(span.start, |k| k.start);
+            spans.push((line_of(start), line_of(span.end.saturating_sub(1))));
+        } else {
+            first_table = first_table.min(line_of(span.start));
+        }
+    }
+    let mut at = want.min(first_table);
+    while let Some(&(_, end)) = spans.iter().find(|(start, end)| *start < at && at <= *end) {
+        at = end + 1;
+    }
+    at.min(first_table)
+}
+
+/// `persona.toml` as a locked page may see it: without the `character`
+/// assignment when the persona's portrait is a locked library character
+/// (owner ruling, 2026-09-30 — the link is hidden, never cut). Everything
+/// else is the file as written.
+pub fn hide_character(text: &str) -> String {
+    let Some((first, last)) = character_lines(text) else {
+        return text.to_string();
+    };
+    let mut out: String = text
+        .lines()
+        .enumerate()
+        .filter(|(i, _)| !(first..=last).contains(i))
+        .map(|(_, l)| format!("{l}\n"))
+        .collect();
+    if !text.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+/// A save from a page that was shown [`hide_character`]'s text: the hidden
+/// assignment put back **as it is in `disk`** — its spelling, every line of
+/// it and any comment on it — at its old line number, kept inside the root
+/// table (review of #430: a fresh bare `character = …` lost the owner's
+/// comment). Unless the owner wrote a `character` of their own, which stands.
+pub fn restore_character(text: &str, disk: &str) -> String {
+    if character_lines(text).is_some() {
+        return text.to_string();
+    }
+    let Some((first, last)) = character_lines(disk) else {
+        return text.to_string();
+    };
+    let hidden: Vec<&str> = disk.lines().skip(first).take(last - first + 1).collect();
+    let mut lines: Vec<&str> = text.lines().collect();
+    let at = root_boundary(text, first).min(lines.len());
+    lines.splice(at..at, hidden);
+    let mut out = lines.join("\n");
+    if text.ends_with('\n') || text.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+/// The sections a Markdown owner file must keep: `## Core` in identity.md
+/// is who they are at heart, and the re-anchor reads it.
+pub fn fixed_sections(file: OwnerFile) -> &'static [&'static str] {
+    match file {
+        OwnerFile::Identity => &["Core"],
+        OwnerFile::Motivation | OwnerFile::Settings => &[],
+    }
+}
+
+/// Save a Markdown owner file from its form (`mdform`): written in the
+/// canonical layout and saved through [`write_owner_file`], with every check
+/// a text save gets.
+pub fn edit_markdown(
+    dir: &Path,
+    name: &str,
+    file: OwnerFile,
+    doc: &crate::mdform::Doc,
+    base: &str,
+) -> Result<State> {
+    if file == OwnerFile::Settings {
+        bail!("persona.toml is not Markdown");
+    }
+    let text = crate::mdform::join(doc, fixed_sections(file))?;
+    write_owner_file(dir, name, file, &text, Some(base))
 }
 
 /// A text's digest, as a page holds it to say which version of a file it
@@ -2518,6 +2869,149 @@ mod tests {
         assert!(write_owner_file(&dir, "mara", OwnerFile::Motivation, "a\u{1b}[2J", None).is_err());
         assert!(read_owner_file(&dir, "nobody", OwnerFile::Identity).is_err());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The form's save: values set in place, every comment the template
+    /// wrote still there, and the same stale check a text save gets.
+    #[test]
+    fn a_form_edit_keeps_the_owners_comments_and_checks_base() {
+        use serde_json::json;
+        let dir = scratch();
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        let before = read_owner_file(&dir, "mara", OwnerFile::Settings).unwrap();
+        let choices = FormChoices {
+            relationships: relationship_choices(&dir)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect(),
+            ..FormChoices::default()
+        };
+        let form = settings_form(&choices);
+        let values = settings_values(&form, &before).unwrap();
+        assert_eq!(values["safety.crisis"], json!(true));
+        assert_eq!(values["memory.user_facts"], json!("shared"));
+
+        let starter = choices.relationships[0].clone();
+        let changes = json!({ "safety.breaks": true, "relationship": [starter] });
+        let state = edit_settings(
+            &dir,
+            "mara",
+            &form,
+            changes.as_object().unwrap(),
+            &text_digest(&before),
+        )
+        .unwrap();
+        assert_eq!(state.version, 2);
+        let after = read_owner_file(&dir, "mara", OwnerFile::Settings).unwrap();
+        let comments = |t: &str| t.lines().filter(|l| l.contains('#')).count();
+        assert_eq!(comments(&after), comments(&before), "{after}");
+        let v = settings_values(&form, &after).unwrap();
+        assert_eq!(v["safety.breaks"], json!(true));
+        assert_eq!(v["relationship"], json!([starter]));
+
+        // Opened before that save: refused, and the file is as it was.
+        let stale = json!({ "safety.crisis": false });
+        let e = edit_settings(
+            &dir,
+            "mara",
+            &form,
+            stale.as_object().unwrap(),
+            &text_digest(&before),
+        )
+        .unwrap_err();
+        assert!(e.downcast_ref::<StaleEdit>().is_some(), "{e:#}");
+        // A name the form does not offer: refused before anything is read.
+        let stranger = json!({ "relationship": ["stranger"] });
+        assert!(edit_settings(
+            &dir,
+            "mara",
+            &form,
+            stranger.as_object().unwrap(),
+            &text_digest(&after)
+        )
+        .is_err());
+        assert_eq!(
+            read_owner_file(&dir, "mara", OwnerFile::Settings).unwrap(),
+            after
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Hidden, never cut: the served text has no `character` line, and a
+    /// save of it gets the link back — unless the owner wrote their own.
+    #[test]
+    fn a_hidden_character_is_redacted_and_restored() {
+        let text = "# c\n# character = \"example\"\ndisplay = \"Mara\"\ncharacter  = \"theo\"  # portrait\n\n[tools]\ncharacter = \"not-root\"\n";
+        let shown = hide_character(text);
+        assert!(!shown.contains("\"theo\""), "{shown}");
+        assert!(shown.contains("# character = \"example\""), "comments stay");
+        assert!(
+            shown.contains("character = \"not-root\""),
+            "only the root key"
+        );
+        let back = restore_character(&shown, text);
+        let parsed: toml::Table = toml::from_str(&back).unwrap();
+        assert_eq!(parsed["character"].as_str(), Some("theo"), "{back}");
+        // Back as it was, comment and all, where it was.
+        assert_eq!(back, text, "{back}");
+        assert_eq!(parsed["tools"]["character"].as_str(), Some("not-root"));
+        // The owner named a portrait of their own: theirs stands.
+        let chosen = shown.replace(
+            "display = \"Mara\"",
+            "display = \"Mara\"\ncharacter = \"maya\"",
+        );
+        assert_eq!(restore_character(&chosen, text), chosen);
+        // A file with no tables, and one that does not parse, both work.
+        assert_eq!(hide_character("character = \"theo\"\n"), "");
+        assert_eq!(
+            restore_character("", "character = \"theo\"\n"),
+            "character = \"theo\"\n"
+        );
+        assert!(!hide_character("character = \"theo\"\ndisplay = ").contains("theo"));
+        // A multi-line value goes whole, parsed or not, and comes back whole.
+        let multi = "display = \"Mara\"\ncharacter = \"\"\"\ntheo\"\"\"\n\n[tools]\nallow = []\n";
+        let shown = hide_character(multi);
+        assert!(!shown.contains("theo"), "{shown}");
+        assert!(toml::from_str::<toml::Table>(&shown).is_ok(), "{shown}");
+        assert_eq!(restore_character(&shown, multi), multi);
+        // The owner reformatted a value on the page so that it now spans the
+        // hidden line's old number: the line goes back beside it, not in it.
+        let disk = "# h\n\ncharacter = \"theo\"\ndisplay = \"Mara\"\n\n[tools]\nallow = []\n";
+        let client = hide_character(disk).replacen("\n\n", "\nmodel = \"\"\"\nlocal\n\"\"\"\n", 1);
+        let back = restore_character(&client, disk);
+        let parsed: toml::Table = toml::from_str(&back).expect(&back);
+        assert_eq!(parsed["character"].as_str(), Some("theo"), "{back}");
+        assert_eq!(parsed["model"].as_str(), Some("local\n"), "{back}");
+        let broken = "character = '''\ntheo\n'''\ndisplay = ";
+        assert!(
+            !hide_character(broken).contains("theo"),
+            "{}",
+            hide_character(broken)
+        );
+    }
+
+    /// Every path the settings form declares is a key `Settings` carries: a
+    /// typo or a rename would otherwise draw as "off" and fail only at save,
+    /// as an unknown field (review of #430; the shape of
+    /// `every_field_of_config_is_reachable_from_a_file`).
+    #[test]
+    fn every_settings_form_path_is_a_settings_key() {
+        let typed = serde_json::to_value(parse_toml::<Settings>("").unwrap()).unwrap();
+        let form = settings_form(&FormChoices::default());
+        for field in form.sections.iter().flat_map(|s| &s.fields) {
+            let (parents, leaf) = field.path.rsplit_once('.').unwrap_or(("", &field.path));
+            let table = parents
+                .split('.')
+                .filter(|s| !s.is_empty())
+                .try_fold(&typed, |at, seg| at.get(seg))
+                .and_then(|t| t.as_object())
+                .unwrap_or_else(|| panic!("no table for `{}`", field.path));
+            assert!(
+                table.contains_key(leaf),
+                "`{}` is not a Settings key",
+                field.path
+            );
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // The Personas tab's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
 import {
-  isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle,
+  isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
   taintLabel, safetyLine, doseLine, personaName, authoringUrl, keptCharacter, OWNER_FILES,
 } from '../src/lib/persona.js';
 
@@ -129,6 +129,21 @@ assert.deepEqual(s.entries, [{ kind: 'notice', text: 'model unavailable' }]);
 // An event this page does not know changes nothing.
 const before = emptyRun([{ kind: 'user', text: 'x' }]);
 assert.equal(applyEvent(before, { type: 'affect', label: 'calm' }), before);
+
+// An editor save keeps the other tabs' unsaved edits — text and form alike —
+// and each tab's mode; the saved file's own drafts are the saved file now.
+{
+  const files = {
+    identity: { text: 'a', draft: 'a2', formDraft: { title: 'x' }, asText: false },
+    motivation: { text: 'm', draft: 'm', formDraft: { title: 'y' }, asText: true },
+    settings: { text: 's', formDraft: { 'safety.dose': false } },
+  };
+  assert.deepEqual(keptEdits(files, 'identity'), {
+    identity: { asText: false },
+    motivation: { asText: true, formDraft: { title: 'y' } },
+    settings: { asText: undefined, formDraft: { 'safety.dose': false } },
+  });
+}
 
 // A relock drops a locked portrait the form had chosen; an unlock keeps
 // whatever was chosen, since the list only grows.
