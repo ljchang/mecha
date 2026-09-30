@@ -109,6 +109,43 @@ fn set(ids: &[String], on: bool) -> Result<()> {
     Ok(())
 }
 
+/// What the global configuration says about `f` right now, if it refuses:
+/// the same [`feature::refusal`] the web routes answer with. `None` when
+/// `f` is on, not guarded yet, or the configuration cannot be read — a
+/// config that does not load is the command's own error to report, in its
+/// own words, a moment later.
+pub fn refusal_now(f: Feature) -> Option<feature::Refusal> {
+    let home = mecha_core::work::mecha_home().ok()?;
+    let cfg = Config::load_global().ok()?;
+    feature::refusal(&feature::Facts::read(&home, &cfg), f)
+}
+
+/// The first thing a verb that belongs to `f` does (FEATURES-DESIGN.md §4.2
+/// item 5): refuse with the one sentence every surface says — *"Mail and
+/// calendar is off (not enabled in [features]) — `mecha features enable
+/// mail`"* — read from the global file, never the layered `Config` the verb
+/// then runs with, which a project could otherwise answer for the owner.
+pub fn require(f: Feature) -> Result<()> {
+    match refusal_now(f) {
+        Some(r) => anyhow::bail!("{}", r.sentence()),
+        None => Ok(()),
+    }
+}
+
+/// Why a knowledge-graph tool is missing from a run's surface: the switch,
+/// when that is the cause — `prepare_tools` does not connect the graph
+/// server with `graph` off, and asking about `[[mcp]]` would send the owner
+/// to the wrong file — else the missing server entry (the #445 leftover).
+pub fn graph_tool_absent(f: Feature, tool: &str) -> String {
+    match refusal_now(f) {
+        Some(r) => r.sentence(),
+        None => format!(
+            "no knowledge-graph server in this configuration — `{tool}` is not on the \
+             tool surface. Is `[[mcp]]` enabled?"
+        ),
+    }
+}
+
 /// The upgrade notice, printed on stderr when a session or a service
 /// starts: one line per feature this install set up whose switch is still
 /// unanswered, and one per `[features]` key this build does not know.
@@ -225,6 +262,23 @@ fn render(rows: &[Row], announced: &[feature::Announcement]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The #445 leftover: a graph tool missing from a run's surface names the
+    /// switch when that is why, and the `[[mcp]]` entry only when it is not —
+    /// read from the global file, as every refusal is.
+    #[test]
+    fn a_missing_graph_tool_names_the_switch_when_that_is_the_cause() {
+        let home = crate::testenv::HomeGuard::new("features-graph-absent");
+        let write = |body: &str| std::fs::write(home.dir.join("config.toml"), body).unwrap();
+        write("[features]\ngraph = false\n");
+        let said = graph_tool_absent(Feature::Tasks, "kg_task_list");
+        assert!(said.contains("`mecha features enable graph`"), "{said}");
+        assert!(!said.contains("[[mcp]]"), "{said}");
+        write("[features]\ngraph = true\n");
+        let said = graph_tool_absent(Feature::Tasks, "kg_task_list");
+        assert!(said.contains("Is `[[mcp]]` enabled?"), "{said}");
+        assert!(require(Feature::Tasks).is_ok());
+    }
 
     #[test]
     fn the_notice_is_one_line_with_one_command() {

@@ -59,6 +59,11 @@ pub async fn execute(args: Args) -> Result<()> {
         );
     };
     let cache_dir = Cache::default_dir()?;
+    // Extraction is the feature; `prune` and `forget` only delete what the
+    // cache already holds, and deleting data you have is never refused.
+    if matches!(args.cmd, Cmd::Extract { .. }) {
+        super::features::require(mecha_core::feature::Feature::Documents)?;
+    }
     match args.cmd {
         Cmd::Extract {
             file,
