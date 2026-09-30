@@ -2307,6 +2307,12 @@ impl Tool for ImageGenerate {
         let mut used = Vec::new();
         let mut source_seeds = Vec::new();
         let mut drawn_as_extras: Vec<String> = Vec::new();
+        // Who was actually drawn, for the manifest: the cast that kept its
+        // portraits, and every extra — the model's and the demoted — so a
+        // character is never recorded with a stranger's clothes (review of
+        // #434: the manifest zipped the asked-for cast against the drawn one).
+        let mut drawn_cast: Vec<crate::imagelib::CastMember> = Vec::new();
+        let mut drawn_extras: Vec<String> = Vec::new();
         if let Some(ask) = &ask {
             let lib = match &self.library_dir {
                 Some(dir) => crate::imagelib::Library::load(dir).0,
@@ -2327,26 +2333,27 @@ impl Tool for ImageGenerate {
             // A name the library does not hold is drawn as an extra, from what
             // the model wrote, rather than refusing the picture — except in a
             // persona chat, which refuses it as before.
-            let (cast, extras) = if self.persona {
-                (ask.cast.clone(), ask.extras.clone())
+            let (cast, demoted) = if self.persona {
+                (ask.cast.clone(), Vec::new())
             } else {
                 let (kept, moved, names) = crate::imagelib::demote_unknown(&lib, &ask.cast);
                 drawn_as_extras = names;
-                let mut extras = ask.extras.clone();
-                extras.extend(moved);
-                (kept, extras)
+                (kept, moved)
             };
-            let compiled = match crate::imagelib::compile(
+            let compiled = match crate::imagelib::compile_with(
                 &lib,
                 &req.prompt,
                 &cast,
-                &extras,
+                &ask.extras,
+                &demoted,
                 ask.style.as_deref(),
             ) {
                 Ok(compiled) => compiled,
                 // Before the GPU, so `refused` says nothing was drawn.
                 Err(why) => return Ok(refused(why)),
             };
+            drawn_extras = ask.extras.iter().cloned().chain(demoted).collect();
+            drawn_cast = cast;
             req.prompt = compiled.prompt;
             if !compiled.references.is_empty() {
                 req.references = compiled
@@ -2537,13 +2544,13 @@ impl Tool for ImageGenerate {
             "mask": mask_path,
             "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
             "same_layout_as": near.as_ref().map(|n| &n.original),
-            "cast": ask.as_ref().filter(|a| !a.cast.is_empty()).map(|a| a.cast.iter()
+            "cast": (!drawn_cast.is_empty()).then(|| drawn_cast.iter()
                 .zip(used.iter().filter(|u| u.kind == crate::imagelib::Kind::Character))
                 .map(|(m, u)| json!({
                 "name": u.name, "version": u.version, "portrait": u.portrait,
                 "wearing": m.wearing.trim(), "doing": m.doing.trim(),
             })).collect::<Vec<_>>()),
-            "extras": ask.as_ref().filter(|a| !a.extras.is_empty()).map(|a| &a.extras),
+            "extras": (!drawn_extras.is_empty()).then_some(&drawn_extras),
             "style": used.iter().find(|u| u.kind == crate::imagelib::Kind::Style)
                 .map(|u| json!({"name": u.name, "version": u.version})),
             "model": {
@@ -4321,9 +4328,11 @@ mod tests {
         )
         .unwrap();
         let t = Arc::new(tool(&url).with_library_dir(lib.clone()));
+        // The unknown name first, and its action naming a kept character:
+        // both are how a model writes it (review of #434).
         let cast = json!([
-            {"name": "maya", "wearing": "a yellow raincoat", "doing": "laughing"},
-            {"name": "Sam", "wearing": "a denim jacket", "doing": "pouring coffee"}
+            {"name": "Sam", "wearing": "a denim jacket", "doing": "pouring coffee for maya"},
+            {"name": "maya", "wearing": "a yellow raincoat", "doing": "laughing"}
         ]);
         let out = t
             .call(
@@ -4347,12 +4356,26 @@ mod tests {
             .cloned()
             .unwrap();
         assert!(
-            submitted.contains("Sam, wearing a denim jacket, pouring coffee"),
+            submitted.contains("Sam, wearing a denim jacket, pouring coffee for maya"),
             "{submitted}"
         );
         assert!(
             submitted.contains("The person in the image (maya, a memorable face)"),
             "{submitted}"
+        );
+
+        // The manifest records who was drawn: maya with her own clothes, and
+        // Sam among the extras.
+        let manifest = manifest_of(&dir, &out.content);
+        assert_eq!(manifest["cast"][0]["name"], "maya", "{manifest}");
+        assert_eq!(
+            manifest["cast"][0]["wearing"], "a yellow raincoat",
+            "{manifest}"
+        );
+        assert_eq!(manifest["cast"].as_array().unwrap().len(), 1, "{manifest}");
+        assert_eq!(
+            manifest["extras"][0],
+            "Sam, wearing a denim jacket, pouring coffee for maya"
         );
 
         // A candidate is a known name: refused, not drawn as a stranger.
