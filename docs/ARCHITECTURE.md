@@ -7940,6 +7940,15 @@ durable machine-readable markers in its own store, and doctor is the one
 reader. A new failure mode costs a marker and a check, never a cross-crate
 dependency.
 
+**Each store is read where its owner keeps it.** The mail crate's registry
+and legacy stores live by its rule (`$MECHA_MAIL_DIR`, `$MECHA_GOOGLE_DIR`,
+`$MECHA_OUTLOOK_DIR`, else `~/.mecha/..` under the real home) and ignore
+`$MECHA_HOME`, so `examine` locates them with `MailStores::of_owner` rather
+than `home.join(..)` — which read a directory nobody wrote whenever either
+variable was set, and reported a dead login as all clear (#432). The rule is
+§Features' "another program's store is found by its rule"; `frontdoor`,
+`setup`, Slack's import check and the booking sweep each paid for it first.
+
 Most checks are self-evident: dead auth markers, releases that errored, drafts
 and requests waiting past a threshold, triggers whose slots stopped advancing,
 failed `mecha-*` units and harness candidates staged past 72h. Five carry reasoning that is not

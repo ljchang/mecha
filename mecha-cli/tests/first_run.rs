@@ -104,7 +104,11 @@ fn run(home: &Home, args: &[&str], with_key: bool) -> Output {
         // So the home is ours too, or a developer's authorised mailbox turns
         // `docs` from missing into done on their machine only.
         .env("HOME", home.path())
+        // `HOME` covers only the fallback arm; an explicitly set variable
+        // walks past it. doctor reads the legacy stores by these too.
         .env_remove("MECHA_MAIL_DIR")
+        .env_remove("MECHA_GOOGLE_DIR")
+        .env_remove("MECHA_OUTLOOK_DIR")
         // A developer's own key would make `provider-credential` disappear
         // and the test pass for the wrong reason on their machine and fail
         // in CI. Removed rather than blanked: an empty value is a

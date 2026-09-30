@@ -239,8 +239,10 @@ pub fn event_text(record: &PollRecord) -> (String, String) {
 /// home the two halves must agree — and the ledger that keeps this half's
 /// sends from repeating must live in the same home as the records it is
 /// about. (The rest of this crate's stores — tokens, accounts, the
-/// bookings ledger — still resolve through `dirs::home_dir()`.)
-fn mecha_home() -> Result<PathBuf> {
+/// bookings ledger — still resolve through `dirs::home_dir()`.) Public
+/// because the booking sweep reads mecha's `requests` store, and a reader of
+/// somebody else's store uses their rule for finding it.
+pub fn mecha_home() -> Result<PathBuf> {
     Ok(match std::env::var("MECHA_HOME") {
         Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => dirs::home_dir()

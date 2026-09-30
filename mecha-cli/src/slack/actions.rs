@@ -1148,17 +1148,14 @@ pub fn toggle_outcome(
 }
 
 /// Whether the unified registry now holds credentials for the imported
-/// account. The import writes `~/.mecha/mail/<provider>/oauth.json`; its
-/// presence, not the child's exit, is the outcome.
+/// account. The import writes `<registry>/<provider>/oauth.json`; its
+/// presence, not the child's exit, is the outcome. The registry is found by
+/// the mail crate's rule (`onboarding::mail_store_dir`), not under the mecha
+/// home, or a successful import reads as failed whenever `$MECHA_HOME` or
+/// `$MECHA_MAIL_DIR` is set.
 fn registry_credentials_exist(provider: &str) -> bool {
-    mecha_core::work::mecha_home()
-        .map(|home| {
-            home.join("mail")
-                .join(provider)
-                .join("oauth.json")
-                .is_file()
-        })
-        .unwrap_or(false)
+    mecha_core::onboarding::mail_store_dir()
+        .is_some_and(|dir| dir.join(provider).join("oauth.json").is_file())
 }
 
 /// The registry is the outcome. An import moves the login, not its health —
@@ -1281,6 +1278,35 @@ fn latest_trigger_row_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The import's outcome is read where the mail crate keeps its registry
+    /// — `$MECHA_MAIL_DIR` here — not under the mecha home. On the old
+    /// `mecha_home().join("mail")` a successful import read as failed
+    /// whenever the variable was set (review of #432).
+    #[test]
+    fn an_import_is_seen_where_the_mail_crate_keeps_its_registry() {
+        // Moves `MECHA_HOME` to an empty temp dir (and takes the binary's one
+        // env lock): the old code read `mecha_home().join("mail")`, and on a
+        // machine with a real import there the negative would pass on the old
+        // code — so the home must be empty everywhere (review of #432).
+        let _home = crate::testenv::HomeGuard::new("import-registry");
+        let dir =
+            std::env::temp_dir().join(format!("mecha-import-registry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("google")).unwrap();
+        std::fs::write(dir.join("google").join("oauth.json"), "{}").unwrap();
+        let restore = std::env::var("MECHA_MAIL_DIR").ok();
+        std::env::set_var("MECHA_MAIL_DIR", &dir);
+        let google = registry_credentials_exist("google");
+        let outlook = registry_credentials_exist("outlook");
+        match restore {
+            Some(v) => std::env::set_var("MECHA_MAIL_DIR", v),
+            None => std::env::remove_var("MECHA_MAIL_DIR"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(google, "the imported account is found in $MECHA_MAIL_DIR");
+        assert!(!outlook, "and one never imported is not");
+    }
     use mecha_core::trigger::RunStatus;
 
     fn remedy(argv: &[&str], needs_terminal: bool) -> Remedy {
