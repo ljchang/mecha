@@ -14,6 +14,47 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-30 — paint the part of a picture to change (#424, #429).** The
+owner asked for the web chat's Edit button to become a modal where areas can
+be painted. `IMAGE-REGION-EDIT-RESEARCH.md` (#424) measured the ways to
+target a region on Qwen-Image 2.1, on the #408 picnic picture, four seeds,
+60 images. A red box drawn on the picture, or a mask passed as a second
+image, only hinted, and the rest of the frame drifted as much as a plain
+edit. A latent noise mask with a composite in mecha (C) kept every pixel
+beyond the mask's edge exact, blended seamlessly, and landed 8 of 8 local
+edits. Crop-edit-paste (D) landed a pose, but left seams where its edge
+crossed a person. C′, the region hidden from the reference, lost her
+identity or copied its placeholder, and was dropped. The owner chose C.
+
+#429 (`f0e62112`) builds it:
+- `EditModal.svelte` has a brush, a box and an eraser. Painting dims the
+  rest of the picture.
+- The page uploads the mask but never attaches it, so it never reaches the
+  model as pixels. `image_generate` takes it as `mask`, read through the
+  jail.
+- `prepare_mask` sizes it to the encoder's canvas (`edit_canvas`), grows
+  it by about 21 px and feathers it by about 16. The graph samples under
+  `SetLatentNoiseMask`, and `composite_masked` lays the result back over
+  the original.
+- The near-copy check reads only the painted cells
+  (`layout_similarity_painted`).
+
+Six review passes found:
+- the modal carried one chat's paths into the next;
+- "painted" was judged from the op list, not the canvas;
+- a second finger hijacked the stroke;
+- a mask that failed to encode fell through to a whole-picture edit;
+- "pixel for pixel" was wrong for a photo larger than the canvas.
+
+The live check, with the local model, found two more things. Refusing a
+`size` beside a mask made the model retry without the mask (now the size is
+set aside). And the model copied results over the original picture (the
+result text now says not to). After the fixes, 4 of 4 real masked edits
+landed, identical beyond the mask's edge. Installed 2026-09-30 about 04:31Z
+by mecha-d7 (main `c599c802`). Between the dist rsync at 04:29Z and the serve
+restart, the new page ran against the old binary, which ignored `mask` and
+would have edited the whole picture.
+
 **2026-09-29 — PDFs as a tool, a layout stage for tables, model servers
 that start on demand, and the persona design (#403, #404, #406,
 mecha-graph #26).** Merged and installed the same evening; the install is

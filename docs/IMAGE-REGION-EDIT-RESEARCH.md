@@ -154,8 +154,10 @@ form. It was not re-run with the named subject.
   (C: 80 s). B's second reference costs about 10 s.
 
 **What generalises, and what does not.** Every image is the one picnic
-from #408, at four seeds. C's and D's exact outside is by construction and
-holds for any picture. The landing rates, D's scale and seams, and C's
+from #408, at four seeds. D's exact outside is by construction and holds
+for any picture, since it pastes into the original. C's holds at the edit
+canvas, the picture's own size for every picture the tool made (§4's size
+note). The landing rates, D's scale and seams, and C's
 under-editing of a pose are this scene's, and need a second scene before
 they are general (HANDOFF lists "any scene but the one picnic" as untested
 since #408).
