@@ -539,8 +539,9 @@ under one harness.
   already the box's bottleneck.
 - **An MCP server for other hosts** — a thin wrapper over `Extractor` when a
   host needs it.
-- **Formats other than PDF**, and images as documents (`image_view` covers a
-  look; OCR of a photographed page would take the same path minus poppler).
+- **Formats other than PDF and the images of §10** — office files, HEIC
+  photos, and TIFF scans, including multi-page ones. The last two are refused
+  by name, with what to do instead.
 - **Web uploads and Slack attachments** reach the tool as workspace files
   (`inbox/…`) and need nothing new; a surface that renders the regions is not
   built. A persona chat's uploads reach it the same way, once the owner lists
@@ -549,3 +550,51 @@ under one harness.
   `cache = false` for the room's runs and an OCR server that keeps nothing,
   which llama-server does — no prompt cache, `-cram 0`).
 - **The embeddings conversion** (§7).
+
+## 10. Images: a page with no text layer
+
+Built 2026-09-30, at the owner's request. A photographed page or a screenshot
+is read the way a scanned PDF page is: one page, no text layer, OCR only.
+`document_read` and `mecha document extract` take PNG, JPEG, WebP and GIF.
+
+- **The bytes decide.** `kind_of` checks an image signature at offset 0
+  first, because `%PDF-` may sit anywhere in a PDF's first kilobyte, and a
+  PNG with that string in a text chunk is still a PNG. Two formats are
+  refused by name, each with what to do instead:
+  - HEIC/HEIF (an ISO-BMFF `ftyp` with a HEIF brand): an iPhone's default,
+    so the refusal names the setting that makes it save JPEG.
+  - TIFF: common from scanners.
+
+  This build compiles neither decoder.
+- **No poppler, no confinement to prove.** Nothing parses the file out of
+  process. `decode_image` runs in-process with the same memory-safe `image`
+  crate, under the same limits (8000 px a side, 512 MB), that already
+  decodes every rendered page before the OCR server sees it (§3). The
+  record's `confinement` says so.
+- **Upright, on white, scaled down never up.**
+  - **Upright.** The EXIF orientation is applied, because a phone stores a
+    portrait page sideways and says so in a tag. Measured on one page (a
+    kelp survey note), OCR'd with and without its tag:
+    - **Sideways (90°):** PaddleOCR-VL with the layout stage read it
+      correctly either way.
+    - **Upside down:** with the tag, the page read exactly. Without it, the
+      words survived but the structure did not: the heading was placed last,
+      and the paragraph came back as a one-column table.
+  - **On white.** Transparency is composited onto white, so a screenshot's
+    transparent background does not turn black behind black text.
+  - **Scaled down, never up.** `fit_pixels` shrinks the image to each
+    stage's pixel budget: `OCR_MAX_PIXELS` for a whole-page read,
+    `layout::LAYOUT_MAX_PIXELS` for the layout pass. It never enlarges one,
+    since upscaling a small screenshot adds no detail.
+- **Everything after the pixels is the PDF path's.** The layout and OCR
+  stages take a `Source` (the confined renderer, or the decoded image),
+  so region reading, the cache (keyed by the image's sha256, with a
+  text-less `layer.json` that keeps it on the same pruning clock), the caps,
+  the labels and `.from_outside()` are shared, not copied. Region boxes are in
+  the image's own pixels, where a PDF's are in points.
+- **What an image refuses.** Mode `text` refuses an image (it has no text
+  layer), and so does `[documents] ocr = false` (its only text is a reading).
+  A failed OCR shows no empty "text layer" in the answer.
+- **Measured.** A 1275 × 1650 page, stored sideways as a phone does, was read
+  by region (heading and paragraph) in 4.6 s, including the on-demand
+  server's start, and every line matched.

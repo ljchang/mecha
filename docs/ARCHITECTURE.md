@@ -884,6 +884,16 @@ its measurements are `docs/DOCUMENT-EXTRACTION-DESIGN.md`.
 - **Results carrying document content are `.from_outside()`; the tool's own
   refusals are not.** A PDF's text layer is where white-on-white injections
   live.
+- **An image is a one-page document with no text layer** (PNG, JPEG, WebP,
+  GIF). `kind_of` decides by the bytes: an image signature at offset 0 comes
+  first, then `%PDF-`, and a HEIC or TIFF file is refused by name, with what
+  to do instead. The image skips poppler, since nothing parses it out of
+  process. `decode_image` uses the same `image` crate and limits as a
+  rendered page, applies the EXIF orientation, and lays transparency on
+  white. `fit_pixels` scales down to each stage's budget and never up. From
+  there the layout stage, OCR, cache, caps and `.from_outside()` are the PDF
+  path's (`Source`). Mode `text` and `ocr = false` refuse an image, because
+  its only text is a reading.
 - **`[documents]` is global-file only**: `ocr_url` is where page images go
   (loopback enforced) and `confine` is the parser's sandbox.
 - **The cache key is the sha256 of the bytes rendered** — the scratch copy,
