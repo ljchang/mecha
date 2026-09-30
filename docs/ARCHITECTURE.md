@@ -8266,10 +8266,13 @@ in five different ways. The design and its open steps are
   merges write the owner's graph. Each driver now asks `require` itself; a
   fourth that spawns `mecha-graph` has to as well. A graph tool missing from a run's surface now names the
   switch when that is the cause (`features::graph_tool_absent`), not
-  `[[mcp]]`. Home's queue card for an off feature is flat, with its command:
-  the pane it would open answers `feature_off`, and a feature's pane in a
+  `[[mcp]]`. **The web keys a refusal's consequences on the row's `gated`**,
+  never on `shown` alone (`features.js` `refuses`): Home's queue card for a
+  feature that refuses is flat, with its command, and a feature's pane in a
   core view (`PANE_FEATURE`: Review's graph queue, entities, front door) is
-  sent home like a hidden view. **3b is a flip, not a build:** the five
+  sent home — but a feature hidden before its guard lands keeps its door,
+  or the front door's queue, still filling, had none (review of #451). 3b's
+  flip moves the page with the routes, with no web edit. **3b is a flip, not a build:** the five
   features `gated` still answers `false` for already declare their routes'
   owner, and pass until their arm flips with their verbs guarded.
 - **An environment may only narrow.** `trial_env::config_at` refuses an
