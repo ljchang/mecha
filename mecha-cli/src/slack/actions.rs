@@ -1286,12 +1286,16 @@ mod tests {
     #[test]
     fn an_import_is_seen_where_the_mail_crate_keeps_its_registry() {
         // Moves `MECHA_HOME` to an empty temp dir (and takes the binary's one
-        // env lock): the old code read `mecha_home().join("mail")`, and on a
+        // env lock) — apart from the registry below, which must not share
+        // `HomeGuard`'s `mecha-<tag>-<pid>` name (review of #432). The old
+        // code read `mecha_home().join("mail")`, and on a
         // machine with a real import there the negative would pass on the old
         // code — so the home must be empty everywhere (review of #432).
         let _home = crate::testenv::HomeGuard::new("import-registry");
-        let dir =
-            std::env::temp_dir().join(format!("mecha-import-registry-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-import-registry-store-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("google")).unwrap();
         std::fs::write(dir.join("google").join("oauth.json"), "{}").unwrap();
