@@ -500,22 +500,34 @@ parent's settings, where they already live.
 | `mail` | Mail and calendar | a global `[[mcp]]` entry running `mecha-mail`, and an authorised account | — | Mail tab, Home mail card, Outbox event editor, `mecha mail` |
 | `docs` | Google Docs, Sheets, Slides | a global `[[mcp]]` entry running `mecha-docs`, and an account | — | its tools |
 | `graph` | Knowledge graph | a global `[[mcp]]` entry running `mecha-graph-mcp` | — | Graph tab, Review → graph queue, Proposals → entities, `kg`, `gossip`, `corroborate`, `vet`, `distill` |
-| ↳ `tasks` | The task board | — | `graph` | Tasks tab, Home tasks card, `tasks`, `workflow`, `questions` |
+| ↳ `tasks` | The task board | — | `graph` | Tasks tab, Home tasks card, `mecha tasks` |
 | `search` | Web search and open | a `[[search]]` backend not disabled | — | `web_search`, `web_open` |
 | `documents` | PDF extraction | a `[documents]` table | — | `document_read`, `mecha document` |
 | ↳ `ocr` | OCR pages | `[documents] ocr` | `documents` | its row in `features` |
 | ↳ `layout` | Region-by-region layout | `[documents] layout` | `ocr` | its row in `features` |
 | `image` | Image generation | an `[image]` table | — | `image_generate` |
-| ↳ `library` | Characters and styles | — | `image` | Library tab and Home card, `image_library*`, `mecha imagelib` writes |
+| ↳ `library` | Characters and styles | — | `image` | Library tab and Home card, `image_library*` (registered only inside `[image]`), `mecha imagelib` writes. Its reads — `mecha imagelib list`/`show` — are store reads and stay ungated |
 | `personas` | Characters the owner talks to | — (a **new** `[personas]` table later holds its safety settings) | — (web for the tab) | Personas tab, `/api/personas*`, `mecha persona` |
-| `voice` | Talking to mecha | a **new** `[voice]` table (below) | `web` | voice-call button, Dictate, Settings → Voice |
-| ↳ `dictate` | Speech to text | `[voice] stt_url` | `voice` | Dictate |
-| ↳ `calls` | Spoken conversation | `[voice] offer_target` | `voice` | voice-call button |
-| ↳ `cloning` | New voices | `[voice] voices_dir` | `voice` | Settings → Voice → clone |
+| `voice` | Talking to mecha | a **new** `[voice]` table (below) | — (`mecha voice-serve` is its own loopback surface) | `mecha voice-serve` |
+| ↳ `dictate` | Speech to text in the browser | `[voice] stt_url` | `voice`, `web` | Dictate |
+| ↳ `calls` | Spoken conversation in the browser | `[voice] offer_target` | `voice`, `web` | voice-call button |
+| ↳ `cloning` | New voices | `[voice] voices_dir` | `voice`, `web` | Settings → Voice → clone |
 | `incognito` | A chat that leaves no trace | a local provider without fallbacks (`provider_is_local`) | `web` | Chat's incognito toggle |
 | `frontdoor` | Inbound requests and polls | `factory-publish` on PATH — its drain fills `~/.mecha/requests` | — | Review → Front door, Home card, `frontdoor`, `polls` |
 | ↳ `publishing` | The model's publishing tools | a global `[[mcp]]` entry running `factory-publish` | `frontdoor` | the `factory__*` tools |
 | `messages` | Messages between sessions | — (`[messages]` keeps its tunables) | — | `message_send`, `mecha msg` |
+
+**Not every surface belongs to a feature.** A `requires` edge means
+*cannot work without*, never *shares a subsystem*: `questions`, `workflow`
+and `/api/today` read local stores (`~/.mecha/questions`, the outbox, the
+workflows) and have no graph in them, so they are core, and a graph that is
+off must not hide a delegated run's blocking question or a staged draft. The
+same holds for every **cross-feature reader** — `/api/today`,
+`Backlog::read`, `mecha doctor`, `/api/summary`: they are core, ungated by
+construction, and degrade **per section** (a Today card for mail simply has
+no rows when mail is off), which is the decline rule — a feature being off
+never hides a failure somewhere else — applied to aggregates (found on review
+of #427, pass 6).
 
 Notes on the rows that change:
 
@@ -553,9 +565,13 @@ Notes on the rows that change:
   presence rule would have had. **`Lever::Messages` follows it.** The lever
   is defined as `--no-messages` or `[messages] enabled = false`
   (`harness.rs`), and is recorded in every `RunStats` row and eval
-  scorecard; after the move it reads `--no-messages` or the registry's
-  `messages` state, and a test asserts the lever and the feature never
-  disagree — otherwise a run with no mailbox records messaging as on, the
+  scorecard; after the move it reads `--no-messages` or the **switch** —
+  the `[features] messages` bool, or-ed with the alias — not the six-state
+  readout. The lever records whether a mailbox was *asked for*; a messages
+  feature has no settings, so its readout is only ever `On` or `Off` anyway,
+  and a lever that folded `Unknown` or `Down` one way or the other would
+  claim either that messaging worked or that the owner had it off, both
+  false. A test asserts the lever and the switch never disagree — otherwise a run with no mailbox records messaging as on, the
   wrong condition `levers_off` exists to prevent. The same test covers
   `Lever::Mcp` beside the four server bools: the lever forces every server
   off, a bool gates one, and the recorded feature set says which bool was on
@@ -603,13 +619,22 @@ Three things make it deliberate rather than accidental:
   environment may switch a feature *on* only if it could configure it**,
   judged by the trust of the tables the feature's switch and settings live
   in, not by who happens to supply them: a feature whose table is in
-  `trial_env::OPERATOR_ONLY_TABLES` (`web`, `slack`, `image`, and `messages`,
-  whose switch is the alias of `[messages] enabled`) or in `MACHINE_TABLES`
+  `trial_env::OPERATOR_ONLY_TABLES` (`web`, `slack`, `image`, `documents`,
+  and `messages`, whose switch is the alias of `[messages] enabled`) or in
+  `MACHINE_TABLES`
   (`search`, whose backends and keys `config_at` copies from the operator —
   `Egress::Chosen` at deep search, with nothing to degrade to `Unready`)
   cannot be turned on from an environment. A new settings table gets the
   same test the day it is added (§9 step 8). An environment that sets such a
   key to `true` is **refused at load**, with `config_at`'s `ensure!` and its
+  reason. **`[documents]` is not on `OPERATOR_ONLY_TABLES` today**, though
+  `merge_file` strips it from project layers for `[image]`'s reason — its
+  `ocr_url` is where the owner's documents go and `confine` is the PDF
+  parser's sandbox — and the constant's own comment still counts "the five a
+  project layer is stripped of". An environment can set both today, with or
+  without this design; step 1 adds `documents` to the list and corrects the
+  comment, since this rule is only as good as that list (found on review of
+  #427, pass 6). The refusal is
   reason, never ignored with a warning: a warning fails open in exactly the
   way the `requires` bullet below exists to close — the arm would run without
   the feature it asked for and be scored anyway. An environment may set any
@@ -746,7 +771,17 @@ Each step is a PR, and each leaves every surface working.
    command; `mecha config init` writes the table in full; `[messages]
    enabled` read as an alias, and `Lever::Messages` reading the registry
    (§5). F6's offer lands in `mecha setup` here, and
-   this machine's table is written in the same deploy. **Tool registration
+   this machine's table is written in the same deploy. **An unknown key in
+   `[features]` warns and is ignored, unlike every other config table**:
+   `deny_unknown_fields` everywhere else makes a typo a startup failure, but
+   here one `config.toml` is read by the installed release, the long-running
+   units and several worktree builds at once, and a key a worktree build
+   adds would take the older binaries down at their next restart with a bare
+   serde error. An unknown key cannot turn anything on in a binary that does
+   not know the feature, so ignoring it fails closed; the warning names the
+   key and says the binary predates it or it is misspelled, and `mecha
+   features` lists it — so a typo still shows as the feature it meant being
+   off (found on review of #427, pass 6). **Tool registration
    switches to the registry in this step** — a server whose feature is off is
    not connected — since that is the step that could otherwise make a tool
    disappear unannounced.
@@ -813,9 +848,9 @@ Each step is a PR, and each leaves every surface working.
   without it and assert that its tools are absent from `mecha tools --json`,
   its verbs exit with the one sentence, its routes return 404 `feature_off`,
   and `/api/features` reports `Off`.
-- **Every route belongs to exactly one feature or to the core.** The only
-  route list today is written by hand inside a test
-  (`the_settings_routes_sit_behind_the_owner_guard`), so step 2 declares each
+- **Every route belongs to exactly one feature or to the core.** The route
+  lists today are written by hand inside tests (the four
+  `*_sit_behind_the_owner_guard` tests, one per group), so step 3 declares each
   route's owner where it is registered, and a test walks that declaration so
   an unowned route fails the build — otherwise the next tab added is visible
   on every install.
