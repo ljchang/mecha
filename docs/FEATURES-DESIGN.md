@@ -5,9 +5,10 @@
 > the same day, with the store-location fixes it surfaced in `doctor`, Slack
 > and the booking sweep as #432 and #433. `docs/ARCHITECTURE.md` §Features
 > describes what is built. Steps 1–8 are unbuilt. The owner
-> ruled F1–F4 and F6 the same day (§7): the switch is a `[features]` table of
+> ruled F1–F6 the same day (§7): the switch is a `[features]` table of
 > bools — not a table's presence, which this doc first recommended — and §5
-> is written to that ruling. F5 is open and blocks only step 6. Step 8 (how
+> is written to that ruling; F5 is `hardware.md`'s four tiers, in two
+> columns (unified memory, and a separate GPU beside system RAM). Step 8 (how
 > to add a feature, in `ARCHITECTURE.md` and `CLAUDE.md`) is the owner's
 > addition.
 
@@ -486,13 +487,21 @@ it. So, in step 1, the `tool_availability_notices` shape Hermes uses:
   would otherwise be usable** — *"`mail`: configured but not enabled —
   `mecha features enable mail` (or `mecha setup`)"* — on stderr, like the
   routed-outbox-name warning that fires on every start. "Would otherwise be
-  usable" is `own_state` with the switch treated as on, **not** a settings
-  table being present: four features' evidence is not a table at all —
-  `slack` a token store, `personas` a non-empty store, `voice` a running unit,
-  `frontdoor` a binary on PATH — and a table-keyed notice could not fire for
-  any of them. `own_state` is already the exhaustive per-variant predicate,
-  so the notice and F6's detector are the same function (found on review of
-  #427, pass 14);
+  usable" is the full `state` with the switch treated as on, **not** a
+  settings table being present: four features' evidence is not a table at
+  all — `slack` a token store, `personas` a non-empty store, `voice` an
+  installed unit file (installed, not running: a socket-activated unit is
+  idle until asked, and §4.3 reads unit files, never sockets), `frontdoor` a
+  binary on PATH — and a table-keyed notice could not fire for any of them.
+  The notice and F6's detector are one function. **Two obligations on step 1
+  before it can key on this** (found on review of #435): `personas` and
+  `voice` are unconditional `On` in step 0 ("no switch yet"), so step 1 must
+  give them the evidence named here first, or both lines print on every
+  light install forever; and because it is `state`, not `own_state`, a
+  feature whose dependency is off (`incognito` without `web`) is announced
+  with the dependency first — *"`incognito`: needs `web` — `mecha features
+  enable web incognito`"* — never offered alone into a `Blocked` it cannot
+  leave;
 - `mecha features` shows that pair as its own row (settings present, switch
   absent), not a bare `off`, as it does an off front door with requests
   waiting;
@@ -748,11 +757,21 @@ Three things make it deliberate rather than accidental:
   `Feature::switchable_from_environment(self) -> bool` as an exhaustive
   `match` — a new variant does not compile until it decides — and
   `config_at` refuses any `[features]` key set `true` for which it is
-  `false`. The permitted set, said out loud: **`graph`** (only an
-  environment-declared server, never the operator's), **`frontdoor`** (a
-  binary on PATH and the trial's own `requests` store) and **`incognito`**
-  (blocked without `web` in any case); every other top-level feature is
-  `false` (found on review of #427, pass 14). A new settings table gets the
+  `false`. The permitted set, said out loud: **`frontdoor`** (a binary on
+  PATH and the trial's own `requests` store) and **`incognito`** (blocked
+  without `web` in any case); every other top-level feature is `false`
+  (found on review of #427, pass 14). **Not `graph`**, though an
+  environment may declare its own graph server: a manifest's `live_servers =
+  ["graph"]` carries the operator's live server into the trial's `[[mcp]]`,
+  and the graph row finds a server by its command, so it cannot tell a
+  carried-in entry from a declared one — an environment's `graph = true`
+  beside that manifest would read `On` against the owner's `graph.db`, the
+  2026-09-23 incident this section exists for. So a trial's `graph` bool is
+  **set by `trial_env::config_at`, never read from the environment file**:
+  on when the environment declares its own graph server or the manifest
+  carries one in — the operator's existing, explicit opt-in — and off
+  otherwise, so experiments that use `live_servers` keep working once step 1
+  gates the server on the bool (found on review of #435). A new settings table gets the
   same test the day it is added (§9 step 8). An environment that sets such a
   key to `true` is **refused at load**, with `config_at`'s `ensure!` and its
   reason. **`[documents]` is not on `OPERATOR_ONLY_TABLES` today**, though
@@ -802,11 +821,22 @@ Each feature carries `Recommendation` rows:
 
 ```rust
 pub struct Recommendation {
-    pub tier_gb: u32,             // 16, 32, 64, 128 — hardware.md's tiers
+    pub tier_gb: u32,             // 16, 32, 64, 128 — hardware.md's tiers (F5)
+    pub memory: Memory,           // Unified | Discrete — the two columns (F5)
     pub model: &'static str,      // "PaddleOCR-VL 1.6 (GGUF + mmproj)"
     pub fetch: &'static str,      // "hf download PaddlePaddle/PaddleOCR-VL-1.6-GGUF"
     pub peak: Peak,               // the number and where it came from, as one value
     pub residency: Residency,     // Resident | OnDemand | PerRequest
+}
+
+/// F5's second column. `Unified`: one pool holds everything (a GB10, a Mac),
+/// and `tier_gb` is that pool. `Discrete`: `tier_gb` is the GPU's own memory,
+/// the chat model is sized to it, and the row may put OCR, embeddings and
+/// speech to text in system RAM or on the CPU instead. `mecha setup` reads
+/// which shape the machine is before choosing a row.
+pub enum Memory {
+    Unified,
+    Discrete,
 }
 
 pub enum Peak {
@@ -859,7 +889,7 @@ genuinely not known yet, and the output must say so rather than guess.
 | **F2** | Off in the web app | **Removed from navigation**, as the owner asked in the opening message; Settings → Features lists everything. `Unready` and `Unknown` are shown with a banner, never removed (§4.1) |
 | **F3** | Web as a feature | **Optional like the rest** — the owner: *"Web should also be optional feature."* CLI, TUI and Slack are complete without it; incognito, and voice's browser parts (`dictate`, `calls`, `cloning`), report `Blocked(web)`. `voice` itself does not: `mecha voice-serve` is its own loopback surface, and `Blocked` would refuse it (found on review of #427, pass 7). A tab's visibility is not a `requires` relation: with `web` off there is no navigation at all, so the Personas and Library tabs need no dependency on it — and giving `personas` one would make `Blocked` refuse `mecha persona` from the CLI, which works without the web (found on review of #427) |
 | **F4** | What an off route returns | **404** with `{"error":"feature_off","feature":"image","fix":"mecha features enable image"}`, only behind `owner_guard` (§4.2 item 4). 503 stays for `Unready` |
-| **F5** | Recommendation tiers | *Open.* Recommended: `hardware.md`'s four (16/32/64/128 GB), so one page and one table agree |
+| **F5** | Recommendation tiers | **`hardware.md`'s four — 16, 32, 64 and 128 GB — in two columns**: unified memory, and a separate GPU beside system RAM, where the tier is the GPU's memory and the auxiliary models (OCR, embeddings, speech to text) may run from system RAM or the CPU. One page and one table agree on the tiers; the column is what keeps a 24 GB GPU with 64 GB of RAM from being steered as a 24 GB machine. Only the 128 GB unified row is measured (this GB10); every other cell says `Arithmetic` or `Unmeasured`. Ruled by the owner 2026-09-30 |
 | **F6** | Existing installs, when `[features]` arrives | **`mecha setup` offers.** It detects a feature in use (an `[image]` table, a mail `[[mcp]]` entry, a non-empty persona store, a running voice unit) and offers to write its bool. Never grandfathered as on: that is a second source of truth. On this machine the deploy that ships the table writes it by hand, in the same change, so nothing disappears |
 
 ---
