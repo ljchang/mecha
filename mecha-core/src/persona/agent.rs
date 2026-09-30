@@ -644,6 +644,29 @@ mod tests {
                 );
                 assert_eq!(form.name(), name);
             }
+            // The live path: a chat's registry asks `for_persona_as`, so the
+            // same declaration must hold there, for a persona with a
+            // character and one without (review of #444).
+            for character in [Some("maya"), None] {
+                let who = crate::tool::PersonaSelf {
+                    name: "mara".into(),
+                    display: "Mara".into(),
+                    character: character.map(Into::into),
+                };
+                let form = Arc::clone(tool).for_persona_as(&who);
+                assert_eq!(
+                    form.is_some(),
+                    ELIGIBLE.contains(&name),
+                    "`{name}`'s live persona form disagrees with the design's list"
+                );
+                if let Some(form) = form {
+                    assert!(
+                        form.capabilities().egress <= Egress::Blind,
+                        "`{name}`'s live persona form can aim"
+                    );
+                    assert_eq!(form.name(), name);
+                }
+            }
         }
         // Egress, on each chain: a chosen-only chain makes web_search Chosen,
         // and the registry refuses it; blind and mixed chains admit it.
