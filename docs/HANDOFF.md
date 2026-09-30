@@ -22,8 +22,8 @@ maps which document holds what.
 
 ## Where the work is
 
-**2026-09-30 — region-targeted edits: measured, and C chosen by the owner
-and built in #429.** `IMAGE-REGION-EDIT-RESEARCH.md` is the authority: the
+**2026-09-30 — region-targeted edits: measured, C chosen by the owner,
+built in #429, merged and installed (04:31Z).** `IMAGE-REGION-EDIT-RESEARCH.md` is the authority: the
 Edit button opens a modal where the owner paints the area to change. C (a
 latent noise mask, composited in mecha) was exact and seamless, and landed
 every local edit. In #429's live check it kept the outside identical to the
@@ -37,11 +37,14 @@ byte in 4 of 4 real edits. Open:
 - **The mask is a path the model passes, not a registered object** (§6).
   The page could register it and the tool accept only that one. Not built.
 - **`NEAR_COPY_LAYOUT` (0.78) is reused for the masked reading** over
-  painted thumbnail cells without being measured there. A false alarm reads
-  "nothing is wrong", and a miss only loses the safety net.
-- **Everything was measured on the one picnic scene.** C's and D's exact
-  outside holds anywhere; the landing rates and D's seams need a second
-  scene.
+  painted thumbnail cells without being measured there. A false alarm on a
+  masked edit that landed tells the model to retry with the same mask, and
+  a second one in a row tells it to report that the edit did not take: a
+  needless retry, then a false "it did not take". A miss only loses the
+  safety net.
+- **Everything was measured on the one picnic scene.** D's exact outside
+  holds anywhere, and C's at the edit canvas (§4); the landing rates and
+  D's seams need a second scene.
 - **Seen in #429's live check, not caused by the mask:** after an edit, the
   local model copied the result over the original picture in 3 of 4 chats,
   and once `fs_write`'d a path string into it. #429's edit result now tells
