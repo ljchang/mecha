@@ -177,6 +177,13 @@ export const ROUTES = [
 
   // Personas: their own door, as on the server (`persona_chat.rs`).
   ['GET', /^\/api\/personas$/, () => fx.personas],
+  // Authoring: shown, not kept — the demo has no store to write to.
+  ['GET', /^\/api\/personas\/authoring$/, () => fx.personaAuthoring],
+  ['POST', /^\/api\/personas\/(relationships|groups)$/, () => new Response('the demo does not keep new relationships or groups', { status: 501 })],
+  ['POST', /^\/api\/personas$/, () => new Response('the demo does not keep new personas', { status: 501 })],
+  ['GET', /^\/api\/personas\/[^/]+\/files$/, () => fx.personaFiles],
+  ['POST', /^\/api\/personas\/[^/]+\/files$/, () => new Response('the demo does not save', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/lock$/, () => new Response('the demo does not lock', { status: 501 })],
   ['GET', /^\/api\/personas\/[^/]+\/chats$/, () => fx.personaHistory],
   ['POST', /^\/api\/personas\/[^/]+\/chats$/, () => ({ key: 'p-0123456789ab', session: 'demo', refused: [] })],
   ['POST', /^\/api\/personas\/[^/]+\/resume$/, () => ({ key: 'p-0123456789ab', refused: [] })],
