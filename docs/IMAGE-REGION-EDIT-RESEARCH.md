@@ -58,7 +58,7 @@ tried.
 
 | | How | Outside the region | Cost to build |
 |---|---|---|---|
-| **A. Mark the picture** | a red box drawn on the picture; "inside the red box: …" | a hint; may spill, and the mark may survive | none in the graph; the page draws the mark |
+| **A. Mark the picture** | a red box drawn on the picture; "inside the red box: …" | a hint; may spill (the mark itself never survived, §4) | none in the graph; the page draws the mark |
 | **B. Mask as a second image** | the original as `<image1>`, a black-and-white mask as `<image2>` | a hint | none in the graph; one more reference |
 | **C. Latent noise mask** | the encoded original as the canvas, resampled only under the mask, then composited in code | identical by construction | a second fixed graph, and a composite in `imagegen` |
 | **D. Crop, edit, paste** | mecha crops the region plus a margin, edits the crop at full size, pastes it back through a feathered mask | identical by construction | code only; any backend. `IMAGE-COMPILER-RESEARCH.md` §2 and §6 already recommend it |
@@ -147,15 +147,34 @@ since #408).
 this, recolour that, change a detail), C does what the owner asked for: the
 change, and nothing else, at no extra cost. A pose or a move is a different
 kind of edit. In these four seeds, C held the rest of the picture but
-stood her up once where a plain edit did so twice, which is n = 4 and a
-reason to measure C′ rather than a finding about C. D makes
-the change but cannot blend it when the region's edge crosses a person. Not
-yet run:
-- **C′**, C with the region greyed out of the reference, so the model is not
-  shown what it is meant to redraw. It keeps C's composite. It targets C's
-  one weakness and needs one more graph input, not a new approach.
-- **D's edge placed in background,** by growing the crop until its border
-  clears people. That is harder to do from a box the owner drew.
+stood her up once where a plain edit did so twice. That is n = 4, and it
+was the reason to measure C′, below. D makes the change but cannot blend it
+when the region's edge crosses a person.
+
+**C′, measured the same day** (2026-09-30, 20 images, 0 errors). C′ is C
+with the region hidden from the reference, so the model is not shown the
+pose it is meant to replace. It was tried three ways, on the pose edit and
+the swap, at the same four seeds:
+
+| | Pose (T2) | Still her? | Swap (T1) |
+|---|---|---|---|
+| **grey fill** | the fill copied into the result, a grey wall with a faint figure | n/a | not run past seed 1 |
+| **blur** | stood up in 3 of 4 | **no: a different woman in all 4**, and seed 3 copied the blur into the result | 4/4 |
+| **grey + the original as `<image2>`** | about as often as C | yes | 4/4 |
+
+Grey fill was stopped after its first seed, which was conclusive. The
+grey-plus-original variant also copied its grey fill across the frame in
+seed 3. The model treats its reference as the picture, so a placeholder in
+it is content to reproduce, not a blank to fill. That is the same lesson
+#408 found for a caption. Hiding the region takes her identity along with
+her pose, and giving the identity back with a second reference brings the
+pose back too. **C′ does not fix the pose, and it adds a catastrophic
+failure on large regions.** It was dropped.
+
+Not yet run: **D's edge placed in background,** by growing the crop until
+its border clears people, which is hard to do from a box the owner drew;
+and **D then a thin C pass**, C over just the seam band of D's result, to
+blend what D's paste leaves (two generations, about 160 s).
 
 ## 5. The edit modal
 
@@ -191,8 +210,11 @@ whichever graph wins:
 
 Set, or narrowed, by the results:
 - **Which graph backs a painted area.** C for the local edits (measured
-  above). For a pose or a move, C′ is the next measurement, about 12 images
-  on T2 and a swap check.
+  above). C′ was measured and dropped. A pose or a move has no region-graph
+  answer yet, and two alternatives outside it: a plain edit in #408's form,
+  which moved people but redrew the rest; and a library redraw, which
+  #408's probes found moves people reliably. D followed by a thin C pass is
+  the untested candidate inside a region.
 - **What C costs if the backend changes.** `Request` is shaped like
   stable-diffusion.cpp's API so that a second backend can meet it
   (`ARCHITECTURE.md`, image generation). D needs nothing from any backend
