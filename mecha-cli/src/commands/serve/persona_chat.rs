@@ -693,10 +693,18 @@ impl PersonaChats {
             .filter(|(meta, _)| !archived.contains_key(&meta.id))
             .take(40)
             .map(|(meta, _)| {
+                // The goal the chat was opened with, from its pin: the one
+                // thing that tells two chats apart at a glance. A missing or
+                // unreadable pin is no goal, not a failed list.
+                let goal = std::fs::read(pin_path(&dir, &meta.id))
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<PinRecord>(&b).ok())
+                    .and_then(|p| p.goal);
                 serde_json::json!({
                     "id": meta.id,
                     "created": meta.created_at,
                     "title": meta.title,
+                    "goal": goal,
                 })
             })
             .collect();
@@ -2237,6 +2245,13 @@ mod tests {
             .unwrap();
         assert_eq!(t["goal"], "Plan the kelp survey", "{t}");
         assert_eq!(t["entries"].as_array().unwrap().len(), 0);
+        // The earlier-chats list carries it too, so the page can tell two
+        // chats apart by what they were for.
+        let listed = w.personas().history(&w.library, "mara", None).unwrap();
+        assert_eq!(
+            listed["chats"][0]["goal"], "Plan the kelp survey",
+            "{listed}"
+        );
     }
 
     /// A turn cancelled after a tool ran leaves the conversation ending on

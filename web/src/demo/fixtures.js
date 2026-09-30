@@ -1662,8 +1662,8 @@ export const personas = {
 export const personaHistory = {
   persona: 'mara',
   chats: [
-    { id: '20260928T161200-a1b2c3d4', created: '2026-09-28T16:12:00Z', title: 'persona: Mara' },
-    { id: '20260926T093000-e5f6a7b8', created: '2026-09-26T09:30:00Z', title: 'persona: Mara' },
+    { id: '20260928T161200-a1b2c3d4', created: '2026-09-28T16:12:00Z', title: 'persona: Mara', goal: 'Decide whether the winter transects can go' },
+    { id: '20260926T093000-e5f6a7b8', created: '2026-09-26T09:30:00Z', title: 'persona: Mara', goal: null },
   ],
 };
 
