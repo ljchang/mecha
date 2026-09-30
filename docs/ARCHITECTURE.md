@@ -8296,12 +8296,15 @@ in five different ways. The design and its open steps are
   start; `/api/offer`, the call's web half, refuses per request. **Guard the
   driver, not only the verb.** Anything that opens a feature's store or
   talks to its server in-process asks `require` itself, because some caller
-  will skip the verb — found three times: the graph's (`review::graph_cli`,
+  will skip the verb — found four times: the graph's (`review::graph_cli`,
   the TUI's `graph_cli`/`graph_cli_raw`, #451), Slack's (`send::send_file`,
   `remote::attach`, the connector, which the TUI's `/send` and
-  `/remote-control` call directly) and the front door's (the TUI's
+  `/remote-control` call directly), the front door's (the TUI's
   `frontdoor::load`, which reconciled and settled the store with the switch
-  off, and Slack's review-here and `request_state`, #452). The one opener
+  off, and Slack's review-here and `request_state`) and its polls' (the
+  TUI's `polls::load`, `commands::polls::pick_next`, which the TUI calls
+  directly, and the TUI's `factory_cli`, #452). A `serve` listener mounted
+  once (the voice facade) is the same rule at start. The one opener
   deliberately left open is a count of what waits (`review queues`), which
   never degrades.
 - **An environment may only narrow.** `trial_env::config_at` refuses an

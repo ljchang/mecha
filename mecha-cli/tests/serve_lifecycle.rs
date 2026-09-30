@@ -428,3 +428,89 @@ async fn read_until(response: &mut reqwest::Response, needle: &str) -> String {
     .await
     .unwrap()
 }
+
+/// Step 3b: `serve` mounts its voice facade only with voice calls on at
+/// start. The facade is a second listener that cannot refuse per request, so
+/// with `voice = false` and a `--voice-port` nothing may listen there, and
+/// the note says why (review of #452: the positive case alone left the guard
+/// unmeasured — deleting it kept every other test green).
+#[tokio::test]
+async fn serve_does_not_mount_the_voice_facade_with_calls_off() {
+    let root = std::env::temp_dir().join(format!("mecha-serve-nofacade-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let home = root.join("home");
+    let work = root.join("work");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    // A provider that is never asked: the chat only has to build.
+    let provider = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let provider_addr = provider.local_addr().unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "default_provider = \"fixture\"\n[providers.fixture]\nkind = \"openai-compatible\"\n\
+             base_url = \"http://{provider_addr}\"\nmodel = \"fixture\"\nmax_retries = 0\n\
+             [tools]\nenabled = [\"fs_read\"]\n[sandbox]\nkind = \"none\"\n\
+             [features]\nweb = true\nvoice = false\n"
+        ),
+    )
+    .unwrap();
+    let port = {
+        let r = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        r.local_addr().unwrap().port()
+    };
+    let voice_port = {
+        let r = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        r.local_addr().unwrap().port()
+    };
+    let log_path = root.join("serve.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mecha"))
+        .args([
+            "serve",
+            "--port",
+            &port.to_string(),
+            "--voice-port",
+            &voice_port.to_string(),
+            "--owner-login",
+            "test@example.com",
+        ])
+        .env("MECHA_HOME", &home)
+        .env("MECHA_SESSION_KIND", "test")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENAI_API_KEY")
+        .current_dir(&work)
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let client = reqwest::Client::new();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let ping = client
+                .get(format!("http://127.0.0.1:{port}/api/ping"))
+                .header("Tailscale-User-Login", "test@example.com")
+                .send()
+                .await;
+            if ping.is_ok() {
+                break;
+            }
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "{}",
+                std::fs::read_to_string(&log_path).unwrap()
+            );
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .expect("serve came up");
+    let facade = tokio::net::TcpStream::connect(("127.0.0.1", voice_port)).await;
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    let _ = child.kill().await;
+    drop(provider);
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(facade.is_err(), "the facade listened with calls off\n{log}");
+    assert!(log.contains("the voice facade is not mounted"), "{log}");
+}

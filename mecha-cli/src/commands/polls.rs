@@ -557,6 +557,9 @@ pub fn pick(poll_id: &str, n: usize) -> Result<String> {
 
 /// Advance to the next candidate, wrapping — the `/polls` modal's `p` key.
 pub fn pick_next(poll_id: &str) -> Result<String> {
+    // The TUI calls this directly, not through `run` — and it rewrites the
+    // poll's record and stages a pick card (review of #452).
+    super::features::require(mecha_core::feature::Feature::Frontdoor)?;
     let store = crate::commands::outbox::open_store()?;
     let record = load_by_id(poll_id)?;
     let count = record.ranked().len();
