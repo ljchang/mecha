@@ -413,6 +413,44 @@ never chose, and both look like nothing happening.
 cannot widen. A [trigger](/docs/features/automation/triggers) names its skills in its own
 file and carries none by default.
 
+## `[features]`
+
+Which optional parts of mecha are switched on: one `true` or `false` per
+feature. **Global file only** — a project's `mecha.toml` is stripped of it, so a
+cloned repository can never turn a feature on. `mecha config init` writes the
+table in full with every feature off, and `mecha features enable <id>` edits it
+in place.
+
+```toml
+[features]
+web = false        # the web app (`mecha serve`)
+slack = false      # Slack remote control
+mail = false       # mail and calendar
+docs = false       # Google Docs, Sheets and Slides
+graph = false      # the knowledge graph and the task board
+search = false     # web search and open
+documents = false  # PDF extraction (OCR and layout are [documents] settings)
+image = false      # image generation and the character library
+personas = false   # characters you write and talk to
+voice = false      # dictation and voice calls
+incognito = false  # a web chat that leaves no trace
+frontdoor = false  # inbound requests, polls and publishing
+messages = false   # messages between sessions on this machine
+```
+
+The switch is the only switch; a settings table such as `[image]` or
+`[documents]` is only settings. A feature switched on without the settings it
+needs reads **unready** in `mecha features`, with what is missing; one switched
+off keeps its settings for later. A key that is absent is unanswered, and reads
+off. A key this build does not know — a newer build's feature, or a typo — is
+reported and ignored rather than failing the load, because one `config.toml` is
+often read by more than one build of mecha at once.
+
+`messages` here and `enabled` under `[messages]` are the same switch; when both
+are set, `[features]` wins. An experiment environment's `config.toml` may set
+any key to `false` but may switch on only `frontdoor`: the rest depend on your
+own credentials, servers or surfaces.
+
 ## `[messages]`
 
 Messages between this machine's own mecha sessions — a trigger telling `chat`
