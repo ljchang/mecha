@@ -257,16 +257,30 @@
 
   // ─── Authoring ───────────────────────────────────────────────────────
 
+  // Every read of the form's lists is numbered, as `reread` numbers the
+  // transcript's: the lock button is live while one is in flight, and an
+  // unlocked answer landing after a relock's would put locked characters
+  // back in the portrait list of a locked page (review of #425).
+  let authoringGen = 0;
+
   async function startMaking() {
     error = '';
+    const gen = ++authoringGen;
+    const issued = token;
     try {
       const res = await fetch(authoringUrl(token));
       if (!res.ok) throw new Error((await res.text()).trim());
-      authoring = await res.json();
+      const lists = await res.json();
+      if (gen !== authoringGen) return;
+      authoring = lists;
       making = { name: '', display: '', relationships: [], character: '', groups: [], locked: false };
     } catch (e) {
       error = String(e?.message ?? e);
+      return;
     }
+    // The lock moved while the form was opening, and with no form open
+    // then, nothing re-read the lists for it.
+    if (issued !== token) await rereadAuthoring();
   }
 
   // The form's lists follow the lock: `authoring` was read when the form
@@ -274,12 +288,13 @@
   // portrait list, and a relock left them in.
   async function rereadAuthoring() {
     if (!making) return;
+    const gen = ++authoringGen;
     try {
       const res = await fetch(authoringUrl(token));
       if (!res.ok) throw new Error((await res.text()).trim());
       const lists = await res.json();
-      // Cancelled while the lists were in flight: nothing left to update.
-      if (!making) return;
+      // Cancelled, or overtaken by a newer read, while this one was in flight.
+      if (!making || gen !== authoringGen) return;
       authoring = lists;
       making.character = keptCharacter(making.character, authoring.characters);
     } catch (e) {
@@ -315,8 +330,12 @@
         ),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
+      const gen = ++authoringGen;
       const reread = await fetch(authoringUrl(token));
-      if (reread.ok) authoring = await reread.json();
+      if (reread.ok) {
+        const lists = await reread.json();
+        if (gen === authoringGen) authoring = lists;
+      }
       if (relationship) making.relationships = [...making.relationships, name];
       else making.groups = [...making.groups, name];
       adding = null;
