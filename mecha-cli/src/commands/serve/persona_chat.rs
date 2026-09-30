@@ -299,15 +299,17 @@ impl PersonaChats {
         library: &LibraryState,
         token: Option<&str>,
     ) -> Result<serde_json::Value, Refusal> {
-        mecha_core::persona::ensure_layout(&self.store).map_err(failed)?;
+        // Read-only, as a GET is (the guard exempts GETs from the CSRF header
+        // on that premise): the starters are listed, and copied in by
+        // `create` when one is first used (review of #420).
         let store = Store::load(&self.store);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
         let unlocked = library.unlocked(token);
-        let relationships: Vec<serde_json::Value> = store
-            .relationships()
-            .values()
-            .map(|r| serde_json::json!({ "name": r.name, "starter": r.starter }))
-            .collect();
+        let relationships: Vec<serde_json::Value> =
+            mecha_core::persona::relationship_choices(&self.store)
+                .into_iter()
+                .map(|(name, starter)| serde_json::json!({ "name": name, "starter": starter }))
+                .collect();
         let characters: Vec<&str> = lib
             .approved()
             .filter(|e| e.kind == mecha_core::imagelib::Kind::Character)
@@ -397,9 +399,17 @@ impl PersonaChats {
             &p.name,
             body.file,
             &body.text,
-            body.base.as_deref(),
+            // Required from the page: a save that could skip the stale check
+            // by leaving out a field would make it advisory (review of #420).
+            Some(&body.base),
         )
-        .map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
+        .map_err(|e| {
+            if e.downcast_ref::<mecha_core::persona::StaleEdit>().is_some() {
+                Refusal::Conflict(format!("{e:#}"))
+            } else {
+                Refusal::Bad(format!("{e:#}"))
+            }
+        })?;
         let store = Store::load(&self.store);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
         let problems = store
@@ -1341,9 +1351,8 @@ pub struct CreateBody {
 pub struct SaveBody {
     file: mecha_core::persona::OwnerFile,
     text: String,
-    /// The digest of the file as the page opened it.
-    #[serde(default)]
-    base: Option<String>,
+    /// The digest of the file as the page opened it — required.
+    base: String,
     #[serde(default)]
     unlock: Option<String>,
 }
@@ -2628,6 +2637,23 @@ mod tests {
             matches!(stale, Err(Refusal::Conflict(ref m)) if m.contains("changed since")),
             "{stale:?}"
         );
+
+        // A save without its base does not parse — the stale check is not
+        // skippable — and bad input is a 400, not a conflict.
+        assert!(serde_json::from_value::<SaveBody>(
+            serde_json::json!({ "file": "identity", "text": "x" })
+        )
+        .is_err());
+        let files = w.personas().files(&w.library, "priya", None).unwrap();
+        let bad = w.personas().save(
+            &w.library,
+            "priya",
+            body(serde_json::json!({
+                "file": "motivation", "text": "a\u{1b}b",
+                "base": files["motivation"]["digest"],
+            })),
+        );
+        assert!(matches!(bad, Err(Refusal::Bad(_))), "{bad:?}");
 
         // Locked: its files answer as missing without the unlock.
         w.personas().lock(&w.library, "priya", true, None).unwrap();

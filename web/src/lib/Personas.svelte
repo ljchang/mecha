@@ -58,6 +58,7 @@
   const personas = $derived(data?.personas ?? []);
 
   async function load() {
+    error = '';
     try {
       const res = await fetch(listUrl(token));
       if (!res.ok) throw new Error((await res.text()).trim());
@@ -67,8 +68,9 @@
       if (chosen) chosen = personas.find((p) => p.name === chosen.name) ?? null;
       // A deep link (`#personas/mara`) opens that persona, earlier chats and
       // all — once: a later reload (a lock toggle) must not re-enter it.
-      // `#personas/new` opens the form for a new persona.
-      if (!chosen && initial === 'new' && !usedInitial) {
+      // `#personas/+new` opens the form for a new persona — `+`, because
+      // `new` could be a persona's own name (review of #420).
+      if (!chosen && initial === '+new' && !usedInitial) {
         usedInitial = true;
         await startMaking();
       }
@@ -77,7 +79,8 @@
         chosen = personas.find((p) => p.name === initial) ?? null;
         if (chosen) await loadHistory();
       }
-      error = '';
+      // No reset here: `error` was cleared at the top, and anything set
+      // since — a failed `+new` deep link — is the one worth showing.
     } catch (e) {
       error = String(e?.message ?? e);
     }
@@ -370,9 +373,19 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       const saved = await res.json();
       const file = editing.file;
+      // What was typed in the other files survives this save (review of #420).
+      const drafts = Object.fromEntries(
+        Object.entries(editing.files)
+          .filter(([f, v]) => f !== file && v.draft != null && v.draft !== v.text)
+          .map(([f, v]) => [f, v.draft]),
+      );
       await load();
       await openEditor(file);
+      for (const [f, d] of Object.entries(drafts)) editing.files[f].draft = d;
       editing.saved = `saved — now v${saved.version}; new chats use it`;
+      // A save can succeed and still leave something to fix — a group not
+      // declared, a Core left empty: said here, not dropped.
+      editing.problems = saved.problems ?? [];
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {
@@ -640,6 +653,7 @@
           Text inside <code>&lt;!-- --&gt;</code> is a note to yourself: kept, never sent to a chat.
         </div>
         {#if editing.saved}<div class="barnote ok">{editing.saved}</div>{/if}
+        {#each editing.problems ?? [] as problem}<div class="warnline">{problem}</div>{/each}
         <div class="btnrow">
           <button class="abtn" onclick={() => (editing = null)}>Close</button>
           <button class="abtn primary" disabled={busy || editing.text === editing.files[editing.file].text} onclick={saveFile}>Save</button>
