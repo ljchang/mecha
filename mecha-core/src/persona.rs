@@ -1908,6 +1908,39 @@ fn character_lines(text: &str) -> Option<(usize, usize)> {
     Some((first, last))
 }
 
+/// A line index at or near `want` where a root `key = value` can go in
+/// `text`: never inside a value that spans lines (a multi-line array or
+/// string the owner reformatted on the page), and never past the first table
+/// header. A text that does not parse takes line 0, before anything (review
+/// of #430: the disk's line number, spliced into the client's text, could
+/// land mid-value and break the save or cut the link).
+fn root_boundary(text: &str, want: usize) -> usize {
+    let Ok(doc) = toml_edit::Document::parse(text) else {
+        return 0;
+    };
+    let line_of = |at: usize| text[..at.min(text.len())].matches('\n').count();
+    let mut first_table = usize::MAX;
+    let mut spans = Vec::new();
+    for (name, item) in doc.as_table().iter() {
+        let Some(span) = item.span() else { continue };
+        if item.is_value() {
+            let start = doc
+                .as_table()
+                .key(name)
+                .and_then(|k| k.span())
+                .map_or(span.start, |k| k.start);
+            spans.push((line_of(start), line_of(span.end.saturating_sub(1))));
+        } else {
+            first_table = first_table.min(line_of(span.start));
+        }
+    }
+    let mut at = want.min(first_table);
+    while let Some(&(_, end)) = spans.iter().find(|(start, end)| *start < at && at <= *end) {
+        at = end + 1;
+    }
+    at.min(first_table)
+}
+
 /// `persona.toml` as a locked page may see it: without the `character`
 /// assignment when the persona's portrait is a locked library character
 /// (owner ruling, 2026-09-30 — the link is hidden, never cut). Everything
@@ -1942,7 +1975,7 @@ pub fn restore_character(text: &str, disk: &str) -> String {
     };
     let hidden: Vec<&str> = disk.lines().skip(first).take(last - first + 1).collect();
     let mut lines: Vec<&str> = text.lines().collect();
-    let at = first.min(root_lines(text)).min(lines.len());
+    let at = root_boundary(text, first).min(lines.len());
     lines.splice(at..at, hidden);
     let mut out = lines.join("\n");
     if text.ends_with('\n') || text.is_empty() {
@@ -2941,6 +2974,14 @@ mod tests {
         assert!(!shown.contains("theo"), "{shown}");
         assert!(toml::from_str::<toml::Table>(&shown).is_ok(), "{shown}");
         assert_eq!(restore_character(&shown, multi), multi);
+        // The owner reformatted a value on the page so that it now spans the
+        // hidden line's old number: the line goes back beside it, not in it.
+        let disk = "# h\n\ncharacter = \"theo\"\ndisplay = \"Mara\"\n\n[tools]\nallow = []\n";
+        let client = hide_character(disk).replacen("\n\n", "\nmodel = \"\"\"\nlocal\n\"\"\"\n", 1);
+        let back = restore_character(&client, disk);
+        let parsed: toml::Table = toml::from_str(&back).expect(&back);
+        assert_eq!(parsed["character"].as_str(), Some("theo"), "{back}");
+        assert_eq!(parsed["model"].as_str(), Some("local\n"), "{back}");
         let broken = "character = '''\ntheo\n'''\ndisplay = ";
         assert!(
             !hide_character(broken).contains("theo"),

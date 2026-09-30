@@ -372,6 +372,14 @@ fn set(root: &mut Table, path: &str, v: &Json) -> Result<()> {
             .with_context(|| format!("`{seg}` in `{path}` is not a table in the file"))?;
     }
     // `null` never reaches here: `apply` sends it to `remove`.
+    // A list already in the file is edited in place, so a comment inside it
+    // stays (review of #430: a fresh array dropped them).
+    if let (Json::Array(want), Some(Value::Array(have))) =
+        (v, table.get_mut(leaf).and_then(Item::as_value_mut))
+    {
+        edit_array(have, want);
+        return Ok(());
+    }
     let mut new = to_toml(v)?;
     // Keep the old value's decor — a comment trailing it on its line is the
     // owner's, and it stays beside the value it described.
@@ -385,6 +393,97 @@ fn set(root: &mut Table, path: &str, v: &Json) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `have` edited to hold `want`'s names: entries no longer wanted removed —
+/// each handing its leading comments on, since `toml_edit` keeps a comment
+/// that trails an entry on the *next* one's decor — and new ones appended,
+/// indented like their neighbours in a multi-line list.
+fn edit_array(have: &mut Array, want: &[Json]) {
+    let want: Vec<&str> = want.iter().filter_map(Json::as_str).collect();
+    let prefix_of = |v: &Value| {
+        v.decor()
+            .prefix()
+            .and_then(|r| r.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let mut i = have.len();
+    while i > 0 {
+        i -= 1;
+        let keep = have
+            .get(i)
+            .and_then(Value::as_str)
+            .is_some_and(|s| want.contains(&s));
+        if keep {
+            continue;
+        }
+        let carried = have.get(i).map(prefix_of).unwrap_or_default();
+        have.remove(i);
+        if carried.contains('#') {
+            match have.get_mut(i) {
+                Some(next) => {
+                    let old = prefix_of(next);
+                    next.decor_mut().set_prefix(format!("{carried}{old}"));
+                }
+                None => {
+                    let end = have.trailing().as_str().unwrap_or("").to_string();
+                    have.set_trailing(format!("{carried}{end}"));
+                }
+            }
+        }
+    }
+    // The indentation a multi-line list uses: the whitespace after the last
+    // newline in an entry's prefix.
+    let indent = have.iter().last().map(prefix_of).and_then(|p| {
+        p.rfind('\n')
+            .map(|at| &p[at..])
+            .filter(|tail| tail.trim().is_empty())
+            .map(str::to_string)
+    });
+    for &name in &want {
+        if have.iter().any(|x| x.as_str() == Some(name)) {
+            continue;
+        }
+        let mut v = Value::from(name);
+        if let Some(indent) = &indent {
+            v.decor_mut().set_prefix(indent.clone());
+        }
+        have.push_formatted(v);
+    }
+    // In the order asked for, each entry moving with its own decor.
+    let order: Vec<Option<String>> = have
+        .iter()
+        .map(|x| x.as_str().map(str::to_string))
+        .collect();
+    if order
+        .iter()
+        .map(|o| o.as_deref())
+        .ne(want.iter().map(|w| Some(*w)))
+    {
+        let mut taken: Vec<Value> = Vec::with_capacity(have.len());
+        while !have.is_empty() {
+            taken.push(have.remove(0));
+        }
+        for &name in &want {
+            if let Some(at) = taken.iter().position(|x| x.as_str() == Some(name)) {
+                have.push_formatted(taken.remove(at));
+            }
+        }
+    }
+    // A one-line list keeps one-line spacing: `["a", "b"]`, whatever moved.
+    if indent.is_none() {
+        for (i, v) in have.iter_mut().enumerate() {
+            let plain = v
+                .decor()
+                .prefix()
+                .and_then(|r| r.as_str())
+                .is_none_or(|p| !p.contains(['#', '\n']));
+            if plain {
+                v.decor_mut().set_prefix(if i == 0 { "" } else { " " });
+            }
+        }
+    }
 }
 
 fn to_toml(v: &Json) -> Result<Value> {
@@ -561,6 +660,48 @@ crisis = true # keep this one
             let back: toml::Table = toml::from_str(&out).unwrap();
             assert_eq!(back["a"].as_integer(), Some(1));
         }
+    }
+
+    /// A list edited from the form keeps the comments written inside it,
+    /// on the entries that stay and on the ones removed around them.
+    #[test]
+    fn a_multi_line_list_keeps_its_comments() {
+        let chips = Form {
+            sections: vec![Section::new("s").field(Field::new(
+                "tools.allow",
+                "Tools",
+                Kind::Chips {
+                    options: Vec::new(),
+                    free: true,
+                },
+            ))],
+        };
+        let file =
+            "[tools]\nallow = [\n  \"web_search\",   # she looks things up\n  \"image_view\",\n]\n";
+        let out = apply(
+            &chips,
+            file,
+            &changes(json!({ "tools.allow": ["web_search", "fs_read"] })),
+        )
+        .unwrap();
+        assert!(out.contains("# she looks things up"), "{out}");
+        let back: toml::Table = toml::from_str(&out).unwrap();
+        let names: Vec<&str> = back["tools"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(names, ["web_search", "fs_read"], "{out}");
+        // The commented entry itself removed: its comment is handed on.
+        let out = apply(
+            &chips,
+            file,
+            &changes(json!({ "tools.allow": ["image_view"] })),
+        )
+        .unwrap();
+        assert_eq!(comment_lines(&out), comment_lines(file), "{out}");
+        assert!(toml::from_str::<toml::Table>(&out).is_ok(), "{out}");
     }
 
     #[test]
