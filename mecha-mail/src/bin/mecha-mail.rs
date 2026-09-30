@@ -262,12 +262,12 @@ async fn bookings(
 ) -> Result<()> {
     use mecha_mail::bookings as bk;
 
+    // mecha's store, found by mecha's rule — `$MECHA_HOME` first — as
+    // `frontdoor` writes it; `dirs::home_dir()` here ignored an isolated
+    // home and swept a directory the drain never wrote.
     let requests = match requests {
         Some(dir) => dir,
-        None => dirs::home_dir()
-            .context("cannot determine home directory")?
-            .join(".mecha")
-            .join("requests"),
+        None => mecha_mail::polls::mecha_home()?.join("requests"),
     };
     if !requests.is_dir() {
         // An absent store is "nothing drained yet", not a broken setup —
