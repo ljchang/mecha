@@ -22,7 +22,7 @@ pub fn execute(args: Args) -> Result<()> {
     // features an install has is a property of the machine, and every table
     // that turns one on is stripped from project layers anyway.
     let cfg = mecha_core::config::Config::load_global()?;
-    let rows = feature::all(&cfg, &feature::Facts::read(&home));
+    let rows = feature::all(&cfg, &feature::Facts::read(&home, &cfg));
     if args.json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());

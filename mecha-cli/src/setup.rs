@@ -2929,6 +2929,32 @@ pub(crate) fn live_rules(
 #[cfg(test)]
 mod live_rules_tests {
     use super::*;
+
+    /// `SearchBackendConfig::problem` is what `mecha features` reads; it must
+    /// refuse exactly the backends this builder drops, or the feature list
+    /// says search works on a run that has no `web_search`.
+    #[test]
+    fn a_backends_problem_is_exactly_what_the_chain_builder_drops() {
+        let backend = |toml: &str| -> SearchBackendConfig { toml::from_str(toml).unwrap() };
+        for cfg in [
+            backend("kind = \"exa\""),
+            backend("kind = \"exa\"\napi_key = \"k\""),
+            backend("kind = \"tavily\"\napi_key_env = \"MECHA_TEST_SURELY_UNSET_KEY\""),
+            backend("kind = \"tavily\"\napi_key = \"k\""),
+            backend("kind = \"searxng\""),
+            backend("kind = \"searxng\"\nbase_url = \"http://127.0.0.1:8888\""),
+            backend("kind = \"brave\"\napi_key = \"k\""),
+        ] {
+            let (chain, errors) = build_search_chain(std::slice::from_ref(&cfg));
+            match cfg.problem() {
+                Some(p) => {
+                    assert!(chain.is_empty(), "{}: problem {p:?} but built", cfg.kind);
+                    assert_eq!(errors, vec![format!("{}: {p}", cfg.kind)]);
+                }
+                None => assert!(errors.is_empty(), "{}: no problem but {errors:?}", cfg.kind),
+            }
+        }
+    }
     use mecha_core::policy::{RuleConfig, RuleDecision};
 
     fn rule(tool: &str, decision: RuleDecision, from_project: bool) -> RuleConfig {

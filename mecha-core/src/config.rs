@@ -978,6 +978,30 @@ impl SearchBackendConfig {
         }
         self.api_key.clone().filter(|k| !k.is_empty())
     }
+
+    /// Why this backend cannot be built, in `build_search_chain`'s words, or
+    /// `None` when it can — config and environment only, no network. The
+    /// chain builder drops such a backend and registers no `web_search` when
+    /// none is left, so `mecha features` asks this rather than reading
+    /// "a backend is listed" as "search works" (found on review of #428). A
+    /// test beside `build_search_chain` holds the two to the same answer.
+    pub fn problem(&self) -> Option<String> {
+        match self.kind.as_str() {
+            "exa" | "tavily" => self.resolve_api_key().is_none().then(|| {
+                format!(
+                    "no API key (set api_key_env, e.g. {}_API_KEY)",
+                    self.kind.to_uppercase()
+                )
+            }),
+            "searxng" => self
+                .base_url
+                .is_none()
+                .then(|| "searxng needs `base_url` pointing at your instance".to_string()),
+            other => Some(format!(
+                "unknown search backend {other:?} (expected: exa, tavily, searxng)"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
