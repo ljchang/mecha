@@ -32,6 +32,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turn whose `image_generate` calls all failed, read off the tool rows, so a
   reply saying "here you go" over nothing is not the last word.
 
+- **Every optional feature has a switch: `[features]`.** The global
+  `config.toml` gains a `[features]` table with one `true`/`false` per
+  feature — web, Slack, mail, docs, the graph, search, PDF extraction, image
+  generation, personas, voice, incognito, the front door and messages.
+  `mecha features enable <id>` and `disable <id>` edit it in place, keeping
+  your comments; `mecha config init` writes it with everything off. An install
+  from before the table has every switch unanswered, so `mecha features` marks
+  what you have set up as "not enabled, but set up here", a session or service
+  prints one line naming them when it starts, and `mecha setup` offers each.
+  Nothing is turned off by the switch yet: this release only records your
+  answers. A project's `mecha.toml` cannot set the table, and an experiment
+  environment may only switch features off (and the front door on).
+
 - **Persona chats show their pictures, with the same Edit button.** A picture
   a persona draws now appears under its row in the Personas tab, as in the
   main chat, and Edit opens the same paint-a-region modal. A locked persona's

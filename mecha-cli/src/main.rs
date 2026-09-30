@@ -634,6 +634,20 @@ impl Command {
         }
     }
 
+    /// Whether this command prints the features upgrade notice
+    /// (`commands::features::print_notices`): the starts of a session or a
+    /// long-running service, where the owner or a unit's journal reads it
+    /// once. Not the one-shot verbs `mecha serve` runs as children per
+    /// request, whose stderr would repeat it into every log line.
+    fn announces_features(&self) -> bool {
+        matches!(
+            self,
+            Command::Run(_) | Command::Chat(_) | Command::Tui(_) | Command::Serve(_)
+        ) || matches!(self, Command::VoiceServe(_))
+            || matches!(self, Command::Slack(a) if matches!(a.cmd, Some(commands::slack::Cmd::Connect)))
+            || matches!(self, Command::Trigger(a) if matches!(a.cmd, Some(commands::trigger::Cmd::Daemon { .. })))
+    }
+
     /// Whether this command may resolve a default provider — run a model, or
     /// build an agent — and so needs [`follow_the_loaded_model`]'s snapshot.
     ///
@@ -818,6 +832,9 @@ async fn dispatch() -> Result<()> {
     };
     if cli.command.runs_a_model() {
         follow_the_loaded_model(&cli.global, cli.command.may_follow()).await;
+    }
+    if cli.command.announces_features() {
+        commands::features::print_notices();
     }
     match cli.command {
         Command::Run(args) => commands::run::execute(&cli.global, args).await,
