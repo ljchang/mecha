@@ -300,8 +300,10 @@ pub fn check_shell_confinement(
 #[derive(Debug, Clone)]
 pub struct MailStores {
     pub registry: Option<PathBuf>,
-    /// `(provider, dir)` for each legacy store that could be located.
-    pub legacy: Vec<(&'static str, PathBuf)>,
+    /// `(provider, dir)` for each legacy store, `None` where it could not
+    /// be located — said as a finding, never dropped, since an unreadable
+    /// store is a finding and not an empty one.
+    pub legacy: Vec<(&'static str, Option<PathBuf>)>,
 }
 
 impl MailStores {
@@ -315,7 +317,7 @@ impl MailStores {
                 ("outlook", "MECHA_OUTLOOK_DIR"),
             ]
             .into_iter()
-            .filter_map(|(p, var)| Some((p, legacy_store_dir(p, var)?)))
+            .map(|(p, var)| (p, legacy_store_dir(p, var)))
             .collect(),
         }
     }
@@ -326,8 +328,8 @@ impl MailStores {
         MailStores {
             registry: Some(root.join("mail")),
             legacy: vec![
-                ("google", root.join("google")),
-                ("outlook", root.join("outlook")),
+                ("google", Some(root.join("google"))),
+                ("outlook", Some(root.join("outlook"))),
             ],
         }
     }
@@ -801,10 +803,18 @@ mod grant_age_tests {
 /// migrate — get the same marker written beside their credentials by the
 /// same token lifecycle. A doctor that reads only the registry layout
 /// reports "all clear" over a dead legacy login.
-fn check_legacy_mail(stores: &[(&'static str, PathBuf)]) -> Vec<Finding> {
+fn check_legacy_mail(stores: &[(&'static str, Option<PathBuf>)]) -> Vec<Finding> {
     let mut out = Vec::new();
     for (provider, dir) in stores {
         let provider = *provider;
+        let Some(dir) = dir else {
+            out.push(Finding::unreadable(
+                "mail",
+                &format!("the legacy {provider} store"),
+                "no home directory to find it under, and its directory variable is unset",
+            ));
+            continue;
+        };
         let marker_path = dir.join("auth_error.json");
         if !marker_path.is_file() {
             continue;
@@ -3143,7 +3153,7 @@ mod tests {
         .unwrap();
         let stores = MailStores {
             registry: Some(elsewhere.join("mail")),
-            legacy: vec![("google", elsewhere.join("google"))],
+            legacy: vec![("google", Some(elsewhere.join("google")))],
         };
         let found = examine_with(&mecha_home, &stores, utc(NOW));
         let mail: Vec<_> = found.iter().filter(|f| f.component == "mail").collect();
@@ -3171,6 +3181,55 @@ mod tests {
         );
         std::fs::remove_dir_all(&mecha_home).ok();
         std::fs::remove_dir_all(&elsewhere).ok();
+    }
+
+    /// The location rule itself, which the injected-value test above cannot
+    /// see: the legacy stores resolve by the mail crate's
+    /// `token::provider_path` — the variable, else `~/.mecha/<provider>`
+    /// under the real home, never the mecha home — and `of_owner` asks the
+    /// variables the mail crate sets. On the old code `of_owner` did not
+    /// exist and the answer was `home.join(provider)` (found on review of
+    /// #432).
+    #[test]
+    fn the_legacy_stores_follow_the_mail_crates_rule() {
+        use crate::onboarding::legacy_store_dir;
+        // A variable nothing else reads, so no parallel test races it.
+        let var = "MECHA_TEST_LEGACY_STORE_DIR_432";
+        std::env::remove_var(var);
+        let fallback = legacy_store_dir("google", var).unwrap();
+        assert_eq!(
+            fallback,
+            dirs::home_dir().unwrap().join(".mecha").join("google"),
+            "the fallback is the real home's, whatever $MECHA_HOME says"
+        );
+        std::env::set_var(var, "/tmp/somewhere-else");
+        assert_eq!(
+            legacy_store_dir("google", var).unwrap(),
+            PathBuf::from("/tmp/somewhere-else")
+        );
+        std::env::remove_var(var);
+
+        // `of_owner` names the mail crate's variables. `$MECHA_GOOGLE_DIR` is
+        // read only by the mail crate, so setting it here races nothing.
+        let restore = std::env::var("MECHA_GOOGLE_DIR").ok();
+        std::env::set_var("MECHA_GOOGLE_DIR", "/tmp/google-elsewhere");
+        let legacy = MailStores::of_owner().legacy;
+        assert!(
+            legacy.contains(&("google", Some(PathBuf::from("/tmp/google-elsewhere")))),
+            "{legacy:?}"
+        );
+        match restore {
+            Some(v) => std::env::set_var("MECHA_GOOGLE_DIR", v),
+            None => std::env::remove_var("MECHA_GOOGLE_DIR"),
+        }
+    }
+
+    /// A legacy store that cannot be located is said, not dropped.
+    #[test]
+    fn an_unlocatable_legacy_store_is_a_finding() {
+        let found = check_legacy_mail(&[("outlook", None)]);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].summary.contains("outlook") || found[0].detail.contains("outlook"));
     }
 
     fn valid_marker() -> String {
