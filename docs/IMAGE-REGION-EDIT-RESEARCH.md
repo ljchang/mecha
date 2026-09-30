@@ -61,7 +61,7 @@ tried.
 | **A. Mark the picture** | a red box drawn on the picture; "inside the red box: …" | a hint; may spill (the mark itself never survived, §4) | none in the graph; the page draws the mark |
 | **B. Mask as a second image** | the original as `<image1>`, a black-and-white mask as `<image2>` | a hint | none in the graph; one more reference |
 | **C. Latent noise mask** | the encoded original as the canvas, resampled only under the mask, then composited in code | identical by construction | a second fixed graph, and a composite in `imagegen` |
-| **D. Crop, edit, paste** | mecha crops the region plus a margin, edits the crop at full size, pastes it back through a feathered mask | identical by construction | code only; any backend. `IMAGE-COMPILER-RESEARCH.md` §2 and §6 already recommend it |
+| **D. Crop, edit, paste** | mecha crops the region plus a margin, edits the crop at full size, pastes it back through a feathered mask | identical by construction outside the crop, not intact: its paste can damage what the crop's edge crosses (§4) | code only; any backend. `IMAGE-COMPILER-RESEARCH.md` §2 and §6 already recommend it |
 
 A and B only say where. C and D are the two that keep the rest of the
 picture. They differ in what the model sees: C sees the whole picture and
@@ -123,11 +123,11 @@ without a resize. A picture of another size is edited at its canvas, and
 
 **P is not #408's baseline.** #408 stood Maya up in 12 of 12 seeds with
 the named form. Here P managed 2 of 4 with "the woman" and a keep list that
-names the man. Against #408's rate, every arm here under-edits the pose.
-So "C stood her up less often than P" is a comparison within this run's
-wording, not a claim about C against the tested form. It was not re-run
-with the named subject.
-P's pose edits reached 49.6 where the scene was recomposed.
+names the man; where it did, it recomposed the scene, and its pose edits
+moved the outside by up to 49.6. Against #408's rate, every arm here
+under-edits the pose. So "C stood her up less often than P" is a comparison
+within this run's wording, at n = 4, not a claim about C against the tested
+form. It was not re-run with the named subject.
 
 - **A and B are hints, and they keep nothing.** On the swap and the detail,
   their outside moved as much as a plain edit's, within 2 points. On the
@@ -136,7 +136,8 @@ P's pose edits reached 49.6 where the scene was recomposed.
   so a lower number there is evidence of failure, not of keeping anything.
   The red box never survived into a result (at most 0.5% of its outline
   stayed red).
-- **C is seamless and exact, and it under-edits a pose.** Nothing outside
+- **C is seamless and exact; on the pose it did no better than this run's
+  weak baseline.** Nothing outside
   the mask moved, and at the boundary the new pixels continue the old ones.
   In T2 the grass, the blanket and the man's arm run straight through. It
   landed every swap and every detail, but it stood the woman up less often
@@ -252,7 +253,12 @@ Set, or narrowed, by the results:
   register the mask it uploaded (for example, the descriptor-relative I/O in
   `workspace_files.rs`), and `image_generate` accept only a registered mask
   for that picture. Not built. The live run found the model passes the path
-  faithfully once `size` is not refused.
+  faithfully once `size` is not refused. (The first live run's tool
+  refused a `size` passed beside a mask, and the model retried without the
+  mask; #429 now sets the size aside instead.) Said in CLAUDE.md's terms,
+  a model-chosen or all-white mask is the silently-degrading guard: C
+  falls back to the unguarded plain edit while the modal still shows a
+  small painted area.
 - **A and B are not worth building on their own.** A mark in the picture
   could still ride along with C as a hint for multi-region notes, but nothing
   here shows it helps.
