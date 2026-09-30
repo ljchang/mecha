@@ -312,7 +312,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     // Non-zero when anything failed, so this can gate CI.
     if scorecard.passed < scorecard.total {
-        std::process::exit(1);
+        crate::exit_with(1);
     }
     Ok(())
 }

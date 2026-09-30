@@ -200,7 +200,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         // exit code says nothing is a plan every caller has to parse to learn
         // what a status byte could have told it.
         if !outstanding.is_empty() {
-            std::process::exit(1);
+            crate::exit_with(1);
         }
         return Ok(());
     }
@@ -218,7 +218,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         println!("\n{} step(s) outstanding.", outstanding.len());
         // Exit 1 like doctor: a script can act on it, and a person sees the
         // same list either way.
-        std::process::exit(1);
+        crate::exit_with(1);
     }
     offer(&outstanding, &home, &mut std::io::stdin().lock())?;
     finished_note(&steps);
@@ -634,7 +634,7 @@ fn write_local_provider(found: &onboarding::LocalServer) -> Result<()> {
             path.display()
         );
         eprintln!("{}", if restored { RESTORED } else { NOT_RESTORED });
-        std::process::exit(1);
+        crate::exit_with(1);
     }
 
     println!(

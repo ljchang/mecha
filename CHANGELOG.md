@@ -402,6 +402,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A command that ends non-zero no longer leaves a model hold behind.**
+  `mecha eval` with a failed case, `mecha batch` with a failed item, and a
+  refused `mecha run` exited without removing their file in
+  `~/.mecha/holds/`. A dead process's hold never blocked a model switch, so
+  the files only piled up. Every such exit now releases the hold first.
+
 - **A chat no longer resends a refused call for minutes.** If a tool
   refuses the same call the same way, turn after turn, the run now stops
   after seven tries. You get an answer saying what could not be done, instead
