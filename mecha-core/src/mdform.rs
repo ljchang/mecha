@@ -55,7 +55,9 @@ fn lines(text: &str) -> Vec<(&str, bool)> {
     let mut comment = false;
     let mut fenced = false;
     for line in text.lines() {
-        let heading = !comment && !fenced && line.starts_with("## ");
+        // Plain: a line that starts outside a comment and outside a fence —
+        // the only place a heading or the title can be.
+        let plain = !comment && !fenced;
         if !comment && line.trim_start().starts_with("```") {
             fenced = !fenced;
         }
@@ -76,7 +78,7 @@ fn lines(text: &str) -> Vec<(&str, bool)> {
                 _ => break,
             }
         }
-        out.push((line, heading));
+        out.push((line, plain));
     }
     out
 }
@@ -112,8 +114,8 @@ fn dedent(s: &str) -> String {
 pub fn split(text: &str) -> Doc {
     let mut pre = String::new();
     let mut sections: Vec<(String, String)> = Vec::new();
-    for (line, heading) in lines(text) {
-        if heading {
+    for (line, plain) in lines(text) {
+        if plain && line.starts_with("## ") {
             sections.push((line[3..].trim().to_string(), String::new()));
             continue;
         }
@@ -124,18 +126,15 @@ pub fn split(text: &str) -> Doc {
         into.push_str(line);
         into.push('\n');
     }
-    // The title: the first `# ` line of the preamble that is not inside a
-    // comment. Taken out; the rest keeps its order.
+    // The title: a `# ` line outside a comment and outside fenced code, with
+    // nothing but comments and blank lines before it. Taken out and written
+    // first; a `# ` line after other text stays where it is, or the join
+    // would move prompt text ahead of what preceded it.
     let mut title = String::new();
     let mut rest = String::new();
-    for (line, _) in lines(&pre) {
-        let in_comment = {
-            // A `# ` line is a title only when no comment is open before it.
-            let before = rest.rfind("<!--");
-            let closed = rest.rfind("-->");
-            matches!((before, closed), (Some(o), Some(c)) if c > o) || before.is_none()
-        };
-        if title.is_empty() && in_comment && line.starts_with("# ") {
+    for (line, plain) in lines(&pre) {
+        let first = crate::persona::strip_comments(&rest).0.trim().is_empty();
+        if title.is_empty() && first && plain && line.starts_with("# ") {
             title = line[2..].trim().to_string();
             continue;
         }
@@ -164,6 +163,12 @@ pub fn split(text: &str) -> Doc {
 fn one_line(what: &str, s: &str) -> Result<()> {
     if s.contains(['\n', '\r']) {
         bail!("{what} is one line");
+    }
+    // A heading is prompt text: `<!--` in one would open a comment that
+    // swallows the rest of the file — `## Core` included — and `-->` would
+    // close one it never opened (review of #430).
+    if s.contains("<!--") || s.contains("-->") {
+        bail!("{what} cannot hold `<!--` or `-->`");
     }
     if s.chars().count() > MAX_HEADING {
         bail!("{what} is at most {MAX_HEADING} characters");
@@ -202,10 +207,15 @@ pub fn join(doc: &Doc, fixed: &[&str]) -> Result<String> {
     if !doc.body.trim().is_empty() {
         parts.push(doc.body.trim().to_string());
     }
+    let mut seen = std::collections::BTreeSet::new();
     for s in &doc.sections {
         let heading = s.heading.trim();
         if heading.is_empty() {
             bail!("a section needs a heading");
+        }
+        // The page says so first; the server is the fence for any client.
+        if !seen.insert(heading) {
+            bail!("two sections are called `{heading}`");
         }
         one_line(&format!("the heading `{heading}`"), heading)?;
         note_ok(&format!("`## {heading}`"), &s.note)?;
@@ -311,6 +321,10 @@ mod tests {
             "# What Mara wants\n\n<!-- Their wants. -->\n",
             "Just text, no title.\n",
             "<!-- a note first -->\n# Title\nIntro.\n## A\nx\n",
+            // A `# ` line in a fence before the title stays in its fence.
+            "```\n# not the title\n```\n# Title\n## A\nx\n",
+            // Prose before a `# ` line: it is not hoisted over the prose.
+            "Intro first.\n# Later heading\n## A\nx\n",
             "",
         ] {
             let once = join(&split(text), &[]).unwrap();
@@ -347,5 +361,16 @@ mod tests {
         assert!(join(&d, &[]).is_err());
         d.sections[2].heading = "  ".into();
         assert!(join(&d, &[]).is_err());
+        // A heading or title that would open or close a comment.
+        let mut d = split(IDENTITY);
+        d.sections[1].heading = "Voice <!--".into();
+        assert!(join(&d, &["Core"]).is_err());
+        let mut d = split(IDENTITY);
+        d.title = "Mara -->".into();
+        assert!(join(&d, &[]).is_err());
+        // Two sections with one heading: a second `## Core` included.
+        let mut d = split(IDENTITY);
+        d.sections[2].heading = "Core".into();
+        assert!(join(&d, &["Core"]).is_err());
     }
 }
