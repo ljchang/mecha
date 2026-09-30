@@ -211,6 +211,7 @@ fn seed(root: &Path, base_url: &str, deliver: bool) -> PathBuf {
              [agent]\ntimezone = \"America/New_York\"\nsituation_brief = {deliver}\n\
              [tools]\nenabled = [\"fs_read\"]\n\
              [sandbox]\nkind = \"none\"\n\
+             [features]\nweb = true\n\
              [outbox]\ntools = [\"mail_send\"]\n\
              [[mcp]]\nname = \"graph\"\ncommand = \"python3\"\nargs = [{:?}]\n\
              prefix_tools = false\nsandbox = false\n\

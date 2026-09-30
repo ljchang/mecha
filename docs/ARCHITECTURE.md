@@ -8121,7 +8121,21 @@ in five different ways. The design and its open steps are
   installed release, the units and worktree builds at once, and a key a
   newer build added must not take the older ones down; an unknown key can
   turn nothing on, so it is reported (`unknown_switches`) and ignored.
-  Nothing registers or connects by the switch until step 1b.
+  **Registration asks the switch, never the readout** (`switched_on`, step
+  1b): `prepare_tools` registers `web_search`, `image_generate` and the
+  library, and `document_read`, and connects an `[[mcp]]` server that
+  `server_feature` places in a feature, only when that feature's switch is
+  on — then builds from the session's settings as before, so a switched-on
+  feature whose server is down still registers what it can and the tool list
+  does not move with uptime. A server that belongs to no feature connects as
+  it always has. A feature configured but switched off says so on stderr
+  once per build, as a tool that failed to build does. `mecha serve` refuses
+  without `web`, telling "predates the switch" from `web = false`.
+- **A trial keeps what it carries.** `trial_env::config_at` fills a trial's
+  unanswered switches so gating changes nothing an existing experiment
+  connects: a feature whose server the trial declares or whose server
+  `live_servers` brings in is on, and `search` follows the operator's own
+  switch as its backends do. The environment's own answer stands.
 - **`messages` has one runtime answer.** `apply` writes `[features] messages`
   into `[messages] enabled` and drops it from the map, rather than or-ing two
   fields as the design proposed: `Lever::Messages` and every experiment arm

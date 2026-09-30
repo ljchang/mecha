@@ -439,7 +439,10 @@ messages = false   # messages between sessions on this machine
 ```
 
 The switch is the only switch; a settings table such as `[image]` or
-`[documents]` is only settings. A feature switched on without the settings it
+`[documents]` is only settings. A feature whose switch is not `true` is off:
+its tools are not registered and its MCP server is not started, and
+`mecha serve` will not start without `web = true`. An `[[mcp]]` server that
+belongs to no feature starts as it always has. A feature switched on without the settings it
 needs reads **unready** in `mecha features`, with what is missing; one switched
 off keeps its settings for later. A key that is absent is unanswered, and reads
 off. A key this build does not know — a newer build's feature, or a typo — is

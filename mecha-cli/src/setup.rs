@@ -1398,9 +1398,33 @@ async fn prepare_tools_carrying(
         handle
     });
 
+    // Each optional feature registers only when its `[features]` switch is on
+    // (FEATURES-DESIGN.md §4.2 item 6): the switch from the owner, the
+    // settings from this session's config as before. A feature configured
+    // but switched off says so once, as a tool that failed to build does; one
+    // with no settings at all stays quiet, or a light install would hear
+    // about everything it never set up.
+    use mecha_core::feature::{self, Feature};
+    let feature_on = |f: Feature| feature::switched_on(&cfg, f);
+    // Named by the feature that owns the switch — a part (`publishing`) has
+    // none, and `enable` refuses a part by name.
+    let switched_off = |f: Feature, what: &str| {
+        let owner = std::iter::successors(Some(f), |g| g.part_of())
+            .last()
+            .unwrap_or(f);
+        eprintln!(
+            "mecha: {what} — `{}` is not switched on in [features] \
+             (`mecha features enable {}`)",
+            owner.id(),
+            owner.id()
+        )
+    };
     // Search is only registered when a backend is configured — an agent with a
     // `web_search` tool that always errors is worse than no tool at all.
-    if !cfg.search.is_empty() {
+    if !cfg.search.is_empty() && !feature_on(Feature::Search) {
+        switched_off(Feature::Search, "web_search not registered");
+    }
+    if !cfg.search.is_empty() && feature_on(Feature::Search) {
         let (chain, errors) = build_search_chain(&cfg.search);
         for error in errors {
             eprintln!("mecha: search backend unavailable — {error}");
@@ -1434,7 +1458,10 @@ async fn prepare_tools_carrying(
     // rather than registered, because the tool's no-egress declaration would
     // then be false — said loudly, since a tool missing from the list is
     // otherwise indistinguishable from one never configured.
-    if let Some(image) = cfg.image.clone() {
+    if cfg.image.is_some() && !feature_on(Feature::Image) {
+        switched_off(Feature::Image, "image_generate not registered");
+    }
+    if let Some(image) = cfg.image.clone().filter(|_| feature_on(Feature::Image)) {
         let wants = opts.tools.is_empty() || opts.tools.iter().any(|t| t == "image_generate");
         if wants {
             match mecha_core::imagegen::ImageGenerate::new(image) {
@@ -1496,7 +1523,14 @@ async fn prepare_tools_carrying(
     // docker confinement) is refused out loud rather than registered.
     // `[tools]` narrows it like any builtin. An incognito chat never offers
     // it: its cache writes outside the room (`incognito::ALLOWED_BUILTINS`).
-    if let Some(docs) = cfg.documents.clone() {
+    if cfg.documents.is_some() && !feature_on(Feature::Documents) {
+        switched_off(Feature::Documents, "document_read not registered");
+    }
+    if let Some(docs) = cfg
+        .documents
+        .clone()
+        .filter(|_| feature_on(Feature::Documents))
+    {
         let name = "document_read";
         if (opts.tools.is_empty() || opts.tools.iter().any(|t| t == name))
             && cfg.tools.registers(name)
@@ -1520,10 +1554,21 @@ async fn prepare_tools_carrying(
     // Named servers are dropped before connecting rather than after: a server
     // that is off should not have been spawned, since spawning it is what runs
     // third-party code.
+    // A server that belongs to a feature connects only when that feature is
+    // switched on — the bool gates the server, not just its tab, and dropping
+    // it here means it is never spawned. A server that belongs to none
+    // connects as it always has.
     let wanted: Vec<_> = cfg
         .mcp
         .iter()
         .filter(|c| !opts.no_mcp_servers.iter().any(|n| n == &c.name))
+        .filter(|c| match feature::server_feature(c) {
+            Some(f) if !c.disabled && !feature_on(f) => {
+                switched_off(f, &format!("[[mcp]] `{}` not started", c.name));
+                false
+            }
+            _ => true,
+        })
         .cloned()
         .collect();
     if !opts.no_mcp && !wanted.is_empty() {
