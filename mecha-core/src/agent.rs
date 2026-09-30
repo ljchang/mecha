@@ -891,9 +891,11 @@ pub enum StopCause {
     /// harness's ceiling on the *work* (that is `MaxTurns`' family): a run
     /// that was fine and got restarted under it.
     Shutdown,
-    /// The model repeated an identical tool call, with an identical result,
+    /// The model repeated an identical tool call, with an identical result:
     /// right after a compaction — the sign that compaction did not carry the
-    /// task and the run is stuck re-living it. Distinct from `MaxTurns` on
+    /// task and the run is stuck re-living it — or failing the same way in
+    /// `LoopGuard::REFUSED_REPEATS` consecutive turns, compaction or not.
+    /// Never for a call the harness refused. Distinct from `MaxTurns` on
     /// purpose: "hit the turn limit" reads as the task being too big, when a
     /// stuck run is a different problem with a different fix.
     Loop,
@@ -2866,8 +2868,27 @@ impl Agent {
                         })
                         .collect();
 
+                    // A call the approver, a hook, a policy or the interlock
+                    // refused is the harness working, not the model stuck:
+                    // appraisal scores `Loop` against the run, and keeps
+                    // denials out of every failure count for that reason. So
+                    // neither of the guard's triggers counts one (review of
+                    // #448). Only this turn's traces: a call refused once and
+                    // later let through still counts when it then fails.
+                    let refused_by_harness: std::collections::HashSet<(&str, String)> = trace
+                        [traced.min(trace.len())..]
+                        .iter()
+                        .filter(|t| t.denied)
+                        .map(|t| (t.name.as_str(), t.input.to_string()))
+                        .collect();
+                    let guarded: Vec<&(&str, &Value, &str, bool)> = outcomes
+                        .iter()
+                        .filter(|(name, input, _, _)| {
+                            !refused_by_harness.contains(&(*name, input.to_string()))
+                        })
+                        .collect();
                     if loop_guard.observe_turn(
-                        outcomes.iter().map(|(name, input, content, _)| {
+                        guarded.iter().map(|(name, input, content, _)| {
                             LoopGuard::digest(name, input, content)
                         }),
                     ) {
@@ -2876,23 +2897,10 @@ impl Agent {
                         );
                         loop_detected = true;
                     }
-                    // A call the approver, a hook, a policy or the interlock
-                    // refused is the harness working, not the model stuck:
-                    // appraisal scores `Loop` against the run, and keeps
-                    // denials out of every failure count for that reason.
-                    let refused_by_harness: std::collections::HashSet<(&str, String)> = trace
-                        [traced.min(trace.len())..]
-                        .iter()
-                        .filter(|t| t.denied)
-                        .map(|t| (t.name.as_str(), t.input.to_string()))
-                        .collect();
                     if loop_guard.observe_refusals(
-                        outcomes
+                        guarded
                             .iter()
-                            .filter(|(name, input, _, is_error)| {
-                                *is_error
-                                    && !refused_by_harness.contains(&(*name, input.to_string()))
-                            })
+                            .filter(|o| o.3)
                             .map(|(name, input, content, _)| {
                                 LoopGuard::digest(name, input, content)
                             }),
@@ -12316,6 +12324,122 @@ mod tests {
         );
         assert_eq!(outcome.tool_calls.len(), n);
         assert_eq!(outcome.stop_cause, StopCause::Completed);
+    }
+
+    /// The same for the guard's older trigger: a policy refusing one call
+    /// twice after a compaction is not the run re-living a dropped stretch
+    /// (review of #448, pass 3).
+    #[tokio::test]
+    async fn repeated_denials_after_a_compaction_are_not_a_loop() {
+        let write = |id: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "fs_write".into(),
+                    input: json!({"path": "a.rs"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns = three_calls();
+        turns.push(assistant(
+            vec![Block::text("a summary")],
+            StopReason::EndTurn,
+        ));
+        turns.push(assistant(vec![Block::text("NONE")], StopReason::EndTurn));
+        turns.push(write("w0"));
+        turns.push(write("w1"));
+        // At this threshold it compacts again before the answer, as the
+        // polling test above finds.
+        turns.push(assistant(
+            vec![Block::text("a second summary")],
+            StopReason::EndTurn,
+        ));
+        turns.push(assistant(vec![Block::text("NONE")], StopReason::EndTurn));
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![Arc::new(EchoTool), Arc::new(WriteTool)],
+            PermissionMode::ReadOnly,
+        );
+        agent.cfg.compact_at_tokens = Some(1);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.force_final_answer = false;
+        let mut convo = Conversation::user("audit the entries");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert!(outcome.compactions > 0, "the guard was never armed");
+        assert_eq!(
+            outcome.tool_calls.iter().filter(|c| c.denied).count(),
+            2,
+            "both writes must have been refused, or this proves nothing"
+        );
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+    }
+
+    /// Only the turn's own refusals are excluded: a call the owner turned
+    /// down once, then let through, still stops the run when it fails the
+    /// same way every turn after. A whole-run exclusion would miss it.
+    #[tokio::test]
+    async fn a_call_denied_once_then_failing_still_counts() {
+        struct FailingSend;
+        #[async_trait]
+        impl Tool for FailingSend {
+            fn name(&self) -> &str {
+                "send"
+            }
+            fn description(&self) -> &str {
+                "sends"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                false
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::err("the server said no"))
+            }
+        }
+        struct DenyFirst(std::sync::atomic::AtomicBool);
+        #[async_trait]
+        impl Approver for DenyFirst {
+            async fn approve(&self, _tool: &dyn Tool, _input: &Value) -> Decision {
+                if self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    Decision::Allow
+                } else {
+                    Decision::Deny("not yet".into())
+                }
+            }
+        }
+
+        let n = LoopGuard::REFUSED_REPEATS as usize;
+        let mut turns: Vec<CompletionResponse> = (0..=n)
+            .map(|i| {
+                assistant(
+                    vec![Block::ToolUse {
+                        id: format!("s{i}"),
+                        name: "send".into(),
+                        input: json!({"to": "x"}),
+                    }],
+                    StopReason::ToolUse,
+                )
+            })
+            .collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(FailingSend)], PermissionMode::Ask);
+        agent.set_approver(Arc::new(DenyFirst(Default::default())));
+        agent.cfg.force_final_answer = false;
+        let mut convo = Conversation::user("send it");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert!(
+            outcome.tool_calls[0].denied,
+            "the first call must be denied"
+        );
+        assert_eq!(outcome.stop_cause, StopCause::Loop);
+        assert_eq!(outcome.tool_calls.len(), n + 1);
     }
 
     #[test]

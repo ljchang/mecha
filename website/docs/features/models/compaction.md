@@ -434,7 +434,9 @@ transcripts. At three, the stop would have ended two runs that recovered on the
 next turn, after the "nothing is being learned" notice. From four to seven it
 catches only the loop that prompted it: a persona chat resending one refused
 picture request forty times. So the stop comes one turn after the notice's
-second rung. A call you, a hook, a policy or the trifecta interlock refused
+second rung.
+
+For both checks, a call you, a hook, a policy or the trifecta interlock refused
 never counts, because that is the harness working.
 
 Two details that keep it honest. It is keyed on **call *and* result**, so
