@@ -210,7 +210,8 @@ fn render(rows: &[Row], announced: &[feature::Announcement]) -> String {
             State::Off { reason, fix } | State::Unready { reason, fix } => {
                 (reason.clone(), fix.clone())
             }
-            State::Blocked { on } => (format!("needs {}", on.id()), None),
+            // The command of what blocks it, the same `next` the web app shows.
+            State::Blocked { on } => (format!("needs {}", on.id()), row.next.clone()),
             State::Unknown { reason } => (reason.clone(), None),
         };
         out.push_str(&format!("{name:<width$}  {:<7}  {say}\n", row.state.word()));
@@ -271,7 +272,11 @@ mod tests {
         let text = render(&rows, &[]);
         assert!(text.contains("\n  tasks "), "{text}");
         assert!(text.contains("\n    layout "), "{text}");
-        assert!(text.contains("needs graph"), "{text}");
+        // Switched on without settings is unready, never a block on what
+        // depends on it; a part off by its parent's missing table is.
+        assert!(text.contains("unready"), "{text}");
+        assert!(text.contains("needs ocr"), "{text}");
+        assert!(text.contains("→ add a [documents] table"), "{text}");
         assert!(text.contains("→ add an [image] table"), "{text}");
     }
 }

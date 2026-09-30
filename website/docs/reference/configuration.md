@@ -451,7 +451,18 @@ whatever it says, and `mecha features` and the start-up line say so. An
 `[[mcp]]` server that belongs to no feature starts as it always has. A feature switched on without the settings it
 needs reads **unready** in `mecha features`, with what is missing; one switched
 off keeps its settings for later. A key that is absent is unanswered, and reads
-off. A key this build does not know — a newer build's feature, or a typo — is
+off.
+
+The web app follows the same answer, read afresh each time a page loads. A
+feature that is off disappears — its tab, its Home card, its buttons — and
+**Settings → Features** lists every feature, off ones included, with the
+command that turns each on (the page shows the command; you run it in a
+terminal). One that is switched on but unready keeps its tab, marked, with what
+is missing above it. A Home queue with anything waiting stays even when its
+feature is off, marked with the command, because the front door's queue keeps
+filling either way. A switch changed while `mecha serve` is running reaches the
+pages at once; the web chat's tools follow when it restarts, and Settings →
+Features says which switches are waiting on that. A key this build does not know — a newer build's feature, or a typo — is
 reported and ignored rather than failing the load, because one `config.toml` is
 often read by more than one build of mecha at once.
 

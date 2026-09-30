@@ -227,6 +227,7 @@ export const ROUTES = [
     ({ todo: key.startsWith('incognito-') ? [] : fx.transcript.todo ?? [] })],
   ['POST', /^\/api\/chat\/[^/]+$/, () => text('')],
   // The chip's picker reads the router; switching is on the demo boundary.
+  ['GET', /^\/api\/features$/, () => fx.features],
   ['GET', /^\/api\/model$/, () => fx.modelList],
   ['POST', /^\/api\/incognito$/, () => ({ key: 'incognito-demo' })],
   ['POST', /^\/api\/incognito\/[^/]+\/(end|alive)$/, () => text('')],
