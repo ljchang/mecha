@@ -487,7 +487,10 @@ it. So, in step 1, the `tool_availability_notices` shape Hermes uses:
   would otherwise be usable** — *"`mail`: configured but not enabled —
   `mecha features enable mail` (or `mecha setup`)"* — on stderr, like the
   routed-outbox-name warning that fires on every start. "Would otherwise be
-  usable" is the full `state` with the switch treated as on, **not** a
+  usable" is the full `state` with **every** switch in `[features]` treated
+  as on — the substitution is global, or a feature's dependencies, still
+  absent on exactly this install, would short-circuit it to `Blocked` and
+  eight of the parts and dependents would never be announced (#435) — **not** a
   settings table being present: four features' evidence is not a table at
   all — `slack` a token store, `personas` a non-empty store, `voice` an
   installed unit file (installed, not running: a socket-activated unit is
@@ -757,21 +760,27 @@ Three things make it deliberate rather than accidental:
   `Feature::switchable_from_environment(self) -> bool` as an exhaustive
   `match` — a new variant does not compile until it decides — and
   `config_at` refuses any `[features]` key set `true` for which it is
-  `false`. The permitted set, said out loud: **`frontdoor`** (a binary on
-  PATH and the trial's own `requests` store) and **`incognito`** (blocked
-  without `web` in any case); every other top-level feature is `false`
-  (found on review of #427, pass 14). **Not `graph`**, though an
+  `false`. The permitted set, said out loud, is **`frontdoor`** alone — a
+  binary on PATH and the trial's own `requests` store; every other
+  top-level feature is `false` (found on review of #427, pass 14). Not
+  `incognito`: its evidence is `provider_is_local` over `default_provider`
+  and `providers`, both `MACHINE_TABLES` copied from the operator, so it
+  fails the test on its own terms, not only by needing `web` (#435). **Not `graph`**, though an
   environment may declare its own graph server: a manifest's `live_servers =
   ["graph"]` carries the operator's live server into the trial's `[[mcp]]`,
   and the graph row finds a server by its command, so it cannot tell a
   carried-in entry from a declared one — an environment's `graph = true`
   beside that manifest would read `On` against the owner's `graph.db`, the
   2026-09-23 incident this section exists for. So a trial's `graph` bool is
-  **set by `trial_env::config_at`, never read from the environment file**:
-  on when the environment declares its own graph server or the manifest
-  carries one in — the operator's existing, explicit opt-in — and off
-  otherwise, so experiments that use `live_servers` keep working once step 1
-  gates the server on the bool (found on review of #435). A new settings table gets the
+  **defaulted by `trial_env::config_at`**, and the environment file may only
+  narrow it: `graph = true` there is refused at load like any key the
+  predicate forbids; `graph = false` is honoured, so a light arm stays light
+  even beside a manifest that carries a server; and with the key absent,
+  `config_at` sets it on exactly when the environment declares its own graph
+  server or the manifest's `live_servers` carries one in — the operator's
+  existing, explicit opt-in — so experiments that use `live_servers` keep
+  working once step 1 gates the server on the bool (found on review of #435,
+  passes 1 and 3). A new settings table gets the
   same test the day it is added (§9 step 8). An environment that sets such a
   key to `true` is **refused at load**, with `config_at`'s `ensure!` and its
   reason. **`[documents]` is not on `OPERATOR_ONLY_TABLES` today**, though
@@ -785,11 +794,11 @@ Three things make it deliberate rather than accidental:
   reason, never ignored with a warning: a warning fails open in exactly the
   way the `requires` bullet below exists to close — the arm would run without
   the feature it asked for and be scored anyway. An environment may set any
-  key to `false`. Two tests pin the negatives: `graph = true`, `search =
-  true` or `messages = true` in an environment file refuses the trial; and a
-  trial whose manifest carries no graph server has `graph` off whatever the
-  environment asked, since `config_at` sets that bool (found on review of
-  #427, passes 4 and 5, and #435). Turning features off is how a trial is made light; this is the switch
+  key to `false`. Three tests pin it: `graph = true`, `search = true` or
+  `messages = true` in an environment file refuses the trial; `graph` absent
+  with a manifest carrying no graph server reads off; and `graph = false`
+  beside `live_servers = ["graph"]` reads off (found on review of #427,
+  passes 4 and 5, and #435). Turning features off is how a trial is made light; this is the switch
   it uses. But which features were on
   is as much a condition as which levers were off, so the experiment manifest
   and the session record carry the feature set beside `levers_off`, from the
@@ -823,21 +832,24 @@ Each feature carries `Recommendation` rows:
 ```rust
 pub struct Recommendation {
     pub tier_gb: u32,             // 16, 32, 64, 128 — hardware.md's tiers (F5)
-    pub memory: Memory,           // Unified | Discrete — the two columns (F5)
+    pub memory: Memory,           // the column and its cost, as one value (F5)
     pub model: &'static str,      // "PaddleOCR-VL 1.6 (GGUF + mmproj)"
     pub fetch: &'static str,      // "hf download PaddlePaddle/PaddleOCR-VL-1.6-GGUF"
-    pub peak: Peak,               // the number and where it came from, as one value
     pub residency: Residency,     // Resident | OnDemand | PerRequest
 }
 
 /// F5's second column. `Unified`: one pool holds everything (a GB10, a Mac),
 /// and `tier_gb` is that pool. `Discrete`: `tier_gb` is the GPU's own memory,
 /// the chat model is sized to it, and the row may put OCR, embeddings and
-/// speech to text in system RAM or on the CPU instead. `mecha setup` reads
-/// which shape the machine is before choosing a row.
+/// speech to text in system RAM or on the CPU instead — so a discrete row's
+/// cost is **two** numbers, which `Peak` alone cannot carry. `mecha setup`
+/// reads which shape the machine is before choosing a row. A card between
+/// tiers (24 GB, 48 GB) takes the row at or below it for the model family;
+/// whether it fits is `--probe`'s ratio against the card's actual memory,
+/// never the row's label (found on review of #435).
 pub enum Memory {
-    Unified,
-    Discrete,
+    Unified { peak: Peak },
+    Discrete { gpu: Peak, host: Peak },
 }
 
 pub enum Peak {
@@ -866,7 +878,11 @@ Rules:
   machine is not "does image generation fit" but "does it fit *beside* the
   chat model". `mecha features --probe` adds up the resident and peak memory
   of everything enabled and reports llmfit's ratio band against the machine's
-  total, with `null` for any feature whose peak is unmeasured. This is why
+  memory, with `null` for any feature whose peak is unmeasured. On a
+  `Discrete` machine that is **two sums against two totals** — the GPU's
+  memory and the host's — never one: a single sum would pass a chat model
+  that does not fit the card and fail an OCR server that fits host RAM with
+  room to spare (found on review of #435). This is why
   `residency` is on the row: an on-demand OCR server costs nothing until a
   PDF arrives; an image generation borrows ~15 GB for its duration (and
   `[image] min_available_mb` already refuses one that would not fit).
