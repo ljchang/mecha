@@ -26,9 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from before the table has every switch unanswered, so `mecha features` marks
   what you have set up as "not enabled, but set up here", a session or service
   prints one line naming them when it starts, and `mecha setup` offers each.
-  Nothing is turned off by the switch yet: this release only records your
-  answers. A project's `mecha.toml` cannot set the table, and an experiment
-  environment may only switch features off (and the front door on).
+  A project's `mecha.toml` cannot set the table, and an experiment environment
+  may only switch features off (and the front door on).
 
 - **Persona chats show their pictures, with the same Edit button.** A picture
   a persona draws now appears under its row in the Personas tab, as in the
@@ -257,6 +256,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it.
 
 ### Changed
+
+- **A feature whose switch is not on is off.** Web search, image generation,
+  PDF extraction and the mail, docs, graph and publishing servers register or
+  start only when their `[features]` switch is `true`, and `mecha serve`
+  refuses to start without `web = true`. **Before upgrading an existing
+  install, answer the switches:** run `mecha setup`, or the one
+  `mecha features enable …` line a session prints when it starts — it names
+  everything this install had set up. An MCP server that belongs to no
+  feature starts as before. Experiment trials keep what they carry: a feature
+  whose server a trial declares, or whose server the manifest brings in with
+  `live_servers`, is on unless the environment says `false`, and search
+  follows your own switch.
 
 - **The learning store no longer uses git.** `~/.mecha/learning/` is plain
   files: opening it no longer runs `git init` or writes a `.gitignore`, and a

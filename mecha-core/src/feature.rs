@@ -18,9 +18,10 @@
 //! bool in `[features]` before anything else ([`switch`]); a part rides its
 //! parent. An install that predates `[features]` has every switch absent, so
 //! every feature reads off — and [`announcements`] names the ones it had set
-//! up, which the upgrade notice prints and `mecha setup` offers. Nothing
-//! registers or connects by this module's answer yet (FEATURES-DESIGN.md §9,
-//! step 1b); for now it is what `mecha features` reports.
+//! up, which the upgrade notice prints and `mecha setup` offers. Tool
+//! registration and server connection ask [`switched_on`] — the switch,
+//! never the readout (FEATURES-DESIGN.md §4.2 item 6) — and `mecha serve`
+//! refuses without `web`.
 
 use crate::config::{Config, McpServerConfig};
 use serde::Serialize;
@@ -316,6 +317,36 @@ pub fn switch(cfg: &Config, f: Feature) -> Option<Switch> {
     })
 }
 
+/// Whether `f` is switched on — its own bool, or for a part its parent's.
+///
+/// What tool registration and server connection ask (FEATURES-DESIGN.md §4.2
+/// item 6): **the switch, never the readout**. Registration builds from the
+/// session's settings as it always has, and a switched-on feature whose
+/// settings are missing or whose server is down still registers what it can,
+/// so the tool list — the front of the cached prefix — does not move with a
+/// server's uptime. `cfg` may be a project-layered config: `[features]` is
+/// stripped from project layers, so its switches are the global file's.
+pub fn switched_on(cfg: &Config, f: Feature) -> bool {
+    let owner = std::iter::successors(Some(f), |g| g.part_of())
+        .last()
+        .unwrap_or(f);
+    switch(cfg, owner) == Some(Switch::On)
+}
+
+/// The feature an `[[mcp]]` server belongs to, by the program its `command`
+/// runs — the same match the rows use (`mcp_entry`). `None` for a server that
+/// belongs to no feature: it connects as it always has.
+pub fn server_feature(server: &McpServerConfig) -> Option<Feature> {
+    let program = Path::new(&server.command).file_name()?.to_str()?;
+    match program {
+        "mecha-mail" => Some(Feature::Mail),
+        "mecha-docs" => Some(Feature::Docs),
+        "mecha-graph-mcp" => Some(Feature::Graph),
+        "factory-publish" => Some(Feature::Publishing),
+        _ => None,
+    }
+}
+
 /// Keys in `[features]` this build does not know — a newer build's feature,
 /// or a typo. Ignored, never a load failure (see `config::FeaturesConfig`),
 /// and reported so a typo still shows as the feature it meant being off.
@@ -437,25 +468,28 @@ pub fn all(facts: &Facts) -> Vec<Row> {
 /// Every row reads [`Facts::config`], the global configuration, and
 /// nothing else configures it.
 ///
-/// A feature whose parent or requirement is off is `Blocked` on the first
-/// one found, whatever its own switch says: configured-but-unreachable is
-/// different from off, and this says which dependency to fix first.
+/// The owner's switch is read first: absent or `false` is `Off`, whatever the
+/// settings or the dependencies say. With it on (or for a part, which has
+/// none), a feature whose parent or requirement is off is `Blocked` on the
+/// first one found: configured-but-unreachable is different from off, and
+/// this says which dependency to fix first.
 pub fn state(facts: &Facts, f: Feature) -> State {
-    // The owner's switch first: off is off, whatever its settings say. A
-    // part has no switch and is decided by its parent below.
+    // The fix names every dependency that is not on either, because `enable`
+    // refuses a feature alone when its requirement is off — the row must
+    // not print a command the same binary rejects (found on review of #443).
+    let fix = || {
+        let mut ids: Vec<&str> = f
+            .requires()
+            .iter()
+            .filter(|d| switch(&facts.config, **d) != Some(Switch::On))
+            .map(|d| d.id())
+            .collect();
+        ids.push(f.id());
+        format!("mecha features enable {}", ids.join(" "))
+    };
     match switch(&facts.config, f) {
-        Some(Switch::Off) => {
-            return off(
-                "turned off in [features]",
-                format!("mecha features enable {}", f.id()),
-            )
-        }
-        Some(Switch::Absent) => {
-            return off(
-                "not enabled in [features]",
-                format!("mecha features enable {}", f.id()),
-            )
-        }
+        Some(Switch::Off) => return off("turned off in [features]", fix()),
+        Some(Switch::Absent) => return off("not enabled in [features]", fix()),
         Some(Switch::On) | None => {}
     }
     for need in f.needs() {
@@ -1403,6 +1437,19 @@ mod tests {
             plan_enable(&web_on, &ids(&["incognito"])).unwrap(),
             vec![Feature::Incognito]
         );
+        // And every off row's own fix is a command `enable` accepts — the row
+        // must not print one this binary refuses (review of #443).
+        let facts = Facts {
+            config: cfg.clone(),
+            ..empty_machine()
+        };
+        for &f in Feature::ALL.iter().filter(|f| f.has_switch()) {
+            let State::Off { fix: Some(fix), .. } = state(&facts, f) else {
+                panic!("{} is off on an empty machine", f.id())
+            };
+            let args: Vec<String> = fix.split_whitespace().skip(3).map(String::from).collect();
+            plan_enable(&cfg, &args).unwrap_or_else(|e| panic!("{fix}: {e}"));
+        }
     }
 
     /// The writer edits in place: comments, other tables and a newer build's

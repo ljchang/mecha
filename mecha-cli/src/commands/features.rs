@@ -99,6 +99,7 @@ fn set(ids: &[String], on: bool) -> Result<()> {
         for dependent in Feature::ALL.iter().filter(|g| {
             g.has_switch()
                 && feature::switch(&cfg, **g) == Some(Switch::On)
+                && !features.contains(g)
                 && g.requires().iter().any(|d| features.contains(d))
         }) {
             println!("  `{}` needs it, and now reads blocked", dependent.id());
@@ -150,9 +151,9 @@ fn notice_line(announced: &[feature::Announcement]) -> Option<String> {
         }
     }
     Some(format!(
-        // True while nothing is gated on the switch (FEATURES-DESIGN §9, step
-        // 1a): these still work. Step 1b, which gates them, says "so off".
-        "set up here but not switched on in [features]: {} — they still work, and will be off once switches are enforced; `mecha features enable {}`, or `mecha setup` to answer each",
+        // Tools and servers follow the switch (FEATURES-DESIGN §9, step 1b), so
+        // an unanswered one is off in this very session.
+        "set up here but not switched on in [features], so off: {} — `mecha features enable {}`, or `mecha setup` to answer each",
         named.join(", "),
         ids.join(" ")
     ))

@@ -120,6 +120,26 @@ pub async fn execute(args: Args) -> Result<()> {
         );
     }
 
+    // The web app is a feature with a switch (FEATURES-DESIGN.md F3), and
+    // the two ways it can be unanswered want different words: an install
+    // from before `[features]` is one command from working, while a `false`
+    // is the owner's choice and is not argued with.
+    {
+        use mecha_core::feature::{switch, Feature, Switch};
+        match switch(&config, Feature::Web) {
+            Some(Switch::On) => {}
+            Some(Switch::Off) => bail!(
+                "the web app is turned off in [features] (`web = false`); \
+                 `mecha features enable web` turns it back on"
+            ),
+            _ => bail!(
+                "the web app is not switched on in [features] — this install's config \
+                 predates the switch, which every optional feature now has. \
+                 `mecha features enable web` keeps it (`mecha setup` offers the rest)"
+            ),
+        }
+    }
+
     let Some(owner) = args
         .owner_login
         .clone()
