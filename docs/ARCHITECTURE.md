@@ -8013,6 +8013,73 @@ Three rules, each load-bearing:
   "re-auth needed" — permanent, not transient — which is what lets timers
   and `OnFailure=` hooks route around blind retry.
 
+## Features
+
+`feature.rs` answers one question — *which optional parts of mecha are on?* —
+for every reader: `mecha features` today, and by `FEATURES-DESIGN.md`'s build
+order `/api/features`, the route and CLI guards, tool registration and
+`mecha setup`. It exists because each of those used to answer it separately:
+the web nav said every tab was on, setup looked for a binary where
+registration looked for an `[[mcp]]` entry, and an off feature's routes failed
+in five different ways. The design and its open steps are
+`docs/FEATURES-DESIGN.md`; what is built is below.
+
+- **The registry is closed.** `Feature` is an enum the binary owns; config
+  chooses among its variants and nothing else can add one — not a repository,
+  a skill, or an MCP server, for the reason triggers and skills live only in
+  `~/.mecha/`. Its `id`s are a wire format (`--json`, and later the recorded
+  feature set), so an id is never renamed. A part (`ocr`, `library`,
+  `publishing`) is a variant with `part_of`, listed after everything it
+  needs — `state` recurses through `needs`, and a test holds the order.
+- **Five states, never merged into a bool.** `On`, `Off`, `Blocked` (a need is
+  off), `Unready` (config or disk says it cannot work yet) and `Unknown` (a
+  store could not be read). Only `Off` and `Blocked` block dependents or hide
+  anything: hiding a feature the owner turned on because something about it
+  is wrong reads as "not configured", the silently-degrading shape. `Unknown`
+  is never clean.
+- **No network, ever.** OCR and embeddings are socket-activated and the router
+  loads whatever a request names, so a reading that probed would turn a page
+  load into a way to fill memory. Every predicate `own_state` reaches is a pure
+  function of configuration, `PATH` and a directory listing.
+- **Global configuration only, by signature.** `state` takes a `Facts` and no
+  `Config`; `Facts::read` carries the global one. A project `mecha.toml` keeps
+  its `[[mcp]]`, `[[search]]`, `[tools]` and `default_provider`, and each
+  decides a row, so a layered config would let a cloned repository say what
+  the owner's install has on. The first fix was a doc comment asking callers
+  to pass `load_global`; review found three tables it did not cover, and the
+  type now carries the rule (#427, #428).
+- **A row is on only where its tool would register.** Each arm asks what
+  `setup::prepare_tools` asks — `ToolsConfig::registers`, the loopback
+  validators (`imagegen::loopback_url`, `document::ocr_url`),
+  `DocumentsConfig::validate`, `SearchBackendConfig::problem` (held to
+  `build_search_chain` by a test beside it) — never a field's presence. The
+  first version read presence and said `on` for a search backend with no key,
+  an image server off the machine, and PDF extraction turned off in
+  `[tools]`, each a run without the tool.
+- **Another program's store is found by its rule.** Mail accounts live where
+  the mail crate looks — `$MECHA_MAIL_DIR`, else `~/.mecha/mail` under the real
+  home (`onboarding::mail_store_dir`) — never `$MECHA_HOME/mail`. `home.join`
+  read an authorised install as having no account whenever either variable was
+  set; `frontdoor::mail_dir` had paid for it first, and `setup` was still
+  paying.
+
+### Adding a feature
+
+What a new optional feature needs today. `FEATURES-DESIGN.md` §9 step 8 is
+the full checklist this grows into as each build step lands.
+
+1. A `Feature` variant: `id`, `label`, `part_of`, `requires`, placed in
+   `Feature::ALL` after everything it needs. `every_variant_is_in_all` will
+   not compile until the variant is in its `match`; raise its count with it.
+2. An `own_state` arm that asks the predicate its tool's registration asks.
+   If that predicate lives in `mecha-cli`, move it to core rather than copy
+   it (`provider_is_local`, `SearchBackendConfig::problem`).
+3. Any new fact it needs from the disk goes in `Facts::read`, found by the
+   owning program's rule.
+4. A row in `mecha features`' docs (`reference/cli.md`) if its off state has a
+   fix worth naming. The tests in `feature::tests` cover order, ids and the
+   empty machine without further edits.
+
 ## Context, and knowing how much is left
 
 `[providers.X] context_window` is what the model's context holds — for a
