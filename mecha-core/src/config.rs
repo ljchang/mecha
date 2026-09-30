@@ -1155,6 +1155,42 @@ impl ConfigLayer {
     }
 }
 
+/// Whether this process's chat provider may serve an incognito chat: a
+/// local server on this machine, with no fallbacks. A cloud provider keeps
+/// the text on someone else's servers; a fallback would re-send the whole
+/// conversation there on a transient local error, silently (INCOGNITO-DESIGN.md
+/// §6.1).
+pub fn provider_is_local(config: &Config, provider_name: &str) -> std::result::Result<(), String> {
+    let Some(provider) = config.providers.get(provider_name) else {
+        return Err(format!("the provider `{provider_name}` is not configured"));
+    };
+    if !provider.fallbacks.is_empty() {
+        return Err(format!(
+            "the provider `{provider_name}` has fallbacks ({}), which could send the \
+             conversation elsewhere",
+            provider.fallbacks.join(", ")
+        ));
+    }
+    let loopback = provider
+        .base_url
+        .as_deref()
+        .and_then(|u| reqwest::Url::parse(u).ok())
+        .and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())
+        })
+        .is_some_and(|h| match h.parse::<std::net::IpAddr>() {
+            Ok(ip) => ip.is_loopback(),
+            Err(_) => h.eq_ignore_ascii_case("localhost"),
+        });
+    if !loopback {
+        return Err(format!(
+            "the provider `{provider_name}` is not a server on this machine"
+        ));
+    }
+    Ok(())
+}
+
 impl Config {
     pub fn global_path() -> Option<PathBuf> {
         crate::work::mecha_home()

@@ -1082,6 +1082,21 @@ pub fn charter_state(path: &Path) -> CharterState {
     }
 }
 
+/// Whether Slack tokens are stored: `None` when `<home>/slack` could not be
+/// read, which is a finding, not an absence.
+pub fn slack_linked(home: &std::path::Path) -> Option<bool> {
+    let dir = home.join("slack");
+    match std::fs::read_dir(&dir) {
+        Ok(entries) => Some(entries.flatten().any(|e| {
+            e.path()
+                .extension()
+                .is_some_and(|x| x == "json" || x == "toml")
+        })),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    }
+}
+
 /// Is `name` runnable from `PATH`?
 pub fn on_path(name: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {

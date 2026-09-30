@@ -1618,6 +1618,34 @@ one quietly failing a third of its tool calls, and one whose most recent run
 succeeded having made none at all. See
 [Run quality](/docs/features/learning/run-quality).
 
+## `features`
+
+Which optional parts of mecha are on, and the way to turn on each of the rest.
+Read from the global config and the disk only — no network, so a server that
+starts on demand is never woken to be asked.
+
+```
+mecha features [--json]
+```
+
+| Flag | Description |
+|---|---|
+| `--json` | Machine output: one object per feature, with `state` one of `on`, `off`, `blocked`, `unready`, `unknown`. |
+
+Each row is one of five states. **on** and **off** are what they say; an off
+row carries the command or config change that turns it on. **blocked** means
+the feature is configured but something it needs is off — `layout` needs `ocr`,
+voice needs the web app — and names the dependency. **unready** means a fact
+on disk says it cannot work yet, such as mail with no mailbox authorised.
+**unknown** means a store could not be read, which is a finding, never the same
+as off. Parts of a feature (`tasks` under `graph`, `ocr` under `documents`)
+are indented under it.
+
+Exit 0 whatever it finds: an install with features off is a light install, not
+a broken one. Mail, docs, the graph and the front door count as on only when an
+enabled `[[mcp]]` entry runs their server — an installed binary alone puts no
+tool on the surface.
+
 ## `diagnose`
 
 Read the run corpus and propose one change to try — the stage between `doctor`

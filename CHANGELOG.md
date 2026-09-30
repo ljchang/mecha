@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha features` lists which optional parts of mecha are on.** Web,
+  Slack, mail, docs, the graph, search, PDF extraction, image generation,
+  personas, voice, incognito, the front door and messages, each marked on,
+  off, blocked (waiting on something else that is off), unready or unknown,
+  with the command that turns on each one that is off. It reads the config
+  and the disk only and wakes no server. `--json` for scripts. The first step
+  of making installs modular (`docs/FEATURES-DESIGN.md`).
+
 - **Make and edit personas on the web.** The Personas tab has a New persona
   form: name, relationship templates, a library portrait and groups. New
   kinds of relationship (how someone in it behaves) and new groups can be

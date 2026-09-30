@@ -131,7 +131,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         has_graph_binary: onboarding::on_path("mecha-graph-mcp"),
         mail_accounts: onboarding::count_accounts(&home.join("mail")),
         docs_accounts: onboarding::count_accounts(&home.join("docs")),
-        slack_linked: slack_linked(&home),
+        slack_linked: onboarding::slack_linked(&home),
         provider_credential: pcfg.resolve_api_key().is_some(),
         props,
         scheduler_installed: scheduler_installed(),
@@ -764,19 +764,6 @@ fn apply(provider: &str, settings: &[(&'static str, String)]) -> Result<()> {
         backup.display()
     );
     Ok(())
-}
-
-fn slack_linked(home: &std::path::Path) -> Option<bool> {
-    let dir = home.join("slack");
-    match std::fs::read_dir(&dir) {
-        Ok(entries) => Some(entries.flatten().any(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|x| x == "json" || x == "toml")
-        })),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
-        Err(_) => None,
-    }
 }
 
 fn trigger_count(home: &std::path::Path) -> usize {
