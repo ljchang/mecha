@@ -318,6 +318,26 @@ impl PersonaChats {
         }))
     }
 
+    /// The persona's portrait character when it is a locked library entry and
+    /// this viewer holds no unlock: then no part of the Edit screen names it
+    /// (owner ruling, 2026-09-30 — hidden, never cut). `None` when there is
+    /// nothing to hide.
+    fn hidden_character(
+        &self,
+        library: &LibraryState,
+        p: &Persona,
+        token: Option<&str>,
+    ) -> Option<String> {
+        let name = p.settings.character.as_ref()?;
+        if library.unlocked(token) {
+            return None;
+        }
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        lib.get(mecha_core::imagelib::Kind::Character, name)
+            .filter(|e| e.locked)
+            .map(|_| name.clone())
+    }
+
     /// What the settings form offers, from the stores as they stand — built
     /// the same way for the page's GET and for checking its save, so a save
     /// is held to the choices the page was shown.
@@ -380,8 +400,16 @@ impl PersonaChats {
             mecha_core::persona::OwnerFile::Motivation,
             mecha_core::persona::OwnerFile::Settings,
         ] {
-            let text =
+            let mut text =
                 mecha_core::persona::read_owner_file(&self.store, &p.name, file).map_err(failed)?;
+            // A hidden portrait is not named: the line is left out of what
+            // is served, and the digest is over the served text — a digest
+            // of the file itself would let a guessed name be checked.
+            if file == mecha_core::persona::OwnerFile::Settings
+                && self.hidden_character(library, &p, token).is_some()
+            {
+                text = mecha_core::persona::hide_character(&text);
+            }
             // The settings file also comes as a form. One the form cannot
             // read (a hand edit that does not load) comes without it, and
             // why: the page edits it as text until it loads again.
@@ -428,6 +456,27 @@ impl PersonaChats {
             .ok_or(Refusal::NotFound)?;
         // Required from the page either way: a save that could skip the stale
         // check by leaving out a field would make it advisory (review of #420).
+        // The page was shown the settings without a hidden portrait's line,
+        // and its base is a digest of that. Check the base against what it
+        // was shown, then hold the write to the file as it is now; a text
+        // save gets the link back, and a form save never touched it.
+        let hidden = (body.file == mecha_core::persona::OwnerFile::Settings)
+            .then(|| self.hidden_character(library, &p, body.unlock.as_deref()))
+            .flatten();
+        let mut base = body.base.clone();
+        if hidden.is_some() {
+            let disk = mecha_core::persona::read_owner_file(&self.store, &p.name, body.file)
+                .map_err(failed)?;
+            let shown =
+                mecha_core::persona::text_digest(&mecha_core::persona::hide_character(&disk));
+            if shown != body.base {
+                return Err(Refusal::Conflict(format!(
+                    "{:#}",
+                    anyhow::Error::from(mecha_core::persona::StaleEdit(body.file))
+                )));
+            }
+            base = mecha_core::persona::text_digest(&disk);
+        }
         let saved = match (body.text, body.changes, body.doc) {
             (None, None, Some(doc)) => mecha_core::persona::edit_markdown(
                 &self.store,
@@ -436,24 +485,24 @@ impl PersonaChats {
                 &doc,
                 &body.base,
             ),
-            (Some(text), None, None) => mecha_core::persona::write_owner_file(
-                &self.store,
-                &p.name,
-                body.file,
-                &text,
-                Some(&body.base),
-            ),
+            (Some(text), None, None) => {
+                let text = match &hidden {
+                    Some(c) => mecha_core::persona::restore_character(&text, c),
+                    None => text,
+                };
+                mecha_core::persona::write_owner_file(
+                    &self.store,
+                    &p.name,
+                    body.file,
+                    &text,
+                    Some(&base),
+                )
+            }
             (None, Some(changes), None)
                 if body.file == mecha_core::persona::OwnerFile::Settings =>
             {
                 let form = self.form(library, body.unlock.as_deref());
-                mecha_core::persona::edit_settings(
-                    &self.store,
-                    &p.name,
-                    &form,
-                    &changes,
-                    &body.base,
-                )
+                mecha_core::persona::edit_settings(&self.store, &p.name, &form, &changes, &base)
             }
             (None, Some(_), None) => {
                 return Err(Refusal::Bad("only persona.toml is edited as a form".into()))
@@ -473,10 +522,18 @@ impl PersonaChats {
         })?;
         let store = Store::load(&self.store);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
-        let problems = store
+        let problems: Vec<String> = store
             .get(&p.name)
             .map(|q| store.problems(q, &lib))
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            // A problem that names the hidden portrait would name it.
+            .filter(|m| {
+                hidden
+                    .as_ref()
+                    .is_none_or(|c| !m.contains(&format!("`{c}`")))
+            })
+            .collect();
         Ok(serde_json::json!({ "version": state.version, "problems": problems }))
     }
 
@@ -2676,6 +2733,96 @@ mod tests {
 
     fn body<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> T {
         serde_json::from_value(v).unwrap()
+    }
+
+    /// A visible persona whose portrait is a locked character: a locked page
+    /// never sees the name — not in the text, the form or the digest — and
+    /// every save keeps the link (owner ruling, 2026-09-30: hidden, never cut).
+    #[tokio::test]
+    async fn a_locked_portrait_is_never_named_to_a_locked_page_and_never_cut() {
+        let w = world();
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb([9, 10, 10]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        mecha_core::imagelib::create(
+            &w.library.dir,
+            mecha_core::imagelib::NewEntry {
+                kind: mecha_core::imagelib::Kind::Character,
+                name: "theo".into(),
+                text: "A tall man in a grey coat.".into(),
+                portrait: Some(png.into_inner()),
+                source_seed: None,
+                origin: mecha_core::imagelib::Origin::Owner,
+                locked: true,
+            },
+        )
+        .unwrap();
+        let toml = w.store().join("mara/persona.toml");
+        let on_disk = std::fs::read_to_string(&toml).unwrap().replacen(
+            "display",
+            "character = \"theo\"\ndisplay",
+            1,
+        );
+        std::fs::write(&toml, &on_disk).unwrap();
+
+        let files = w.personas().files(&w.library, "mara", None).unwrap();
+        assert!(!files.to_string().contains("theo"), "{files}");
+        let settings = &files["settings"];
+        assert!(settings["form"]["values"]["character"].is_null());
+        assert_ne!(
+            settings["digest"],
+            mecha_core::persona::text_digest(&on_disk)
+        );
+
+        // A text save of what was shown, and a form save: the link stays.
+        let text = settings["text"]
+            .as_str()
+            .unwrap()
+            .replace("dose       = true", "dose       = false");
+        let saved = w
+            .personas()
+            .save(
+                &w.library,
+                "mara",
+                body(serde_json::json!({ "file": "settings", "text": text, "base": settings["digest"] })),
+            )
+            .unwrap();
+        assert!(!saved.to_string().contains("theo"), "{saved}");
+        let now = std::fs::read_to_string(&toml).unwrap();
+        assert!(now.contains("character = \"theo\""), "{now}");
+        assert!(now.contains("dose       = false"), "{now}");
+        let files = w.personas().files(&w.library, "mara", None).unwrap();
+        w.personas()
+            .save(
+                &w.library,
+                "mara",
+                body(serde_json::json!({
+                    "file": "settings", "changes": { "safety.dose": true },
+                    "base": files["settings"]["digest"],
+                })),
+            )
+            .unwrap();
+        assert!(std::fs::read_to_string(&toml)
+            .unwrap()
+            .contains("character = \"theo\""));
+        // The real file's digest is not a base the page could have held.
+        let stale = w.personas().save(
+            &w.library,
+            "mara",
+            body(serde_json::json!({
+                "file": "settings", "changes": { "safety.dose": false },
+                "base": mecha_core::persona::text_digest(&std::fs::read_to_string(&toml).unwrap()),
+            })),
+        );
+        assert!(matches!(stale, Err(Refusal::Conflict(_))), "{stale:?}");
+
+        // Unlocked, the portrait is named as ever.
+        let token = w.library.grant_for_tests();
+        let open = w
+            .personas()
+            .files(&w.library, "mara", Some(&token))
+            .unwrap();
+        assert_eq!(open["settings"]["form"]["values"]["character"], "theo");
     }
 
     /// The page can make a persona and write who it is — the owner's door,
