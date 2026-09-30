@@ -541,9 +541,17 @@ impl PersonaChats {
         };
         let state = saved.map_err(|e| {
             if e.downcast_ref::<mecha_core::persona::StaleEdit>().is_some() {
-                Refusal::Conflict(format!("{e:#}"))
-            } else {
-                Refusal::Bad(format!("{e:#}"))
+                return Refusal::Conflict(format!("{e:#}"));
+            }
+            let why = format!("{e:#}");
+            // A parser's refusal quotes the offending source line, and the
+            // restored hidden line is part of the source: never let a
+            // refusal say the name the page was not shown (review of #430).
+            match &hidden {
+                Some(c) if why.contains(c.as_str()) => Refusal::Bad(
+                    "persona.toml would not load as saved; unlock the library to see why".into(),
+                ),
+                _ => Refusal::Bad(why),
             }
         })?;
         let store = Store::load(&self.store);
