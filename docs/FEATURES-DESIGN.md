@@ -430,7 +430,9 @@ memory from a page load. So:
 - `mecha features --probe` and `mecha setup` may probe, using only calls that
   load nothing: `served_props` / `GET /models` against the router, the
   systemd unit state for a socket-activated server, ComfyUI's
-  `/system_stats`. A server that runs on demand reports **"on demand"**, which
+  `/system_stats` (to be confirmed load-free on this install before step 6
+  relies on it — "loads weights on first use" is why ComfyUI is on this
+  list). A server that runs on demand reports **"on demand"**, which
   is a state, not a failure.
 - Every probe row says **where** it ran (#80206).
 
@@ -478,7 +480,9 @@ Three rules keep one switch from becoming two:
   presence a project file would have switched the owner's Mail and Graph tabs.
   A project's servers still give sessions in that directory tools; they never
   change what the install says is on. (The registry also reads the server
-  rows' settings from the global layer's `[[mcp]]` only.)
+  rows' settings from the global layer's `[[mcp]]` only — enforced from step
+  0 by `Facts::read` carrying the global configuration, so `state` has no
+  `Config` parameter a layered value could be handed to.)
 - **A key that is absent is off**, and a feature shipped after your table
   was written is simply absent — so `mecha features` lists it, and `mecha
   setup` offers it as `Missing`, never as declined. (Hermes had to add
@@ -595,20 +599,24 @@ Three things make it deliberate rather than accidental:
   case lacks — a trial home never inherits the operator's servers (the
   2026-09-23 rule `trial_env` exists for), so an environment's `graph = true`
   can connect only a server the environment itself declared, and with none
-  declared it reads `Unready`, never the operator's graph. **Except where
-  the operator supplies the settings:** `[[search]]` is a
-  `trial_env::MACHINE_TABLE`, which an environment may not declare and
-  `base_config` copies from the operator — so an environment's `search =
-  true` would hand a checkout-supplied file the owner's backends and keys,
-  `Egress::Chosen` at deep search, with nothing to degrade to `Unready`. So
-  the rule is **an environment's bool may enable only what the same layer
-  could configure**: its `[features]` keys for features whose settings come
-  from a machine table (today, `search`) are ignored, loudly, the way a
-  project layer's `trust_result_claims` is cleared. It may still turn any
-  feature *off*. Two tests pin the two negatives — `graph = true` with no
-  environment server reads `Unready`, and `search = true` from an
-  environment leaves search off in the trial (found on review of #427, pass
-  4). Turning features off is how a trial is made light; this is the switch
+  declared it reads `Unready`, never the operator's graph. **But an
+  environment may switch a feature *on* only if it could configure it**,
+  judged by the trust of the tables the feature's switch and settings live
+  in, not by who happens to supply them: a feature whose table is in
+  `trial_env::OPERATOR_ONLY_TABLES` (`web`, `slack`, `image`, and `messages`,
+  whose switch is the alias of `[messages] enabled`) or in `MACHINE_TABLES`
+  (`search`, whose backends and keys `config_at` copies from the operator —
+  `Egress::Chosen` at deep search, with nothing to degrade to `Unready`)
+  cannot be turned on from an environment. A new settings table gets the
+  same test the day it is added (§9 step 8). An environment that sets such a
+  key to `true` is **refused at load**, with `config_at`'s `ensure!` and its
+  reason, never ignored with a warning: a warning fails open in exactly the
+  way the `requires` bullet below exists to close — the arm would run without
+  the feature it asked for and be scored anyway. An environment may set any
+  key to `false`. Two tests pin the negatives: `graph = true` with no
+  environment server reads `Unready`, and `search = true` or `messages =
+  true` from an environment refuses the trial (found on review of #427,
+  passes 4 and 5). Turning features off is how a trial is made light; this is the switch
   it uses. But which features were on
   is as much a condition as which levers were off, so the experiment manifest
   and the session record carry the feature set beside `levers_off`, from the
@@ -756,7 +764,9 @@ Each step is a PR, and each leaves every surface working.
    `lenient_features` loader of `lenient_levers`' all-or-nothing shape, and
    an environment's `requires` refuses a trial that lacks one (§5.1).
 5. **The new settings tables**: `[voice]` (with the URLs out of the code)
-   and `[personas]`. Three edits each.
+   and `[personas]`. Four places each, and a place on `trial_env`'s lists:
+   `[voice]` goes on `OPERATOR_ONLY_TABLES` for `[image]`'s reason —
+   `stt_url` is a destination the owner's audio goes to.
 6. **Recommendations**: the rows, the probe that sums memory, and a test that
    `hardware.md` matches them. Fix the embeddings page.
 7. **Installers**: one `scripts/<feature>/install.sh` per feature that needs a
@@ -775,7 +785,12 @@ Each step is a PR, and each leaves every surface working.
      `part_of` and `requires`, listed after everything it needs;
    - a key in `[features]`, and `mecha config init` writing it;
    - its settings table, if any: `Config`, `ConfigLayer`, `apply`, and the
-     `merge_file` project strip — four places, and the nested-layer test;
+     `merge_file` project strip — four places, and the nested-layer test —
+     **and a decision on `trial_env`'s two lists**: `OPERATOR_ONLY_TABLES`
+     (a checkout may not name it: a destination, a credential, a mailbox),
+     `MACHINE_TABLES` (the operator's copy is used), or neither (an
+     environment may declare it). That decision is also what says whether an
+     environment may switch the feature on (§5.1);
    - an `own_state` arm that asks **what registration asks** (`[tools]`,
      the loopback validators, `SearchBackendConfig::problem`), never a
      field's presence;
