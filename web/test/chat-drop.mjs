@@ -1,8 +1,7 @@
 // Behaviour checks for dropping files onto the chat.
 //
-// `npm test` in web/. Plain node, same rig as `generated-image.mjs`: the
-// functions are read OUT of the component so this exercises the text that
-// ships.
+// `npm test` in web/. The rules live in `attach.js`, which both chats
+// import, so this exercises the text that ships in each.
 //
 // **Why it needs a test.** Two things a browser will not tell you by
 // failing loudly. A drag of selected text or a link carries no files, and
@@ -10,24 +9,7 @@
 // dropped folder arrives as a `File` like any other — it has to be told
 // apart by its entry, or it goes up as an empty upload the server refuses
 // with nothing on screen saying why.
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const src = fs.readFileSync(path.join(here, '..', 'src', 'lib', 'Chat.svelte'), 'utf8');
-
-function readOut(marker, end = '\n  }\n') {
-  const start = src.indexOf(marker);
-  if (start < 0) throw new Error(`Chat.svelte no longer defines ${marker.trim()}`);
-  return src.slice(start, src.indexOf(end, start) + end.length);
-}
-
-const { carriesFiles, droppedFiles } = new Function(
-  `${readOut('  const carriesFiles = ', ';\n')}
-   ${readOut('  function droppedFiles(dt) {')}
-   return { carriesFiles, droppedFiles };`
-)();
+import { carriesFiles, droppedFiles, withAttachments } from '../src/lib/attach.js';
 
 let passed = 0;
 let failed = 0;
@@ -89,6 +71,15 @@ is(
   'with no items list, the plain files list is used'
 );
 is(names(droppedFiles(null)), { files: [], folders: [] }, 'nothing dropped is nothing uploaded');
+
+// The message a turn with attachments sends: words first, then each path.
+is(withAttachments('look', []), 'look', 'no attachments leave the words alone');
+is(
+  withAttachments('look', ['inbox/a.png', 'inbox/b.pdf']),
+  'look\n\nAttached file at inbox/a.png\nAttached file at inbox/b.pdf',
+  'each attachment is named on its own line after the words',
+);
+is(withAttachments('', ['inbox/a.png']), 'Attached file at inbox/a.png', 'a file alone is a message');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
