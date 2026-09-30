@@ -1,8 +1,10 @@
 //! `mecha msg` — the human surface over the inter-agent mailbox.
 //!
-//! Reading and sending both work whether or not `[messages] enabled` has
-//! wired the agents up: the store is the user's own, and "what did the
-//! overnight run tell me" must not depend on a feature flag. A message sent
+//! The whole verb follows `[features] messages` (the owner's ruling M1,
+//! 2026-09-30, over this doc's earlier "works whether or not `[messages]
+//! enabled`"): off, `mecha msg` refuses with the command that turns it on.
+//! Nothing new arrives while it is off — no agent has the mailbox tools — and
+//! what is already in the store stays there for when it is on. A message sent
 //! from here is stamped `from: user` (or `--from`) with a clean taint —
 //! typed by the person at the keyboard, the one sender whose words *are*
 //! trusted input.
@@ -62,6 +64,8 @@ pub enum Cmd {
 }
 
 pub async fn execute(args: Args) -> Result<()> {
+    // Ruling M1: hidden whole when messages is off, reads included.
+    super::features::require(mecha_core::feature::Feature::Messages)?;
     let store = open_store()?;
     match args.cmd {
         Cmd::Send {

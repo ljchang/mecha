@@ -147,6 +147,9 @@ enabled = ["fs_read"]
 kind = "none"
 [features]
 web = true
+# The voice facade these drive is voice calls' (`serve` mounts it only with
+# calls on, since step 3b).
+voice = true
 [[mcp]]
 name = "fixture"
 command = "python3"

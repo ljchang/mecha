@@ -8165,10 +8165,10 @@ in five different ways. The design and its open steps are
   the command's file name, so **a server launched through a wrapper belongs
   to no feature and is not gated** — the day a feature's server moves behind
   a launcher, `server_feature` has to learn it. `Feature::gated` says which
-  features a switch turns off today; the upgrade notice calls only those
-  off, and Slack, personas, voice, incognito and the front door — queue
-  and publishing server together, never one half first — "still working"
-  until §9 step 3 guards them. `mecha serve` refuses
+  features a switch turns off today, and the upgrade notice calls only those
+  off; since step 3b that is every feature, the front door's queue and its
+  publishing server (`factory-publish`) together — never one half first.
+  `mecha serve` refuses
   without `web`, telling "predates the switch" from `web = false`.
 - **A trial keeps what it carries, and `graph` is the only default.**
   `trial_env::config_at` fills a trial's unanswered `graph` switch on when
@@ -8275,12 +8275,24 @@ in five different ways. The design and its open steps are
   `[[mcp]]`. **The web keys a refusal's consequences on the row's `gated`**,
   never on `shown` alone (`features.js` `refuses`): Home's queue card for a
   feature that refuses is flat, with its command, and a feature's pane in a
-  core view (`PANE_FEATURE`: Review's graph queue, entities, front door) is
-  sent home — but a feature hidden before its guard lands keeps its door,
-  or the front door's queue, still filling, had none (review of #451). 3b's
-  flip moves the page with the routes, with no web edit. **3b is a flip, not a build:** the five
-  features `gated` still answers `false` for already declare their routes'
-  owner, and pass until their arm flips with their verbs guarded.
+  core view (`PANE_FEATURE`: Review's graph queue, entities, front door,
+  Settings' voice pane) is sent home — or-ed with the view's own feature,
+  never standing in for it — but a feature hidden before its guard lands
+  keeps its door, or the front door's queue, still filling, had none
+  (review of #451). **Step 3b guarded the rest whole**, by flipping their
+  `gated` arms: Slack, personas, voice (with dictation, calls and cloning),
+  incognito, the front door and messages. Their verbs refuse except where
+  the rules above leave them open — `slack status`, `auth`, `threads` and
+  `unlink`; `persona list`, `show` and `group list` — and `msg`,
+  `frontdoor`, `polls` and `voice-serve` refuse whole (`msg` by the owner's
+  ruling M1, over its older "works whether or not enabled"; `frontdoor`
+  because even its reads create and reconcile the store). **The line
+  between open and refused:** reading a store is open, deleting cached or
+  derived data (`document prune`/`forget`, `slack unlink`) is open, and
+  anything that changes an entry — including a `remove` that moves it aside
+  (`imagelib`, `persona`) — is refused. `mecha serve`'s voice facade is a
+  second listener mounted once, so it is not mounted when calls are off at
+  start; `/api/offer`, the call's web half, refuses per request.
 - **An environment may only narrow.** `trial_env::config_at` refuses an
   environment's `[features]` key set `true` unless
   `Feature::switchable_from_environment` — an exhaustive match, today only

@@ -456,10 +456,15 @@ and `mecha serve` will not start without `web = true`. The library is part of
 image: it is on whenever image is, and `[tools]` withholding `image_library`
 or `image_library_propose` only keeps those tools from the model. Reading the
 library, pruning or forgetting cached extractions, and the library's lock
-password stay open whatever the switches say. Slack, personas, voice,
-incognito and the front door (its queue and its publishing server) are listed here now, and follow their
-switch once their commands and web pages are guarded; until then they work
-whatever it says, and `mecha features` and the start-up line say so. An
+password stay open whatever the switches say. Slack, personas, voice (with
+dictation, voice calls and cloning), incognito, the front door (its queue,
+its polls and its publishing server) and messages follow their switches the
+same way: their web pages answer `feature_off`, and `mecha slack`, `persona`,
+`msg`, `frontdoor`, `polls` and `voice-serve` refuse. What stays open:
+`slack status`, `auth`, `threads` and `unlink`, and `persona list`, `show`
+and `group list` — reading what is there, setting Slack up, and deleting a
+binding. Changing an entry is refused, even a `remove` that only moves it
+aside. An
 `[[mcp]]` server that belongs to no feature starts as it always has. A feature switched on without the settings it
 needs reads **unready** in `mecha features`, with what is missing; one switched
 off keeps its settings for later. A key that is absent is unanswered, and reads

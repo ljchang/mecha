@@ -107,8 +107,19 @@ pub enum Cmd {
 }
 
 pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
+    let cmd = args.cmd.unwrap_or(Cmd::Status);
+    // Before `open_store`, which creates the store. Open with the switch off:
+    // `status` and `threads` read what is here, `auth` is how the feature is
+    // set up, and `unlink` deletes a binding — deleting data you hold is
+    // never refused. What talks to Slack or acts on its threads is refused.
+    if !matches!(
+        cmd,
+        Cmd::Status | Cmd::Auth | Cmd::Threads { .. } | Cmd::Unlink
+    ) {
+        super::features::require(mecha_core::feature::Feature::Slack)?;
+    }
     let store = open_store()?;
-    match args.cmd.unwrap_or(Cmd::Status) {
+    match cmd {
         Cmd::Status => status(&store).await,
         Cmd::Auth => auth(&store).await,
         Cmd::Link { timeout, force } => link(&store, timeout, force).await,

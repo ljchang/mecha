@@ -267,8 +267,10 @@ fn a_switched_off_feature_s_verbs_refuse_with_one_sentence() {
             .expect("running mecha");
         String::from_utf8_lossy(&out.stderr).into_owned()
     };
-    let off = "[features]\nmail = false\ngraph = false\ndocuments = false\nimage = false";
-    let on = "[features]\nmail = true\ngraph = true\ndocuments = true\nimage = true";
+    let off = "[features]\nmail = false\ngraph = false\ndocuments = false\nimage = false\n\
+               slack = false\npersonas = false\nfrontdoor = false\nmessages = false\nvoice = false";
+    let on = "[features]\nmail = true\ngraph = true\ndocuments = true\nimage = true\n\
+              slack = true\npersonas = true\nfrontdoor = true\nmessages = true\nvoice = true";
     for (argv, sentence) in [
         (
             &["mail", "list"][..],
@@ -294,6 +296,29 @@ fn a_switched_off_feature_s_verbs_refuse_with_one_sentence() {
             &["imagelib", "remove", "nobody"][..],
             "Character and style library is off (needs image generation) — `mecha features enable image`",
         ),
+        // Step 3b.
+        (
+            &["slack", "send", "/nonexistent.png"][..],
+            "Slack remote control is off (turned off in [features]) — `mecha features enable slack`",
+        ),
+        (
+            &["persona", "new", "ada"][..],
+            "Personas is off (turned off in [features]) — `mecha features enable personas`",
+        ),
+        (
+            &["frontdoor", "list"][..],
+            "Front door (inbound requests) is off (turned off in [features]) — `mecha features enable frontdoor`",
+        ),
+        (
+            &["polls", "list"][..],
+            "Front door (inbound requests) is off (turned off in [features]) — `mecha features enable frontdoor`",
+        ),
+        // `messages = false` is applied into `[messages] enabled`, which
+        // reads as unanswered (FEATURES-DESIGN.md §5): hence "not enabled".
+        (
+            &["msg", "list"][..],
+            "Messages between sessions is off (not enabled in [features]) — `mecha features enable messages`",
+        ),
     ] {
         let err = run(off, argv);
         assert!(err.contains(sentence), "{argv:?} off:\n{err}");
@@ -305,10 +330,19 @@ fn a_switched_off_feature_s_verbs_refuse_with_one_sentence() {
             "{argv:?} on:\n{err}"
         );
     }
+    // Off only: switched on, `voice-serve` binds and serves until stopped.
+    let err = run(off, &["voice-serve"]);
+    assert!(
+        err.contains("Voice is off (turned off in [features]) — `mecha features enable voice`"),
+        "{err}"
+    );
     for argv in [
         &["imagelib", "list"][..],
         &["document", "prune"][..],
         &["review", "queues"][..],
+        // Step 3b: reading what is here, and the way Slack is set up.
+        &["slack", "status"][..],
+        &["persona", "list"][..],
     ] {
         let err = run(off, argv);
         assert!(
@@ -342,5 +376,64 @@ fn an_unreadable_configuration_refuses_a_feature_s_verb() {
     assert!(
         err.contains("cannot tell whether `image` is switched on"),
         "{err}"
+    );
+}
+
+/// Step 3b: the front door is gated whole — its publishing server is not
+/// connected with `frontdoor` off, as mail's, docs' and the graph's are not
+/// with theirs. A fixture server whose command's file name is
+/// `factory-publish` stands in for it, its tools prefixed `factory__`.
+#[test]
+fn the_publishing_server_connects_only_with_the_front_door_on() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new("publish");
+    let wrapper = home.0.join("factory-publish");
+    std::fs::write(
+        &wrapper,
+        format!("#!/bin/sh\nexec python3 {:?} \"$@\"\n", board_server()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let board = home.0.join("board");
+    std::fs::create_dir_all(&board).unwrap();
+    let tools = |features: &str| -> Vec<String> {
+        std::fs::write(
+            home.0.join("home/config.toml"),
+            format!(
+                "[sandbox]\nkind = \"none\"\n{features}\n[[mcp]]\nname = \"factory\"\n\
+                 command = {wrapper:?}\nsandbox = false\n[mcp.env]\nMECHA_FIXTURE_DIR = {board:?}\n"
+            ),
+        )
+        .unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_mecha"))
+            .args(["tools", "--json"])
+            .current_dir(home.0.join("work"))
+            .env("MECHA_HOME", home.0.join("home"))
+            .env("HOME", home.0.join("home"))
+            .env_remove("ANTHROPIC_API_KEY")
+            .env_remove("OPENAI_API_KEY")
+            .output()
+            .expect("running mecha tools");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let off = tools("[features]\nfrontdoor = false");
+    assert!(
+        !off.iter().any(|t| t.starts_with("factory__")),
+        "the publishing server connected with the front door off: {off:?}"
+    );
+    let on = tools("[features]\nfrontdoor = true");
+    assert!(
+        on.iter().any(|t| t.starts_with("factory__")),
+        "the publishing server did not connect with the front door on: {on:?}"
     );
 }
