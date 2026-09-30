@@ -146,11 +146,13 @@ async fn mecha(home: &Path, work: &Path, args: &[&str]) -> std::process::Output 
             .args(args)
             .env("MECHA_HOME", home)
             .env("MECHA_SESSION_KIND", "test")
-            // `mecha doctor` reads the mail crate's stores by these; a
-            // developer's own must not reach the child.
-            .env_remove("MECHA_MAIL_DIR")
-            .env_remove("MECHA_GOOGLE_DIR")
-            .env_remove("MECHA_OUTLOOK_DIR")
+            // `mecha doctor` reads the mail crate's stores by these, and by
+            // `$HOME` when they are unset — so point them at our own home
+            // rather than removing them, or the fallback arm lands on the
+            // developer's real `~/.mecha/mail` (review of #432).
+            .env("MECHA_MAIL_DIR", home.join("mail"))
+            .env("MECHA_GOOGLE_DIR", home.join("google"))
+            .env("MECHA_OUTLOOK_DIR", home.join("outlook"))
             .env_remove("MECHA_SESSION_DIR")
             .env_remove("MECHA_LEARNING_DIR")
             .env_remove("MECHA_COMPARISONS_DIR")
