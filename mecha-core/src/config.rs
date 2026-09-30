@@ -584,9 +584,10 @@ pub struct AgentConfig {
     /// user should get that protection. Identical arguments with a *changing*
     /// result is polling and never trips it.
     ///
-    /// Also, without a compaction: one call refused with one identical error
-    /// in five consecutive turns (`agent::LoopGuard::REFUSED_REPEATS`, and
-    /// the measurement it rests on).
+    /// Also, without a compaction: one call failing with one identical error
+    /// in seven consecutive turns, harness refusals excepted
+    /// (`agent::LoopGuard::REFUSED_REPEATS`, and the measurement it rests
+    /// on).
     pub loop_guard: bool,
     /// Tell a run when an approach has stopped teaching it anything
     /// (`docs/GOAL-SYSTEM-DESIGN.md` §9.1).

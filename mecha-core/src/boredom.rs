@@ -59,7 +59,7 @@ use std::collections::HashMap;
 const STUCK: u32 = 3;
 
 /// …and after which the cheap escapes have demonstrably not worked.
-const STILL_STUCK: u32 = 6;
+pub(crate) const STILL_STUCK: u32 = 6;
 
 /// What one run may say about being stuck.
 ///
