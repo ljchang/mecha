@@ -940,6 +940,21 @@ module.
   destructures `AgentConfig` exhaustively and switches off every lever that
   reads the charter, the board or the session corpus, so a new lever is a
   compile error there until someone decides it.
+- **The page authors personas, and writes the owner's text verbatim.**
+  `POST /api/personas` creates one (the owner's, approved at once, exactly as
+  `mecha persona new`). `GET`/`POST /api/personas/{name}/files` read and save
+  `identity.md`, `motivation.md` and `persona.toml` **as the owner typed them,
+  comments and all** — never re-serialised, so the page keeps the rule that
+  code does not rewrite an owner file. `persona::write_owner_file` refuses a
+  stale save (its `base` digest is not the file as it stands, an edit made
+  elsewhere), control characters and oversize text, and it restores the old
+  file when the persona would not load or could not be versioned after the
+  save. `POST /api/personas/relationships` adds a template of the owner's
+  own (`persona::add_relationship`: an exclusive create, so no existing
+  template, a starter the owner edited included, is overwritten), and
+  `POST /api/personas/groups` declares a group (`add_group`, appended to
+  `groups.toml` with its comments kept). These are owner-guarded HTTP routes;
+  no tool reaches them, so no model authors a line.
 - **Persona chats on the web have a door of their own**
   (`serve/persona_chat.rs`). They have their own session map, their own routes
   (`/api/personas…`, `/api/persona-chat/{key}…`) and their own `p-` keys, and

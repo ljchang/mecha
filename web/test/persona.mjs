@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle,
-  taintLabel, safetyLine, doseLine,
+  taintLabel, safetyLine, doseLine, personaName, authoringUrl, OWNER_FILES,
 } from '../src/lib/persona.js';
 
 // Only a key the server could have minted is a persona chat's.
@@ -27,7 +27,15 @@ assert.equal(withUnlock('/x?a=1', 'z'), '/x?a=1&unlock=z');
 assert.throws(() => personaUrl('mara', '/delete', null));
 assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 7);
+assert.equal(ENDPOINTS.length, 12);
+assert.ok(ENDPOINTS.includes('/api/personas/authoring') && ENDPOINTS.includes('/api/personas/X/files'));
+assert.equal(authoringUrl('t'), '/api/personas/authoring?unlock=t');
+assert.equal(personaUrl('mara', '/files', null), '/api/personas/mara/files');
+// A name as the store holds it, or null for the obvious refusals.
+assert.equal(personaName('  Mara '), 'mara');
+assert.equal(personaName('devils_advocate'), 'devils_advocate');
+for (const bad of ['', 'files', '-x', 'a b', 'a/b', 'x'.repeat(65)]) assert.equal(personaName(bad), null, bad);
+assert.deepEqual(OWNER_FILES.map(([f]) => f), ['identity', 'motivation', 'settings']);
 
 assert.equal(relationshipLabel({ relationship: ['colleague', 'devils_advocate'] }), 'colleague · devils advocate');
 assert.equal(relationshipLabel({}), '');

@@ -338,7 +338,28 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/chat/{key}/cancel", axum::routing::post(chat::cancel))
         // Persona chats: a door of their own, never the routes above
         // (`persona_chat`, `PERSONA-DESIGN.md` §3.2).
-        .route("/api/personas", get(persona_chat::list))
+        .route(
+            "/api/personas",
+            get(persona_chat::list).post(persona_chat::create),
+        )
+        // Authoring: the owner's door, verbatim writes (`persona_chat`).
+        .route("/api/personas/authoring", get(persona_chat::authoring))
+        .route(
+            "/api/personas/relationships",
+            axum::routing::post(persona_chat::add_relationship),
+        )
+        .route(
+            "/api/personas/groups",
+            axum::routing::post(persona_chat::add_group),
+        )
+        .route(
+            "/api/personas/{name}/files",
+            get(persona_chat::files).post(persona_chat::save),
+        )
+        .route(
+            "/api/personas/{name}/lock",
+            axum::routing::post(persona_chat::lock),
+        )
         .route(
             "/api/personas/{name}/chats",
             get(persona_chat::history).post(persona_chat::open),

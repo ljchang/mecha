@@ -1690,3 +1690,20 @@ export const personaScript = [
   [260, { type: 'delta', text: 'if the autumn counts come in below last year\'s, we keep the winter transects.' }],
   [120, { type: 'done', ok: true, stop: 'EndTurn', taint_private: false, taint_untrusted: false, error: null }],
 ];
+
+// Authoring: what a new persona is made from, and one persona's own files.
+export const personaAuthoring = {
+  relationships: ['character', 'coach', 'collaborator', 'colleague', 'devils_advocate', 'friend', 'reflective', 'romantic', 'simulated', 'teacher'].map((name) => ({ name, starter: true })),
+  groups: ['kelp'],
+  characters: ['maya', 'john'],
+};
+
+export const personaFiles = {
+  identity: {
+    file: 'identity.md',
+    digest: '0'.repeat(64),
+    text: "# Mara\n\n<!-- Who Mara is, in your words. -->\n\n## Core\nA marine ecologist who distrusts easy answers.\n\n## How she talks\nDry and precise, with a running joke about kelp.\n",
+  },
+  motivation: { file: 'motivation.md', digest: '1'.repeat(64), text: "# What Mara wants\n\nThe kelp model published before the grant renewal.\n" },
+  settings: { file: 'persona.toml', digest: '2'.repeat(64), text: 'display      = "Mara"\nrelationship = "colleague"\ncharacter    = "maya"\ngroups       = ["kelp"]\n\n[tools]\nallow = ["web_search"]\n\n[safety]\ndisclosure = true\ncrisis     = true\n' },
+};
