@@ -38,14 +38,12 @@
 <div class="review">
   <div class="tabs">
     <button class="tab" class:active={pane === 'outbox'} onclick={() => navigate('review/outbox')}>Outbox</button>
-    <!-- A tab whose feature is off is not offered, unless its pane is the
-         one open: Home keeps a queue's card while anything waits in it
-         (FEATURES-DESIGN.md §5), and the pane it lands on has to show
-         where it is. -->
-    {#if isShown(features.rows, 'graph') || pane === 'graph'}
+    <!-- A tab whose feature is off is not offered; its pane's routes answer
+         `feature_off`, and App sends a link to it home (PANE_FEATURE). -->
+    {#if isShown(features.rows, 'graph')}
       <button class="tab" class:active={pane === 'graph'} onclick={() => navigate('review/graph')}>Graph queue</button>
     {/if}
-    {#if isShown(features.rows, 'frontdoor') || pane === 'frontdoor'}
+    {#if isShown(features.rows, 'frontdoor')}
       <button class="tab" class:active={pane === 'frontdoor'} onclick={() => navigate('review/frontdoor')}>Front door</button>
     {/if}
     <button class="tab" class:active={inProposals} onclick={() => navigate('review/harness')}>Proposals</button>

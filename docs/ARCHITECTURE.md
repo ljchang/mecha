@@ -8232,6 +8232,37 @@ in five different ways. The design and its open steps are
   that is not ready. Settings → Features lists every
   row with its command and runs none of them (design §8). No route changed
   in this step — a stale page still works, and the guards are step 3's.
+- **One refusal, on every surface** (step 3a). `feature::refusal` answers
+  for a route and a verb alike: a feature `Feature::gated` says is switched
+  off today whose row is hidden, with why and the fix. **Every route is
+  added through `serve::api()`'s `.at(path, owner, …)`** (`serve/gate.rs`),
+  so none exists without an owner — `every_route_is_registered_with_its_owner`
+  refuses a bare `.route` — and two owners read the path: `ProposalStore`
+  (the `entities` store is the graph's, `harness` and `rules` are core) and
+  `ChatKey` (an incognito room's key is incognito's). The guard sits
+  **inside** `owner_guard`, so a stranger gets the owner's 403 and never
+  learns what is off; the owner gets F4's `404 feature_off`, before the
+  handler, so a read with a side effect does not happen. It reads a `Gate`
+  built when `serve` starts, as its chat's tools are; `/api/features` marks
+  a switch flipped since as pending. Verbs call `features::require(f)` from
+  the global file before anything else: `mail`, `tasks`, `kg`, `review`
+  (all but `queues`, the cross-feature reader), `document extract`, and the
+  `imagelib` writes. **What is never refused:** reading a store you hold
+  (`imagelib list`/`show`), deleting data (`document prune`/`forget`), and
+  what another feature shares — the library's lock password, unlock, relock
+  and portraits, which Personas uses (ruling L1: the library follows
+  `image`, and `[tools]` withholds only the model's library tools). The
+  graph's own verbs and routes ran `mecha-graph` directly (`graph_cli`,
+  `board::graph_verb`), past `prepare_tools`, so before this `graph = false`
+  still let `review accept` and the web's entity create and merge write the
+  owner's graph. A graph tool missing from a run's surface now names the
+  switch when that is the cause (`features::graph_tool_absent`), not
+  `[[mcp]]`. Home's queue card for an off feature is flat, with its command:
+  the pane it would open answers `feature_off`, and a feature's pane in a
+  core view (`PANE_FEATURE`: Review's graph queue, entities, front door) is
+  sent home like a hidden view. **3b is a flip, not a build:** the five
+  features `gated` still answers `false` for already declare their routes'
+  owner, and pass until their arm flips with their verbs guarded.
 - **An environment may only narrow.** `trial_env::config_at` refuses an
   environment's `[features]` key set `true` unless
   `Feature::switchable_from_environment` — an exhaustive match, today only
@@ -8272,6 +8303,10 @@ the full checklist this grows into as each build step lands.
    offering another of its sub-views. Give an `own_state` arm's
    missing-settings case an `off` with the fix; `state` makes it `Unready`
    for a switched feature, so the tab stays.
+7. Its routes added with `.at(path, Owner::Of(Feature::X), …)` in
+   `serve::api()`, and its verbs starting with `features::require(Feature::X)`
+   — except what only reads a store, deletes data, or is shared with another
+   feature. Its `gated` arm says whether all of that is on.
 
 ## Context, and knowing how much is left
 

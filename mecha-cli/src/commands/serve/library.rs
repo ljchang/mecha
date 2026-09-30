@@ -1033,6 +1033,7 @@ mod route_tests {
                 voices_dir: None,
                 library: Arc::new(LibraryState::new(dir.clone())),
                 features_at_start: Arc::default(),
+                gate: Arc::default(),
                 review: Arc::new(review::ReviewState {
                     outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
                     sessions_dir: None,

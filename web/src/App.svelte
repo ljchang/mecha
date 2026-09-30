@@ -11,7 +11,7 @@
   import Graph from './lib/Graph.svelte';
   import Settings from './lib/Settings.svelte';
   import { features, loadFeatures } from './lib/features.svelte.js';
-  import { VIEW_FEATURE, isShown, banner, hiddenLine, opensAnyway } from './lib/features.js';
+  import { featureOf, isShown, banner, hiddenLine, opensAnyway } from './lib/features.js';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
   // A hash may carry a sub-view after a slash (#review/frontdoor), which the
@@ -101,7 +101,7 @@
   // answer is in: before it, and when it failed, nothing is hidden.
   let hiddenNotice = $state(null);
   $effect(() => {
-    const f = VIEW_FEATURE[view];
+    const f = featureOf(view, route.sub);
     if (f && !isShown(features.rows, f) && !opensAnyway(view, route.sub)) {
       hiddenNotice = hiddenLine(features.rows, f);
       navigate('home', { replace: true });
@@ -112,11 +112,11 @@
   });
   // Switched on and not working yet, or unreadable: the view stays, with
   // the reason and the fix above it — never hidden, never silent.
-  const viewBanner = $derived(banner(features.rows, VIEW_FEATURE[view]));
+  const viewBanner = $derived(banner(features.rows, featureOf(view, route.sub)));
   // A core pane opened inside a hidden feature's view (a run's question on
   // the board's page): it opens, and says the rest of the page is off.
   const openedHidden = $derived.by(() => {
-    const f = VIEW_FEATURE[view];
+    const f = featureOf(view, route.sub);
     return f && !isShown(features.rows, f) ? hiddenLine(features.rows, f) : null;
   });
 

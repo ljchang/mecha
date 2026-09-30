@@ -188,12 +188,14 @@ impl Feature {
     }
 
     /// Whether switching this off turns something off *today* — its tools
-    /// are unregistered, its server is not started, or its surface refuses.
-    /// The rest (Slack, personas, voice, incognito, the front door — its queue
-    /// and its publishing server together) wait for the route and verb guards
-    /// of FEATURES-DESIGN.md §9 step 3, and
-    /// the upgrade notice must not call them off while they work (found on
-    /// review of #445). Exhaustive: a step that gates one flips its arm.
+    /// are unregistered, its server is not started, its web routes answer
+    /// `feature_off` and its verbs refuse ([`refusal`], step 3a). The rest
+    /// (Slack, personas, voice, incognito, the front door — its queue and its
+    /// publishing server together) are guarded whole in step 3b: their routes
+    /// already declare their owner and pass while this says `false`, and the
+    /// upgrade notice must not call them off while they work (found on review
+    /// of #445). Exhaustive: flipping an arm is what turns a feature's guards
+    /// on, everywhere at once.
     pub fn gated(self) -> bool {
         match self {
             Feature::Web
@@ -422,6 +424,55 @@ pub fn enable_command(cfg: &Config, f: Feature) -> String {
         .map(|g| g.id())
         .collect();
     format!("mecha features enable {}", ids.join(" "))
+}
+
+/// Why a surface that belongs to `f` refuses: `f` is switched off today
+/// ([`Feature::gated`]) and its row is hidden ([`State::shown`]). `None` lets
+/// it through — on, unready (shown with its fix, and the handler says what is
+/// missing), unknown, or a feature whose guard has not landed yet.
+///
+/// The one predicate behind every route's `feature_off` and every CLI verb's
+/// refusal (FEATURES-DESIGN.md §4.2 items 4–5), so the page, the API and the
+/// terminal say the same thing the same way.
+pub fn refusal(facts: &Facts, f: Feature) -> Option<Refusal> {
+    if !f.gated() {
+        return None;
+    }
+    let st = state(facts, f);
+    if st.shown() {
+        return None;
+    }
+    let why = match &st {
+        State::Blocked { on } => format!("needs {}", on.label().to_lowercase()),
+        State::Off { reason, .. } => reason.clone(),
+        _ => unreachable!("only off and blocked hide"),
+    };
+    Some(Refusal {
+        feature: f,
+        why,
+        fix: fix(facts, f).unwrap_or_else(|| enable_command(&facts.config, f)),
+    })
+}
+
+/// A surface's refusal: which feature, why, and what brings it on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Refusal {
+    pub feature: Feature,
+    pub why: String,
+    pub fix: String,
+}
+
+impl Refusal {
+    /// The one sentence a verb prints: *"Image generation is off (not
+    /// enabled in [features]) — `mecha features enable image`"*.
+    pub fn sentence(&self) -> String {
+        format!(
+            "{} is off ({}) — `{}`",
+            self.feature.label(),
+            self.why,
+            self.fix
+        )
+    }
 }
 
 /// Why `server` must not be started: `Some` when it belongs to a feature whose
@@ -1091,9 +1142,27 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             },
             None => off("no [image] table", "add an [image] table"),
         },
-        Feature::Library if !cfg.tools.registers("image_library") => tools_off("image_library"),
+        // The library is the store and the owner's page, on with `image`
+        // (the owner's ruling L1, 2026-09-30: there is no reason to want
+        // images without it). `[tools]` narrows what the *model* reaches,
+        // per tool, like any builtin — said in the detail, never an `off`
+        // that would take the owner's page with it. Its tools register only
+        // inside `[image]`, which `image`'s own row answers for.
         Feature::Library => match crate::imagelib::Library::default_dir() {
-            Ok(dir) => on(dir.display().to_string()),
+            Ok(dir) => {
+                let withheld: Vec<&str> = ["image_library", "image_library_propose"]
+                    .into_iter()
+                    .filter(|t| !cfg.tools.registers(t))
+                    .collect();
+                on(match withheld.as_slice() {
+                    [] => dir.display().to_string(),
+                    names => format!(
+                        "{} ([tools] withholds {} from the model)",
+                        dir.display(),
+                        names.join(", ")
+                    ),
+                })
+            }
             Err(e) => State::Unknown {
                 reason: format!("the library's directory: {e:#}"),
             },
@@ -1578,9 +1647,17 @@ mod tests {
         };
         assert_eq!(state(&at(&cfg, &facts), Feature::Image).word(), "on");
         assert_eq!(state(&at(&cfg, &facts), Feature::Library).word(), "on");
-        // A part's own off is the owner's no, and stays off.
-        cfg.tools.disabled = vec!["image_library".into()];
-        assert_eq!(state(&at(&cfg, &facts), Feature::Library).word(), "off");
+        // `[tools]` withholding the library's tools narrows the model, not
+        // the owner: the library stays on with `image` and says which tools
+        // the model lacks (ruling L1).
+        cfg.tools.disabled = vec!["image_library".into(), "image_library_propose".into()];
+        let State::On { detail } = state(&at(&cfg, &facts), Feature::Library) else {
+            panic!("the library follows image, whatever [tools] says")
+        };
+        assert!(
+            detail.contains("withholds image_library, image_library_propose"),
+            "{detail}"
+        );
         cfg.image = image("http://10.0.0.5:8188");
         assert_eq!(state(&at(&cfg, &facts), Feature::Image).word(), "unready");
 
