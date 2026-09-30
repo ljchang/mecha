@@ -36,7 +36,7 @@ design. §7 is the rulings. §8 is what this deliberately does not do.
 | Does the web app hide what is off? | No. `Nav.svelte`'s `items` are hard-coded and every one is `true`; an off feature's tab renders, and its routes fail in one of five different ways | §1.2 |
 | Are there model recommendations? | For the chat model only (`getting-started/hardware.md`, four memory tiers). None for OCR, image generation, voice or embeddings — and the embeddings page names the wrong model | §1.3 |
 | What do other harnesses do? | A closed registry of features in code; one `list` command with a typed status per row; hide rather than refuse in the UI; declared requirements; a section per re-runnable setup step; per-function model slots with a local default | §2 |
-| Lighter installs for experiments? | Already the default shape once features are off until configured: the heavy parts are services, not the binary. A trial records its feature set beside `levers_off`, and an environment can require features | §5.1 |
+| Lighter installs for experiments? | Already the default shape, since every `[features]` bool ships `false`: the heavy parts are services, not the binary. A trial records its feature set beside `levers_off`, and an environment can require features | §5.1 |
 | What does this design add? | One closed `Feature` registry in `mecha-core`, read by six consumers: setup, `mecha features`, `/api/features`, route guards, CLI guards and tool registration | §3–§5 |
 | What turns a feature on? | A bool in one `[features]` table, global file only, every feature listed so a user can see what exists (F1, ruled). A settings table is only settings; enabled without them is *unready*, shown with the fix | §5 |
 | What does an off feature look like? | Hidden in the web app, 404 `feature_off` from its routes, one sentence and `mecha features enable <feature>` from its CLI verbs, absent from the tool list. A feature that is *configured but not answering* is **never** hidden | §4.2 |
@@ -180,8 +180,8 @@ refusing silently (#120118), a quoted-string plugin list leaving every plugin
 unmounted until doctor learned to flag it. Its security scanner defaults to
 **fail open** (`security.tirith_fail_open: true`).
 
-**OpenClaw** is closest to what §4 proposes: **a config section being present
-turns it on** ("each channel starts automatically when its config section
+**OpenClaw** is closest to what this doc first proposed and F1 overruled
+(§7) — **a config section being present turns it on** ("each channel starts automatically when its config section
 exists, unless `enabled: false`"). Plugins carry a manifest with
 `enabledByDefault`; skills declare `requires.{bins, anyBins, env, config}`,
 `os` and install specs, and are filtered at load; `openclaw skills check`
@@ -205,6 +205,11 @@ allowlist whose entries were all invalid collapsing to **unrestricted**
 
 ### 2.2 The others, briefly
 
+- **Goose** toggles built-in and external *extensions* from `goose
+  configure`, a desktop page or `config.yaml` (`enabled: true`), and per
+  session with `--with-builtin`; some built-ins are on by default. It is the
+  plugin-shaped answer — an extension is a tool bundle — and adds nothing the
+  registry here needs beyond what Claude Code's manifest already shows.
 - **Codex** is the cleanest registry: `FEATURES: &[FeatureSpec]` with
   `{id, key, stage, default_enabled}` and stages `UnderDevelopment →
   Experimental → Stable → Deprecated → Removed`; `[features]` in
@@ -282,7 +287,7 @@ allowlist whose entries were all invalid collapsing to **unrestricted**
 4. **Many parallel switches for one feature** — Hermes has per-platform lists,
    a global disable, a flag, a slash command and per-tool toggles.
 5. **Lots of it on by default** — OpenClaw's plugins-on-by-default cost is
-   #75279. In mecha everything in §5 is off until its table exists.
+   #75279. In mecha every bool in §5's `[features]` table ships `false`.
 6. **A requirement check run somewhere other than where the feature runs**
    (#80206). A probe says where it ran.
 
@@ -353,7 +358,7 @@ registry.
 | State | Meaning | Web | Routes | CLI | Tools |
 |---|---|---|---|---|---|
 | `Off` | not configured (or declined) | hidden | 404 `feature_off` | one sentence + the setup command | not registered |
-| `Blocked(Feature)` | configured, but something it needs is off | hidden, and Settings says what it waits on | 404 `feature_off`, naming the dependency | names the dependency | not registered |
+| `Blocked(Feature)` | configured, but something it needs is off — the **first** unmet need in `needs()` order (the parent, then `requires`) | hidden, and Settings says what it waits on | 404 `feature_off`, naming that dependency | names it; `mecha features enable` chains every unmet one (`mecha features enable web dictate`) | not registered |
 | `Unready(reason)` | enabled, but config or disk says it cannot work yet — settings missing or refused, no account authorised | **shown**, with a banner | 503 with the reason | the reason | whatever registration's own rule builds — nothing from an absent `[image]`; a mail server with no account still connects and says so per call |
 | `Down(reason)` | configured, and a probe found it not answering — **`mecha features --probe` only** | — (never produced: the web reads `On`, and the handler's own error is what the owner sees) | — (a route cannot probe per request) | the reason | registered |
 | `On` | enabled and usable as far as config and disk can say | shown | normal | normal | registered |
@@ -397,8 +402,12 @@ Three rules carry the design:
    break another plugin.
 3. **`GET /api/features`** returns the same rows. `Nav.svelte`'s `enabled`
    column becomes that answer rather than a literal, and `Off` and `Blocked`
-   entries are **removed**, not greyed out — the existing greyed-out style
-   stays for `Unready`. Home cards, the voice-call button and `Dictate` take
+   entries are **removed**, not greyed out. `Unready` entries stay
+   **clickable**, marked with a badge, and the view carries the banner with
+   the fix: the existing greyed-out style (`.disabled`, with its "coming in a
+   later phase" tooltip) is unclickable, so reusing it would put the fix out
+   of reach — hiding by styling what §4.1 says is never hidden (found on
+   review of #427, pass 10). That style is retired. Home cards, the voice-call button and `Dictate` take
    the same test. A direct link to a hidden view (`#library`) lands on Home
    with a one-line notice rather than an empty page. **Settings → Features**
    lists everything, including `Off`, with the command that turns each one on —
@@ -442,8 +451,11 @@ one state this design otherwise refuses to leave unsaid (found on review of
   itself for its routes' state, which it loads once. `mecha features enable
   graph` says *"enabled — its tools arrive in the next session; restart
   `mecha serve` for the web"*, and `/api/features` compares the file with
-  what the serving process loaded and marks a difference **pending restart**,
-  a row of its own rather than `On`. The same holds for `mecha slack
+  what the serving process loaded and marks a difference **pending restart**.
+  That is an annotation on the row (`"pending": true`), not a seventh
+  `State`: `state(facts, f)` answers what the file says, which is all `Facts`
+  can know, and only `serve` knows what it loaded, so the comparison is
+  `serve`'s to make. The same holds for `mecha slack
   connect` and the units that load once (ruminate, front door).
 
 **The upgrade is announced.** An install that predates `[features]` has
@@ -664,7 +676,7 @@ compiled into `mecha`: the binary is ~47 MB, `mecha-cli` has no cargo
 features, and it links no ML runtime. So `cargo install mecha-cli` plus a
 provider is already the light install; what makes an install heavy is which
 services were set up next to it, and under this design that is exactly the
-set of tables present. Compile-time cargo features would buy little today
+set of `[features]` bools that are `true`. Compile-time cargo features would buy little today
 and are out of scope (§8) until a heavy Rust dependency lands.
 
 Three things make it deliberate rather than accidental:
@@ -745,9 +757,10 @@ pub struct Recommendation {
     pub tier_gb: u32,             // 16, 32, 64, 128 — hardware.md's tiers
     pub model: &'static str,      // "PaddleOCR-VL 1.6 (GGUF + mmproj)"
     pub fetch: &'static str,      // "hf download PaddlePaddle/PaddleOCR-VL-1.6-GGUF"
-    pub peak_mb: Option<u32>,     // None = not measured, never 0
+    pub peak_mb: Option<u32>,     // the number only; None = unknown, never 0
     pub residency: Residency,     // Resident | OnDemand | PerRequest
-    pub evidence: Evidence,       // Measured { machine, date } | Arithmetic | Unmeasured
+    pub evidence: Evidence,       // where the number came from: Measured { machine, date } | Arithmetic
+                                  // (and a None peak is Unmeasured by construction, not a third field)
 }
 ```
 
