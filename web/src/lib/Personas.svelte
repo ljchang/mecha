@@ -9,7 +9,7 @@
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
     taintLabel, safetyLine, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
-    toolStatus, waitingLine,
+    toolStatus, waitingLine, withWorking,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -251,7 +251,8 @@
     if (!res.ok) throw new Error((await res.text()).trim());
     const t = await res.json();
     if (key !== k || gen !== readGen) return;
-    run = { ...emptyRun(settle(t.entries, run), t.taint ?? null), running: !!t.running };
+    const entries = t.running ? withWorking(settle(t.entries, run), t.working) : settle(t.entries, run);
+    run = { ...emptyRun(entries, t.taint ?? null), running: !!t.running };
     safety = t.safety ?? null;
     chatModel = t.model ?? '';
     crisisShown = !!t.crisis_shown;

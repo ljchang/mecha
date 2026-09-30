@@ -1758,10 +1758,9 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
                 )),
             Section::new("Safety")
                 .help("On by default. Turning one off affects this persona only.")
-                .field(
-                    Field::toggle("safety.disclosure", "Disclosure")
-                        .help("Every chat opens by saying this is an AI character you wrote."),
-                )
+                .field(Field::toggle("safety.disclosure", "Disclosure").help(
+                    "The persona is told the chat is marked as an AI, so it need not say so.",
+                ))
                 .field(Field::toggle("safety.crisis", "Crisis check").help(
                     "A message that suggests risk of self-harm pauses the persona \
                      and shows crisis resources.",

@@ -152,6 +152,16 @@ export function waitingLine(run, display, now) {
   return `${display} is typing`;
 }
 
+// The transcript a page re-reads mid-run has every finished tool call, not
+// the one still running; the server names that one (`working`), and it is
+// put back as a pending row with its real start, so a reload during a long
+// render still reads "drawing a picture… 1:24" (review of #431).
+export function withWorking(entries, working) {
+  if (!working?.id || entries.some((e) => e.kind === 'tool' && e.id === working.id)) return entries;
+  const started = Date.parse(working.since);
+  return [...entries, { kind: 'tool', id: working.id, name: working.name, is_error: null, started: Number.isNaN(started) ? undefined : started }];
+}
+
 export function emptyRun(entries = [], taint = null) {
   // `crisisSeq` carries on past the entries it numbered, so ids never repeat
   // within a page's life of the chat.
