@@ -975,6 +975,15 @@ impl ComfyUi {
             })
         };
         self.preflight(cfg).await?;
+        // `comfy_graph`'s masked arm needs the picture it masks; without one
+        // the mask would drop out of the graph and the whole frame be redrawn.
+        // `request` refuses the pair, and this stops it here too, since
+        // `Request` is public (review of #429).
+        if req.mask.is_some() && req.references.is_empty() {
+            return Err(Failure::Other(anyhow!(
+                "a mask needs the picture it masks; nothing was drawn"
+            )));
+        }
         let mut uploaded = Vec::with_capacity(req.references.len() + 1);
         for reference in req.references.iter().chain(req.mask.iter()) {
             let asked = format!(
@@ -2553,8 +2562,10 @@ impl Tool for ImageGenerate {
                 .unwrap_or_default();
             text.push_str(&format!(
                 "Edited {}{styled} into a {size} image in {secs} s (seed {}, {} steps) and saved \
-                 it to {path} in the workspace; the original is unchanged. To change it further, \
-                 edit {path} next. You have not seen it, so do not describe what it shows.",
+                 it to {path} in the workspace; the original is unchanged — leave it so, and do not \
+                 copy the result over it: the user sees the new picture in the chat. To change it \
+                 further, edit {path} next. You have not seen it, so do not describe what it \
+                 shows.",
                 sources.join(", "),
                 req.seed,
                 req.steps

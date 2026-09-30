@@ -657,26 +657,28 @@ conversation, so the capabilities do not change. Three rules:
   before.
 - **A masked edit redraws only the mask, and mecha keeps the rest.** The
   picture is resized to the encoder's own canvas (`edit_canvas`, the node's
-  sizing with Python's round-half-even), and the mask is grown by about 24 px and feathered by
-  about 16 (`prepare_mask`), the setting a 60-image comparison found
-  seamless (`IMAGE-REGION-EDIT-RESEARCH.md` §4, PR #424). The graph samples on the encoded picture under a
-  `SetLatentNoiseMask`. The result is then laid over the original in
-  mecha's code (`composite_masked`), not the server's, so every pixel beyond
-  the grown, feathered edge (up to about 40 px outside what was painted) is
-  the original, byte for byte, at the edit canvas. For every
-  picture this tool made, that canvas is the picture's own size. A larger
-  photo is edited and returned at its canvas size, as a plain edit already
-  is, and the result says so. A dab too small to survive the grow step is
-  refused rather than silently changing nothing. The near-copy check reads only the
-  painted cells (`layout_similarity_painted`), or every masked edit would
-  look unchanged. Measured seamless, and landing 8 of 8 local edits, in
-  `IMAGE-REGION-EDIT-RESEARCH.md` §4. It under-edits a pose, which is left
-  to a plain edit or a library redraw. A mask that marks nothing, or was
-  painted over a picture of another shape, is refused before the GPU. A
-  `size` beside a mask is set aside and said, never refused, because the
-  canvas is the picture. The first live run refused it, and the local model
-  read the refusal as the mask being at fault and retried without the mask:
-  a whole-picture edit of a picture the owner had painted a region on.
+  sizing with Python's round-half-even), and the mask is grown by about 21
+  px and feathered by about 16 (`prepare_mask`; σ = 12 thresholded at 10,
+  then σ = 8), the setting a 60-image comparison found seamless
+  (`IMAGE-REGION-EDIT-RESEARCH.md` §4, PR #424). The graph samples on the
+  encoded picture under a `SetLatentNoiseMask`. The result is then laid over
+  the original in mecha's code (`composite_masked`), not the server's, so
+  every pixel beyond the grown, feathered edge (up to about 37 px outside
+  what was painted) is the original, byte for byte, at the edit canvas. For
+  every picture this tool made, that canvas is the picture's own size. A
+  larger photo is edited and returned at its canvas size, as a plain edit
+  already is, and the result says so. A dab too small to survive the grow
+  step is refused rather than silently changing nothing. The near-copy check
+  reads only the painted cells (`layout_similarity_painted`), or every
+  masked edit would look unchanged. Measured seamless, and landing 8 of 8
+  local edits, in `IMAGE-REGION-EDIT-RESEARCH.md` §4. It under-edits a pose,
+  which is left to a plain edit or a library redraw. A mask that marks
+  nothing, or was painted over a picture of another shape, is refused before
+  the GPU. A `size` beside a mask is set aside and said, never refused,
+  because the canvas is the picture. The first live run refused it, and the
+  local model read the refusal as the mask being at fault and retried
+  without the mask: a whole-picture edit of a picture the owner had painted
+  a region on.
 
 The model sees what it made on request — `image_view` on the result's path
 (§Images) — and the result hands the seed back: revising is an edited prompt
