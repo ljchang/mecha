@@ -22,7 +22,7 @@ pub fn execute(args: Args) -> Result<()> {
     // features an install has is a property of the machine, and every table
     // that turns one on is stripped from project layers anyway.
     let cfg = mecha_core::config::Config::load_global()?;
-    let rows = feature::all(&cfg, &feature::Facts::read(&home, &cfg));
+    let rows = feature::all(&feature::Facts::read(&home, &cfg));
     if args.json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
@@ -68,10 +68,7 @@ mod tests {
 
     #[test]
     fn parts_indent_under_their_parent_and_a_fix_gets_its_own_line() {
-        let rows = feature::all(
-            &mecha_core::config::Config::default(),
-            &feature::Facts::default(),
-        );
+        let rows = feature::all(&feature::Facts::default());
         let text = render(&rows);
         assert!(text.contains("\n  tasks "), "{text}");
         assert!(text.contains("\n    layout "), "{text}");

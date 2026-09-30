@@ -619,6 +619,38 @@ fn no_step_detail_carries_its_source_indentation() {
     }
 }
 
+/// `mecha features` on a fresh install is the light install: it exits 0 —
+/// features being off is not a failure — and no row is `unknown` or
+/// `unready`, which on an empty home could only mean a store read the wrong
+/// place or a config that failed to load. Rows that depend on `PATH` (the
+/// front door on a machine with `factory-publish`) may be on; the web app,
+/// whose answer comes only from our empty config, is off.
+#[test]
+fn features_on_a_fresh_install_exits_zero_with_nothing_unknown() {
+    let home = Home::new("features");
+    let out = mecha(&home, &["features", "--json"]);
+    assert!(
+        out.status.success(),
+        "exit {:?}: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).expect("--json is JSON");
+    let rows = rows.as_array().expect("an array of rows");
+    assert!(!rows.is_empty());
+    for row in rows {
+        let state = row["state"].as_str().expect("every row names its state");
+        assert!(
+            matches!(state, "on" | "off" | "blocked"),
+            "`{}` is {state} on a fresh install: {row}",
+            row["id"]
+        );
+    }
+    let web = rows.iter().find(|r| r["id"] == "web").expect("a web row");
+    assert_eq!(web["state"], "off");
+    assert!(web["fix"].is_string(), "an off row says how to turn it on");
+}
+
 /// `--undecline` puts a step back, so "never" is a preference rather than a
 /// door that locks behind you.
 #[test]

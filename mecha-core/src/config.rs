@@ -1195,18 +1195,13 @@ pub fn provider_is_local(config: &Config, provider_name: &str) -> std::result::R
             provider.fallbacks.join(", ")
         ));
     }
+    // `imagegen::is_loopback`, the one definition of "on this machine" —
+    // this was a line-for-line copy of it until the move (review of #428).
     let loopback = provider
         .base_url
         .as_deref()
         .and_then(|u| reqwest::Url::parse(u).ok())
-        .and_then(|u| {
-            u.host_str()
-                .map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())
-        })
-        .is_some_and(|h| match h.parse::<std::net::IpAddr>() {
-            Ok(ip) => ip.is_loopback(),
-            Err(_) => h.eq_ignore_ascii_case("localhost"),
-        });
+        .is_some_and(|u| crate::imagegen::is_loopback(&u));
     if !loopback {
         return Err(format!(
             "the provider `{provider_name}` is not a server on this machine"
