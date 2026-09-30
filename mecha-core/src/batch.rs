@@ -76,6 +76,12 @@ pub struct BatchItem {
     /// subject ids, or whatever the caller is joining against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<serde_json::Value>,
+    /// Workspace-relative pictures put on the first turn as pixels, for a
+    /// model that can see — what the web chat does with an upload
+    /// ([`crate::image::attached_images`]). The paths are the item's to name
+    /// in its prompt; a blind model gets the prompt alone, as it would there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attach: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,8 +186,24 @@ where
         let mut failure = None;
         let mut last: Option<crate::agent::RunOutcome> = None;
 
+        // Read before the first turn, as the web chat reads an upload before
+        // it starts one; only a model that can see is handed pixels.
+        let mut pictures = if agent.vision() && !item.attach.is_empty() {
+            let workspace = cx.tools.workspace.clone();
+            let paths = item.attach.clone();
+            tokio::task::spawn_blocking(move || crate::image::attached_images(&workspace, &paths))
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("attachments not read: {e}");
+                    Vec::new()
+                })
+        } else {
+            Vec::new()
+        };
         for turn in item.prompt.turns() {
-            convo.push(Message::user(turn.clone()));
+            let mut user = Message::user(turn.clone());
+            user.content.append(&mut pictures);
+            convo.push(user);
             match agent.run_in(&cx, &mut convo, None).await {
                 Ok(outcome) => {
                     totals.absorb(&outcome);
@@ -465,6 +487,89 @@ mod tests {
         .unwrap()
     }
 
+    /// An item's `attach` puts its pictures on the first turn as pixels for a
+    /// model that can see, and arms `private` as a web-chat upload does; a
+    /// blind model gets the prompt alone. What `mecha eval` relies on to ask
+    /// what a model does with a picture it can already see.
+    #[tokio::test]
+    async fn attached_pictures_ride_on_the_first_turn_for_a_model_that_sees() {
+        struct Sees(bool, Arc<Mutex<Vec<usize>>>);
+        #[async_trait]
+        impl Provider for Sees {
+            fn id(&self) -> &str {
+                "sees"
+            }
+            fn default_model(&self) -> &str {
+                "sees-1"
+            }
+            fn vision(&self) -> bool {
+                self.0
+            }
+            async fn complete(
+                &self,
+                req: &CompletionRequest,
+                _sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                let images = req
+                    .messages
+                    .iter()
+                    .flat_map(|m| &m.content)
+                    .filter(|b| matches!(b, Block::Image { .. }))
+                    .count();
+                self.1.lock().unwrap().push(images);
+                Ok(CompletionResponse {
+                    message: Message::assistant(vec![Block::text("seen")]),
+                    stop_reason: StopReason::EndTurn,
+                    usage: Usage::default(),
+                    refusal: None,
+                    model: "sees-1".into(),
+                    malformed_tool_args: 0,
+                })
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("mecha-batch-attach-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        let mut png = Vec::new();
+        image::RgbImage::new(8, 8)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(dir.join("inbox/page.png"), &png).unwrap();
+        std::fs::write(dir.join("inbox/notes.txt"), b"notes").unwrap();
+
+        for sees in [true, false] {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let agent = Agent::new(
+                Box::new(Sees(sees, Arc::clone(&seen))),
+                Registry::new(),
+                Arc::new(ModeApprover {
+                    mode: PermissionMode::Allow,
+                }),
+                ToolCtx {
+                    workspace: dir.clone(),
+                    ..Default::default()
+                },
+                AgentConfig::default(),
+                None,
+            )
+            .unwrap();
+            let item = BatchItem {
+                id: "a".into(),
+                prompt: Prompt::Many(vec!["what does it say?".into(), "and again?".into()]),
+                meta: None,
+                attach: vec!["inbox/page.png".into(), "inbox/notes.txt".into()],
+            };
+            let out = run(&agent, vec![item], 1, |_| {}).await;
+            assert!(out[0].ok, "{:?}", out[0].error);
+            let seen = seen.lock().unwrap().clone();
+            // One picture (the text file never rides), on the first turn, and
+            // carried in the history of the second rather than attached again.
+            let want = if sees { vec![1, 1] } else { vec![0, 0] };
+            assert_eq!(seen, want, "sees = {sees}");
+            assert_eq!(out[0].taint.private, sees, "sees = {sees}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     fn items(prompts: &[&str]) -> Vec<BatchItem> {
         prompts
             .iter()
@@ -473,6 +578,7 @@ mod tests {
                 id: format!("item-{i}"),
                 prompt: (*p).to_string().into(),
                 meta: Some(serde_json::json!({"index": i})),
+                attach: Vec::new(),
             })
             .collect()
     }

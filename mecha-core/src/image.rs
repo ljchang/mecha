@@ -241,6 +241,76 @@ fn human(bytes: usize) -> String {
     }
 }
 
+// ── Attached pictures ───────────────────────────────────────────────────
+
+/// At most this many pictures ride on one turn; the rest are named by path
+/// only. Each costs context for the rest of the conversation (~1000–1500
+/// tokens on the Qwen-VL presets), and a burst of phone photos should not
+/// spend a window by accident.
+pub const MAX_ATTACHED_IMAGES: usize = 8;
+
+/// The pictures among `paths`, read out of the session jail and capped at
+/// the door (`image::block_from_bytes`) — the Slack door's rule: the path is
+/// named in the text *and* the pixels ride on the turn, so the model has
+/// both something to look at and something to pass to a tool. Read through
+/// `WorkspaceFiles::read`, the download route's containment walk, because
+/// the paths come from the caller (a page, a case file). What cannot be read or decoded is left to
+/// its path and logged, never a failed turn.
+pub fn attached_images(workspace: &std::path::Path, paths: &[String]) -> Vec<Block> {
+    let files = match crate::workspace_files::WorkspaceFiles::open(workspace) {
+        Ok(files) => files,
+        Err(e) => {
+            tracing::warn!("attachments not read: {e}");
+            return Vec::new();
+        }
+    };
+    let mut blocks = Vec::new();
+    for path in paths {
+        // The name decides whether to try; the bytes decide what it is
+        // (`image::block_from_bytes`).
+        if image_media_type(std::path::Path::new(path)).is_none() {
+            continue;
+        }
+        if blocks.len() == MAX_ATTACHED_IMAGES {
+            tracing::info!(
+                "more than {MAX_ATTACHED_IMAGES} pictures on one turn; the rest by path"
+            );
+            break;
+        }
+        let read = files.read(path).and_then(|(file, _)| {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            // One byte past the cap tells "exactly at it" from "cut short": a
+            // truncated JPEG can still decode, as half a picture.
+            file.take(MAX_ATTACHMENT_BYTES + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
+                return Err(std::io::Error::other(format!(
+                    "larger than {} MB",
+                    MAX_ATTACHMENT_BYTES / (1024 * 1024)
+                )));
+            }
+            Ok(bytes)
+        });
+        let bytes = match read {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!("attachment {path} not read: {e}");
+                continue;
+            }
+        };
+        match block_from_bytes(bytes, Some(path.clone()), path) {
+            Ok(block) => blocks.push(block),
+            Err(e) => tracing::warn!("attachment {path} not attached: {e:#}"),
+        }
+    }
+    blocks
+}
+
+/// A file larger than this is named by path only: the door caps what rides
+/// on the turn either way, and a phone photo is a few megabytes.
+pub const MAX_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024;
+
 #[cfg(test)]
 mod tests {
     use super::*;

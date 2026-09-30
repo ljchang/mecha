@@ -55,6 +55,12 @@ pub struct EvalCase {
     /// change what every other case in the set is measuring.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_at_tokens: Option<u64>,
+    /// Pictures in the case's workspace put on its first turn as pixels, the
+    /// way a web-chat upload is — so a case can measure what a model does
+    /// with an image it can already see, not only one named by path. The
+    /// prompt names them, as the chat's message does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attach: Vec<String>,
 }
 
 impl EvalCase {
@@ -76,8 +82,119 @@ impl EvalCase {
              shared fixture",
             self.id
         );
+        // A picture that would be skipped at the door — not an image, past the
+        // cap, a path out of the workspace — leaves the case graded on a
+        // prompt naming something the model was never shown: refused here,
+        // not discovered in a scorecard (review of #450). Whether each file
+        // exists and decodes is checked against the fixture before the run
+        // (`check_attachments`).
+        anyhow::ensure!(
+            self.attach.len() <= crate::image::MAX_ATTACHED_IMAGES,
+            "case `{}` attaches {} pictures; at most {} ride on a turn",
+            self.id,
+            self.attach.len(),
+            crate::image::MAX_ATTACHED_IMAGES
+        );
+        for path in &self.attach {
+            let p = Path::new(path);
+            anyhow::ensure!(
+                !path.trim().is_empty()
+                    && p.is_relative()
+                    && p.components()
+                        .all(|c| matches!(c, std::path::Component::Normal(_))),
+                "case `{}` attaches `{path}`: a path relative to the fixture, with no `..`",
+                self.id
+            );
+            anyhow::ensure!(
+                crate::message::image_media_type(p).is_some(),
+                "case `{}` attaches `{path}`, which is not a PNG, JPEG, GIF or WebP — only \
+                 pictures ride on a turn",
+                self.id
+            );
+        }
         Ok(())
     }
+
+    /// Every picture this case attaches, read from `fixture` exactly as the
+    /// run will read it: an error naming the first that is missing or does not
+    /// decode, so a moved fixture fails the run rather than a case's grade.
+    ///
+    /// A sandboxed case runs against a staged copy, not `fixture`; checking
+    /// the fixture holds only because `stage_workspace` copies every regular
+    /// file. A filter added there would make this check a false green.
+    pub fn check_attachments(&self, fixture: &Path) -> Result<()> {
+        for path in &self.attach {
+            let shown = crate::image::attached_images(fixture, std::slice::from_ref(path));
+            anyhow::ensure!(
+                shown.len() == 1,
+                "case `{}` attaches `{path}`, which could not be read from {} as a picture",
+                self.id,
+                fixture.display()
+            );
+        }
+        Ok(())
+    }
+}
+
+/// The gate before a run whose cases attach pictures: the model under test
+/// must be able to see — or every such case is graded on a prompt naming a
+/// picture it was never shown — and each picture must be readable from the
+/// fixture as the run will read it. The judge's reason: a case set that
+/// cannot be graded fails in the first second, not after an hour.
+pub fn check_attached(cases: &[EvalCase], fixture: &Path, sees: bool) -> Result<()> {
+    let attaching: Vec<&str> = cases
+        .iter()
+        .filter(|c| !c.attach.is_empty())
+        .map(|c| c.id.as_str())
+        .collect();
+    if attaching.is_empty() {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        sees,
+        "{} case(s) attach pictures ({}), but the model under test cannot see \
+         (`vision` is off for its provider) — they would be graded on a prompt \
+         naming a picture it was never shown",
+        attaching.len(),
+        attaching.join(", ")
+    );
+    for case in cases {
+        case.check_attachments(fixture)?;
+    }
+    Ok(())
+}
+
+/// The tools the cases' checks name that this run does not offer, each with
+/// the cases naming it. A check on an absent tool is vacuous: `forbid_tools`
+/// passes because the tool cannot be called, and `tools` fails for a reason
+/// that is the machine's, not the model's — so `eval/image-read`'s "never
+/// chose OCR" means nothing on a box without `[documents]` (review of #450).
+/// Said, not refused: a case set may name MCP tools legitimately off today,
+/// the `[[rule]]` and `[outbox]` warnings' reason.
+pub fn unoffered_tools(
+    cases: &[EvalCase],
+    offered: impl Fn(&str) -> bool,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut out: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for case in cases {
+        let e = &case.expect;
+        let named = e
+            .tools
+            .iter()
+            .chain(&e.tools_any)
+            .chain(&e.tools_in_order)
+            .chain(&e.forbid_tools)
+            .chain(e.args.iter().map(|a| &a.tool));
+        for tool in named {
+            if !offered(tool) {
+                let ids = out.entry(tool.clone()).or_default();
+                if !ids.contains(&case.id) {
+                    ids.push(case.id.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Run a case's `verify` command in its workspace and grade the exit code.
@@ -1407,7 +1524,90 @@ mod tests {
             sandbox: false,
             max_turns: None,
             compact_at_tokens: None,
+            attach: Vec::new(),
         }
+    }
+
+    /// A picture that would never reach the model is refused before the run,
+    /// never discovered as a failed grade (review of #450): a path out of the
+    /// fixture, a file that is not a picture, one past the cap, and — against
+    /// the fixture — one that is missing or does not decode.
+    #[test]
+    fn an_attachment_that_cannot_reach_the_model_is_refused_up_front() {
+        let with = |paths: &[&str]| EvalCase {
+            attach: paths.iter().map(|p| p.to_string()).collect(),
+            ..case(Expect::default())
+        };
+        assert!(with(&["inbox/page.jpg", "inbox/b.PNG"]).validate().is_ok());
+        for bad in [
+            &["/etc/page.png"][..],
+            &["../page.png"],
+            &["inbox/notes.txt"],
+            &[""],
+        ] {
+            assert!(with(bad).validate().is_err(), "{bad:?} was accepted");
+        }
+        let many: Vec<String> = (0..=crate::image::MAX_ATTACHED_IMAGES)
+            .map(|i| format!("p{i}.png"))
+            .collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert!(with(&refs).validate().is_err(), "past the cap was accepted");
+
+        let dir = std::env::temp_dir().join(format!("mecha-eval-attach-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 4)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(dir.join("inbox/ok.png"), &png).unwrap();
+        std::fs::write(dir.join("inbox/broken.png"), b"not a png").unwrap();
+        assert!(with(&["inbox/ok.png"]).check_attachments(&dir).is_ok());
+        let e = with(&["inbox/ok.png", "inbox/missing.png"])
+            .check_attachments(&dir)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("missing.png"), "{e}");
+        assert!(with(&["inbox/broken.png"]).check_attachments(&dir).is_err());
+
+        // The run's gate: a blind model is refused by the cases that need
+        // sight, and only when some case does.
+        let plain = case(Expect::default());
+        let pic = EvalCase {
+            id: "pic".into(),
+            ..with(&["inbox/ok.png"])
+        };
+        assert!(check_attached(std::slice::from_ref(&plain), &dir, false).is_ok());
+        let e = check_attached(&[plain.clone(), pic.clone()], &dir, false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("cannot see") && e.contains("pic"), "{e}");
+        assert!(check_attached(&[plain, pic], &dir, true).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A check on a tool the run does not offer is named before the run: a
+    /// `forbid_tools` control otherwise passes on the tool's absence.
+    #[test]
+    fn a_check_on_a_tool_this_run_lacks_is_named() {
+        let forbid = EvalCase {
+            id: "control".into(),
+            ..case(Expect {
+                forbid_tools: vec!["document_read".into()],
+                ..Expect::default()
+            })
+        };
+        let wants = EvalCase {
+            id: "reads".into(),
+            ..case(Expect {
+                tools: vec!["fs_read".into(), "document_read".into()],
+                ..Expect::default()
+            })
+        };
+        let cases = [forbid, wants];
+        let missing = unoffered_tools(&cases, |t| t == "fs_read");
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing["document_read"], vec!["control", "reads"]);
+        assert!(unoffered_tools(&cases, |_| true).is_empty());
     }
 
     #[test]
@@ -1623,6 +1823,38 @@ mod tests {
             count >= 15,
             "expected a substantive case set, found {count}"
         );
+    }
+
+    /// `eval/image-read/` parses, and every picture it attaches reads from its
+    /// fixture as a run would read it — so a moved or renamed picture fails
+    /// here, not as a pre-run error on the next measurement (review of #450).
+    #[test]
+    fn the_image_read_cases_parse_and_every_picture_reads() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("eval/image-read");
+        let text = std::fs::read_to_string(dir.join("cases.jsonl"))
+            .expect("eval/image-read/cases.jsonl is missing");
+        let fixture = dir.join("workspace");
+        let mut ids = std::collections::HashSet::new();
+        let mut attached = 0;
+        for (i, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            let case: EvalCase = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("image-read/cases.jsonl:{}: {e}", i + 1));
+            case.validate()
+                .unwrap_or_else(|e| panic!("image-read/cases.jsonl:{}: {e}", i + 1));
+            case.check_attachments(&fixture)
+                .unwrap_or_else(|e| panic!("image-read/cases.jsonl:{}: {e}", i + 1));
+            assert!(ids.insert(case.id.clone()), "duplicate case id {}", case.id);
+            attached += case.attach.len();
+        }
+        assert!(ids.len() >= 19, "found {} cases", ids.len());
+        assert!(attached >= ids.len(), "every case attaches a picture");
     }
 
     #[test]
@@ -1910,6 +2142,7 @@ mod grounding_tests {
             sandbox: false,
             max_turns: None,
             compact_at_tokens: None,
+            attach: Vec::new(),
         };
         let check = Judge::new(Box::new(EvidenceJudge), None)
             .check_with_evidence(&case, "unknown", &evidence)
