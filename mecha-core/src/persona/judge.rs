@@ -105,7 +105,11 @@ pub fn parse(text: &str) -> Verdict {
 /// Screen one owner message. Envelope first: a refusal and an empty answer
 /// are read before any content is.
 pub async fn screen(provider: &dyn Provider, model: &str, text: &str) -> Verdict {
-    let pass = QuarantinedPass::new(model, 4096)
+    // Not 4096: that is the router's reasoning budget, and a judge given
+    // exactly its thinking allowance spends it all and answers empty — every
+    // chat would read "keywords only" forever (review of #426;
+    // `docs/LLAMA-SERVER.md` names that value). The one shared number.
+    let pass = QuarantinedPass::new(model, crate::provider::LOCAL_MAX_TOKENS)
         .system(SYSTEM)
         .response_schema(provider.structured_output().then(schema));
     let request = pass.ask(format!(
@@ -153,9 +157,15 @@ mod tests {
             req: &CompletionRequest,
             _: Option<&crate::provider::StreamSink>,
         ) -> Result<CompletionResponse> {
-            // Quarantined: no tools, one message.
+            // Quarantined: no tools, one message — and room to answer after
+            // a reasoning model's thinking budget.
             assert!(req.tools.is_empty());
             assert_eq!(req.messages.len(), 1);
+            assert!(
+                req.max_tokens >= crate::provider::LOCAL_MAX_TOKENS,
+                "{}",
+                req.max_tokens
+            );
             let Some((text, stop)) = self.0 else {
                 anyhow::bail!("connection refused");
             };
