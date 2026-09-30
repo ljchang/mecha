@@ -1846,6 +1846,68 @@ pub fn edit_settings(
     write_owner_file(dir, name, OwnerFile::Settings, &edited, Some(base))
 }
 
+/// Is this line a root-table `character = …` assignment? Line-based on
+/// purpose, so a file that no longer parses is redacted all the same: every
+/// line before the first `[table]` header whose key is `character`, bare or
+/// quoted. A `# character = …` comment is not one.
+fn is_character_line(line: &str) -> bool {
+    let t = line.trim_start();
+    let key = t
+        .strip_prefix("character")
+        .or_else(|| t.strip_prefix("\"character\""))
+        .or_else(|| t.strip_prefix("'character'"));
+    matches!(key, Some(rest) if rest.trim_start().starts_with('='))
+}
+
+/// The root-table lines of a TOML text, by index: those before the first
+/// `[table]` or `[[array]]` header.
+fn root_lines(text: &str) -> usize {
+    text.lines()
+        .position(|l| l.trim_start().starts_with('['))
+        .unwrap_or(usize::MAX)
+}
+
+/// `persona.toml` as a locked page may see it: without the `character` line
+/// when the persona's portrait is a locked library character (owner ruling,
+/// 2026-09-30 — the link is hidden, never cut). Everything else is the file
+/// as written.
+pub fn hide_character(text: &str) -> String {
+    let root = root_lines(text);
+    let mut out: String = text
+        .lines()
+        .enumerate()
+        .filter(|(i, l)| !(*i < root && is_character_line(l)))
+        .map(|(_, l)| format!("{l}\n"))
+        .collect();
+    if !text.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+/// A save from a page that was shown [`hide_character`]'s text: the hidden
+/// link put back, unless the owner wrote a `character` of their own. Put
+/// before the first table, where a root key must go.
+pub fn restore_character(text: &str, character: &str) -> String {
+    let root = root_lines(text);
+    if text
+        .lines()
+        .enumerate()
+        .any(|(i, l)| i < root && is_character_line(l))
+    {
+        return text.to_string();
+    }
+    let line = format!("character = {}", toml_edit::Value::from(character));
+    let mut lines: Vec<&str> = text.lines().collect();
+    let at = root.min(lines.len());
+    lines.insert(at, &line);
+    let mut out = lines.join("\n");
+    if text.ends_with('\n') || text.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
 /// The sections a Markdown owner file must keep: `## Core` in identity.md
 /// is who they are at heart, and the re-anchor reads it.
 pub fn fixed_sections(file: OwnerFile) -> &'static [&'static str] {
@@ -2797,6 +2859,34 @@ mod tests {
             after
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Hidden, never cut: the served text has no `character` line, and a
+    /// save of it gets the link back — unless the owner wrote their own.
+    #[test]
+    fn a_hidden_character_is_redacted_and_restored() {
+        let text = "# c\n# character = \"example\"\ndisplay = \"Mara\"\ncharacter  = \"theo\"  # portrait\n\n[tools]\ncharacter = \"not-root\"\n";
+        let shown = hide_character(text);
+        assert!(!shown.contains("\"theo\""), "{shown}");
+        assert!(shown.contains("# character = \"example\""), "comments stay");
+        assert!(
+            shown.contains("character = \"not-root\""),
+            "only the root key"
+        );
+        let back = restore_character(&shown, "theo");
+        let parsed: toml::Table = toml::from_str(&back).unwrap();
+        assert_eq!(parsed["character"].as_str(), Some("theo"), "{back}");
+        assert_eq!(parsed["tools"]["character"].as_str(), Some("not-root"));
+        // The owner named a portrait of their own: theirs stands.
+        let chosen = shown.replace(
+            "display = \"Mara\"",
+            "display = \"Mara\"\ncharacter = \"maya\"",
+        );
+        assert_eq!(restore_character(&chosen, "theo"), chosen);
+        // A file with no tables, and one that does not parse, both work.
+        assert_eq!(hide_character("character = \"theo\"\n"), "");
+        assert_eq!(restore_character("", "theo"), "character = \"theo\"\n");
+        assert!(!hide_character("character = \"theo\"\ndisplay = ").contains("theo"));
     }
 
     #[test]

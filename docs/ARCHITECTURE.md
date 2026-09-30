@@ -962,7 +962,14 @@ module.
   property), a note holding `-->` is refused rather than escaped, and
   `## Core` cannot be dropped. The engines are general: another owner file
   gets a form by declaring a schema, not a component (`TomlForm.svelte`,
-  `MdForm.svelte`). All three end in `persona::write_owner_file`, which refuses a
+  `MdForm.svelte`). On a locked page, a persona whose portrait is a locked
+  library character is served `persona.toml` without its `character` line
+  (`persona::hide_character`), with the form's Portrait empty and the stale
+  digest taken over the served text, because a digest of the real file would
+  let a guessed name be checked. A save puts the link back
+  (`restore_character`) unless the owner named a portrait of their own:
+  hidden, never cut (owner ruling, 2026-09-30). All three end in
+  `persona::write_owner_file`, which refuses a
   stale save (its `base` digest is not the file as it stands, an edit made
   elsewhere), control characters and oversize text, and it restores the old
   file when the persona would not load or could not be versioned after the
