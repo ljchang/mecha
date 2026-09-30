@@ -1825,6 +1825,38 @@ mod tests {
         );
     }
 
+    /// `eval/image-read/` parses, and every picture it attaches reads from its
+    /// fixture as a run would read it — so a moved or renamed picture fails
+    /// here, not as a pre-run error on the next measurement (review of #450).
+    #[test]
+    fn the_image_read_cases_parse_and_every_picture_reads() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("eval/image-read");
+        let text = std::fs::read_to_string(dir.join("cases.jsonl"))
+            .expect("eval/image-read/cases.jsonl is missing");
+        let fixture = dir.join("workspace");
+        let mut ids = std::collections::HashSet::new();
+        let mut attached = 0;
+        for (i, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            let case: EvalCase = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("image-read/cases.jsonl:{}: {e}", i + 1));
+            case.validate()
+                .unwrap_or_else(|e| panic!("image-read/cases.jsonl:{}: {e}", i + 1));
+            case.check_attachments(&fixture)
+                .unwrap_or_else(|e| panic!("image-read/cases.jsonl:{}: {e}", i + 1));
+            assert!(ids.insert(case.id.clone()), "duplicate case id {}", case.id);
+            attached += case.attach.len();
+        }
+        assert!(ids.len() >= 19, "found {} cases", ids.len());
+        assert!(attached >= ids.len(), "every case attaches a picture");
+    }
+
     #[test]
     fn a_verdict_survives_the_ways_models_wrap_json() {
         let wrapped = [
