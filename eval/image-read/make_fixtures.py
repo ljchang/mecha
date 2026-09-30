@@ -213,7 +213,11 @@ def main():
     scene_landscape("landscape.jpg")
     scene_shapes("shapes.png")
 
+    # The figures the receipt cases grade on, computed here from the line
+    # items, kept beside the letters' text so a changed item is re-derivable.
     for name, (subtotal, tax, total) in totals.items():
+        line = f"subtotal {subtotal:.2f}\ntax {tax:.2f}\ntotal {total:.2f}\n"
+        (TRUTH / (Path(name).stem + ".txt")).write_text(line)
         print(f"{name}: subtotal {subtotal:.2f} tax {tax:.2f} total {total:.2f}")
 
 
