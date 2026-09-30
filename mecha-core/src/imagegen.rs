@@ -2061,7 +2061,17 @@ impl ImageGenerate {
             };
             match named_at(extra) {
                 Some((0, end)) if !possessive(end) => {
-                    from_extra.get_or_insert_with(|| extra[end..].to_string());
+                    // Two extras that are the persona are one person twice:
+                    // refused, as the compiler refuses a name twice in
+                    // `cast`, rather than one dropped (review of #454).
+                    if from_extra.is_some() {
+                        return Err(
+                            "Two entries in `extras` describe you. You are one person: say \
+                             what you are doing once, in one of them or in the prompt."
+                                .to_string(),
+                        );
+                    }
+                    from_extra = Some(extra[end..].to_string());
                     is_persona.push(true);
                 }
                 Some(_) => {
@@ -2091,21 +2101,22 @@ impl ImageGenerate {
             return Ok(());
         }
         // A full cast: adding the persona would make a call the compiler
-        // refuses and the model never wrote. Named in the prompt, the guard
-        // below names everyone instead, the persona included. Written as an
-        // extra, it would be drawn as a stranger with its own name, which
-        // no guard sees — so that is refused, naming the cap (review of
-        // #454).
-        if ask
+        // refuses and the model never wrote. Leaving it out draws it as a
+        // stranger wherever the scene names it — in an extra, or in the
+        // prompt by a name the library does not hold ("Mara" for maya),
+        // which no guard sees (review of #454). So a full cast with the
+        // persona in the scene is refused, naming the cap; a scene that does
+        // not name it draws as written.
+        if let Some(full) = ask
             .as_ref()
-            .is_some_and(|a| a.cast.len() >= crate::imagelib::MAX_CAST)
+            .map(|a| a.cast.len())
+            .filter(|&n| n >= crate::imagelib::MAX_CAST)
         {
-            if from_extra.is_some() {
+            if from_extra.is_some() || named_at(prompt).is_some() {
                 return Err(format!(
-                    "Your `cast` is full ({} people) and `extras` describes you. One picture \
-                     holds at most {} people from the library, you included: drop someone \
-                     from `cast`, or split the scene.",
-                    crate::imagelib::MAX_CAST,
+                    "Your `cast` is full ({full} people) and the scene includes you. One \
+                     picture holds at most {} people from the library, you included: drop \
+                     someone from `cast`, or split the scene.",
                     crate::imagelib::MAX_CAST
                 ));
             }
@@ -5009,6 +5020,39 @@ mod tests {
             .unwrap();
         assert!(
             out.is_error && out.content.contains("Your `cast` is full"),
+            "{}",
+            out.content
+        );
+        assert_eq!(draws(), before, "a refused call drew");
+        // The same full cast with the persona named in the prompt by a name
+        // the library does not hold: refused too, not drawn as a stranger.
+        let out = mara
+            .call(
+                json!({"prompt": "Mara O'Brien in a crowded kitchen", "cast": [
+                    {"name": "john", "wearing": "an apron", "doing": "cooking"},
+                    {"name": "ann", "wearing": "a coat", "doing": "leaving"},
+                    {"name": "bea", "wearing": "a hat", "doing": "reading"},
+                    {"name": "cy", "wearing": "a scarf", "doing": "waving"}
+                ]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("Your `cast` is full (4 people)"),
+            "{}",
+            out.content
+        );
+        // Two extras that are both the persona: refused, not one dropped.
+        let out = mara
+            .call(
+                json!({"prompt": "a park", "extras": ["Mara on a bench", "Mara feeding ducks"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("Two entries in `extras` describe you"),
             "{}",
             out.content
         );
