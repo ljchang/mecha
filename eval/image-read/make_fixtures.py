@@ -21,6 +21,10 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 OUT = Path(__file__).resolve().parent / "workspace" / "inbox"
+# Each letter's true text, outside the workspace the model can read: what a
+# transcription is scored against (word recall and precision), re-derivable
+# from here rather than from anyone's notes (review of #450).
+TRUTH = Path(__file__).resolve().parent / "truth"
 FONTS = "/usr/share/fonts/truetype/dejavu/"
 SERIF = FONTS + "DejaVuSerif.ttf"
 SERIF_BOLD = FONTS + "DejaVuSerif-Bold.ttf"
@@ -55,6 +59,7 @@ def photograph(page, name, long_side=1400):
 
 
 def letter(title, lines, name):
+    (TRUTH / (Path(name).stem + ".txt")).write_text("\n".join([title] + lines) + "\n")
     page = Image.new("RGB", (1240, 1754), (250, 248, 242))
     d = ImageDraw.Draw(page)
     d.text((110, 110), title, font=font(SERIF_BOLD, 34), fill=(20, 20, 20))
@@ -148,6 +153,7 @@ def filler(n, topic):
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
+    TRUTH.mkdir(parents=True, exist_ok=True)
 
     letter("Coastal Access Permit - Renewal Notice", filler(9, "access") + [
         "Your renewed permit reference is CAP-2026-04417. It authorises vessel",

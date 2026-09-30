@@ -375,6 +375,29 @@ async fn run_arm(
         _fixture_mcp = clients;
     }
 
+    // Attached pictures, checked before anything runs, for the judge's
+    // reason: a case whose picture never reaches the model is graded on a
+    // prompt naming something it was not shown, and a blind model makes every
+    // such case that (review of #450).
+    let attaching: Vec<&str> = cases
+        .iter()
+        .filter(|c| !c.attach.is_empty())
+        .map(|c| c.id.as_str())
+        .collect();
+    if !attaching.is_empty() {
+        anyhow::ensure!(
+            prepared.agent.vision(),
+            "{} case(s) attach pictures ({}), but the model under test cannot see \
+             (`vision` is off for its provider) — they would be graded on a prompt \
+             naming a picture it was never shown",
+            attaching.len(),
+            attaching.join(", ")
+        );
+        for case in cases {
+            case.check_attachments(fixture)?;
+        }
+    }
+
     // Build the judge before running anything. A case set that cannot be
     // graded should fail in the first second, not after an hour of inference.
     let judge = build_judge(args, &prepared, cases)?;

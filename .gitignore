@@ -13,6 +13,8 @@
 !eval/envs/**/*.jsonl
 # Suite case files are authored data too.
 !eval/suites/*.jsonl
+# So is a case set that keeps its own fixture beside it (eval/image-read/).
+!eval/image-read/*.jsonl
 jobs/
 
 # Credentials. Nothing here has ever been committed and nothing should be: the
