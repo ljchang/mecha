@@ -28,13 +28,15 @@ button to open a modal where areas are painted and annotated. Open:
 
 - **The owner's decision (§6): which graph backs a painted area.** C, a
   latent noise mask plus a composite in mecha, was exact and seamless and
-  landed every local edit. It is ComfyUI's graph today, and on
-  stable-diffusion.cpp it would need `mask_image`, unverified with 2.1
-  edits. D, crop-edit-paste, is backend-free and landed the pose edit, but
+  landed every local edit. ComfyUI has the nodes today, though the graph is
+  not built, and on stable-diffusion.cpp it would need `mask_image`,
+  unverified with 2.1 edits. D, crop-edit-paste, is backend-free and landed the pose edit, but
   left seams where its edge crossed a person.
-- **C′, the next measurement:** C with the region greyed out of the
-  reference, about 12 images on the pose edit plus a swap check. It aims at
-  C's one weakness, under-editing a pose (n = 4).
+- **A pose or a move inside a region is unsolved.** C under-edits it
+  (n = 4). C′, the region hidden from the reference, was measured and
+  dropped: it lost her identity or copied its placeholder into the picture.
+  The untested candidate is D's crop edit followed by a thin C pass over the
+  seam (§6).
 - **Everything was measured on the one picnic scene.** C's and D's exact
   outside holds anywhere; the landing rates and D's seams need a second
   scene.
