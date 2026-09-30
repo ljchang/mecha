@@ -82,8 +82,29 @@ export function addChip(value, typed) {
 
 // iOS "smart punctuation" turns a typed `--` into a dash, so a comment
 // typed on a phone arrives as `<!—` … `—>` and is no longer a comment — the
-// note would be sent to every chat. Only those exact spellings are put
-// back; a dash anywhere else is the owner's.
+// note would be sent to every chat. Put back only inside a comment: an
+// opener is always one, and a dashed close only while a comment is open. A
+// `—>` in prose is the owner's words (review of #430).
 export function repairComments(text) {
-  return String(text).replace(/<!\s?[—–]/g, '<!--').replace(/[—–]>/g, '-->');
+  const s = String(text).replace(/<!\s?[—–]/g, '<!--');
+  let out = '';
+  let open = false;
+  for (let i = 0; i < s.length; i++) {
+    if (!open && s.startsWith('<!--', i)) {
+      open = true;
+      out += '<!--';
+      i += 3;
+    } else if (open && s.startsWith('-->', i)) {
+      open = false;
+      out += '-->';
+      i += 2;
+    } else if (open && (s[i] === '—' || s[i] === '–') && s[i + 1] === '>') {
+      open = false;
+      out += '-->';
+      i += 1;
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
 }
