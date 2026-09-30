@@ -157,7 +157,13 @@ impl Feature {
             // drain` and publishing needs no mailbox; only booking settlement
             // reads the mail ledger, and that side fails closed on its own
             // (found on review of #428).
-            Feature::Voice | Feature::Incognito => &[Feature::Web],
+            // Voice itself is not the web app's: `mecha voice-serve` is a
+            // standalone loopback surface that reads nothing from `[web]`.
+            // Its parts that live in `mecha serve` — the browser's dictation,
+            // voice calls, cloning — are (found on review of #428).
+            Feature::Incognito | Feature::Dictate | Feature::Calls | Feature::Cloning => {
+                &[Feature::Web]
+            }
             _ => &[],
         }
     }
@@ -517,9 +523,11 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         },
         Feature::Personas => on("no switch yet — always on (FEATURES-DESIGN.md F1)"),
         Feature::Voice => {
-            on("no switch yet — `mecha serve`'s --voice-port and --offer-target decide")
+            on("no switch yet — `mecha voice-serve`, and `mecha serve`'s voice flags")
         }
-        Feature::Dictate => on("speech to text at a fixed address, not yet configurable"),
+        Feature::Dictate => {
+            on("the web app's speech to text, at a fixed address — not yet configurable")
+        }
         Feature::Calls => on("`mecha serve`'s --offer-target"),
         Feature::Cloning => match &cfg.web.voices_dir {
             Some(dir) => on(dir.display().to_string()),
@@ -698,13 +706,16 @@ mod tests {
             get(&rows, Feature::Layout),
             &State::Blocked { on: Feature::Ocr }
         );
+        // Voice has a surface without the web app (`mecha voice-serve`);
+        // the parts that live in `mecha serve` wait on it.
+        assert_eq!(get(&rows, Feature::Voice).word(), "on");
         assert_eq!(
-            get(&rows, Feature::Voice),
+            get(&rows, Feature::Dictate),
             &State::Blocked { on: Feature::Web }
         );
         assert_eq!(
-            get(&rows, Feature::Dictate),
-            &State::Blocked { on: Feature::Voice }
+            get(&rows, Feature::Cloning),
+            &State::Blocked { on: Feature::Web }
         );
         assert_eq!(
             get(&rows, Feature::Library),
