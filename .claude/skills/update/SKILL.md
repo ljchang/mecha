@@ -262,8 +262,8 @@ rsync -a --delete dist/ ~/.mecha/web/dist/
 ```
 
 **When the same range changes the binary too, restart `mecha-serve` first
-and rsync last:** step 1's install, then the restart (step 2, once
-`~/.mecha/holds` is clear), then this rsync. `mecha serve` reads assets per
+and rsync last:** step 1's install, then the restart (step 2, whose hold
+check is what "clear" means here), then this rsync. `mecha serve` reads assets per
 request, so a new page reaches the phone the moment it lands, and a new page
 on the old binary can fail silently in the unsafe direction. On 2026-09-30
 #429's modal sent a `mask` that the old `image_generate` ignored, so for
@@ -316,7 +316,24 @@ a bare `304` with no `ETag` means the binary answering predates the bump.
 ### 2. The long-running services
 
 These hold an open file handle on the old binary and must be restarted *after*
-step 1:
+step 1 — and not through a run in flight. **Read `~/.mecha/holds` first:**
+each file is a run holding the model (`hold.rs`), and its pid says which
+unit it lives in:
+
+```bash
+for f in ~/.mecha/holds/*.hold; do [ -e "$f" ] || continue
+  pid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$f")
+  printf '%s  ' "$(basename "$f")"
+  tail -1 /proc/$pid/cgroup 2>/dev/null || echo "(pid $pid gone: a stale file)"
+done
+```
+
+A hold whose cgroup is a unit you are about to restart is somebody's live
+run. On 2026-09-30 it was the owner's persona chat in `mecha-serve`. Wait
+for it to clear, or restart the other units now and that one after. A hold
+in a unit you are not restarting does not block; on 2026-09-30 that was
+`mecha-ruminate`'s nightly `validate`. A new page waiting on this restart
+stays unpublished until it happens (step 1b).
 
 ```bash
 systemctl --user restart mecha-slack.service mecha-triggers.service \

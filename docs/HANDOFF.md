@@ -2060,7 +2060,8 @@ re-consent that was open here is closed: the 2026-09-17 grant outlived the
 seven-day clock (HISTORY, 2026-09-30).
 
 `~/.mecha/mail/accounts.toml` is in no git repository, so a fresh clone will
-not have it. It no longer carries `grant_lifetime_days` on `personal`; the
+not have it. It no longer carries `grant_lifetime_days` on `personal`, and a
+re-auth will not put it back: `mecha-mail auth` never sets the field. The
 backup from before the line came out is `accounts.toml.bak-2026-09-30`.
 
 Dartmouth's Entra registration (also named FlowMail, client
@@ -2882,7 +2883,7 @@ grant is seven days and refreshing does not extend it, so it was due to end
 `--paste` from an ssh session — and never a button.
 
 **Superseded by a later consent.** `granted_at` in that account's
-`oauth.json` reads 2026-09-15T17:13:06Z, so the live grant is the one minted
+`oauth.json` read 2026-09-15T17:13:06Z before the 02:10Z re-consent, so the live grant is the one minted
 that day and it lapses 2026-09-22 17:13Z, not the 21st. `mecha doctor` first
 warns at **16:13Z on the 20th**, not at the start of it:
 `doctor::check_grant_age` truncates the hours remaining and *then* rounds
