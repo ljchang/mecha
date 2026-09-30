@@ -164,6 +164,39 @@ pub fn check_attached(cases: &[EvalCase], fixture: &Path, sees: bool) -> Result<
     Ok(())
 }
 
+/// The tools the cases' checks name that this run does not offer, each with
+/// the cases naming it. A check on an absent tool is vacuous: `forbid_tools`
+/// passes because the tool cannot be called, and `tools` fails for a reason
+/// that is the machine's, not the model's — so `eval/image-read`'s "never
+/// chose OCR" means nothing on a box without `[documents]` (review of #450).
+/// Said, not refused: a case set may name MCP tools legitimately off today,
+/// the `[[rule]]` and `[outbox]` warnings' reason.
+pub fn unoffered_tools(
+    cases: &[EvalCase],
+    offered: impl Fn(&str) -> bool,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut out: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for case in cases {
+        let e = &case.expect;
+        let named = e
+            .tools
+            .iter()
+            .chain(&e.tools_any)
+            .chain(&e.tools_in_order)
+            .chain(&e.forbid_tools)
+            .chain(e.args.iter().map(|a| &a.tool));
+        for tool in named {
+            if !offered(tool) {
+                let ids = out.entry(tool.clone()).or_default();
+                if !ids.contains(&case.id) {
+                    ids.push(case.id.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Run a case's `verify` command in its workspace and grade the exit code.
 ///
 /// Failure detail carries the command's own output, because "exit 1" tells you
@@ -1550,6 +1583,31 @@ mod tests {
         assert!(e.contains("cannot see") && e.contains("pic"), "{e}");
         assert!(check_attached(&[plain, pic], &dir, true).is_ok());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A check on a tool the run does not offer is named before the run: a
+    /// `forbid_tools` control otherwise passes on the tool's absence.
+    #[test]
+    fn a_check_on_a_tool_this_run_lacks_is_named() {
+        let forbid = EvalCase {
+            id: "control".into(),
+            ..case(Expect {
+                forbid_tools: vec!["document_read".into()],
+                ..Expect::default()
+            })
+        };
+        let wants = EvalCase {
+            id: "reads".into(),
+            ..case(Expect {
+                tools: vec!["fs_read".into(), "document_read".into()],
+                ..Expect::default()
+            })
+        };
+        let cases = [forbid, wants];
+        let missing = unoffered_tools(&cases, |t| t == "fs_read");
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing["document_read"], vec!["control", "reads"]);
+        assert!(unoffered_tools(&cases, |_| true).is_empty());
     }
 
     #[test]

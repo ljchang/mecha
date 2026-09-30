@@ -380,6 +380,15 @@ async fn run_arm(
     // prompt naming something it was not shown, and a blind model makes every
     // such case that (review of #450).
     mecha_core::eval::check_attached(cases, fixture, prepared.agent.vision())?;
+    for (tool, ids) in
+        mecha_core::eval::unoffered_tools(cases, |t| prepared.agent.registry().get(t).is_some())
+    {
+        eprintln!(
+            "mecha eval: `{tool}` is named by {} but not offered in this run, so those checks \
+             pass or fail on its absence, not on the model",
+            ids.join(", ")
+        );
+    }
 
     // Build the judge before running anything. A case set that cannot be
     // graded should fail in the first second, not after an hour of inference.
