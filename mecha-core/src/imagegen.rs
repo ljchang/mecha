@@ -1625,7 +1625,7 @@ fn self_clauses(after_name: &str) -> (Option<String>, Option<String>) {
     // A possessive belongs to the name, not to what it is doing: after
     // "Mara", "'s hand holding a cup" is "hand holding a cup" (review of
     // #454).
-    let after_name = ["'s", "’s", "'"]
+    let after_name = ["'s", "’s", "'", "’"]
         .iter()
         .find_map(|p| after_name.strip_prefix(p))
         .unwrap_or(after_name);
@@ -2051,8 +2051,16 @@ impl ImageGenerate {
         let mut from_extra: Option<String> = None;
         let mut is_persona = Vec::new();
         for extra in ask.iter().flat_map(|a| a.extras.iter()) {
+            // "Mara's dog at her feet" opens with the name but is about
+            // something of hers: a possessive is a mention, not the persona
+            // (review of #454).
+            let possessive = |end: usize| {
+                ["'s", "’s", "'", "’"]
+                    .iter()
+                    .any(|p| extra[end..].starts_with(p))
+            };
             match named_at(extra) {
-                Some((0, end)) => {
+                Some((0, end)) if !possessive(end) => {
                     from_extra.get_or_insert_with(|| extra[end..].to_string());
                     is_persona.push(true);
                 }
@@ -2083,12 +2091,24 @@ impl ImageGenerate {
             return Ok(());
         }
         // A full cast: adding the persona would make a call the compiler
-        // refuses and the model never wrote. The guard below names everyone
-        // instead, the persona included, and every extra stays as written.
+        // refuses and the model never wrote. Named in the prompt, the guard
+        // below names everyone instead, the persona included. Written as an
+        // extra, it would be drawn as a stranger with its own name, which
+        // no guard sees — so that is refused, naming the cap (review of
+        // #454).
         if ask
             .as_ref()
             .is_some_and(|a| a.cast.len() >= crate::imagelib::MAX_CAST)
         {
+            if from_extra.is_some() {
+                return Err(format!(
+                    "Your `cast` is full ({} people) and `extras` describes you. One picture \
+                     holds at most {} people from the library, you included: drop someone \
+                     from `cast`, or split the scene.",
+                    crate::imagelib::MAX_CAST,
+                    crate::imagelib::MAX_CAST
+                ));
+            }
             return Ok(());
         }
         let in_prompt = named_at(prompt);
@@ -4912,7 +4932,7 @@ mod tests {
     /// made, leaving two entries the model wrote to the compiler.
     #[tokio::test]
     async fn a_persona_cast_from_its_own_words_wherever_it_writes_them() {
-        let (url, seen) = fake(vec![done(), done(), done(), done()], "200 OK").await;
+        let (url, seen) = fake(vec![done(), done(), done()], "200 OK").await;
         let dir = tempdir();
         let lib = library_with(&["maya", "john", "ann", "bea", "cy"]);
         let base = Arc::new(tool(&url).with_library_dir(lib.clone()));
@@ -4972,9 +4992,8 @@ mod tests {
             "{manifest}"
         );
 
-        // A full cast: the persona is not added, and the extra the model
-        // wrote stays where it was — nothing silently disappears. Four
-        // library characters fill the cast; the call then draws as written.
+        // A full cast with the persona in `extras`: refused, naming the cap —
+        // neither dropped silently nor drawn as a stranger with its name.
         let before = draws();
         let out = mara
             .call(
@@ -4988,14 +5007,27 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(!out.is_error, "{}", out.content);
-        assert_eq!(draws(), before + 1);
-        let manifest = manifest_of(&dir, &out.content);
-        assert_eq!(
-            manifest["extras"],
-            json!(["Mara leaning on the door"]),
-            "{manifest}"
+        assert!(
+            out.is_error && out.content.contains("Your `cast` is full"),
+            "{}",
+            out.content
         );
+        assert_eq!(draws(), before, "a refused call drew");
+        // A possessive extra is about something of hers, not her: refused
+        // as a mention, never read as the persona (the dog would vanish).
+        let out = mara
+            .call(
+                json!({"prompt": "Mara reading on a bench", "extras": ["Mara's dog at her feet"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("This extra names you"),
+            "{}",
+            out.content
+        );
+        assert_eq!(draws(), before, "a refused call drew");
 
         // Named in passing in someone else's extra: refused before drawing,
         // in words the model can act on.

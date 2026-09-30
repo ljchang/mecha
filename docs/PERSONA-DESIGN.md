@@ -701,7 +701,10 @@ picker, the lock (§8.3) and the voice binding (§11) live.
 `PersonaSelf`, and `ImageGenerate::cast_self` casts the persona's character
 when the prompt names the persona (character, folder or display name, whole
 words) or `cast` says `self`, filling `wearing`/`doing` from a prompt that
-opens with the persona. Nothing tells the model in its system prompt; the
+opens with the persona. An `extras` entry that opens with the persona is
+taken as the persona and cast from its own words (#454); one that names it in
+passing, or in the possessive, is refused before drawing, as is a persona in
+`extras` beside a full cast. Nothing tells the model in its system prompt; the
 tool does not need it to.
 
 A persona linked to a library character (§4.2) can make pictures of itself —
