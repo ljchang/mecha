@@ -37,6 +37,23 @@ export const QUEUE_FEATURE = {
   'image candidates': 'library',
 };
 
+/**
+ * Routes that open whatever their view's feature says. A core pane that
+ * happens to live in a feature's view — a delegated run's question and the
+ * workflows, both on the board's page but read from core stores — and the
+ * landing of a queue card kept because something waits in it. Redirecting
+ * these would keep the card and refuse the tap: the Questions card would
+ * land on Home with its runs still waiting (found on review of #449).
+ * `every_feature_the_web_app_names_is_a_registry_id` holds Home's
+ * destinations to this list.
+ */
+export const OPENS_ANYWAY = ['tasks/waiting', 'tasks/workflows', 'library/candidates'];
+
+/** Whether `view/sub` opens even with its view's feature hidden. */
+export function opensAnyway(view, sub) {
+  return sub != null && OPENS_ANYWAY.includes(`${view}/${sub}`);
+}
+
 /** `/api/features`'s body as a map from id to row, or null when unanswered. */
 export function index(body) {
   const rows = body?.features;

@@ -299,10 +299,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`mecha features` reads a switched-on feature with missing settings as
   unready, not off.** `image = true` with no `[image]` table, or mail with no
   `[[mcp]]` entry, is something you said yes to, and now reads **unready**
-  with the fix — and no longer hides the parts under it. A part turned off by
-  its own setting (`[documents] ocr = false`) still reads off. A blocked row
-  now prints the command that unblocks it, and `--json` rows carry `shown`
-  and `next`.
+  with the fix — and no longer hides the parts under it, which read unready
+  beside it rather than on. A part turned off by its own setting
+  (`[documents] ocr = false`) still reads off. A blocked row now prints the
+  command that unblocks it, and `--json` rows carry `shown` and `next`. One
+  new start-up line can follow: an install with a `[documents]` table, no
+  `documents` switch and `document_read` turned off in `[tools]` is now
+  offered `mecha features enable documents`, with the `[tools]` reason beside
+  it — the switch alone will not make it work.
 
 - **A feature whose switch is not on is off.** Web search, image generation,
   PDF extraction and the mail, docs and graph servers register or

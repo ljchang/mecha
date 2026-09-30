@@ -5,7 +5,7 @@
 // failed; an `unready` feature the owner switched on, hidden; a queue with
 // strangers' requests waiting, hidden because its switch is off; and a
 // banner that names the child when the parent is what is broken.
-import { index, isShown, queueCardShown, banner, hiddenLine, summary, tree, detail, VIEW_FEATURE } from '../src/lib/features.js';
+import { OPENS_ANYWAY, opensAnyway, index, isShown, queueCardShown, banner, hiddenLine, summary, tree, detail, VIEW_FEATURE } from '../src/lib/features.js';
 
 let pass = 0;
 let fail = 0;
@@ -63,6 +63,13 @@ t('an off queue with nothing waiting is hidden', !queueCardShown(rows, 'front-do
 t('an off queue with requests waiting is shown', queueCardShown(rows, 'front-door requests', 3));
 t('an off queue that could not be read is shown', queueCardShown(rows, 'front-door requests', null));
 t('a core queue is shown at zero', queueCardShown(rows, 'outbox drafts', 0));
+
+console.log('routes that open anyway');
+t('a run\'s question opens on the board\'s page with the board off', opensAnyway('tasks', 'waiting'));
+t('so do the workflows', opensAnyway('tasks', 'workflows'));
+t('and a kept image-candidates card\'s landing', opensAnyway('library', 'candidates'));
+t('the board itself does not', !opensAnyway('tasks', null) && !opensAnyway('tasks', 'actionable'));
+t('every entry is view/sub', OPENS_ANYWAY.every((r) => /^[a-z]+\/[a-z]+$/.test(r)));
 
 console.log('banners');
 const lib = banner(rows, 'library');
