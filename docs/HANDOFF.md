@@ -42,9 +42,9 @@ byte in 4 of 4 real edits. Open:
   a second one in a row tells it to report that the edit did not take: a
   needless retry, then a false "it did not take". A miss only loses the
   safety net.
-- **Everything was measured on the one picnic scene.** C's and D's exact
-  outside holds anywhere; the landing rates and D's seams need a second
-  scene.
+- **Everything was measured on the one picnic scene.** D's exact outside
+  holds anywhere, and C's at the edit canvas (§4); the landing rates and
+  D's seams need a second scene.
 - **Seen in #429's live check, not caused by the mask:** after an edit, the
   local model copied the result over the original picture in 3 of 4 chats,
   and once `fs_write`'d a path string into it. #429's edit result now tells
