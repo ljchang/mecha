@@ -16,7 +16,7 @@ llama-server holds **one model per process**. So:
 
 ```
 :8080   qwen3.6-35b-a3b   chat/agent    mecha's [providers.local], mecha-graph's extractor
-:8081   an embedding model              mecha-graph's embed + retrieval — on demand once installed (DOCUMENT-EXTRACTION-DESIGN.md §7)
+:8081   an embedding model              mecha-graph's embed + retrieval — on demand since 2026-09-29 (DOCUMENT-EXTRACTION-DESIGN.md §7)
 :8085   paddleocr-vl-1.6  document OCR  mecha's document_read — on demand (§Document OCR)
 ```
 
@@ -372,12 +372,14 @@ machine from starting is one people turn off.
   `~/.local/bin/llama-server.prev` — a rollback has to be a file you restore,
   not a commit you would have to rebuild under pressure.
 
-  **Replace the stub with `mv`, never `cp`.** Both units — `llama-local`
-  (:8080) and `llama-embed` (:8081) — run the same binary path, so stopping
-  one still leaves the file busy and `cp` fails `ETXTBSY`. A rename swaps the
-  directory entry and leaves the running process's inode alive, so the
-  embedding server keeps serving old code until its own restart rather than
-  being taken down for an unrelated upgrade.
+  **Replace the stub with `mv`, never `cp`.** Every llama-server here —
+  `llama-local` (:8080) and the on-demand backends behind :8081 and :8085 —
+  runs the same binary path, so while any one is up the file is busy and
+  `cp` fails `ETXTBSY`. A rename swaps the directory entry and leaves each
+  running process's inode alive, so a server that is up keeps serving old
+  code until it next stops, rather than being taken down for an unrelated
+  upgrade. The on-demand ones pick up the new binary at their next cold
+  start, after at most ten idle minutes.
 
   Measured on the 2026-08-29 jump, `a4ce259` → `c841aee` (674 commits): all six
   sampling flags plus `--reasoning-budget`, `--spec-type`, `-cram` and
@@ -440,8 +442,9 @@ machine from starting is one people turn off.
 ## Document OCR — on demand, behind a socket
 
 `:8085` is PaddleOCR-VL 1.6 for `document_read` and `mecha document`
-(`DOCUMENT-EXTRACTION-DESIGN.md`), and unlike every server above it **holds
-no memory while unused** — the owner's ruling of 2026-09-29. systemd owns the
+(`DOCUMENT-EXTRACTION-DESIGN.md`), and — like the embeddings server on :8081
+since the same day, and unlike the chat router — it **holds no memory while
+unused**: the owner's ruling of 2026-09-29. systemd owns the
 port (`llama-ocr.socket`, enabled at boot); the first connection starts
 `llama-ocr-proxy.service` (`systemd-socket-proxyd`), which requires
 `llama-ocr.service` — the llama-server on `127.0.0.1:18085` — and the proxy
