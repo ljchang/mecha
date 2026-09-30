@@ -277,7 +277,10 @@
     try {
       const res = await fetch(authoringUrl(token));
       if (!res.ok) throw new Error((await res.text()).trim());
-      authoring = await res.json();
+      const lists = await res.json();
+      // Cancelled while the lists were in flight: nothing left to update.
+      if (!making) return;
+      authoring = lists;
       making.character = keptCharacter(making.character, authoring.characters);
     } catch (e) {
       error = String(e?.message ?? e);
