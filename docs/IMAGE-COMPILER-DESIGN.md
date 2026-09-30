@@ -131,6 +131,14 @@ The rules, each a measurement:
   ceiling does not bound them; `MAX_EXTRAS` is four, unmeasured beyond. They
   are read by the named-character guard too: "John waving" as an extra is
   John drawn from words.
+- **A cast name the library does not hold is drawn as an extra** (owner,
+  2026-09-30: a named character not in the library "blocks image generation
+  when it shouldn't"). `imagelib::demote_unknown` moves it, with its
+  `wearing` and `doing`, into the extras before compiling, and the result
+  says so. Only a name with no trace moves: a candidate, or an entry that did
+  not load, stays in the cast and gets its own refusal, because drawing a
+  stranger in its place is the substitution the cast exists to prevent. A
+  persona chat's form of the tool keeps refusing an unknown name.
 - **The style's text is appended verbatim**, never paraphrased.
 - **`cast` and `reference_images` are exclusive in v1.** ComfyUI's encoder
   takes one reference resolution per call, so an edit canvas at 1024² and
