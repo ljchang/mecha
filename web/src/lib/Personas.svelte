@@ -676,10 +676,10 @@
            needs the way back. -->
       {#if key || editing}
         {@render avatar(chosen, 32)}
+        <!-- The name and the AI tag, nothing more (owner, 2026-09-30).
+             Disclosure is the harness's, not the persona's (§12.1). -->
         <div class="who">
-          <span class="pname">{chosen.display}</span>
-          <!-- Disclosure is the harness's, not the persona's (§12.1). -->
-          <span class="meta"><span class="ai">AI</span>{#if relationshipLabel(chosen)} · {relationshipLabel(chosen)}{/if} · v{chosen.version}</span>
+          <span class="pname">{chosen.display} <span class="ai">AI</span></span>
         </div>
       {:else}
         <div class="grow"></div>
@@ -1085,7 +1085,6 @@
   .grow { flex: 1; }
   .who { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .dtitle { font-family: var(--mono); font-size: 13px; color: var(--accent-400); overflow-wrap: anywhere; }
-  .meta { font-family: var(--mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* Muted, not amber: amber is the taint chip's (Chat.svelte's rule), and
      "this is an AI" is not a security posture. */
   .ai { color: var(--text-muted); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 0 5px; margin-right: 2px; }
@@ -1193,4 +1192,5 @@
   .dots i:nth-child(3) { animation-delay: 0.4s; }
   @keyframes blink { 0%, 80%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
   @media (prefers-reduced-motion: reduce) { .dots i { animation: none; opacity: 0.7; } }
+  .pname .ai { font-family: var(--mono); font-size: 10px; font-weight: 400; line-height: 1.4; }
 </style>
