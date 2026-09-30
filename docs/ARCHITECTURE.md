@@ -8102,9 +8102,12 @@ in five different ways. The design and its open steps are
   `[image]` table is shown with its fix (`state` converts the arm's `off`).
   A part has no switch, so its own `off` (`[documents] ocr = false`) is the
   owner's no and stays. Step 0's arms returned `Off` for both, harmless
-  until step 2 hid what read `Off`; an arm that assumed its parent's table
-  was present because an off parent blocked it (`ocr`) had to learn the
-  missing-table case when the parent became `Unready` instead.
+  until step 2 hid what read `Off`. **Nothing standing on an unready need is
+  `On`**: an unready parent or requirement blocks nothing, so without that
+  rule `ocr` read on under a `document_read` that `[tools]` withheld, and the
+  library under an `[image]`-less `image = true` — rows on with no tool to
+  reach them, the #428 invariant broken by a need that stopped blocking
+  (review of #449). `state` makes such a row `Unready`, naming the need.
 - **No network, ever.** OCR and embeddings are socket-activated and the router
   loads whatever a request names, so a reading that probed would turn a page
   load into a way to fill memory. Every predicate `own_state` reaches is a pure
@@ -8219,8 +8222,14 @@ in five different ways. The design and its open steps are
   open silently. **A queue card with anything waiting stays** whatever its
   switch says, marked off with its command: the front door's drain fills its
   store with the bool off. A link to a hidden view lands on Home with one
-  line; an unready view keeps its tab, with a mark, and a banner naming the
-  first switched-on need that is not ready. Settings → Features lists every
+  line — except the routes in `OPENS_ANYWAY`: a core pane inside a
+  feature's view (a run's question and the workflows, on the board's page)
+  and the landing of a queue card kept because something waits. Home keeps
+  those cards whatever the switch says, and a redirect would keep the card
+  and refuse the tap; `every_place_home_lands_opens_whatever_its_view_s_switch_says`
+  holds Home's destinations to the list (review of #449). An unready view
+  keeps its tab, with a mark, and a banner naming the first switched-on need
+  that is not ready. Settings → Features lists every
   row with its command and runs none of them (design §8). No route changed
   in this step — a stale page still works, and the guards are step 3's.
 - **An environment may only narrow.** `trial_env::config_at` refuses an

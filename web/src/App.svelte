@@ -11,7 +11,7 @@
   import Graph from './lib/Graph.svelte';
   import Settings from './lib/Settings.svelte';
   import { features, loadFeatures } from './lib/features.svelte.js';
-  import { VIEW_FEATURE, isShown, banner, hiddenLine } from './lib/features.js';
+  import { VIEW_FEATURE, isShown, banner, hiddenLine, opensAnyway } from './lib/features.js';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
   // A hash may carry a sub-view after a slash (#review/frontdoor), which the
@@ -102,7 +102,7 @@
   let hiddenNotice = $state(null);
   $effect(() => {
     const f = VIEW_FEATURE[view];
-    if (f && !isShown(features.rows, f)) {
+    if (f && !isShown(features.rows, f) && !opensAnyway(view, route.sub)) {
       hiddenNotice = hiddenLine(features.rows, f);
       navigate('home', { replace: true });
     } else if (view !== 'home') {
@@ -113,6 +113,12 @@
   // Switched on and not working yet, or unreadable: the view stays, with
   // the reason and the fix above it — never hidden, never silent.
   const viewBanner = $derived(banner(features.rows, VIEW_FEATURE[view]));
+  // A core pane opened inside a hidden feature's view (a run's question on
+  // the board's page): it opens, and says the rest of the page is off.
+  const openedHidden = $derived.by(() => {
+    const f = VIEW_FEATURE[view];
+    return f && !isShown(features.rows, f) ? hiddenLine(features.rows, f) : null;
+  });
 
   $effect(() => {
     const onNav = () => {
@@ -140,6 +146,10 @@
       <div class="featurebar">
         <span>{hiddenNotice.text}{#if hiddenNotice.next}{' — '}<code>{hiddenNotice.next}</code>{/if}</span>
         <button class="dismiss" aria-label="dismiss" onclick={() => (hiddenNotice = null)}>×</button>
+      </div>
+    {:else if openedHidden}
+      <div class="featurebar">
+        <span>{openedHidden.text}{#if openedHidden.next}{' — '}<code>{openedHidden.next}</code>{/if}</span>
       </div>
     {:else if viewBanner}
       <div class="featurebar warn">

@@ -174,6 +174,65 @@ mod tests {
         }
     }
 
+    /// Home keeps the Questions card, the workflows line and a queue's card
+    /// while anything waits, whatever a switch says — so each place they
+    /// land must open even when its view's feature is hidden, or the tap
+    /// bounces back to Home and the waiting thing has no door (review of
+    /// #449). Every `view/sub` destination Home names inside a feature's
+    /// view is in `OPENS_ANYWAY`.
+    #[test]
+    fn every_place_home_lands_opens_whatever_its_view_s_switch_says() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/src/lib");
+        let js = std::fs::read_to_string(root.join("features.js")).unwrap();
+        let home = std::fs::read_to_string(root.join("Home.svelte")).unwrap();
+        let line = js
+            .lines()
+            .find(|l| l.starts_with("export const OPENS_ANYWAY = ["))
+            .expect("OPENS_ANYWAY is one line in features.js");
+        let quoted = |text: &str| -> Vec<String> {
+            text.split('\'')
+                .skip(1)
+                .step_by(2)
+                .map(String::from)
+                .collect()
+        };
+        let opens = quoted(line);
+        let views: Vec<String> = {
+            let start = js.find("export const VIEW_FEATURE = {").unwrap();
+            let block = &js[start..start + js[start..].find("};").unwrap()];
+            block
+                .lines()
+                .skip(1)
+                .filter_map(|l| l.trim().split_once(':').map(|(k, _)| k.to_string()))
+                .collect()
+        };
+        // Every `'view/sub'` literal, read at each quote on its own: Home's
+        // comments carry apostrophes, so quotes do not pair across the file.
+        let lower = |t: &str| !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase());
+        let landings: Vec<String> = home
+            .match_indices('\'')
+            .filter_map(|(i, _)| {
+                let rest = &home[i + 1..];
+                let lit = &rest[..rest.find('\'')?];
+                let (v, sub) = lit.split_once('/')?;
+                (lower(v) && lower(sub)).then(|| lit.to_string())
+            })
+            .collect();
+        assert!(
+            landings.iter().any(|l| l == "tasks/waiting"),
+            "the Questions card's landing was not found: {landings:?}"
+        );
+        for l in &landings {
+            let (view, _) = l.split_once('/').unwrap();
+            if views.iter().any(|v| v == view) {
+                assert!(
+                    opens.contains(l),
+                    "Home lands on `{l}`, inside a feature's view, and OPENS_ANYWAY does not list it"
+                );
+            }
+        }
+    }
+
     /// `/api/features` opens no socket (FEATURES-DESIGN.md "How to know it
     /// works"). Every address a switched-on feature names points at a
     /// listener here, and the listener must see no connection: a page load
