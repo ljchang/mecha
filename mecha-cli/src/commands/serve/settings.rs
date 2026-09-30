@@ -219,8 +219,10 @@ pub async fn charter_save(State(_state): St, Json(body): Json<CharterSave>) -> R
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             format!(
-                "{} bytes is not a charter — the whole rendered budget is {} characters\n",
+                "{} bytes is not a charter — a charter file is capped at {} bytes (its rendered \
+                 budget is {} characters)\n",
                 raw.len(),
+                MAX_CHARTER_BYTES,
                 mecha_core::charter::CHARTER_CHAR_BUDGET
             ),
         )
