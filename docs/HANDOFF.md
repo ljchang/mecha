@@ -22,6 +22,23 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-30 — region-targeted edits: researched and measured, not built.**
+`IMAGE-REGION-EDIT-RESEARCH.md` is the authority. The owner wants the Edit
+button to open a modal where areas are painted and annotated. Open:
+
+- **The owner's decision (§6): which graph backs a painted area.** C, a
+  latent noise mask plus a composite in mecha, was exact and seamless and
+  landed every local edit. It is ComfyUI's graph today, and on
+  stable-diffusion.cpp it would need `mask_image`, unverified with 2.1
+  edits. D, crop-edit-paste, is backend-free and landed the pose edit, but
+  left seams where its edge crossed a person.
+- **C′, the next measurement:** C with the region greyed out of the
+  reference, about 12 images on the pose edit plus a swap check. It aims at
+  C's one weakness, under-editing a pose (n = 4).
+- **Everything was measured on the one picnic scene.** C's and D's exact
+  outside holds anywhere; the landing rates and D's seams need a second
+  scene.
+
 **2026-09-29 — PDFs as a tool (#404), a layout stage for tables (#406),
 model servers on demand, and the persona design (#403, mecha-graph #26):
 merged and installed.** What shipped, and the measurements, are in HISTORY
