@@ -3,7 +3,7 @@
   import { apiFetch as fetch } from './api.js';
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
-    taintLabel, safetyLine, doseLine, authoringUrl, personaName, OWNER_FILES,
+    taintLabel, safetyLine, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -107,6 +107,7 @@
       token = (await res.json()).token;
       sheet = false;
       await load();
+      await rereadAuthoring();
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {
@@ -121,6 +122,7 @@
     // A locked persona's chat closes with the lock: the lock hides (§8.3).
     if (chosen?.locked) back();
     await load();
+    await rereadAuthoring();
     if (t) {
       fetch('/api/library/relock', {
         method: 'POST',
@@ -262,6 +264,21 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       authoring = await res.json();
       making = { name: '', display: '', relationships: [], character: '', groups: [], locked: false };
+    } catch (e) {
+      error = String(e?.message ?? e);
+    }
+  }
+
+  // The form's lists follow the lock: `authoring` was read when the form
+  // opened, so an unlock after that left locked characters out of the
+  // portrait list, and a relock left them in.
+  async function rereadAuthoring() {
+    if (!making) return;
+    try {
+      const res = await fetch(authoringUrl(token));
+      if (!res.ok) throw new Error((await res.text()).trim());
+      authoring = await res.json();
+      making.character = keptCharacter(making.character, authoring.characters);
     } catch (e) {
       error = String(e?.message ?? e);
     }

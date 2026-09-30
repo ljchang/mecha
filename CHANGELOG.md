@@ -199,6 +199,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Unlocking on the new-persona form now offers locked characters as
+  portraits.** The form read its character list once, when it opened, so
+  the lock button refreshed the persona grid and left the portrait list as
+  it was; it now re-reads the list on every lock change, and a relock drops
+  a locked portrait the form had already chosen.
 - **The document cache is private all the way down.** `~/.mecha/documents/`
   and every directory under it are now created owner-only (0700), and every
   file in it 0600. Before, only the per-file entry was, so the cache root and each entry's `ocr/`
