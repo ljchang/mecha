@@ -178,6 +178,18 @@ async fn cases_for(manifest: &Manifest) -> Result<Vec<mecha_core::eval::EvalCase
         ordered
     };
     anyhow::ensure!(!cases.is_empty(), "the manifest names no tasks");
+    // A trial is a child `mecha run` given a prompt, which cannot carry
+    // pixels: a task that attaches pictures would be graded on a prompt
+    // naming a picture its model was never shown. Refused here, where the
+    // design is read, not at its first trial (review of #450) — as `run_one`
+    // refuses a multi-turn case.
+    if let Some(case) = cases.iter().find(|c| !c.attach.is_empty()) {
+        anyhow::bail!(
+            "task `{}` attaches pictures, and `exp` runs each trial as a child `mecha run`, \
+             which cannot put them on its turn — measure it with `mecha eval`",
+            case.id
+        );
+    }
     for (id, fixture) in &manifest.tasks.mismatch_cases {
         let case = cases
             .iter()
@@ -3239,6 +3251,7 @@ mod tests {
             concat!(
                 "{\"id\":\"b\",\"prompt\":\"x\",\"expect\":{\"contains\":[\"x\"]},\"tags\":[\"t\"]}\n",
                 "{\"id\":\"a\",\"prompt\":\"y\",\"expect\":{\"contains\":[\"y\"]},\"tags\":[\"u\"]}\n",
+                "{\"id\":\"c\",\"prompt\":\"z\",\"expect\":{\"contains\":[\"z\"]},\"tags\":[\"pic\"],\"attach\":[\"inbox/p.png\"]}\n",
             ),
         )
         .unwrap();
@@ -3284,6 +3297,12 @@ rationale = "r"
         m3.tasks.ids.clear();
         m3.tasks.tags = vec!["t".into()];
         assert_eq!(cases_for(&m3).await.unwrap().len(), 1, "tags narrow too");
+        // A task that attaches pictures cannot be a trial: refused by name
+        // at design time, never run on a prompt naming an unseen picture.
+        let mut m4 = m3.clone();
+        m4.tasks.tags = vec!["pic".into()];
+        let e = cases_for(&m4).await.unwrap_err().to_string();
+        assert!(e.contains("`c` attaches pictures"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

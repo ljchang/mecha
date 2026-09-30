@@ -118,6 +118,10 @@ impl EvalCase {
     /// Every picture this case attaches, read from `fixture` exactly as the
     /// run will read it: an error naming the first that is missing or does not
     /// decode, so a moved fixture fails the run rather than a case's grade.
+    ///
+    /// A sandboxed case runs against a staged copy, not `fixture`; checking
+    /// the fixture holds only because `stage_workspace` copies every regular
+    /// file. A filter added there would make this check a false green.
     pub fn check_attachments(&self, fixture: &Path) -> Result<()> {
         for path in &self.attach {
             let shown = crate::image::attached_images(fixture, std::slice::from_ref(path));
@@ -130,6 +134,34 @@ impl EvalCase {
         }
         Ok(())
     }
+}
+
+/// The gate before a run whose cases attach pictures: the model under test
+/// must be able to see — or every such case is graded on a prompt naming a
+/// picture it was never shown — and each picture must be readable from the
+/// fixture as the run will read it. The judge's reason: a case set that
+/// cannot be graded fails in the first second, not after an hour.
+pub fn check_attached(cases: &[EvalCase], fixture: &Path, sees: bool) -> Result<()> {
+    let attaching: Vec<&str> = cases
+        .iter()
+        .filter(|c| !c.attach.is_empty())
+        .map(|c| c.id.as_str())
+        .collect();
+    if attaching.is_empty() {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        sees,
+        "{} case(s) attach pictures ({}), but the model under test cannot see \
+         (`vision` is off for its provider) — they would be graded on a prompt \
+         naming a picture it was never shown",
+        attaching.len(),
+        attaching.join(", ")
+    );
+    for case in cases {
+        case.check_attachments(fixture)?;
+    }
+    Ok(())
 }
 
 /// Run a case's `verify` command in its workspace and grade the exit code.
@@ -1503,6 +1535,20 @@ mod tests {
             .to_string();
         assert!(e.contains("missing.png"), "{e}");
         assert!(with(&["inbox/broken.png"]).check_attachments(&dir).is_err());
+
+        // The run's gate: a blind model is refused by the cases that need
+        // sight, and only when some case does.
+        let plain = case(Expect::default());
+        let pic = EvalCase {
+            id: "pic".into(),
+            ..with(&["inbox/ok.png"])
+        };
+        assert!(check_attached(std::slice::from_ref(&plain), &dir, false).is_ok());
+        let e = check_attached(&[plain.clone(), pic.clone()], &dir, false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("cannot see") && e.contains("pic"), "{e}");
+        assert!(check_attached(&[plain, pic], &dir, true).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 
