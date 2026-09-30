@@ -1722,7 +1722,13 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
                     },
                 )),
             Section::new("Model and tools")
-                .field(Field::new("model", "Model", text(128, "the default model")))
+                // Read by nothing yet: persona chats follow the model the
+                // chat's chip (and every other surface) has picked.
+                .field(
+                    Field::new("model", "Model", text(128, "the model the chip picks"))
+                        .help("Not built yet: saved now; chats use the model picked in the chat.")
+                        .unbuilt(),
+                )
                 .field(
                     Field::new(
                         "tools.allow",
