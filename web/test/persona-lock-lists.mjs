@@ -74,13 +74,16 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
      let adding = null;
      const TEMPLATE = (name) => '# ' + name;
      const back = () => {};
-     const load = async () => {};
+     // The grid's read takes a turn, as a real round trip does, so a list
+     // cleared only after it would be seen on screen first.
+     let loads = 0;
+     const load = async () => { loads++; await new Promise((r) => setImmediate(r)); };
      ${fns}
      return {
        startMaking, unlock, relock, addNew,
        add: (a) => { adding = a; },
        close: () => { making = null; },
-       get: () => ({ token, authoring, making, error }),
+       get: () => ({ token, authoring, making, error, loads }),
      };`,
   )(fetch, authoringUrl, keptCharacter, personaName, {
     unlocked, character, formOpen, lists: formOpen ? LISTS(unlocked) : null,
@@ -197,6 +200,7 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
   const held = new Promise((r) => (release = r));
   const p = page({ unlocked: true, character: 'priya', gate: (url) => (url.includes('unlock=') ? null : held) });
   const relocking = p.relock();
+  assert.deepEqual(p.get().authoring.characters, [], 'the unlocked list outlived the relock press');
   for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r));
   assert.deepEqual(p.get().authoring.characters, [], 'the unlocked list stayed up while the relock read');
   assert.equal(p.get().making.character, 'priya', 'the choice waits for the answer');
