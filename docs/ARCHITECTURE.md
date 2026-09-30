@@ -1029,6 +1029,13 @@ module.
     rebuilt when the binding moves.
   - A locked persona and its chats answer 404 without the library's unlock
     token. All `/api/persona*` responses are `no-store`.
+  - **Pictures and edit masks go through the same door**:
+    `GET /api/persona-chat/{key}/file` and `POST …/upload` find the chat's
+    workspace behind the lock (`PersonaChats::workspace_of`), then share the
+    assistant's jail code (`files::serve`, `files::store`). The assistant's
+    `/api/chat/{key}/file` cannot reach a persona chat, because its session
+    map is not this one. A locked persona's picture is drawn with no link to
+    open it in a tab: that would put the unlock token in browser history.
   - **A persona agent gets no hooks, by design.** `build_subagent` attaches the
     parent's hooks, because otherwise delegating would be the way around a
     `pre_tool` policy. A persona chat is not a delegation out of the assistant.

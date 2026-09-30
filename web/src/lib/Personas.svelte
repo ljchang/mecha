@@ -4,12 +4,15 @@
   import TomlForm from './TomlForm.svelte';
   import MdForm from './MdForm.svelte';
   import ModelChip from './ModelChip.svelte';
+  import EditModal from './EditModal.svelte';
+  import { composeEditMessage, maskName } from './image-edit.js';
+  import { pictureOf, repeatedPictures } from './picture.js';
   import { repairComments, changesOf } from './tomlform.js';
   import { isDirty as mdDirty } from './mdform.js';
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
     taintLabel, safetyLine, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
-    toolStatus, waitingLine, withWorking,
+    toolStatus, waitingLine, withWorking, fileUrl, uploadUrl,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -84,6 +87,55 @@
   let scroller = $state(null);
 
   const personas = $derived(data?.personas ?? []);
+
+  // A picture the persona drew (§8.6), under its row as in the assistant's
+  // chat, with the same Edit button and modal. A locked persona's picture
+  // carries the token and no link: opening it in a tab would write the token
+  // into the browser's history, which outlives the unlock. An open persona's
+  // needs neither, so its URL is safe to open full size.
+  const repeats = $derived(repeatedPictures(run.entries));
+  const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
+
+  // The Edit modal (EditModal.svelte): anything already typed becomes its
+  // instruction. Not `editing`, which is the persona-file editor's.
+  let imageEdit = $state(null);
+  function editImage(path) {
+    imageEdit = { path, src: pictureUrl(path), initial: input.trim(), busy: false, error: null };
+  }
+
+  // The mask goes up into this chat's `inbox/` and is named in the message,
+  // never attached — it is for `image_generate`, not for the persona to look
+  // at (image-edit.js). The words then go out through `send`, like anything
+  // typed, so a live run is steered just as a typed message steers it.
+  async function sendEdit({ text, mask }) {
+    const chatKey = key;
+    const edit = imageEdit;
+    if (!edit || !chatKey) return;
+    edit.busy = true;
+    edit.error = null;
+    try {
+      let maskPath = null;
+      if (mask) {
+        const res = await fetch(uploadUrl(chatKey, maskName(edit.path), token), { method: 'POST', body: mask });
+        if (!res.ok) throw new Error((await res.text()).trim());
+        maskPath = (await res.json()).path;
+      }
+      if (chatKey !== key) return;
+      const message = composeEditMessage(edit.path, maskPath, text);
+      if (!message) {
+        edit.busy = false; // never a modal that no button can close
+        return;
+      }
+      input = message;
+      imageEdit = null;
+      await send();
+    } catch (err) {
+      if (imageEdit === edit) {
+        edit.busy = false;
+        edit.error = `The mask could not be uploaded: ${err?.message ?? err}. Nothing was sent.`;
+      }
+    }
+  }
 
   async function load() {
     error = '';
@@ -277,6 +329,8 @@
     close();
     key = k;
     run = emptyRun();
+    // A modal over the last chat's picture must not send into this one.
+    imageEdit = null;
     // Or the previous chat's resources show for a round trip (review of #418).
     safety = null;
     crisisShown = false;
@@ -1010,9 +1064,22 @@
             <div class="answer">{entry.text}</div>
           {:else if entry.kind === 'tool'}
             {@const status = toolStatus(run.entries, i)}
+            {@const picture = pictureOf(entry)}
             <div class="tool" class:err={status === 'failed'}>
               {entry.name}{status === 'failed' ? ' — failed' : status === 'retried' ? ' — retried' : ''}
             </div>
+            <!-- The picture is the answer, not a detail of the call: drawn
+                 once, from this chat's own workspace (`persona_chat::download`). -->
+            {#if picture && !repeats.has(i)}
+              {#if chosen.locked}
+                <span class="genimg"><img src={pictureUrl(picture)} alt="generated" loading="lazy" /></span>
+              {:else}
+                <a class="genimg" href={pictureUrl(picture)} target="_blank" rel="noopener">
+                  <img src={pictureUrl(picture)} alt="generated" loading="lazy" />
+                </a>
+              {/if}
+              <button class="genedit" onclick={() => editImage(picture)}>Edit</button>
+            {/if}
           {:else if entry.kind === 'notice'}
             <div class="notice">{entry.text}</div>
           {:else if entry.kind === 'crisis'}
@@ -1097,6 +1164,18 @@
   {/if}
 </div>
 
+{#if imageEdit}
+  <EditModal
+    src={imageEdit.src}
+    path={imageEdit.path}
+    initial={imageEdit.initial}
+    busy={imageEdit.busy}
+    error={imageEdit.error}
+    onsend={sendEdit}
+    onclose={() => (imageEdit = null)}
+  />
+{/if}
+
 <style>
   .page { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
   .head { display: flex; align-items: center; gap: 8px; padding: 12px var(--gutter) 0; padding-right: 56px; min-height: 44px; }
@@ -1153,6 +1232,14 @@
   .answer { max-width: 92%; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
   .tool { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
   .tool.err { color: var(--hazard); }
+  /* As the assistant's chat draws a picture and its Edit button. */
+  .genimg { display: block; max-width: min(100%, 512px); }
+  .genimg img { display: block; width: 100%; height: auto; border-radius: 8px; }
+  .genedit {
+    align-self: flex-start; margin-top: -4px; padding: 4px 12px;
+    font-family: var(--mono); font-size: 12px; color: var(--accent-400);
+    background: none; border: 1px solid var(--accent-400); border-radius: 999px; cursor: pointer;
+  }
   .notice { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
   .composer { display: flex; gap: 8px; align-items: flex-end; padding: 10px var(--gutter) 14px; border-top: 1px solid var(--accent-900); }
   .barnote { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
