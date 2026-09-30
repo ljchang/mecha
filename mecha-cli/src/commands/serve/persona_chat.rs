@@ -1345,6 +1345,18 @@ impl PersonaChats {
         }
         if pause {
             ps.crisis_paused_at = Some(std::time::Instant::now());
+            // No run starts to arm it, so armed here: a picture the paused
+            // turn carried is private now, not at the next run — and
+            // checkpointed, or a resume would read the chat clean (review
+            // of #438). Only a hit in the goal reaches this with pixels; one
+            // in the message pauses early, before any are read.
+            let was = conversation.taint;
+            conversation.taint.arm_for_content(&conversation.messages);
+            if conversation.taint != was {
+                if let Err(e) = ps.session.append(&Record::Taint(conversation.taint)) {
+                    tracing::warn!("a paused persona chat's taint was not recorded: {e:#}");
+                }
+            }
             let taint = conversation.taint;
             ps.conversation = Some(conversation);
             ps.crisis_shown = true;
@@ -3524,6 +3536,89 @@ mod tests {
         assert_eq!(seen[0].messages.len(), 1, "the paused turn was folded in");
         let counted = std::fs::read_to_string(w.store().join("safety.jsonl")).unwrap();
         assert!(counted.contains("\"paused\":false"), "{counted}");
+    }
+
+    /// A pause starts no run, so nothing else arms the chat for a picture
+    /// the paused turn carried (review of #438): the chip, the pause's
+    /// `Done`, and the session file a resume reads all say private. Reached
+    /// only through a goal — a hit in the message pauses before any pixels
+    /// are read.
+    #[tokio::test]
+    async fn a_picture_on_a_paused_turn_arms_the_chat() {
+        let w = world();
+        w.sees.store(true, std::sync::atomic::Ordering::SeqCst);
+        let opened = w
+            .personas()
+            .open(
+                &w.chat,
+                &w.library,
+                "mara",
+                None,
+                Some("honestly I want to die".into()),
+            )
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let ws = w
+            .personas()
+            .workspace_of(&w.library, &key, None)
+            .await
+            .unwrap();
+        std::fs::create_dir_all(ws.join("inbox")).unwrap();
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 4)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(ws.join("inbox/photo.png"), &png).unwrap();
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        let answered = w
+            .personas()
+            .send_with(
+                &w.chat,
+                &w.library,
+                &key,
+                "Look\n\nAttached file at inbox/photo.png",
+                None,
+                None,
+                vec!["inbox/photo.png".into()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(answered["paused"], true, "{answered}");
+        assert!(w.seen.lock().unwrap().is_empty(), "the persona answered");
+        let private = next(&mut rx, |ev| match ev {
+            WireEvent::Done { taint_private, .. } => Some(*taint_private),
+            _ => None,
+        })
+        .await;
+        assert!(private, "the pause's Done read the chat clean");
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(t["taint"]["private"], true, "{t}");
+
+        // What a resume after a restart would read.
+        let dir = Store::load(&w.store()).sessions_dir("mara");
+        let file = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|x| x == "jsonl"))
+            .expect("the chat's transcript");
+        let (_, loaded) = Session::load(&file).unwrap();
+        assert!(
+            loaded
+                .messages
+                .iter()
+                .any(|m| m.content.iter().any(|b| matches!(b, Block::Image { .. }))),
+            "the picture is in the record"
+        );
+        assert!(loaded.taint.private, "the record reads the chat clean");
     }
 
     /// A crisis message typed while the persona is answering goes through

@@ -6,7 +6,7 @@
   import ModelChip from './ModelChip.svelte';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, maskName } from './image-edit.js';
-  import { pictureOf, repeatedPictures } from './picture.js';
+  import { pictureOf, repeatedPictures, turnsWithoutPicture } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { repairComments, changesOf } from './tomlform.js';
   import { isDirty as mdDirty } from './mdform.js';
@@ -95,6 +95,7 @@
   // into the browser's history, which outlives the unlock. An open persona's
   // needs neither, so its URL is safe to open full size.
   const repeats = $derived(repeatedPictures(run.entries));
+  const noPicture = $derived(turnsWithoutPicture(run.entries, run.running));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
 
   // The Edit modal (EditModal.svelte): anything already typed becomes its
@@ -1202,6 +1203,11 @@
                 <button class="abtn" onclick={() => (dismissed = new Set([...dismissed, entry.id]))}>Close</button>
               </div>
             {/if}
+          {/if}
+          {#if noPicture.has(i)}
+            <!-- The page's word, from the tool rows, not the persona's: a
+                 reply can say "here you go" over a call that drew nothing. -->
+            <div class="notice">No picture was made in this reply.</div>
           {/if}
         {/each}
         {#if run.streaming}

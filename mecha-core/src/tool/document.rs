@@ -47,7 +47,7 @@ impl Tool for DocumentRead {
     /// The cache it writes is keyed by the document's own bytes, so a
     /// persona can only ever read back what it was handed. Its results are
     /// third-party content, so `answers = "files"` withholds it like the web
-    /// tools (`registry_for`), and §10.6's warning about it beside
+    /// tools (`registry_as`), and §10.6's warning about it beside
     /// `web_search` is the owner's per-persona switch.
     fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
         Some(self)
