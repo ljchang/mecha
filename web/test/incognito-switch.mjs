@@ -33,6 +33,7 @@ function page(start) {
     `'use strict';
      let { key, draft, attachments, incognito, gone } = start;
      let todo = ['[~] plan the thing'];
+     let editing = { path: 'images/a.png', initial: 'KUMQUAT' };
      let goneNote = 'incognito is unavailable: no local model';
      let entries = ['x'], streaming = 'y', usage = 1, taint = 1;
      let affect = 1, valence = 1, sawAffectThisRun = true;
@@ -45,7 +46,7 @@ function page(start) {
      let hungUp = 0;
      const endVoice = () => hungUp++;
      ${switchToSrc}
-     return { switchTo, dropped, call: () => ({ hungUp, vEntries }), now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom }) };`,
+     return { switchTo, dropped, call: () => ({ hungUp, vEntries }), now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom, editing }) };`,
   )(start);
 }
 
@@ -69,6 +70,7 @@ function is(actual, expected, what) {
   const s = p.now();
   is([s.key, s.draft, s.attachments, s.incognito], ['main', '', [], false], 'leaving incognito clears the composer');
   is(s.todo, [], "and the incognito chat's plan");
+  is(s.editing, null, 'and an open edit modal, with its draft and paths');
   is([s.gone, s.goneNote], [null, null], 'and the gone screen with its note');
   is(p.dropped, ['incognito-ab'], "and the audio its call buffered, by the chat's own key");
   is(p.call(), { hungUp: 1, vEntries: [] }, 'and a call still speaking into it, with its words');
@@ -94,6 +96,10 @@ function is(actual, expected, what) {
   is([s.partialRun, s.liveFrom], [false, 0], "and what the catch-up knew of the last chat's run is gone");
   is(p.dropped, [], 'and keeps its call audio for a reconnect');
   is(p.call().hungUp, 0, 'and its call, which never crossed the incognito line');
+  // But the edit modal is never portable: it holds a path in the chat it was
+  // opened in, and sent from the next one it would name that picture in the
+  // wrong transcript (review of #429).
+  is(s.editing, null, 'while an open edit modal closes on any switch');
 }
 {
   const p = page({ key: 'incognito-ab', draft: 'KUMQUAT', attachments: [], incognito: true, gone: 'ended' });
@@ -110,6 +116,7 @@ function is(actual, expected, what) {
     `'use strict';
      let key = 'incognito-ab';
      let entries = ['x'], streaming = 'y', draft = 'z', attachments = ['a'], todo = ['t'];
+     let editing = { path: 'images/a.png' };
      let usage = 1, taint = 1, affect = 1, valence = 1;
      let vEntries = [{ who: 'user', text: 'KUMQUAT' }];
      let ended = 0;
@@ -118,11 +125,12 @@ function is(actual, expected, what) {
      const dropRing = (k) => dropped.push(k);
      ${forgetSrc}
      forget();
-     return { ended, vEntries, dropped, entries };`,
+     return { ended, vEntries, dropped, entries, editing };`,
   )();
   is(s.ended, 1, 'ending an incognito chat hangs up its call');
   is(s.vEntries, [], "and clears the call's words from the overlay");
   is(s.dropped, ['incognito-ab'], 'and drops the audio it buffered');
+  is(s.editing, null, 'and closes an open edit modal');
 }
 
 // The overlay's promise describes the call, not the page: a call is bound to
