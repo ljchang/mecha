@@ -101,6 +101,7 @@ assert.equal(taintLabel({ private: true, untrusted: true }), 'private + untruste
 assert.equal(taintLabel({ private: false, untrusted: false }), '');
 assert.equal(taintLabel(null), '');
 assert.equal(safetyLine({ crisis: 'on', disclosure: true, reanchor: true, dose: true }), 'crisis detection on');
+assert.equal(safetyLine({ crisis: 'enabled' }), 'crisis detection: keywords + a model check on each message');
 assert.equal(safetyLine({ crisis: 'degraded', disclosure: true, reanchor: true, dose: true }), 'crisis detection: keywords only (the model check could not answer)');
 // A state this page does not know reads as the cautious one, never as "on".
 assert.ok(safetyLine({ crisis: 'judged-v2' }).includes('keywords only'));

@@ -195,6 +195,8 @@ export function safetyLine(safety) {
   const crisis = {
     off: 'crisis detection off',
     on: 'crisis detection on',
+    // A persona's own setting, before any chat has asked the judge.
+    enabled: 'crisis detection: keywords + a model check on each message',
   }[safety.crisis] ?? 'crisis detection: keywords only (the model check could not answer)';
   const off = ['disclosure', 'reanchor', 'dose'].filter((k) => safety[k] === false);
   // The farewell check arrives as a state, not a flag (review of #418).
