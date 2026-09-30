@@ -111,9 +111,9 @@ fn set(ids: &[String], on: bool) -> Result<()> {
 
 /// What the global configuration says about `f` right now, if it refuses:
 /// the same [`feature::refusal`] the web routes answer with. `None` when
-/// `f` is on, not guarded yet, or the configuration cannot be read — a
-/// config that does not load is the command's own error to report, in its
-/// own words, a moment later.
+/// `f` is on, not guarded yet, or the configuration cannot be read — only
+/// for wording a message ([`graph_tool_absent`]); a guard uses [`require`],
+/// which refuses on an unreadable file.
 pub fn refusal_now(f: Feature) -> Option<feature::Refusal> {
     let home = mecha_core::work::mecha_home().ok()?;
     let cfg = Config::load_global().ok()?;
@@ -125,8 +125,21 @@ pub fn refusal_now(f: Feature) -> Option<feature::Refusal> {
 /// calendar is off (not enabled in [features]) — `mecha features enable
 /// mail`"* — read from the global file, never the layered `Config` the verb
 /// then runs with, which a project could otherwise answer for the owner.
+///
+/// **An unreadable configuration refuses** — the guard cannot run, so the
+/// verb does not either. `refusal_now`'s "the verb reports it a moment
+/// later" did not hold for every caller: `imagelib` never loads a config,
+/// so a malformed file let `imagelib remove` through with `image = false`
+/// written in it (review of #451).
 pub fn require(f: Feature) -> Result<()> {
-    match refusal_now(f) {
+    let home = mecha_core::work::mecha_home()?;
+    let cfg = Config::load_global().with_context(|| {
+        format!(
+            "cannot tell whether `{}` is switched on — the global configuration did not load",
+            f.switch_owner().id()
+        )
+    })?;
+    match feature::refusal(&feature::Facts::read(&home, &cfg), f) {
         Some(r) => anyhow::bail!("{}", r.sentence()),
         None => Ok(()),
     }

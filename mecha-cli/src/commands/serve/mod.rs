@@ -1518,9 +1518,10 @@ mod tests {
 
     /// F4 end to end, for every route a switched-off feature owns: the owner
     /// gets 404 `feature_off` naming the feature and the command, and the
-    /// handler never runs. The negative is not vacuous — the same route with
-    /// nothing refused never answers `feature_off` — and core routes are
-    /// never refused whatever the gate holds.
+    /// handler never runs, and core routes are never refused whatever the
+    /// gate holds. The negative — nothing refused, every route reached — is
+    /// `the_guard_lets_every_route_through_when_nothing_is_off`, against a
+    /// router where every route answers every method.
     #[tokio::test]
     async fn an_off_feature_s_routes_answer_feature_off_and_nothing_else_does() {
         use mecha_core::feature::{Feature, Refusal};
@@ -1579,11 +1580,6 @@ mod tests {
                         format!("mecha features enable {}", f.switch_owner().id()),
                         "{path}"
                     );
-                    let (_, open) = send(test_router(), path.clone()).await;
-                    assert!(
-                        !open.contains("feature_off"),
-                        "{path} refused with nothing off"
-                    );
                     refused += 1;
                 }
                 None => {
@@ -1602,6 +1598,132 @@ mod tests {
             refused >= 40 && core >= 30,
             "{refused} refused, {core} core"
         );
+    }
+
+    /// The guard alone, over a router where every owned route answers every
+    /// method with "reached": with nothing refused, every route is reached;
+    /// with every gated feature refused, exactly the core ones are. Against
+    /// the real router a probe of the wrong method is a 405 with no body,
+    /// which cannot say `feature_off` whatever the guard does (review of
+    /// #451) — here the only thing that can answer anything else is the guard.
+    #[tokio::test]
+    async fn the_guard_lets_every_route_through_when_nothing_is_off() {
+        use mecha_core::feature::{Feature, Refusal};
+        let (_, owners) = api().finish();
+        let stub = |gate: gate::Gate| {
+            let mut r = Router::new();
+            for path in owners.0.keys() {
+                r = r.route(path, axum::routing::any(|| async { "reached" }));
+            }
+            r.layer(middleware::from_fn_with_state(
+                (Arc::new(gate), Arc::clone(&owners)),
+                gate::guard,
+            ))
+        };
+        let every_gated: Vec<Refusal> = Feature::ALL
+            .iter()
+            .filter(|f| f.gated())
+            .map(|&f| Refusal {
+                feature: f,
+                why: "off".into(),
+                fix: "enable".into(),
+            })
+            .collect();
+        let get = |app: Router, path: String| async move {
+            let response = app
+                .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        let (mut reached, mut kept) = (0, 0);
+        for (template, owner) in &owners.0 {
+            let path = concrete(template, *owner);
+            assert_eq!(
+                get(stub(gate::Gate::default()), path.clone()).await,
+                "reached",
+                "{path} refused with nothing off"
+            );
+            reached += 1;
+            if matches!(owner, gate::Owner::Core) {
+                assert_eq!(
+                    get(
+                        stub(gate::Gate::refusing(every_gated.clone())),
+                        path.clone()
+                    )
+                    .await,
+                    "reached",
+                    "core {path} refused"
+                );
+                kept += 1;
+            }
+        }
+        assert!(
+            reached >= 119 && kept >= 30,
+            "{reached} reached, {kept} core"
+        );
+    }
+
+    /// The two owners that read a capture read it decoded, as the handler
+    /// does: `%65ntities` is the graph's `entities` store and `%69ncognito-`
+    /// an incognito room. Read raw, the encoded spelling walked past a graph
+    /// that was off into a handler that decoded it and wrote the graph
+    /// (review of #451). A core store and a core key still pass.
+    #[tokio::test]
+    async fn an_encoded_capture_is_read_as_the_handler_reads_it() {
+        use mecha_core::feature::{Feature, Refusal};
+        let refuse = |f: Feature| Refusal {
+            feature: f,
+            why: "off".into(),
+            fix: format!("mecha features enable {}", f.id()),
+        };
+        let app = || {
+            test_router_gated(gate::Gate::refusing([
+                refuse(Feature::Graph),
+                refuse(Feature::Incognito),
+            ]))
+        };
+        for (method, uri, refused) in [
+            ("POST", "/api/proposals/%65ntities/x/accept", Some("graph")),
+            ("GET", "/api/proposals/%65ntities", Some("graph")),
+            ("GET", "/api/proposals/entities", Some("graph")),
+            ("GET", "/api/proposals/harness", None),
+            ("POST", "/api/chat/%69ncognito-k/send", Some("incognito")),
+            ("POST", "/api/chat/incognito-k/send", Some("incognito")),
+            ("POST", "/api/chat/web-k/send", None),
+        ] {
+            let response = app()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("Tailscale-User-Login", "owner@example.com")
+                        .header("x-mecha-request", "1")
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body = String::from_utf8_lossy(&bytes);
+            match refused {
+                Some(id) => {
+                    assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
+                    assert!(
+                        body.contains(&format!("\"feature\":\"{id}\"")),
+                        "{uri}: {body}"
+                    );
+                }
+                None => assert!(!body.contains("feature_off"), "{uri}: {body}"),
+            }
+        }
     }
 
     /// The feature guard answers only the owner. A probe without the header

@@ -312,3 +312,30 @@ fn a_switched_off_feature_s_verbs_refuse_with_one_sentence() {
         );
     }
 }
+
+/// A guard that cannot read the configuration refuses rather than letting
+/// the verb through (review of #451): `imagelib` loads no config of its own,
+/// so a malformed file would otherwise have let `imagelib remove` run with
+/// `image = false` written in it.
+#[test]
+fn an_unreadable_configuration_refuses_a_feature_s_verb() {
+    let home = Home::new("badcfg");
+    std::fs::write(
+        home.0.join("home/config.toml"),
+        "[features]\nimage = false\nthis is not toml\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_mecha"))
+        .args(["imagelib", "remove", "nobody"])
+        .current_dir(home.0.join("work"))
+        .env("MECHA_HOME", home.0.join("home"))
+        .env("HOME", home.0.join("home"))
+        .output()
+        .expect("running mecha imagelib");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(
+        err.contains("cannot tell whether `image` is switched on"),
+        "{err}"
+    );
+}
