@@ -1700,18 +1700,23 @@ pub async fn list(State(state): Web, Query(q): Query<UnlockQuery>) -> axum::resp
 }
 
 /// The name of a persona's linked character when the lock hides it from
-/// this viewer — locked, and the page not unlocked.
+/// this viewer. Fails closed: on a locked page the name is shown only for an
+/// entry that loads *and* is unlocked — `Library::load` drops a damaged
+/// entry, and "could not read it" must not read as "not locked" (#430's
+/// review found the same shape there).
 fn hidden_character<'a>(
-    p: &Persona,
-    lib: &'a mecha_core::imagelib::Library,
+    p: &'a Persona,
+    lib: &mecha_core::imagelib::Library,
     unlocked: bool,
 ) -> Option<&'a str> {
-    p.settings
-        .character
-        .as_deref()
-        .and_then(|c| lib.get(mecha_core::imagelib::Kind::Character, c))
-        .filter(|e| e.locked && !unlocked)
-        .map(|e| e.name.as_str())
+    if unlocked {
+        return None;
+    }
+    let c = p.settings.character.as_deref()?;
+    match lib.get(mecha_core::imagelib::Kind::Character, c) {
+        Some(e) if !e.locked => None,
+        _ => Some(c),
+    }
 }
 
 /// Problems as a viewer may read them: one that names a character the lock
@@ -2775,6 +2780,32 @@ mod tests {
         assert!(!locked.to_string().contains("wren"), "{locked}");
         let problems = row_of("wren", Some(&token))["problems"].to_string();
         assert!(problems.contains("`wren`"), "{problems}");
+        // A damaged entry is dropped by `Library::load`: unreadable is not
+        // unlocked, so a locked page does not name it either.
+        mecha_core::imagelib::create(
+            &lib_dir,
+            mecha_core::imagelib::NewEntry {
+                kind: mecha_core::imagelib::Kind::Character,
+                name: "ivy".into(),
+                text: "tall".into(),
+                portrait: Some(png.clone()),
+                source_seed: None,
+                origin: mecha_core::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            row_of("ivy", None)["character"],
+            "ivy",
+            "readable and unlocked: named"
+        );
+        let damaged = lib_dir.join("characters/ivy/entry.toml");
+        assert!(damaged.exists(), "{}", damaged.display());
+        std::fs::write(&damaged, "not = [toml").unwrap();
+        let row = row_of("ivy", None);
+        assert!(!row.to_string().contains("ivy"), "{row}");
+        assert_eq!(row_of("ivy", Some(&token))["character"], "ivy");
         // A save from the locked page answers with the same filtered problems.
         let files = w.personas().files(&w.library, "mara", None).unwrap();
         let saved = w
