@@ -9,7 +9,7 @@
   // first cut — the chrome repeated more often than the text did).
   import { untrack } from 'svelte';
   import './form.css';
-  import { draftOf, docOf, isDirty, isFixed, move, addSection, problems } from './mdform.js';
+  import { draftOf, docOf, isDirty, isFixed, move, addSection, problems, MAX_HEADING } from './mdform.js';
 
   let {
     doc,
@@ -25,15 +25,19 @@
   // digest, so a new doc means a new form.
   if (!draft) draft = untrack(() => draftOf(doc, fixed));
 
-  const dirty = $derived(isDirty(doc, draft, fixed));
+  const dirty = $derived(isDirty(doc, draft));
   const wrong = $derived(problems(draft, fixed));
   // Text before the sections: always there for a file without sections (a
   // motivation is mostly this), otherwise once there is some or it is asked for.
   let showBody = $state(untrack(() => Boolean(draft.body.trim()) || draft.sections.length === 0));
-  let notes = $state(new Set());
+  // Notes open now: every note the file already has, plus any the owner
+  // opened. Held here, not read off the text, so emptying a note keeps its
+  // box and the focus (review of #430).
+  const openNotes = (d) => new Set([...(d.note.trim() ? ['title'] : []), ...d.sections.filter((s) => s.note.trim()).map((s) => s.id)]);
+  let notes = $state(untrack(() => openNotes(draft)));
   let menu = $state(null);
 
-  const noteOpen = (key, value) => notes.has(key) || Boolean(value.trim());
+  const noteOpen = (key) => notes.has(key);
 
   function openNote(key) {
     notes = new Set([...notes, key]);
@@ -47,7 +51,7 @@
 
   function discard() {
     draft = draftOf(doc, fixed);
-    notes = new Set();
+    notes = openNotes(draft);
     menu = null;
   }
 
@@ -122,6 +126,7 @@
           class="tf-title"
           aria-label="Title"
           placeholder={labels.title ?? 'Title'}
+          maxlength={MAX_HEADING}
           disabled={busy}
           bind:value={draft.title}
         />
@@ -162,7 +167,7 @@
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-label="always kept"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>
             </span>
           {:else}
-            <input class="tf-heading" aria-label="Section heading" placeholder="Heading" disabled={busy} bind:value={s.heading} />
+            <input class="tf-heading" aria-label="Section heading" placeholder="Heading" maxlength={MAX_HEADING} disabled={busy} bind:value={s.heading} />
           {/if}
           <div class="tf-menuwrap">
             {@render dots(s.id, `More for ${s.heading || 'this section'}`)}

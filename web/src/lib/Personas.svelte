@@ -400,8 +400,10 @@
   }
 
   function pickFile(file) {
-    // The other files keep what was typed in them until saved or closed.
-    editing.files[editing.file].draft = editing.text;
+    // The other files keep what was typed in them until saved or closed —
+    // the text draft only from a tab in text mode, where `editing.text` is
+    // what was typed (review of #430).
+    if (!asForm) editing.files[editing.file].draft = editing.text;
     editing.file = file;
     editing.text = editing.files[file].draft ?? editing.files[file].text;
     editing.base = editing.files[file].digest;
@@ -420,7 +422,7 @@
     const f = current?.form;
     if (!f || !current.formDraft) return false;
     if (f.form) return Object.keys(changesOf(f.form, f.values, current.formDraft)).length > 0;
-    return mdDirty(f.doc, current.formDraft, f.fixed ?? []);
+    return mdDirty(f.doc, current.formDraft);
   });
 
   // Switch between the form and the text. Refused while the side being left
@@ -428,7 +430,8 @@
   // one would silently lose the other's edits.
   function setAsText(on) {
     current.asText = on;
-    // Text mode starts from the file as saved, never a stale text draft.
+    // Text mode picks up the text draft this tab already held, if any —
+    // what was typed survives (review of #420) — else the file as saved.
     if (on) editing.text = current.draft ?? current.text;
     editing.saved = null;
   }

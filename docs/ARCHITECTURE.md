@@ -963,11 +963,14 @@ module.
   `## Core` cannot be dropped. The engines are general: another owner file
   gets a form by declaring a schema, not a component (`TomlForm.svelte`,
   `MdForm.svelte`). On a locked page, a persona whose portrait is a locked
-  library character is served `persona.toml` without its `character` line
+  library character (or one the library cannot read: unknown reads as
+  locked) is served `persona.toml` without its `character` line
   (`persona::hide_character`), with the form's Portrait empty and the stale
   digest taken over the served text, because a digest of the real file would
-  let a guessed name be checked. A save puts the link back
-  (`restore_character`) unless the owner named a portrait of their own:
+  let a guessed name be checked. A text save puts the line back
+  verbatim, comment and all (`restore_character`), and a form save's `null`
+  for the unseen Portrait is dropped, so neither cuts it unless the owner
+  named a portrait of their own:
   hidden, never cut (owner ruling, 2026-09-30). All three end in
   `persona::write_owner_file`, which refuses a
   stale save (its `base` digest is not the file as it stands, an edit made

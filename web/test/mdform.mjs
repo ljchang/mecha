@@ -9,13 +9,13 @@ const doc = {
 
 // A draft of what was read is no change; ids never reach the server.
 let d = draftOf(doc, ['Core']);
-assert.ok(!isDirty(doc, d, ['Core']));
+assert.ok(!isDirty(doc, d));
 assert.deepEqual(docOf(d), doc);
 
 // Moving, adding and editing are changes.
 d.sections = move(d.sections, 1, -1);
 assert.deepEqual(d.sections.map((s) => s.heading), ['Background', 'Core']);
-assert.ok(isDirty(doc, d, ['Core']));
+assert.ok(isDirty(doc, d));
 assert.equal(move(d.sections, 0, -1), d.sections);
 d = draftOf(doc, ['Core']);
 d.sections = addSection(d.sections);
@@ -27,11 +27,19 @@ assert.deepEqual(problems(d, ['Core']), ['Two sections are called “Background�
 const bare = draftOf({ title: 'Ada', sections: [{ heading: 'Voice', body: 'x' }] }, ['Core']);
 assert.deepEqual(bare.sections.map((s) => s.heading), ['Core', 'Voice']);
 assert.ok(isFixed(['Core'], bare.sections[0]));
+// …and that restoration is a change, so Save can write it.
+assert.ok(isDirty({ title: 'Ada', sections: [{ heading: 'Voice', body: 'x' }] }, bare));
 
 // A note that would end its comment is named before the save.
 d = draftOf(doc, ['Core']);
 d.sections[1].note = 'ends --> here';
 assert.equal(problems(d, ['Core']).length, 1);
+
+// A heading or title the server would refuse is named before the save.
+d = draftOf(doc, ['Core']);
+d.sections[1].heading = 'Reef <!--';
+d.title = 'Mara -->';
+assert.equal(problems(d, ['Core']).length, 2);
 
 // Phone dashes in a comment are put back on the way out.
 d = draftOf(doc, ['Core']);

@@ -262,9 +262,100 @@ pub fn apply(form: &Form, text: &str, changes: &Map<String, Json>) -> Result<Str
         checked.push((path, field.check(v)?));
     }
     for (path, v) in checked {
-        set(doc.as_table_mut(), path, &v)?;
+        if v.is_null() {
+            remove(&mut doc, path)?;
+        } else {
+            set(doc.as_table_mut(), path, &v)?;
+        }
     }
     Ok(doc.to_string())
+}
+
+/// Remove a key, keeping the owner's comments on it. `toml_edit` holds a
+/// key's leading comment lines — the file's header, for the first key — on
+/// the key itself, so a bare remove deletes them (review of #430). They are
+/// handed to what comes next: the next key in the table, else (at the root)
+/// the first table's header, else the end of the file. A comment trailing
+/// the removed value goes with them.
+fn remove(doc: &mut DocumentMut, path: &str) -> Result<()> {
+    let segs: Vec<&str> = path.split('.').collect();
+    let (leaf, parents) = segs.split_last().context("an empty path")?;
+    let (carried, next) = {
+        let mut table: &mut dyn toml_edit::TableLike = doc.as_table_mut();
+        for seg in parents {
+            match table.get_mut(seg).and_then(Item::as_table_like_mut) {
+                Some(t) => table = t,
+                // Removing under a table that is not there: done.
+                None => return Ok(()),
+            }
+        }
+        let Some((key, item)) = table.get_key_value(leaf) else {
+            return Ok(());
+        };
+        let mut carried = key
+            .leaf_decor()
+            .prefix()
+            .and_then(|r| r.as_str())
+            .unwrap_or("")
+            .to_string();
+        let trailing = item
+            .as_value()
+            .and_then(|v| v.decor().suffix())
+            .and_then(|r| r.as_str())
+            .and_then(|t| t.find('#').map(|at| t[at..].trim_end().to_string()));
+        if let Some(t) = trailing {
+            carried.push_str(&t);
+            carried.push('\n');
+        }
+        // The next key the file shows after this one: a value, since a
+        // sub-table renders after every value regardless of insertion order.
+        let next = table
+            .iter()
+            .filter(|(_, i)| i.is_value())
+            .map(|(k, _)| k.to_string())
+            .skip_while(|k| k != leaf)
+            .nth(1);
+        table.remove(leaf);
+        (carried, next)
+    };
+    if !carried.contains('#') {
+        return Ok(());
+    }
+    let prepend = |decor: &mut toml_edit::Decor| {
+        let old = decor
+            .prefix()
+            .and_then(|r| r.as_str())
+            .unwrap_or("")
+            .to_string();
+        decor.set_prefix(format!("{carried}{old}"));
+    };
+    let mut table: &mut dyn toml_edit::TableLike = doc.as_table_mut();
+    for seg in parents {
+        table = table
+            .get_mut(seg)
+            .and_then(Item::as_table_like_mut)
+            .context("the table just edited")?;
+    }
+    if let Some(next) = next {
+        if let Some(mut key) = table.key_mut(&next) {
+            prepend(key.leaf_decor_mut());
+            return Ok(());
+        }
+    }
+    if parents.is_empty() {
+        let first = doc
+            .as_table_mut()
+            .iter_mut()
+            .filter_map(|(_, i)| i.as_table_mut())
+            .min_by_key(|t| t.position().unwrap_or(isize::MAX));
+        if let Some(t) = first {
+            prepend(t.decor_mut());
+            return Ok(());
+        }
+    }
+    let end = doc.trailing().as_str().unwrap_or("").to_string();
+    doc.set_trailing(format!("{end}{carried}"));
+    Ok(())
 }
 
 fn set(root: &mut Table, path: &str, v: &Json) -> Result<()> {
@@ -273,10 +364,6 @@ fn set(root: &mut Table, path: &str, v: &Json) -> Result<()> {
     let mut table: &mut dyn toml_edit::TableLike = root;
     for seg in parents {
         if table.get(seg).is_none() {
-            if v.is_null() {
-                // Removing a key under a table that is not there: done.
-                return Ok(());
-            }
             table.insert(seg, Item::Table(Table::new()));
         }
         table = table
@@ -284,10 +371,7 @@ fn set(root: &mut Table, path: &str, v: &Json) -> Result<()> {
             .and_then(Item::as_table_like_mut)
             .with_context(|| format!("`{seg}` in `{path}` is not a table in the file"))?;
     }
-    if v.is_null() {
-        table.remove(leaf);
-        return Ok(());
-    }
+    // `null` never reaches here: `apply` sends it to `remove`.
     let mut new = to_toml(v)?;
     // Keep the old value's decor — a comment trailing it on its line is the
     // owner's, and it stays beside the value it described.
@@ -432,6 +516,50 @@ crisis = true # keep this one
         ];
         for c in refused {
             assert!(apply(&form(), FILE, &changes(c.clone())).is_err(), "{c}");
+        }
+    }
+
+    fn comment_lines(t: &str) -> Vec<String> {
+        let mut out: Vec<String> = t
+            .lines()
+            .filter_map(|l| l.find('#').map(|at| l[at..].trim().to_string()))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Clearing a field removes its key and never the owner's comments on
+    /// it — here the file's header, which `toml_edit` keeps on the first key,
+    /// and the comment trailing the value (review of #430).
+    #[test]
+    fn a_removed_key_leaves_every_comment_behind() {
+        let out = apply(&form(), FILE, &changes(json!({ "display": "" }))).unwrap();
+        assert!(!out.contains("display"), "{out}");
+        assert_eq!(comment_lines(&out), comment_lines(FILE), "{out}");
+        assert!(
+            out.starts_with("# Mara — the owner's header comment."),
+            "{out}"
+        );
+
+        // The last key before a table: onto the table's header. The last key
+        // of a table: onto the end of the file. Each still loads.
+        let text_form = |path: &str| Form {
+            sections: vec![Section::new("s").field(Field::new(
+                path,
+                "x",
+                Kind::Text {
+                    max: 9,
+                    optional: true,
+                    placeholder: None,
+                },
+            ))],
+        };
+        let file = "a = 1\n# about b\nb = \"y\" # trailing\n\n[t]\n# about c\nc = \"z\"\n";
+        for path in ["b", "t.c"] {
+            let out = apply(&text_form(path), file, &changes(json!({ path: null }))).unwrap();
+            assert_eq!(comment_lines(&out), comment_lines(file), "{path}: {out}");
+            let back: toml::Table = toml::from_str(&out).unwrap();
+            assert_eq!(back["a"].as_integer(), Some(1));
         }
     }
 

@@ -132,8 +132,13 @@ pub fn split(text: &str) -> Doc {
     // would move prompt text ahead of what preceded it.
     let mut title = String::new();
     let mut rest = String::new();
+    // Latches false at the first text: re-reading the prefix only while it
+    // is all comments keeps this from being quadratic over the preamble.
+    let mut first = true;
     for (line, plain) in lines(&pre) {
-        let first = crate::persona::strip_comments(&rest).0.trim().is_empty();
+        if first {
+            first = crate::persona::strip_comments(&rest).0.trim().is_empty();
+        }
         if title.is_empty() && first && plain && line.starts_with("# ") {
             title = line[2..].trim().to_string();
             continue;
