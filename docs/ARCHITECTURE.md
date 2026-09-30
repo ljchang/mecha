@@ -8421,8 +8421,8 @@ The things that decide the design:
   three calls after any compaction, stops the run with `StopCause::Loop` —
   distinct from `MaxTurns`, because "hit the turn limit" reads as the task
   being too big when a stuck run is a different problem. Keyed on call *and*
-  result: polling (same arguments, changing result) never trips it. Dormant
-  until a compaction on purpose — repeated calls in ordinary work are the
+  result: polling (same arguments, changing result) never trips it. This
+  check is dormant until a compaction on purpose — repeated calls in ordinary work are the
   model's business, and the failure this catches is specifically the run
   re-living what a summary dropped, at the largest prompts it will ever
   send. Gradeable via `expect.stop_cause: "loop"`; no shipped case asserts
