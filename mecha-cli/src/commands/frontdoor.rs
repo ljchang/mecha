@@ -1103,6 +1103,9 @@ mod tests {
         // is threading a path parameter through `swept_bookings` purely to
         // make a one-line rule testable. `read_swept` already takes a path,
         // which is where the rest of the ledger contract is pinned.
+        // Held against every other test in this binary that moves
+        // `$MECHA_MAIL_DIR` (Slack's import check, #432).
+        let _lock = crate::testenv::lock();
         let restore = std::env::var("MECHA_MAIL_DIR").ok();
         std::env::set_var("MECHA_MAIL_DIR", "/tmp/somewhere-else");
         assert_eq!(

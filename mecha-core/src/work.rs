@@ -595,6 +595,14 @@ pub(crate) mod tests {
         "MECHA_COMPARISONS_DIR",
     ];
 
+    /// The lock alone, for a test that moves some other process-global
+    /// variable this crate reads (`$MECHA_MAIL_DIR`, `$MECHA_GOOGLE_DIR`) —
+    /// one lock for every such test, or none of them is safe (review of
+    /// #432).
+    pub(crate) fn lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub(crate) struct HomeGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
         previous: Option<String>,
