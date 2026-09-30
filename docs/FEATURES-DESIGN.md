@@ -1,7 +1,8 @@
 # Features — design
 
-> **Status (2026-09-30):** designed, not built. §7 holds the rulings the
-> build waits on; nothing in §4–§6 should be built before they are made.
+> **Status (2026-09-30):** designed; step 0 (the registry and a read-only
+> `mecha features`) is #428, which changes no surface's behaviour. §7 holds
+> the rulings steps 1–6 wait on.
 
 **2026-09-30.** One question: *how does a new user install only the parts of
 mecha they want — and how do `mecha setup`, the web app, the CLI, the API and
@@ -371,14 +372,23 @@ Three rules carry the design:
 4. **Route guards.** Each API route group declares its owner, and one axum
    layer answers for all of them, so the five ways an off feature fails today
    (§1.2) become one. Side-effecting reads (`/api/frontdoor` creating its
-   store) stop happening for a feature that is off.
+   store) stop happening for a feature that is off. **The layer sits inside
+   `owner_guard`.** Serve's middleware chain applies the last `.layer` as the
+   outermost, so a feature layer appended to it would answer before
+   authentication, and F4's body — the feature and the command that turns it
+   on — would give an unauthenticated probe an inventory of the install. The
+   existing `*_sit_behind_the_owner_guard` tests pin that a probe without the
+   header "learns nothing, not even that these routes exist"; step 2 extends
+   them with an off feature's route, asserting the probe gets the guard's 403
+   and never `feature_off`.
 5. **CLI guards.** A verb that belongs to a feature calls
    `feature::require(cfg, Feature::Image)?` first, and every verb says the
    same thing the same way: *"image generation is not enabled — `mecha setup
    image`"*.
 6. **Tool registration** in `setup::prepare_tools` asks the registry rather
-   than repeating `if let Some(image) = cfg.image`. Most of these gates are
-   already correct (§1.1); the change is that they share one predicate with
+   than repeating `if let Some(image) = cfg.image`. The existing gates
+   (`cfg.search`, `cfg.image`, `cfg.documents`, `vision_enabled`) already key
+   on configuration, not liveness — read in the step-0 audit, not in §1; the change is that they share one predicate with
    the other five readers, so they cannot drift apart.
 
 `mecha doctor` stays what it is — no network, no model, the stores' distress.
@@ -414,9 +424,9 @@ it is off. "Today" is the current switch; "Proposed" is the one §4 reads.
 |---|---|---|---|---|---|
 | `web` | The web app (`mecha serve`) | `[web] owner_login` set; serve refuses without it | unchanged — `owner_login` present | — | everything web; `mecha serve` refuses with the setup command |
 | `slack` | Slack remote control | tokens in `~/.mecha/slack`, `mecha-slack.service` | tokens present (the `[slack]` table stays tunables-only) | — | `mecha slack …` verbs except `auth` |
-| `mail` | Mail and calendar | `mecha-mail` on PATH + accounts; tools via `[[mcp]]` | an enabled `[[mcp]]` entry exposing `mail_*` (the fact setup does not check today) | — | Mail tab, Home mail card, Outbox event editor, `mecha mail` |
-| `docs` | Google Docs, Sheets, Slides | `mecha-docs` + account + `[[mcp]]` | an enabled `[[mcp]]` entry exposing it | — | its tools |
-| `graph` | Knowledge graph | `mecha-graph-mcp` on PATH + `[[mcp]]` | an enabled `[[mcp]]` entry exposing `kg_*` | — | Graph tab, Review → graph queue, Proposals → entities, `kg`, `gossip`, `corroborate`, `vet`, `distill` |
+| `mail` | Mail and calendar | `mecha-mail` on PATH + accounts; tools via `[[mcp]]` | an enabled global `[[mcp]]` entry running `mecha-mail` (the fact setup does not check today) | — | Mail tab, Home mail card, Outbox event editor, `mecha mail` |
+| `docs` | Google Docs, Sheets, Slides | `mecha-docs` + account + `[[mcp]]` | an enabled global `[[mcp]]` entry running `mecha-docs` | — | its tools |
+| `graph` | Knowledge graph | `mecha-graph-mcp` on PATH + `[[mcp]]` | an enabled global `[[mcp]]` entry running `mecha-graph-mcp` | — | Graph tab, Review → graph queue, Proposals → entities, `kg`, `gossip`, `corroborate`, `vet`, `distill` |
 | ↳ `tasks` | The task board | — (rides the graph) | part of `graph` | `graph` | Tasks tab, Home tasks card, `tasks`, `workflow`, `questions` |
 | `search` | Web search and open | `[[search]]` non-empty | unchanged | — | `web_search`, `web_open` |
 | `documents` | PDF extraction | `[documents]` present | unchanged | — | `document_read`, `mecha document` |
@@ -430,8 +440,8 @@ it is off. "Today" is the current switch; "Proposed" is the one §4 reads.
 | ↳ `calls` | Spoken conversation | `--offer-target`, the worker | `[voice] offer_target` | `voice` | voice-call button |
 | ↳ `cloning` | New voices | `[web] voices_dir` | `[voice] voices_dir` | `voice` | Settings → Voice → clone |
 | `incognito` | A chat that leaves no trace | always on in web | derived: `web` on and a local provider | `web` | Chat's incognito toggle |
-| `frontdoor` | Inbound requests, publishing, polls | `factory-publish`, units | `[outbox] publish_tools` non-empty | `mail` | Review → Front door, Home card, `frontdoor`, `polls` |
-| `messages` | Messages between sessions | `[messages] enabled` | unchanged (see F1) | — | `message_send`, `mecha msg` |
+| `frontdoor` | Inbound requests, publishing, polls | `factory-publish` as an `[[mcp]]` server, units | an enabled global `[[mcp]]` entry running `factory-publish` | `mail` | Review → Front door, Home card, `frontdoor`, `polls` |
+| `messages` | Messages between sessions | `[messages] enabled` | unchanged — the one bool switch (F1) | — | `message_send`, `mecha msg` |
 
 Notes on the rows that change:
 
@@ -444,13 +454,32 @@ Notes on the rows that change:
 - **`personas` gets a table** because it has no config at all; its switch has
   to live somewhere. Once it exists, it is also where the persona safety
   settings belong (the crisis-pause cooldown, `PERSONA-DESIGN.md` §16).
-- **`frontdoor`'s switch is a guess** — the factory side has its own binary
-  and units, and which fact best means "this install has a public surface"
-  is for whoever owns that arc to confirm.
+- **The four server rows (`mail`, `docs`, `graph`, `frontdoor`) key on the
+  entry, not the tools.** Which tools a server exposes is known only after
+  `connect` spawns it and `tools/list` answers, and the registered names
+  then depend on `prefix_tools` — so "exposes `mail_*`" is not a fact
+  configuration holds, and learning it per page load would start four
+  third-party processes, the failure §4.3 exists to prevent. The switch is an
+  enabled `[[mcp]]` entry whose `command` runs the known program. That is a
+  weaker claim than "the tools are there", and it is the one configuration
+  can make; whether the tools actually answered is `--probe`'s question.
+  (Step 0 found the front door is an `[[mcp]]` server here — `factory` runs
+  `factory-publish` — which replaced an earlier guess at `[outbox]
+  publish_tools`.)
 
 Every new table is **global-file only**, like `[web]`, `[image]` and
 `[documents]` today — `merge_file` strips them from project layers — so a
-cloned repository can never turn a feature on. And each is **three edits**,
+cloned repository can never turn a feature on. **`[[mcp]]` is the
+exception, and the four server rows must not inherit it.** `merge_file`
+deliberately keeps a project's servers (a project may legitimately declare
+one), and `ConfigLayer::apply` takes the list wholesale, so a project file
+*replaces* the owner's servers. Today that decides only which tools a
+session in that directory has; read by the registry, it would let a cloned
+repository turn the owner's Mail and Graph tabs, routes and verbs on or
+off. So the registry reads the four server rows from the **global** layer's
+`[[mcp]]` list only (`Config::load_global`, which is what `mecha features`
+reads). A project's servers still give its sessions tools; they never change
+what the install says is on. And each new table is **three edits**,
 not two: `Config`, `ConfigLayer`, and `ConfigLayer::apply`.
 `every_field_of_config_is_reachable_from_a_file` and
 `every_field_a_layer_can_read_is_a_field_a_layer_applies` catch a missed one
@@ -487,7 +516,14 @@ Three things make it deliberate rather than accidental:
   is as much a condition as which levers were off, so the experiment manifest
   and the session record carry the feature set beside `levers_off`, from the
   same registry — otherwise two arms that differ only in whether `[[search]]`
-  was present read as identical.
+  was present read as identical. **Recorded with `levers_off`'s wire rule,
+  not just beside it.** A feature set is a closed enum on an append-only
+  store, so its loader is all-or-nothing like `session::lenient_levers`: one
+  name a later build does not know collapses the whole set to `None`, because
+  an entry dropped on its own would read as *off* — the mirror of a dropped
+  lever reading as on — and bring back exactly the identical-arms case. A
+  reader that partitions trials by feature set puts `None` with the sessions
+  recorded before the field existed, never with "nothing on".
 - **An environment declares what it needs.** An experiment environment may
   name the features its tasks need (`requires = ["search", "documents"]`),
   and a trial whose home has one of them `Off` or `Blocked` refuses to start
@@ -552,7 +588,7 @@ genuinely not known yet, and the output must say so rather than guess.
 
 | # | Decision | Options | Recommendation |
 |---|---|---|---|
-| **F1** | What turns a feature on | (a) its table being present, global file only, with `enabled = false` to keep settings while off; (b) a central `[features]` table of bools, as Codex has; (c) both | **(a).** One fact per feature, in the table that holds its settings — no second switch to disagree with (§2.3, reject 3–4). `[messages] enabled` becomes presence-based for consistency, with the old key read for one release |
+| **F1** | What turns a feature on | (a) its table being present, global file only, with `enabled = false` to keep settings while off; (b) a central `[features]` table of bools, as Codex has; (c) both | **(a).** One fact per feature, in the table that holds its settings — no second switch to disagree with (§2.3, reject 3–4). **Except `[messages]`, which keeps its bool:** it is the one existing table whose presence does not mean intent — every other field in it is a tunable, `enabled` defaults to `false`, and a table present only to raise `pending_cap` would switch on, under presence, an unattended run folding in inbound messages with their sender's taint (`mailbox.rs`). A fail-open conversion of a security-bearing default is not worth the consistency |
 | **F2** | Off in the web app | (a) removed from navigation; Settings → Features lists everything; (b) greyed out with a tooltip | **(a)**, as the owner asked. `Unready` and `Unknown` are shown with a banner, never removed (§4.1) |
 | **F3** | Web as a feature | (a) optional like the rest: no `owner_login`, no web — CLI, TUI and Slack are complete without it; (b) always installed, just unstarted | **(a).** It is already true in the code (serve refuses without `owner_login`); the change is that setup offers it as a step and the features that need it — voice, incognito, the Personas and Library tabs — report `Blocked(web)` instead of existing with nowhere to appear. `mecha persona` still works from the CLI |
 | **F4** | What an off route returns | 404 / 403 / 409 / 503 | **404** with `{"error":"feature_off","feature":"image","fix":"mecha setup image"}` — on this install the route does not exist. 503 is kept for `Unready`, where it is true |
@@ -601,14 +637,16 @@ Each step is a PR, and each leaves every surface working.
    yet, so a stale page still works.
 2. **One guard for routes and CLI verbs.** Every route group and verb names
    its owner; the five failure shapes become `feature_off` / 503. The
-   side-effecting reads stop.
+   side-effecting reads stop. The layer goes inside `owner_guard`, and the
+   owner-guard tests gain an off feature's route (§4.2 item 4).
 3. **Setup iterates the registry.** A step per feature, `mecha setup
    <feature>`, `mecha setup --minimal`, dependencies offered first, and the
    `[[mcp]]` checks that `mail` and `graph` are missing today.
-   **Experiments** record the feature set beside `levers_off`, and an
-   environment's `requires` refuses a trial that lacks one (§5.1).
+   **Experiments** record the feature set beside `levers_off`, with a
+   `lenient_features` loader of `lenient_levers`' all-or-nothing shape, and
+   an environment's `requires` refuses a trial that lacks one (§5.1).
 4. **The new tables**, after F1 and F6: `[voice]` (with the URLs out of the
-   code), `[personas]`, `[messages]` to presence. Three edits each, plus the
+   code) and `[personas]`. Three edits each, plus the
    nested-layer test. The owner's config gets both tables in the same deploy.
 5. **Recommendations**: the rows, the probe that sums memory, and a test that
    `hardware.md` matches them. Fix the embeddings page.
