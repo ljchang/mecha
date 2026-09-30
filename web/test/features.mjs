@@ -5,7 +5,7 @@
 // failed; an `unready` feature the owner switched on, hidden; a queue with
 // strangers' requests waiting, hidden because its switch is off; and a
 // banner that names the child when the parent is what is broken.
-import { OPENS_ANYWAY, opensAnyway, index, isShown, queueCardShown, banner, hiddenLine, summary, tree, detail, VIEW_FEATURE } from '../src/lib/features.js';
+import { OPENS_ANYWAY, opensAnyway, opens, index, isShown, queueCardShown, banner, hiddenLine, summary, tree, detail, VIEW_FEATURE } from '../src/lib/features.js';
 
 let pass = 0;
 let fail = 0;
@@ -69,6 +69,9 @@ t('a run\'s question opens on the board\'s page with the board off', opensAnyway
 t('so do the workflows', opensAnyway('tasks', 'workflows'));
 t('and a kept image-candidates card\'s landing', opensAnyway('library', 'candidates'));
 t('the board itself does not', !opensAnyway('tasks', null) && !opensAnyway('tasks', 'actionable'));
+t('a hidden view offers only what opens', opens(rows, 'tasks', 'waiting') && !opens(new Map([['tasks', row('tasks', 'blocked', { on: 'graph' })]]), 'tasks', 'done'));
+t('a shown view offers everything', opens(rows, 'tasks', 'done') && opens(rows, 'graph', null));
+t('an unanswered read offers everything', opens(null, 'library', 'styles'));
 t('every entry is view/sub', OPENS_ANYWAY.every((r) => /^[a-z]+\/[a-z]+$/.test(r)));
 
 console.log('banners');

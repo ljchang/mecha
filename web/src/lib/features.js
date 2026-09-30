@@ -44,14 +44,25 @@ export const QUEUE_FEATURE = {
  * landing of a queue card kept because something waits in it. Redirecting
  * these would keep the card and refuse the tap: the Questions card would
  * land on Home with its runs still waiting (found on review of #449).
- * `every_feature_the_web_app_names_is_a_registry_id` holds Home's
- * destinations to this list.
+ * `every_place_home_lands_opens_whatever_its_view_s_switch_says` holds
+ * Home's destinations to this list, and a view these admit offers only the
+ * sub-views that open (`opens`), or its own controls would bounce the same
+ * way one level in.
  */
 export const OPENS_ANYWAY = ['tasks/waiting', 'tasks/workflows', 'library/candidates'];
 
 /** Whether `view/sub` opens even with its view's feature hidden. */
 export function opensAnyway(view, sub) {
   return sub != null && OPENS_ANYWAY.includes(`${view}/${sub}`);
+}
+
+/**
+ * Whether `view/sub` would open rather than bounce to Home: its view's
+ * feature is shown, or the route opens anyway. What a view's own controls
+ * ask before offering a way to another of its sub-views.
+ */
+export function opens(rows, view, sub) {
+  return isShown(rows, VIEW_FEATURE[view]) || opensAnyway(view, sub);
 }
 
 /** `/api/features`'s body as a map from id to row, or null when unanswered. */
