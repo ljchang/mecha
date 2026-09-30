@@ -112,6 +112,11 @@ struct PersonaSession {
     /// before it has been asked, which reads as keywords only — "on" is
     /// claimed only once it has answered (review of #426).
     judge_answered: Option<bool>,
+    /// Whether this chat has shown a crisis card: the page offers the
+    /// support resources only after one (owner ruling, 2026-09-30). Held for
+    /// the chat's life in this process — a restart forgets it, since the
+    /// safety record is content-free and names no chat by design.
+    crisis_shown: bool,
 }
 
 struct Live {
@@ -124,6 +129,35 @@ struct Live {
     /// is what is left to say it (found on review of #409; the assistant's
     /// `Live` carries it for the same reason).
     taint: mecha_core::agent::Taint,
+    /// The tool the run is waiting on — id, name and when it began — so a
+    /// page reloaded during a long image render still says "drawing a
+    /// picture… 1:24" rather than "typing" (review of #431). Set and cleared
+    /// by the run's event forwarder ([`track_working`]).
+    working: Arc<StdMutex<Vec<serde_json::Value>>>,
+}
+
+/// Keep `slot` naming the tool a run is waiting on: every call that has
+/// started and not yet returned — tools in one turn run concurrently — and
+/// the transcript reports the latest of them.
+fn track_working(slot: &StdMutex<Vec<serde_json::Value>>, event: &AgentEvent) {
+    let Ok(mut slot) = slot.lock() else { return };
+    match event {
+        AgentEvent::ToolCall { id, name, .. } => slot.push(serde_json::json!({
+            "id": id,
+            "name": name,
+            "since": chrono::Utc::now().to_rfc3339(),
+        })),
+        AgentEvent::ToolResult { id, .. } => slot.retain(|w| w["id"] != *id),
+        // A refused call gets no result — the interlock, a hook or the
+        // approver said no — and carries no id: the latest call of that name
+        // is the one refused (review of #431: it stayed "working" all run).
+        AgentEvent::ToolDenied { name, .. } => {
+            if let Some(at) = slot.iter().rposition(|w| w["name"] == *name) {
+                slot.remove(at);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Beside each transcript: which persona version the chat is pinned to, so
@@ -755,6 +789,7 @@ impl PersonaChats {
                 turns_since_anchor: 0,
                 anchor_due: false,
                 crisis_paused_at: None,
+                crisis_shown: false,
                 pending_crisis: None,
                 judge_answered: None,
             },
@@ -787,10 +822,18 @@ impl PersonaChats {
             .filter(|(meta, _)| !archived.contains_key(&meta.id))
             .take(40)
             .map(|(meta, _)| {
+                // The goal the chat was opened with, from its pin: the one
+                // thing that tells two chats apart at a glance. A missing or
+                // unreadable pin is no goal, not a failed list.
+                let goal = std::fs::read(pin_path(&dir, &meta.id))
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<PinRecord>(&b).ok())
+                    .and_then(|p| p.goal);
                 serde_json::json!({
                     "id": meta.id,
                     "created": meta.created_at,
                     "title": meta.title,
+                    "goal": goal,
                 })
             })
             .collect();
@@ -871,7 +914,17 @@ impl PersonaChats {
             return Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }));
         }
         let key = new_key();
-        let workspace = self.work.join(&key);
+        // The workspace the chat began in, as its session records it: a
+        // resumed chat keeps its pictures, and the persona can edit one it
+        // drew before a restart (owner, 2026-09-30 — a resume under a new
+        // key had given the same chat an empty workspace). Only a directory
+        // directly in the persona work dir is trusted; anything else gets a
+        // fresh one.
+        let workspace = if session.meta.workspace.parent() == Some(self.work.as_path()) {
+            session.meta.workspace.clone()
+        } else {
+            self.work.join(&key)
+        };
         mecha_core::create_private_dir(&workspace).map_err(|e| failed(e.into()))?;
         sessions.insert(
             key.clone(),
@@ -887,6 +940,7 @@ impl PersonaChats {
                 turns_since_anchor: 0,
                 anchor_due,
                 crisis_paused_at: None,
+                crisis_shown: false,
                 pending_crisis: None,
                 judge_answered: None,
             },
@@ -940,6 +994,22 @@ impl PersonaChats {
             "model": bound.model,
             "running": ps.live.is_some(),
             "goal": ps.goal,
+            "crisis_shown": ps.crisis_shown,
+            "working": ps
+                .live
+                .as_ref()
+                .and_then(|l| l.working.lock().ok().and_then(|w| w.last().cloned()))
+                // How long it has run, by this server's clock: the page adds
+                // it to its own, so a phone whose clock disagrees still counts
+                // from the right moment (review of #431).
+                .map(|mut w| {
+                    let elapsed = w["since"]
+                        .as_str()
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_milliseconds().max(0));
+                    w["elapsed_ms"] = serde_json::json!(elapsed);
+                    w
+                }),
             "display": ps.pinned.settings.display,
             // The switches as they stand, not as pinned: they are read live.
             "safety": safety_json(
@@ -1203,6 +1273,7 @@ impl PersonaChats {
             ps.crisis_paused_at = Some(std::time::Instant::now());
             let taint = conversation.taint;
             ps.conversation = Some(conversation);
+            ps.crisis_shown = true;
             let _ = ps.events.send(WireEvent::Crisis {
                 text: safety::SAFE_MESSAGE.to_string(),
             });
@@ -1241,6 +1312,7 @@ impl PersonaChats {
         let cancel = mecha_core::agent::CancelHandle::new();
         let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
         let queued_ids: Arc<StdMutex<VecDeque<String>>> = Arc::default();
+        let working: Arc<StdMutex<Vec<serde_json::Value>>> = Arc::default();
         let mut history_taint = conversation.taint;
         history_taint.arm_for_content(&before);
         ps.live = Some(Live {
@@ -1249,6 +1321,7 @@ impl PersonaChats {
             queued_ids: Arc::clone(&queued_ids),
             history: Arc::clone(&before),
             taint: history_taint,
+            working: Arc::clone(&working),
         });
         if let Some(h) = &held {
             let c = cancel.clone();
@@ -1285,6 +1358,7 @@ impl PersonaChats {
                 let bcast = bcast.clone();
                 tokio::spawn(async move {
                     while let Some(event) = rx.recv().await {
+                        track_working(&working, &event);
                         if let AgentEvent::QueuedInput(_) = &event {
                             if let Some(request_id) =
                                 queued_ids.lock().ok().and_then(|mut ids| ids.pop_front())
@@ -1537,6 +1611,7 @@ impl PersonaChats {
                     });
                 }
                 ps.judge_answered = Some(true);
+                ps.crisis_shown = true;
                 let _ = ps.events.send(WireEvent::Crisis {
                     text: safety::SAFE_MESSAGE.to_string(),
                 });
@@ -1611,6 +1686,7 @@ impl PersonaChats {
                     spoken: false,
                     request_id: Some(request_id),
                 });
+                ps.crisis_shown = true;
                 let _ = ps.events.send(WireEvent::Crisis {
                     text: safety::SAFE_MESSAGE.to_string(),
                 });
@@ -2542,6 +2618,74 @@ mod tests {
         assert!(seen[1].messages.len() >= 3);
     }
 
+    /// A chat resumed after a restart keeps its workspace, so a picture the
+    /// persona drew before is still there to edit (owner, 2026-09-30).
+    #[tokio::test]
+    async fn a_resumed_chat_keeps_its_workspace() {
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let id = opened["session"].as_str().unwrap().to_string();
+        let first = w.personas().sessions.lock().await[&key].workspace.clone();
+        std::fs::create_dir_all(first.join("images")).unwrap();
+        std::fs::write(first.join("images/drawn.png"), b"png").unwrap();
+
+        w.personas().sessions.lock().await.clear();
+        let resumed = w
+            .personas()
+            .resume(&w.chat, &w.library, "mara", &id, None)
+            .await
+            .unwrap();
+        let key2 = resumed["key"].as_str().unwrap().to_string();
+        assert_ne!(key, key2);
+        let again = w.personas().sessions.lock().await[&key2].workspace.clone();
+        assert_eq!(again, first);
+        assert!(again.join("images/drawn.png").is_file());
+    }
+
+    /// The tool a run waits on is named until its result arrives.
+    #[test]
+    fn the_working_slot_follows_a_call_to_its_result() {
+        let slot = StdMutex::new(Vec::new());
+        let call = |id: &str, name: &str| AgentEvent::ToolCall {
+            id: id.into(),
+            name: name.into(),
+            input: serde_json::json!({}),
+        };
+        let result = |id: &str| AgentEvent::ToolResult {
+            id: id.into(),
+            name: "x".into(),
+            is_error: false,
+            content: String::new(),
+        };
+        track_working(&slot, &call("t1", "image_generate"));
+        track_working(&slot, &call("t2", "web_search"));
+        assert_eq!(slot.lock().unwrap().len(), 2);
+        // The later call returning first leaves the earlier one named: two
+        // calls in one turn run at once (review of #431).
+        track_working(&slot, &result("t2"));
+        let held = slot.lock().unwrap().clone();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0]["name"], "image_generate");
+        assert!(held[0]["since"].as_str().is_some());
+        track_working(&slot, &result("t1"));
+        assert!(slot.lock().unwrap().is_empty());
+        // A refused call is no longer waited on.
+        track_working(&slot, &call("t3", "web_search"));
+        track_working(
+            &slot,
+            &AgentEvent::ToolDenied {
+                name: "web_search".into(),
+                reason: "blocked".into(),
+            },
+        );
+        assert!(slot.lock().unwrap().is_empty());
+    }
+
     /// A persona turn mid-generation is cancelled at shutdown, so the drain
     /// finishes instead of waiting on work nothing asked to stop.
     #[tokio::test]
@@ -2701,6 +2845,13 @@ mod tests {
             .unwrap();
         assert_eq!(t["goal"], "Plan the kelp survey", "{t}");
         assert_eq!(t["entries"].as_array().unwrap().len(), 0);
+        // The earlier-chats list carries it too, so the page can tell two
+        // chats apart by what they were for.
+        let listed = w.personas().history(&w.library, "mara", None).unwrap();
+        assert_eq!(
+            listed["chats"][0]["goal"], "Plan the kelp survey",
+            "{listed}"
+        );
     }
 
     /// A turn cancelled after a tool ran leaves the conversation ending on
@@ -2998,6 +3149,14 @@ mod tests {
     async fn a_crisis_hit_pauses_the_persona_and_is_counted_without_content() {
         let w = world();
         let key = open_chat(&w).await;
+        // No crisis yet: the page offers no support resources (owner ruling,
+        // 2026-09-30) — and after one, it does, on any re-read.
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(t["crisis_shown"], false, "{t}");
         let (mut rx, _) = w
             .personas()
             .subscribe(&w.library, &key, None)
@@ -3028,6 +3187,12 @@ mod tests {
         })
         .await;
         assert_eq!(stop.as_deref(), Some("CrisisPause"));
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(t["crisis_shown"], true, "{t}");
         assert!(
             w.seen.lock().unwrap().is_empty(),
             "the persona answered a crisis turn"
