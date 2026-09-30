@@ -184,7 +184,7 @@ what came out except `image_view` on request.
 |---|---|---|---|---|
 | In-context references (`<imageN>`) | yes, native | `TextEncodeQwenImage21` [local] | `-r` / `ref_images` [local] | yes — every current edit model takes references |
 | Character LoRA | yes; ai-toolkit (`qwen_image_2`) and DiffSynth train it; musubi-tuner does not yet [official] | `comfy/lora.py` maps 2.1's fused `img_mlp` keys; GGUF patches on load [local] | `lora` field, from a server-listed directory [local] | **no** — tied to the exact base weights; retrain per model |
-| Mask inpaint / local edit | via crop-edit-paste (below) | generic nodes; not verified for 2.1 *(2026-09-30: verified, `SetLatentNoiseMask` with the 2.1 encoder, 12 images, 0 errors; `IMAGE-REGION-EDIT-RESEARCH.md` §4)* | `--mask` / `mask_image` [local] | yes if done as crop-edit-paste in mecha's code |
+| Mask inpaint / local edit | via crop-edit-paste (below) | generic nodes; not verified for 2.1 *(2026-09-30: verified, `SetLatentNoiseMask` with the 2.1 encoder, 12 images, 0 errors; `IMAGE-REGION-EDIT-RESEARCH.md` §4)* | `--mask` / `mask_image` [local] | yes if done as crop-edit-paste in mecha's code *(2026-09-30: a backend noise mask was chosen and built (#429); it survives a backend move only if the new backend resamples under a mask, which is a measurement owed, `IMAGE-REGION-EDIT-RESEARCH.md` §6)* |
 | Detect-then-repair (ADetailer) | yes, as crop-edit-paste | custom nodes | native, YOLOv8 [local] | yes |
 | PuLID / InfiniteYou / UNO / USO | **no port** | FLUX only | PuLID FLUX only [local] | n/a |
 | PhotoMaker / IP-Adapter | **no port** | SDXL / SD1.5 | SDXL / SD1.5 only [local] | n/a |
