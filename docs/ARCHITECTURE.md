@@ -1036,6 +1036,11 @@ module.
     `/api/chat/{key}/file` cannot reach a persona chat, because its session
     map is not this one. A locked persona's picture is drawn with no link to
     open it in a tab: that would put the unlock token in browser history.
+    The same upload route takes dropped or picked files. `send_with` puts a
+    picture among them on the turn as pixels for a model that can see
+    (`chat::attached_images`, which arms `private`), exactly as the assistant's
+    `send` does. A persona's fixed tool set has no `fs_read` or
+    `document_read`, so any other file is named in the text and nothing more.
   - **A persona agent gets no hooks, by design.** `build_subagent` attaches the
     parent's hooks, because otherwise delegating would be the way around a
     `pre_tool` policy. A persona chat is not a delegation out of the assistant.

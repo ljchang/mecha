@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pictures stay behind the library lock, and have no link to open them in a
   new tab.
 
+- **Drop or attach files in a persona chat.** Drag files onto the Personas
+  tab, or use the paperclip, just as in the main chat. Files land in the
+  chat's own `inbox/` and are named in your message. A picture is also shown
+  to the persona when its model can see images. Other files are named only:
+  a persona has no tool to read a PDF or a text file yet.
+
 - **Paint the part of a picture to change.** The web chat's Edit button now
   opens a modal: paint or draw a box over what should change, say what to
   do, send. Only the painted area is redrawn, blended over a narrow edge

@@ -1085,6 +1085,8 @@ impl PersonaChats {
     }
 
     /// Start a turn, or steer the one in flight.
+    /// A text-only turn, as the tests drive one; the route is `send_with`.
+    #[cfg(test)]
     pub async fn send(
         self: &Arc<Self>,
         chat: &Arc<ChatState>,
@@ -1093,6 +1095,27 @@ impl PersonaChats {
         text: &str,
         request_id: Option<String>,
         token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        self.send_with(chat, library, key, text, request_id, token, Vec::new())
+            .await
+    }
+
+    /// `send`, with the files the page uploaded for this turn (`upload`),
+    /// already named in `text`. As in the assistant's chat, each picture
+    /// among them also rides on the turn as pixels for a model that can see
+    /// (`chat::attached_images`), which arms `private_data`; a blind model,
+    /// the cap or an unreadable file leave it to its path, and the answer
+    /// says how many were not shown.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_with(
+        self: &Arc<Self>,
+        chat: &Arc<ChatState>,
+        library: &LibraryState,
+        key: &str,
+        text: &str,
+        request_id: Option<String>,
+        token: Option<&str>,
+        attachments: Vec<String>,
     ) -> Result<serde_json::Value, Refusal> {
         let text = text.trim().to_string();
         if text.is_empty() {
@@ -1162,6 +1185,36 @@ impl PersonaChats {
             let (agent, _) = self.agent_for(&bound, &pinned).map_err(failed)?;
             (held, Some((bound, agent)))
         };
+        // Read before the sessions lock the turn takes below, and only for a
+        // model that can see: to a blind one the pixels would render as a
+        // placeholder every turn, and the path is already in the text.
+        let named = attachments
+            .iter()
+            .filter(|p| mecha_core::message::image_media_type(Path::new(p)).is_some())
+            .count();
+        let sees = ready.as_ref().is_some_and(|(_, agent)| agent.vision());
+        let images = if sees && named > 0 {
+            let workspace = self
+                .sessions
+                .lock()
+                .await
+                .get(key)
+                .map(|ps| ps.workspace.clone());
+            match workspace {
+                Some(workspace) => tokio::task::spawn_blocking(move || {
+                    chat::attached_images(&workspace, &attachments)
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("attachments not read: {e}");
+                    Vec::new()
+                }),
+                None => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        let shown = images.len();
 
         let mut sessions = self.sessions.lock().await;
         // Under the lock `stop` takes, so a turn is either cancelled by it or
@@ -1231,6 +1284,9 @@ impl PersonaChats {
         {
             let pre_fold = conversation.messages.clone();
             mecha_core::agent::append_user_text(&mut conversation.messages, said.clone());
+            if let Some(last) = conversation.messages.last_mut() {
+                last.content.extend(images);
+            }
             if let Some(anchor) = &anchor {
                 mecha_core::agent::append_user_text(&mut conversation.messages, anchor.clone());
             }
@@ -1241,6 +1297,7 @@ impl PersonaChats {
                 .map_err(|e| (e, Some(pre_fold)))
         } else {
             let mut user = Message::user(&said);
+            user.content.extend(images);
             // Its own block, in the harness's registered voice: never drawn in
             // the owner's bubble, never read as the owner's words.
             if let Some(anchor) = &anchor {
@@ -1549,7 +1606,13 @@ impl PersonaChats {
             }
         });
         drop(sessions);
-        Ok(serde_json::json!({ "started": true }))
+        // How many pictures the text names and the persona was not shown, for
+        // the page to say — it cleared the chips on send (as `chat::send`).
+        Ok(serde_json::json!({
+            "started": true,
+            "pictures_not_shown": named.saturating_sub(shown),
+            "model_sees": sees,
+        }))
     }
 }
 
@@ -1837,6 +1900,10 @@ pub struct SendBody {
     request_id: Option<String>,
     #[serde(default)]
     unlock: Option<String>,
+    /// Workspace-relative paths the page uploaded for this turn, already
+    /// named in `text` (`PersonaChats::send_with`).
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -2190,13 +2257,14 @@ pub async fn send(
     let personas = Arc::clone(&chat.personas);
     respond(
         personas
-            .send(
+            .send_with(
                 &chat,
                 &state.library,
                 &key,
                 &body.text,
                 body.request_id,
                 body.unlock.as_deref(),
+                body.attachments,
             )
             .await,
     )
@@ -2320,6 +2388,8 @@ mod tests {
         Mode,
         Arc<StdMutex<JudgeSays>>,
         Arc<StdMutex<usize>>,
+        /// Whether the model can see — off unless a test turns it on.
+        Arc<std::sync::atomic::AtomicBool>,
     );
 
     #[async_trait::async_trait]
@@ -2329,6 +2399,9 @@ mod tests {
         }
         fn default_model(&self) -> &str {
             "test"
+        }
+        fn vision(&self) -> bool {
+            self.4.load(std::sync::atomic::Ordering::SeqCst)
         }
         async fn complete(
             &self,
@@ -2400,6 +2473,7 @@ mod tests {
         chat: Arc<ChatState>,
         library: LibraryState,
         seen: Arc<StdMutex<Vec<CompletionRequest>>>,
+        sees: Arc<std::sync::atomic::AtomicBool>,
         judge: Arc<StdMutex<JudgeSays>>,
         judged: Arc<StdMutex<usize>>,
     }
@@ -2461,6 +2535,8 @@ mod tests {
         let judge = Arc::new(StdMutex::new(JudgeSays::Clear));
         let judged = Arc::new(StdMutex::new(0usize));
         let (for_judge, for_judged) = (Arc::clone(&judge), Arc::clone(&judged));
+        let sees = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let for_sees = Arc::clone(&sees);
         let personas = PersonaChats::with(
             dir,
             root.join("work"),
@@ -2470,6 +2546,7 @@ mod tests {
                     mode.clone(),
                     Arc::clone(&for_judge),
                     Arc::clone(&for_judged),
+                    Arc::clone(&for_sees),
                 ))
                     as Box<dyn mecha_core::provider::Provider>)
             }),
@@ -2485,6 +2562,7 @@ mod tests {
                 Mode::Answer,
                 Arc::new(StdMutex::new(JudgeSays::Clear)),
                 Arc::new(StdMutex::new(0)),
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
             )),
             pool,
             config,
@@ -2496,6 +2574,7 @@ mod tests {
             root,
             chat,
             seen,
+            sees,
             judge,
             judged,
         }
@@ -2749,6 +2828,9 @@ mod tests {
         let shown = super::super::files::serve(ws.clone(), "images/drawn.png".into()).await;
         assert_eq!(shown.status(), StatusCode::OK);
         assert_eq!(shown.headers()["content-type"], "image/png");
+        // A real file just outside the jail, so the 404 is containment and
+        // not absence (review of #438).
+        std::fs::write(ws.parent().unwrap().join("drawn.png"), b"png").unwrap();
         let outside = super::super::files::serve(ws.clone(), "../drawn.png".into()).await;
         assert_eq!(outside.status(), StatusCode::NOT_FOUND);
 
@@ -2785,6 +2867,96 @@ mod tests {
                 .await,
             Err(Refusal::Bad(_))
         ));
+    }
+
+    /// A dropped picture rides on the persona's turn as pixels when its
+    /// model can see, arming `private` as in the assistant's chat; a blind
+    /// model gets the path alone, and the answer counts what was not shown.
+    #[tokio::test]
+    async fn an_attached_picture_rides_on_the_turn_for_a_model_that_sees() {
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let ws = w
+            .personas()
+            .workspace_of(&w.library, &key, None)
+            .await
+            .unwrap();
+        std::fs::create_dir_all(ws.join("inbox")).unwrap();
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 4)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(ws.join("inbox/photo.png"), &png).unwrap();
+        std::fs::write(ws.join("inbox/notes.txt"), b"notes").unwrap();
+        let attached = vec!["inbox/photo.png".to_string(), "inbox/notes.txt".to_string()];
+        let text = "Look\n\nAttached file at inbox/photo.png\nAttached file at inbox/notes.txt";
+
+        let send = |sees: bool| {
+            w.sees.store(sees, std::sync::atomic::Ordering::SeqCst);
+            let (w, key, attached) = (&w, key.clone(), attached.clone());
+            async move {
+                let (mut rx, _) = w
+                    .personas()
+                    .subscribe(&w.library, &key, None)
+                    .await
+                    .unwrap();
+                let answer = w
+                    .personas()
+                    .send_with(&w.chat, &w.library, &key, text, None, None, attached)
+                    .await
+                    .unwrap();
+                loop {
+                    match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await
+                    {
+                        Ok(Ok(WireEvent::Done {
+                            ok,
+                            error,
+                            taint_private,
+                            ..
+                        })) => {
+                            assert!(ok, "{error:?}");
+                            return (answer, taint_private);
+                        }
+                        Ok(Ok(_)) => continue,
+                        other => panic!("no Done event: {other:?}"),
+                    }
+                }
+            }
+        };
+        let images_in_last_turn = || {
+            let seen = w.seen.lock().unwrap();
+            let last = seen.last().unwrap();
+            let user = last
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == mecha_core::message::Role::User)
+                .unwrap();
+            user.content
+                .iter()
+                .filter(|b| matches!(b, Block::Image { .. }))
+                .count()
+        };
+
+        // Blind: the path is in the text, no pixels, and one not shown.
+        let (answer, private) = send(false).await;
+        assert_eq!(answer["model_sees"], false);
+        assert_eq!(answer["pictures_not_shown"], 1);
+        assert_eq!(images_in_last_turn(), 0);
+        assert!(!private, "nothing private entered a blind turn");
+
+        // Seeing: the picture rides as pixels (the text file never does),
+        // and the chat now holds something private.
+        let (answer, private) = send(true).await;
+        assert_eq!(answer["model_sees"], true);
+        assert_eq!(answer["pictures_not_shown"], 0);
+        assert_eq!(images_in_last_turn(), 1);
+        assert!(private, "an attached picture arms private_data");
     }
 
     /// The tool a run waits on is named until its result arrives.
