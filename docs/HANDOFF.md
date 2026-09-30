@@ -22,6 +22,40 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-30 — modular installs: designed, step 0 shipped (#427, #428,
+#432, #433), steps 1–8 open.** `FEATURES-DESIGN.md` is the authority: §7
+holds the owner's six rulings (all made), and §9 the build order. What
+shipped is in HISTORY under 2026-09-30. `ARCHITECTURE.md` §Features
+describes the registry and is the checklist for adding a feature. Open:
+
+- **#435** (docs, open) carries the design's status line, F5's ruling and
+  three last-pass fixes. Merge it before step 1 is written against the doc.
+- **Step 1 is next**, and it is the first one that changes behaviour for an
+  existing install:
+  - the `[features]` table (`Config`, `ConfigLayer`, `apply`, the project
+    strip and a nested-layer test);
+  - an in-place `mecha features enable|disable` writer, since
+    `setup::apply` bails when the header is absent;
+  - tool registration gated on the global bool;
+  - the upgrade notice on every start;
+  - `documents`, `voice` and `personas` onto
+    `trial_env::OPERATOR_ONLY_TABLES`, and correcting that constant's "the
+    five" comment;
+  - `Feature::switchable_from_environment`.
+  `personas` and `voice` still read "always on" in step 0, and step 1 must
+  give them real evidence before the notice keys on it (§4.2).
+- **A real gap today, independent of step 1:** `[documents]` is stripped from
+  project layers but missing from `OPERATOR_ONLY_TABLES`. An experiment
+  environment can set `ocr_url` and `confine = false` now.
+- **Minor, from the #428/#432/#433 reviews:**
+  - The `incognito` row asks `provider_is_local` of `default_provider`, not
+    the bound router preset.
+  - `every_variant_is_in_all` relies on a count raised by hand.
+  - `mcp_entry` matches a command's file name, so a wrapper script reads off.
+  - `testenv::HomeGuard`'s `STORE_OVERRIDES` omits `MECHA_MAIL_DIR`.
+  - `onboarding`'s store helpers copy the mail crate's rule with nothing
+    that fails when the two diverge.
+
 **2026-09-30 — region-targeted edits: measured, C chosen by the owner,
 built in #429, merged and installed (04:31Z).** `IMAGE-REGION-EDIT-RESEARCH.md` is the authority: the
 Edit button opens a modal where the owner paints the area to change. C (a
