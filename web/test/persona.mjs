@@ -237,4 +237,31 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   assert.equal(pictureOf(r.entries[0]), 'images/20260930-120000-1.png');
 }
 
+// A turn that asked for pictures and got none says so under the reply,
+// from the tool rows' own results; a drawn one, a running one, a turn with
+// a call still out, or one that asked for none says nothing.
+{
+  const { turnsWithoutPicture } = await import('../src/lib/picture.js');
+  const img = (is_error) => ({ kind: 'tool', name: 'image_generate', is_error });
+  const entries = [
+    { kind: 'user', text: 'draw yourself' },
+    img(true), img(true),
+    { kind: 'assistant', text: 'Here you go.' },
+    { kind: 'user', text: 'again' },
+    img(true), img(false),
+    { kind: 'assistant', text: 'There.' },
+    { kind: 'user', text: 'hello' },
+    { kind: 'tool', name: 'document_read', is_error: true },
+    { kind: 'assistant', text: 'hi' },
+    { kind: 'user', text: 'one more' },
+    img(true),
+    { kind: 'user', text: 'and with the cat', queued: true },
+    img(true),
+    { kind: 'assistant', text: 'Done!' },
+  ];
+  assert.deepEqual([...turnsWithoutPicture(entries)], [3, 15]);
+  assert.deepEqual([...turnsWithoutPicture(entries, true)], [3], 'a running turn is not judged');
+  assert.deepEqual([...turnsWithoutPicture([{ kind: 'user', text: 'x' }, img(null)])], [], 'a call still out');
+}
+
 console.log('persona: ok');

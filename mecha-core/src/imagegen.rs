@@ -1572,6 +1572,49 @@ pub fn layout_similarity_painted(
     (vx > 0.0 && vy > 0.0).then(|| cov / (vx * vy).sqrt())
 }
 
+/// What a persona cast as itself wears and does when its prompt does not open
+/// with it: the scene the prompt describes, rather than the portrait's own.
+const SELF_WEARING: &str = "the clothes the scene describes";
+const SELF_DOING: &str = "what the scene describes";
+
+/// A prompt that opens with the persona's name (`name_words` long), read for
+/// what it wears and does: the rest of the first clause is what it is doing,
+/// and a "wearing …" clause is what it wears. "Maya [removed],
+/// wearing [removed], warm light" gives "[removed]" and "[removed]
+". Either is `None` when the prompt does not say it that way.
+fn self_clauses(prompt: &str, name_words: usize) -> (Option<String>, Option<String>) {
+    let clauses: Vec<&str> = prompt
+        .split([',', '.', ';', '\n'])
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .collect();
+    let Some(first) = clauses.first() else {
+        return (None, None);
+    };
+    // The name is the first word, or words for a display name; what it is
+    // doing follows it in the same clause.
+    let rest = first
+        .split_whitespace()
+        .skip(name_words)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let rest = rest.as_str();
+    let lower = |t: &str| t.to_lowercase();
+    let wearing = clauses
+        .iter()
+        .take(3)
+        .find_map(|c| {
+            let l = lower(c);
+            l.find("wearing ")
+                .map(|at| c[at + "wearing ".len()..].trim().to_string())
+        })
+        .filter(|w| !w.is_empty());
+    let doing = (!rest.is_empty() && !lower(rest).starts_with("wearing "))
+        .then(|| rest.to_string())
+        .filter(|d| d.split_whitespace().count() >= 2);
+    (wearing, doing)
+}
+
 /// The manifest beside a workspace picture, when it has one: read through
 /// the jail, bounded, and only ever used for names checked elsewhere.
 async fn read_manifest(ctx: &ToolCtx, png: &str) -> Option<Value> {
@@ -1613,6 +1656,10 @@ pub struct ImageGenerate {
     /// The persona form (`for_persona`): a cast name the library does not
     /// hold is refused, as before, rather than drawn as an extra.
     persona: bool,
+    /// Who "self" is in this persona's chat (`for_persona_as`, §8.6): its
+    /// names and the library character it looks like. `None` outside a
+    /// persona chat.
+    self_as: Option<crate::tool::PersonaSelf>,
 }
 
 /// An edit that came back a near-copy: the picture a retry should edit, and
@@ -1647,6 +1694,7 @@ impl ImageGenerate {
             near_copies: Default::default(),
             near_copy_salt: Default::default(),
             persona: false,
+            self_as: None,
         })
     }
 
@@ -1822,6 +1870,125 @@ impl ImageGenerate {
     pub fn with_library_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.library_dir = Some(dir);
         self
+    }
+
+    /// The form a persona chat gets: strict about unknown cast names, and
+    /// knowing who "self" is when `who` says.
+    fn persona_form(&self, who: Option<crate::tool::PersonaSelf>) -> ImageGenerate {
+        ImageGenerate {
+            cfg: self.cfg.clone(),
+            backend: Arc::clone(&self.backend),
+            generation: Arc::clone(&self.generation),
+            library_dir: self.library_dir.clone(),
+            near_copies: Default::default(),
+            near_copy_salt: Default::default(),
+            persona: true,
+            self_as: who,
+        }
+    }
+
+    /// Cast the persona as itself (§8.6). In a persona chat, a cast member
+    /// named `self` is the persona's linked character, and a prompt that
+    /// names the persona — by its character, its folder name or the name it
+    /// is shown by — gets that character added to `cast` rather than a
+    /// refusal. The first live persona chat asked for its own picture 87
+    /// times; 82 were refused for naming itself without `cast`, and the
+    /// model resent the same call each time (2026-09-30).
+    ///
+    /// Only ever the persona's *own* character: another name the prompt uses
+    /// is left to the guard, and an unknown cast name is still refused.
+    /// `Err` is an expected failure for the model to route around: `self`
+    /// asked of a persona with no character.
+    fn cast_self(&self, ask: &mut Option<LibraryAsk>, prompt: &str) -> Result<(), String> {
+        let Some(who) = &self.self_as else {
+            return Ok(());
+        };
+        let character = who.character.as_deref().map(|c| c.trim().to_lowercase());
+        let is_self = |n: &str| n.trim().eq_ignore_ascii_case("self");
+        if let Some(a) = ask.as_mut() {
+            if a.cast.iter().any(|m| is_self(&m.name)) {
+                let Some(c) = &character else {
+                    return Err(
+                        "This persona has no library character, so there is no \"self\" \
+                                to draw. Describe the scene without `self` in `cast`."
+                            .to_string(),
+                    );
+                };
+                for m in a.cast.iter_mut().filter(|m| is_self(&m.name)) {
+                    m.name = c.clone();
+                }
+                // `self` and the character's own name both given: one of them.
+                let mut seen = std::collections::BTreeSet::new();
+                a.cast.retain(|m| seen.insert(m.name.trim().to_lowercase()));
+            }
+        }
+        let Some(c) = character else {
+            return Ok(());
+        };
+        if ask.as_ref().is_some_and(|a| {
+            a.cast
+                .iter()
+                .any(|m| m.name.trim().eq_ignore_ascii_case(&c))
+        }) {
+            return Ok(());
+        }
+        // Whole words, as `imagelib::named_in` reads a prompt: "Ann" is not
+        // named by "planning".
+        let words = |text: &str| -> Vec<String> {
+            text.split(|ch: char| !(ch.is_alphanumeric() || ch == '-'))
+                .filter(|w| !w.is_empty())
+                .map(str::to_lowercase)
+                .collect()
+        };
+        let said = words(prompt);
+        let first = |name: &[String]| -> Option<usize> {
+            (!name.is_empty() && name.len() <= said.len())
+                .then(|| (0..=said.len() - name.len()).find(|&i| said[i..i + name.len()] == *name))
+                .flatten()
+        };
+        // Where the prompt first names the persona, and in how many words.
+        let Some((at, len)) = [vec![c.clone()], words(&who.name), words(&who.display)]
+            .iter()
+            .filter_map(|n| first(n).map(|i| (i, n.len())))
+            // Earliest, and at one place the longest: "Mara Quinn" over "mara".
+            .min_by_key(|&(i, len)| (i, std::cmp::Reverse(len)))
+        else {
+            return Ok(());
+        };
+        // The compiler needs what they wear and do, or the portrait's own
+        // outfit and pose come along. A prompt that opens with the persona —
+        // the common selfie, "Maya lounging on [removed]"
+        // — says both in its first clauses; otherwise they point at the scene
+        // the prompt describes.
+        let (wearing, doing) = if at == 0 {
+            self_clauses(prompt, len)
+        } else {
+            (None, None)
+        };
+        let me = crate::imagelib::CastMember {
+            name: c,
+            wearing: wearing.unwrap_or_else(|| SELF_WEARING.to_string()),
+            doing: doing.unwrap_or_else(|| SELF_DOING.to_string()),
+        };
+        match ask.as_mut() {
+            // Left to right, as the cast is read: before the first member the
+            // prompt names later, or who it does not name at all.
+            Some(a) => {
+                let slot = a
+                    .cast
+                    .iter()
+                    .position(|m| first(&words(&m.name)).is_none_or(|i| i > at))
+                    .unwrap_or(a.cast.len());
+                a.cast.insert(slot, me);
+            }
+            None => {
+                *ask = Some(LibraryAsk {
+                    cast: vec![me],
+                    ..Default::default()
+                })
+            }
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -2001,15 +2168,14 @@ impl Tool for ImageGenerate {
     /// Eligible, in a form that keeps refusing a cast name the library does
     /// not hold: an unknown name is not drawn as an extra in a persona chat.
     fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
-        Some(Arc::new(ImageGenerate {
-            cfg: self.cfg.clone(),
-            backend: Arc::clone(&self.backend),
-            generation: Arc::clone(&self.generation),
-            library_dir: self.library_dir.clone(),
-            near_copies: Default::default(),
-            near_copy_salt: Default::default(),
-            persona: true,
-        }))
+        Some(Arc::new(self.persona_form(None)))
+    }
+
+    /// The persona form, knowing who "self" is: a persona linked to a library
+    /// character draws itself as that character (`docs/PERSONA-DESIGN.md`
+    /// §8.6) without the model having to cast it.
+    fn for_persona_as(self: Arc<Self>, who: &crate::tool::PersonaSelf) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(self.persona_form(Some(who.clone()))))
     }
 
     fn description(&self) -> &str {
@@ -2113,11 +2279,21 @@ impl Tool for ImageGenerate {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let (mut req, paths, ask, mask_path) = match self.request(&input) {
+        let (mut req, paths, mut ask, mask_path) = match self.request(&input) {
             Ok(parsed) => parsed,
             Err(why) => return Ok(refused(why)),
         };
         let is_edit = !paths.is_empty();
+        // A persona drawing itself: before the guard below, which would
+        // otherwise refuse the persona for naming itself (§8.6). An edit's
+        // people carry their own identity, and `"cast": []` says someone
+        // else, so neither is cast here.
+        let waived_self = matches!(input.get("cast"), Some(Value::Array(a)) if a.is_empty());
+        if !is_edit && !waived_self {
+            if let Err(why) = self.cast_self(&mut ask, &req.prompt) {
+                return Ok(refused(why));
+            }
+        }
         let scene_prompt = req.prompt.clone();
         // A library character named in the prompt but not in `cast` is drawn
         // from words alone, and comes out as someone else — the first real
@@ -4419,6 +4595,175 @@ mod tests {
             .filter(|l| l.starts_with("POST /prompt"))
             .count();
         assert_eq!(before, after, "the persona form drew");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A persona draws itself (§8.6): naming itself — by its character, its
+    /// folder name or the name it is shown by — or casting `self` gets its
+    /// linked character cast, where the guard used to refuse it and the model
+    /// resent the same call (82 of 87 calls in the first live chat,
+    /// 2026-09-30). Only its *own* character: another library name is still
+    /// refused, the assistant's form is unchanged, and `self` on a persona
+    /// with no character is an expected failure that draws nothing.
+    #[tokio::test]
+    async fn a_persona_draws_itself_without_casting_itself() {
+        let (url, seen) = fake(vec![done(), done(), done(), done(), done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "priya", "john"]);
+        let base = Arc::new(tool(&url).with_library_dir(lib.clone()));
+        let who = |name: &str, display: &str, character: Option<&str>| crate::tool::PersonaSelf {
+            name: name.into(),
+            display: display.into(),
+            character: character.map(Into::into),
+        };
+        let draws = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.starts_with("POST /prompt"))
+                .count()
+        };
+        let last_prompt = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|l| l.starts_with("POST /prompt"))
+                .cloned()
+                .unwrap()
+        };
+
+        // The first live chat's call: its own name in the prompt, no cast.
+        let maya = Arc::clone(&base)
+            .for_persona_as(&who("maya", "Maya", Some("maya")))
+            .unwrap();
+        let out = maya
+            .call(
+                json!({"prompt": "Maya reading on a park bench, wearing a rain jacket, warm light", "seed": 7}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            last_prompt().contains("(maya, a memorable face)"),
+            "{}",
+            last_prompt()
+        );
+        let cast = manifest_of(&dir, &out.content)["cast"][0].clone();
+        assert_eq!(cast["name"], "maya", "{cast}");
+        assert_eq!(cast["doing"], "reading on a park bench", "{cast}");
+        assert_eq!(cast["wearing"], "a rain jacket", "{cast}");
+
+        // A persona whose name is not its character's: "Mara" is priya.
+        let mara = Arc::clone(&base)
+            .for_persona_as(&who("mara", "Mara Quinn", Some("priya")))
+            .unwrap();
+        let out = mara
+            .call(
+                json!({"prompt": "Mara Quinn on a beach at dusk"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let cast = manifest_of(&dir, &out.content)["cast"][0].clone();
+        assert_eq!(cast["name"], "maya", "{cast}");
+        assert_eq!(cast["doing"], "on a beach at dusk", "{cast}");
+
+        // `self` in the cast is the character, in the place it was given:
+        // left to right, after john.
+        let out = mara
+            .call(
+                json!({"prompt": "a kitchen, morning", "cast": [
+                    {"name": "john", "wearing": "an apron", "doing": "pouring coffee"},
+                    {"name": "self", "wearing": "a robe", "doing": "reading"}
+                ]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let cast = manifest_of(&dir, &out.content)["cast"].clone();
+        assert_eq!(cast[0]["name"], "john", "{cast}");
+        assert_eq!(cast[1]["name"], "maya", "{cast}");
+        assert_eq!(cast[1]["wearing"], "a robe", "{cast}");
+
+        // Named after someone the prompt names first: after them.
+        let out = maya
+            .call(
+                json!({"prompt": "john hands Maya a cup", "cast": [
+                    {"name": "john", "wearing": "a coat", "doing": "handing over a cup"}
+                ]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let cast = manifest_of(&dir, &out.content)["cast"].clone();
+        assert_eq!(cast[0]["name"], "john", "{cast}");
+        assert_eq!(cast[1]["name"], "maya", "{cast}");
+
+        // Whole words only: "planning" does not name a persona called Ann,
+        // so nothing is cast and the scene draws as written.
+        let ann = Arc::clone(&base)
+            .for_persona_as(&who("ann", "Ann", Some("priya")))
+            .unwrap();
+        let out = ann
+            .call(
+                json!({"prompt": "a planning meeting, whiteboard"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            manifest_of(&dir, &out.content)["cast"]
+                .as_array()
+                .is_none_or(|c| c.is_empty()),
+            "{}",
+            out.content
+        );
+
+        let before = draws();
+        // Another library character named without a cast is still refused.
+        let out = maya
+            .call(json!({"prompt": "Maya and john at a diner"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("`john`"),
+            "{}",
+            out.content
+        );
+        // The assistant's form knows no "self": naming maya is refused as before.
+        let out = base
+            .call(json!({"prompt": "Maya reading on a bench"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("`maya`"),
+            "{}",
+            out.content
+        );
+        // `self` on a persona with no character: an expected failure.
+        let plain = Arc::clone(&base)
+            .for_persona_as(&who("rook", "Rook", None))
+            .unwrap();
+        let out = plain
+            .call(
+                json!({"prompt": "a portrait", "cast": [{"name": "self", "wearing": "", "doing": ""}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("no library character"),
+            "{}",
+            out.content
+        );
+        assert_eq!(draws(), before, "a refused call drew");
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }

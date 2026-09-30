@@ -697,6 +697,13 @@ picker, the lock (§8.3) and the voice binding (§11) live.
 
 ### 8.6 Self-portraits (R23)
 
+*Built 2026-09-30:* `Tool::for_persona_as` hands `image_generate` a
+`PersonaSelf`, and `ImageGenerate::cast_self` casts the persona's character
+when the prompt names the persona (character, folder or display name, whole
+words) or `cast` says `self`, filling `wearing`/`doing` from a prompt that
+opens with the persona. Nothing tells the model in its system prompt; the
+tool does not need it to.
+
 A persona linked to a library character (§4.2) can make pictures of itself —
 a selfie in a friend's chat, a scene from a story, the devil's advocate
 looking unimpressed.
