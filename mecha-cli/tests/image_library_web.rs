@@ -51,6 +51,8 @@ max_retries = 0
 enabled = ["fs_read"]
 [sandbox]
 kind = "none"
+[features]
+web = true
 "#,
     )
     .unwrap();

@@ -6,8 +6,10 @@
 > and the booking sweep as #432 and #433. `docs/ARCHITECTURE.md` §Features
 > describes what is built. **Step 1 is split in two**: 1a — the `[features]`
 > table, `mecha features enable|disable`, the upgrade notice, `mecha setup`'s
-> offers and the environment refusal, gating nothing — is built; 1b, the
-> gating, is next. One deliberate departure from §5: `[features] messages` is
+> offers and the environment refusal, gating nothing — shipped as #443;
+> 1b — tools and the known servers register only when switched on, trials
+> default their switches from the servers they carry, and `mecha serve`
+> refuses without `web` — is built. One deliberate departure from §5: `[features] messages` is
 > applied *into* `[messages] enabled` rather than or-ed with it, so experiment
 > levers keep one field (ARCHITECTURE §Features says why). Steps 2–8 are
 > unbuilt. The owner

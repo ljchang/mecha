@@ -8121,7 +8121,43 @@ in five different ways. The design and its open steps are
   installed release, the units and worktree builds at once, and a key a
   newer build added must not take the older ones down; an unknown key can
   turn nothing on, so it is reported (`unknown_switches`) and ignored.
-  Nothing registers or connects by the switch until step 1b.
+  **Registration asks the switch, never the readout** (`switched_on`, step
+  1b): `prepare_tools` registers `web_search`, `image_generate` and the
+  library, and `document_read`, and connects an `[[mcp]]` server that
+  `server_feature` places in a feature, only when that feature's switch is
+  on — then builds from the session's settings as before, so a switched-on
+  feature whose server is down still registers what it can and the tool list
+  does not move with uptime. `switched_on` walks `needs()` as `state` does,
+  so it cannot hand out a tool the readout shows `Blocked`. A server that
+  belongs to no feature connects as it always has. **The gate speaks only
+  when the run named the tool** (`--tool`): every verb that builds a
+  registry passes through it — the children `mecha serve` and Slack spawn
+  per request among them — so a line per build would repeat into the
+  journal forever, which is what `Cli::announces_features` keeps the
+  upgrade notice from doing (review of #445). The fix a row, the gate and
+  a refused server print comes from `enable_command`, which names every
+  switch a feature hangs on; the announcement, `plan_enable`'s refusal and
+  `serve`'s two refusals spell theirs directly and agree with it today.
+  The four verbs that start the graph server themselves (`distill`,
+  `gossip`, `vet`, `corroborate`) ask `server_refusal` before they spawn
+  it, so `graph = false` is one answer everywhere. `server_feature` keys on
+  the command's file name, so **a server launched through a wrapper belongs
+  to no feature and is not gated** — the day a feature's server moves behind
+  a launcher, `server_feature` has to learn it. `Feature::gated` says which
+  features a switch turns off today; the upgrade notice calls only those
+  off, and Slack, personas, voice, incognito and the front door — queue
+  and publishing server together, never one half first — "still working"
+  until §9 step 3 guards them. `mecha serve` refuses
+  without `web`, telling "predates the switch" from `web = false`.
+- **A trial keeps what it carries, and `graph` is the only default.**
+  `trial_env::config_at` fills a trial's unanswered `graph` switch on when
+  the environment declares its own graph server or `live_servers` brings
+  the operator's in, so gating changes nothing an existing experiment
+  connects, and `search` follows the operator's own switch as its backends
+  do. Nothing else defaults: a `mecha-mail` or `mecha-docs` an environment
+  declares runs on the operator's credentials, which `switchable_from_environment` refuses, and a default
+  would assert on the environment's behalf what it may not (review of
+  #445). The environment's own answer stands.
 - **`messages` has one runtime answer.** `apply` writes `[features] messages`
   into `[messages] enabled` and drops it from the map, rather than or-ing two
   fields as the design proposed: `Lever::Messages` and every experiment arm
