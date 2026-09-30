@@ -228,6 +228,13 @@ The decisions that are this design's rather than the owner's:
   blob no visible entry names — a page that blurred a thumbnail would still
   receive its bytes. The list and every locked portrait carry `no-store`; an
   open portrait is content-addressed and cached `immutable`.
+- **Nothing says how much is hidden** (owner ruling, 2026-09-30). No
+  `hidden · N` tile, no "N locked entries hidden" line, and no count in
+  `GET /api/library` or `GET /api/personas`: a count tells whoever holds the
+  phone there is something to find, which "sort of defeats the point". A
+  locked page reads exactly like one with nothing locked — the list-level
+  form of hidden answering as missing. #425 removed the `hidden_locked` field
+  that had carried it.
 - **The unlock is a token in the page's memory.** `POST /api/library/unlock`
   returns a token the page keeps in a variable — no cookie, no storage,
   which `web/test/no-storage.mjs` forbids — and sends as `?unlock=`; it lapses
