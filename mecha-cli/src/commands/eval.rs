@@ -399,6 +399,7 @@ async fn run_arm(
                 id,
                 prompt: case.prompt.clone(),
                 meta: None,
+                attach: case.attach.clone(),
             });
         }
     }

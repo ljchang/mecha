@@ -55,6 +55,12 @@ pub struct EvalCase {
     /// change what every other case in the set is measuring.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_at_tokens: Option<u64>,
+    /// Pictures in the case's workspace put on its first turn as pixels, the
+    /// way a web-chat upload is — so a case can measure what a model does
+    /// with an image it can already see, not only one named by path. The
+    /// prompt names them, as the chat's message does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attach: Vec<String>,
 }
 
 impl EvalCase {
@@ -1407,6 +1413,7 @@ mod tests {
             sandbox: false,
             max_turns: None,
             compact_at_tokens: None,
+            attach: Vec::new(),
         }
     }
 
@@ -1911,6 +1918,7 @@ mod grounding_tests {
             sandbox: false,
             max_turns: None,
             compact_at_tokens: None,
+            attach: Vec::new(),
         };
         let check = Judge::new(Box::new(EvidenceJudge), None)
             .check_with_evidence(&case, "unknown", &evidence)
