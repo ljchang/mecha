@@ -1915,18 +1915,39 @@ impl ImageGenerate {
     /// is left to the guard, and an unknown cast name is still refused.
     /// `Err` is an expected failure for the model to route around: `self`
     /// asked of a persona with no character.
-    fn cast_self(&self, ask: &mut Option<LibraryAsk>, prompt: &str) -> Result<(), String> {
+    fn cast_self(
+        &self,
+        ask: &mut Option<LibraryAsk>,
+        prompt: &str,
+        add: bool,
+    ) -> Result<(), String> {
         let Some(who) = &self.self_as else {
             return Ok(());
         };
-        let character = who.character.as_deref().map(|c| c.trim().to_lowercase());
+        // Only a character the library holds as approved is "self": one it
+        // does not (a dangling link, a candidate, no library) would be
+        // refused by the compiler under a name the model never wrote — the
+        // loop this exists to end (review of #444). A persona in that state
+        // draws as it did before, and `mecha persona` reports the link.
+        let character = who
+            .character
+            .as_deref()
+            .map(|c| c.trim().to_lowercase())
+            .filter(|c| {
+                self.library_dir.as_ref().is_some_and(|dir| {
+                    crate::imagelib::Library::load(dir)
+                        .0
+                        .get(crate::imagelib::Kind::Character, c)
+                        .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
+                })
+            });
         let is_self = |n: &str| n.trim().eq_ignore_ascii_case("self");
         if let Some(a) = ask.as_mut() {
             if a.cast.iter().any(|m| is_self(&m.name)) {
                 let Some(c) = &character else {
                     return Err(
-                        "This persona has no library character, so there is no \"self\" \
-                                to draw. Describe the scene without `self` in `cast`."
+                        "This persona has no approved library character, so there is no \
+                         \"self\" to draw. Describe the scene without `self` in `cast`."
                             .to_string(),
                     );
                 };
@@ -1945,7 +1966,7 @@ impl ImageGenerate {
                 });
             }
         }
-        let Some(c) = character else {
+        let Some(c) = character.filter(|_| add) else {
             return Ok(());
         };
         if ask.as_ref().is_some_and(|a| {
@@ -2311,13 +2332,15 @@ impl Tool for ImageGenerate {
             Err(why) => return Ok(refused(why)),
         };
         let is_edit = !paths.is_empty();
+        // An explicit `"cast": []` says "someone else by that name": no
+        // guard below, and no self cast here.
+        let waived = matches!(input.get("cast"), Some(Value::Array(a)) if a.is_empty());
         // A persona drawing itself: before the guard below, which would
-        // otherwise refuse the persona for naming itself (§8.6). An edit's
-        // people carry their own identity, and `"cast": []` says someone
-        // else, so neither is cast here.
-        let waived_self = matches!(input.get("cast"), Some(Value::Array(a)) if a.is_empty());
-        if !is_edit && !waived_self {
-            if let Err(why) = self.cast_self(&mut ask, &req.prompt) {
+        // otherwise refuse the persona for naming itself (§8.6). `self` in
+        // `cast` is resolved on an edit too; the persona is only *added* to a
+        // new picture, since an edit's people carry their own identity.
+        if !waived {
+            if let Err(why) = self.cast_self(&mut ask, &req.prompt, !is_edit) {
                 return Ok(refused(why));
             }
         }
@@ -2330,7 +2353,6 @@ impl Tool for ImageGenerate {
         // #383). An explicit `"cast": []` says "someone else by that name";
         // `null` is no cast, as `request` reads it; an edit's people carry
         // their own identity.
-        let waived = matches!(input.get("cast"), Some(Value::Array(a)) if a.is_empty());
         if !is_edit && !waived {
             if let Some(dir) = &self.library_dir {
                 let (lib, _) = crate::imagelib::Library::load(dir);
@@ -4673,6 +4695,76 @@ mod tests {
         );
     }
 
+    /// A persona whose linked character the library does not hold as
+    /// approved — a dangling link, or a candidate — is not cast as itself:
+    /// the compiler would refuse a name the model never wrote, and the model
+    /// would resend the call (review of #444). Naming itself draws as it did
+    /// before, and `self` is an expected failure that names no one.
+    #[tokio::test]
+    async fn a_persona_whose_character_is_not_approved_is_not_cast() {
+        let (url, seen) = fake(vec![done(), done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya"]);
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb([1, 2, 3]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Character,
+                name: "wren".into(),
+                text: "wren, proposed by a model".into(),
+                portrait: Some(png.into_inner()),
+                source_seed: None,
+                origin: crate::imagelib::Origin::ModelClean,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let base = Arc::new(tool(&url).with_library_dir(lib.clone()));
+        let draws = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.starts_with("POST /prompt"))
+                .count()
+        };
+        for character in ["ghost", "wren"] {
+            let persona = Arc::clone(&base)
+                .for_persona_as(&crate::tool::PersonaSelf {
+                    name: character.into(),
+                    display: String::new(),
+                    character: Some(character.into()),
+                })
+                .unwrap();
+            let before = draws();
+            let out = persona
+                .call(
+                    json!({"prompt": format!("{character} on a beach at dusk")}),
+                    &ctx(&dir),
+                )
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{character}: {}", out.content);
+            assert_eq!(draws(), before + 1, "{character}: drew as before");
+            let out = persona
+                .call(
+                    json!({"prompt": "a portrait", "cast": [{"name": "self", "wearing": "a coat", "doing": "smiling"}]}),
+                    &ctx(&dir),
+                )
+                .await
+                .unwrap();
+            assert!(
+                out.is_error && out.content.contains("no approved library character"),
+                "{character}: {}",
+                out.content
+            );
+            assert!(!out.content.contains(character), "{}", out.content);
+        }
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
     /// A persona draws itself (§8.6): naming itself — by its character, its
     /// folder name or the name it is shown by — or casting `self` gets its
     /// linked character cast, where the guard used to refuse it and the model
@@ -4833,7 +4925,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            out.is_error && out.content.contains("no library character"),
+            out.is_error && out.content.contains("no approved library character"),
             "{}",
             out.content
         );
