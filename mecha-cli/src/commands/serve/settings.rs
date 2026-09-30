@@ -91,6 +91,7 @@ fn charter_state_blocking() -> Json<serde_json::Value> {
         Ok(charter) => serde_json::json!({
             "path": path,
             "exists": path.is_file(),
+            "digest": mecha_core::charter::digest(&raw),
             "raw": raw,
             // `sensor` rides beside each line so the page's serialiser can
             // write it back on a save — carried through a re-rank, or typed
@@ -136,7 +137,16 @@ pub async fn charter(State(_state): St) -> Json<serde_json::Value> {
 
 #[derive(Deserialize)]
 pub struct CharterSave {
-    raw: String,
+    /// The whole file, verbatim — the "Edit as TOML" save.
+    #[serde(default)]
+    raw: Option<String>,
+    /// The list's rows (`charter::form`), set in place in the file on disk —
+    /// the list editor's save. With it, `base`: the digest of the charter as
+    /// the page read it.
+    #[serde(default)]
+    changes: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(default)]
+    base: Option<String>,
 }
 
 /// A charter is a handful of lines under a 2,000-character rendered budget;
@@ -147,14 +157,72 @@ pub struct CharterSave {
 /// arbitrary input.
 const MAX_CHARTER_BYTES: usize = 64 * 1024;
 
+/// The list editor's save as the file it would write: its rows set in place
+/// in the charter on disk (`tomlform::apply` over `charter::form`), the
+/// owner's comments kept — or, with no charter yet, in the template, so a
+/// first charter keeps the template's guidance above its lines. Refused
+/// when the page read a charter that has changed since.
+#[allow(clippy::result_large_err)]
+fn rows_to_raw(
+    changes: &serde_json::Map<String, serde_json::Value>,
+    base: Option<&str>,
+) -> std::result::Result<String, Response> {
+    let path = mecha_core::charter::Charter::default_path()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response())?;
+    let disk = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response())
+        }
+    };
+    let Some(base) = base else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "a list save carries the `base` its page read\n",
+        )
+            .into_response());
+    };
+    if mecha_core::charter::digest(&disk) != base {
+        return Err((
+            StatusCode::CONFLICT,
+            "the charter changed since this page read it — reload to see the change, then edit again\n",
+        )
+            .into_response());
+    }
+    let start = if disk.trim().is_empty() {
+        mecha_core::charter::TEMPLATE
+    } else {
+        disk.as_str()
+    };
+    mecha_core::tomlform::apply(&mecha_core::charter::form(), start, changes)
+        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}\n")).into_response())
+}
+
 /// POST /api/settings/charter — validate, then write, in that order.
 pub async fn charter_save(State(_state): St, Json(body): Json<CharterSave>) -> Response {
-    if body.raw.len() > MAX_CHARTER_BYTES {
+    let raw = match (body.raw, body.changes) {
+        (Some(raw), None) => raw,
+        (None, Some(changes)) => match rows_to_raw(&changes, body.base.as_deref()) {
+            Ok(raw) => raw,
+            Err(refused) => return refused,
+        },
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "a charter save carries `raw` or `changes`, one of them\n",
+            )
+                .into_response()
+        }
+    };
+    if raw.len() > MAX_CHARTER_BYTES {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             format!(
-                "{} bytes is not a charter — the whole rendered budget is {} characters\n",
-                body.raw.len(),
+                "{} bytes is not a charter — a charter file is capped at {} bytes (its rendered \
+                 budget is {} characters)\n",
+                raw.len(),
+                MAX_CHARTER_BYTES,
                 mecha_core::charter::CHARTER_CHAR_BUDGET
             ),
         )
@@ -162,7 +230,7 @@ pub async fn charter_save(State(_state): St, Json(body): Json<CharterSave>) -> R
     }
     // The same reader every run loads through. A document this refuses
     // never reaches disk, which is the property the module doc names.
-    let parsed = match mecha_core::charter::Charter::parse(&body.raw) {
+    let parsed = match mecha_core::charter::Charter::parse(&raw) {
         Ok(c) => c,
         Err(e) => {
             return (StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}\n")).into_response();
@@ -183,7 +251,7 @@ pub async fn charter_save(State(_state): St, Json(body): Json<CharterSave>) -> R
     // connections, and two saves sharing one temp path can land A's rename
     // over B's write while telling each the other's outcome.
     let tmp = path.with_extension(format!("toml.tmp.{}", request_stamp()));
-    let write = std::fs::write(&tmp, &body.raw).and_then(|()| std::fs::rename(&tmp, &path));
+    let write = std::fs::write(&tmp, &raw).and_then(|()| std::fs::rename(&tmp, &path));
     if let Err(e) = write {
         let _ = std::fs::remove_file(&tmp);
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
