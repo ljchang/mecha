@@ -710,8 +710,8 @@ Three things make it deliberate rather than accidental:
   it uses. But which features were on
   is as much a condition as which levers were off, so the experiment manifest
   and the session record carry the feature set beside `levers_off`, from the
-  same registry — otherwise two arms that differ only in whether `[[search]]`
-  was present differ today only in effects — `RunConfig::tools`' tool names,
+  same registry. Two arms that differ only in whether `[[search]]` was
+  present differ today only in effects — `RunConfig::tools`' tool names,
   `condition_hash` — and `harness.rs`'s rule is to record *the switch, not
   the effect*: `web`, `personas` and `voice` change no tool names at all. **Recorded with `levers_off`'s wire rule,
   not just beside it.** A feature set is a closed enum on an append-only
