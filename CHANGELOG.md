@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **An experiment environment can no longer set `[documents]`.** A project's
+  `mecha.toml` was already stripped of it, but an environment's `config.toml`
+  — which arrives with a checkout — could point OCR at a remote server or run
+  the PDF parser unconfined. `mecha exp` now refuses such a file, as it does
+  `[image]`, `[messages]`, `[slack]`, `[web]` and `[harness]`.
+
 ### Added
 
 - **Persona chats show their pictures, with the same Edit button.** A picture
@@ -28,6 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `document_read` and `web_search` could be steered by a hostile PDF into
   searching for something; drop `web_search` for a persona that reads files
   you did not write.
+
+- **The charter editor keeps your comments.** Saving the charter from the
+  web page now changes only what you changed: comments above and among the
+  lines stay, a line you drag takes its comments with it (a comment right
+  above the first line reads as the file's header and stays at the top),
+  and a setpoint you
+  did not touch keeps its spelling. A charter with comments among its lines
+  can be edited as a list, not only as TOML. A save made from a page that
+  read an older charter is refused rather than written over.
 
 - **Paint the part of a picture to change.** The web chat's Edit button now
   opens a modal: paint or draw a box over what should change, say what to

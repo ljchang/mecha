@@ -667,6 +667,68 @@ impl Charter {
     }
 }
 
+/// The charter's `[[line]]` list as a form (`tomlform`): rows matched by
+/// `id`, so a save from the settings page edits the file in place — the
+/// owner's comments, among the lines as well as above them, and an
+/// untouched setpoint's own spelling all stay — and a row that moves takes
+/// its comments with it. The page sends the whole list, in rank order; the
+/// fence is these four fields, and `Charter::parse` still decides whether
+/// the result is a charter (review of the JS serialiser this replaced: it
+/// regenerated every table, so a comment among the lines could not survive).
+pub fn form() -> crate::tomlform::Form {
+    use crate::tomlform::{Field, Form, Kind, Opt, Section};
+    let text = |max, multiline| Kind::Text {
+        max,
+        optional: false,
+        placeholder: None,
+        multiline,
+    };
+    Form {
+        sections: vec![Section::new("Charter").field(Field::new(
+            "line",
+            "Lines",
+            Kind::Rows {
+                key: "id".into(),
+                fields: vec![
+                    Field::new("id", "Id", text(80, false)),
+                    Field::new("text", "Text", text(MAX_FORM_TEXT, true)),
+                    Field::new(
+                        "sensor.kind",
+                        "Sensor",
+                        Kind::Choice {
+                            options: SensorKind::ALL
+                                .iter()
+                                .map(|k| Opt::new(k.wire(), k.describe()))
+                                .collect(),
+                            none: None,
+                        },
+                    ),
+                    Field::new("sensor.setpoint", "Setpoint", text(40, false)),
+                ],
+                max_rows: MAX_FORM_LINES,
+            },
+        ))],
+    }
+}
+
+/// A line's text as the form takes it: well past the whole rendered budget,
+/// which `over_budget` reports rather than refuses.
+const MAX_FORM_TEXT: usize = 4 * CHARTER_CHAR_BUDGET;
+
+/// More lines than any charter holds; a rank past this is not a priority.
+const MAX_FORM_LINES: usize = 64;
+
+/// The digest of the charter's text as a page read it: a list save carries
+/// it back, and a charter changed on disk meanwhile is refused rather than
+/// overwritten from a stale page.
+pub fn digest(text: &str) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// The closed set of sensor kinds as a surface offers them to the owner —
 /// `[{kind, unit, hint, describe}]` in `SensorKind::ALL`'s order. Served by
 /// the web settings endpoint so the form's select is this list and not a
@@ -1009,7 +1071,7 @@ setpoint = 0
     /// docs demo's `fixtures.js` carries a hand copy of what
     /// `sensor_kinds_json` serves, and `website/scripts/check-charter-toml.mjs`
     /// reads this literal out of the source and asserts the fixture equals
-    /// it, the way it pins the serialiser against `WEB_EDITOR_SAMPLE`. The
+    /// it. The
     /// test below asserts the literal equals the function, so a kind that
     /// joins or a hint that is reworded fails here first and the demo
     /// second — never neither (found on review).
@@ -1022,6 +1084,32 @@ setpoint = 0
   {"kind":"intervention_rate","unit":"rate","hint":"a rate like `0.2` or `20%`","describe":"the share of recent runs you stepped into"}
 ]"#;
     // sensor-kinds:end
+
+    /// The fields a list save's row carries, as the page sends them
+    /// (`charter-toml.js`'s `toRows`) and `form` declares them. Both sides
+    /// assert against their own literal, and the `Rows` fence refuses a
+    /// field it does not declare, so a rename on either side would 422 every
+    /// list save behind a green gate (review of #439). This literal is
+    /// asserted equal to `form()`'s fields below, and
+    /// `website/scripts/check-charter-toml.mjs` reads it out of this file and
+    /// asserts `toRows` sends exactly these — the chain across the boundary.
+    // charter-form-fields:begin
+    const CHARTER_FORM_FIELDS: &str = r#"["id","text","sensor.kind","sensor.setpoint"]"#;
+    // charter-form-fields:end
+
+    #[test]
+    fn the_marked_form_fields_are_what_the_form_declares() {
+        let pinned: Vec<String> = serde_json::from_str(CHARTER_FORM_FIELDS).unwrap();
+        let form = form();
+        let crate::tomlform::Kind::Rows { fields, .. } = &form.sections[0].fields[0].kind else {
+            panic!("the charter form is one list of rows");
+        };
+        let declared: Vec<&str> = fields.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            declared, pinned,
+            "update the charter-form-fields literal (and `toRows`) with the form"
+        );
+    }
 
     /// The macro's wire word and `serde`'s `snake_case` are two spellings
     /// of one name; every kind round-trips through both.
@@ -1393,56 +1481,26 @@ priority = 1
         let block = prompt_block(&charter).unwrap();
         assert!(block.contains("not weighted"), "{block}");
     }
-    /// The exact bytes the web settings page writes, verbatim.
-    ///
-    /// **This literal is a shared fixture, not a copy.** The Svelte
-    /// serialiser (`web/src/lib/charter-toml.js`) must produce these bytes
-    /// and this reader must load them, and neither half proves the agreement
-    /// alone: a hand-copied expectation here stays green through any
-    /// regression in `esc` or `serialize`. So
-    /// `website/scripts/check-charter-toml.mjs` reads *this* string out of
-    /// *this* file and asserts the serialiser emits it byte-for-byte, which
-    /// is what makes an edit to either side fail the other. Keep the markers
-    /// intact; that script finds the literal by them.
-    ///
-    /// The editor keeps everything above the first `[[line]]` untouched (the
-    /// owner's header comments, and the whole template on a first charter)
-    /// and regenerates only the tables, always as single-line basic strings,
-    /// because an escape sequence is unambiguous where a bare quote or
-    /// newline is not. A line's sensor is written back as a `[line.sensor]`
-    /// table with the owner's own setpoint spelling — the editor does not
-    /// compose or edit one, it carries one through a save, which is the
-    /// half of §11.1's "parser, serialiser and template move together" that
-    /// this fixture pins: a serialiser that dropped the table would silently
-    /// delete the owner's sensor on the next re-rank.
-    // web-editor-sample:begin
-    const WEB_EDITOR_SAMPLE: &str = r#"# What mecha is for, most important first.
-#
-# Order is rank.
 
-[[line]]
-id = "say-no-early"
-text = "A refusal on Monday is a kindness."
-
-[[line]]
-id = "quote-and-break"
-text = "She said \"no\" early.\nAnd meant it."
-
-[[line]]
-id = "answer-what-waits"
-text = "Keep what waits on me short."
-[line.sensor]
-kind = "outbox_age"
-setpoint = "24h"
-"#;
-    // web-editor-sample:end
-
-    /// The order of the tables *is* the ranking — the editor's drag gesture
-    /// writes nothing else — so this asserts file order, not membership, and
-    /// that the serialiser's escaping survives the reader.
+    /// The list editor's save is `tomlform::apply` over [`form`], and this
+    /// reader must load what it writes — one language on both sides now
+    /// (the JavaScript serialiser this replaced needed a second checker to
+    /// agree with the reader). From the real template: the template's
+    /// guidance stays above the lines, the order sent is the rank, a quote
+    /// and a newline in the text survive, and a sensor is its own table.
     #[test]
-    fn the_web_editors_serialisation_is_what_this_reader_loads() {
-        let charter = Charter::parse(WEB_EDITOR_SAMPLE).unwrap();
+    fn the_list_editors_rows_are_what_this_reader_loads() {
+        let rows = serde_json::json!([
+            {"id": "say-no-early", "text": "A refusal on Monday is a kindness.", "sensor": null},
+            {"id": "quote-and-break", "text": "She said \"no\" early.\nAnd meant it.", "sensor": null},
+            {"id": "answer-what-waits", "text": "Keep what waits on me short.",
+             "sensor": {"kind": "outbox_age", "setpoint": "24h"}},
+        ]);
+        let changes = serde_json::json!({ "line": rows });
+        let raw = crate::tomlform::apply(&form(), TEMPLATE, changes.as_object().unwrap()).unwrap();
+        let first_template_line = TEMPLATE.lines().next().unwrap();
+        assert!(raw.starts_with(first_template_line), "{raw}");
+        let charter = Charter::parse(&raw).unwrap();
         let ids: Vec<&str> = charter.lines().iter().map(|l| l.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -1452,7 +1510,7 @@ setpoint = "24h"
         assert_eq!(
             charter.lines()[1].text,
             "She said \"no\" early.\nAnd meant it.",
-            "the editor's escaping must survive the reader"
+            "the text survives the writer and the reader"
         );
         assert_eq!(charter.lines()[0].sensor, None);
         let s = charter.lines()[2].sensor.as_ref().unwrap();
@@ -1460,5 +1518,8 @@ setpoint = "24h"
             (s.kind, s.setpoint_text.as_str()),
             (SensorKind::OutboxAge, "24h")
         );
+        // And a kind the form does not offer never reaches the reader.
+        let bad = serde_json::json!({ "line": [{"id": "x", "text": "y", "sensor": {"kind": "cost", "setpoint": "1"}}] });
+        assert!(crate::tomlform::apply(&form(), TEMPLATE, bad.as_object().unwrap()).is_err());
     }
 }

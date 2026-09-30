@@ -1,21 +1,18 @@
-// The two-language pin on `~/.mecha/charter.toml`.
+// What the web settings page shares with `mecha_core::charter`, pinned.
 //
-// The web settings page writes that file and `mecha_core::charter` reads it,
-// and neither side proves the agreement alone. `charter.rs`'s
-// `the_web_editors_serialisation_is_what_this_reader_loads` shows the reader
-// accepts a sample; on its own that sample is a hand-copied expectation that
-// stays green through any regression in `esc` or `serialize`. This script
-// closes the loop from the other end: it reads that same literal out of
-// `charter.rs` and asserts the serialiser actually emits it, byte for byte.
-//
-// So an edit to either half fails the other, which is the whole point — the
-// expensive bugs in this project came from beliefs about the far side of a
-// boundary.
+// The page no longer writes `charter.toml`: it sends its rows, and the server
+// sets them in place with `tomlform` over `charter::form`, so one language
+// describes the file (the JavaScript serialiser this script used to pin
+// against `charter.rs`, byte for byte, is gone — `charter.rs`'s
+// `the_list_editors_rows_are_what_this_reader_loads` is that half now, in
+// Rust). Two things still cross the boundary and are checked here: how the
+// page derives a new line's id, and the sensor kinds the docs demo carries a
+// copy of.
 
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { esc, hasComment, serialize, slugify, splitHeader } from '../../web/src/lib/charter-toml.js';
+import { slugify, toRows } from '../../web/src/lib/charter-toml.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const fail = (msg) => {
@@ -27,85 +24,7 @@ const eq = (got, want, what) => {
   checks++;
   if (got !== want) fail(`${what}\n  got:  ${JSON.stringify(got)}\n  want: ${JSON.stringify(want)}`);
 };
-
-// --- the shared fixture ---------------------------------------------------
 const rs = readFileSync(join(root, 'mecha-core/src/charter.rs'), 'utf8');
-const marked = /\/\/ web-editor-sample:begin[\s\S]*?r#"([\s\S]*?)"#;[\s\S]*?\/\/ web-editor-sample:end/.exec(rs);
-if (!marked) {
-  fail(
-    'could not find the web-editor-sample markers in mecha-core/src/charter.rs.\n' +
-      '  That literal is this check\'s expectation — if it moved, move this reader with it.'
-  );
-}
-// A Rust raw string carries no escapes: `\"` in the file is a backslash and a
-// quote, which is exactly what the TOML wants.
-const want = marked[1];
-
-const produced = serialize('# What mecha is for, most important first.\n#\n# Order is rank.', [
-  { id: 'say-no-early', text: 'A refusal on Monday is a kindness.' },
-  { id: 'quote-and-break', text: 'She said "no" early.\nAnd meant it.' },
-  // The sensor rides through a save exactly as the server served it — the
-  // owner's own setpoint spelling under a `[line.sensor]` table. A
-  // serialiser that dropped it would delete the owner's sensor on the next
-  // re-rank, silently (GOAL-SYSTEM-DESIGN §11.1).
-  { id: 'answer-what-waits', text: 'Keep what waits on me short.', sensor: { kind: 'outbox_age', setpoint: '24h' } },
-]);
-eq(produced, want, 'the serialiser no longer emits the document charter.rs reads back');
-
-// A line whose `sensor` is null or absent writes no table at all, so a
-// charter with no sensors serialises exactly as it did before sensors existed.
-eq(
-  serialize('', [{ id: 'a', text: 't', sensor: null }, { id: 'b', text: 'u' }]),
-  '[[line]]\nid = "a"\ntext = "t"\n\n[[line]]\nid = "b"\ntext = "u"\n',
-  'no sensor, no table'
-);
-
-// --- escaping -------------------------------------------------------------
-eq(esc('plain'), '"plain"', 'a plain string');
-eq(esc('a "b" c'), '"a \\"b\\" c"', 'a quote must be escaped');
-eq(esc('a\\b'), '"a\\\\b"', 'a backslash must be escaped');
-eq(esc('one\ntwo'), '"one\\ntwo"', 'a newline must become an escape, never a raw break');
-eq(esc('a\tb\rc'), '"a\\tb\\rc"', 'tab and carriage return');
-
-// --- comments -------------------------------------------------------------
-const yes = (row, what) => { checks++; if (!hasComment(row)) fail(`should read as a comment: ${what}`); };
-const no = (row, what) => { checks++; if (hasComment(row)) fail(`should NOT read as a comment: ${what}`); };
-yes('# a whole-line comment', 'whole line');
-yes('   # indented', 'indented');
-yes('text = "t"  # trailing note', 'trailing a value — the case a whole-line regex misses');
-no('text = "use #hashtags freely"', 'a # inside a basic string');
-no("text = 'a #literal string'", 'a # inside a literal string');
-no('text = "escaped \\" then #not-a-comment"', 'a # after an escaped quote, still inside the string');
-no('id = "a"', 'no comment at all');
-
-// Multi-line strings span rows, so these are documents rather than rows: a row
-// read alone cannot tell an opening delimiter from a closing one, which is
-// exactly how a comment closing a multi-line string went undetected.
-yes('text = """\nprose\n""" # note', 'a comment after a multi-line string closes');
-no('text = """\na #hash inside the prose\n"""', 'a # inside a multi-line string');
-no("text = '''\na #hash inside a literal block\n'''", 'a # inside a multi-line literal');
-yes('text = "unterminated\n# a real comment below', 'an unterminated string must not hide what follows');
-
-// --- the header is the owner's writing ------------------------------------
-const split = splitHeader('# keep me\n\n[[line]]\nid = "a"\ntext = "t"\n');
-eq(split.header, '# keep me', 'everything above the first [[line]] is kept');
-eq(split.blocked, null, 'a clean document is editable as a list');
-checks++;
-if (!splitHeader('# h\n[[line]]\nid = "a"\ntext = "t" # note\n').blocked) {
-  fail('a comment among the lines must refuse the list editor, not be rewritten away');
-}
-eq(splitHeader('# comments only, no tables').header, '# comments only, no tables', 'a template-only document is all header');
-checks++;
-// At `splitHeader`'s level, not `hasComment`'s: the defect was in how the tail
-// was handed over (row by row), not in the scanner itself, so a check that
-// only exercises `hasComment` would stay green through a regression.
-if (!splitHeader('# h\n\n[[line]]\nid = "a"\ntext = """\nprose\n""" # note\n').blocked) {
-  fail('a comment closing a multi-line string must refuse the list editor, not be rewritten away');
-}
-checks++;
-if (splitHeader('# h\n\n[[line]]\nid = "a"\ntext = """\na #hash in the prose\n"""\n').blocked) {
-  fail('a # inside a multi-line string must not cost the owner the list editor');
-}
 
 // --- ids ------------------------------------------------------------------
 eq(slugify('Say no early'), 'say-no-early', 'a slug from typed text');
@@ -128,4 +47,19 @@ eq(
   'the demo fixture offers a sensor-kind list that mecha-core no longer serves'
 );
 
-console.log(`check-charter-toml: ${checks} checks, the serialiser and mecha-core agree on charter.toml`);
+// --- the fields a list save sends ----------------------------------------
+// `toRows` is what the page sends and `charter::form` what the server's
+// fence accepts; a field renamed on one side refuses every list save while
+// both sides' own tests pass (review of #439). The literal between the
+// markers is asserted equal to `form()`'s fields in Rust; here `toRows` is
+// asserted to send exactly those, sensor and all.
+const fieldsMarked = /\/\/ charter-form-fields:begin[\s\S]*?r#"([\s\S]*?)"#;[\s\S]*?\/\/ charter-form-fields:end/.exec(rs);
+if (!fieldsMarked) fail('could not find the charter-form-fields markers in mecha-core/src/charter.rs');
+const pinnedFields = JSON.parse(fieldsMarked[1]);
+const [sent] = toRows([{ id: 'a', text: 't', sensor: { kind: 'outbox_age', setpoint: '24h' }, reading: {}, uid: 1 }]);
+const sentFields = Object.entries(sent).flatMap(([k, v]) =>
+  v && typeof v === 'object' ? Object.keys(v).map((sub) => `${k}.${sub}`) : [k]
+);
+eq(JSON.stringify(sentFields), JSON.stringify(pinnedFields), 'toRows sends fields the charter form does not declare, or misses one it does');
+
+console.log(`check-charter-toml: ${checks} checks, the page and mecha-core agree on ids, row fields and sensor kinds`);

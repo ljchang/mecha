@@ -1,10 +1,14 @@
 # Features — design
 
-> **Status (2026-09-30):** designed; step 0 (the registry and a read-only
-> `mecha features`) is #428, which changes no surface's behaviour. The owner
-> ruled F1–F4 and F6 the same day (§7): the switch is a `[features]` table of
+> **Status (2026-09-30):** this design merged as #427; **step 0 shipped** —
+> the registry and a read-only `mecha features`, merged as #428 and deployed
+> the same day, with the store-location fixes it surfaced in `doctor`, Slack
+> and the booking sweep as #432 and #433. `docs/ARCHITECTURE.md` §Features
+> describes what is built. Steps 1–8 are unbuilt. The owner
+> ruled F1–F6 the same day (§7): the switch is a `[features]` table of
 > bools — not a table's presence, which this doc first recommended — and §5
-> is written to that ruling. F5 is open and blocks only step 6. Step 8 (how
+> is written to that ruling; F5 is `hardware.md`'s four tiers, in two
+> columns (unified memory, and a separate GPU beside system RAM). Step 8 (how
 > to add a feature, in `ARCHITECTURE.md` and `CLAUDE.md`) is the owner's
 > addition.
 
@@ -479,12 +483,38 @@ stop mail, docs and the graph connecting and have `mecha serve` refuse to
 start. F6 has `mecha setup` offer the bools; nothing would tell anyone to run
 it. So, in step 1, the `tool_availability_notices` shape Hermes uses:
 
-- every start prints one line per feature whose **settings are present and
-  bool absent** — *"`mail`: configured but not enabled — `mecha features
-  enable mail` (or `mecha setup`)"* — on stderr, like the routed-outbox-name
-  warning that fires on every start;
-- `mecha features` shows that pair as its own row (settings present, switch
-  absent), not a bare `off`, as it does an off front door with requests
+- every start prints one line per feature whose **bool is absent but which
+  would otherwise be usable** — *"`mail`: configured but not enabled —
+  `mecha features enable mail` (or `mecha setup`)"* — on stderr, like the
+  routed-outbox-name warning that fires on every start. "Would otherwise be
+  usable" is the full `state` with every switch **absent from** `[features]`
+  treated as on — **not** a settings table being present: four features'
+  evidence is not a table at all — `slack` a token store, `personas` a
+  non-empty store, `voice` an installed unit file (installed, not running: a
+  socket-activated unit is idle until asked, and §4.3 reads unit files, never
+  sockets), `frontdoor` a binary on PATH — and a table-keyed notice could not
+  fire for any of them. It iterates only features that *have* a switch
+  (`part_of().is_none()`), since a part has no bool to announce and `enable`
+  refuses a part id by name. The substitution covers every absent switch,
+  not just the one being announced, because on this install the dependencies
+  are absent too: substituting `incognito` alone would leave `web` off and
+  short-circuit it to `Blocked`, so the line would never print. An explicit
+  `false` is an answer, not an unanswered question, and is never substituted:
+  an owner who wrote `web = false` is not told to enable `incognito` on every
+  start (found on review of #435, passes 3 and 4). The notice and F6's
+  detector are one function. **Two obligations on step 1
+  before it can key on this** (found on review of #435): `personas` and
+  `voice` are unconditional `On` in step 0 ("no switch yet"), so step 1 must
+  give them the evidence named here first, or both lines print on every
+  light install forever; and a feature whose dependency's bool is **also
+  absent** (`incognito` with no `web` key) is announced with the dependency
+  first, because the substitution holds only inside the notice — on disk
+  `web` is still absent, and `enable incognito` alone would land in
+  `Blocked` — *"`incognito`: needs `web` — `mecha features
+  enable web incognito`"* — never offered alone into a `Blocked` it cannot
+  leave;
+- `mecha features` shows that case as its own row (switch absent, would
+  otherwise be usable), not a bare `off`, as it does an off front door with requests
   waiting;
 - `mecha serve` refusing for `web` tells *"this install predates the
   switch — `mecha features enable web`"* apart from *"the web app is turned
@@ -577,6 +607,10 @@ Parts have no bool of their own: `tasks` and `library` ride their parent,
 and `ocr`, `layout`, `dictate`, `calls` and `cloning` are switched by their
 parent's settings, where they already live.
 
+A `(parent)` in the Requires column is `part_of`, not a `requires` edge:
+`needs()` is the parent, then `requires`, so writing the parent into
+`requires()` as well would add a duplicate edge.
+
 | id | Feature | Settings it needs (Unready without them) | Requires | Hidden when off |
 |---|---|---|---|---|
 | `web` | The web app (`mecha serve`) | `[web] owner_login` (serve refuses without it) | — | everything web; `mecha serve` refuses with the fix |
@@ -584,21 +618,21 @@ parent's settings, where they already live.
 | `mail` | Mail and calendar | a global `[[mcp]]` entry running `mecha-mail`, and an authorised account | — | Mail tab, Home mail card, Outbox event editor, `mecha mail` |
 | `docs` | Google Docs, Sheets, Slides | a global `[[mcp]]` entry running `mecha-docs`, and an account | — | its tools |
 | `graph` | Knowledge graph | a global `[[mcp]]` entry running `mecha-graph-mcp` | — | Graph tab, Review → graph queue, Proposals → entities, `kg`, `gossip`, `corroborate`, `vet`, `distill` |
-| ↳ `tasks` | The task board | — | `graph` | Tasks tab, Home tasks card, `mecha tasks` |
+| ↳ `tasks` | The task board | — | `graph` (parent) | Tasks tab, Home tasks card, `mecha tasks` |
 | `search` | Web search and open | a `[[search]]` backend not disabled | — | `web_search`, `web_open` |
 | `documents` | PDF extraction | a `[documents]` table | — | `document_read`, `mecha document` |
-| ↳ `ocr` | OCR pages | `[documents] ocr` | `documents` | its row in `features` |
-| ↳ `layout` | Region-by-region layout | `[documents] layout` | `ocr` | its row in `features` |
+| ↳ `ocr` | OCR pages | `[documents] ocr` | `documents` (parent) | its row in `features` |
+| ↳ `layout` | Region-by-region layout | `[documents] layout` | `ocr` (parent) | its row in `features` |
 | `image` | Image generation | an `[image]` table | — | `image_generate` |
-| ↳ `library` | Characters and styles | — | `image` | Library tab and Home card, `image_library*` (registered only inside `[image]`), `mecha imagelib` writes. Its reads — `mecha imagelib list`/`show` — are store reads and stay ungated |
+| ↳ `library` | Characters and styles | — | `image` (parent) | Library tab and Home card, `image_library*` (registered only inside `[image]`), `mecha imagelib` writes. Its reads — `mecha imagelib list`/`show` — are store reads and stay ungated |
 | `personas` | Characters the owner talks to | — (a **new** `[personas]` table later holds its safety settings) | — (web for the tab) | Personas tab, `/api/personas*`, `mecha persona` |
 | `voice` | Talking to mecha | a **new** `[voice]` table (below) | — (`mecha voice-serve` is its own loopback surface) | `mecha voice-serve` |
-| ↳ `dictate` | Speech to text in the browser | `[voice] stt_url` | `voice`, `web` | Dictate |
-| ↳ `calls` | Spoken conversation in the browser | `[voice] offer_target` | `voice`, `web` | voice-call button |
-| ↳ `cloning` | New voices | `[voice] voices_dir` | `voice`, `web` | Settings → Voice → clone |
+| ↳ `dictate` | Speech to text in the browser | `[voice] stt_url` | `voice` (parent), `web` | Dictate |
+| ↳ `calls` | Spoken conversation in the browser | `[voice] offer_target` | `voice` (parent), `web` | voice-call button |
+| ↳ `cloning` | New voices | `[voice] voices_dir` | `voice` (parent), `web` | Settings → Voice → clone |
 | `incognito` | A chat that leaves no trace | a local provider without fallbacks (`provider_is_local`) | `web` | Chat's incognito toggle |
 | `frontdoor` | Inbound requests and polls | `factory-publish` on PATH — its drain fills `~/.mecha/requests` | — | Review → Front door, Home card, `frontdoor`, `polls` |
-| ↳ `publishing` | The model's publishing tools | a global `[[mcp]]` entry running `factory-publish` | `frontdoor` | the `factory__*` tools |
+| ↳ `publishing` | The model's publishing tools | a global `[[mcp]]` entry running `factory-publish` | `frontdoor` (parent) | the `factory__*` tools |
 | `messages` | Messages between sessions | — (`[messages]` keeps its tunables) | — | `message_send`, `mecha msg` |
 
 **Not every surface belongs to a feature.** A `requires` edge means
@@ -706,11 +740,11 @@ Three things make it deliberate rather than accidental:
   that environment's `[features]` table with no second switch. **An
   environment may set `[features]`**, though a project layer may not: it is
   stripped at `LayerTrust::Project` and deliberately **not** added to
-  `trial_env::OPERATOR_ONLY_TABLES`. That is safe for a reason the project
-  case lacks — a trial home never inherits the operator's servers (the
-  2026-09-23 rule `trial_env` exists for), so an environment's `graph = true`
-  can connect only a server the environment itself declared, and with none
-  declared it reads `Unready`, never the operator's graph. **But an
+  `trial_env::OPERATOR_ONLY_TABLES`. That is safe for turning features
+  *off*, which is what a light trial needs, and for the few it may turn on,
+  named below — a trial home never inherits the operator's servers except
+  through the manifest's `live_servers` (the 2026-09-23 rule `trial_env`
+  exists for). **But an
   environment may switch a feature *on* only if it could configure it**,
   judged by the trust of the tables the feature's switch and settings live
   in, not by who happens to supply them: a feature whose table is in
@@ -728,7 +762,33 @@ Three things make it deliberate rather than accidental:
   read `On` against the owner's live mailbox. The test is therefore not only
   the tables' trust but **where the feature's credentials live**: a feature
   whose credentials are the operator's, wherever its entry is declared, is
-  operator-only to switch on (found on review of #427, pass 13). A new settings table gets the
+  operator-only to switch on (found on review of #427, pass 13). **The list
+  is a function, not a fourth hand-kept list**: `config_at` refuses by table
+  name and cannot see a `[features]` key, so step 1 adds
+  `Feature::switchable_from_environment(self) -> bool` as an exhaustive
+  `match` — a new variant does not compile until it decides — and
+  `config_at` refuses any `[features]` key set `true` for which it is
+  `false`. The permitted set, said out loud, is **`frontdoor`** alone — a
+  binary on PATH and the trial's own `requests` store; every other
+  top-level feature is `false` (found on review of #427, pass 14). Not
+  `incognito`: its evidence is `provider_is_local` over `default_provider`
+  and `providers`, both `MACHINE_TABLES` copied from the operator, so it
+  fails the test on its own terms, not only by needing `web` (#435). **Not `graph`**, though an
+  environment may declare its own graph server: a manifest's `live_servers =
+  ["graph"]` carries the operator's live server into the trial's `[[mcp]]`,
+  and the graph row finds a server by its command, so it cannot tell a
+  carried-in entry from a declared one — an environment's `graph = true`
+  beside that manifest would read `On` against the owner's `graph.db`, the
+  2026-09-23 incident this section exists for. So a trial's `graph` bool is
+  **defaulted by `trial_env::config_at`**, and the environment file may only
+  narrow it: `graph = true` there is refused at load like any key the
+  predicate forbids; `graph = false` is honoured, so a light arm stays light
+  even beside a manifest that carries a server; and with the key absent,
+  `config_at` sets it on exactly when the environment declares its own graph
+  server or the manifest's `live_servers` carries one in — the operator's
+  existing, explicit opt-in — so experiments that use `live_servers` keep
+  working once step 1 gates the server on the bool (found on review of #435,
+  passes 1 and 3). A new settings table gets the
   same test the day it is added (§9 step 8). An environment that sets such a
   key to `true` is **refused at load**, with `config_at`'s `ensure!` and its
   reason. **`[documents]` is not on `OPERATOR_ONLY_TABLES` today**, though
@@ -742,10 +802,14 @@ Three things make it deliberate rather than accidental:
   reason, never ignored with a warning: a warning fails open in exactly the
   way the `requires` bullet below exists to close — the arm would run without
   the feature it asked for and be scored anyway. An environment may set any
-  key to `false`. Two tests pin the negatives: `graph = true` with no
-  environment server reads `Unready`, and `search = true` or `messages =
-  true` from an environment refuses the trial (found on review of #427,
-  passes 4 and 5). Turning features off is how a trial is made light; this is the switch
+  key to `false`. Four tests pin it: `graph = true`, `search = true` or
+  `messages = true` in an environment file refuses the trial; `graph` absent
+  with a manifest carrying no graph server reads off; `graph = false` beside
+  `live_servers = ["graph"]` reads off; and — the positive, and the only one
+  a step-1 default of `false` would fail — `graph` **absent** beside
+  `live_servers = ["graph"]` reads **on**, so existing `live_servers`
+  experiments keep their graph (found on review of #427, passes 4 and 5,
+  and #435). Turning features off is how a trial is made light; this is the switch
   it uses. But which features were on
   is as much a condition as which levers were off, so the experiment manifest
   and the session record carry the feature set beside `levers_off`, from the
@@ -778,13 +842,31 @@ Each feature carries `Recommendation` rows:
 
 ```rust
 pub struct Recommendation {
-    pub tier_gb: u32,             // 16, 32, 64, 128 — hardware.md's tiers
+    pub tier_gb: u32,             // 16, 32, 64, 128 — hardware.md's tiers (F5)
+    pub memory: Memory,           // the column and its cost, as one value (F5)
     pub model: &'static str,      // "PaddleOCR-VL 1.6 (GGUF + mmproj)"
     pub fetch: &'static str,      // "hf download PaddlePaddle/PaddleOCR-VL-1.6-GGUF"
-    pub peak_mb: Option<u32>,     // the number only; None = unknown, never 0
     pub residency: Residency,     // Resident | OnDemand | PerRequest
-    pub evidence: Evidence,       // where the number came from: Measured { machine, date } | Arithmetic
-                                  // (and a None peak is Unmeasured by construction, not a third field)
+}
+
+/// F5's second column. `Unified`: one pool holds everything (a GB10, a Mac),
+/// and `tier_gb` is that pool. `Discrete`: `tier_gb` is the GPU's own memory,
+/// the chat model is sized to it, and the row may put OCR, embeddings and
+/// speech to text in system RAM or on the CPU instead — so a discrete row's
+/// cost is **two** numbers, which `Peak` alone cannot carry. `mecha setup`
+/// reads which shape the machine is before choosing a row. A card between
+/// tiers (24 GB, 48 GB) takes the row at or below it for the model family;
+/// whether it fits is `--probe`'s ratio against the card's actual memory,
+/// never the row's label (found on review of #435).
+pub enum Memory {
+    Unified { peak: Peak },
+    Discrete { gpu: Peak, host: Peak },
+}
+
+pub enum Peak {
+    Measured { mb: u32, machine: &'static str, date: &'static str },
+    Arithmetic { mb: u32 },       // hardware.md's formula
+    Unmeasured,                   // no number at all — reported as null, never 0
 }
 ```
 
@@ -796,7 +878,9 @@ Rules:
   (`mecha setup --write`), per `onboarding.rs`'s rule that setup never writes
   down a number the user merely believes.
 - **Evidence on every row.** Only the GB10 has measurements. Rows for other
-  tiers are `Arithmetic` (from `hardware.md`'s formula) or `Unmeasured`,
+  tiers are `Peak::Arithmetic` (from `hardware.md`'s formula) or
+  `Peak::Unmeasured` — one enum, so a number without a source or a source
+  without a number cannot be written (found on review of #427, pass 14),
   and the output says which. llmfit's `calibrated` / `estimated` split is the
   model; its `null`-not-zero rule is ours already.
 - **Rows that don't fit stay visible, with the reason** — "needs ~15 GB peak;
@@ -805,7 +889,13 @@ Rules:
   machine is not "does image generation fit" but "does it fit *beside* the
   chat model". `mecha features --probe` adds up the resident and peak memory
   of everything enabled and reports llmfit's ratio band against the machine's
-  total, with `null` for any feature whose peak is unmeasured. This is why
+  memory, with `null` for any feature whose peak is unmeasured. On a
+  `Discrete` machine that is **two sums against two totals** — the GPU's
+  memory and the host's — never one, and a `null` is per pool: a row whose
+  `host` is `Unmeasured` nulls the host sum and leaves the GPU sum standing,
+  never the reverse and never both: a single sum would pass a chat model
+  that does not fit the card and fail an OCR server that fits host RAM with
+  room to spare (found on review of #435). This is why
   `residency` is on the row: an on-demand OCR server costs nothing until a
   PDF arrives; an image generation borrows ~15 GB for its duration (and
   `[image] min_available_mb` already refuses one that would not fit).
@@ -829,8 +919,8 @@ genuinely not known yet, and the output must say so rather than guess.
 | **F2** | Off in the web app | **Removed from navigation**, as the owner asked in the opening message; Settings → Features lists everything. `Unready` and `Unknown` are shown with a banner, never removed (§4.1) |
 | **F3** | Web as a feature | **Optional like the rest** — the owner: *"Web should also be optional feature."* CLI, TUI and Slack are complete without it; incognito, and voice's browser parts (`dictate`, `calls`, `cloning`), report `Blocked(web)`. `voice` itself does not: `mecha voice-serve` is its own loopback surface, and `Blocked` would refuse it (found on review of #427, pass 7). A tab's visibility is not a `requires` relation: with `web` off there is no navigation at all, so the Personas and Library tabs need no dependency on it — and giving `personas` one would make `Blocked` refuse `mecha persona` from the CLI, which works without the web (found on review of #427) |
 | **F4** | What an off route returns | **404** with `{"error":"feature_off","feature":"image","fix":"mecha features enable image"}`, only behind `owner_guard` (§4.2 item 4). 503 stays for `Unready` |
-| **F5** | Recommendation tiers | *Open.* Recommended: `hardware.md`'s four (16/32/64/128 GB), so one page and one table agree |
-| **F6** | Existing installs, when `[features]` arrives | **`mecha setup` offers.** It detects a feature in use (an `[image]` table, a mail `[[mcp]]` entry, a non-empty persona store, a running voice unit) and offers to write its bool. Never grandfathered as on: that is a second source of truth. On this machine the deploy that ships the table writes it by hand, in the same change, so nothing disappears |
+| **F5** | Recommendation tiers | **`hardware.md`'s four — 16, 32, 64 and 128 GB — in two columns**: unified memory, and a separate GPU beside system RAM, where the tier is the GPU's memory and the auxiliary models (OCR, embeddings, speech to text) may run from system RAM or the CPU. One page and one table agree on the tiers; the column is what keeps a 24 GB GPU with 64 GB of RAM from being steered as a 24 GB machine. Only the 128 GB unified row is measured (this GB10); every other cell says `Arithmetic` or `Unmeasured`. Ruled by the owner 2026-09-30 |
+| **F6** | Existing installs, when `[features]` arrives | **`mecha setup` offers.** It detects a feature in use (an `[image]` table, a mail `[[mcp]]` entry, a non-empty persona store, an installed voice unit file) and offers to write its bool — the same predicate as the upgrade notice (§4.2), so the two cannot disagree. Never grandfathered as on: that is a second source of truth. On this machine the deploy that ships the table writes it by hand, in the same change, so nothing disappears |
 
 ---
 
@@ -922,7 +1012,13 @@ Each step is a PR, and each leaves every surface working.
    review of #427, pass 11). A study that needs a different cooldown asks the
    operator.
 6. **Recommendations**: the rows, the probe that sums memory, and a test that
-   `hardware.md` matches them. Fix the embeddings page.
+   `hardware.md` matches them. `hardware.md` changes first: its tier
+   sections (`### 16 GB` … `### 128 GB and up`) describe one pool, though
+   the page's own description already says "unified-memory or VRAM tier". It
+   gains F5's discrete column, with every discrete cell marked `Arithmetic`
+   or `Unmeasured` until someone measures one. The Mac note that "unified
+   memory has no separate GPU pool" stays: it is scoped to Macs and still
+   true (#435). Fix the embeddings page.
 7. **Installers**: one `scripts/<feature>/install.sh` per feature that needs a
    service, each with `--remove`, copying rather than symlinking (the
    `scripts/llama/install.sh` pattern), with no `/home/<user>` or checkout
