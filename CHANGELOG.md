@@ -35,8 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - the persona's Core handed back to it on a cadence;
   - usage meters.
 
-  Each can be switched off per persona in its `persona.toml`. The crisis
-  check reads keywords only for now, and the page says so.
+  Each can be switched off per persona in its `persona.toml`, and a switch
+  reaches chats already open. Behind the keywords, a model check screens
+  each message you send, including one sent while the persona is answering,
+  and pauses the persona if it finds a concern the keywords missed. When
+  that check cannot answer, the page says crisis detection is on keywords
+  only until it can.
 
 - **OCR reads tables whole.** With the layout stage installed
   (`scripts/layout/install.sh`), an OCR page is read region by region: a
