@@ -1039,8 +1039,11 @@ module.
     The same upload route takes dropped or picked files. `send_with` puts a
     picture among them on the turn as pixels for a model that can see
     (`chat::attached_images`, which arms `private`), exactly as the assistant's
-    `send` does. A persona's fixed tool set has no `fs_read` or
-    `document_read`, so any other file is named in the text and nothing more.
+    `send` does. Any other file is named in the text, and a PDF among them
+    is readable when the owner lists `document_read` in that persona's
+    `[tools] allow` (PERSONA-DESIGN D24). It is persona-eligible, jailed to
+    the chat's workspace, and withheld by `answers = "files"` because its
+    results are third-party content. `fs_read` is not persona-eligible.
   - **A persona agent gets no hooks, by design.** `build_subagent` attaches the
     parent's hooks, because otherwise delegating would be the way around a
     `pre_tool` policy. A persona chat is not a delegation out of the assistant.
