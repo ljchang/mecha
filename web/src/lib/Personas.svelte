@@ -331,12 +331,11 @@
         ),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
-      const gen = ++authoringGen;
-      const reread = await fetch(authoringUrl(token));
-      if (reread.ok) {
-        const lists = await reread.json();
-        if (gen === authoringGen) authoring = lists;
-      }
+      // The one reader of the lists once the form is open, so the new name
+      // arrives under the same numbering and portrait check a lock change
+      // uses — its own read took a newer number than a relock's and skipped
+      // the check (review of #425).
+      await rereadAuthoring();
       // Cancelled while the add was in flight: no form left to pick it for.
       if (!making) return;
       if (relationship) making.relationships = [...making.relationships, name];

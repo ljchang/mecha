@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { authoringUrl, keptCharacter } from '../src/lib/persona.js';
+import { authoringUrl, keptCharacter, personaName } from '../src/lib/persona.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(here, '..', 'src', 'lib', 'Personas.svelte'), 'utf8');
@@ -29,6 +29,7 @@ const fns = [
   readOut('  async function unlock() {'),
   readOut('  async function relock() {'),
   readOut('  async function rereadAuthoring() {'),
+  readOut('  async function addNew() {'),
 ].join('\n');
 
 // The server's rule (`PersonaChat::authoring`): locked characters only to an
@@ -45,6 +46,11 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
   const fetch = async (url, init) => {
     if (url === '/api/library/unlock') return { ok: true, json: async () => ({ token: 't1' }) };
     if (url === '/api/library/relock') return { ok: true, json: async () => ({}) };
+    if (url === '/api/personas/relationships') {
+      const g = gate?.(url);
+      if (g) await g;
+      return { ok: true, json: async () => ({}) };
+    }
     if (url.startsWith('/api/personas/authoring')) {
       if (hold && holdIf(url)) await hold;
       const g = gate?.(url);
@@ -55,7 +61,7 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
     throw new Error(`unexpected fetch ${url} ${init?.method ?? 'GET'}`);
   };
   return new Function(
-    'fetch', 'authoringUrl', 'keptCharacter', 'start',
+    'fetch', 'authoringUrl', 'keptCharacter', 'personaName', 'start',
     `'use strict';
      let token = start.unlocked ? 't0' : null;
      let authoring = start.lists;
@@ -64,15 +70,18 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
        : null;
      let chosen = null, sheet = false, busy = false, password = '', error = '';
      let authoringGen = 0;
+     let adding = null;
+     const TEMPLATE = (name) => '# ' + name;
      const back = () => {};
      const load = async () => {};
      ${fns}
      return {
-       startMaking, unlock, relock,
+       startMaking, unlock, relock, addNew,
+       add: (a) => { adding = a; },
        close: () => { making = null; },
        get: () => ({ token, authoring, making, error }),
      };`,
-  )(fetch, authoringUrl, keptCharacter, {
+  )(fetch, authoringUrl, keptCharacter, personaName, {
     unlocked, character, formOpen, lists: formOpen ? LISTS(unlocked) : null,
   });
 }
@@ -154,6 +163,30 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
   const { authoring, error } = p.get();
   assert.equal(error, '');
   assert.deepEqual(authoring.characters, ['john', 'maya']);
+}
+
+// Relock while a new relationship is being added, with a locked portrait
+// chosen: the add's re-read must not overtake the relock's and skip the
+// portrait check, or the form sends a character the page now hides.
+{
+  let releasePost, releaseLists;
+  const posted = new Promise((r) => (releasePost = r));
+  const listed = new Promise((r) => (releaseLists = r));
+  const gate = (url) => (url === '/api/personas/relationships' ? posted : listed);
+  const p = page({ unlocked: true, character: 'stella', gate });
+  p.add({ kind: 'relationship', name: 'Mentor', text: '' });
+  const adding = p.addNew();
+  await new Promise((r) => setImmediate(r));
+  const relocking = p.relock();
+  releasePost();
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  releaseLists();
+  await Promise.all([adding, relocking]);
+  const { authoring, making, error } = p.get();
+  assert.equal(error, '');
+  assert.deepEqual(authoring.characters, ['john', 'maya']);
+  assert.equal(making.character, '', 'a locked portrait survived the relock');
+  assert.deepEqual(making.relationships, ['mentor']);
 }
 
 console.log('persona-lock-lists: ok');
