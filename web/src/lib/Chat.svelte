@@ -690,9 +690,13 @@
     if (incognito) {
       draft = '';
       attachments = [];
-      editing = null; // the modal carries this chat's draft and paths too
       todo = [];
     }
+    // Unlike the draft, the edit modal is never portable: it holds a path in
+    // the chat it was opened in, and sending it from here would upload the
+    // mask into this chat's jail and name the other chat's picture in this
+    // transcript (review of #429).
+    editing = null;
     incognito = false;
     gone = null;
     goneNote = null;
@@ -1960,8 +1964,8 @@
               <img src={workspaceFile(picture)} alt="generated" loading="lazy" />
             </a>
           {/if}
-          <!-- Starts a sentence rather than sending one: the change is the
-               person's to describe. The path is what lets the model pass the
+          <!-- Opens the edit modal (EditModal.svelte): paint what may change,
+               say what to change. The path is what lets the model pass the
                right file as the reference. -->
           <button class="genedit" onclick={() => editImage(picture)}>Edit</button>
           {#if !incognito}

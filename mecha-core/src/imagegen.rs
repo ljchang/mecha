@@ -1402,8 +1402,11 @@ pub fn prepare_mask(
     };
     let hard = image::GrayImage::from_fn(cw, ch, {
         let luma = resize(&mask.to_luma8(), cw, ch, FilterType::Triangle);
+        // Any real coverage counts: a thin stroke on a large photo is
+        // averaged down by the resize, and 127 would erase it before the
+        // owner is told it is too small (review of #429).
         move |x, y| {
-            image::Luma([if luma.get_pixel(x, y).0[0] > 127 {
+            image::Luma([if luma.get_pixel(x, y).0[0] > 16 {
                 255
             } else {
                 0
@@ -5005,8 +5008,10 @@ mod tests {
         assert_eq!(plan.picture.dimensions(), (1024, 1024));
         assert_eq!(plan.soft.dimensions(), (1024, 1024));
         // Painted pixels are fully redrawn; the edge is grown, then feathered;
-        // far away nothing is.
-        assert_eq!(plan.bounds, (0, 256, 256, 896));
+        // far away nothing is. The box is 0..256 × 256..896 at canvas size;
+        // upscaling the 64 px mask 16× leaves it a soft edge, which counts as
+        // painted from 16 up, 7 px each side.
+        assert_eq!(plan.bounds, (0, 249, 263, 903));
         assert_eq!(plan.soft.get_pixel(128, 576).0[0], 255);
         let just_outside = plan.soft.get_pixel(266, 576).0[0];
         assert!(just_outside > 0 && just_outside < 255, "{just_outside}");
@@ -5178,13 +5183,33 @@ mod tests {
 
     #[test]
     fn a_dab_too_small_to_survive_the_grow_is_refused() {
-        // One painted pixel on a picture the canvas scales 16×: after the
-        // grow step nothing is left, so nothing would be redrawn.
+        // One painted pixel, at canvas size (1344×768 is its own canvas):
+        // the grow step's blur spreads it to well under its threshold, so
+        // nothing would be left to redraw.
         let big = image::RgbImage::from_pixel(1344, 768, image::Rgb([90, 90, 90]));
         let mut png = std::io::Cursor::new(Vec::new());
         big.write_to(&mut png, image::ImageFormat::Png).unwrap();
         let err =
             prepare_mask(png.get_ref(), &mask_png(1344, 768, (10, 10, 11, 11)), 1024).unwrap_err();
         assert!(err.contains("too small to edit"), "{err}");
+    }
+
+    #[test]
+    fn a_thin_stroke_on_a_large_photo_survives_the_downscale() {
+        // A 2 px stroke on a 2368×1776 photo is about 1 px at its 1184×896
+        // canvas: averaged down, not erased, so the owner gets an edit and
+        // not "marks nothing" (review of #429). At a threshold of 127 this
+        // was refused.
+        let photo = image::RgbImage::from_pixel(2368, 1776, image::Rgb([90, 90, 90]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        photo.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let plan = prepare_mask(
+            png.get_ref(),
+            &mask_png(2368, 1776, (600, 600, 602, 1200)),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(plan.picture.dimensions(), (1184, 896));
+        assert_eq!(plan.source, (2368, 1776));
     }
 }

@@ -27,7 +27,25 @@
   let live = null; // the operation under the pointer
   let start = null;
 
-  const painted = $derived(hasPaint(ops));
+  // Whether anything is painted, read from the canvas itself once a stroke
+  // or box is let go: the op list cannot tell a stroke erased away from one
+  // that is still there (review of #429). `hasPaint` answers first, cheaply.
+  let painted = $state(false);
+  function repaint() {
+    if (!base || !hasPaint(ops)) {
+      painted = false;
+      return;
+    }
+    const data = base.getContext('2d').getImageData(0, 0, base.width, base.height).data;
+    let any = false;
+    for (let i = 3; i < data.length; i += 4) {
+      if (data[i] > 127) {
+        any = true;
+        break;
+      }
+    }
+    painted = any;
+  }
   const canSend = $derived(!busy && words.trim().length > 0);
   const dirty = $derived(ops.length > 0 || words.trim() !== initial.trim());
 
@@ -78,7 +96,7 @@
     const ctx = view.getContext('2d');
     const { width: w, height: h } = view;
     ctx.clearRect(0, 0, w, h);
-    const any = hasPaint(ops) || (live && (live.kind === 'box' || !live.erase));
+    const any = painted || (live && (live.kind === 'box' || !live.erase));
     if (!any) return;
     let mask = base;
     if (live?.kind === 'box') {
@@ -147,6 +165,7 @@
     }
     ops = [...ops, op];
     if (op.kind === 'box') draw(base.getContext('2d'), op);
+    repaint();
     render();
   }
 
@@ -154,6 +173,7 @@
     if (!ops.length || busy) return;
     ops = ops.slice(0, -1);
     replay();
+    repaint();
     render();
   }
 
@@ -161,6 +181,7 @@
     if (busy) return;
     ops = [];
     replay();
+    repaint();
     render();
   }
 
