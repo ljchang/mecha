@@ -1418,7 +1418,9 @@
   // the page does not claim is *navigated to* by the browser — which throws
   // this page away, an incognito chat with it.
   let dragDepth = $state(0); // dragenter/leave fire at every child boundary
-  const canDrop = $derived(!gone && !voiceOpen);
+  // Not behind the edit modal: a file dropped there would join
+  // `attachments` unseen and ride out on the modal's own send (review of #429).
+  const canDrop = $derived(!gone && !voiceOpen && !editing);
 
   const carriesFiles = (dt) => [...(dt?.types ?? [])].includes('Files');
 
