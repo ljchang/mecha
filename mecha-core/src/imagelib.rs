@@ -924,10 +924,35 @@ pub fn compile(
     extras: &[String],
     style: Option<&str>,
 ) -> std::result::Result<Compiled, String> {
+    compile_with(lib, scene, cast, extras, &[], style)
+}
+
+/// [`compile`], with `demoted`: the extras [`demote_unknown`] made of cast
+/// names the library does not hold. They are drawn like any extra, but they
+/// are not the model's `extras` — so the checks that answer the model about
+/// its own list (its count, its shape, a cast member named in it) are not
+/// asked of them (review of #434: "pouring coffee for maya" beside a cast
+/// maya refused the whole picture, with advice the model had already taken).
+pub fn compile_with(
+    lib: &Library,
+    scene: &str,
+    cast: &[CastMember],
+    extras: &[String],
+    demoted: &[String],
+    style: Option<&str>,
+) -> std::result::Result<Compiled, String> {
     if extras.len() > MAX_EXTRAS {
         return Err(format!(
             "At most {MAX_EXTRAS} people in `extras`, not {}.",
             extras.len()
+        ));
+    }
+    if extras.len() + demoted.len() > MAX_EXTRAS {
+        return Err(format!(
+            "At most {MAX_EXTRAS} people who are not library characters, not {}: {} of the \
+             names in `cast` are not in the library and are drawn as extras.",
+            extras.len() + demoted.len(),
+            demoted.len()
         ));
     }
     let extras: Vec<&str> = extras
@@ -967,6 +992,10 @@ pub fn compile(
             ));
         }
     }
+    let extras: Vec<&str> = extras
+        .into_iter()
+        .chain(demoted.iter().map(|d| d.trim().trim_end_matches('.')))
+        .collect();
     let mut refs = Vec::with_capacity(cast.len());
     let mut used = Vec::new();
     let mut source_seeds = Vec::new();
@@ -1173,6 +1202,61 @@ fn capitalize(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Only a name with no trace moves: a known character stays, a
+    /// candidate and an entry that did not load stay and keep their own
+    /// refusals, and an unknown name becomes an extra with what it wore and
+    /// did (review of #434: the load-error branch is the load-bearing one).
+    #[test]
+    fn only_a_name_with_no_trace_is_demoted() {
+        let dir = std::env::temp_dir().join(format!("mecha-demote-{}", uuid::Uuid::new_v4()));
+        let png = {
+            let img = image::RgbImage::from_pixel(2, 2, image::Rgb([9, 9, 9]));
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        for (name, origin) in [
+            ("maya", Origin::Owner),
+            ("wren", Origin::ModelClean),
+            ("theo", Origin::Owner),
+        ] {
+            create(
+                &dir,
+                NewEntry {
+                    kind: Kind::Character,
+                    name: name.into(),
+                    text: format!("{name}, a face"),
+                    portrait: Some(png.clone()),
+                    source_seed: None,
+                    origin,
+                    locked: false,
+                },
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.join("characters/theo/entry.toml"), "not = [toml").unwrap();
+        let lib = Library::load(&dir).0;
+        let member = |name: &str| CastMember {
+            name: name.into(),
+            wearing: "a coat".into(),
+            doing: "waving".into(),
+        };
+        let (kept, extras, names) = demote_unknown(
+            &lib,
+            &[
+                member("maya"),
+                member("wren"),
+                member("theo"),
+                member("Sam"),
+            ],
+        );
+        let kept: Vec<&str> = kept.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(kept, ["maya", "wren", "theo"]);
+        assert_eq!(extras, ["Sam, wearing a coat, waving"]);
+        assert_eq!(names, ["Sam"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     use super::*;
 
     /// A real 2×2 PNG, so the header decodes.
