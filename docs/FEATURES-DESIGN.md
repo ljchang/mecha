@@ -1,7 +1,10 @@
 # Features — design
 
-> **Status (2026-09-30):** designed; step 0 (the registry and a read-only
-> `mecha features`) is #428, which changes no surface's behaviour. The owner
+> **Status (2026-09-30):** this design merged as #427; **step 0 shipped** —
+> the registry and a read-only `mecha features`, merged as #428 and deployed
+> the same day, with the store-location fixes it surfaced in `doctor`, Slack
+> and the booking sweep as #432 and #433. `docs/ARCHITECTURE.md` §Features
+> describes what is built. Steps 1–8 are unbuilt. The owner
 > ruled F1–F4 and F6 the same day (§7): the switch is a `[features]` table of
 > bools — not a table's presence, which this doc first recommended — and §5
 > is written to that ruling. F5 is open and blocks only step 6. Step 8 (how
@@ -479,10 +482,17 @@ stop mail, docs and the graph connecting and have `mecha serve` refuse to
 start. F6 has `mecha setup` offer the bools; nothing would tell anyone to run
 it. So, in step 1, the `tool_availability_notices` shape Hermes uses:
 
-- every start prints one line per feature whose **settings are present and
-  bool absent** — *"`mail`: configured but not enabled — `mecha features
-  enable mail` (or `mecha setup`)"* — on stderr, like the routed-outbox-name
-  warning that fires on every start;
+- every start prints one line per feature whose **bool is absent but which
+  would otherwise be usable** — *"`mail`: configured but not enabled —
+  `mecha features enable mail` (or `mecha setup`)"* — on stderr, like the
+  routed-outbox-name warning that fires on every start. "Would otherwise be
+  usable" is `own_state` with the switch treated as on, **not** a settings
+  table being present: four features' evidence is not a table at all —
+  `slack` a token store, `personas` a non-empty store, `voice` a running unit,
+  `frontdoor` a binary on PATH — and a table-keyed notice could not fire for
+  any of them. `own_state` is already the exhaustive per-variant predicate,
+  so the notice and F6's detector are the same function (found on review of
+  #427, pass 14);
 - `mecha features` shows that pair as its own row (settings present, switch
   absent), not a bare `off`, as it does an off front door with requests
   waiting;
@@ -577,6 +587,10 @@ Parts have no bool of their own: `tasks` and `library` ride their parent,
 and `ocr`, `layout`, `dictate`, `calls` and `cloning` are switched by their
 parent's settings, where they already live.
 
+A `(parent)` in the Requires column is `part_of`, not a `requires` edge:
+`needs()` is the parent, then `requires`, so writing the parent into
+`requires()` as well would add a duplicate edge.
+
 | id | Feature | Settings it needs (Unready without them) | Requires | Hidden when off |
 |---|---|---|---|---|
 | `web` | The web app (`mecha serve`) | `[web] owner_login` (serve refuses without it) | — | everything web; `mecha serve` refuses with the fix |
@@ -584,21 +598,21 @@ parent's settings, where they already live.
 | `mail` | Mail and calendar | a global `[[mcp]]` entry running `mecha-mail`, and an authorised account | — | Mail tab, Home mail card, Outbox event editor, `mecha mail` |
 | `docs` | Google Docs, Sheets, Slides | a global `[[mcp]]` entry running `mecha-docs`, and an account | — | its tools |
 | `graph` | Knowledge graph | a global `[[mcp]]` entry running `mecha-graph-mcp` | — | Graph tab, Review → graph queue, Proposals → entities, `kg`, `gossip`, `corroborate`, `vet`, `distill` |
-| ↳ `tasks` | The task board | — | `graph` | Tasks tab, Home tasks card, `mecha tasks` |
+| ↳ `tasks` | The task board | — | `graph` (parent) | Tasks tab, Home tasks card, `mecha tasks` |
 | `search` | Web search and open | a `[[search]]` backend not disabled | — | `web_search`, `web_open` |
 | `documents` | PDF extraction | a `[documents]` table | — | `document_read`, `mecha document` |
-| ↳ `ocr` | OCR pages | `[documents] ocr` | `documents` | its row in `features` |
-| ↳ `layout` | Region-by-region layout | `[documents] layout` | `ocr` | its row in `features` |
+| ↳ `ocr` | OCR pages | `[documents] ocr` | `documents` (parent) | its row in `features` |
+| ↳ `layout` | Region-by-region layout | `[documents] layout` | `ocr` (parent) | its row in `features` |
 | `image` | Image generation | an `[image]` table | — | `image_generate` |
-| ↳ `library` | Characters and styles | — | `image` | Library tab and Home card, `image_library*` (registered only inside `[image]`), `mecha imagelib` writes. Its reads — `mecha imagelib list`/`show` — are store reads and stay ungated |
+| ↳ `library` | Characters and styles | — | `image` (parent) | Library tab and Home card, `image_library*` (registered only inside `[image]`), `mecha imagelib` writes. Its reads — `mecha imagelib list`/`show` — are store reads and stay ungated |
 | `personas` | Characters the owner talks to | — (a **new** `[personas]` table later holds its safety settings) | — (web for the tab) | Personas tab, `/api/personas*`, `mecha persona` |
 | `voice` | Talking to mecha | a **new** `[voice]` table (below) | — (`mecha voice-serve` is its own loopback surface) | `mecha voice-serve` |
-| ↳ `dictate` | Speech to text in the browser | `[voice] stt_url` | `voice`, `web` | Dictate |
-| ↳ `calls` | Spoken conversation in the browser | `[voice] offer_target` | `voice`, `web` | voice-call button |
-| ↳ `cloning` | New voices | `[voice] voices_dir` | `voice`, `web` | Settings → Voice → clone |
+| ↳ `dictate` | Speech to text in the browser | `[voice] stt_url` | `voice` (parent), `web` | Dictate |
+| ↳ `calls` | Spoken conversation in the browser | `[voice] offer_target` | `voice` (parent), `web` | voice-call button |
+| ↳ `cloning` | New voices | `[voice] voices_dir` | `voice` (parent), `web` | Settings → Voice → clone |
 | `incognito` | A chat that leaves no trace | a local provider without fallbacks (`provider_is_local`) | `web` | Chat's incognito toggle |
 | `frontdoor` | Inbound requests and polls | `factory-publish` on PATH — its drain fills `~/.mecha/requests` | — | Review → Front door, Home card, `frontdoor`, `polls` |
-| ↳ `publishing` | The model's publishing tools | a global `[[mcp]]` entry running `factory-publish` | `frontdoor` | the `factory__*` tools |
+| ↳ `publishing` | The model's publishing tools | a global `[[mcp]]` entry running `factory-publish` | `frontdoor` (parent) | the `factory__*` tools |
 | `messages` | Messages between sessions | — (`[messages]` keeps its tunables) | — | `message_send`, `mecha msg` |
 
 **Not every surface belongs to a feature.** A `requires` edge means
@@ -728,7 +742,17 @@ Three things make it deliberate rather than accidental:
   read `On` against the owner's live mailbox. The test is therefore not only
   the tables' trust but **where the feature's credentials live**: a feature
   whose credentials are the operator's, wherever its entry is declared, is
-  operator-only to switch on (found on review of #427, pass 13). A new settings table gets the
+  operator-only to switch on (found on review of #427, pass 13). **The list
+  is a function, not a fourth hand-kept list**: `config_at` refuses by table
+  name and cannot see a `[features]` key, so step 1 adds
+  `Feature::switchable_from_environment(self) -> bool` as an exhaustive
+  `match` — a new variant does not compile until it decides — and
+  `config_at` refuses any `[features]` key set `true` for which it is
+  `false`. The permitted set, said out loud: **`graph`** (only an
+  environment-declared server, never the operator's), **`frontdoor`** (a
+  binary on PATH and the trial's own `requests` store) and **`incognito`**
+  (blocked without `web` in any case); every other top-level feature is
+  `false` (found on review of #427, pass 14). A new settings table gets the
   same test the day it is added (§9 step 8). An environment that sets such a
   key to `true` is **refused at load**, with `config_at`'s `ensure!` and its
   reason. **`[documents]` is not on `OPERATOR_ONLY_TABLES` today**, though
@@ -781,10 +805,14 @@ pub struct Recommendation {
     pub tier_gb: u32,             // 16, 32, 64, 128 — hardware.md's tiers
     pub model: &'static str,      // "PaddleOCR-VL 1.6 (GGUF + mmproj)"
     pub fetch: &'static str,      // "hf download PaddlePaddle/PaddleOCR-VL-1.6-GGUF"
-    pub peak_mb: Option<u32>,     // the number only; None = unknown, never 0
+    pub peak: Peak,               // the number and where it came from, as one value
     pub residency: Residency,     // Resident | OnDemand | PerRequest
-    pub evidence: Evidence,       // where the number came from: Measured { machine, date } | Arithmetic
-                                  // (and a None peak is Unmeasured by construction, not a third field)
+}
+
+pub enum Peak {
+    Measured { mb: u32, machine: &'static str, date: &'static str },
+    Arithmetic { mb: u32 },       // hardware.md's formula
+    Unmeasured,                   // no number at all — reported as null, never 0
 }
 ```
 
@@ -796,7 +824,9 @@ Rules:
   (`mecha setup --write`), per `onboarding.rs`'s rule that setup never writes
   down a number the user merely believes.
 - **Evidence on every row.** Only the GB10 has measurements. Rows for other
-  tiers are `Arithmetic` (from `hardware.md`'s formula) or `Unmeasured`,
+  tiers are `Peak::Arithmetic` (from `hardware.md`'s formula) or
+  `Peak::Unmeasured` — one enum, so a number without a source or a source
+  without a number cannot be written (found on review of #427, pass 14),
   and the output says which. llmfit's `calibrated` / `estimated` split is the
   model; its `null`-not-zero rule is ours already.
 - **Rows that don't fit stay visible, with the reason** — "needs ~15 GB peak;
