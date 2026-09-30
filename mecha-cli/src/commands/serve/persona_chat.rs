@@ -485,9 +485,10 @@ impl PersonaChats {
                 // A visible persona linked to a locked character does not name
                 // it to a locked page: a name says more than the count the
                 // owner ruled out (2026-09-30). The link itself is untouched.
-                let character = match linked {
-                    Some(e) if e.locked && !unlocked => None,
-                    _ => p.settings.character.as_deref(),
+                let hidden = hidden_character(p, &lib, unlocked);
+                let character = match hidden {
+                    Some(_) => None,
+                    None => p.settings.character.as_deref(),
                 };
                 // The linked character's portrait, by the library's own rule:
                 // approved only, and a locked one only with the live token.
@@ -504,7 +505,7 @@ impl PersonaChats {
                     "version": p.state.version,
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     "locked": p.state.locked,
-                    "problems": store.problems(p, &lib),
+                    "problems": unnamed(store.problems(p, &lib), hidden),
                     "safety": safety_json(&p.settings.safety),
                     // The meters are shown to the owner, never to the model.
                     "dose": p.settings.safety.dose.then(|| match &doses.unreadable {
@@ -1413,6 +1414,38 @@ pub async fn list(State(state): Web, Query(q): Query<UnlockQuery>) -> axum::resp
     {
         Ok(v) => Json(v).into_response(),
         Err(e) => Refusal::Failed(format!("listing personas: {e}")).into_response(),
+    }
+}
+
+/// The name of a persona's linked character when the lock hides it from
+/// this viewer — locked, and the page not unlocked.
+fn hidden_character<'a>(
+    p: &Persona,
+    lib: &'a mecha_core::imagelib::Library,
+    unlocked: bool,
+) -> Option<&'a str> {
+    p.settings
+        .character
+        .as_deref()
+        .and_then(|c| lib.get(mecha_core::imagelib::Kind::Character, c))
+        .filter(|e| e.locked && !unlocked)
+        .map(|e| e.name.as_str())
+}
+
+/// Problems as a viewer may read them: one that names a character the lock
+/// hides is left out, not reworded — a locked candidate's "names character
+/// `x`, which is a candidate" would say what the nulled `character` does not
+/// (review of #425). The owner reads it again once unlocked.
+fn unnamed(problems: Vec<String>, hidden: Option<&str>) -> Vec<String> {
+    match hidden {
+        Some(c) => {
+            let quoted = format!("`{c}`");
+            problems
+                .into_iter()
+                .filter(|s| !s.contains(&quoted))
+                .collect()
+        }
+        None => problems,
     }
 }
 
@@ -2336,6 +2369,7 @@ mod tests {
         for (name, origin, locked) in [
             ("maya", mecha_core::imagelib::Origin::Owner, true),
             ("sam", mecha_core::imagelib::Origin::ModelClean, false),
+            ("wren", mecha_core::imagelib::Origin::ModelClean, true),
         ] {
             mecha_core::imagelib::create(
                 &lib_dir,
@@ -2379,6 +2413,12 @@ mod tests {
         assert_eq!(row_of("maya", Some(&token))["character"], "maya");
         // A link the lock does not cover is named as ever.
         assert_eq!(row_of("sam", None)["character"], "sam");
+        // A locked *candidate*: its problem names it, so the problem is left
+        // out while locked and back once unlocked (review of #425).
+        let locked = row_of("wren", None);
+        assert!(!locked.to_string().contains("wren"), "{locked}");
+        let problems = row_of("wren", Some(&token))["problems"].to_string();
+        assert!(problems.contains("`wren`"), "{problems}");
         let shown = portrait_of("maya", Some(&token));
         let url = shown.as_str().expect("unlocked: the portrait is shown");
         assert!(

@@ -42,7 +42,7 @@ const LISTS = (unlocked) => ({
 // A page with the form open, its lists read under `unlocked`, and a fetch
 // that answers as the server would. `hold` delays the authoring answer so a
 // test can close the form while it is in flight.
-function page({ unlocked, character, hold, holdIf = () => true, gate = null, formOpen = true }) {
+function page({ unlocked, character, hold, holdIf = () => true, gate = null, formOpen = true, failIf = null }) {
   const fetch = async (url, init) => {
     if (url === '/api/library/unlock') return { ok: true, json: async () => ({ token: 't1' }) };
     if (url === '/api/library/relock') return { ok: true, json: async () => ({}) };
@@ -52,6 +52,7 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
       return { ok: true, json: async () => ({}) };
     }
     if (url.startsWith('/api/personas/authoring')) {
+      if (failIf?.(url)) return { ok: false, text: async () => 'server down' };
       if (hold && holdIf(url)) await hold;
       const g = gate?.(url);
       if (g) await g;
@@ -187,6 +188,29 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
   assert.deepEqual(authoring.characters, ['john', 'priya']);
   assert.equal(making.character, '', 'a locked portrait survived the relock');
   assert.deepEqual(making.relationships, ['mentor']);
+}
+
+// Relock: the unlocked list leaves the screen at once, not when the locked
+// answer lands — and if that answer never comes, a locked pick is dropped.
+{
+  let release;
+  const held = new Promise((r) => (release = r));
+  const p = page({ unlocked: true, character: 'priya', gate: (url) => (url.includes('unlock=') ? null : held) });
+  const relocking = p.relock();
+  for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r));
+  assert.deepEqual(p.get().authoring.characters, [], 'the unlocked list stayed up while the relock read');
+  assert.equal(p.get().making.character, 'priya', 'the choice waits for the answer');
+  release();
+  await relocking;
+  assert.equal(p.get().making.character, 'priya', 'an unlocked pick survives a relock');
+}
+{
+  const p = page({ unlocked: true, character: 'maya', failIf: (url) => !url.includes('unlock=') });
+  await p.relock();
+  const { authoring, making, error } = p.get();
+  assert.equal(error, 'server down');
+  assert.deepEqual(authoring.characters, []);
+  assert.equal(making.character, '', 'a locked pick outlived a failed relock read');
 }
 
 console.log('persona-lock-lists: ok');
