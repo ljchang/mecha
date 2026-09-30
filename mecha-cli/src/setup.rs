@@ -1871,7 +1871,7 @@ pub fn persona_provider(
 ///
 /// What it takes from `bound` is the run's mechanics — the provider, the
 /// model, the window, the tool context's limits. What it never takes is
-/// anything of the owner's: its registry is `persona::agent::registry_for`
+/// anything of the owner's: its registry is `persona::agent::registry_as`
 /// over the assistant's pool (declared tools only, none that can aim), its
 /// system prompt replaces the assistant's (no charter, skills or learned
 /// rules), its config switches off every lever that reads an owner store,
@@ -1884,7 +1884,7 @@ pub fn persona_agent(
     provider: Box<dyn mecha_core::provider::Provider>,
 ) -> Result<(Agent, Vec<mecha_core::persona::agent::Refused>)> {
     use mecha_core::persona::agent as persona;
-    let tools = persona::registry_for(bound.agent.registry(), &pinned.settings);
+    let tools = persona::registry_as(bound.agent.registry(), &pinned.name, &pinned.settings);
     let system = persona::system_prompt(pinned)?;
     let ctx = bound.agent.ctx();
     let agent = Agent::new(
