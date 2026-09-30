@@ -1278,6 +1278,31 @@ fn latest_trigger_row_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The import's outcome is read where the mail crate keeps its registry
+    /// — `$MECHA_MAIL_DIR` here — not under the mecha home. On the old
+    /// `mecha_home().join("mail")` a successful import read as failed
+    /// whenever the variable was set (review of #432).
+    #[test]
+    fn an_import_is_seen_where_the_mail_crate_keeps_its_registry() {
+        let _lock = crate::testenv::lock();
+        let dir =
+            std::env::temp_dir().join(format!("mecha-import-registry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("google")).unwrap();
+        std::fs::write(dir.join("google").join("oauth.json"), "{}").unwrap();
+        let restore = std::env::var("MECHA_MAIL_DIR").ok();
+        std::env::set_var("MECHA_MAIL_DIR", &dir);
+        let google = registry_credentials_exist("google");
+        let outlook = registry_credentials_exist("outlook");
+        match restore {
+            Some(v) => std::env::set_var("MECHA_MAIL_DIR", v),
+            None => std::env::remove_var("MECHA_MAIL_DIR"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(google, "the imported account is found in $MECHA_MAIL_DIR");
+        assert!(!outlook, "and one never imported is not");
+    }
     use mecha_core::trigger::RunStatus;
 
     fn remedy(argv: &[&str], needs_terminal: bool) -> Remedy {
