@@ -187,10 +187,18 @@ fn failed(e: anyhow::Error) -> Refusal {
 /// its judge has answered, `degraded` (keywords only) before then and while
 /// it cannot — and the farewell check as
 /// unbuilt, so neither can pass for "checked".
-fn safety_json(s: &mecha_core::persona::Safety, judge_ok: bool) -> serde_json::Value {
+/// `judge` is a chat's judge state (`Some(answered)`), or `None` for the
+/// persona itself, where no judge has been asked: that reads `enabled` —
+/// what is configured — never `on`, which a chat earns (review of #426).
+fn safety_json(s: &mecha_core::persona::Safety, judge: Option<bool>) -> serde_json::Value {
+    let crisis = match judge {
+        Some(answered) => serde_json::json!(safety::crisis_state(s.crisis, answered)),
+        None if s.crisis => serde_json::json!("enabled"),
+        None => serde_json::json!("off"),
+    };
     serde_json::json!({
         "disclosure": s.disclosure,
-        "crisis": safety::crisis_state(s.crisis, judge_ok),
+        "crisis": crisis,
         "reanchor": s.reanchor,
         "dose": s.dose,
         "breaks": s.breaks,
@@ -510,7 +518,7 @@ impl PersonaChats {
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     "locked": p.state.locked,
                     "problems": store.problems(p, &lib),
-                    "safety": safety_json(&p.settings.safety, true),
+                    "safety": safety_json(&p.settings.safety, None),
                     // The meters are shown to the owner, never to the model.
                     "dose": p.settings.safety.dose.then(|| match &doses.unreadable {
                         // Unread is said, not shown as zero turns.
@@ -806,7 +814,7 @@ impl PersonaChats {
                     .get(&ps.pinned.name)
                     .map(|p| p.settings.safety)
                     .unwrap_or(ps.pinned.settings.safety),
-                ps.judge_answered == Some(true),
+                Some(ps.judge_answered == Some(true)),
             ),
             "entries": entries,
             "taint": taint.map(|t| serde_json::json!({
@@ -1358,12 +1366,15 @@ impl PersonaChats {
                 // holds them, rather than coming back "not delivered"
                 // (review of #426).
                 if let (Some((text, request_id)), Some(live)) = (steer, &ps.live) {
+                    // By its receipt, not its words: the two queues are pushed
+                    // together, so one index names the same steer in both, and
+                    // two steers with the same words cannot be confused.
                     let held = match (live.queue.lock(), live.queued_ids.lock()) {
                         (Ok(mut queue), Ok(mut ids)) => {
-                            match queue.iter().position(|q| *q == text) {
+                            match ids.iter().position(|id| *id == request_id) {
                                 Some(at) => {
+                                    ids.remove(at);
                                     queue.remove(at);
-                                    ids.retain(|id| *id != request_id);
                                     true
                                 }
                                 None => false,
@@ -1378,6 +1389,10 @@ impl PersonaChats {
                             Some(before) => format!("{before}\n\n{text}"),
                             None => text,
                         });
+                        // Its receipt: kept, and it reaches the persona with
+                        // the owner's next turn — or the page's bubble reads
+                        // "queued" forever (review of #426).
+                        let _ = ps.events.send(WireEvent::QueuedDelivered { request_id });
                     }
                 }
                 if let Err(e) =
@@ -1486,8 +1501,22 @@ impl PersonaChats {
             match (self.provider)(bound) {
                 Ok(provider) => {
                     let model = bound.model.clone();
+                    let stopping = chat.stopping.clone();
+                    // Bounded and stoppable, as the turn's judge is: a judge
+                    // that hangs must not hold `drain` at shutdown (#409's
+                    // rule) or wait forever (review of #426).
                     chat.runs.spawn(async move {
-                        let v = judge::screen(provider.as_ref(), &model, &words).await;
+                        let v = tokio::select! {
+                            judged = tokio::time::timeout(
+                                JUDGE_WAIT,
+                                judge::screen(provider.as_ref(), &model, &words),
+                            ) => judged.unwrap_or_else(|_| {
+                                judge::Verdict::Unchecked("the judge did not answer in time".into())
+                            }),
+                            _ = stopping.cancelled() => {
+                                judge::Verdict::Unchecked("the server is shutting down".into())
+                            }
+                        };
                         chats.apply_verdict(&key, v, false, steered).await;
                     });
                 }
@@ -3368,6 +3397,49 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("the judge answered and the chat never read on");
+    }
+
+    /// A steer the judge held back gets its receipt — not "queued" forever —
+    /// and the persona list never claims "on" for a judge nobody has asked
+    /// (review of #426).
+    #[tokio::test]
+    async fn a_held_steer_is_receipted_and_the_list_claims_only_enabled() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_with(Mode::Gate(Arc::clone(&gate)));
+        let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
+        assert_eq!(listed["personas"][0]["safety"]["crisis"], "enabled");
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        judged(&w, 1).await;
+        *w.judge.lock().unwrap() = JudgeSays::Concern;
+        w.personas()
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "same words",
+                Some("r-1".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let receipt = next(&mut rx, |ev| match ev {
+            WireEvent::QueuedDelivered { request_id } => Some(request_id.clone()),
+            WireEvent::QueuedDiscarded { request_ids } => {
+                Some(format!("discarded {request_ids:?}"))
+            }
+            _ => None,
+        })
+        .await;
+        assert_eq!(receipt, "r-1");
     }
 
     #[tokio::test]
