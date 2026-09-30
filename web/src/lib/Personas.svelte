@@ -124,7 +124,7 @@
     const t = token;
     token = null;
     // A locked persona's chat closes with the lock: the lock hides (§8.3).
-    if (chosen?.locked) back();
+    if (chosen?.locked) toList();
     await load();
     if (t) {
       fetch('/api/library/relock', {
@@ -152,17 +152,20 @@
     };
     requestAnimationFrame(fit);
     node.addEventListener('input', fit);
-    return { update: fit, destroy: () => node.removeEventListener('input', fit) };
+    // `update` runs when `input` changes — a send clears it — but whether
+    // before or after `bind:value` writes the element is Svelte's ordering to
+    // decide; a frame later the value is settled either way (review of #431).
+    return { update: () => requestAnimationFrame(fit), destroy: () => node.removeEventListener('input', fit) };
   }
 
-  // An earlier chat's title, unless it is only the automatic one.
-  function chatTitle(h) {
-    const t = (h.title ?? '').trim();
-    return t && !/^persona:/i.test(t) ? t : '';
-  }
+  // An earlier chat's goal, when it was opened with one: what tells two
+  // chats apart. (A session title here is always the automatic
+  // "persona: …", so it is never shown — review of #431.)
+  const chatGoal = (h) => (h.goal ?? '').trim();
 
   // One step back at a time: out of a chat or the editor to the persona,
   // and from the persona to the list. The chat's "Done" button was this.
+  // The lock never steps: `toList` hides everything at once (review of #431).
   function back() {
     if (key) {
       close();
@@ -175,6 +178,10 @@
       editing = null;
       return;
     }
+    toList();
+  }
+
+  function toList() {
     menuOpen = false;
     close();
     making = null;
@@ -487,8 +494,8 @@
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       await load();
-      // Locked with no unlock in hand, it is hidden now: back to the grid.
-      if (!chosen) back();
+      // Locked with no unlock in hand, it is hidden now: back to the list.
+      if (!chosen) toList();
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {
@@ -592,7 +599,7 @@
 <div class="page">
   <header class="head">
     {#if chosen}
-      <button class="backbtn" aria-label="all personas" onclick={back}>
+      <button class="backbtn" aria-label={key ? `end the chat with ${chosen.display}` : editing ? 'close the editor' : 'all personas'} onclick={back}>
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7" /></svg>
       </button>
       <!-- On the persona's own page the hero says who; the header only
@@ -716,6 +723,7 @@
       {/if}
       <!-- A contacts list, not a wall of tiles: who they are to you reads at
            a glance, and a phone shows a dozen rather than three. -->
+      {#if personas.length}
       <div class="plist">
         {#each personas as p (p.name)}
           <button class="prow" onclick={() => choose(p)}>
@@ -723,7 +731,7 @@
             <span class="pbody">
               <span class="pname">
                 {p.display}
-                {#if p.locked}<svg class="glyph" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-label="hidden behind the library lock"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>{/if}
+                {#if p.locked}<svg class="glyph" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="hidden behind the library lock"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>{/if}
               </span>
               <span class="prel">{relationshipLabel(p) || 'no relationship'}</span>
             </span>
@@ -736,6 +744,7 @@
           </button>
         {/each}
       </div>
+      {/if}
     </div>
   {:else}
     <div class="scroll" bind:this={scroller}>
@@ -823,6 +832,10 @@
           <div class="herotext">
             <div class="heroname">{chosen.display}</div>
             <div class="herochips">
+              <!-- Disclosure is the harness's (§12.1): this is an AI, on the
+                   page that reads most like a contact. -->
+              <span class="ai">AI</span>
+              {#if chosen.locked}<svg class="glyph" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="hidden behind the library lock"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>{/if}
               {#each chosen.relationship ?? [] as r}<span class="rchip">{r.replaceAll('_', ' ')}</span>{/each}
               <span class="ver">v{chosen.version}</span>
             </div>
@@ -880,10 +893,8 @@
           <div class="plist">
             {#each history as h (h.id)}
               <button class="hrow" disabled={busy} onclick={() => resume(h.id)}>
-                <!-- A chat's own title when it has one; the automatic
-                     "persona: Mara" says nothing a row here does not. -->
-                {#if chatTitle(h)}
-                  <span class="htitle">{chatTitle(h)}</span>
+                {#if chatGoal(h)}
+                  <span class="htitle">{chatGoal(h)}</span>
                   <span class="when">{when(h.created)} · {clock(h.created)}</span>
                 {:else}
                   <span class="htitle">{when(h.created)}</span>
@@ -1015,7 +1026,7 @@
   .badge { align-self: flex-start; margin: 2px 10px 0; font-family: var(--mono); font-size: 10px; color: var(--hazard); border: 1px solid var(--hazard); border-radius: var(--radius-chip); padding: 1px 6px; }
   .when { font-family: var(--mono); font-size: 10px; color: var(--accent-700); margin-left: auto; }
   .earlier { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-300); margin-top: 14px; }
-  .startbox { display: flex; gap: 10px; }
+  .startbox { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
   .form { display: flex; flex-direction: column; gap: 12px; max-width: 520px; }
   .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text); }
   .hint { font-size: 11px; color: var(--text-muted); }
@@ -1083,7 +1094,6 @@
   .mitem { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 0 12px; background: transparent; border: none; border-radius: 8px; color: var(--text); font-size: 14px; text-align: left; cursor: pointer; }
   .mitem svg { color: var(--text-muted); flex-shrink: 0; }
   .mitem:hover { background: var(--accent-900); }
-  .startbox { flex-direction: column; margin-top: 6px; }
   .abtn.wide { width: 100%; }
   .status { display: flex; flex-wrap: wrap; gap: 6px 16px; }
   .stat { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
