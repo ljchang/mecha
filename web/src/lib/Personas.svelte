@@ -385,7 +385,8 @@
   // one would silently lose the other's edits.
   function setAsText(on) {
     current.asText = on;
-    // Text mode starts from the file as saved, never a stale text draft.
+    // Text mode picks up the text draft this tab already held, if any —
+    // what was typed survives (review of #420) — else the file as saved.
     if (on) editing.text = current.draft ?? current.text;
     editing.saved = null;
   }

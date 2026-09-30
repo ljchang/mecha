@@ -332,10 +332,15 @@ impl PersonaChats {
         if library.unlocked(token) {
             return None;
         }
+        // Shown only when the library holds it, open. An entry that did not
+        // load (a damaged `entry.toml`) is unknown, and unknown reads as
+        // locked (review of #430). Locked keys on `locked`, not approval: a
+        // locked candidate is hidden too.
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
-        lib.get(mecha_core::imagelib::Kind::Character, name)
-            .filter(|e| e.locked)
-            .map(|_| name.clone())
+        match lib.get(mecha_core::imagelib::Kind::Character, name) {
+            Some(e) if !e.locked => None,
+            _ => Some(name.clone()),
+        }
     }
 
     /// What the settings form offers, from the stores as they stand — built
@@ -464,6 +469,7 @@ impl PersonaChats {
             .then(|| self.hidden_character(library, &p, body.unlock.as_deref()))
             .flatten();
         let mut base = body.base.clone();
+        let mut disk_text = None;
         if hidden.is_some() {
             let disk = mecha_core::persona::read_owner_file(&self.store, &p.name, body.file)
                 .map_err(failed)?;
@@ -476,6 +482,7 @@ impl PersonaChats {
                 )));
             }
             base = mecha_core::persona::text_digest(&disk);
+            disk_text = Some(disk);
         }
         let saved = match (body.text, body.changes, body.doc) {
             (None, None, Some(doc)) if body.file != mecha_core::persona::OwnerFile::Settings => {
@@ -487,8 +494,8 @@ impl PersonaChats {
                 ))
             }
             (Some(text), None, None) => {
-                let text = match &hidden {
-                    Some(c) => mecha_core::persona::restore_character(&text, c),
+                let text = match &disk_text {
+                    Some(disk) => mecha_core::persona::restore_character(&text, disk),
                     None => text,
                 };
                 mecha_core::persona::write_owner_file(
@@ -499,9 +506,15 @@ impl PersonaChats {
                     Some(&base),
                 )
             }
-            (None, Some(changes), None)
+            (None, Some(mut changes), None)
                 if body.file == mecha_core::persona::OwnerFile::Settings =>
             {
+                // Hidden, never cut: the page was shown no portrait, so a
+                // `null` for it is not a choice to remove one. A name is —
+                // the owner picked a portrait.
+                if hidden.is_some() && changes.get("character").is_some_and(|v| v.is_null()) {
+                    changes.remove("character");
+                }
                 let form = self.form(library, body.unlock.as_deref());
                 mecha_core::persona::edit_settings(&self.store, &p.name, &form, &changes, &base)
             }
@@ -2746,7 +2759,7 @@ mod tests {
         let toml = w.store().join("mara/persona.toml");
         let on_disk = std::fs::read_to_string(&toml).unwrap().replacen(
             "display",
-            "character = \"theo\"\ndisplay",
+            "character = \"theo\"   # the grey coat\ndisplay",
             1,
         );
         std::fs::write(&toml, &on_disk).unwrap();
@@ -2775,7 +2788,10 @@ mod tests {
             .unwrap();
         assert!(!saved.to_string().contains("theo"), "{saved}");
         let now = std::fs::read_to_string(&toml).unwrap();
-        assert!(now.contains("character = \"theo\""), "{now}");
+        assert!(
+            now.contains("character = \"theo\"   # the grey coat\ndisplay"),
+            "the line as it was: {now}"
+        );
         assert!(now.contains("dose       = false"), "{now}");
         let files = w.personas().files(&w.library, "mara", None).unwrap();
         w.personas()
@@ -2784,6 +2800,22 @@ mod tests {
                 "mara",
                 body(serde_json::json!({
                     "file": "settings", "changes": { "safety.dose": true },
+                    "base": files["settings"]["digest"],
+                })),
+            )
+            .unwrap();
+        assert!(std::fs::read_to_string(&toml)
+            .unwrap()
+            .contains("character = \"theo\""));
+        // Nor does a form save that sends `null` for the Portrait it was not
+        // shown: that is not a choice to cut the link.
+        let files = w.personas().files(&w.library, "mara", None).unwrap();
+        w.personas()
+            .save(
+                &w.library,
+                "mara",
+                body(serde_json::json!({
+                    "file": "settings", "changes": { "character": null, "safety.dose": false },
                     "base": files["settings"]["digest"],
                 })),
             )
@@ -2809,6 +2841,12 @@ mod tests {
             .files(&w.library, "mara", Some(&token))
             .unwrap();
         assert_eq!(open["settings"]["form"]["values"]["character"], "theo");
+
+        // An entry that no longer loads is unknown, and unknown is hidden.
+        let entry = w.library.dir.join("characters/theo/entry.toml");
+        std::fs::write(&entry, "not = [toml").unwrap();
+        let files = w.personas().files(&w.library, "mara", None).unwrap();
+        assert!(!files.to_string().contains("theo"), "{files}");
     }
 
     /// The page can make a persona and write who it is — the owner's door,

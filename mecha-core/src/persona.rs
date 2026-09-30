@@ -1886,9 +1886,11 @@ pub fn hide_character(text: &str) -> String {
 }
 
 /// A save from a page that was shown [`hide_character`]'s text: the hidden
-/// link put back, unless the owner wrote a `character` of their own. Put
-/// before the first table, where a root key must go.
-pub fn restore_character(text: &str, character: &str) -> String {
+/// line put back **as it is in `disk`** — its spelling and any comment on it
+/// — at its old line number, kept inside the root table (review of #430: a
+/// fresh bare `character = …` lost the owner's comment). Unless the owner
+/// wrote a `character` of their own, which stands.
+pub fn restore_character(text: &str, disk: &str) -> String {
     let root = root_lines(text);
     if text
         .lines()
@@ -1897,10 +1899,17 @@ pub fn restore_character(text: &str, character: &str) -> String {
     {
         return text.to_string();
     }
-    let line = format!("character = {}", toml_edit::Value::from(character));
+    let disk_root = root_lines(disk);
+    let Some((was, line)) = disk
+        .lines()
+        .enumerate()
+        .find(|(i, l)| *i < disk_root && is_character_line(l))
+    else {
+        return text.to_string();
+    };
     let mut lines: Vec<&str> = text.lines().collect();
-    let at = root.min(lines.len());
-    lines.insert(at, &line);
+    let at = was.min(root).min(lines.len());
+    lines.insert(at, line);
     let mut out = lines.join("\n");
     if text.ends_with('\n') || text.is_empty() {
         out.push('\n');
@@ -2873,19 +2882,24 @@ mod tests {
             shown.contains("character = \"not-root\""),
             "only the root key"
         );
-        let back = restore_character(&shown, "theo");
+        let back = restore_character(&shown, text);
         let parsed: toml::Table = toml::from_str(&back).unwrap();
         assert_eq!(parsed["character"].as_str(), Some("theo"), "{back}");
+        // Back as it was, comment and all, where it was.
+        assert_eq!(back, text, "{back}");
         assert_eq!(parsed["tools"]["character"].as_str(), Some("not-root"));
         // The owner named a portrait of their own: theirs stands.
         let chosen = shown.replace(
             "display = \"Mara\"",
             "display = \"Mara\"\ncharacter = \"maya\"",
         );
-        assert_eq!(restore_character(&chosen, "theo"), chosen);
+        assert_eq!(restore_character(&chosen, text), chosen);
         // A file with no tables, and one that does not parse, both work.
         assert_eq!(hide_character("character = \"theo\"\n"), "");
-        assert_eq!(restore_character("", "theo"), "character = \"theo\"\n");
+        assert_eq!(
+            restore_character("", "character = \"theo\"\n"),
+            "character = \"theo\"\n"
+        );
         assert!(!hide_character("character = \"theo\"\ndisplay = ").contains("theo"));
     }
 
