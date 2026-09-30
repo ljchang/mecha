@@ -1,0 +1,3 @@
+subtotal 67.25
+tax 5.38
+total 72.63

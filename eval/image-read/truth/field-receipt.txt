@@ -1,0 +1,3 @@
+subtotal 275.88
+tax 19.31
+total 295.19
