@@ -1622,6 +1622,13 @@ fn word_spans(text: &str) -> Vec<(usize, usize, String)> {
 /// name with punctuation in it ("Mara O'Brien", "J.R. Smith") is never
 /// miscounted into the clause (review of #444).
 fn self_clauses(after_name: &str) -> (Option<String>, Option<String>) {
+    // A possessive belongs to the name, not to what it is doing: after
+    // "Mara", "'s hand holding a cup" is "hand holding a cup" (review of
+    // #454).
+    let after_name = ["'s", "’s", "'"]
+        .iter()
+        .find_map(|p| after_name.strip_prefix(p))
+        .unwrap_or(after_name);
     let mut parts = after_name.split([',', '.', ';', '\n']).map(str::trim);
     // The first part is the rest of the name's own clause, even when empty
     // ("Maya, wearing a coat"): what follows it is a new clause.
@@ -2038,36 +2045,50 @@ impl ImageGenerate {
         // passing is someone else's description, and the compiler refuses an
         // extra naming a cast member — so it is refused here, in the model's
         // terms, before anything is added (review of #444).
+        // Read first, changed only once the persona is cast: an extra removed
+        // on a path that then declines to cast would be a person the model
+        // wrote, gone without a word (review of #454).
         let mut from_extra: Option<String> = None;
-        if let Some(a) = ask.as_mut() {
-            let mut kept = Vec::with_capacity(a.extras.len());
-            for extra in std::mem::take(&mut a.extras) {
-                match named_at(&extra) {
-                    Some((0, end)) => {
-                        from_extra.get_or_insert_with(|| extra[end..].to_string());
-                    }
-                    Some(_) => {
-                        return Err(format!(
-                            "This extra names you: \"{extra}\". You are \
-                             drawn from your own portrait, so say what you are doing in the \
-                             prompt, and describe the other people in `extras` without your \
-                             name."
-                        ));
-                    }
-                    None => kept.push(extra),
+        let mut is_persona = Vec::new();
+        for extra in ask.iter().flat_map(|a| a.extras.iter()) {
+            match named_at(extra) {
+                Some((0, end)) => {
+                    from_extra.get_or_insert_with(|| extra[end..].to_string());
+                    is_persona.push(true);
                 }
+                Some(_) => {
+                    return Err(format!(
+                        "This extra names you: \"{extra}\". You are drawn from your own \
+                         portrait, so say what you are doing in the prompt, and describe the \
+                         other people in `extras` without your name."
+                    ));
+                }
+                None => is_persona.push(false),
             }
-            a.extras = kept;
         }
+        let drop_persona_extras = |ask: &mut Option<LibraryAsk>| {
+            if let Some(a) = ask.as_mut() {
+                let mut flags = is_persona.iter();
+                a.extras.retain(|_| !flags.next().copied().unwrap_or(false));
+            }
+        };
+        // Already cast by the model: that entry draws the persona, and an
+        // extra that is the persona too would be a second face for it.
         if ask.as_ref().is_some_and(|a| {
             a.cast
                 .iter()
                 .any(|m| m.name.trim().eq_ignore_ascii_case(&c))
-                // A full cast: adding the persona would make a call the
-                // compiler refuses and the model never wrote. The guard
-                // below names everyone instead, the persona included.
-                || a.cast.len() >= crate::imagelib::MAX_CAST
         }) {
+            drop_persona_extras(ask);
+            return Ok(());
+        }
+        // A full cast: adding the persona would make a call the compiler
+        // refuses and the model never wrote. The guard below names everyone
+        // instead, the persona included, and every extra stays as written.
+        if ask
+            .as_ref()
+            .is_some_and(|a| a.cast.len() >= crate::imagelib::MAX_CAST)
+        {
             return Ok(());
         }
         let in_prompt = named_at(prompt);
@@ -2091,6 +2112,7 @@ impl ImageGenerate {
             wearing: capped(wearing.as_deref().unwrap_or(SELF_WEARING)),
             doing: capped(doing.as_deref().unwrap_or(SELF_DOING)),
         };
+        drop_persona_extras(ask);
         let spans = word_spans(prompt);
         let first_word = |name: &str| -> Option<usize> {
             let n: Vec<String> = word_spans(name).into_iter().map(|(_, _, w)| w).collect();
@@ -4798,6 +4820,11 @@ mod tests {
             "{w}"
         );
         assert_eq!(capped("short"), "short");
+        // A possessive is the name's: "Maya's hand" is a hand, not "'s hand".
+        assert_eq!(
+            self_clauses("'s hand holding a cup, wearing a ring"),
+            (Some("a ring".into()), Some("hand holding a cup".into()))
+        );
         // Lowercasing "İ" makes it longer: no panic, and the right slice.
         assert_eq!(
             read("Maya İstanbul skyline behind her wearing é coat"),
@@ -4885,9 +4912,9 @@ mod tests {
     /// made, leaving two entries the model wrote to the compiler.
     #[tokio::test]
     async fn a_persona_cast_from_its_own_words_wherever_it_writes_them() {
-        let (url, seen) = fake(vec![done(), done(), done()], "200 OK").await;
+        let (url, seen) = fake(vec![done(), done(), done(), done()], "200 OK").await;
         let dir = tempdir();
-        let lib = library_with(&["maya", "john"]);
+        let lib = library_with(&["maya", "john", "ann", "bea", "cy"]);
         let base = Arc::new(tool(&url).with_library_dir(lib.clone()));
         let mara = Arc::clone(&base)
             .for_persona_as(&crate::tool::PersonaSelf {
@@ -4942,6 +4969,31 @@ mod tests {
         assert_eq!(
             manifest["extras"],
             json!(["a man with a dog walking below"]),
+            "{manifest}"
+        );
+
+        // A full cast: the persona is not added, and the extra the model
+        // wrote stays where it was — nothing silently disappears. Four
+        // library characters fill the cast; the call then draws as written.
+        let before = draws();
+        let out = mara
+            .call(
+                json!({"prompt": "a crowded kitchen", "cast": [
+                    {"name": "john", "wearing": "an apron", "doing": "cooking"},
+                    {"name": "ann", "wearing": "a coat", "doing": "leaving"},
+                    {"name": "bea", "wearing": "a hat", "doing": "reading"},
+                    {"name": "cy", "wearing": "a scarf", "doing": "waving"}
+                ], "extras": ["Mara leaning on the door"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(draws(), before + 1);
+        let manifest = manifest_of(&dir, &out.content);
+        assert_eq!(
+            manifest["extras"],
+            json!(["Mara leaning on the door"]),
             "{manifest}"
         );
 
