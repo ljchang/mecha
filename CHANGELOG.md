@@ -31,7 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   graph tool now names the switch when that is why, not `[[mcp]]`. `mecha
   batch` prints the upgrade line, as `run` does. On Home, a review queue
   whose feature is off shows its count and the command, and no longer opens
-  a page that cannot load.
+  a page that cannot load. **The web app reads the switches when `mecha
+  serve` starts**, as its chat's tools do: switching a feature *off* stops
+  its web routes only after a restart of `mecha serve` (Settings → Features
+  lists the switches waiting on one), while the commands read the file every
+  time.
 
 - **Eval cases can attach pictures.** `"attach": [...]` in a case puts
   images on its first turn as pixels, exactly as a web-chat upload does, so

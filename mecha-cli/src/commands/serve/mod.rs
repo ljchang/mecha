@@ -1691,6 +1691,8 @@ mod tests {
             ("GET", "/api/proposals/%65ntities", Some("graph")),
             ("GET", "/api/proposals/entities", Some("graph")),
             ("GET", "/api/proposals/harness", None),
+            // A store the table does not know fails closed.
+            ("GET", "/api/proposals/nonesuch", Some("graph")),
             ("POST", "/api/chat/%69ncognito-k/send", Some("incognito")),
             ("POST", "/api/chat/incognito-k/send", Some("incognito")),
             ("POST", "/api/chat/web-k/send", None),

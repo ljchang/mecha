@@ -620,6 +620,12 @@ pub struct Row {
     /// the "next command" of FEATURES-DESIGN.md §4.2 item 1. Not `fix`: the
     /// flattened state already carries one for `Off` and `Unready`.
     pub next: Option<String>,
+    /// Whether switching it off refuses today ([`Feature::gated`]): its
+    /// routes answer `feature_off` and its verbs refuse. The web keys what a
+    /// refusal forces — a flat card, a pane sent home — on this, not on
+    /// `shown`, so a feature hidden before its guard lands keeps its door
+    /// (review of #451: the front door's queue had none).
+    pub gated: bool,
 }
 
 /// Every feature, in [`Feature::ALL`] order.
@@ -635,6 +641,7 @@ pub fn all(facts: &Facts) -> Vec<Row> {
                 requires: f.requires(),
                 shown: state.shown(),
                 next: fix(facts, f),
+                gated: f.gated(),
                 state,
                 switch: switch(&facts.config, f),
                 in_use: announcement(facts, f).is_some(),

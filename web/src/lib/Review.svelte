@@ -8,7 +8,7 @@
   import Proposals from './Proposals.svelte';
 
   import { features } from './features.svelte.js';
-  import { isShown } from './features.js';
+  import { isShown, refuses } from './features.js';
 
   let { initial = null, navigate = () => {} } = $props();
   // The three proposal stores are panes in their own right rather than one
@@ -38,12 +38,14 @@
 <div class="review">
   <div class="tabs">
     <button class="tab" class:active={pane === 'outbox'} onclick={() => navigate('review/outbox')}>Outbox</button>
-    <!-- A tab whose feature is off is not offered; its pane's routes answer
-         `feature_off`, and App sends a link to it home (PANE_FEATURE). -->
-    {#if isShown(features.rows, 'graph')}
+    <!-- A tab whose feature is off is not offered. Its pane, opened by a
+         link, keeps its tab while its routes still work (a feature hidden
+         before its guard lands); once they refuse, App sends the link home
+         (PANE_FEATURE, `refuses`). -->
+    {#if isShown(features.rows, 'graph') || (pane === 'graph' && !refuses(features.rows, 'graph'))}
       <button class="tab" class:active={pane === 'graph'} onclick={() => navigate('review/graph')}>Graph queue</button>
     {/if}
-    {#if isShown(features.rows, 'frontdoor')}
+    {#if isShown(features.rows, 'frontdoor') || (pane === 'frontdoor' && !refuses(features.rows, 'frontdoor'))}
       <button class="tab" class:active={pane === 'frontdoor'} onclick={() => navigate('review/frontdoor')}>Front door</button>
     {/if}
     <button class="tab" class:active={inProposals} onclick={() => navigate('review/harness')}>Proposals</button>

@@ -27,8 +27,9 @@ export const VIEW_FEATURE = {
 
 /**
  * Panes of a core view that belong to a feature: a link to one whose feature
- * is hidden lands on Home, as a hidden view's does — its routes answer
- * `feature_off` — and the view does not offer it.
+ * refuses lands on Home, as a hidden view's does — its routes answer
+ * `feature_off` — and the view does not offer it. One whose feature is hidden
+ * but not yet guarded still opens (`refuses`).
  */
 export const PANE_FEATURE = {
   'review/graph': 'graph',
@@ -88,6 +89,19 @@ export function index(body) {
   const rows = body?.features;
   if (!Array.isArray(rows)) return null;
   return new Map(rows.map((r) => [r.id, r]));
+}
+
+/**
+ * Whether `id` is off *and refuses*: hidden, and its guard has landed
+ * (`gated`), so its routes answer `feature_off`. What a refusal forces — a
+ * flat Home card, a pane sent home — keys on this, never on `isShown`
+ * alone: a feature hidden before its guard lands still works, and its door
+ * must stay (review of #451: the front door's queue lost its only one).
+ */
+export function refuses(rows, id) {
+  if (!id || !rows) return false;
+  const row = rows.get(id);
+  return !!row && row.shown === false && row.gated === true;
 }
 
 /** Whether `id` is shown. `id` null is core, always shown. */

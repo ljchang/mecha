@@ -11,7 +11,7 @@
   import Graph from './lib/Graph.svelte';
   import Settings from './lib/Settings.svelte';
   import { features, loadFeatures } from './lib/features.svelte.js';
-  import { featureOf, isShown, banner, hiddenLine, opensAnyway } from './lib/features.js';
+  import { VIEW_FEATURE, PANE_FEATURE, featureOf, isShown, refuses, banner, hiddenLine, opensAnyway } from './lib/features.js';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
   // A hash may carry a sub-view after a slash (#review/frontdoor), which the
@@ -101,8 +101,12 @@
   // answer is in: before it, and when it failed, nothing is hidden.
   let hiddenNotice = $state(null);
   $effect(() => {
-    const f = featureOf(view, route.sub);
-    if (f && !isShown(features.rows, f) && !opensAnyway(view, route.sub)) {
+    // A hidden view goes home (step 2); a feature's pane in a core view only
+    // when its routes refuse — before its guard lands it still works.
+    const pane = PANE_FEATURE[`${view}/${route.sub}`];
+    const hidden = pane ? refuses(features.rows, pane) : !isShown(features.rows, VIEW_FEATURE[view]);
+    const f = pane ?? VIEW_FEATURE[view];
+    if (f && hidden && !opensAnyway(view, route.sub)) {
       hiddenNotice = hiddenLine(features.rows, f);
       navigate('home', { replace: true });
     } else if (view !== 'home') {

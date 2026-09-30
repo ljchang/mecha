@@ -46,7 +46,7 @@ const STORES: [(&str, &str); 3] = [
     ("entities", "graph entities"),
 ];
 
-fn queue_of(store: &str) -> Option<&'static str> {
+pub(super) fn queue_of(store: &str) -> Option<&'static str> {
     STORES
         .iter()
         .find(|(k, _)| *k == store)

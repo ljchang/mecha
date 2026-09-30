@@ -56,8 +56,14 @@ impl Owner {
         match self {
             Owner::Core => None,
             Owner::Of(f) => Some(f),
+            // Whose store it is comes from the table the handler dispatches
+            // on (`proposals::queue_of` → `review_source`), not a second
+            // hand-kept name: a graph-backed store added there is the
+            // graph's here, and an unknown one fails closed (review of #451).
             Owner::ProposalStore => capture("store")
-                .is_none_or(|store| store == "entities")
+                .and_then(|store| super::proposals::queue_of(&store))
+                .and_then(crate::commands::review::review_source)
+                .is_none_or(|source| source.graph)
                 .then_some(Feature::Graph),
             Owner::ChatKey => capture("key")
                 .is_none_or(|key| key.starts_with(super::incognito::KEY_PREFIX))

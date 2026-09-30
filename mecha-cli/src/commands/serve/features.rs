@@ -124,6 +124,10 @@ mod tests {
         assert_eq!(image["shown"], false);
         assert_eq!(image["next"], "mecha features enable image");
         assert_eq!(image["pending"], false);
+        // Whether its guard has landed, which the web keys a refusal's
+        // consequences on (a flat card, a pane sent home).
+        assert_eq!(image["gated"], true);
+        assert_eq!(row(&body, "frontdoor")["gated"], false);
         // Switched off since start: pending the other way.
         let body = super::body(&facts, &[Feature::Web, Feature::Image]);
         assert_eq!(row(&body, "image")["pending"], true);

@@ -5,7 +5,7 @@
 // failed; an `unready` feature the owner switched on, hidden; a queue with
 // strangers' requests waiting, hidden because its switch is off; and a
 // banner that names the child when the parent is what is broken.
-import { OPENS_ANYWAY, opensAnyway, opens, featureOf, index, isShown, queueCardShown, banner, hiddenLine, summary, tree, detail, VIEW_FEATURE } from '../src/lib/features.js';
+import { OPENS_ANYWAY, opensAnyway, opens, featureOf, refuses, index, isShown, queueCardShown, banner, hiddenLine, summary, tree, detail, VIEW_FEATURE } from '../src/lib/features.js';
 
 let pass = 0;
 let fail = 0;
@@ -76,6 +76,17 @@ t('a feature\'s pane in a core view is the pane\'s', featureOf('review', 'graph'
 t('a core pane of a core view is nobody\'s', featureOf('review', 'outbox') === null);
 t('a feature\'s view is the view\'s', featureOf('library', 'candidates') === 'library' && featureOf('tasks', null) === 'tasks');
 t('every entry is view/sub', OPENS_ANYWAY.every((r) => /^[a-z]+\/[a-z]+$/.test(r)));
+
+console.log('what refuses');
+const gatedRows = new Map([
+  ['graph', row('graph', 'off', { gated: true })],
+  ['frontdoor', row('frontdoor', 'off', { gated: false })],
+  ['mail', row('mail', 'on', { gated: true })],
+]);
+t('an off feature whose guard has landed refuses', refuses(gatedRows, 'graph'));
+t('an off feature not yet guarded does not — its door stays', !refuses(gatedRows, 'frontdoor'));
+t('an on feature does not', !refuses(gatedRows, 'mail'));
+t('nothing refuses before the answer', !refuses(null, 'graph') && !refuses(undefined, 'graph'));
 
 console.log('banners');
 const lib = banner(rows, 'library');
