@@ -178,7 +178,7 @@ change the server's `-c` or `-np`, change `context_window` to match. See
 | `compact_at_tokens` | integer | unset | Summarise the middle of the conversation once the reported prompt passes this many tokens. |
 | `timezone` | string | unset | IANA timezone name for the user, e.g. `America/New_York`. |
 | `compact_keep_recent` | integer | `6` | Turns kept verbatim after a compaction. |
-| `loop_guard` | bool | `true` | Stop a run that repeats an identical tool call with an identical result right after a compaction. |
+| `loop_guard` | bool | `true` | Stop a run that repeats an identical tool call with an identical result right after a compaction, or that gets the same error from the same call seven turns running. |
 | `compact_validate` | bool | `true` | Check each summary against the transcript it replaces before installing it, and regenerate once with the omissions named. |
 | `boredom` | bool | `true` | Notify a run when an approach stops producing useful new evidence. |
 | `step_escalation` | bool | `false` | Spend a quarantined model call on an ambiguous completed plan step. |
@@ -203,7 +203,9 @@ enabled, the trigger also considers the forecast size of the next request. It is
 because compaction is lossy. Set it to roughly two thirds of the model's context
 window, or set `context_window` on the provider and let it be derived.
 
-`loop_guard` is dormant until a compaction has happened. Identical arguments with a
+`loop_guard`'s repeat check is dormant until a compaction has happened; its
+other trigger, one call failing identically seven turns in a row, is not, and
+never counts a call you or a policy refused. Identical arguments with a
 *changing* result is polling and never trips it. The distinct `StopCause::Loop` is
 what separates "stuck" from "the task was too big".
 
@@ -835,7 +837,7 @@ max_cost_usd = 0.50                # needs prices on the provider
 # compact_at_tokens = 21000        # unset: derived as 2/3 of context_window
 compact_keep_recent = 6            # turns kept verbatim after a summary
 compact_validate = true            # check a summary against what it replaces
-loop_guard = true                  # stop a post-compaction repeat loop
+loop_guard = true                  # stop a repeat loop (post-compaction, or 7 identical errors)
 timezone = "America/New_York"      # IANA name; an offset is wrong twice a year
 
 # -------------------------------------------------------------------- tools --
