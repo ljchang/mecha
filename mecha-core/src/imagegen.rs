@@ -1358,7 +1358,7 @@ pub fn edit_canvas(w: u32, h: u32, resolution: u32) -> (u32, u32) {
     )
 }
 
-/// Grow the painted area by about 24 px and feather its edge by about 16,
+/// Grow the painted area by about 21 px and feather its edge by about 16,
 /// at the canvas's scale — the setting measured seamless
 /// (`IMAGE-REGION-EDIT-RESEARCH.md` §4).
 const MASK_GROW_SIGMA: f32 = 12.0;

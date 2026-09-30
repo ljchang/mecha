@@ -19,6 +19,10 @@
   let size = $state(24);
   let ops = $state([]);
   let textarea = $state(null);
+  // Set before the mask is encoded, so a second click in that window cannot
+  // send twice (review of #429).
+  let encoding = $state(false);
+  let encodeError = $state(null);
 
   // What is painted, at the picture's own size: white where it will change,
   // transparent elsewhere. `base` holds the committed operations; a stroke
@@ -50,7 +54,7 @@
     }
     painted = any;
   }
-  const canSend = $derived(!busy && words.trim().length > 0);
+  const canSend = $derived(!busy && !encoding && words.trim().length > 0);
   // Work is paint or words: an eraser tap on nothing is neither (review of #429).
   const dirty = $derived(painted || words.trim() !== initial.trim());
 
@@ -214,9 +218,22 @@
   }
 
   async function send() {
-    if (!canSend) return;
-    const mask = painted ? await maskBlob() : null;
-    onsend?.({ text: words, mask });
+    if (!canSend || encoding) return;
+    encoding = true;
+    encodeError = null;
+    try {
+      const mask = painted ? await maskBlob() : null;
+      // A painted area whose mask could not be made must stop here: sent as
+      // "nothing painted", it would redraw the whole picture the owner
+      // painted a region to protect (review of #429).
+      if (painted && !mask) {
+        encodeError = 'The painted area could not be prepared. Nothing was sent; try again.';
+        return;
+      }
+      onsend?.({ text: words, mask });
+    } finally {
+      encoding = false;
+    }
   }
 
   function close() {
@@ -302,8 +319,8 @@
     ></textarea>
   </label>
 
-  {#if error}
-    <p class="editerr" role="alert">{error}</p>
+  {#if error || encodeError}
+    <p class="editerr" role="alert">{error ?? encodeError}</p>
   {/if}
 
   <footer class="editfoot">
