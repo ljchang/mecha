@@ -46,8 +46,9 @@ export function repeatedPictures(entries) {
 // entry, for a plain line under it. Read off the tool rows' own results, so
 // a reply that says "here you go" over nothing cannot stand as the last word
 // (2026-09-30: seven refused calls, then "Here you go"). A turn runs from one
-// message the owner sent to the next; a steer folded into the run (`queued`)
-// is not a new turn. A turn still running, or with a call still out, is not
+// message the owner sent to the next; a steer folded into the run is not a
+// new turn — `queued` while it is live, `steered` as the transcript reads it
+// back, where it comes after the turn's tool rows (review of #444). A turn still running, or with a call still out, is not
 // judged yet.
 export function turnsWithoutPicture(entries, running = false) {
   const out = new Set();
@@ -59,7 +60,7 @@ export function turnsWithoutPicture(entries, running = false) {
     asked = drawn = open = 0;
   };
   entries.forEach((entry, i) => {
-    if (entry.kind === 'user' && !entry.queued) close(i - 1);
+    if (entry.kind === 'user' && !entry.queued && !entry.steered) close(i - 1);
     if (entry.kind !== 'tool' || entry.name !== 'image_generate') return;
     asked += 1;
     if (entry.is_error === false) drawn += 1;

@@ -238,6 +238,8 @@ pub struct PersonaTools {
 /// third-party content — out of the registry, so the model is never offered
 /// it.
 pub fn registry_for(pool: &Registry, settings: &Settings) -> PersonaTools {
+    // No folder name, but the settings' display name and character still
+    // reach each tool's persona form, as [`registry_as`] passes them.
     registry_as(pool, "", settings)
 }
 
