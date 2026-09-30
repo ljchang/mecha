@@ -3,6 +3,9 @@
   import SettingsCharter from './SettingsCharter.svelte';
   import SettingsLearning from './SettingsLearning.svelte';
   import SettingsVoice from './SettingsVoice.svelte';
+  import SettingsFeatures from './SettingsFeatures.svelte';
+  import { features } from './features.svelte.js';
+  import { isShown, summary } from './features.js';
 
   // Settings is an index of features, not one long scroll: each row opens a
   // pane at `#settings/<pane>`, so the hash names where you are, reload
@@ -11,12 +14,12 @@
   // two-tap save and the voice pane's live microphone have no business
   // sharing a scope.
   let { initial = null, navigate, backTo } = $props();
-  const PANES = ['charter', 'learning', 'voice'];
+  const PANES = ['charter', 'learning', 'voice', 'features'];
   // Derived, never copied into state: App re-renders this with a new
   // `initial` on back/forward, and a `$state` snapshot would ignore it.
   const pane = $derived(PANES.includes(initial) ? initial : null);
 
-  const TITLE = { charter: 'Charter', learning: 'Learning', voice: 'Voice' };
+  const TITLE = { charter: 'Charter', learning: 'Learning', voice: 'Voice', features: 'Features' };
 
   // Each pane reads its own data when opened. These are only the one-line
   // summaries the index rows show, re-read on every return so an edit made
@@ -107,13 +110,26 @@
     learning: 'M9.5 18h5M10.5 21h3M12 3a6 6 0 00-3.5 10.9V16h7v-2.1A6 6 0 0012 3z',
     // A waveform.
     voice: 'M4 10v4M8 6.5v11M12 9v6M16 4.5v15M20 10v4',
+    // Switches.
+    features: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4',
   };
 
-  const rows = $derived([
-    { pane: 'charter', name: 'Charter', line: charterLine },
-    { pane: 'learning', name: 'Learning', line: learningLine },
-    { pane: 'voice', name: 'Voice', line: voiceLine },
-  ]);
+  // Every feature, off ones included — the one place a hidden feature is
+  // still found, so it is always here.
+  const featuresLine = $derived.by(() => {
+    if (features.error) return { text: `could not be read: ${features.error}`, bad: true };
+    return summary(features.body) ?? { text: '—' };
+  });
+
+  // Voice's pane follows the feature, as its tab would.
+  const rows = $derived(
+    [
+      { pane: 'charter', name: 'Charter', line: charterLine },
+      { pane: 'learning', name: 'Learning', line: learningLine },
+      isShown(features.rows, 'voice') && { pane: 'voice', name: 'Voice', line: voiceLine },
+      { pane: 'features', name: 'Features', line: featuresLine },
+    ].filter(Boolean),
+  );
 </script>
 
 {#if pane === null}
@@ -175,6 +191,8 @@
       <SettingsCharter />
     {:else if pane === 'learning'}
       <SettingsLearning />
+    {:else if pane === 'features'}
+      <SettingsFeatures />
     {:else}
       <SettingsVoice />
     {/if}

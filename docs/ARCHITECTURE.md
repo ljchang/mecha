@@ -8092,11 +8092,22 @@ in five different ways. The design and its open steps are
   `publishing`) is a variant with `part_of`, listed after everything it
   needs — `state` recurses through `needs`, and a test holds the order.
 - **Five states, never merged into a bool.** `On`, `Off`, `Blocked` (a need is
-  off), `Unready` (config or disk says it cannot work yet) and `Unknown` (a
-  store could not be read). Only `Off` and `Blocked` block dependents or hide
-  anything: hiding a feature the owner turned on because something about it
-  is wrong reads as "not configured", the silently-degrading shape. `Unknown`
-  is never clean.
+  off), `Unready` (switched on, and config or disk says it cannot work yet)
+  and `Unknown` (a store could not be read). Only `Off` and `Blocked` block
+  dependents or hide anything (`State::shown`): hiding a feature the owner
+  turned on because something about it is wrong reads as "not configured",
+  the silently-degrading shape. `Unknown` is never clean. **So `Off` means
+  the owner said no**: past the switch, a feature with one whose own
+  settings are missing reads `Unready`, never `Off` — `image = true` with no
+  `[image]` table is shown with its fix (`state` converts the arm's `off`).
+  A part has no switch, so its own `off` (`[documents] ocr = false`) is the
+  owner's no and stays. Step 0's arms returned `Off` for both, harmless
+  until step 2 hid what read `Off`. **Nothing standing on an unready need is
+  `On`**: an unready parent or requirement blocks nothing, so without that
+  rule `ocr` read on under a `document_read` that `[tools]` withheld, and the
+  library under an `[image]`-less `image = true` — rows on with no tool to
+  reach them, the #428 invariant broken by a need that stopped blocking
+  (review of #449). `state` makes such a row `Unready`, naming the need.
 - **No network, ever.** OCR and embeddings are socket-activated and the router
   loads whatever a request names, so a reading that probed would turn a page
   load into a way to fill memory. Every predicate `own_state` reaches is a pure
@@ -8192,6 +8203,35 @@ in five different ways. The design and its open steps are
   upgrading install is in, where `setup::apply` bails — and keeping comments,
   order and unknown keys, which a rewrite through `Config` would drop. It
   renames a temporary file over the old one.
+- **The web app hides by the row, never by its own rule** (step 2).
+  `GET /api/features` returns `feature::all`'s rows — the same as `mecha
+  features --json` — each carrying `shown` and `next` (`feature::fix`: the
+  chained `enable` for a row blocked on a switch, the blocking need's own fix
+  for one blocked on a setting), plus `pending` and the unknown keys. It
+  re-reads the global file per request and opens no socket
+  (`reading_the_features_connects_to_nothing` points every address at a
+  listener that must see nothing); `pending` compares the file with the
+  switches `serve` loaded at start, which is what its chat's tools were built
+  from — an annotation, never a state. The page (`web/src/lib/features.js`)
+  maps views and queue cards to feature ids and reads `shown`: nav places,
+  Home's Mail and Tasks cards, the voice-call button, every `Dictate`, the
+  incognito entry points and Review's Graph and Front door tabs. **Not
+  answered is shown** — before the read, when it fails, and for an id this
+  serve does not know — so `every_feature_the_web_app_names_is_a_registry_id`
+  holds the page's ids to the registry, since a misspelled one would fail
+  open silently. **A queue card with anything waiting stays** whatever its
+  switch says, marked off with its command: the front door's drain fills its
+  store with the bool off. A link to a hidden view lands on Home with one
+  line — except the routes in `OPENS_ANYWAY`: a core pane inside a
+  feature's view (a run's question and the workflows, on the board's page)
+  and the landing of a queue card kept because something waits. Home keeps
+  those cards whatever the switch says, and a redirect would keep the card
+  and refuse the tap; `every_place_home_lands_opens_whatever_its_view_s_switch_says`
+  holds Home's destinations to the list (review of #449). An unready view
+  keeps its tab, with a mark, and a banner naming the first switched-on need
+  that is not ready. Settings → Features lists every
+  row with its command and runs none of them (design §8). No route changed
+  in this step — a stale page still works, and the guards are step 3's.
 - **An environment may only narrow.** `trial_env::config_at` refuses an
   environment's `[features]` key set `true` unless
   `Feature::switchable_from_environment` — an exhaustive match, today only
@@ -8223,6 +8263,15 @@ the full checklist this grows into as each build step lands.
    fix worth naming, and its key in `reference/configuration.md` §`[features]`.
    The tests in `feature::tests` cover order, ids and the empty machine
    without further edits.
+6. Its web surfaces keyed on its `id` in `web/src/lib/features.js` —
+   `VIEW_FEATURE` for a nav place, `QUEUE_FEATURE` for a Home queue card —
+   and an `isShown(features.rows, '<id>')` around any button or tab it owns,
+   written as a literal so `every_feature_the_web_app_names_is_a_registry_id`
+   can hold it to the registry. A place Home keeps whatever the switch says
+   goes in `OPENS_ANYWAY`, and a view's own controls ask `opens` before
+   offering another of its sub-views. Give an `own_state` arm's
+   missing-settings case an `off` with the fix; `state` makes it `Unready`
+   for a switched feature, so the tab stays.
 
 ## Context, and knowing how much is left
 

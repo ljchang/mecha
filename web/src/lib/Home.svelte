@@ -1,6 +1,8 @@
 <script>
   import { apiFetch as fetch } from './api.js';
   import { needsYou, fyi, actionable, workflowGroups, healthLine, queueCount } from './home-view.js';
+  import { features } from './features.svelte.js';
+  import { isShown, queueCardShown, QUEUE_FEATURE } from './features.js';
   // Home is counts and doors. One card per place, a number, a tap into the
   // tab that has the rest — and nothing that tab already shows. The cards
   // never move: where Mail is today is where it is tomorrow, which is what
@@ -71,12 +73,16 @@
     const c = queueCount(summary, cardQueue[label]);
     return { label, to, n: c?.n, sub, why: c?.why };
   };
-  const mine = $derived([
-    { label: 'Mail', to: 'mail', n: Array.isArray(needs) ? needs.length : needs, sub: fyi(mail) ? `need you · ${fyi(mail)} FYI` : 'need you' },
-    fromQueue('Outbox', 'review/outbox', 'drafts to review'),
-    fromQueue('Questions', 'tasks/waiting', 'a run waits on your answer'),
-    { label: 'Tasks', to: 'tasks', n: Array.isArray(open) ? open.length : open, sub: overdue ? `to do · ${overdue} overdue` : 'to do next', hot: overdue > 0 },
-  ]);
+  // Mail and Tasks follow their features (FEATURES-DESIGN.md §5); the
+  // outbox and questions are core stores and always here.
+  const mine = $derived(
+    [
+      isShown(features.rows, 'mail') && { label: 'Mail', to: 'mail', n: Array.isArray(needs) ? needs.length : needs, sub: fyi(mail) ? `need you · ${fyi(mail)} FYI` : 'need you' },
+      fromQueue('Outbox', 'review/outbox', 'drafts to review'),
+      fromQueue('Questions', 'tasks/waiting', 'a run waits on your answer'),
+      isShown(features.rows, 'tasks') && { label: 'Tasks', to: 'tasks', n: Array.isArray(open) ? open.length : open, sub: overdue ? `to do · ${overdue} overdue` : 'to do next', hot: overdue > 0 },
+    ].filter(Boolean),
+  );
 
   // The two queues with a large card of their own, by wire name, and not
   // repeated as small cards below. A map rather than literals at each use
@@ -88,7 +94,20 @@
     'blocked questions': 'Questions',
   };
   const cardQueue = Object.fromEntries(Object.entries(queueCards).map(([q, label]) => [label, q]));
-  const machine = $derived((summary?.queues ?? []).filter((q) => !(q.queue in queueCards)));
+  // A queue whose feature is off leaves the page only when nothing waits in
+  // it: the front door's drain fills its store whatever the switch says,
+  // and a count of what waits never degrades (FEATURES-DESIGN.md §5). One
+  // kept for that reason says it is off, and what turns it on.
+  const machine = $derived(
+    (summary?.queues ?? [])
+      .filter((q) => !(q.queue in queueCards))
+      .filter((q) => queueCardShown(features.rows, q.queue, q.depth ?? null)),
+  );
+  const offFix = (queue) => {
+    const f = QUEUE_FEATURE[queue];
+    if (!f || isShown(features.rows, f)) return null;
+    return features.rows?.get(f)?.next ?? `mecha features enable ${f}`;
+  };
 
   // Every name `collect_queues()` can push, in its order. A queue missing
   // from here renders under its raw wire name, which is how `blocked
@@ -180,9 +199,11 @@
       {#each machine as q (q.queue)}
         {@const to = queueTargets[q.queue]}
         {#if to}
+          {@const fix = offFix(q.queue)}
           <button class="card small" class:zero={q.depth === 0} onclick={() => navigate(to)}>
             <span class="row"><span class="label">{queueLabels[q.queue] ?? q.queue}</span><span class="count">{dash(q.depth)}</span></span>
             <span class="sub" title={q.detail}>{q.detail}</span>
+            {#if fix}<span class="sub off">switched off — <code>{fix}</code></span>{/if}
           </button>
         {:else}
           <div class="card small flat">
@@ -269,6 +290,17 @@
     display: flex;
     flex-direction: column;
     gap: 26px;
+  }
+  /* The command is the point of the line, so it wraps rather than being
+     ellipsised with the rest of a card's sub-lines. */
+  .small .sub.off {
+    color: var(--hazard);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .small .sub.off code {
+    font-family: var(--mono);
+    font-size: 10px;
   }
   section {
     display: flex;
