@@ -690,6 +690,7 @@
     if (incognito) {
       draft = '';
       attachments = [];
+      editing = null; // the modal carries this chat's draft and paths too
       todo = [];
     }
     incognito = false;
@@ -709,6 +710,7 @@
     streaming = '';
     draft = '';
     attachments = [];
+    editing = null; // the modal carries this chat's draft and paths too
     todo = [];
     usage = null;
     taint = null;

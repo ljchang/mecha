@@ -661,7 +661,11 @@ conversation, so the capabilities do not change. Three rules:
   (`prepare_mask`). The graph samples on the encoded picture under a
   `SetLatentNoiseMask`. The result is then laid over the original in
   mecha's code (`composite_masked`), not the server's, so every unpainted
-  pixel is the original, byte for byte. The near-copy check reads only the
+  pixel is the original, byte for byte, at the edit canvas. For every
+  picture this tool made, that canvas is the picture's own size. A larger
+  photo is edited and returned at its canvas size, as a plain edit already
+  is, and the result says so. A dab too small to survive the grow step is
+  refused rather than silently changing nothing. The near-copy check reads only the
   painted bounds (`layout_similarity_within`), or every masked edit would
   look unchanged. Measured seamless, and landing 8 of 8 local edits, in
   `IMAGE-REGION-EDIT-RESEARCH.md` §4. It under-edits a pose, which is left
