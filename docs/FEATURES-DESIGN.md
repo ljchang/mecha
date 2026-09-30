@@ -1,8 +1,10 @@
 # Features — design
 
 > **Status (2026-09-30):** designed; step 0 (the registry and a read-only
-> `mecha features`) is #428, which changes no surface's behaviour. §7 holds
-> the rulings steps 1–6 wait on.
+> `mecha features`) is #428, which changes no surface's behaviour. The owner
+> ruled F1–F4 and F6 the same day (§7): the switch is a `[features]` table of
+> bools — not a table's presence, which this doc first recommended — and §5
+> is written to that ruling. F5 is open and blocks only step 6.
 
 **2026-09-30.** One question: *how does a new user install only the parts of
 mecha they want — and how do `mecha setup`, the web app, the CLI, the API and
@@ -34,8 +36,8 @@ design. §7 is the rulings. §8 is what this deliberately does not do.
 | What do other harnesses do? | A closed registry of features in code; one `list` command with a typed status per row; hide rather than refuse in the UI; declared requirements; a section per re-runnable setup step; per-function model slots with a local default | §2 |
 | Lighter installs for experiments? | Already the default shape once features are off until configured: the heavy parts are services, not the binary. A trial records its feature set beside `levers_off`, and an environment can require features | §5.1 |
 | What does this design add? | One closed `Feature` registry in `mecha-core`, read by six consumers: setup, `mecha features`, `/api/features`, route guards, CLI guards and tool registration | §3–§5 |
-| What turns a feature on? | Its config table being present, global file only (recommended; ruling F1) | §4.1 |
-| What does an off feature look like? | Hidden in the web app, 404 `feature_off` from its routes, one sentence and the `mecha setup <feature>` command from its CLI verbs, absent from the tool list. A feature that is *configured but not answering* is **never** hidden | §4.2 |
+| What turns a feature on? | A bool in one `[features]` table, global file only, every feature listed so a user can see what exists (F1, ruled). A settings table is only settings; enabled without them is *unready*, shown with the fix | §5 |
+| What does an off feature look like? | Hidden in the web app, 404 `feature_off` from its routes, one sentence and `mecha features enable <feature>` from its CLI verbs, absent from the tool list. A feature that is *configured but not answering* is **never** hidden | §4.2 |
 | Model recommendations? | Yes, as data on each feature: model, download command, memory, and whether it was **measured** or is arithmetic. Printed, never written into config | §6 |
 
 ---
@@ -354,7 +356,11 @@ Three rules carry the design:
 1. **`mecha features`** (new; `--json`). One row per feature and per part:
    state, the reason, and the next command. Modelled on `codex features list`
    and `claude mcp list`. With `--probe` it checks reachability; without it,
-   it reads only config and the disk.
+   it reads only config and the disk. **`mecha features enable|disable
+   <id>`** writes the bool into the global `[features]` table (`codex
+   features enable`); an enable whose dependency is off is refused with the
+   chained command (`mecha features enable web voice`), as Claude Code
+   refuses a disable that would break another plugin.
 2. **`mecha setup`** iterates the registry instead of the hand-written
    `integration_steps`. Every optional feature becomes a declinable step, and
    **`mecha setup <feature>`** runs just that one (Hermes and OpenClaw both
@@ -383,8 +389,8 @@ Three rules carry the design:
    and never `feature_off`.
 5. **CLI guards.** A verb that belongs to a feature calls
    `feature::require(cfg, Feature::Image)?` first, and every verb says the
-   same thing the same way: *"image generation is not enabled — `mecha setup
-   image`"*.
+   same thing the same way: *"image generation is not enabled — `mecha
+   features enable image`"*.
 6. **Tool registration** in `setup::prepare_tools` asks the registry rather
    than repeating `if let Some(image) = cfg.image`. The existing gates
    (`cfg.search`, `cfg.image`, `cfg.documents`, `vision_enabled`) already key
@@ -417,77 +423,111 @@ memory from a page load. So:
 
 ## 5. The catalogue
 
-What each feature is, what turns it on under ruling F1, and what hides when
-it is off. "Today" is the current switch; "Proposed" is the one §4 reads.
+**The switch is a bool in one `[features]` table** (F1, ruled 2026-09-30).
+The owner's reason: *"users need to know what features are available"* — a
+table that turns a feature on by existing is invisible until you already
+know its name, and a list of toggles is its own documentation.
 
-| id | Feature | Today | Proposed switch | Requires | Hidden when off |
-|---|---|---|---|---|---|
-| `web` | The web app (`mecha serve`) | `[web] owner_login` set; serve refuses without it | unchanged — `owner_login` present | — | everything web; `mecha serve` refuses with the setup command |
-| `slack` | Slack remote control | tokens in `~/.mecha/slack`, `mecha-slack.service` | tokens present (the `[slack]` table stays tunables-only) | — | `mecha slack …` verbs except `auth` |
-| `mail` | Mail and calendar | `mecha-mail` on PATH + accounts; tools via `[[mcp]]` | an enabled global `[[mcp]]` entry running `mecha-mail` (the fact setup does not check today) | — | Mail tab, Home mail card, Outbox event editor, `mecha mail` |
-| `docs` | Google Docs, Sheets, Slides | `mecha-docs` + account + `[[mcp]]` | an enabled global `[[mcp]]` entry running `mecha-docs` | — | its tools |
-| `graph` | Knowledge graph | `mecha-graph-mcp` on PATH + `[[mcp]]` | an enabled global `[[mcp]]` entry running `mecha-graph-mcp` | — | Graph tab, Review → graph queue, Proposals → entities, `kg`, `gossip`, `corroborate`, `vet`, `distill` |
-| ↳ `tasks` | The task board | — (rides the graph) | part of `graph` | `graph` | Tasks tab, Home tasks card, `tasks`, `workflow`, `questions` |
-| `search` | Web search and open | `[[search]]` non-empty | unchanged | — | `web_search`, `web_open` |
-| `documents` | PDF extraction | `[documents]` present | unchanged | — | `document_read`, `mecha document` |
-| ↳ `ocr` | OCR pages | `[documents] ocr` | unchanged | `documents` | its row in `features` |
-| ↳ `layout` | Region-by-region layout | `[documents] layout` | unchanged | `ocr` | its row in `features` |
-| `image` | Image generation | `[image]` present | unchanged | — | `image_generate` |
-| ↳ `library` | Characters and styles | always on | part of `image` | `image` | Library tab and Home card, `image_library*`, `mecha imagelib` writes |
-| `personas` | Characters the owner talks to | always on (store) | **new** `[personas]` table | — (web for the tab) | Personas tab, `/api/personas*`, `mecha persona` |
-| `voice` | Talking to mecha | serve flags, literals, units | **new** `[voice]` table (see below) | `web` | voice-call button, Dictate, Settings → Voice |
-| ↳ `dictate` | Speech to text | Parakeet at a literal URL | `[voice] stt_url` | `voice` | Dictate |
-| ↳ `calls` | Spoken conversation | `--offer-target`, the worker | `[voice] offer_target` | `voice` | voice-call button |
-| ↳ `cloning` | New voices | `[web] voices_dir` | `[voice] voices_dir` | `voice` | Settings → Voice → clone |
-| `incognito` | A chat that leaves no trace | always on in web | derived: `web` on and a local provider | `web` | Chat's incognito toggle |
-| `frontdoor` | Inbound requests, publishing, polls | `factory-publish` as an `[[mcp]]` server, units | an enabled global `[[mcp]]` entry running `factory-publish` | `mail` | Review → Front door, Home card, `frontdoor`, `polls` |
-| `messages` | Messages between sessions | `[messages] enabled` | unchanged — the one bool switch (F1) | — | `message_send`, `mecha msg` |
+```toml
+# ~/.mecha/config.toml — written in full by `mecha config init`, every
+# feature listed, every one off; `mecha features enable <id>` flips one.
+[features]
+web = false        # the web app (`mecha serve`)
+slack = false      # Slack remote control
+mail = false       # mail and calendar
+docs = false       # Google Docs, Sheets and Slides
+graph = false      # the knowledge graph and the task board
+search = false     # web search and open
+documents = false  # PDF extraction (OCR and layout are [documents] settings)
+image = false      # image generation and the character library
+personas = false   # characters you write and talk to
+voice = false      # dictation and voice calls
+incognito = false  # a web chat that leaves no trace
+frontdoor = false  # inbound requests, publishing, polls
+messages = false   # messages between sessions
+```
+
+Three rules keep one switch from becoming two:
+
+- **The bool is the only switch; a settings table is only settings.** An
+  `[image]` table with `image = false` is off, its settings kept for later.
+  `image = true` with no `[image]` table is **`Unready`** — enabled, not yet
+  usable — shown with the fix, never hidden, because the owner said yes to
+  it. Presence of a table means nothing on its own, so there is nothing for
+  the bool to disagree with.
+- **`[features]` is global-file only.** `merge_file` strips it from project
+  layers like `[web]` and `[image]`, so a cloned repository can never turn a
+  feature on — and that holds for the four `[[mcp]]` server rows too, which
+  presence could not guarantee: `merge_file` deliberately keeps a project's
+  servers and `ConfigLayer::apply` replaces the list wholesale, so under
+  presence a project file would have switched the owner's Mail and Graph tabs.
+  A project's servers still give sessions in that directory tools; they never
+  change what the install says is on. (The registry also reads the server
+  rows' settings from the global layer's `[[mcp]]` only.)
+- **A key that is absent is off**, and a feature shipped after your table
+  was written is simply absent — so `mecha features` lists it, and `mecha
+  setup` offers it as `Missing`, never as declined. (Hermes had to add
+  `known_builtin_toolsets` to tell "declined" from "never offered"; a decline
+  here is already per id in `setup-declined.json`.)
+
+Parts have no bool of their own: `tasks` and `library` ride their parent,
+and `ocr`, `layout`, `dictate`, `calls` and `cloning` are switched by their
+parent's settings, where they already live.
+
+| id | Feature | Settings it needs (Unready without them) | Requires | Hidden when off |
+|---|---|---|---|---|
+| `web` | The web app (`mecha serve`) | `[web] owner_login` (serve refuses without it) | — | everything web; `mecha serve` refuses with the fix |
+| `slack` | Slack remote control | tokens in `~/.mecha/slack` (`mecha slack auth`) | — | `mecha slack …` verbs except `auth` |
+| `mail` | Mail and calendar | a global `[[mcp]]` entry running `mecha-mail`, and an authorised account | — | Mail tab, Home mail card, Outbox event editor, `mecha mail` |
+| `docs` | Google Docs, Sheets, Slides | a global `[[mcp]]` entry running `mecha-docs`, and an account | — | its tools |
+| `graph` | Knowledge graph | a global `[[mcp]]` entry running `mecha-graph-mcp` | — | Graph tab, Review → graph queue, Proposals → entities, `kg`, `gossip`, `corroborate`, `vet`, `distill` |
+| ↳ `tasks` | The task board | — | `graph` | Tasks tab, Home tasks card, `tasks`, `workflow`, `questions` |
+| `search` | Web search and open | a `[[search]]` backend not disabled | — | `web_search`, `web_open` |
+| `documents` | PDF extraction | a `[documents]` table | — | `document_read`, `mecha document` |
+| ↳ `ocr` | OCR pages | `[documents] ocr` | `documents` | its row in `features` |
+| ↳ `layout` | Region-by-region layout | `[documents] layout` | `ocr` | its row in `features` |
+| `image` | Image generation | an `[image]` table | — | `image_generate` |
+| ↳ `library` | Characters and styles | — | `image` | Library tab and Home card, `image_library*`, `mecha imagelib` writes |
+| `personas` | Characters the owner talks to | — (a **new** `[personas]` table later holds its safety settings) | — (web for the tab) | Personas tab, `/api/personas*`, `mecha persona` |
+| `voice` | Talking to mecha | a **new** `[voice]` table (below) | `web` | voice-call button, Dictate, Settings → Voice |
+| ↳ `dictate` | Speech to text | `[voice] stt_url` | `voice` | Dictate |
+| ↳ `calls` | Spoken conversation | `[voice] offer_target` | `voice` | voice-call button |
+| ↳ `cloning` | New voices | `[voice] voices_dir` | `voice` | Settings → Voice → clone |
+| `incognito` | A chat that leaves no trace | a local provider without fallbacks (`provider_is_local`) | `web` | Chat's incognito toggle |
+| `frontdoor` | Inbound requests, publishing, polls | a global `[[mcp]]` entry running `factory-publish` | `mail` | Review → Front door, Home card, `frontdoor`, `polls` |
+| `messages` | Messages between sessions | — (`[messages]` keeps its tunables) | — | `message_send`, `mecha msg` |
 
 Notes on the rows that change:
 
-- **`voice` gets a table** because today it has none: its switches are serve
-  flags (`--voice-port`, `--offer-target`), a literal in `serve::dictate`,
-  and `[web] voices_dir`. A `[voice]` table holds all of them, so the
-  Parakeet and worker URLs become config for the first time — which a new
-  user needs anyway, since theirs will not be this machine's. `voices_dir`
-  moves from `[web]` with a one-release alias.
-- **`personas` gets a table** because it has no config at all; its switch has
-  to live somewhere. Once it exists, it is also where the persona safety
-  settings belong (the crisis-pause cooldown, `PERSONA-DESIGN.md` §16).
-- **The four server rows (`mail`, `docs`, `graph`, `frontdoor`) key on the
+- **`voice` gets a settings table** because today it has none: its switches
+  are serve flags (`--voice-port`, `--offer-target`), a literal in
+  `serve::dictate`, and `[web] voices_dir`. `[voice]` holds all of them, so
+  the Parakeet and worker URLs become config for the first time — which a
+  new user needs anyway, since theirs will not be this machine's.
+  `voices_dir` moves from `[web]` with a one-release alias.
+- **The four server rows (`mail`, `docs`, `graph`, `frontdoor`) read the
   entry, not the tools.** Which tools a server exposes is known only after
   `connect` spawns it and `tools/list` answers, and the registered names
   then depend on `prefix_tools` — so "exposes `mail_*`" is not a fact
   configuration holds, and learning it per page load would start four
-  third-party processes, the failure §4.3 exists to prevent. The switch is an
-  enabled `[[mcp]]` entry whose `command` runs the known program. That is a
-  weaker claim than "the tools are there", and it is the one configuration
-  can make; whether the tools actually answered is `--probe`'s question.
-  (Step 0 found the front door is an `[[mcp]]` server here — `factory` runs
-  `factory-publish` — which replaced an earlier guess at `[outbox]
+  third-party processes, the failure §4.3 exists to prevent. The setting is
+  an enabled `[[mcp]]` entry whose `command` runs the known program; whether
+  the tools answered is `--probe`'s question. With `mail = false`, that
+  entry is not connected at all — the bool gates the server, not just the
+  tab. (Step 0 found the front door is an `[[mcp]]` server here — `factory`
+  runs `factory-publish` — which replaced an earlier guess at `[outbox]
   publish_tools`.)
+- **`[messages] enabled` becomes an alias** for `[features] messages`, read
+  for one release and **or**-ed in: both default to `false`, so the alias
+  can only keep on what was already on — it cannot switch messaging on for a
+  table present only to raise `pending_cap`, which is the fail-open case a
+  presence rule would have had.
 
-Every new table is **global-file only**, like `[web]`, `[image]` and
-`[documents]` today — `merge_file` strips them from project layers — so a
-cloned repository can never turn a feature on. **`[[mcp]]` is the
-exception, and the four server rows must not inherit it.** `merge_file`
-deliberately keeps a project's servers (a project may legitimately declare
-one), and `ConfigLayer::apply` takes the list wholesale, so a project file
-*replaces* the owner's servers. Today that decides only which tools a
-session in that directory has; read by the registry, it would let a cloned
-repository turn the owner's Mail and Graph tabs, routes and verbs on or
-off. So the registry reads the four server rows from the **global** layer's
-`[[mcp]]` list only (`Config::load_global`, which is what `mecha features`
-reads). A project's servers still give its sessions tools; they never change
-what the install says is on. And each new table is **three edits**,
-not two: `Config`, `ConfigLayer`, and `ConfigLayer::apply`.
-`every_field_of_config_is_reachable_from_a_file` and
+`[features]` and every new settings table are **three edits** each, not two:
+`Config`, `ConfigLayer`, and `ConfigLayer::apply`, plus the project-layer
+strip in `merge_file`. `every_field_of_config_is_reachable_from_a_file` and
 `every_field_a_layer_can_read_is_a_field_a_layer_applies` catch a missed one
 at the top level only, so the build step adds a nested-layer test alongside.
-
-`mecha config init` writes every optional table **commented out**, each with
-one line on what it turns on, so the starter config doubles as the feature
-list.
 
 ### 5.1 Light installs, and experiments
 
@@ -507,12 +547,14 @@ and are out of scope (§8) until a heavy Rust dependency lands.
 
 Three things make it deliberate rather than accidental:
 
-- **`mecha setup --minimal`** declines every optional step in one pass
-  (Hermes's *Blank Slate*). It writes declines, never config, so `mecha setup
-  <feature>` still turns any one on later.
+- **A fresh `[features]` table is the light install**: every bool `false`.
+  `mecha setup --minimal` (Hermes's *Blank Slate*) then declines every
+  optional step in one pass, so setup stops offering them; it writes
+  declines, never config, and `mecha features enable <id>` still turns any
+  one on later.
 - **A trial's features are a condition of the trial.** A trial home's config
   already comes from its environment (`trial_env`), so its features follow
-  that environment's tables with no second switch. But which features were on
+  that environment's `[features]` table with no second switch. But which features were on
   is as much a condition as which levers were off, so the experiment manifest
   and the session record carry the feature set beside `levers_off`, from the
   same registry — otherwise two arms that differ only in whether `[[search]]`
@@ -584,16 +626,16 @@ genuinely not known yet, and the output must say so rather than guess.
 
 ---
 
-## 7. Rulings the build waits on
+## 7. Rulings
 
-| # | Decision | Options | Recommendation |
-|---|---|---|---|
-| **F1** | What turns a feature on | (a) its table being present, global file only, with `enabled = false` to keep settings while off; (b) a central `[features]` table of bools, as Codex has; (c) both | **(a).** One fact per feature, in the table that holds its settings — no second switch to disagree with (§2.3, reject 3–4). **Except `[messages]`, which keeps its bool:** it is the one existing table whose presence does not mean intent — every other field in it is a tunable, `enabled` defaults to `false`, and a table present only to raise `pending_cap` would switch on, under presence, an unattended run folding in inbound messages with their sender's taint (`mailbox.rs`). A fail-open conversion of a security-bearing default is not worth the consistency |
-| **F2** | Off in the web app | (a) removed from navigation; Settings → Features lists everything; (b) greyed out with a tooltip | **(a)**, as the owner asked. `Unready` and `Unknown` are shown with a banner, never removed (§4.1) |
-| **F3** | Web as a feature | (a) optional like the rest: no `owner_login`, no web — CLI, TUI and Slack are complete without it; (b) always installed, just unstarted | **(a).** It is already true in the code (serve refuses without `owner_login`); the change is that setup offers it as a step and the features that need it — voice, incognito, the Personas and Library tabs — report `Blocked(web)` instead of existing with nowhere to appear. `mecha persona` still works from the CLI |
-| **F4** | What an off route returns | 404 / 403 / 409 / 503 | **404** with `{"error":"feature_off","feature":"image","fix":"mecha setup image"}` — on this install the route does not exist. 503 is kept for `Unready`, where it is true |
-| **F5** | Recommendation tiers | `hardware.md`'s four (16/32/64/128 GB), or finer | **The four**, so one page and one table agree |
-| **F6** | Existing installs, when the switch changes | (a) a feature whose new table is absent is off — this machine's personas and voice would disappear until the tables are added; (b) `mecha setup` detects a feature in use (a non-empty persona store, a running voice unit) and offers to write its table; (c) grandfather features in use as on | **(b).** Never (c): inferring "on" from a store is exactly the second source of truth F1 rejects. On this machine the deploy that ships step 4 adds the two tables by hand, in the same change |
+| # | Decision | Ruling (2026-09-30) |
+|---|---|---|
+| **F1** | What turns a feature on | **A `[features]` table of bools** in the global config, every feature listed. The owner, overruling the doc's recommendation of table presence: *"The problem with table existing is that users need to know what features are available. I feel like a registry or having to toggle bools is a better design."* §5's three rules are what keep the bool from being a second source of truth |
+| **F2** | Off in the web app | **Removed from navigation**, as the owner asked in the opening message; Settings → Features lists everything. `Unready` and `Unknown` are shown with a banner, never removed (§4.1) |
+| **F3** | Web as a feature | **Optional like the rest** — the owner: *"Web should also be optional feature."* CLI, TUI and Slack are complete without it; voice, incognito and the Personas and Library tabs report `Blocked(web)`. `mecha persona` still works from the CLI |
+| **F4** | What an off route returns | **404** with `{"error":"feature_off","feature":"image","fix":"mecha features enable image"}`, only behind `owner_guard` (§4.2 item 4). 503 stays for `Unready` |
+| **F5** | Recommendation tiers | *Open.* Recommended: `hardware.md`'s four (16/32/64/128 GB), so one page and one table agree |
+| **F6** | Existing installs, when `[features]` arrives | **`mecha setup` offers.** It detects a feature in use (an `[image]` table, a mail `[[mcp]]` entry, a non-empty persona store, a running voice unit) and offers to write its bool. Never grandfathered as on: that is a second source of truth. On this machine the deploy that ships the table writes it by hand, in the same change, so nothing disappears |
 
 ---
 
@@ -632,25 +674,34 @@ Each step is a PR, and each leaves every surface working.
 0. **`feature.rs` and `mecha features`**, read-only. The registry, `state`,
    and the list command. Nothing else changes; its output on this machine is
    checked by hand against §5.
-1. **`/api/features` and the web app.** Nav, Home cards, the voice button and
+1. **The `[features]` table.** `Config`, `ConfigLayer`, `apply`, the
+   project-layer strip and the nested-layer test; `state` reads the bool
+   first and the settings second; `mecha features enable|disable <id>`
+   writes it, refusing an enable whose dependency is off with the chained
+   command; `mecha config init` writes the table in full; `[messages]
+   enabled` read as an alias. F6's offer lands in `mecha setup` here, and
+   this machine's table is written in the same deploy. **Tool registration
+   switches to the registry in this step** — a server whose feature is off is
+   not connected — since that is the step that could otherwise make a tool
+   disappear unannounced.
+2. **`/api/features` and the web app.** Nav, Home cards, the voice button and
    Dictate take their answer from it; Settings → Features. No route changes
    yet, so a stale page still works.
-2. **One guard for routes and CLI verbs.** Every route group and verb names
+3. **One guard for routes and CLI verbs.** Every route group and verb names
    its owner; the five failure shapes become `feature_off` / 503. The
    side-effecting reads stop. The layer goes inside `owner_guard`, and the
    owner-guard tests gain an off feature's route (§4.2 item 4).
-3. **Setup iterates the registry.** A step per feature, `mecha setup
+4. **Setup iterates the registry.** A step per feature, `mecha setup
    <feature>`, `mecha setup --minimal`, dependencies offered first, and the
    `[[mcp]]` checks that `mail` and `graph` are missing today.
    **Experiments** record the feature set beside `levers_off`, with a
    `lenient_features` loader of `lenient_levers`' all-or-nothing shape, and
    an environment's `requires` refuses a trial that lacks one (§5.1).
-4. **The new tables**, after F1 and F6: `[voice]` (with the URLs out of the
-   code) and `[personas]`. Three edits each, plus the
-   nested-layer test. The owner's config gets both tables in the same deploy.
-5. **Recommendations**: the rows, the probe that sums memory, and a test that
+5. **The new settings tables**: `[voice]` (with the URLs out of the code)
+   and `[personas]`. Three edits each.
+6. **Recommendations**: the rows, the probe that sums memory, and a test that
    `hardware.md` matches them. Fix the embeddings page.
-6. **Installers**: one `scripts/<feature>/install.sh` per feature that needs a
+7. **Installers**: one `scripts/<feature>/install.sh` per feature that needs a
    service, each with `--remove`, copying rather than symlinking (the
    `scripts/llama/install.sh` pattern), with no `/home/<user>` or checkout
    path in any unit. The router, ComfyUI and Chatterbox get units in the repo
