@@ -89,7 +89,10 @@ pub enum Kind {
     /// `key` field, so a row that is edited keeps its comments and a row
     /// that moves carries them with it. `fields` are paths within a row
     /// (`text`, `sensor.kind`); a row's sub-table sent as `null` is removed.
-    /// Sent whole, in order: the list is what the file will hold.
+    /// Sent whole, in order: the list is what the file will hold. The rows
+    /// are renumbered from where the list began, so this suits a file whose
+    /// list is its only list of tables (a charter), not one that interleaves
+    /// it with other tables.
     Rows {
         key: String,
         fields: Vec<Field>,
@@ -539,6 +542,12 @@ fn set_rows(doc: &mut DocumentMut, path: &str, key: &str, rows: &[Json]) -> Resu
         aot.push(t);
     }
     let header = header.or_else(|| fresh_header.then(String::new));
+    // Every row gone: the header has no table to sit above, and would go
+    // with the last one (review of #439). It becomes the file's own text.
+    let orphaned = match (&header, aot.is_empty()) {
+        (Some(h), true) if !h.trim().is_empty() => Some(h.clone()),
+        _ => None,
+    };
     if let (Some(header), Some(first)) = (header, aot.get_mut(0)) {
         let own = first
             .decor()
@@ -588,6 +597,10 @@ fn set_rows(doc: &mut DocumentMut, path: &str, key: &str, rows: &[Json]) -> Resu
             };
             first.decor_mut().set_prefix(joined);
         }
+    }
+    if let Some(header) = orphaned {
+        let end = doc.trailing().as_str().unwrap_or("").to_string();
+        doc.set_trailing(format!("{}\n{end}", header.trim_end()));
     }
     if !carried.is_empty() {
         let end = doc.trailing().as_str().unwrap_or("").to_string();
@@ -1150,6 +1163,14 @@ setpoint = 3
             Some("5"),
             "{out}"
         );
+
+        // Every row removed: the header and every row's comments stay, and
+        // the file is a charter with no lines (review of #439).
+        let out = apply(&rows_form(), CHARTER, &rows(json!([]))).unwrap();
+        assert!(out.starts_with("# The owner's charter."), "{out}");
+        assert_eq!(comment_lines(&out), comment_lines(CHARTER), "{out}");
+        assert!(!out.contains("[[line]]"), "{out}");
+        assert!(toml::from_str::<toml::Table>(&out).is_ok(), "{out}");
 
         // From no list at all: the header stays, the rows follow it.
         let header = "# Only comments so far.\n";

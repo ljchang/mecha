@@ -667,12 +667,6 @@ impl Charter {
     }
 }
 
-/// The closed set of sensor kinds as a surface offers them to the owner —
-/// `[{kind, unit, hint, describe}]` in `SensorKind::ALL`'s order. Served by
-/// the web settings endpoint so the form's select is this list and not a
-/// copy that drifts; the hint is the parser's own unit sentence, and there
-/// is deliberately no default kind and no default setpoint in it — the page
-/// proposes nothing, the owner types both (§11.1's author rule).
 /// The charter's `[[line]]` list as a form (`tomlform`): rows matched by
 /// `id`, so a save from the settings page edits the file in place — the
 /// owner's comments, among the lines as well as above them, and an
@@ -735,6 +729,12 @@ pub fn digest(text: &str) -> String {
         .collect()
 }
 
+/// The closed set of sensor kinds as a surface offers them to the owner —
+/// `[{kind, unit, hint, describe}]` in `SensorKind::ALL`'s order. Served by
+/// the web settings endpoint so the form's select is this list and not a
+/// copy that drifts; the hint is the parser's own unit sentence, and there
+/// is deliberately no default kind and no default setpoint in it — the page
+/// proposes nothing, the owner types both (§11.1's author rule).
 pub fn sensor_kinds_json() -> serde_json::Value {
     serde_json::Value::Array(
         SensorKind::ALL
