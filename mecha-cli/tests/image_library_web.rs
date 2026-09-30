@@ -204,7 +204,7 @@ kind = "none"
     .await;
     assert!(r.status().is_success(), "{}", r.text().await.unwrap());
     let v = list(None).await;
-    assert!(names(&v).contains(&"maya".to_string()));
+    assert_eq!(names(&v), ["john", "maya", "sam"], "nothing left hidden");
 
     // Remove: moved aside, its portrait kept (a manifest may name it).
     let r = post("/api/library/character/john/remove", serde_json::json!({})).await;
