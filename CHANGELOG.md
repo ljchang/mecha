@@ -275,7 +275,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **A feature whose switch is not on is off.** Web search, image generation,
-  PDF extraction and the mail, docs, graph and publishing servers register or
+  PDF extraction and the mail, docs and graph servers register or
   start only when their `[features]` switch is `true`, and `mecha serve`
   refuses to start without `web = true`. **Before upgrading an existing
   install, answer the switches:** run `mecha setup`, or the one
@@ -283,7 +283,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   everything this install had set up. An MCP server that belongs to no
   feature starts as before; the graph server stays off for `distill`,
   `gossip`, `vet` and `corroborate` too. Slack, personas, voice, incognito
-  and the front door's queue keep working for now whatever their switch
+  and the front door (its queue and publishing) keep working for now whatever their switch
   says, and the start-up line tells them apart. Experiment trials keep their
   graph: it is on when the environment declares its own graph server or the
   manifest brings yours in with `live_servers`, unless the environment says

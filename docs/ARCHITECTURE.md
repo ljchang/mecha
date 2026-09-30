@@ -8145,17 +8145,17 @@ in five different ways. The design and its open steps are
   to no feature and is not gated** — the day a feature's server moves behind
   a launcher, `server_feature` has to learn it. `Feature::gated` says which
   features a switch turns off today; the upgrade notice calls only those
-  off, and Slack, personas, voice, incognito and the front door's queue
-  "still working" until §9 step 3 guards them. `mecha serve` refuses
+  off, and Slack, personas, voice, incognito and the front door — queue
+  and publishing server together, never one half first — "still working"
+  until §9 step 3 guards them. `mecha serve` refuses
   without `web`, telling "predates the switch" from `web = false`.
 - **A trial keeps what it carries, and `graph` is the only default.**
   `trial_env::config_at` fills a trial's unanswered `graph` switch on when
   the environment declares its own graph server or `live_servers` brings
   the operator's in, so gating changes nothing an existing experiment
   connects, and `search` follows the operator's own switch as its backends
-  do. Nothing else defaults: a `mecha-mail`, `mecha-docs` or
-  `factory-publish` an environment declares runs on the operator's
-  credentials, which `switchable_from_environment` refuses, and a default
+  do. Nothing else defaults: a `mecha-mail` or `mecha-docs` an environment
+  declares runs on the operator's credentials, which `switchable_from_environment` refuses, and a default
   would assert on the environment's behalf what it may not (review of
   #445). The environment's own answer stands.
 - **`messages` has one runtime answer.** `apply` writes `[features] messages`
