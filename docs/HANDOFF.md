@@ -28,8 +28,6 @@ holds the owner's six rulings (all made), and §9 the build order. What
 shipped is in HISTORY under 2026-09-30. `ARCHITECTURE.md` §Features
 describes the registry and is the checklist for adding a feature. Open:
 
-- **#435** (docs, open) carries the design's status line, F5's ruling and
-  three last-pass fixes. Merge it before step 1 is written against the doc.
 - **Step 1 is next**, and it is the first one that changes behaviour for an
   existing install:
   - the `[features]` table (`Config`, `ConfigLayer`, `apply`, the project
@@ -43,7 +41,17 @@ describes the registry and is the checklist for adding a feature. Open:
     five" comment;
   - `Feature::switchable_from_environment`.
   `personas` and `voice` still read "always on" in step 0, and step 1 must
-  give them real evidence before the notice keys on it (§4.2).
+  give them real evidence before the notice keys on it (§4.2). Three
+  decisions the design leaves to step 1, from #435's last pass:
+  - which `state`s count as "usable" for the notice and F6's offer. `On`
+    only is the safe reading. `Unknown` must never be announced, or F6
+    writes `slack = true` off a store it could not read. `Unready` (mail with
+    no account) needs a ruling;
+  - F6's row in §7 still lists presence evidence ("an `[image]` table"),
+    while §4.2 says the detector is `state`. Code it as `state`, because
+    presence is what step 0 already paid for;
+  - the test "`graph` absent with no manifest server reads off" should also
+    say the environment declares no graph server of its own.
 - **A real gap today, independent of step 1:** `[documents]` is stripped from
   project layers but missing from `OPERATOR_ONLY_TABLES`. An experiment
   environment can set `ocr_url` and `confine = false` now.
