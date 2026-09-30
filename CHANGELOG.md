@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Read a photo or screenshot of a page.** `document_read` and
+  `mecha document extract` now take PNG, JPEG, WebP and GIF as well as PDF.
+  A picture is read as one page by the local OCR model, through the same
+  layout stage, cache and caps as a scanned PDF page. Phone photos are
+  turned upright from their rotation tag first: on an upside-down test page,
+  skipping that put the heading last and misread the paragraph as a table.
+  Transparent screenshots are read on white. HEIC photos and TIFF scans are
+  refused with what to do instead. Personas that have `document_read` get
+  this too.
+
 - **A persona draws itself (PERSONA-DESIGN §8.6).** In a persona chat,
   `image_generate` knows who "self" is: a prompt that names the persona — by
   its linked character, its folder name or the name it is shown by — gets

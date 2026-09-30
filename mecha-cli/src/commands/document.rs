@@ -19,9 +19,10 @@ pub struct Args {
 #[derive(clap::Subcommand, Debug)]
 pub enum Cmd {
     /// Extract pages of a PDF: its text layer, and an OCR transcript where a
-    /// page has none (or with --mode ocr|both).
+    /// page has none (or with --mode ocr|both). A picture of text (PNG, JPEG,
+    /// WebP, GIF) is one page, read by OCR only.
     Extract {
-        /// The PDF.
+        /// The PDF or image.
         file: std::path::PathBuf,
         /// Which pages: all, 3, 2-5, 1,4,7-9.
         #[arg(long, default_value = "all")]
@@ -31,7 +32,7 @@ pub enum Cmd {
         mode: String,
         /// The whole extraction as JSON, including each page's text-layer
         /// regions and, for a transcript read through the layout stage, its
-        /// layout regions (boxes in PDF points).
+        /// layout regions (boxes in PDF points; in pixels for an image).
         #[arg(long)]
         json: bool,
         /// Neither read nor write the cache.
