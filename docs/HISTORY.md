@@ -19,8 +19,8 @@ still worth knowing about, because the next person will otherwise re-derive it.
 they want: Slack, the web app, image generation, personas, OCR and voice
 optional, an off feature hidden from the web app and refused by the CLI, and
 model recommendations per feature. `FEATURES-DESIGN.md` (#427, fourteen
-review passes) is the authority. It reads Hermes and OpenClaw from source and
-six other systems from their docs. The owner ruled all six questions the
+review passes) is the authority. It reads Hermes, OpenClaw and Codex from
+source and the rest from their docs. The owner ruled all six questions the
 same day. F1 is a `[features]` table of bools that ships all `false`, which
 overruled the doc's first recommendation of table presence, because a user
 has to be able to see what exists. F5 is `hardware.md`'s four tiers in two
@@ -45,6 +45,11 @@ mail crate never looks. #432 (`5664f245`) moved the rule to
 (`MailStores::of_owner`), Slack's import check and the booking sweep find
 each store by its owner's rule. #433 (`c599c802`) fixed one test's temp
 directory. Deployed by the mecha-d7 lane at `5664f245` and `c599c802`.
+#441 (`76c3331e`) closed a gap the design found that predated it: `[documents]`
+was stripped from project layers but missing from
+`trial_env::OPERATOR_ONLY_TABLES`, so an experiment environment could point
+OCR at a remote server or run the PDF parser unconfined. `config_at` now
+refuses it like the other five.
 On this machine `mecha features` reads 20 of 21 rows on; `messages` is off.
 
 **2026-09-30 — paint the part of a picture to change (#424, #429).** The
@@ -10354,7 +10359,7 @@ asking whether anyone nearby has unpushed work against the same PR** — a
 flight?") would have cost one round trip and avoided the whole repair.
 
 It recurred on 2026-09-30. Another lane, on the owner's "Do it", merged #428
-and then #432, the latter at `0d972f76` while the owning session was
+and then #432, the latter at its branch tip `0d972f76` while the owning session was
 answering #432's review. That fix was pushed a minute later to a closed PR
 and needed #433 to reach `main`. The merge also landed #428 ahead of the
 design doc its comments cite (#427).
