@@ -272,14 +272,15 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       const lists = await res.json();
       if (gen !== authoringGen) return;
-      authoring = lists;
+      // The lock moved while the form was opening, and with no form open
+      // then, nothing re-read the lists for it. An answer read under the
+      // other lock is never shown, not even until the re-read lands.
+      authoring = issued === token ? lists : null;
       making = { name: '', display: '', relationships: [], character: '', groups: [], locked: false };
     } catch (e) {
       error = String(e?.message ?? e);
       return;
     }
-    // The lock moved while the form was opening, and with no form open
-    // then, nothing re-read the lists for it.
     if (issued !== token) await rereadAuthoring();
   }
 
@@ -336,6 +337,8 @@
         const lists = await reread.json();
         if (gen === authoringGen) authoring = lists;
       }
+      // Cancelled while the add was in flight: no form left to pick it for.
+      if (!making) return;
       if (relationship) making.relationships = [...making.relationships, name];
       else making.groups = [...making.groups, name];
       adding = null;
