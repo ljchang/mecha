@@ -1642,7 +1642,8 @@ as off. Parts of a feature (`tasks` under `graph`, `ocr` under `documents`)
 are indented under it.
 
 Exit 0 whatever it finds: an install with features off is a light install, not
-a broken one. Mail, docs, the graph and publishing count as on only when an
+a broken one. A global `config.toml` that does not parse is an error (exit 1),
+since no row could be read from it. Mail, docs, the graph and publishing count as on only when an
 enabled `[[mcp]]` entry in the global config has a `command` naming their
 binary; an entry that starts the server through a wrapper script reads off.
 An installed binary alone puts no tool on the surface, and a project's

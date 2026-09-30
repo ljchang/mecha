@@ -509,7 +509,12 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             None => off("no [image] table", "add an [image] table"),
         },
         Feature::Library if !cfg.tools.registers("image_library") => tools_off("image_library"),
-        Feature::Library => on("~/.mecha/imagelib"),
+        Feature::Library => match crate::imagelib::Library::default_dir() {
+            Ok(dir) => on(dir.display().to_string()),
+            Err(e) => State::Unknown {
+                reason: format!("the library's directory: {e:#}"),
+            },
+        },
         Feature::Personas => on("no switch yet — always on (FEATURES-DESIGN.md F1)"),
         Feature::Voice => {
             on("no switch yet — `mecha serve`'s --voice-port and --offer-target decide")
@@ -593,6 +598,43 @@ mod tests {
 
     fn get(rows: &[Row], f: Feature) -> &State {
         &rows.iter().find(|r| r.id == f).unwrap().state
+    }
+
+    /// `Feature::ALL` is a hand-kept list, and every other test iterates it
+    /// — so a variant left out of it would vanish from `mecha features` and
+    /// from every test at once. This `match` has no wildcard: a new variant
+    /// does not compile until it is placed here, and placing it here is
+    /// placing it in `ALL` (found on review of #428).
+    #[test]
+    fn every_variant_is_in_all() {
+        for &f in Feature::ALL {
+            match f {
+                Feature::Web
+                | Feature::Slack
+                | Feature::Mail
+                | Feature::Docs
+                | Feature::Graph
+                | Feature::Tasks
+                | Feature::Search
+                | Feature::Documents
+                | Feature::Ocr
+                | Feature::Layout
+                | Feature::Image
+                | Feature::Library
+                | Feature::Personas
+                | Feature::Voice
+                | Feature::Dictate
+                | Feature::Calls
+                | Feature::Cloning
+                | Feature::Incognito
+                | Feature::Frontdoor
+                | Feature::Publishing
+                | Feature::Messages => {}
+            }
+        }
+        // The match above lists 21 — raise this with it, and a variant
+        // added to the match but not to `ALL` fails here.
+        assert_eq!(Feature::ALL.len(), 21);
     }
 
     #[test]

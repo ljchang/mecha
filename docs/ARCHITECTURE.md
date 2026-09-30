@@ -8023,7 +8023,8 @@ What a new optional feature needs today. `FEATURES-DESIGN.md` §9 step 8 is
 the full checklist this grows into as each build step lands.
 
 1. A `Feature` variant: `id`, `label`, `part_of`, `requires`, placed in
-   `Feature::ALL` after everything it needs.
+   `Feature::ALL` after everything it needs. `every_variant_is_in_all` will
+   not compile until the variant is in its `match`; raise its count with it.
 2. An `own_state` arm that asks the predicate its tool's registration asks.
    If that predicate lives in `mecha-cli`, move it to core rather than copy
    it (`provider_is_local`, `SearchBackendConfig::problem`).
