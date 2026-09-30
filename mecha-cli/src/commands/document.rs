@@ -50,6 +50,14 @@ pub enum Cmd {
 }
 
 pub async fn execute(args: Args) -> Result<()> {
+    // Extraction is the feature, and its switch answers first — before the
+    // settings check, so an install that is both unconfigured and off is
+    // told the switch, not `mecha config init` (review of #451). `prune`
+    // and `forget` only delete what the cache already holds, and deleting
+    // data you have is never refused.
+    if matches!(args.cmd, Cmd::Extract { .. }) {
+        super::features::require(mecha_core::feature::Feature::Documents)?;
+    }
     let cwd = std::env::current_dir()?;
     let cfg = Config::load(&cwd)?;
     let Some(docs) = cfg.documents.clone() else {

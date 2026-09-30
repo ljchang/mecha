@@ -53,6 +53,9 @@ enabled = ["fs_read"]
 kind = "none"
 [features]
 web = true
+# The library follows image (ruling L1); with no `[image]` table it is
+# unready — shown, and its store's routes open — which is what this drives.
+image = true
 "#,
     )
     .unwrap();

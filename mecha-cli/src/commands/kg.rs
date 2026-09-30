@@ -159,6 +159,7 @@ pub enum Cmd {
 }
 
 pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
+    super::features::require(mecha_core::feature::Feature::Graph)?;
     match args.cmd {
         Cmd::Search { query, k, json } => search(global, &query.join(" "), k, json).await,
         Cmd::Entity { name, json } => entity(global, &name.join(" "), json).await,
@@ -219,7 +220,7 @@ async fn unalias(global: &GlobalOpts, node_id: &str, alias: &str) -> Result<()> 
 async fn call(global: &GlobalOpts, tool: &str, args: Value) -> Result<Value> {
     let prepared = setup::prepare_tools(global, false).await?;
     let found = find_tool(&prepared.registry, tool).with_context(|| {
-        format!("no knowledge-graph server in this configuration — `{tool}` is not on the tool surface. Is `[[mcp]]` enabled?")
+        super::features::graph_tool_absent(mecha_core::feature::Feature::Graph, tool)
     })?;
     let out = found.call(args, &tool_ctx(&prepared)).await?;
     if out.is_error {

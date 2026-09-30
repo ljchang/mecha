@@ -44,6 +44,7 @@ mod chat;
 mod features;
 mod files;
 mod frontdoor;
+mod gate;
 pub(crate) mod incognito;
 mod library;
 mod mail;
@@ -108,6 +109,9 @@ struct WebState {
     /// config — what its chat's tools were built from, and what
     /// `/api/features` compares the file against to mark a row pending.
     features_at_start: Arc<Vec<mecha_core::feature::Feature>>,
+    /// Where a feature route's refusal comes from: the global file, read per
+    /// request (`gate`).
+    gate: Arc<gate::Gate>,
 }
 
 pub async fn execute(args: Args) -> Result<()> {
@@ -188,6 +192,7 @@ pub async fn execute(args: Args) -> Result<()> {
             mecha_core::imagelib::Library::default_dir()?,
         )),
         features_at_start: features::switched_at_start(&config),
+        gate: Arc::new(gate::Gate::Live),
     };
     // 127.0.0.1 by construction — the address is not configurable.
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -325,217 +330,426 @@ pub(super) fn child_cwd() -> Option<std::path::PathBuf> {
 /// The whole surface, auth included, as a value — which is what lets the
 /// guard be tested by driving the router directly instead of binding a port.
 fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
-    let api = Router::new()
-        .route("/api/ping", get(ping))
-        .route("/api/summary", get(summary))
-        .route("/api/today", get(today))
-        .route(
+    let (api, owners) = api().finish();
+    let app = match assets {
+        Some(dir) => api.fallback_service(tower_http::services::ServeDir::new(dir)),
+        None => api,
+    };
+
+    // Inside `owner_guard` — the last `.layer` is the outermost — so a probe
+    // without the owner's header is refused before any feature is named.
+    app.layer(middleware::from_fn_with_state(
+        (Arc::clone(&state.gate), owners),
+        gate::guard,
+    ))
+    .layer(middleware::from_fn_with_state(state.clone(), owner_guard))
+    .layer(middleware::from_fn(security_headers))
+    .layer(middleware::from_fn(cache_headers))
+    .with_state(state)
+}
+
+/// Every API route, each with its owner (`gate`): the one place a route is
+/// added, so none can be added without saying whose it is.
+fn api() -> gate::Owned {
+    use gate::Owner;
+    use mecha_core::feature::Feature;
+    gate::Owned::new()
+        .at("/api/ping", Owner::Core, get(ping))
+        .at("/api/summary", Owner::Core, get(summary))
+        .at("/api/today", Owner::Core, get(today))
+        .at(
             "/api/workflows/{id}/{action}",
+            Owner::Core,
             axum::routing::post(workflow_action),
         )
-        .route(
+        .at(
             "/api/outbox/{id}/reconcile",
+            Owner::Core,
             axum::routing::post(review::reconcile),
         )
-        .route("/api/sessions", get(chat::sessions))
-        .route("/api/history", get(chat::history))
-        .route("/api/sessions/{id}", axum::routing::delete(archive::delete))
-        .route(
+        .at("/api/sessions", Owner::Core, get(chat::sessions))
+        .at("/api/history", Owner::Core, get(chat::history))
+        .at(
+            "/api/sessions/{id}",
+            Owner::Core,
+            axum::routing::delete(archive::delete),
+        )
+        .at(
             "/api/sessions/{id}/archive",
+            Owner::Core,
             axum::routing::post(archive::archive),
         )
-        .route(
+        .at(
             "/api/sessions/{id}/unarchive",
+            Owner::Core,
             axum::routing::post(archive::unarchive),
         )
-        .route("/api/resume", axum::routing::post(chat::resume))
-        .route("/api/incognito", axum::routing::post(chat::open_incognito))
-        .route(
+        .at(
+            "/api/resume",
+            Owner::Core,
+            axum::routing::post(chat::resume),
+        )
+        .at(
+            "/api/incognito",
+            Owner::Of(Feature::Incognito),
+            axum::routing::post(chat::open_incognito),
+        )
+        .at(
             "/api/incognito/{key}/end",
+            Owner::Of(Feature::Incognito),
             axum::routing::post(chat::end_incognito),
         )
-        .route(
+        .at(
             "/api/incognito/{key}/alive",
+            Owner::Of(Feature::Incognito),
             axum::routing::post(chat::incognito_alive),
         )
-        .route("/api/chat/{key}", get(chat::transcript).post(chat::open))
-        .route("/api/chat/{key}/todo", get(chat::todo))
-        .route("/api/chat/{key}/send", axum::routing::post(chat::send))
-        .route("/api/chat/{key}/cancel", axum::routing::post(chat::cancel))
+        .at(
+            "/api/chat/{key}",
+            Owner::ChatKey,
+            get(chat::transcript).post(chat::open),
+        )
+        .at("/api/chat/{key}/todo", Owner::ChatKey, get(chat::todo))
+        .at(
+            "/api/chat/{key}/send",
+            Owner::ChatKey,
+            axum::routing::post(chat::send),
+        )
+        .at(
+            "/api/chat/{key}/cancel",
+            Owner::ChatKey,
+            axum::routing::post(chat::cancel),
+        )
         // Persona chats: a door of their own, never the routes above
         // (`persona_chat`, `PERSONA-DESIGN.md` §3.2).
-        .route(
+        .at(
             "/api/personas",
+            Owner::Of(Feature::Personas),
             get(persona_chat::list).post(persona_chat::create),
         )
         // Authoring: the owner's door, verbatim writes (`persona_chat`).
-        .route("/api/personas/authoring", get(persona_chat::authoring))
-        .route(
+        .at(
+            "/api/personas/authoring",
+            Owner::Of(Feature::Personas),
+            get(persona_chat::authoring),
+        )
+        .at(
             "/api/personas/relationships",
+            Owner::Of(Feature::Personas),
             axum::routing::post(persona_chat::add_relationship),
         )
-        .route(
+        .at(
             "/api/personas/groups",
+            Owner::Of(Feature::Personas),
             axum::routing::post(persona_chat::add_group),
         )
-        .route(
+        .at(
             "/api/personas/{name}/files",
+            Owner::Of(Feature::Personas),
             get(persona_chat::files).post(persona_chat::save),
         )
-        .route(
+        .at(
             "/api/personas/{name}/lock",
+            Owner::Of(Feature::Personas),
             axum::routing::post(persona_chat::lock),
         )
-        .route(
+        .at(
             "/api/personas/{name}/chats",
+            Owner::Of(Feature::Personas),
             get(persona_chat::history).post(persona_chat::open),
         )
-        .route(
+        .at(
             "/api/personas/{name}/resume",
+            Owner::Of(Feature::Personas),
             axum::routing::post(persona_chat::resume),
         )
-        .route("/api/persona-chat/{key}", get(persona_chat::transcript))
-        .route("/api/persona-chat/{key}/events", get(persona_chat::events))
-        .route(
+        .at(
+            "/api/persona-chat/{key}",
+            Owner::Of(Feature::Personas),
+            get(persona_chat::transcript),
+        )
+        .at(
+            "/api/persona-chat/{key}/events",
+            Owner::Of(Feature::Personas),
+            get(persona_chat::events),
+        )
+        .at(
             "/api/persona-chat/{key}/send",
+            Owner::Of(Feature::Personas),
             axum::routing::post(persona_chat::send),
         )
-        .route(
+        .at(
             "/api/persona-chat/{key}/cancel",
+            Owner::Of(Feature::Personas),
             axum::routing::post(persona_chat::cancel),
         )
-        .route("/api/persona-chat/{key}/file", get(persona_chat::download))
-        .route(
+        .at(
+            "/api/persona-chat/{key}/file",
+            Owner::Of(Feature::Personas),
+            get(persona_chat::download),
+        )
+        .at(
             "/api/persona-chat/{key}/upload",
+            Owner::Of(Feature::Personas),
             axum::routing::post(persona_chat::upload)
                 // An edit's mask is a PNG at the picture's own size — well
                 // under a photo, bounded as the assistant's upload is.
                 .layer(axum::extract::DefaultBodyLimit::max(26_214_400)),
         )
-        .route("/api/chat/{key}/events", get(chat::events))
-        .route("/api/chat/{key}/answer", axum::routing::post(chat::answer))
-        .route("/api/chat/{key}/mode", axum::routing::post(chat::set_mode))
-        .route(
+        .at("/api/chat/{key}/events", Owner::ChatKey, get(chat::events))
+        .at(
+            "/api/chat/{key}/answer",
+            Owner::ChatKey,
+            axum::routing::post(chat::answer),
+        )
+        .at(
+            "/api/chat/{key}/mode",
+            Owner::ChatKey,
+            axum::routing::post(chat::set_mode),
+        )
+        .at(
             "/api/chat/{key}/upload",
+            Owner::ChatKey,
             axum::routing::post(files::upload)
                 // A phone photo is 3-10 MB; axum's 2 MB default refuses the
                 // route's whole purpose. Bounded still: the jail is disk.
                 .layer(axum::extract::DefaultBodyLimit::max(26_214_400)),
         )
-        .route("/api/chat/{key}/file", get(files::download))
+        .at("/api/chat/{key}/file", Owner::ChatKey, get(files::download))
         // The chip (§14 step 5). The owner's only: every route here is behind
         // `owner_guard`, and no tool reaches these.
         // What is on, for the nav, Home and Settings → Features to show and
         // hide by (FEATURES-DESIGN.md §9 step 2): an inventory of the
         // install, so behind the owner guard like everything here.
-        .route("/api/features", get(features::list))
-        .route("/api/model", get(model::state))
-        .route("/api/model/use", axum::routing::post(model::switch))
-        .route("/api/model/cancel", axum::routing::post(model::cancel))
-        .route("/api/outbox", get(review::list))
-        .route("/api/outbox/{id}", get(review::detail))
-        .route(
+        .at("/api/features", Owner::Core, get(features::list))
+        .at("/api/model", Owner::Core, get(model::state))
+        .at(
+            "/api/model/use",
+            Owner::Core,
+            axum::routing::post(model::switch),
+        )
+        .at(
+            "/api/model/cancel",
+            Owner::Core,
+            axum::routing::post(model::cancel),
+        )
+        .at("/api/outbox", Owner::Core, get(review::list))
+        .at("/api/outbox/{id}", Owner::Core, get(review::detail))
+        .at(
             "/api/outbox/{id}/approve",
+            Owner::Core,
             axum::routing::post(review::approve),
         )
-        .route(
+        .at(
             "/api/outbox/{id}/reject",
+            Owner::Core,
             axum::routing::post(review::reject),
         )
-        .route("/api/outbox/{id}/edit", axum::routing::post(review::edit))
-        .route("/api/queue", get(review::queue))
-        .route("/api/queue/classes", get(review::classes))
-        .route("/api/queue/groups", get(review::groups))
-        .route("/api/queue/items", get(review::items))
-        .route("/api/queue/sample", axum::routing::post(review::sample))
-        .route("/api/entity", get(board::entity))
-        .route("/api/queue/shadow", get(review::shadow))
-        .route(
+        .at(
+            "/api/outbox/{id}/edit",
+            Owner::Core,
+            axum::routing::post(review::edit),
+        )
+        .at("/api/queue", Owner::Of(Feature::Graph), get(review::queue))
+        .at(
+            "/api/queue/classes",
+            Owner::Of(Feature::Graph),
+            get(review::classes),
+        )
+        .at(
+            "/api/queue/groups",
+            Owner::Of(Feature::Graph),
+            get(review::groups),
+        )
+        .at(
+            "/api/queue/items",
+            Owner::Of(Feature::Graph),
+            get(review::items),
+        )
+        .at(
+            "/api/queue/sample",
+            Owner::Of(Feature::Graph),
+            axum::routing::post(review::sample),
+        )
+        .at("/api/entity", Owner::Of(Feature::Graph), get(board::entity))
+        .at(
+            "/api/queue/shadow",
+            Owner::Of(Feature::Graph),
+            get(review::shadow),
+        )
+        .at(
             "/api/queue/shadow/verdict",
+            Owner::Of(Feature::Graph),
             axum::routing::post(review::shadow_verdict),
         )
-        .route("/api/queue/verdict", axum::routing::post(review::verdict))
-        .route("/api/queue/bind", axum::routing::post(review::bind))
+        .at(
+            "/api/queue/verdict",
+            Owner::Of(Feature::Graph),
+            axum::routing::post(review::verdict),
+        )
+        .at(
+            "/api/queue/bind",
+            Owner::Of(Feature::Graph),
+            axum::routing::post(review::bind),
+        )
         // The proposal stores: harness candidates, rule proposals, the
         // graph's entity proposals. One generic surface over
         // `commands::review::review_source`, so a store added to that table
         // reaches the phone without another handler.
-        .route("/api/proposals", get(proposals::stores))
-        .route("/api/proposals/{store}", get(proposals::list))
-        .route("/api/proposals/{store}/{id}", get(proposals::detail))
-        .route(
+        .at("/api/proposals", Owner::Core, get(proposals::stores))
+        .at(
+            "/api/proposals/{store}",
+            Owner::ProposalStore,
+            get(proposals::list),
+        )
+        .at(
+            "/api/proposals/{store}/{id}",
+            Owner::ProposalStore,
+            get(proposals::detail),
+        )
+        .at(
             "/api/proposals/{store}/{id}/accept",
+            Owner::ProposalStore,
             axum::routing::post(proposals::accept),
         )
-        .route(
+        .at(
             "/api/proposals/{store}/{id}/reject",
+            Owner::ProposalStore,
             axum::routing::post(proposals::reject),
         )
-        .route("/api/mail", get(mail::list))
-        .route("/api/mail/inbox", get(mail::inbox))
-        .route("/api/mail/calendars", get(mail::calendars))
-        .route("/api/mail/compose", axum::routing::post(mail::compose))
-        .route("/api/mail/read", get(mail::read))
-        .route("/api/mail/act", axum::routing::post(mail::act))
-        .route("/api/tasks", get(board::tasks))
-        .route("/api/tasks/set", axum::routing::post(board::task_set))
-        .route("/api/tasks/work", axum::routing::post(board::task_work))
-        .route("/api/tasks/stop", axum::routing::post(board::task_stop))
-        .route("/api/tasks/steer", axum::routing::post(board::task_steer))
-        .route("/api/tasks/chat", axum::routing::post(board::task_chat))
-        .route(
+        .at("/api/mail", Owner::Of(Feature::Mail), get(mail::list))
+        .at(
+            "/api/mail/inbox",
+            Owner::Of(Feature::Mail),
+            get(mail::inbox),
+        )
+        .at(
+            "/api/mail/calendars",
+            Owner::Of(Feature::Mail),
+            get(mail::calendars),
+        )
+        .at(
+            "/api/mail/compose",
+            Owner::Of(Feature::Mail),
+            axum::routing::post(mail::compose),
+        )
+        .at("/api/mail/read", Owner::Of(Feature::Mail), get(mail::read))
+        .at(
+            "/api/mail/act",
+            Owner::Of(Feature::Mail),
+            axum::routing::post(mail::act),
+        )
+        .at("/api/tasks", Owner::Of(Feature::Tasks), get(board::tasks))
+        .at(
+            "/api/tasks/set",
+            Owner::Of(Feature::Tasks),
+            axum::routing::post(board::task_set),
+        )
+        .at(
+            "/api/tasks/work",
+            Owner::Of(Feature::Tasks),
+            axum::routing::post(board::task_work),
+        )
+        .at(
+            "/api/tasks/stop",
+            Owner::Of(Feature::Tasks),
+            axum::routing::post(board::task_stop),
+        )
+        .at(
+            "/api/tasks/steer",
+            Owner::Of(Feature::Tasks),
+            axum::routing::post(board::task_steer),
+        )
+        .at(
+            "/api/tasks/chat",
+            Owner::Of(Feature::Tasks),
+            axum::routing::post(board::task_chat),
+        )
+        .at(
             "/api/tasks/handover",
+            Owner::Of(Feature::Tasks),
             axum::routing::post(board::task_handover),
         )
-        .route("/api/tasks/plan", axum::routing::post(board::task_plan))
-        .route("/api/tasks/source", axum::routing::post(board::task_source))
-        .route("/api/tasks/add", axum::routing::post(board::task_add))
-        .route("/api/tasks/parse", axum::routing::post(board::task_parse))
-        .route("/api/questions", get(questions::list))
-        .route(
+        .at(
+            "/api/tasks/plan",
+            Owner::Of(Feature::Tasks),
+            axum::routing::post(board::task_plan),
+        )
+        .at(
+            "/api/tasks/source",
+            Owner::Of(Feature::Tasks),
+            axum::routing::post(board::task_source),
+        )
+        .at(
+            "/api/tasks/add",
+            Owner::Of(Feature::Tasks),
+            axum::routing::post(board::task_add),
+        )
+        .at(
+            "/api/tasks/parse",
+            Owner::Of(Feature::Tasks),
+            axum::routing::post(board::task_parse),
+        )
+        .at("/api/questions", Owner::Core, get(questions::list))
+        .at(
             "/api/questions/answer",
+            Owner::Core,
             axum::routing::post(questions::answer),
         )
-        .route(
+        .at(
             "/api/questions/abandon",
+            Owner::Core,
             axum::routing::post(questions::abandon),
         )
-        .route(
+        .at(
             "/api/settings/charter",
+            Owner::Core,
             get(settings::charter).post(settings::charter_save),
         )
-        .route("/api/settings/rules", get(settings::rules))
-        .route(
+        .at("/api/settings/rules", Owner::Core, get(settings::rules))
+        .at(
             "/api/settings/rules/retire",
+            Owner::Core,
             axum::routing::post(settings::rule_retire),
         )
-        .route(
+        .at(
             "/api/settings/rules/restore",
+            Owner::Core,
             axum::routing::post(settings::rule_restore),
         )
-        .route("/api/settings/reflections", get(settings::reflections))
-        .route(
+        .at(
+            "/api/settings/reflections",
+            Owner::Core,
+            get(settings::reflections),
+        )
+        .at(
             "/api/settings/learning-report",
+            Owner::Core,
             get(settings::learning_report),
         )
-        .route(
+        .at(
             "/api/settings/reflections/show",
+            Owner::Core,
             get(settings::reflection_show),
         )
-        .route(
+        .at(
             "/api/settings/reflections/edit",
+            Owner::Core,
             axum::routing::post(settings::reflection_edit),
         )
-        .route(
+        .at(
             "/api/settings/reflections/drop",
+            Owner::Core,
             axum::routing::post(settings::reflection_drop),
         )
-        .route(
+        .at(
             "/api/settings/reflections/restore",
+            Owner::Core,
             axum::routing::post(settings::reflection_restore),
         )
-        .route(
+        .at(
             "/api/settings/voice/clone",
+            Owner::Of(Feature::Cloning),
             axum::routing::post(settings::voice_clone)
                 // A cloning reference is a multi-megabyte WAV by design —
                 // ~50s of 48 kHz mono s16 is ~5 MB — and axum's 2 MB
@@ -547,23 +761,50 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
                     settings::MAX_CLONE_BYTES + 4096,
                 )),
         )
-        .route(
+        .at(
             "/api/settings/voice/clone/delete",
+            Owner::Of(Feature::Cloning),
             axum::routing::post(settings::voice_clone_delete),
         )
-        .route("/api/settings/voice", get(settings::voice))
-        .route("/api/library", get(library::list))
-        .route("/api/library/portrait/{blob}", get(library::portrait))
-        .route("/api/library/unlock", axum::routing::post(library::unlock))
-        .route("/api/library/relock", axum::routing::post(library::relock))
-        .route("/api/library/source", get(library::source))
-        .route(
+        .at(
+            "/api/settings/voice",
+            Owner::Of(Feature::Voice),
+            get(settings::voice),
+        )
+        .at(
+            "/api/library",
+            Owner::Of(Feature::Library),
+            get(library::list),
+        )
+        .at(
+            "/api/library/portrait/{blob}",
+            Owner::Core,
+            get(library::portrait),
+        )
+        .at(
+            "/api/library/unlock",
+            Owner::Core,
+            axum::routing::post(library::unlock),
+        )
+        .at(
+            "/api/library/relock",
+            Owner::Core,
+            axum::routing::post(library::relock),
+        )
+        .at(
+            "/api/library/source",
+            Owner::Of(Feature::Library),
+            get(library::source),
+        )
+        .at(
             "/api/library/save",
+            Owner::Of(Feature::Library),
             axum::routing::post(library::save), // A portrait's bytes never cross this body — the handler
                                                 // reads them from the chat's jail — so the default is ample.
         )
-        .route(
+        .at(
             "/api/library/add",
+            Owner::Of(Feature::Library),
             axum::routing::post(library::add)
                 // A portrait rides this body, base64: the store's cap, not
                 // axum's 2 MB default, is the ceiling that should answer.
@@ -571,64 +812,98 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
                     library::MAX_WRITE_BODY,
                 )),
         )
-        .route(
+        .at(
             "/api/library/edit",
+            Owner::Of(Feature::Library),
             axum::routing::post(library::edit).layer(axum::extract::DefaultBodyLimit::max(
                 library::MAX_WRITE_BODY,
             )),
         )
-        .route(
+        .at(
             "/api/library/{kind}/{name}/{action}",
+            Owner::Of(Feature::Library),
             axum::routing::post(library::act),
         )
-        .route("/api/notes", get(board::notes).post(board::note))
-        .route("/api/notes/edit", axum::routing::post(board::note_edit))
-        .route("/api/frontdoor", get(frontdoor::list))
-        .route("/api/frontdoor/read", get(frontdoor::read))
-        .route("/api/frontdoor/act", axum::routing::post(frontdoor::act))
-        .route("/api/find", get(board::find))
-        .route("/api/related", get(board::related))
-        .route("/api/timeline", get(board::timeline))
-        .route(
+        .at(
+            "/api/notes",
+            Owner::Of(Feature::Graph),
+            get(board::notes).post(board::note),
+        )
+        .at(
+            "/api/notes/edit",
+            Owner::Of(Feature::Graph),
+            axum::routing::post(board::note_edit),
+        )
+        .at(
+            "/api/frontdoor",
+            Owner::Of(Feature::Frontdoor),
+            get(frontdoor::list),
+        )
+        .at(
+            "/api/frontdoor/read",
+            Owner::Of(Feature::Frontdoor),
+            get(frontdoor::read),
+        )
+        .at(
+            "/api/frontdoor/act",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(frontdoor::act),
+        )
+        .at("/api/find", Owner::Of(Feature::Graph), get(board::find))
+        .at(
+            "/api/related",
+            Owner::Of(Feature::Graph),
+            get(board::related),
+        )
+        .at(
+            "/api/timeline",
+            Owner::Of(Feature::Graph),
+            get(board::timeline),
+        )
+        .at(
             "/api/entity/alias",
+            Owner::Of(Feature::Graph),
             axum::routing::post(board::entity_alias),
         )
-        .route(
+        .at(
             "/api/entity/unalias",
+            Owner::Of(Feature::Graph),
             axum::routing::post(board::entity_unalias),
         )
-        .route(
+        .at(
             "/api/entity/merge",
+            Owner::Of(Feature::Graph),
             axum::routing::post(board::entity_merge),
         )
-        .route(
+        .at(
             "/api/entity/create",
+            Owner::Of(Feature::Graph),
             axum::routing::post(board::entity_create),
         )
-        .route("/api/facts", axum::routing::post(board::fact))
-        .route(
+        .at(
+            "/api/facts",
+            Owner::Of(Feature::Graph),
+            axum::routing::post(board::fact),
+        )
+        .at(
             "/api/facts/retract",
+            Owner::Of(Feature::Graph),
             axum::routing::post(board::fact_retract),
         )
-        .route(
+        .at(
             "/api/dictate",
+            Owner::Of(Feature::Dictate),
             axum::routing::post(dictate)
                 // A minute of 16 kHz mono 16-bit is ~2 MB; axum's default
                 // refuses at 2 MB exactly, which is the wrong place to cut
                 // off a long thought.
                 .layer(axum::extract::DefaultBodyLimit::max(8_388_608)),
         )
-        .route("/api/offer", axum::routing::post(offer_proxy));
-
-    let app = match assets {
-        Some(dir) => api.fallback_service(tower_http::services::ServeDir::new(dir)),
-        None => api,
-    };
-
-    app.layer(middleware::from_fn_with_state(state.clone(), owner_guard))
-        .layer(middleware::from_fn(security_headers))
-        .layer(middleware::from_fn(cache_headers))
-        .with_state(state)
+        .at(
+            "/api/offer",
+            Owner::Of(Feature::Calls),
+            axum::routing::post(offer_proxy),
+        )
 }
 
 /// The header `tailscale serve` injects for the authenticated tailnet user.
@@ -1150,6 +1425,12 @@ mod tests {
     use tower::util::ServiceExt;
 
     fn test_router() -> Router {
+        test_router_gated(gate::Gate::default())
+    }
+
+    /// `test_router` with a gate: the features its routes answer
+    /// `feature_off` for.
+    fn test_router_gated(gate: gate::Gate) -> Router {
         router(
             WebState {
                 owner_login: Arc::new("owner@example.com".into()),
@@ -1161,6 +1442,7 @@ mod tests {
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
                 ),
                 features_at_start: Arc::default(),
+                gate: Arc::new(gate),
                 review: Arc::new(review::ReviewState {
                     outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
                     sessions_dir: None,
@@ -1168,6 +1450,361 @@ mod tests {
             },
             None,
         )
+    }
+
+    /// Every route is added through `api()`'s `.at`, with its owner — none
+    /// through a bare `.route`, which would add one with no owner and so no
+    /// guard (FEATURES-DESIGN.md "every route belongs to exactly one feature
+    /// or to the core"). And the shared routes land where ruling L1 put
+    /// them: the library's lock and portraits are core, because Personas
+    /// uses them; the rest of the library is the library's.
+    #[test]
+    fn every_route_is_registered_with_its_owner() {
+        let src = include_str!("mod.rs");
+        let body = |name: &str| {
+            let start = src.find(name).unwrap_or_else(|| panic!("{name} not found"));
+            let end = start + src[start..].find("\n}\n").unwrap();
+            &src[start..end]
+        };
+        let api_body = body("\nfn api() -> gate::Owned {");
+        let router_body = body("\nfn router(state: WebState");
+        assert!(
+            !api_body.contains(".route(") && !router_body.contains(".route("),
+            "a route added with `.route` has no owner — use `.at`"
+        );
+        let (_, owners) = api().finish();
+        assert_eq!(
+            api_body.matches(".at(").count(),
+            owners.0.len(),
+            "every `.at` is one owned route"
+        );
+        use gate::Owner;
+        use mecha_core::feature::Feature;
+        for (path, owner) in [
+            ("/api/library/unlock", Owner::Core),
+            ("/api/library/relock", Owner::Core),
+            ("/api/library/portrait/{blob}", Owner::Core),
+            ("/api/library", Owner::Of(Feature::Library)),
+            ("/api/queue", Owner::Of(Feature::Graph)),
+            ("/api/entity/create", Owner::Of(Feature::Graph)),
+            ("/api/proposals", Owner::Core),
+            ("/api/proposals/{store}", Owner::ProposalStore),
+            ("/api/chat/{key}/send", Owner::ChatKey),
+            ("/api/questions", Owner::Core),
+            ("/api/features", Owner::Core),
+        ] {
+            assert_eq!(owners.0.get(path), Some(&owner), "{path}");
+        }
+    }
+
+    /// A concrete request path for a route template, choosing the segment
+    /// that puts a shared route in the feature's hands.
+    fn concrete(template: &str, owner: gate::Owner) -> String {
+        let mut out = template.to_string();
+        let key = match owner {
+            gate::Owner::ProposalStore => "entities",
+            gate::Owner::ChatKey => "incognito-k",
+            _ => "x",
+        };
+        while let Some(start) = out.find('{') {
+            let end = start + out[start..].find('}').unwrap();
+            out.replace_range(start..=end, key);
+        }
+        out
+    }
+
+    /// F4 end to end, for every route a switched-off feature owns: the owner
+    /// gets 404 `feature_off` naming the feature and the command, and the
+    /// handler never runs, and core routes are never refused whatever the
+    /// gate holds. The negative — nothing refused, every route reached — is
+    /// `the_guard_lets_every_route_through_when_nothing_is_off`, against a
+    /// router where every route answers every method.
+    #[tokio::test]
+    async fn an_off_feature_s_routes_answer_feature_off_and_nothing_else_does() {
+        use mecha_core::feature::{Feature, Refusal};
+        let every_gated: Vec<Refusal> = Feature::ALL
+            .iter()
+            .filter(|f| f.gated())
+            .map(|&f| Refusal {
+                feature: f,
+                why: "not enabled in [features]".into(),
+                fix: format!("mecha features enable {}", f.switch_owner().id()),
+            })
+            .collect();
+        let (_, owners) = api().finish();
+        let send = |app: Router, path: String| async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(&path)
+                        .header("Tailscale-User-Login", "owner@example.com")
+                        .header("x-mecha-request", "1")
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        };
+        let (mut refused, mut core) = (0, 0);
+        for (template, owner) in &owners.0 {
+            let path = concrete(template, *owner);
+            let feature = match owner {
+                gate::Owner::Core => None,
+                gate::Owner::Of(f) => Some(*f),
+                gate::Owner::ProposalStore => Some(Feature::Graph),
+                gate::Owner::ChatKey => Some(Feature::Incognito),
+            };
+            let (status, body) = send(
+                test_router_gated(gate::Gate::refusing(every_gated.clone())),
+                path.clone(),
+            )
+            .await;
+            match feature.filter(|f| f.gated()) {
+                Some(f) => {
+                    assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+                    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+                    assert_eq!(v["error"], "feature_off", "{path}");
+                    assert_eq!(v["feature"], f.id(), "{path}");
+                    assert_eq!(
+                        v["fix"],
+                        format!("mecha features enable {}", f.switch_owner().id()),
+                        "{path}"
+                    );
+                    refused += 1;
+                }
+                None => {
+                    assert!(
+                        !body.contains("feature_off"),
+                        "{path} is not a gated feature's: {body}"
+                    );
+                    if feature.is_none() {
+                        core += 1;
+                    }
+                }
+            }
+        }
+        // Mail, graph (and its store and board), and the library today.
+        assert!(
+            refused >= 40 && core >= 30,
+            "{refused} refused, {core} core"
+        );
+    }
+
+    /// The guard alone, over a router where every owned route answers every
+    /// method with "reached": with nothing refused, every route is reached;
+    /// with every gated feature refused, exactly the core ones are. Against
+    /// the real router a probe of the wrong method is a 405 with no body,
+    /// which cannot say `feature_off` whatever the guard does (review of
+    /// #451) — here the only thing that can answer anything else is the guard.
+    #[tokio::test]
+    async fn the_guard_lets_every_route_through_when_nothing_is_off() {
+        use mecha_core::feature::{Feature, Refusal};
+        let (_, owners) = api().finish();
+        let stub = |gate: gate::Gate| {
+            let mut r = Router::new();
+            for path in owners.0.keys() {
+                r = r.route(path, axum::routing::any(|| async { "reached" }));
+            }
+            r.layer(middleware::from_fn_with_state(
+                (Arc::new(gate), Arc::clone(&owners)),
+                gate::guard,
+            ))
+        };
+        let every_gated: Vec<Refusal> = Feature::ALL
+            .iter()
+            .filter(|f| f.gated())
+            .map(|&f| Refusal {
+                feature: f,
+                why: "off".into(),
+                fix: "enable".into(),
+            })
+            .collect();
+        let get = |app: Router, path: String| async move {
+            let response = app
+                .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        let (mut reached, mut kept) = (0, 0);
+        for (template, owner) in &owners.0 {
+            let path = concrete(template, *owner);
+            assert_eq!(
+                get(stub(gate::Gate::default()), path.clone()).await,
+                "reached",
+                "{path} refused with nothing off"
+            );
+            reached += 1;
+            if matches!(owner, gate::Owner::Core) {
+                assert_eq!(
+                    get(
+                        stub(gate::Gate::refusing(every_gated.clone())),
+                        path.clone()
+                    )
+                    .await,
+                    "reached",
+                    "core {path} refused"
+                );
+                kept += 1;
+            }
+        }
+        assert!(
+            reached >= 119 && kept >= 30,
+            "{reached} reached, {kept} core"
+        );
+    }
+
+    /// The live gate follows the file within one process, both ways: a
+    /// feature enabled while `serve` runs opens its routes at once — the
+    /// start-time snapshot 404'd them while the nav already showed the tab —
+    /// and one disabled stops them at once. A file that does not load refuses
+    /// (review of #451). Over the stub, so no real handler — and no real
+    /// `mecha-graph` — can run.
+    #[tokio::test]
+    async fn the_gate_follows_the_file_without_a_restart() {
+        let home = crate::testenv::HomeGuard::new("serve-live-gate");
+        let (_, owners) = api().finish();
+        let mut stub = Router::new();
+        for path in owners.0.keys() {
+            stub = stub.route(path, axum::routing::any(|| async { "reached" }));
+        }
+        let app = stub.layer(middleware::from_fn_with_state(
+            (Arc::new(gate::Gate::Live), Arc::clone(&owners)),
+            gate::guard,
+        ));
+        let get = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                String::from_utf8_lossy(&bytes).into_owned()
+            }
+        };
+        let write = |body: &str| std::fs::write(home.dir.join("config.toml"), body).unwrap();
+
+        write("[features]\ngraph = false\n");
+        assert!(get("/api/find").await.contains("feature_off"));
+        assert_eq!(
+            get("/api/questions").await,
+            "reached",
+            "core is never asked"
+        );
+        write("[features]\ngraph = true\n");
+        assert_eq!(get("/api/find").await, "reached", "enabled with no restart");
+        write("[features]\ngraph = false\n");
+        assert!(
+            get("/api/find").await.contains("feature_off"),
+            "disabled with no restart"
+        );
+        write("[features]\ngraph = true\nnot toml at all\n");
+        let said = get("/api/find").await;
+        assert!(
+            said.contains("cannot tell whether it is switched on"),
+            "{said}"
+        );
+    }
+
+    /// The two owners that read a capture read it decoded, as the handler
+    /// does: `%65ntities` is the graph's `entities` store and `%69ncognito-`
+    /// an incognito room. Read raw, the encoded spelling walked past a graph
+    /// that was off into a handler that decoded it and wrote the graph
+    /// (review of #451). A core store and a core key still pass.
+    #[tokio::test]
+    async fn an_encoded_capture_is_read_as_the_handler_reads_it() {
+        use mecha_core::feature::{Feature, Refusal};
+        let refuse = |f: Feature| Refusal {
+            feature: f,
+            why: "off".into(),
+            fix: format!("mecha features enable {}", f.id()),
+        };
+        let app = || {
+            test_router_gated(gate::Gate::refusing([
+                refuse(Feature::Graph),
+                refuse(Feature::Incognito),
+            ]))
+        };
+        for (method, uri, refused) in [
+            ("POST", "/api/proposals/%65ntities/x/accept", Some("graph")),
+            ("GET", "/api/proposals/%65ntities", Some("graph")),
+            ("GET", "/api/proposals/entities", Some("graph")),
+            ("GET", "/api/proposals/harness", None),
+            // A store the table does not know fails closed.
+            ("GET", "/api/proposals/nonesuch", Some("graph")),
+            ("POST", "/api/chat/%69ncognito-k/send", Some("incognito")),
+            ("POST", "/api/chat/incognito-k/send", Some("incognito")),
+            ("POST", "/api/chat/web-k/send", None),
+        ] {
+            let response = app()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("Tailscale-User-Login", "owner@example.com")
+                        .header("x-mecha-request", "1")
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body = String::from_utf8_lossy(&bytes);
+            match refused {
+                Some(id) => {
+                    assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
+                    assert!(
+                        body.contains(&format!("\"feature\":\"{id}\"")),
+                        "{uri}: {body}"
+                    );
+                }
+                None => assert!(!body.contains("feature_off"), "{uri}: {body}"),
+            }
+        }
+    }
+
+    /// The feature guard answers only the owner. A probe without the header
+    /// gets `owner_guard`'s 403 and learns nothing — not even that a feature
+    /// is off, which would be an inventory of the install (§4.2 item 4).
+    #[tokio::test]
+    async fn an_off_feature_s_route_tells_a_stranger_nothing() {
+        use mecha_core::feature::{Feature, Refusal};
+        let app = test_router_gated(gate::Gate::refusing([Refusal {
+            feature: Feature::Mail,
+            why: "not enabled in [features]".into(),
+            fix: "mecha features enable mail".into(),
+        }]));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/mail")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("feature"));
     }
 
     fn request(header: Option<&str>) -> Request<Body> {
@@ -1538,6 +2175,7 @@ mod tests {
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
                 ),
                 features_at_start: Arc::default(),
+                gate: Arc::default(),
                 review: Arc::new(review::ReviewState {
                     outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
                     sessions_dir: None,
@@ -1569,6 +2207,7 @@ mod tests {
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
                 ),
                 features_at_start: Arc::default(),
+                gate: Arc::default(),
                 review: Arc::new(review::ReviewState {
                     outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
                     sessions_dir: None,
@@ -2117,6 +2756,7 @@ mod boundary_tests {
                 owner_login: Arc::new("owner@example.com".into()),
                 chat: Some(chat),
                 features_at_start: Arc::default(),
+                gate: Arc::default(),
                 review: Arc::new(review::ReviewState {
                     outbox_root: PathBuf::new(),
                     sessions_dir: None,

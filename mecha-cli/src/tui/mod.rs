@@ -5137,6 +5137,10 @@ fn self_cli_capture(args: &[&str]) -> Result<String> {
 /// binary, so the review level reaches it the way `/queues` already reaches
 /// the graph's fact queue — as a child process, never by opening the store.
 fn graph_cli_raw(args: &[&str]) -> Result<String> {
+    // The third driver of `mecha-graph` beside `review::graph_cli` and the
+    // web's `graph_verb`, and gated like them: `/queues`' accept and shadow
+    // keys wrote the graph with `graph = false` (review of #451).
+    crate::commands::features::require(mecha_core::feature::Feature::Graph)?;
     let bin = graph_bin();
     let out = std::process::Command::new(&bin)
         .args(args)
@@ -9090,6 +9094,10 @@ fn graph_bin() -> String {
 /// name with the variable that fixes it — "No such file or directory" from a
 /// child nobody mentioned is the least actionable error there is.
 fn graph_cli(args: &[&str]) -> std::result::Result<String, String> {
+    // Every entity-modal read and edit — merge, new person, alias — runs
+    // through here, so the switch is asked here, once (review of #451).
+    crate::commands::features::require(mecha_core::feature::Feature::Graph)
+        .map_err(|e| format!("{e:#}"))?;
     let bin = graph_bin();
     let out = std::process::Command::new(&bin).args(args).output();
     let out = match out {
@@ -9699,6 +9707,42 @@ mod tests {
         });
         app.documents = Some(modal);
         app
+    }
+
+    /// The TUI's two `mecha-graph` drivers ask the switch before spawning
+    /// anything: with `graph = false`, `/queues`' accept keys and the entity
+    /// modal's edits wrote the owner's graph (review of #451). With it on, a
+    /// missing binary is still reported as missing, not as the switch.
+    #[test]
+    fn the_tui_s_graph_drivers_refuse_when_the_graph_is_off() {
+        let home = crate::testenv::HomeGuard::new("tui-graph-gate");
+        // Put back on drop, panic included, under the guard's lock.
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(v) => std::env::set_var("MECHA_GRAPH_BIN", v),
+                    None => std::env::remove_var("MECHA_GRAPH_BIN"),
+                }
+            }
+        }
+        let _restore = Restore(std::env::var("MECHA_GRAPH_BIN").ok());
+        std::env::set_var("MECHA_GRAPH_BIN", home.dir.join("no-such-mecha-graph"));
+        let write = |body: &str| std::fs::write(home.dir.join("config.toml"), body).unwrap();
+
+        write("[features]\ngraph = false\n");
+        let modal = graph_cli(&["merge", "a", "b"]).unwrap_err();
+        assert!(modal.contains("`mecha features enable graph`"), "{modal}");
+        let queue = graph_cli_raw(&["proposals", "accept", "1"]).unwrap_err();
+        assert!(
+            format!("{queue:#}").contains("`mecha features enable graph`"),
+            "{queue:#}"
+        );
+
+        write("[features]\ngraph = true\n");
+        let modal = graph_cli(&["entity", "x"]).unwrap_err();
+        assert!(modal.contains("not found"), "{modal}");
+        assert!(!modal.contains("mecha features enable"), "{modal}");
     }
 
     // ─── /entity ─────────────────────────────────────────────────────────

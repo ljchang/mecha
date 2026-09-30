@@ -255,7 +255,16 @@ pub enum Cmd {
 }
 
 pub async fn execute(args: Args) -> Result<()> {
-    match args.cmd.unwrap_or(Cmd::Queues { json: false }) {
+    let cmd = args.cmd.unwrap_or(Cmd::Queues { json: false });
+    // `queues` is the cross-feature reader, core by construction; every
+    // other verb here is the graph's review queue, and runs `mecha-graph`
+    // directly (`graph_cli`) — so it asks the switch itself rather than
+    // relying on `prepare_tools`, which it never reaches. With `graph = false`
+    // `accept` was writing the owner's graph (found building step 3).
+    if !matches!(cmd, Cmd::Queues { .. }) {
+        super::features::require(mecha_core::feature::Feature::Graph)?;
+    }
+    match cmd {
         Cmd::Queues { json } => queues(json),
         Cmd::List {
             proposer,
