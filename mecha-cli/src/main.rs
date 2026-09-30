@@ -366,6 +366,14 @@ pub enum Command {
     /// path jail its runs get.
     Work(commands::work::Args),
 
+    /// Which optional parts of mecha are on, and how to turn on the rest.
+    ///
+    /// Read from the config and the disk only — no network, so a server that
+    /// starts on demand is never woken to be asked. Exit 0 whatever it finds:
+    /// an install with features off is not a broken one. A config file that
+    /// does not parse is an error, not a list.
+    Features(commands::features::Args),
+
     /// Read every store — no network, no model, no tokens — and report what
     /// is silently wrong: dead mail logins, stuck outbox drafts, stalled
     /// frontdoor requests, failing triggers, failed units. On a terminal it
@@ -612,6 +620,7 @@ impl Command {
             | Command::Msg(_)
             | Command::Work(_)
             | Command::Doctor(_)
+            | Command::Features(_)
             | Command::Polls(_)
             | Command::Proposals(_)
             | Command::Review(_)
@@ -680,6 +689,7 @@ impl Command {
             | Command::Msg(_)
             | Command::Work(_)
             | Command::Doctor(_)
+            | Command::Features(_)
             | Command::Polls(_)
             | Command::Proposals(_)
             | Command::Review(_)
@@ -827,6 +837,7 @@ async fn dispatch() -> Result<()> {
         Command::Work(args) => commands::work::execute(args).await,
         Command::Setup(args) => commands::setup::execute(&cli.global, args).await,
         Command::Doctor(args) => commands::doctor::execute(args).await,
+        Command::Features(args) => commands::features::execute(args),
         Command::Serve(args) => commands::serve::execute(args).await,
         Command::Diagnose(args) => commands::diagnose::execute(&cli.global, args).await,
         Command::Harness(args) => commands::harness::execute(&cli.global, args).await,

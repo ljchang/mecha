@@ -9,19 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha features` lists which optional parts of mecha are on.** Web,
+  Slack, mail, docs, the graph, search, PDF extraction, image generation,
+  personas, voice, incognito, the front door and messages, each marked on,
+  off, blocked (waiting on something else that is off), unready or unknown,
+  with the command that turns on each one that is off. It reads the config
+  and the disk only and wakes no server. `--json` for scripts. The first step
+  of making installs modular (`docs/FEATURES-DESIGN.md`).
+
 - **A cleaner Personas tab.** Personas are listed like contacts: avatar,
-  name and relationship, with New in the header. A persona's page leads with who they are and one
-  Start a chat button; Edit is a pencil, and hiding behind the library lock
-  moves into a menu. Earlier chats show the goal they
-  were opened with. In
-  a chat, the send button sits inside the message box and the back arrow
-  ends the chat (the Done button is gone). The chat shows the model chip,
-  the same picker as the main chat. While a reply is on its way, a line
-  says the persona is typing, or what it is doing and for how long, such as
+  name and relationship, with New in the header. A persona's page leads
+  with who they are and one Start a chat button; Edit is a pencil, and
+  hiding behind the library lock moves into a menu. Earlier chats show the
+  goal they were opened with. In a chat, the header shows just the name and
+  the AI tag, with the model chip (the same picker as the main chat); the
+  send button sits inside the message box, and the back arrow ends the chat
+  (the Done button is gone). While a reply is on its way, a line says the
+  persona is typing, or what it is doing and for how long, such as
   "drawing a picture… 1:24". A tool call the persona retried reads as
   retried, not failed. The support-resources link appears only after a
   crisis warning in that chat, and the banner at the top of each chat is
-  gone; the AI tag in the header stays.
+  gone.
 
 - **Persona files edit as forms.** A persona's Edit screen is now a form on
   every tab. Settings are switches, choices and name chips: relationship,
