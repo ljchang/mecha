@@ -146,6 +146,10 @@ pub struct Facts {
     pub trigger_count: usize,
     /// What the owner's charter is doing, read through the ordinary loader.
     pub charter: CharterState,
+    /// Features this install set up whose `[features]` switch is unanswered
+    /// (`feature::announcements`) — F6's offer, from the same function as the
+    /// upgrade notice so the two cannot disagree (FEATURES-DESIGN.md §7).
+    pub feature_offers: Vec<crate::feature::Announcement>,
     /// Step ids the owner has said they do not want, from
     /// [`read_declined`].
     ///
@@ -356,6 +360,7 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
     }
 
     steps.extend(integration_steps(facts));
+    steps.extend(feature_steps(facts));
     steps.extend(timezone_step(cfg));
     steps.push(charter_step(&facts.charter));
 
@@ -856,6 +861,37 @@ fn integration_steps(facts: &Facts) -> Vec<Step> {
     steps
 }
 
+/// One declinable step per feature this install set up whose switch is
+/// still unanswered — an install that predates `[features]` has them all.
+/// Accepting runs `mecha features enable …`, which writes the bool in place;
+/// "never" records a decline under `feature-<id>`, so a later start's notice
+/// is the only place it is still named.
+fn feature_steps(facts: &Facts) -> Vec<Step> {
+    facts
+        .feature_offers
+        .iter()
+        .map(|a| {
+            let argv: Vec<&str> = a.fix.split_whitespace().collect();
+            Step::new(
+                &format!("feature-{}", a.id.id()),
+                &format!("Switch on {}", a.id.label().to_lowercase()),
+                Status::Missing,
+                match &a.caveat {
+                    Some(why) => format!(
+                        "Set up here but not switched on in `[features]` ({why}). Every \
+                         optional feature has a switch now, and one left unanswered is off."
+                    ),
+                    None => "Set up here but not switched on in `[features]`. Every optional \
+                             feature has a switch now, and one left unanswered is off."
+                        .to_string(),
+                },
+            )
+            .with(&format!("Write `{}`.", a.fix), &argv, false)
+            .optional()
+        })
+        .collect()
+}
+
 /// The values a local server reports about itself, ready to be written down.
 ///
 /// Returned rather than applied, so the caller can show them before changing
@@ -1181,6 +1217,8 @@ mod tests {
             config_file: true,
             local_probe: LocalProbe::NotAttempted,
             declined: Default::default(),
+            // A complete install has answered every switch it uses.
+            feature_offers: Vec::new(),
         }
     }
 
@@ -1237,6 +1275,40 @@ mod tests {
                 .map(|s| &s.id)
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// F6: a feature this install set up with its switch unanswered is a
+    /// declinable step whose remedy writes the bool — the same announcement
+    /// the upgrade notice prints, carried with its caveat.
+    #[test]
+    fn a_feature_set_up_but_unanswered_is_offered_and_declinable() {
+        use crate::feature::{Announcement, Feature};
+        let cfg = cfg_with_local(262144, Some(true));
+        let mut f = facts(Some(props(262144, 4, true)));
+        f.feature_offers = vec![Announcement {
+            id: Feature::Mail,
+            caveat: Some("no account is authorised".into()),
+            fix: "mecha features enable mail".into(),
+        }];
+        let steps = plan(&cfg, "local", &f);
+        let step = steps
+            .iter()
+            .find(|s| s.id == "feature-mail")
+            .expect("offered");
+        assert_eq!(step.status, Status::Missing);
+        assert!(step.optional, "declinable, as every offer is");
+        assert!(
+            step.detail.contains("no account is authorised"),
+            "{}",
+            step.detail
+        );
+        let remedy = step.remedy.as_ref().expect("a remedy");
+        assert_eq!(remedy.argv, vec!["mecha", "features", "enable", "mail"]);
+
+        f.declined.insert("feature-mail".into());
+        let steps = plan(&cfg, "local", &f);
+        let step = steps.iter().find(|s| s.id == "feature-mail").unwrap();
+        assert_eq!(step.status, Status::Declined);
     }
 
     /// A fresh install is *offered* a charter, and the offer never composes

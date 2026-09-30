@@ -71,6 +71,9 @@ pub struct Config {
     /// Where the harness diagnostician may read this program's own source.
     /// Global-file only; see [`HarnessConfig`].
     pub harness: HarnessConfig,
+    /// Which optional features are switched on. Global-file only; see
+    /// [`FeaturesConfig`].
+    pub features: FeaturesConfig,
 }
 
 /// What `mecha harness ruminate`'s diagnostician is allowed to read.
@@ -124,6 +127,33 @@ pub struct SkillsConfig {
     /// Global-file only — a project layer naming its own directory would be
     /// the authoring hole this type exists to close, wearing a different hat.
     pub dir: Option<PathBuf>,
+}
+
+/// Which optional parts of mecha are switched on — `[features]`, one bool per
+/// top-level feature (`docs/FEATURES-DESIGN.md` §5, ruling F1).
+///
+/// **Global-file only**: `merge_file` strips it from project layers, so a
+/// cloned repository can never turn a feature on. **Merged per key**, not
+/// wholesale. And the one table without `deny_unknown_fields`: one
+/// `config.toml` is read by the installed release, the long-running units and
+/// worktree builds at once, and a key a newer build added would otherwise take
+/// the older binaries down at their next restart. An unknown key can turn
+/// nothing on in a binary that does not know the feature, so it is reported
+/// (`feature::unknown_switches`) and otherwise ignored.
+///
+/// `messages` is not kept here: `apply` writes it into
+/// `[messages] enabled`, the field `Lever::Messages` and every experiment arm
+/// already read and write, so there is one runtime answer, not two that a
+/// serialised-and-reloaded arm config could set against each other.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct FeaturesConfig(pub BTreeMap<String, bool>);
+
+impl FeaturesConfig {
+    /// The owner's answer for one switch: `None` is unanswered.
+    pub fn get(&self, id: &str) -> Option<bool> {
+        self.0.get(id).copied()
+    }
 }
 
 /// Messaging between this machine's own mecha sessions.
@@ -345,6 +375,7 @@ impl Default for Config {
             security: SecurityConfig::default(),
             skills: SkillsConfig::default(),
             harness: HarnessConfig::default(),
+            features: FeaturesConfig::default(),
             sandbox: crate::sandbox::SandboxConfig::default(),
             mcp: Vec::new(),
             subagents: Vec::new(),
@@ -1403,6 +1434,16 @@ impl Config {
                 path.display()
             );
         }
+        // `[features]` for the reason all of these are stripped: a project file
+        // arrives with a cloned repository, and a feature switched on turns on
+        // its tools, its servers and its web surface (FEATURES-DESIGN.md §5).
+        if trust == LayerTrust::Project && layer.features.take().is_some() {
+            tracing::warn!(
+                "[features] in {} is ignored — which features are on loads from \
+                 the global config only",
+                path.display()
+            );
+        }
         // `[[rule]]` from a project layer may only ever *narrow*: `prompt` and
         // `forbid` rules stay, `allow` rules are dropped with a warning, and
         // `[approval]` (whose one knob only widens) is dropped whole. A cloned
@@ -1718,6 +1759,7 @@ struct ConfigLayer {
     skills: Option<SkillsLayer>,
     web: Option<WebLayer>,
     harness: Option<HarnessLayer>,
+    features: Option<BTreeMap<String, bool>>,
 }
 
 /// A layer's opinion about where the diagnostician may read. See
@@ -2162,6 +2204,20 @@ impl ConfigLayer {
         if let Some(x) = self.harness {
             if x.source_dir.is_some() {
                 cfg.harness.source_dir = x.source_dir;
+            }
+        }
+        // Per key, so a later layer answers only the switches it names. After
+        // `[messages]` on purpose: `messages` is moved into `messages.enabled`
+        // and out of the map, so a file that sets both gets the `[features]`
+        // answer and a serialised config carries it once (see
+        // [`FeaturesConfig`]).
+        if let Some(x) = self.features {
+            for (key, on) in x {
+                if key == "messages" {
+                    cfg.messages.enabled = on;
+                } else {
+                    cfg.features.0.insert(key, on);
+                }
             }
         }
         // Only ever reached from the global layer, like `[messages]` and
@@ -2653,6 +2709,60 @@ mod tests {
             vec!["audit".to_string(), "deploy".to_string()]
         );
         assert_eq!(global.skills.dir.as_deref(), Some(Path::new("/tmp/theirs")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `[features]` is global-only, merged per key, tolerant of a key this
+    /// build does not know, and moves `messages` into `[messages] enabled`
+    /// rather than keeping a second copy (FEATURES-DESIGN.md §5).
+    #[test]
+    fn features_are_global_only_per_key_and_carry_messages_once() {
+        let dir = std::env::temp_dir().join(format!("mecha-features-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first.toml");
+        let second = dir.join("second.toml");
+        std::fs::write(
+            &first,
+            "[features]\nmail = true\ngraph = true\nfrom_a_newer_build = true\nmessages = true\n",
+        )
+        .unwrap();
+        std::fs::write(&second, "[features]\ngraph = false\n").unwrap();
+
+        // A project file can switch nothing on.
+        let mut project = Config::default();
+        project.merge_file(&first, LayerTrust::Project).unwrap();
+        assert!(project.features.0.is_empty());
+        assert!(!project.messages.enabled);
+
+        // Globally: per key, a later layer answering only what it names; an
+        // unknown key parses rather than failing the load.
+        let mut global = Config::default();
+        global.merge_file(&first, LayerTrust::Global).unwrap();
+        global.merge_file(&second, LayerTrust::Global).unwrap();
+        assert_eq!(global.features.get("mail"), Some(true));
+        assert_eq!(global.features.get("graph"), Some(false));
+        assert_eq!(global.features.get("from_a_newer_build"), Some(true));
+
+        // `messages` lands in `[messages] enabled` and is not kept twice, so a
+        // serialised config cannot re-enable what a lever turned off.
+        assert!(global.messages.enabled);
+        assert_eq!(global.features.get("messages"), None);
+        global.messages.enabled = false;
+        let reloaded: Config = toml::from_str(&toml::to_string(&global).unwrap()).unwrap();
+        assert!(!reloaded.messages.enabled);
+
+        // And `[features] messages` answers a `[messages] enabled` in the
+        // same file.
+        let both = dir.join("both.toml");
+        std::fs::write(
+            &both,
+            "[messages]\nenabled = true\n[features]\nmessages = false\n",
+        )
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.merge_file(&both, LayerTrust::Global).unwrap();
+        assert!(!cfg.messages.enabled);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
