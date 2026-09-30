@@ -978,12 +978,32 @@ module.
   destructures `AgentConfig` exhaustively and switches off every lever that
   reads the charter, the board or the session corpus, so a new lever is a
   compile error there until someone decides it.
-- **The page authors personas, and writes the owner's text verbatim.**
+- **The page authors personas, and loses nothing the owner wrote.**
   `POST /api/personas` creates one (the owner's, approved at once, exactly as
   `mecha persona new`). `GET`/`POST /api/personas/{name}/files` read and save
-  `identity.md`, `motivation.md` and `persona.toml` **as the owner typed them,
-  comments and all** — never re-serialised, so the page keeps the rule that
-  code does not rewrite an owner file. `persona::write_owner_file` refuses a
+  `identity.md`, `motivation.md` and `persona.toml` three ways, exactly one
+  per save: `text`, **as the owner typed it, comments and all** (the page
+  repairs one thing first: a phone's smart dash in a comment's `<!--` or
+  `-->`, only while a comment is open); `changes`,
+  a form's `{path: value}` that `tomlform::apply` sets **in place** with
+  `toml_edit` — every comment stays, and a path or value the form
+  (`persona::settings_form`) does not offer is refused; or `doc`, a Markdown
+  file's parts that `mdform::join` writes in one canonical layout — the
+  words a prompt receives and every comment's text survive (tested as a
+  property), a note holding `-->` is refused rather than escaped, and
+  `## Core` cannot be dropped. The engines are general: another owner file
+  gets a form by declaring a schema, not a component (`TomlForm.svelte`,
+  `MdForm.svelte`). On a locked page, a persona whose portrait is a locked
+  library character (or one the library cannot read: unknown reads as
+  locked) is served `persona.toml` without its `character` line
+  (`persona::hide_character`), with the form's Portrait empty and the stale
+  digest taken over the served text, because a digest of the real file would
+  let a guessed name be checked. A text save puts the line back
+  verbatim, comment and all (`restore_character`), and a form save's `null`
+  for the unseen Portrait is dropped, so neither cuts it unless the owner
+  named a portrait of their own:
+  hidden, never cut (owner ruling, 2026-09-30). All three end in
+  `persona::write_owner_file`, which refuses a
   stale save (its `base` digest is not the file as it stands, an edit made
   elsewhere), control characters and oversize text, and it restores the old
   file when the persona would not load or could not be versioned after the
