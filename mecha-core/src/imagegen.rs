@@ -1599,19 +1599,35 @@ fn self_clauses(prompt: &str, name_words: usize) -> (Option<String>, Option<Stri
         .collect::<Vec<_>>()
         .join(" ");
     let rest = rest.as_str();
-    let lower = |t: &str| t.to_lowercase();
-    let wearing = clauses
-        .iter()
-        .take(3)
-        .find_map(|c| {
-            let l = lower(c);
-            l.find("wearing ")
-                .map(|at| c[at + "wearing ".len()..].trim().to_string())
+    // "wearing" as a word, found on the original string at char boundaries.
+    // Lowercasing first and slicing the original at that offset panics where
+    // lowercasing changes a length ("İ" is two bytes, "i̇" three — review of
+    // #444); "wearing " is ASCII, so the comparison needs no lowercasing.
+    const W: &str = "wearing ";
+    let find_w = |c: &str| {
+        c.char_indices().map(|(i, _)| i).find(|&i| {
+            (i == 0 || c[..i].ends_with(char::is_whitespace))
+                && c.get(i..i + W.len())
+                    .is_some_and(|s| s.eq_ignore_ascii_case(W))
         })
+    };
+    // Only the persona's own clauses: the rest of its opening one, then the
+    // next if it begins "wearing". "Stella at the door, john wearing an
+    // apron" does not dress Stella in john's apron.
+    let (doing, own) = match find_w(rest) {
+        Some(i) => (&rest[..i], Some(&rest[i + W.len()..])),
+        None => (rest, None),
+    };
+    let wearing = own
+        .or_else(|| {
+            clauses
+                .get(1)
+                .filter(|c| find_w(c) == Some(0))
+                .map(|c| &c[W.len()..])
+        })
+        .map(|w| w.trim().to_string())
         .filter(|w| !w.is_empty());
-    let doing = (!rest.is_empty() && !lower(rest).starts_with("wearing "))
-        .then(|| rest.to_string())
-        .filter(|d| d.split_whitespace().count() >= 2);
+    let doing = Some(doing.trim().to_string()).filter(|d| d.split_whitespace().count() >= 2);
     (wearing, doing)
 }
 
@@ -1917,9 +1933,16 @@ impl ImageGenerate {
                 for m in a.cast.iter_mut().filter(|m| is_self(&m.name)) {
                     m.name = c.clone();
                 }
-                // `self` and the character's own name both given: one of them.
-                let mut seen = std::collections::BTreeSet::new();
-                a.cast.retain(|m| seen.insert(m.name.trim().to_lowercase()));
+                // `self` and the character's own name both given: the first
+                // of them. Only that duplicate — any other is the compiler's
+                // to refuse, as it would be without `self` (review of #444).
+                let mut kept = false;
+                a.cast.retain(|m| {
+                    let this = m.name.trim().eq_ignore_ascii_case(c);
+                    let keep = !(this && kept);
+                    kept |= this;
+                    keep
+                });
             }
         }
         let Some(c) = character else {
@@ -1929,6 +1952,10 @@ impl ImageGenerate {
             a.cast
                 .iter()
                 .any(|m| m.name.trim().eq_ignore_ascii_case(&c))
+                // A full cast: adding the persona would make a call the
+                // compiler refuses and the model never wrote. The guard
+                // below names everyone instead, the persona included.
+                || a.cast.len() >= crate::imagelib::MAX_CAST
         }) {
             return Ok(());
         }
@@ -4597,6 +4624,53 @@ mod tests {
         assert_eq!(before, after, "the persona form drew");
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// What a persona cast as itself wears and does, read only from its own
+    /// clauses and never by slicing a lowercased copy: a prompt where
+    /// lowercasing changes a length panicked the tool (review of #444).
+    #[test]
+    fn self_clauses_read_only_the_personas_own_words() {
+        let read = |p: &str| {
+            let (w, d) = self_clauses(p, 1);
+            (
+                w.as_deref().map(str::to_string),
+                d.as_deref().map(str::to_string),
+            )
+        };
+        assert_eq!(
+            read("Stella lounging on a plush couch, wearing a lace set, warm light"),
+            (
+                Some("a lace set".into()),
+                Some("lounging on a plush couch".into())
+            )
+        );
+        assert_eq!(
+            read("Stella lounging on a couch wearing a lace set"),
+            (
+                Some("a lace set".into()),
+                Some("lounging on a couch".into())
+            )
+        );
+        assert_eq!(read("Stella wearing a coat"), (Some("a coat".into()), None));
+        // Someone else's clothes are theirs.
+        assert_eq!(
+            read("Stella at the door, john wearing an apron"),
+            (None, Some("at the door".into()))
+        );
+        // A word containing it is not it.
+        assert_eq!(
+            read("Stella swearing loudly at the sky"),
+            (None, Some("swearing loudly at the sky".into()))
+        );
+        // Lowercasing "İ" makes it longer: no panic, and the right slice.
+        assert_eq!(
+            read("Stella İstanbul skyline behind her wearing é coat"),
+            (
+                Some("é coat".into()),
+                Some("İstanbul skyline behind her".into())
+            )
+        );
     }
 
     /// A persona draws itself (§8.6): naming itself — by its character, its

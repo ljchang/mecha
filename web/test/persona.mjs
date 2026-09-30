@@ -262,6 +262,15 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   assert.deepEqual([...turnsWithoutPicture(entries)], [3, 15]);
   assert.deepEqual([...turnsWithoutPicture(entries, true)], [3], 'a running turn is not judged');
   assert.deepEqual([...turnsWithoutPicture([{ kind: 'user', text: 'x' }, img(null)])], [], 'a call still out');
+  // The same steered turn as a reload reads it: the steer after the tool
+  // rows, marked `steered` by the server (`transcript_entries`).
+  const reloaded = [
+    { kind: 'user', text: 'one more' },
+    img(true), img(true),
+    { kind: 'user', text: 'and with the cat', steered: true },
+    { kind: 'assistant', text: 'Done!' },
+  ];
+  assert.deepEqual([...turnsWithoutPicture(reloaded)], [4], 'the note stays under the reply');
 }
 
 console.log('persona: ok');
