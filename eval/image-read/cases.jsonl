@@ -1,0 +1,62 @@
+// What a model does with a picture it can already see. Each case attaches its
+// picture as pixels on the first turn (`attach`), exactly as a web-chat upload
+// does, and names it the way the chat does ("Attached file at …"). Read-only
+// against eval/image-read/workspace; the pictures are made by make_fixtures.py.
+//
+// Graded on reading: the answer carries the values the picture holds. The
+// no-text controls also forbid `document_read`. Routing is recorded, not
+// asserted — see below.
+//
+// Measured 2026-09-30 on qwen3.6-35b-a3b-uncensored (vision, seed 42), two
+// runs a case, before and after a document_read description that told the
+// model to OCR dense pictures:
+//   - direct questions (13 cases): document_read 0/18 text-heavy runs in both
+//     arms; every answer correct, 26/26 in both;
+//   - tasks (6 cases — spreadsheet, CSV, summary, transcription, extraction):
+//     document_read 0/12 before, 1/12 after; every value correct;
+//   - word-for-word transcription of safety-notice.jpg (310 words, scrambled
+//     text): the vision model 85% recall / 90% precision; document_read's
+//     own OCR of the same file 79% / 91%, in 9.4 s. Word-level, after
+//     lower-casing and dropping punctuation, against truth/safety-notice.txt
+//     (make_fixtures.py writes each letter's text there, outside the
+//     workspace the model reads).
+// So the wording did not move routing, and reading from pixels was as good as
+// OCR here. Routing is therefore not asserted: a case set must not fail
+// forever on a behaviour that was measured and deliberately not forced. If a
+// model reads pictures worse, the reading checks are what will say so.
+//
+// Run against the model that is resident, so nothing switches:
+//   mecha eval eval/image-read/cases.jsonl -p <provider serving it> --out …
+
+// --- dense pages: the answer sits mid-page in small print ---
+{"id": "page-permit", "tags": ["text-heavy", "page"], "attach": ["inbox/permit-letter.jpg"], "prompt": "What is my permit reference, and when does it expire?\n\nAttached file at inbox/permit-letter.jpg", "expect": {"contains": ["CAP-2026-04417", "2027"], "max_turns": 8}}
+{"id": "page-safety", "tags": ["text-heavy", "page"], "attach": ["inbox/safety-notice.jpg"], "prompt": "What's the maximum occupancy of the lab, and which extension do I call for an incident?\n\nAttached file at inbox/safety-notice.jpg", "expect": {"contains": ["14", "4719"], "max_turns": 8}}
+{"id": "page-budget", "tags": ["text-heavy", "page"], "attach": ["inbox/budget-memo.jpg"], "prompt": "What was the equipment line reduced to, and how much carry-forward was approved?\n\nAttached file at inbox/budget-memo.jpg", "expect": {"contains": ["12,950", "3,275"], "max_turns": 8}}
+
+// --- tables: one cell among thirty-two ---
+{"id": "table-holdfast", "tags": ["text-heavy", "table"], "attach": ["inbox/holdfast-table.jpg"], "prompt": "What were Site 6's holdfast counts in 2025 and 2026?\n\nAttached file at inbox/holdfast-table.jpg", "expect": {"contains": ["258", "233"], "max_turns": 8}}
+{"id": "table-enrolment", "tags": ["text-heavy", "table"], "attach": ["inbox/enrolment-table.jpg"], "prompt": "How many students are in PSYC 28 section 2, and what is its cap?\n\nAttached file at inbox/enrolment-table.jpg", "expect": {"contains": ["33", "40"], "max_turns": 8}}
+{"id": "table-reagent", "tags": ["text-heavy", "table"], "attach": ["inbox/reagent-table.jpg"], "prompt": "What's the lot number and expiry of the sodium azide?\n\nAttached file at inbox/reagent-table.jpg", "expect": {"contains": ["SA-7784", "2026-11"], "max_turns": 8}}
+
+// --- receipts: two figures near the bottom of a column ---
+{"id": "receipt-hardware", "tags": ["text-heavy", "receipt"], "attach": ["inbox/hardware-receipt.jpg"], "prompt": "What was the total on this receipt, and how much of it was tax?\n\nAttached file at inbox/hardware-receipt.jpg", "expect": {"contains": ["208.86", "12.29"], "max_turns": 8}}
+{"id": "receipt-cafe", "tags": ["text-heavy", "receipt"], "attach": ["inbox/cafe-receipt.jpg"], "prompt": "What was the total on this receipt, and how much of it was tax?\n\nAttached file at inbox/cafe-receipt.jpg", "expect": {"contains": ["72.63", "5.38"], "max_turns": 8}}
+{"id": "receipt-field", "tags": ["text-heavy", "receipt"], "attach": ["inbox/field-receipt.jpg"], "prompt": "What was the total on this receipt, and how much of it was tax?\n\nAttached file at inbox/field-receipt.jpg", "expect": {"contains": ["295.19", "19.31"], "max_turns": 8}}
+
+// --- short screenshots: reading only, either route ---
+{"id": "shot-terminal", "tags": ["short-text"], "attach": ["inbox/terminal-error.png"], "prompt": "What error is this showing?\n\nAttached file at inbox/terminal-error.png", "expect": {"contains": ["137"], "max_turns": 8}}
+{"id": "shot-calendar", "tags": ["short-text"], "attach": ["inbox/calendar-note.png"], "prompt": "When and where is the meeting now?\n\nAttached file at inbox/calendar-note.png", "expect": {"contains": ["3:40", "214"], "max_turns": 8}}
+
+// --- no text at all: the OCR tool has nothing to read here ---
+{"id": "scene-landscape", "tags": ["no-text"], "attach": ["inbox/landscape.jpg"], "prompt": "What's in this picture? One sentence.\n\nAttached file at inbox/landscape.jpg", "expect": {"forbid_tools": ["document_read"], "contains_any": ["sun", "hill", "tree", "landscape"], "max_turns": 6}}
+{"id": "scene-shapes", "tags": ["no-text"], "attach": ["inbox/shapes.png"], "prompt": "What shapes and colours are in this image?\n\nAttached file at inbox/shapes.png", "expect": {"forbid_tools": ["document_read"], "contains": ["circle"], "max_turns": 6}}
+
+// --- tasks: the prompt asks for extraction, not a glance ---
+// The direct questions above never routed to OCR; these ask whether a task
+// that is *about* getting the text out does (it did not — see the header).
+{"id": "task-receipts-sheet", "tags": ["task", "receipt"], "attach": ["inbox/hardware-receipt.jpg", "inbox/cafe-receipt.jpg", "inbox/field-receipt.jpg"], "prompt": "Make a spreadsheet from these receipts: one CSV row per receipt with shop, subtotal, tax and total.\n\nAttached file at inbox/hardware-receipt.jpg\nAttached file at inbox/cafe-receipt.jpg\nAttached file at inbox/field-receipt.jpg", "expect": {"contains": ["208.86", "72.63", "295.19", "19.31"], "max_turns": 10}}
+{"id": "task-summarize-permit", "tags": ["task", "page"], "attach": ["inbox/permit-letter.jpg"], "prompt": "Read this document and summarize it.\n\nAttached file at inbox/permit-letter.jpg", "expect": {"contains": ["CAP-2026-04417"], "max_turns": 8}}
+{"id": "task-transcribe-safety", "tags": ["task", "page"], "attach": ["inbox/safety-notice.jpg"], "prompt": "Transcribe this page word for word.\n\nAttached file at inbox/safety-notice.jpg", "expect": {"contains": ["x4719", "every 7 days", "Laboratory 3B"], "max_turns": 8}}
+{"id": "task-table-csv", "tags": ["task", "table"], "attach": ["inbox/holdfast-table.jpg"], "prompt": "Turn this table into CSV.\n\nAttached file at inbox/holdfast-table.jpg", "expect": {"contains": ["258", "233", "Site 8", "144"], "max_turns": 8}}
+{"id": "task-pages-extract", "tags": ["task", "page"], "attach": ["inbox/permit-letter.jpg", "inbox/safety-notice.jpg", "inbox/budget-memo.jpg"], "prompt": "Here are three pages I photographed. Pull out every reference number, date, dollar amount and phone extension into a list, saying which page each came from.\n\nAttached file at inbox/permit-letter.jpg\nAttached file at inbox/safety-notice.jpg\nAttached file at inbox/budget-memo.jpg", "expect": {"contains": ["CAP-2026-04417", "4719", "12,950", "3,275"], "max_turns": 10}}
+{"id": "task-inventory-sheet", "tags": ["task", "table"], "attach": ["inbox/reagent-table.jpg"], "prompt": "Enter this inventory sheet into a spreadsheet for me — CSV is fine.\n\nAttached file at inbox/reagent-table.jpg", "expect": {"contains": ["SA-7784", "TX-6127", "2028-01"], "max_turns": 8}}

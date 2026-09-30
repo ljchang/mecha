@@ -1321,6 +1321,7 @@ impl SourceTask {
             sandbox: true,
             max_turns: self.max_turns,
             compact_at_tokens: None,
+            attach: Vec::new(),
         };
         case.validate()?;
         Ok(case)
