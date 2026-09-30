@@ -109,8 +109,8 @@ struct WebState {
     /// config — what its chat's tools were built from, and what
     /// `/api/features` compares the file against to mark a row pending.
     features_at_start: Arc<Vec<mecha_core::feature::Feature>>,
-    /// The features whose routes answer `feature_off`, read when this
-    /// process started (`gate`).
+    /// Where a feature route's refusal comes from: the global file, read per
+    /// request (`gate`).
     gate: Arc<gate::Gate>,
 }
 
@@ -192,10 +192,7 @@ pub async fn execute(args: Args) -> Result<()> {
             mecha_core::imagelib::Library::default_dir()?,
         )),
         features_at_start: features::switched_at_start(&config),
-        gate: Arc::new(gate::Gate::at_start(&mecha_core::feature::Facts::read(
-            &mecha_core::work::mecha_home()?,
-            &config,
-        ))),
+        gate: Arc::new(gate::Gate::Live),
     };
     // 127.0.0.1 by construction — the address is not configurable.
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -1664,6 +1661,61 @@ mod tests {
         assert!(
             reached >= 119 && kept >= 30,
             "{reached} reached, {kept} core"
+        );
+    }
+
+    /// The live gate follows the file within one process, both ways: a
+    /// feature enabled while `serve` runs opens its routes at once — the
+    /// start-time snapshot 404'd them while the nav already showed the tab —
+    /// and one disabled stops them at once. A file that does not load refuses
+    /// (review of #451). Over the stub, so no real handler — and no real
+    /// `mecha-graph` — can run.
+    #[tokio::test]
+    async fn the_gate_follows_the_file_without_a_restart() {
+        let home = crate::testenv::HomeGuard::new("serve-live-gate");
+        let (_, owners) = api().finish();
+        let mut stub = Router::new();
+        for path in owners.0.keys() {
+            stub = stub.route(path, axum::routing::any(|| async { "reached" }));
+        }
+        let app = stub.layer(middleware::from_fn_with_state(
+            (Arc::new(gate::Gate::Live), Arc::clone(&owners)),
+            gate::guard,
+        ));
+        let get = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                String::from_utf8_lossy(&bytes).into_owned()
+            }
+        };
+        let write = |body: &str| std::fs::write(home.dir.join("config.toml"), body).unwrap();
+
+        write("[features]\ngraph = false\n");
+        assert!(get("/api/find").await.contains("feature_off"));
+        assert_eq!(
+            get("/api/questions").await,
+            "reached",
+            "core is never asked"
+        );
+        write("[features]\ngraph = true\n");
+        assert_eq!(get("/api/find").await, "reached", "enabled with no restart");
+        write("[features]\ngraph = false\n");
+        assert!(
+            get("/api/find").await.contains("feature_off"),
+            "disabled with no restart"
+        );
+        write("[features]\ngraph = true\nnot toml at all\n");
+        let said = get("/api/find").await;
+        assert!(
+            said.contains("cannot tell whether it is switched on"),
+            "{said}"
         );
     }
 

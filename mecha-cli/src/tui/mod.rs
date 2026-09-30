@@ -9716,7 +9716,17 @@ mod tests {
     #[test]
     fn the_tui_s_graph_drivers_refuse_when_the_graph_is_off() {
         let home = crate::testenv::HomeGuard::new("tui-graph-gate");
-        let previous = std::env::var("MECHA_GRAPH_BIN").ok();
+        // Put back on drop, panic included, under the guard's lock.
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(v) => std::env::set_var("MECHA_GRAPH_BIN", v),
+                    None => std::env::remove_var("MECHA_GRAPH_BIN"),
+                }
+            }
+        }
+        let _restore = Restore(std::env::var("MECHA_GRAPH_BIN").ok());
         std::env::set_var("MECHA_GRAPH_BIN", home.dir.join("no-such-mecha-graph"));
         let write = |body: &str| std::fs::write(home.dir.join("config.toml"), body).unwrap();
 
@@ -9733,11 +9743,6 @@ mod tests {
         let modal = graph_cli(&["entity", "x"]).unwrap_err();
         assert!(modal.contains("not found"), "{modal}");
         assert!(!modal.contains("mecha features enable"), "{modal}");
-
-        match previous {
-            Some(v) => std::env::set_var("MECHA_GRAPH_BIN", v),
-            None => std::env::remove_var("MECHA_GRAPH_BIN"),
-        }
     }
 
     // ─── /entity ─────────────────────────────────────────────────────────

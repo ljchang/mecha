@@ -8248,9 +8248,12 @@ in five different ways. The design and its open steps are
   none of its own, so failing open let its writes through. The guard sits
   **inside** `owner_guard`, so a stranger gets the owner's 403 and never
   learns what is off; the owner gets F4's `404 feature_off`, before the
-  handler, so a read with a side effect does not happen. It reads a `Gate`
-  built when `serve` starts, as its chat's tools are; `/api/features` marks
-  a switch flipped since as pending. Verbs call `features::require(f)` from
+  handler, so a read with a side effect does not happen. **It reads the
+  global file on every request** to a feature's route (config plus disk, no
+  socket): a start-time snapshot 404'd a feature enabled while `serve` ran —
+  its tab already shown — and kept a disabled one writing until a restart
+  (review of #451). Only the chat's tools load once; `/api/features`' 
+  `pending` marks that. Verbs call `features::require(f)` from
   the global file before anything else: `mail`, `tasks`, `kg`, `review`
   (all but `queues`, the cross-feature reader), `document extract`, and the
   `imagelib` writes. **What is never refused:** reading a store you hold
@@ -8263,8 +8266,11 @@ in five different ways. The design and its open steps are
   `board::graph_verb`, and the TUI's `graph_cli` / `graph_cli_raw` (`/queues`
   and the entity modal) — so before this `graph = false` still let `review
   accept`, the web's entity create and merge, and the TUI's accept keys and
-  merges write the owner's graph. Each driver now asks `require` itself; a
-  fourth that spawns `mecha-graph` has to as well. A graph tool missing from a run's surface now names the
+  merges write the owner's graph. The CLI's and the TUI's drivers ask
+  `require` themselves; the web's two (`board::graph_verb`,
+  `proposals::run`) are behind the route guard, which asks per request. A
+  new driver sits behind one or the other — a route with a graph owner, or
+  `require` before it spawns. A graph tool missing from a run's surface now names the
   switch when that is the cause (`features::graph_tool_absent`), not
   `[[mcp]]`. **The web keys a refusal's consequences on the row's `gated`**,
   never on `shown` alone (`features.js` `refuses`): Home's queue card for a

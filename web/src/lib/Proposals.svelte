@@ -1,6 +1,6 @@
 <script>
   import { features } from './features.svelte.js';
-  import { isShown } from './features.js';
+  import { refuses } from './features.js';
   import { apiFetch as fetch } from './api.js';
   // The proposal stores on the phone: harness candidates, rule proposals and
   // the graph's entity proposals. One pane over three stores, because they
@@ -164,7 +164,7 @@
     <div class="chips">
       <!-- The entities store is the graph's: with the graph off its routes
            answer `feature_off`, so it is not offered. -->
-      {#each (stores ?? [{ store: 'harness' }, { store: 'rules' }, { store: 'entities' }]).filter((s) => s.store !== 'entities' || isShown(features.rows, 'graph')) as s}
+      {#each (stores ?? [{ store: 'harness' }, { store: 'rules' }, { store: 'entities' }]).filter((s) => s.store !== 'entities' || !refuses(features.rows, 'graph')) as s}
         <button class="chipbtn" class:active={s.store === store} onclick={() => pick(s.store)}>
           {shortName[s.store] ?? s.store}
           <span class="chipcount">{dash(s.depth)}</span>

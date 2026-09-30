@@ -15,9 +15,13 @@
 //! side effect (`/api/frontdoor` creating its store) no longer happens for a
 //! feature that is off.
 //!
-//! **Loaded once, like the rest of `serve`.** The refusals are read when the
-//! process starts, from the same configuration its chat's tools were built
-//! from; `/api/features` marks a switch flipped since as pending.
+//! **Read on every request, as the nav is.** A request to a feature's route
+//! asks the global file then (config plus disk, never a socket — the read
+//! `/api/features` makes per request). A start-time snapshot broke both
+//! directions: a feature enabled while `serve` ran showed its tab and 404'd
+//! every request on it, naming the command just run, and one disabled kept
+//! writing until a restart (review of #451). Only the chat's tools still
+//! load once, which is what `/api/features`' `pending` marks.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -108,27 +112,59 @@ impl Owned {
 #[derive(Debug, Default)]
 pub(super) struct Owners(pub(super) BTreeMap<&'static str, Owner>);
 
-/// The refusals this process loaded when it started: every feature whose
-/// routes answer `feature_off`.
-#[derive(Debug, Default)]
-pub(super) struct Gate(BTreeMap<Feature, Refusal>);
+/// Where the guard's refusals come from.
+#[derive(Debug)]
+pub(super) enum Gate {
+    /// The global configuration and the disk, read per request.
+    Live,
+    /// A fixed set, for tests: the refusals given and nothing else.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Fixed(BTreeMap<Feature, Refusal>),
+}
+
+impl Default for Gate {
+    /// Refuse nothing — the tests' router, which switches nothing on.
+    fn default() -> Self {
+        Gate::Fixed(BTreeMap::new())
+    }
+}
 
 impl Gate {
-    /// Read from the global configuration and the disk, as `/api/features`
-    /// reads its rows — never a socket.
-    pub(super) fn at_start(facts: &Facts) -> Gate {
-        Gate(
-            Feature::ALL
-                .iter()
-                .filter_map(|&f| feature::refusal(facts, f).map(|r| (f, r)))
-                .collect(),
-        )
-    }
-
-    /// For tests: the refusals given, and nothing else.
     #[cfg(test)]
     pub(super) fn refusing(refusals: impl IntoIterator<Item = Refusal>) -> Gate {
-        Gate(refusals.into_iter().map(|r| (r.feature, r)).collect())
+        Gate::Fixed(refusals.into_iter().map(|r| (r.feature, r)).collect())
+    }
+
+    /// Why `f`'s route refuses now, if it does. A feature whose guard has
+    /// not landed never costs a read. A configuration that does not load
+    /// refuses — the guard cannot run, so the route does not either, as
+    /// `features::require` refuses a verb.
+    async fn refusal(&self, f: Feature) -> Option<Refusal> {
+        match self {
+            Gate::Fixed(refusals) => refusals.get(&f).cloned(),
+            Gate::Live if !f.gated() => None,
+            Gate::Live => {
+                let unknown = move |why: String| Refusal {
+                    feature: f,
+                    why: format!("cannot tell whether it is switched on — {why}"),
+                    fix: "fix ~/.mecha/config.toml".into(),
+                };
+                let read = tokio::task::spawn_blocking(move || {
+                    let home = mecha_core::work::mecha_home()?;
+                    let cfg = mecha_core::config::Config::load_global()?;
+                    anyhow::Ok(feature::refusal(&Facts::read(&home, &cfg), f))
+                })
+                .await;
+                match read {
+                    Ok(Ok(refusal)) => refusal,
+                    Ok(Err(e)) => Some(unknown(format!(
+                        "the global configuration did not load: {e:#}"
+                    ))),
+                    // Never open on a read that did not finish.
+                    Err(e) => Some(unknown(format!("the read did not finish: {e}"))),
+                }
+            }
+        }
     }
 }
 
@@ -157,9 +193,10 @@ pub(super) async fn guard(
             .find(|(k, _)| *k == name)
             .map(|(_, v)| v.to_string())
     };
-    let refusal = owner
-        .and_then(|o| o.feature(capture))
-        .and_then(|f| gate.0.get(&f));
+    let refusal = match owner.and_then(|o| o.feature(capture)) {
+        Some(f) => gate.refusal(f).await,
+        None => None,
+    };
     match refusal {
         None => next.run(request).await,
         Some(r) => (

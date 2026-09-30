@@ -278,10 +278,17 @@ mod tests {
         let flat_when_off: Vec<String> = {
             let start = js.find("export const QUEUE_FEATURE = {").unwrap();
             let block = &js[start..start + js[start..].find("};").unwrap()];
+            // Only a queue whose feature refuses when off goes flat; one hidden
+            // before its guard lands stays a door, so its landing is not
+            // exempt (review of #451).
             let queues: Vec<&str> = block
                 .lines()
                 .skip(1)
-                .filter_map(|l| l.trim().split_once(':').map(|(k, _)| k.trim_matches('\'')))
+                .filter_map(|l| {
+                    let (k, v) = l.trim().trim_end_matches(',').split_once(": ")?;
+                    let f = Feature::parse(v.trim_matches('\''))?;
+                    f.gated().then_some(k.trim_matches('\''))
+                })
                 .collect();
             let start = home.find("const queueTargets = {").unwrap();
             let targets = &home[start..start + home[start..].find("};").unwrap()];
