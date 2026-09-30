@@ -11,7 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The charter editor keeps your comments.** Saving the charter from the
   web page now changes only what you changed: comments above and among the
-  lines stay, a line you drag takes its comments with it, and a setpoint you
+  lines stay, a line you drag takes its comments with it (a comment right
+  above the first line reads as the file's header and stays at the top),
+  and a setpoint you
   did not touch keeps its spelling. A charter with comments among its lines
   can be edited as a list, not only as TOML. A save made from a page that
   read an older charter is refused rather than written over.

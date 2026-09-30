@@ -1885,6 +1885,22 @@ mod tests {
             assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
             assert_eq!(std::fs::read_to_string(&on_disk).unwrap(), now);
         }
+        // Every line deleted: the save lands, the header and the comments
+        // stay, and what is on disk is a charter with no lines (review of
+        // #439: this path reached disk untested end to end).
+        let emptied = post(serde_json::json!({ "changes": { "line": [] }, "base": fresh }))
+            .await
+            .unwrap();
+        assert_eq!(emptied.status(), StatusCode::OK);
+        let bare = std::fs::read_to_string(&on_disk).unwrap();
+        assert!(bare.starts_with("# Mine."), "{bare}");
+        assert!(bare.contains("# the one that matters"), "{bare}");
+        assert!(!bare.contains("[[line]]"), "{bare}");
+        assert!(mecha_core::charter::Charter::parse(&bare)
+            .unwrap()
+            .lines()
+            .is_empty());
+
         // Neither, or both, is a malformed request.
         let neither = post(serde_json::json!({})).await.unwrap();
         assert_eq!(neither.status(), StatusCode::BAD_REQUEST);

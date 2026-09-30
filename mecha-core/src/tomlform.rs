@@ -73,7 +73,7 @@ pub enum Kind {
         optional: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         placeholder: Option<String>,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
         multiline: bool,
     },
     /// One of a closed set. With `none`, that label offers leaving the key
@@ -1152,6 +1152,26 @@ setpoint = 3
         assert!(!out.contains("[line.sensor]"), "{out}");
         let back: toml::Table = toml::from_str(&out).unwrap();
         assert_eq!(back["line"][1]["text"].as_str(), Some("Walk\ntwice"));
+
+        // A new sensor on a line that is not last: its sub-table is written
+        // under its own line, and the next line keeps its own (the renumbering
+        // across rows and sub-tables — review of #439).
+        let first_sensed = json!({"id": "ship", "text": "Ship the paper",
+                                  "sensor": {"kind": "outbox_waiting", "setpoint": "2"}});
+        let out = apply(&rows_form(), CHARTER, &rows(json!([first_sensed, sleep]))).unwrap();
+        let back: toml::Table = toml::from_str(&out).expect(&out);
+        assert_eq!(back["line"][0]["id"].as_str(), Some("ship"), "{out}");
+        assert_eq!(
+            back["line"][0]["sensor"]["setpoint"].as_str(),
+            Some("2"),
+            "{out}"
+        );
+        assert_eq!(back["line"][1]["id"].as_str(), Some("sleep"), "{out}");
+        assert_eq!(
+            back["line"][1]["sensor"]["setpoint"].as_integer(),
+            Some(3),
+            "{out}"
+        );
 
         // A changed setpoint is written; a new sensor is a new sub-table.
         let sensed = json!({"id": "ship", "text": "Ship the paper",
