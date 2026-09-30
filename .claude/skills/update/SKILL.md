@@ -322,8 +322,12 @@ unit it lives in:
 
 ```bash
 for f in ~/.mecha/holds/*.hold; do [ -e "$f" ] || continue
-  pid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$f")
-  printf '%s  ' "$(basename "$f")"
+  # The pid is in the name (`{pid}-{uuid}.hold`), as `hold::pid_of` reads
+  # it: an unreadable hold is still a hold, never a stale one.
+  name=$(basename "$f"); pid=${name%%-*}
+  what=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["what"])' "$f" \
+         2>/dev/null) || what='(unreadable, still a hold)'
+  printf '%s  %s  ' "$name" "$what"
   tail -1 /proc/$pid/cgroup 2>/dev/null || echo "(pid $pid gone: a stale file)"
 done
 ```
@@ -339,6 +343,15 @@ stays unpublished until it happens (step 1b).
 systemctl --user restart mecha-slack.service mecha-triggers.service \
                          mecha-drain.service mecha-serve.service \
                          mecha-voice-worker.service
+```
+
+With a hold in `mecha-serve`, restart the rest now and serve once it clears:
+
+```bash
+systemctl --user restart mecha-slack.service mecha-triggers.service \
+                         mecha-drain.service mecha-voice-worker.service
+# later, when the check above prints nothing in mecha-serve.service:
+systemctl --user restart mecha-serve.service
 ```
 
 **`mecha-serve` and `mecha-voice-worker` were missing from this list until

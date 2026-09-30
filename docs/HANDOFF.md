@@ -2047,7 +2047,7 @@ scopes widened, and both are recorded in each account's `oauth.json` under
 
 | Account | Provider | Grant | Expiry |
 |---|---|---|---|
-| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | none observed — `granted_at` in that account's `oauth.json` reads 2026-09-17T02:10:19Z, after the 2026-09-16 publish, and the grant was still refreshing on 2026-09-30 (day 13; a Testing grant is revoked on day 7) |
+| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | none observed: `granted_at` 2026-09-17T02:10:19Z, after the 2026-09-16 publish; still refreshing on 2026-09-30, day 13 (a Testing grant dies on day 7) |
 | `dartmouth` | Outlook | `Mail.ReadWrite`, `Mail.Read`, `Mail.Send`, `Calendars.ReadWrite` | none — permanent |
 
 All of this is settled. The publish is in
@@ -2882,9 +2882,10 @@ grant is seven days and refreshing does not extend it, so it was due to end
 (`GRANT_WARN_WITHIN_DAYS`); the re-auth is a terminal-only flow —
 `--paste` from an ssh session — and never a button.
 
-**Superseded by a later consent.** `granted_at` in that account's
-`oauth.json` read 2026-09-15T17:13:06Z before the 02:10Z re-consent, so the live grant is the one minted
-that day and it lapses 2026-09-22 17:13Z, not the 21st. `mecha doctor` first
+**Superseded by a later consent.** Before the 02:10Z re-consent,
+`granted_at` in that account's `oauth.json` read 2026-09-15T17:13:06Z, so
+the live grant was then the one minted that day, due to lapse 2026-09-22
+17:13Z rather than the 21st. `mecha doctor` first
 warns at **16:13Z on the 20th**, not at the start of it:
 `doctor::check_grant_age` truncates the hours remaining and *then* rounds
 that up to whole days before comparing against `GRANT_WARN_WITHIN_DAYS`, so
