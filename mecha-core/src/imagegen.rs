@@ -1734,6 +1734,11 @@ struct LibraryAsk {
     /// People in the scene who are no library character, each described.
     extras: Vec<String>,
     style: Option<String>,
+    /// Words the model wrote that now ride in a cast member's `doing` or
+    /// `wearing` — an extra that was the persona (`cast_self`). The library
+    /// guard reads them with the prompt and the extras, or a character named
+    /// there would be drawn as a stranger unguarded (review of #454).
+    folded: Vec<String>,
 }
 
 impl ImageGenerate {
@@ -2090,14 +2095,21 @@ impl ImageGenerate {
                 a.extras.retain(|_| !flags.next().copied().unwrap_or(false));
             }
         };
-        // Already cast by the model: that entry draws the persona, and an
-        // extra that is the persona too would be a second face for it.
+        // Already cast by the model: that entry draws the persona. An extra
+        // that is the persona too would be a second face, and dropping it
+        // would lose what it said (review of #454): refused, to say it once.
         if ask.as_ref().is_some_and(|a| {
             a.cast
                 .iter()
                 .any(|m| m.name.trim().eq_ignore_ascii_case(&c))
         }) {
-            drop_persona_extras(ask);
+            if from_extra.is_some() {
+                return Err(
+                    "You are in `cast` and an entry in `extras` describes you too. You are one \
+                     person: say what you are wearing and doing once, in your `cast` entry."
+                        .to_string(),
+                );
+            }
             return Ok(());
         }
         // A full cast: adding the persona would make a call the compiler
@@ -2144,6 +2156,7 @@ impl ImageGenerate {
             doing: capped(doing.as_deref().unwrap_or(SELF_DOING)),
         };
         drop_persona_extras(ask);
+        let folded = from_extra.clone();
         let spans = word_spans(prompt);
         let first_word = |name: &str| -> Option<usize> {
             let n: Vec<String> = word_spans(name).into_iter().map(|(_, _, w)| w).collect();
@@ -2172,6 +2185,7 @@ impl ImageGenerate {
                         .unwrap_or(a.cast.len()),
                 };
                 a.cast.insert(slot, me);
+                a.folded.extend(folded);
             }
             None => {
                 *ask = Some(LibraryAsk {
@@ -2299,6 +2313,7 @@ impl ImageGenerate {
                 cast,
                 extras,
                 style,
+                folded: Vec::new(),
             });
         let size = match input.get("size").and_then(Value::as_str) {
             _ if mask.is_some() => None,
@@ -2483,7 +2498,8 @@ impl Tool for ImageGenerate {
         // otherwise refuse the persona for naming itself (§8.6). Not on an
         // edit: its people carry their own identity, and `request` refuses a
         // cast beside `reference_images` anyway.
-        // Read once for the self cast and the guard below (review of #444).
+        // Read once for the self cast and the guard below, which each loaded
+        // it before (review of #444); the compile step still reads its own.
         let library = self
             .library_dir
             .as_ref()
@@ -2510,8 +2526,16 @@ impl Tool for ImageGenerate {
                 // diner" reach the GPU and draw a stranger (review of #383).
                 // The extras are words about people too: "John waving" as an
                 // extra is John drawn from words.
-                let said = match ask.as_ref().filter(|a| !a.extras.is_empty()) {
-                    Some(a) => format!("{} {}", req.prompt, a.extras.join(" ")),
+                let said = match ask
+                    .as_ref()
+                    .filter(|a| !a.extras.is_empty() || !a.folded.is_empty())
+                {
+                    Some(a) => format!(
+                        "{} {} {}",
+                        req.prompt,
+                        a.extras.join(" "),
+                        a.folded.join(" ")
+                    ),
                     None => req.prompt.clone(),
                 };
                 let broken = crate::imagelib::broken_named_in(lib, &said);
@@ -5053,6 +5077,37 @@ mod tests {
             .unwrap();
         assert!(
             out.is_error && out.content.contains("Two entries in `extras` describe you"),
+            "{}",
+            out.content
+        );
+        assert_eq!(draws(), before, "a refused call drew");
+        // A persona extra that names another character: its words are the
+        // guard's to read, so john is refused, not drawn as a stranger.
+        let out = mara
+            .call(
+                json!({"prompt": "a bar at night", "extras": ["Mara with john at the bar"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("`john`"),
+            "{}",
+            out.content
+        );
+        // Cast by the model and described again in an extra: refused, not
+        // the extra dropped.
+        let out = mara
+            .call(
+                json!({"prompt": "a park",
+                       "cast": [{"name": "maya", "wearing": "a coat", "doing": "walking"}],
+                       "extras": ["Mara holding a dog"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("You are in `cast`"),
             "{}",
             out.content
         );
