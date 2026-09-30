@@ -645,9 +645,29 @@ conversation, so the capabilities do not change. Three rules:
   instead told a second successful recolour to stop (review of #408). The
   record holds a salted hash of each path, never the path, and is swept on
   every edit, since an incognito room's path must not outlive the room.
-- **The web chat's Edit button starts a sentence, it does not send one** —
-  `Edit images/…png: ` in the input, cursor after it. The path is what lets
-  the model name the right reference; the change is the owner's to describe.
+- **The web chat's Edit button opens a modal where the owner paints what may
+  change** (`EditModal.svelte`). Painted pixels become a mask at the picture's
+  own size. The mask goes up through the ordinary upload route but is never
+  put in `attachments`: those ride on the turn as pixels, and a mask is for
+  the tool, not for the model to look at, so attaching one would spend
+  context and arm `private_data` for nothing. The message names it
+  (`Edit images/…png with mask inbox/mask-….png: …`), and the model passes
+  it through as `mask`. It never writes coordinates, so the region is the
+  owner's alone. Nothing painted sends a plain edit, as the button did
+  before.
+- **A masked edit redraws only the mask, and mecha keeps the rest.** The
+  picture is resized to the encoder's own canvas (`edit_canvas`, the node's
+  sizing with Python's round-half-even), and the mask is grown and feathered
+  (`prepare_mask`). The graph samples on the encoded picture under a
+  `SetLatentNoiseMask`. The result is then laid over the original in
+  mecha's code (`composite_masked`), not the server's, so every unpainted
+  pixel is the original, byte for byte. The near-copy check reads only the
+  painted bounds (`layout_similarity_within`), or every masked edit would
+  look unchanged. Measured seamless, and landing 8 of 8 local edits, in
+  `IMAGE-REGION-EDIT-RESEARCH.md` §4. It under-edits a pose, which is left
+  to a plain edit or a library redraw. A mask that marks nothing, or was
+  painted over a picture of another shape, is refused before the GPU, and
+  `size` with a mask is refused, because the canvas is the picture.
 
 The model sees what it made on request — `image_view` on the result's path
 (§Images) — and the result hands the seed back: revising is an edited prompt
