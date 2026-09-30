@@ -1236,8 +1236,9 @@ fn render_settings(new: &NewPersona, tools: &[String], answers: Answers) -> Stri
         many => format!("relationship = {}\n", quoted_list(many)),
     };
     format!(
-        "# {name}: the settings the code reads. Yours — mecha never rewrites this\n\
-         # file. Who they are lives in identity.md, what they want in motivation.md.\n\
+        "# {name}: the settings the code reads. Yours — only you change it, here\n\
+         # or in the page's form, which sets values in place and keeps comments.\n\
+         # Who they are lives in identity.md, what they want in motivation.md.\n\
          # docs/PERSONA-DESIGN.md §4.3 explains each field.\n\
          \n\
          display      = {display}\n\
@@ -1656,6 +1657,216 @@ pub fn relationship_choices(dir: &Path) -> Vec<(String, bool)> {
         }
     }
     out.into_iter().collect()
+}
+
+/// The names a settings form offers beside its fixed choices, read from the
+/// stores where the form is built — the relationships a persona can name
+/// ([`relationship_choices`]), the declared groups, the characters the
+/// viewer may see.
+#[derive(Debug, Clone, Default)]
+pub struct FormChoices {
+    pub relationships: Vec<String>,
+    pub groups: Vec<String>,
+    pub characters: Vec<String>,
+}
+
+/// Said on every switch the harness stores and does not read yet, so a form
+/// never shows a toggle that silently does nothing.
+const UNBUILT: &str = "Not built yet: saved now, used once it is.";
+
+/// `persona.toml` as a form (`tomlform`): every key [`Settings`] reads
+/// except `voice`, whose profiles are not built. Edited in place — the
+/// owner's comments stay — and saved through [`edit_settings`].
+pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
+    use crate::tomlform::{Field, Form, Kind, Opt, Section};
+    let text = |max, placeholder: &str| Kind::Text {
+        max,
+        optional: true,
+        placeholder: Some(placeholder.to_string()),
+    };
+    Form {
+        sections: vec![
+            Section::new("Who they are")
+                .field(
+                    Field::new("display", "Name", text(MAX_DISPLAY, "the folder name"))
+                        .help("How the persona is shown and addressed."),
+                )
+                .field(
+                    Field::new(
+                        "relationship",
+                        "Relationship",
+                        Kind::Chips {
+                            options: Opt::names(&c.relationships),
+                            free: false,
+                        },
+                    )
+                    .help("Templates that shape how it relates to you."),
+                )
+                .field(
+                    Field::new(
+                        "groups",
+                        "Groups",
+                        Kind::Chips {
+                            options: Opt::names(&c.groups),
+                            free: false,
+                        },
+                    )
+                    .help("Groups share what you tell them with every member."),
+                )
+                .field(Field::new(
+                    "character",
+                    "Portrait",
+                    Kind::Choice {
+                        options: Opt::names(&c.characters),
+                        none: Some("No portrait".into()),
+                    },
+                )),
+            Section::new("Model and tools")
+                .field(Field::new("model", "Model", text(128, "the default model")))
+                .field(
+                    Field::new(
+                        "tools.allow",
+                        "Tools",
+                        Kind::Chips {
+                            options: Vec::new(),
+                            free: true,
+                        },
+                    )
+                    .help(
+                        "A tool a persona may never have, or one that could send \
+                         somewhere the model names, is refused when a chat starts.",
+                    ),
+                )
+                .field(Field::new(
+                    "files.answers",
+                    "Answers from",
+                    Kind::Choice {
+                        options: vec![
+                            Opt::new("open", "Files and tools"),
+                            Opt::new("files", "Files only")
+                                .help("Tools that read the web are withheld."),
+                        ],
+                        none: None,
+                    },
+                )),
+            Section::new("Safety")
+                .help("On by default. Turning one off affects this persona only.")
+                .field(
+                    Field::toggle("safety.disclosure", "Disclosure")
+                        .help("Every chat opens by saying this is an AI character you wrote."),
+                )
+                .field(Field::toggle("safety.crisis", "Crisis check").help(
+                    "A message that suggests risk of self-harm pauses the persona \
+                     and shows crisis resources.",
+                ))
+                .field(
+                    Field::toggle("safety.reanchor", "Re-anchor")
+                        .help("Every few turns, and after a gap, it is reminded who it is."),
+                )
+                .field(
+                    Field::toggle("safety.dose", "Time spent")
+                        .help("Counts turns per day and late at night, shown on the persona."),
+                )
+                .field(
+                    Field::toggle("safety.breaks", "Break reminders")
+                        .help(UNBUILT)
+                        .unbuilt(),
+                )
+                .field(
+                    Field::toggle("safety.farewell", "Farewell check")
+                        .help(UNBUILT)
+                        .unbuilt(),
+                ),
+            Section::new("Memory")
+                .help(UNBUILT)
+                .unbuilt()
+                .field(Field::toggle("memory.episodic", "Past conversations"))
+                .field(Field::toggle("memory.semantic", "Facts it learns"))
+                .field(Field::new(
+                    "memory.user_facts",
+                    "Facts about you",
+                    Kind::Choice {
+                        options: vec![
+                            Opt::new("shared", "Shared"),
+                            Opt::new("own", "Its own"),
+                            Opt::new("off", "None"),
+                        ],
+                        none: None,
+                    },
+                ))
+                .field(Field::toggle("memory.about_me", "About-me notes"))
+                .field(
+                    Field::toggle("memory.self_update", "Self-update")
+                        .help("Sections of its identity evolve; never Core or a fixed one."),
+                )
+                .field(Field::new(
+                    "memory.fixed",
+                    "Fixed sections",
+                    Kind::Chips {
+                        options: Vec::new(),
+                        free: true,
+                    },
+                )),
+        ],
+    }
+}
+
+/// A form's values for this `persona.toml`, read through [`Settings`] so a
+/// key the file leaves out shows its default.
+pub fn settings_values(
+    form: &crate::tomlform::Form,
+    text: &str,
+) -> Result<serde_json::Map<String, serde_json::Value>> {
+    let settings: Settings = parse_toml(text)?;
+    Ok(crate::tomlform::values(
+        form,
+        &serde_json::to_value(settings)?,
+    ))
+}
+
+/// Apply a form's changes to `persona.toml` in place and save it through
+/// [`write_owner_file`] — the same size, control-character, stale-`base`
+/// and must-still-load checks a text save gets. A starter relationship
+/// named for the first time is copied in first, as `create` does.
+pub fn edit_settings(
+    dir: &Path,
+    name: &str,
+    form: &crate::tomlform::Form,
+    changes: &serde_json::Map<String, serde_json::Value>,
+    base: &str,
+) -> Result<State> {
+    let text = read_owner_file(dir, name, OwnerFile::Settings)?;
+    let edited = crate::tomlform::apply(form, &text, changes)?;
+    if changes.contains_key("relationship") {
+        seed_starters(dir)?;
+    }
+    write_owner_file(dir, name, OwnerFile::Settings, &edited, Some(base))
+}
+
+/// The sections a Markdown owner file must keep: `## Core` in identity.md
+/// is who they are at heart, and the re-anchor reads it.
+pub fn fixed_sections(file: OwnerFile) -> &'static [&'static str] {
+    match file {
+        OwnerFile::Identity => &["Core"],
+        OwnerFile::Motivation | OwnerFile::Settings => &[],
+    }
+}
+
+/// Save a Markdown owner file from its form (`mdform`): written in the
+/// canonical layout and saved through [`write_owner_file`], with every check
+/// a text save gets.
+pub fn edit_markdown(
+    dir: &Path,
+    name: &str,
+    file: OwnerFile,
+    doc: &crate::mdform::Doc,
+    base: &str,
+) -> Result<State> {
+    if file == OwnerFile::Settings {
+        bail!("persona.toml is not Markdown");
+    }
+    let text = crate::mdform::join(doc, fixed_sections(file))?;
+    write_owner_file(dir, name, file, &text, Some(base))
 }
 
 /// A text's digest, as a page holds it to say which version of a file it
@@ -2516,6 +2727,73 @@ mod tests {
         // Control characters never reach the file.
         assert!(write_owner_file(&dir, "mara", OwnerFile::Motivation, "a\u{1b}[2J", None).is_err());
         assert!(read_owner_file(&dir, "nobody", OwnerFile::Identity).is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The form's save: values set in place, every comment the template
+    /// wrote still there, and the same stale check a text save gets.
+    #[test]
+    fn a_form_edit_keeps_the_owners_comments_and_checks_base() {
+        use serde_json::json;
+        let dir = scratch();
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        let before = read_owner_file(&dir, "mara", OwnerFile::Settings).unwrap();
+        let choices = FormChoices {
+            relationships: relationship_choices(&dir)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect(),
+            ..FormChoices::default()
+        };
+        let form = settings_form(&choices);
+        let values = settings_values(&form, &before).unwrap();
+        assert_eq!(values["safety.crisis"], json!(true));
+        assert_eq!(values["memory.user_facts"], json!("shared"));
+
+        let starter = choices.relationships[0].clone();
+        let changes = json!({ "safety.breaks": true, "relationship": [starter] });
+        let state = edit_settings(
+            &dir,
+            "mara",
+            &form,
+            changes.as_object().unwrap(),
+            &text_digest(&before),
+        )
+        .unwrap();
+        assert_eq!(state.version, 2);
+        let after = read_owner_file(&dir, "mara", OwnerFile::Settings).unwrap();
+        let comments = |t: &str| t.lines().filter(|l| l.contains('#')).count();
+        assert_eq!(comments(&after), comments(&before), "{after}");
+        eprintln!("{after}");
+        let v = settings_values(&form, &after).unwrap();
+        assert_eq!(v["safety.breaks"], json!(true));
+        assert_eq!(v["relationship"], json!([starter]));
+
+        // Opened before that save: refused, and the file is as it was.
+        let stale = json!({ "safety.crisis": false });
+        let e = edit_settings(
+            &dir,
+            "mara",
+            &form,
+            stale.as_object().unwrap(),
+            &text_digest(&before),
+        )
+        .unwrap_err();
+        assert!(e.downcast_ref::<StaleEdit>().is_some(), "{e:#}");
+        // A name the form does not offer: refused before anything is read.
+        let stranger = json!({ "relationship": ["stranger"] });
+        assert!(edit_settings(
+            &dir,
+            "mara",
+            &form,
+            stranger.as_object().unwrap(),
+            &text_digest(&after)
+        )
+        .is_err());
+        assert_eq!(
+            read_owner_file(&dir, "mara", OwnerFile::Settings).unwrap(),
+            after
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
