@@ -310,18 +310,23 @@ features, and stay out of the registry:
 
 ### 4.1 One registry, in `mecha-core`
 
-A new module, `feature.rs`, holds a closed enum `Feature` and one static
-description per variant:
+A new module, `feature.rs`, holds a closed enum `Feature` — **one enum for
+features and their parts**, each variant answering `id()` (the wire and CLI
+name), `label()`, `part_of()` and `requires()`, and later `recommend()`
+(§6). A part (`ocr`, `library`, `publishing`) is a variant pointing *up* at
+its parent with `part_of`, not a list hanging off the parent, so every row
+in `mecha features --json` — feature or part — has one shape and one id.
+Two things follow from choosing this, and are fixed here rather than
+discovered later (found on review of #427):
 
-```rust
-pub struct FeatureSpec {
-    pub id: &'static str,           // "image" — the wire and CLI name
-    pub label: &'static str,        // "Image generation"
-    pub requires: &'static [Feature],
-    pub parts: &'static [Part],     // sub-capabilities, each with its own state
-    pub recommend: &'static [Recommendation],   // §6
-}
-```
+- **Part ids are on the wire** in `--json` and `/api/features`, and are
+  never renamed, like feature ids.
+- **The recorded feature set (§5.1) holds top-level features only** — the
+  `[features]` bools. A part has no switch of its own, so recording it would
+  put a derived fact on an append-only store whose loader is all-or-nothing:
+  a build that added a part would collapse every older reader's set to
+  `None`. Parts are recomputable from the recorded config; the switches are
+  what the owner chose.
 
 and one function that is the only place "is it on?" is answered:
 
@@ -552,9 +557,9 @@ Notes on the rows that change:
   off, a bool gates one, and the recorded feature set says which bool was on
   whatever the lever did (found on review of #427).
 
-`[features]` and every new settings table are **three edits** each, not two:
-`Config`, `ConfigLayer`, and `ConfigLayer::apply`, plus the project-layer
-strip in `merge_file`. `every_field_of_config_is_reachable_from_a_file` and
+`[features]` and every new settings table are **four places** each, not two:
+`Config`, `ConfigLayer`, `ConfigLayer::apply`, and the project-layer strip in
+`merge_file`. `every_field_of_config_is_reachable_from_a_file` and
 `every_field_a_layer_can_read_is_a_field_a_layer_applies` catch a missed one
 at the top level only, so the build step adds a nested-layer test alongside.
 
@@ -590,9 +595,21 @@ Three things make it deliberate rather than accidental:
   case lacks — a trial home never inherits the operator's servers (the
   2026-09-23 rule `trial_env` exists for), so an environment's `graph = true`
   can connect only a server the environment itself declared, and with none
-  declared it reads `Unready`, never the operator's graph. A test pins that
-  negative. Turning features off is how a trial is made light; this is the
-  switch it uses (found on review of #427). But which features were on
+  declared it reads `Unready`, never the operator's graph. **Except where
+  the operator supplies the settings:** `[[search]]` is a
+  `trial_env::MACHINE_TABLE`, which an environment may not declare and
+  `base_config` copies from the operator — so an environment's `search =
+  true` would hand a checkout-supplied file the owner's backends and keys,
+  `Egress::Chosen` at deep search, with nothing to degrade to `Unready`. So
+  the rule is **an environment's bool may enable only what the same layer
+  could configure**: its `[features]` keys for features whose settings come
+  from a machine table (today, `search`) are ignored, loudly, the way a
+  project layer's `trust_result_claims` is cleared. It may still turn any
+  feature *off*. Two tests pin the two negatives — `graph = true` with no
+  environment server reads `Unready`, and `search = true` from an
+  environment leaves search off in the trial (found on review of #427, pass
+  4). Turning features off is how a trial is made light; this is the switch
+  it uses. But which features were on
   is as much a condition as which levers were off, so the experiment manifest
   and the session record carry the feature set beside `levers_off`, from the
   same registry — otherwise two arms that differ only in whether `[[search]]`
@@ -672,7 +689,7 @@ genuinely not known yet, and the output must say so rather than guess.
 |---|---|---|
 | **F1** | What turns a feature on | **A `[features]` table of bools** in the global config, every feature listed. The owner, overruling the doc's recommendation of table presence: *"The problem with table existing is that users need to know what features are available. I feel like a registry or having to toggle bools is a better design."* §5's three rules are what keep the bool from being a second source of truth |
 | **F2** | Off in the web app | **Removed from navigation**, as the owner asked in the opening message; Settings → Features lists everything. `Unready` and `Unknown` are shown with a banner, never removed (§4.1) |
-| **F3** | Web as a feature | **Optional like the rest** — the owner: *"Web should also be optional feature."* CLI, TUI and Slack are complete without it; voice, incognito and the Personas and Library tabs report `Blocked(web)`. `mecha persona` still works from the CLI |
+| **F3** | Web as a feature | **Optional like the rest** — the owner: *"Web should also be optional feature."* CLI, TUI and Slack are complete without it; voice and incognito, which exist only in the web app, report `Blocked(web)`. A tab's visibility is not a `requires` relation: with `web` off there is no navigation at all, so the Personas and Library tabs need no dependency on it — and giving `personas` one would make `Blocked` refuse `mecha persona` from the CLI, which works without the web (found on review of #427) |
 | **F4** | What an off route returns | **404** with `{"error":"feature_off","feature":"image","fix":"mecha features enable image"}`, only behind `owner_guard` (§4.2 item 4). 503 stays for `Unready` |
 | **F5** | Recommendation tiers | *Open.* Recommended: `hardware.md`'s four (16/32/64/128 GB), so one page and one table agree |
 | **F6** | Existing installs, when `[features]` arrives | **`mecha setup` offers.** It detects a feature in use (an `[image]` table, a mail `[[mcp]]` entry, a non-empty persona store, a running voice unit) and offers to write its bool. Never grandfathered as on: that is a second source of truth. On this machine the deploy that ships the table writes it by hand, in the same change, so nothing disappears |
