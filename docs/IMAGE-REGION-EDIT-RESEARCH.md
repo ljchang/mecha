@@ -61,7 +61,7 @@ tried.
 | **A. Mark the picture** | a red box drawn on the picture; "inside the red box: …" | a hint; may spill, and the mark may survive | none in the graph; the page draws the mark |
 | **B. Mask as a second image** | the original as `<image1>`, a black-and-white mask as `<image2>` | a hint | none in the graph; one more reference |
 | **C. Latent noise mask** | the encoded original as the canvas, resampled only under the mask, then composited in code | identical by construction | a second fixed graph, and a composite in `imagegen` |
-| **D. Crop, edit, paste** | mecha crops the region plus a margin, edits the crop at full size, pastes it back through a feathered mask | identical by construction | code only; any backend. `IMAGE-COMPILER-RESEARCH.md` §3 already recommends it |
+| **D. Crop, edit, paste** | mecha crops the region plus a margin, edits the crop at full size, pastes it back through a feathered mask | identical by construction | code only; any backend. `IMAGE-COMPILER-RESEARCH.md` §2 and §6 already recommend it |
 
 A and B only say where. C and D are the two that keep the rest of the
 picture. They differ in what the model sees: C sees the whole picture and
@@ -100,11 +100,11 @@ by eye):
 
 | | Swap (T1) | Pose (T2) | Detail (T3) | Outside moved, mean (T1 / T2 / T3) | Seconds |
 |---|---|---|---|---|---|
-| **P** plain | 4/4 | 2 clear, 1 partial; both clear ones redrew the man | 4/4 | 13.6 / 32.2 / 11.4 | 80 |
-| **A** red box | 4/4 | 0 clear, 2 partial | 4/4 | 13.3 / 16.6 / 10.9 | 80 |
-| **B** mask as `<image2>` | 4/4 | 1 clear, 1 partial | 4/4 | 11.9 / 14.6 / 9.8 | 91 |
-| **C** noise mask + composite | 4/4 | 1 clear, 1 partial | 4/4 | **0 / 0 / 0** | 80 |
-| **D** crop, edit, paste | 4/4, basket visibly smaller | **4/4** | 4/4, stripes paler in 2 | **0 / 0 / 0** | 81 |
+| **P** plain | 4/4 | 2 clear, 1 partial, 1 left sitting; both clear ones redrew the man | 4/4 | 13.6 / 32.2 / 11.4 | 80 |
+| **A** red box | 4/4 | 0 clear, 2 partial, 2 left sitting | 4/4 | 13.3 / 16.6 / 10.9 | 80 |
+| **B** mask as `<image2>` | 4/4 | 1 clear, 1 partial, 2 left sitting | 4/4 | 11.9 / 14.6 / 9.8 | 91 |
+| **C** noise mask + composite | 4/4 | 1 clear, 1 partial, 2 left sitting | 4/4 | **0 / 0 / 0** | 80 |
+| **D** crop, edit, paste | 4/4, basket visibly smaller | **4/4 clear** | 4/4, stripes paler in 2 | **0 / 0 / 0** | 81 |
 
 The outside figure is the mean absolute pixel difference on a 0–255 scale.
 P's pose edits reached 49.6 where the scene was recomposed.
@@ -116,8 +116,8 @@ P's pose edits reached 49.6 where the scene was recomposed.
 - **C is seamless and exact, and it under-edits a pose.** Nothing outside
   the mask moved, and at the boundary the new pixels continue the old ones.
   In T2 the grass, the blanket and the man's arm run straight through. It
-  landed every swap and every detail, but it stood the woman up no more
-  often than a plain edit did. The reference and the source latent still
+  landed every swap and every detail, but it stood the woman up less often
+  than a plain edit did: 1 clear against 2. The reference and the source latent still
   show her sitting.
 - **D lands the pose, and leaves seams where its edge crosses something.**
   With the man cropped out, nothing anchored her, and all four seeds stood
@@ -177,6 +177,16 @@ Set, or narrowed, by the results:
 - **Which graph backs a painted area.** C for the local edits (measured
   above). For a pose or a move, C′ is the next measurement, about 12 images
   on T2 and a swap check.
+- **What C costs if the backend changes.** `Request` is shaped like
+  stable-diffusion.cpp's API so that a second backend can meet it
+  (`ARCHITECTURE.md`, image generation). D needs nothing from any backend
+  but "edit this image". C needs the backend to resample under a mask. On
+  ComfyUI that is a second fixed graph. On stable-diffusion.cpp it would be
+  its native `mask_image` field (`IMAGE-COMPILER-RESEARCH.md` §2), unverified
+  in combination with 2.1's reference-image edits. The composite is mecha's
+  code on either. Choosing C now means a mask field in `Request` and a
+  measurement owed at any backend move. D avoids both, at the cost of its
+  seams.
 - **A and B are not worth building on their own.** A mark in the picture
   could still ride along with C as a hint for multi-region notes, but nothing
   here shows it helps.
