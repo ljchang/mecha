@@ -1390,7 +1390,10 @@
       }
       if (sessionKey !== key) return;
       const message = composeEditMessage(edit.path, maskPath, text);
-      if (!message) return;
+      if (!message) {
+        edit.busy = false; // never a modal that no button can close
+        return;
+      }
       draft = message;
       editing = null;
       await send();

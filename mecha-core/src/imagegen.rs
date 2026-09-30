@@ -2480,8 +2480,9 @@ impl Tool for ImageGenerate {
                 let (cw, ch) = plan.picture.dimensions();
                 text.push_str(&if plan.source == (cw, ch) {
                     format!(
-                        " Only the area painted in {mask} was redrawn; everything outside it is \
-                         the original, pixel for pixel."
+                        " Only the area painted in {mask} was redrawn, blended over a narrow \
+                         edge around it; everything beyond that edge is the original, pixel for \
+                         pixel."
                     )
                 } else {
                     let (pw, ph) = plan.source;

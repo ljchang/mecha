@@ -660,8 +660,9 @@ conversation, so the capabilities do not change. Three rules:
   sizing with Python's round-half-even), and the mask is grown and feathered
   (`prepare_mask`). The graph samples on the encoded picture under a
   `SetLatentNoiseMask`. The result is then laid over the original in
-  mecha's code (`composite_masked`), not the server's, so every unpainted
-  pixel is the original, byte for byte, at the edit canvas. For every
+  mecha's code (`composite_masked`), not the server's, so every pixel beyond
+  the grown, feathered edge (up to about 40 px outside what was painted) is
+  the original, byte for byte, at the edit canvas. For every
   picture this tool made, that canvas is the picture's own size. A larger
   photo is edited and returned at its canvas size, as a plain edit already
   is, and the result says so. A dab too small to survive the grow step is

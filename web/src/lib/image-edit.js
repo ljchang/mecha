@@ -41,7 +41,12 @@ export function hasPaint(ops) {
  *  tames it again (`files::tame_filename`); this keeps it readable. */
 export function maskName(picturePath, now = Date.now()) {
   const stem = (picturePath.split('/').pop() ?? 'picture').replace(/\.[^.]*$/, '');
-  const safe = stem.replace(/[^A-Za-z0-9_-]+/g, '-').slice(0, 60) || 'picture';
+  const safe =
+    stem
+      .replace(/[^A-Za-z0-9_-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 60) || 'picture';
   return `mask-${safe}-${now}.png`;
 }
 
