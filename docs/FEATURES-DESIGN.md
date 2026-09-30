@@ -729,11 +729,11 @@ Three things make it deliberate rather than accidental:
   that environment's `[features]` table with no second switch. **An
   environment may set `[features]`**, though a project layer may not: it is
   stripped at `LayerTrust::Project` and deliberately **not** added to
-  `trial_env::OPERATOR_ONLY_TABLES`. That is safe for a reason the project
-  case lacks — a trial home never inherits the operator's servers (the
-  2026-09-23 rule `trial_env` exists for), so an environment's `graph = true`
-  can connect only a server the environment itself declared, and with none
-  declared it reads `Unready`, never the operator's graph. **But an
+  `trial_env::OPERATOR_ONLY_TABLES`. That is safe for turning features
+  *off*, which is what a light trial needs, and for the few it may turn on,
+  named below — a trial home never inherits the operator's servers except
+  through the manifest's `live_servers` (the 2026-09-23 rule `trial_env`
+  exists for). **But an
   environment may switch a feature *on* only if it could configure it**,
   judged by the trust of the tables the feature's switch and settings live
   in, not by who happens to supply them: a feature whose table is in
@@ -785,10 +785,11 @@ Three things make it deliberate rather than accidental:
   reason, never ignored with a warning: a warning fails open in exactly the
   way the `requires` bullet below exists to close — the arm would run without
   the feature it asked for and be scored anyway. An environment may set any
-  key to `false`. Two tests pin the negatives: `graph = true` with no
-  environment server reads `Unready`, and `search = true` or `messages =
-  true` from an environment refuses the trial (found on review of #427,
-  passes 4 and 5). Turning features off is how a trial is made light; this is the switch
+  key to `false`. Two tests pin the negatives: `graph = true`, `search =
+  true` or `messages = true` in an environment file refuses the trial; and a
+  trial whose manifest carries no graph server has `graph` off whatever the
+  environment asked, since `config_at` sets that bool (found on review of
+  #427, passes 4 and 5, and #435). Turning features off is how a trial is made light; this is the switch
   it uses. But which features were on
   is as much a condition as which levers were off, so the experiment manifest
   and the session record carry the feature set beside `levers_off`, from the
@@ -890,7 +891,7 @@ genuinely not known yet, and the output must say so rather than guess.
 | **F3** | Web as a feature | **Optional like the rest** — the owner: *"Web should also be optional feature."* CLI, TUI and Slack are complete without it; incognito, and voice's browser parts (`dictate`, `calls`, `cloning`), report `Blocked(web)`. `voice` itself does not: `mecha voice-serve` is its own loopback surface, and `Blocked` would refuse it (found on review of #427, pass 7). A tab's visibility is not a `requires` relation: with `web` off there is no navigation at all, so the Personas and Library tabs need no dependency on it — and giving `personas` one would make `Blocked` refuse `mecha persona` from the CLI, which works without the web (found on review of #427) |
 | **F4** | What an off route returns | **404** with `{"error":"feature_off","feature":"image","fix":"mecha features enable image"}`, only behind `owner_guard` (§4.2 item 4). 503 stays for `Unready` |
 | **F5** | Recommendation tiers | **`hardware.md`'s four — 16, 32, 64 and 128 GB — in two columns**: unified memory, and a separate GPU beside system RAM, where the tier is the GPU's memory and the auxiliary models (OCR, embeddings, speech to text) may run from system RAM or the CPU. One page and one table agree on the tiers; the column is what keeps a 24 GB GPU with 64 GB of RAM from being steered as a 24 GB machine. Only the 128 GB unified row is measured (this GB10); every other cell says `Arithmetic` or `Unmeasured`. Ruled by the owner 2026-09-30 |
-| **F6** | Existing installs, when `[features]` arrives | **`mecha setup` offers.** It detects a feature in use (an `[image]` table, a mail `[[mcp]]` entry, a non-empty persona store, a running voice unit) and offers to write its bool. Never grandfathered as on: that is a second source of truth. On this machine the deploy that ships the table writes it by hand, in the same change, so nothing disappears |
+| **F6** | Existing installs, when `[features]` arrives | **`mecha setup` offers.** It detects a feature in use (an `[image]` table, a mail `[[mcp]]` entry, a non-empty persona store, an installed voice unit file) and offers to write its bool — the same predicate as the upgrade notice (§4.2), so the two cannot disagree. Never grandfathered as on: that is a second source of truth. On this machine the deploy that ships the table writes it by hand, in the same change, so nothing disappears |
 
 ---
 
@@ -982,7 +983,11 @@ Each step is a PR, and each leaves every surface working.
    review of #427, pass 11). A study that needs a different cooldown asks the
    operator.
 6. **Recommendations**: the rows, the probe that sums memory, and a test that
-   `hardware.md` matches them. Fix the embeddings page.
+   `hardware.md` matches them. `hardware.md` changes first: today it has one
+   unified tier table and a note that no VRAM/RAM split is needed, and F5's
+   second column (a separate GPU beside system RAM) makes that note false —
+   the page gains the column, with every discrete cell marked `Arithmetic` or
+   `Unmeasured` until someone measures one. Fix the embeddings page.
 7. **Installers**: one `scripts/<feature>/install.sh` per feature that needs a
    service, each with `--remove`, copying rather than symlinking (the
    `scripts/llama/install.sh` pattern), with no `/home/<user>` or checkout
