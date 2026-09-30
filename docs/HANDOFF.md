@@ -22,24 +22,30 @@ maps which document holds what.
 
 ## Where the work is
 
-**2026-09-30 — region-targeted edits: researched and measured, not built.**
-`IMAGE-REGION-EDIT-RESEARCH.md` is the authority. The owner wants the Edit
-button to open a modal where areas are painted and annotated. Open:
+**2026-09-30 — region-targeted edits: measured, and C chosen by the owner
+and built in #429.** `IMAGE-REGION-EDIT-RESEARCH.md` is the authority: the
+Edit button opens a modal where the owner paints the area to change. C (a
+latent noise mask, composited in mecha) was exact and seamless, and landed
+every local edit. In #429's live check it kept the outside identical to the
+byte in 4 of 4 real edits. Open:
 
-- **The owner's decision (§6): which graph backs a painted area.** C, a
-  latent noise mask plus a composite in mecha, was exact and seamless and
-  landed every local edit. ComfyUI has the nodes today, though the graph is
-  not built, and on stable-diffusion.cpp it would need `mask_image`,
-  unverified with 2.1 edits. D, crop-edit-paste, is backend-free and landed the pose edit, but
-  left seams where its edge crossed a person.
-- **A pose or a move inside a region is unsolved.** C under-edits it
-  (n = 4). C′, the region hidden from the reference, was measured and
-  dropped: it lost her identity or copied its placeholder into the picture.
-  The untested candidate is D's crop edit followed by a thin C pass over the
-  seam (§6).
+- **A pose or a move inside a region is unsolved.** C under-edits it (n = 4,
+  and on weaker wording than #408's, §4). C′, the region hidden from the
+  reference, was measured and dropped: it lost her identity, or copied its
+  placeholder into the picture. The untested candidate is D's crop edit
+  followed by a thin C pass over the seam (§6).
+- **The mask is a path the model passes, not a registered object** (§6).
+  The page could register it and the tool accept only that one. Not built.
+- **`NEAR_COPY_LAYOUT` (0.78) is reused for the masked reading** over
+  painted thumbnail cells without being measured there. A false alarm reads
+  "nothing is wrong", and a miss only loses the safety net.
 - **Everything was measured on the one picnic scene.** C's and D's exact
   outside holds anywhere; the landing rates and D's seams need a second
   scene.
+- **Seen in #429's live check, not caused by the mask:** after an edit, the
+  local model copied the result over the original picture in 3 of 4 chats,
+  and once `fs_write`'d a path string into it. #429's edit result now tells
+  it to leave the original alone. In a web chat those tools need approval.
 
 **2026-09-29 — PDFs as a tool (#404), a layout stage for tables (#406),
 model servers on demand, and the persona design (#403, mecha-graph #26):

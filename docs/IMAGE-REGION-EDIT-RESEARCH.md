@@ -1,6 +1,6 @@
 # Region-targeted image edits — research
 
-**2026-09-29.** One question: *can Qwen-Image 2.1 be told where to edit — a
+**2026-09-29, measured 2026-09-30.** One question: *can Qwen-Image 2.1 be told where to edit — a
 painted area, a box, a mask — and if so, which way of telling it keeps the
 rest of the picture, lands the change, and costs least, so the web chat's
 Edit button can become a modal where the owner paints or boxes the part to
@@ -81,9 +81,15 @@ GGUF with the w4a8 encoder, 40 steps, cfg 1. Three edits, each with a box:
 - **T3, a detail:** "make the man's white shirt blue and white striped", box
   `(650, 220, 1260, 740)`.
 
-Each edit goes through five arms on the same four seeds: P, a plain edit in
-#408's form, plus A–D above, for 60 images. Every prompt names the kept
-parts and then the change. For C and D the mask is the box grown by 24 px
+Each edit goes through five arms on the same four seeds: P, a plain edit,
+plus A–D above, for 60 images. Every prompt names the kept parts and then
+the change, as #408 found works. The T2 prompt was "Keep the watercolour
+style, the background, the blanket and the man unchanged. Have the woman
+stand up at the edge of the blanket, holding the glass pitcher." That is
+#408's form, but not #408's prompt: #408 named her ("Have Maya stand up"),
+kept the lake, the tree and the blanket rather than the man, and ran other
+seeds. So P here is this run's baseline, not #408's measured one (next
+paragraph). For C and D the mask is the box grown by 24 px
 and feathered by 16 px, and the composite runs in Python, as it would in
 mecha.
 
@@ -110,7 +116,17 @@ The outside figure is the mean absolute pixel difference on a 0–255 scale,
 measured outside the box plus its feather. \*For C and D that area is
 copied from the original, so the zeros check the composite rather than
 measure the edit. D's damage lies inside the band the figure leaves out,
-and is judged by eye below.
+and is judged by eye below. The zeros are also this picture's size: 1344×768
+is already the edit canvas the graph samples at, so the composite lined up
+without a resize. A picture of another size is edited at its canvas, and
+"identical" then holds at that size, not the file's (§5, and #429).
+
+**P is not #408's baseline.** #408 stood Maya up in 12 of 12 seeds with
+the named form. Here P managed 2 of 4 with "the woman" and a keep list that
+names the man. Against #408's rate, every arm here under-edits the pose.
+So "C stood her up less often than P" is a comparison within this run's
+wording, not a claim about C against the tested form. It was not re-run
+with the named subject.
 P's pose edits reached 49.6 where the scene was recomposed.
 
 - **A and B are hints, and they keep nothing.** On the swap and the detail,
@@ -124,8 +140,8 @@ P's pose edits reached 49.6 where the scene was recomposed.
   the mask moved, and at the boundary the new pixels continue the old ones.
   In T2 the grass, the blanket and the man's arm run straight through. It
   landed every swap and every detail, but it stood the woman up less often
-  than a plain edit did: 1 clear against 2. The reference and the source latent still
-  show her sitting.
+  than this run's plain edit did: 1 clear against 2, with the weaker wording
+  above. The reference and the source latent still show her sitting.
 - **D lands the pose, and leaves seams where its edge crosses something.**
   With the man cropped out, nothing anchored her, and all four seeds stood
   her up in full. But T2's crop edge ran through the man's forearm, and in
@@ -151,18 +167,18 @@ stood her up once where a plain edit did so twice. That is n = 4, and it
 was the reason to measure C′, below. D makes the change but cannot blend it
 when the region's edge crosses a person.
 
-**C′, measured the same day** (2026-09-30, 20 images, 0 errors). C′ is C
+**C′, measured the same day** (2026-09-30, 17 images, 0 errors). C′ is C
 with the region hidden from the reference, so the model is not shown the
 pose it is meant to replace. It was tried three ways, on the pose edit and
 the swap, at the same four seeds:
 
-| | Pose (T2) | Still her? | Swap (T1) |
-|---|---|---|---|
-| **grey fill** | the fill copied into the result, a grey wall with a faint figure | n/a | not run past seed 1 |
-| **blur** | stood up in 3 of 4 | **no: a different woman in all 4**, and seed 3 copied the blur into the result | 4/4 |
-| **grey + the original as `<image2>`** | about as often as C | yes | 4/4 |
+| | n | Pose (T2) | Still her? | Swap (T1) |
+|---|---|---|---|---|
+| **grey fill** | 1 (T2, seed 1) | the fill copied into the result, a grey wall with a faint figure | n/a | not run |
+| **blur** | 8 | stood up in 3 of 4 | **no: a different woman in 4 of 4**, and seed 3 copied the blur into the result | 4 of 4 |
+| **grey + the original as `<image2>`** | 8 | 1 clear, 1 partial, 2 left sitting; seed 3 copied its grey fill across the frame | yes, 4 of 4 | 4 of 4 |
 
-Grey fill was stopped after its first seed, which was conclusive. The
+Grey fill was stopped after its first image, which was conclusive. The
 grey-plus-original variant also copied its grey fill across the frame in
 seed 3. The model treats its reference as the picture, so a placeholder in
 it is content to reproduce, not a blank to fill. That is the same lesson
@@ -192,25 +208,30 @@ whichever graph wins:
   That maps onto Qwen's multi-region showcase: numbered marks for the hint
   (A), and the union of the regions as the mask that keeps the rest (C or
   D).
-- **The page renders the mask, and the owner is its only author.** A
+- **The page renders the mask; the model passes its path.** A
   black-and-white PNG at the picture's own size, uploaded into the chat's
   jail. `image_generate` gains a `mask` path that it reads through
-  `ToolCtx::resolve`, like `reference_images`, and checks against the
-  picture's shape. The model passes the path along and never writes
-  coordinates, which keeps the graph fixed in code and the tool typed
-  values.
+  `ToolCtx::resolve`, like `reference_images`. The core then sizes picture
+  and mask together to the edit canvas, and composites at that size (as
+  built in #429). The model never writes coordinates, which keeps the graph
+  fixed in code and the tool typed values. It is still a path the model
+  passes, though, not a registered object. `ToolCtx::resolve` proves the
+  file is in the jail, not that the page made it, and the model could name
+  or write another mask. So the region is the owner's request, carried by
+  the model, not a guarantee (§6).
 - **A mask is not an image for the model to look at.** Web uploads reach the
   model as pixels today (#366), and an attached image arms `private_data`.
   A mask would spend context and taint the chat for nothing, so its upload
   must be a kind the page stores without attaching.
-- **The note is the prompt, and the kept parts come free.** With a region,
-  what stays is enforced by the mask (C, D) rather than listed in words.
+- **The note is the prompt, and the kept parts come free.** With the mask
+  the owner drew, what stays is enforced by the composite (C, D) rather than
+  listed in words.
 
 ## 6. Open, for the owner
 
 Set, or narrowed, by the results:
-- **Which graph backs a painted area.** C for the local edits (measured
-  above). C′ was measured and dropped. A pose or a move has no region-graph
+- **Which graph backs a painted area. The owner chose C on 2026-09-30, and
+  it is built in #429.** C for the local edits (measured above). C′ was measured and dropped. A pose or a move has no region-graph
   answer yet, and two alternatives outside it: a plain edit in #408's form,
   which moved people but redrew the rest; and a library redraw, which
   #408's probes found moves people reliably. D followed by a thin C pass is
@@ -225,6 +246,13 @@ Set, or narrowed, by the results:
   code on either. Choosing C now means a mask field in `Request` and a
   measurement owed at any backend move. D avoids both, at the cost of its
   seams.
+- **A mask the page registers, not a path the model passes.** As built in
+  #429, the mask is a workspace path, so an injected instruction could name
+  another mask while the modal shows a small painted area. The page could
+  register the mask it uploaded (for example, the descriptor-relative I/O in
+  `workspace_files.rs`), and `image_generate` accept only a registered mask
+  for that picture. Not built. The live run found the model passes the path
+  faithfully once `size` is not refused.
 - **A and B are not worth building on their own.** A mark in the picture
   could still ride along with C as a hint for multi-region notes, but nothing
   here shows it helps.
