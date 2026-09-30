@@ -1366,19 +1366,9 @@ impl PersonaChats {
                 // holds them, rather than coming back "not delivered"
                 // (review of #426).
                 if let (Some((text, request_id)), Some(live)) = (steer, &ps.live) {
-                    // By its receipt, not its words: the two queues are pushed
-                    // together, so one index names the same steer in both, and
-                    // two steers with the same words cannot be confused.
                     let held = match (live.queue.lock(), live.queued_ids.lock()) {
                         (Ok(mut queue), Ok(mut ids)) => {
-                            match ids.iter().position(|id| *id == request_id) {
-                                Some(at) => {
-                                    ids.remove(at);
-                                    queue.remove(at);
-                                    true
-                                }
-                                None => false,
-                            }
+                            take_undrained(&mut queue, &mut ids, &request_id)
                         }
                         _ => false,
                     };
@@ -1405,6 +1395,13 @@ impl PersonaChats {
                 // minutes (review of #426).
                 if paused {
                     ps.crisis_paused_at = Some(std::time::Instant::now());
+                }
+                // Recovered, and said so, as the `Clear` arm does: the doc
+                // promises the change is announced both ways (review of #426).
+                if ps.judge_answered == Some(false) {
+                    let _ = ps.events.send(WireEvent::Notice {
+                        text: "Crisis detection's model check is answering again.".into(),
+                    });
                 }
                 ps.judge_answered = Some(true);
                 let _ = ps.events.send(WireEvent::Crisis {
@@ -1557,6 +1554,34 @@ fn steer(
 // ─── Routes ────────────────────────────────────────────────────────────────
 
 type Web = State<super::WebState>;
+
+/// Take a steer back out of what the run has not read yet, by its receipt.
+/// True only when its words were really removed before the agent saw them.
+///
+/// The two deques are pushed together under both locks, but drained apart:
+/// the agent empties `queue` wholesale (`take_queued_input`) and the
+/// forwarder then pops `ids` one event at a time. So, with both locks held,
+/// the steers still in `queue` are the *last* `queue.len()` entries of `ids`
+/// — the ones before them were already folded into the request, and their
+/// words reached the persona (review of #426: an index into both, as if they
+/// were aligned, "held" words the agent had already read).
+fn take_undrained(
+    queue: &mut VecDeque<String>,
+    ids: &mut VecDeque<String>,
+    request_id: &str,
+) -> bool {
+    let Some(offset) = ids.len().checked_sub(queue.len()) else {
+        return false;
+    };
+    match ids.iter().position(|id| id == request_id) {
+        Some(at) if at >= offset => {
+            ids.remove(at);
+            queue.remove(at - offset);
+            true
+        }
+        _ => false,
+    }
+}
 
 #[derive(serde::Deserialize)]
 pub struct UnlockQuery {
@@ -3440,6 +3465,28 @@ mod tests {
         })
         .await;
         assert_eq!(receipt, "r-1");
+    }
+
+    /// Mid-drain, the queue is shorter than the receipts: a steer the agent
+    /// already read is not "held", and a later one is found at its own place.
+    #[test]
+    fn a_steer_is_held_only_if_the_agent_has_not_read_it() {
+        let q = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<VecDeque<_>>();
+        // Drained, receipt not yet popped: already delivered.
+        let (mut queue, mut ids) = (q(&[]), q(&["r-9"]));
+        assert!(!take_undrained(&mut queue, &mut ids, "r-9"));
+        assert_eq!(ids, q(&["r-9"]));
+        // One drained, one still waiting: only the waiting one is held, and
+        // the right words go with it.
+        let (mut queue, mut ids) = (q(&["second"]), q(&["r-1", "r-2"]));
+        assert!(!take_undrained(&mut queue, &mut ids, "r-1"));
+        assert!(take_undrained(&mut queue, &mut ids, "r-2"));
+        assert_eq!((queue, ids), (q(&[]), q(&["r-1"])));
+        // Nothing drained: aligned, and an unknown receipt takes nothing.
+        let (mut queue, mut ids) = (q(&["a", "b"]), q(&["r-1", "r-2"]));
+        assert!(!take_undrained(&mut queue, &mut ids, "r-3"));
+        assert!(take_undrained(&mut queue, &mut ids, "r-1"));
+        assert_eq!((queue, ids), (q(&["b"]), q(&["r-2"])));
     }
 
     #[tokio::test]
