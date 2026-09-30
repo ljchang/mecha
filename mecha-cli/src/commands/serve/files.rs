@@ -88,7 +88,17 @@ pub async fn upload(
         Ok(ws) => ws,
         Err(response) => return *response,
     };
-    let name = tame_filename(&q.name);
+    store(ws, &q.name, body).await
+}
+
+/// Raw bytes into `<ws>/inbox/` under a tamed name, answered with the
+/// workspace-relative path. Shared with the persona chat's door
+/// (`persona_chat::upload`), which finds its workspace behind the lock.
+pub(super) async fn store(ws: std::path::PathBuf, name: &str, body: Bytes) -> Response {
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, "empty upload\n").into_response();
+    }
+    let name = tame_filename(name);
     let bytes = body.len();
     let written =
         tokio::task::spawn_blocking(move || WorkspaceFiles::open(&ws)?.upload(&name, &body)).await;
@@ -138,8 +148,14 @@ pub async fn download(
         Ok(ws) => ws,
         Err(response) => return *response,
     };
+    serve(ws, q.path).await
+}
+
+/// One file out of `ws`, images inline and everything else inert. Shared
+/// with the persona chat's door (`persona_chat::download`).
+pub(super) async fn serve(ws: std::path::PathBuf, path: String) -> Response {
     let opened = tokio::task::spawn_blocking(move || {
-        let (file, target) = WorkspaceFiles::open(&ws)?.read(&q.path)?;
+        let (file, target) = WorkspaceFiles::open(&ws)?.read(&path)?;
         let len = file.metadata()?.len();
         Ok::<_, std::io::Error>((file, target, len))
     })

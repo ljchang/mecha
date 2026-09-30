@@ -1042,7 +1042,7 @@ pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                 // A picture beside tool results is one a tool put in front
                 // of the model (`ToolOutput::image`, from `image_view`). The
                 // page draws it under that tool's row, from the result's
-                // `image: <path>` line (`pictureOf` in Chat.svelte); an
+                // `image: <path>` line (`pictureOf` in picture.js); an
                 // `[image]` here would read as something the owner attached.
                 let results = !mecha_core::agent::is_plain_user_text(message);
                 for block in &message.content {
@@ -1149,7 +1149,7 @@ const MAX_ATTACHED_IMAGES: usize = 8;
 /// `WorkspaceFiles::read`, the download route's containment walk, because
 /// the paths come from the page. What cannot be read or decoded is left to
 /// its path and logged, never a failed turn.
-fn attached_images(workspace: &std::path::Path, paths: &[String]) -> Vec<Block> {
+pub(super) fn attached_images(workspace: &std::path::Path, paths: &[String]) -> Vec<Block> {
     let files = match mecha_core::workspace_files::WorkspaceFiles::open(workspace) {
         Ok(files) => files,
         Err(e) => {

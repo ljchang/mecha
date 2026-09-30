@@ -378,6 +378,14 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
             "/api/persona-chat/{key}/cancel",
             axum::routing::post(persona_chat::cancel),
         )
+        .route("/api/persona-chat/{key}/file", get(persona_chat::download))
+        .route(
+            "/api/persona-chat/{key}/upload",
+            axum::routing::post(persona_chat::upload)
+                // An edit's mask is a PNG at the picture's own size — well
+                // under a photo, bounded as the assistant's upload is.
+                .layer(axum::extract::DefaultBodyLimit::max(26_214_400)),
+        )
         .route("/api/chat/{key}/events", get(chat::events))
         .route("/api/chat/{key}/answer", axum::routing::post(chat::answer))
         .route("/api/chat/{key}/mode", axum::routing::post(chat::set_mode))

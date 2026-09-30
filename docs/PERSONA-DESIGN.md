@@ -239,8 +239,9 @@ rebuilds a child's registry today — but the allowlist is intersected with an
   from (`ImageGenerate::capabilities` is a bare default). Today the set is
   `web_search` (always through the blind path — below), `image_generate`,
   `image_view`, read access to the image library (the owner's approved
-  characters, shared on purpose — §8.6), the file tools over the persona's
-  `files/` roots (§10.2), and the persona's own memory tools (§9).
+  characters, shared on purpose — §8.6), `document_read` over the chat's own
+  workspace (D24), the file tools over the persona's `files/` roots (§10.2),
+  and the persona's own memory tools (§9).
 - **`web_search` in a persona chat is always the blind path**
   (`SearchChain::search_blind`: blind backends only, at quick depth),
   whatever the conversation's taint (found on review). Egress is declared
@@ -1227,7 +1228,9 @@ the template too.
   the configured search chain, not an attacker-chosen host, but a search
   engine is not nobody). The owner's switches that close it, both per
   persona: `answers = "files"` for a persona whose files are not the owner's
-  own, or no `web_search` for it.
+  own, or no `web_search` for it. The same holds for a document dropped into
+  a chat and read with `document_read` (D24) — there only the second switch
+  applies, since `answers = "files"` withholds `document_read` itself.
 - **Files never write a persona.** Material from a file reaching the memory
   writer (§9) is classified untrusted, and nothing in a file ever becomes
   persona definition text.
@@ -1515,6 +1518,7 @@ Every row is ruled; the ruling is the owner's, in §1 where it was said in words
 | D21 | Safety features | **Ruled (R21):** all on by default; each switchable off per persona by the owner (§12) |
 | D22 | Surfaces | **Ruled (R22):** web chat and voice only for now; not the TUI or Slack (§8.5) |
 | D23 | Self-portraits | **Ruled (R23):** yes — `image_generate` in a persona chat knows "self" as its linked character (§8.6) |
+| D24 | Documents in a persona chat | **Ruled 2026-09-30:** `document_read` is persona-eligible, jailed to the chat's workspace, so a file dropped into the chat can be read before the §10 file tools exist. Given only when the owner lists it in `[tools] allow`; withheld by `answers = "files"` with the web tools, since its results are third-party content. Beside `web_search` it is §10.6's three legs, and the owner's per-persona switch closes it |
 
 ---
 
