@@ -57,7 +57,8 @@ would have edited the whole picture.
 
 **2026-09-30 — the `personal` Google grant outlived seven days.** The
 project was published to production on 2026-09-16, and `personal` was
-re-consented on 2026-09-17. On 2026-09-30 (day 13) its refresh token was still
+re-consented on 2026-09-17 (`granted_at` 2026-09-17T02:10:19Z in its
+`oauth.json`, replacing the 09-15 grant). On 2026-09-30 (day 13) its refresh token was still
 minting access tokens, and a live read-only `mecha mail calendars` answered.
 A grant minted in Testing is revoked on day 7. So the guard the handoff had
 kept for exactly this, `grant_lifetime_days = 7` on that account in
@@ -1127,6 +1128,8 @@ marketing pages, and pruning them as unused would break the consent screen
 with nothing to say why. What this does *not* settle is in HANDOFF: the
 seven-day clock belongs to the grant rather than the app, so the `personal`
 grant minted 2026-09-15 keeps its own expiry and still owes a re-consent.
+(Closed on 2026-09-30: the 2026-09-17 re-consent outlived seven days; see
+that entry.)
 The console states were observed by `mecha-41` and are not verifiable from a
 shell; the DNS row and the three branding URLs were re-checked
 independently.
