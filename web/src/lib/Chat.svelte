@@ -3,6 +3,8 @@
   import { apiFetch as fetch } from './api.js';
   import { tameName, validName } from './library.js';
   import ModelChip from './ModelChip.svelte';
+  import EditModal from './EditModal.svelte';
+  import { composeEditMessage, maskName } from './image-edit.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   // The chat view: a rendering of the conversation the server owns, plus a
   // live SSE feed of the run in flight. Sending during a run steers it —
@@ -690,6 +692,11 @@
       attachments = [];
       todo = [];
     }
+    // Unlike the draft, the edit modal is never portable: it holds a path in
+    // the chat it was opened in, and sending it from here would upload the
+    // mask into this chat's jail and name the other chat's picture in this
+    // transcript (review of #429).
+    editing = null;
     incognito = false;
     gone = null;
     goneNote = null;
@@ -707,6 +714,7 @@
     streaming = '';
     draft = '';
     attachments = [];
+    editing = null; // the modal carries this chat's draft and paths too
     todo = [];
     usage = null;
     taint = null;
@@ -1349,13 +1357,52 @@
     }
   }
 
+  // The Edit button opens a modal where the owner paints the part to change
+  // (EditModal.svelte). Anything already typed becomes its instruction.
+  let editing = $state(null);
   function editImage(path) {
-    const typed = draft.trim();
-    draft = typed ? `Edit ${path}: ${typed}` : `Edit ${path}: `;
-    queueMicrotask(() => {
-      inputEl?.focus();
-      inputEl?.setSelectionRange(draft.length, draft.length);
-    });
+    editing = { path, src: workspaceFile(path), initial: draft.trim(), busy: false, error: null };
+  }
+
+  // A painted area goes up as a mask, named in the message and never put in
+  // `attachments`: those ride on the turn as pixels, and a mask is for
+  // `image_generate`, not for the model to look at (image-edit.js). The text
+  // then goes out through `send`, like anything typed — steering a run in
+  // progress, an incognito chat and a failure all behave the same.
+  async function sendEdit({ text, mask }) {
+    const sessionKey = key;
+    const edit = editing;
+    if (!edit) return;
+    edit.busy = true;
+    edit.error = null;
+    try {
+      let maskPath = null;
+      if (mask) {
+        const q = new URLSearchParams({ name: maskName(edit.path) });
+        const res = await fetch(`/api/chat/${sessionKey}/upload?${q}`, { method: 'POST', body: mask });
+        if (res.status === 410) {
+          if (sessionKey === key) closeIncognito('closed');
+          editing = null;
+          return;
+        }
+        if (!res.ok) throw new Error((await res.text()).trim());
+        maskPath = (await res.json()).path;
+      }
+      if (sessionKey !== key) return;
+      const message = composeEditMessage(edit.path, maskPath, text);
+      if (!message) {
+        edit.busy = false; // never a modal that no button can close
+        return;
+      }
+      draft = message;
+      editing = null;
+      await send();
+    } catch (err) {
+      if (editing === edit) {
+        edit.busy = false;
+        edit.error = `The mask could not be uploaded: ${err?.message ?? err}. Nothing was sent.`;
+      }
+    }
   }
 
   function uploadPicked(e) {
@@ -1371,7 +1418,9 @@
   // the page does not claim is *navigated to* by the browser — which throws
   // this page away, an incognito chat with it.
   let dragDepth = $state(0); // dragenter/leave fire at every child boundary
-  const canDrop = $derived(!gone && !voiceOpen);
+  // Not behind the edit modal: a file dropped there would join
+  // `attachments` unseen and ride out on the modal's own send (review of #429).
+  const canDrop = $derived(!gone && !voiceOpen && !editing);
 
   const carriesFiles = (dt) => [...(dt?.types ?? [])].includes('Files');
 
@@ -1920,8 +1969,8 @@
               <img src={workspaceFile(picture)} alt="generated" loading="lazy" />
             </a>
           {/if}
-          <!-- Starts a sentence rather than sending one: the change is the
-               person's to describe. The path is what lets the model pass the
+          <!-- Opens the edit modal (EditModal.svelte): paint what may change,
+               say what to change. The path is what lets the model pass the
                right file as the reference. -->
           <button class="genedit" onclick={() => editImage(picture)}>Edit</button>
           {#if !incognito}
@@ -2273,6 +2322,18 @@
     </div>
   {/if}
 </div>
+
+{#if editing}
+  <EditModal
+    src={editing.src}
+    path={editing.path}
+    initial={editing.initial}
+    busy={editing.busy}
+    error={editing.error}
+    onsend={sendEdit}
+    onclose={() => (editing = null)}
+  />
+{/if}
 
 <style>
   .chat {
