@@ -123,6 +123,7 @@ fn read_items(path: &PathBuf) -> Result<Vec<BatchItem>> {
                 id: format!("{}", i + 1),
                 prompt: text.into(),
                 meta: None,
+                attach: Vec::new(),
             }
         } else {
             serde_json::from_str::<BatchItem>(line)

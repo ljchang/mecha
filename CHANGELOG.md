@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Eval cases can attach pictures.** `"attach": [...]` in a case puts
+  images on its first turn as pixels, exactly as a web-chat upload does, so
+  a case can measure what a model does with a picture it can already see.
+  The chat, the persona chat and eval now share one implementation of that
+  (`image::attached_images`). `eval/image-read/` is the first set: 19 cases
+  over photographed pages, tables, receipts, screenshots and pictures with no
+  text. Measured on the resident vision model, it never chose OCR for an
+  attached picture, even when asked for a spreadsheet or a transcript, and a
+  description telling it to did not change that. Its answers were all right,
+  and on one hard page it transcribed as well as the OCR model did. So
+  pictures stay read from pixels; `document_read` is there when asked for.
+
 - **Read a photo or screenshot of a page.** `document_read` and
   `mecha document extract` now take PNG, JPEG, WebP and GIF as well as PDF.
   A picture is read as one page by the local OCR model, through the same
