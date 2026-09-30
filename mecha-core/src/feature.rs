@@ -293,7 +293,8 @@ pub enum State {
     Blocked {
         on: Feature,
     },
-    /// Configured, and a fact on disk says it cannot work yet.
+    /// Switched on, and its settings are missing or a fact on disk says it
+    /// cannot work yet.
     Unready {
         reason: String,
         fix: Option<String>,
@@ -310,6 +311,14 @@ impl State {
     /// dependents of something that may well be working.
     fn satisfies(&self) -> bool {
         !matches!(self, State::Off { .. } | State::Blocked { .. })
+    }
+
+    /// Whether a surface shows this feature — the web app's nav, cards and
+    /// buttons (FEATURES-DESIGN.md §4.2 item 3). The same test as
+    /// `satisfies`, and deliberately so: what cannot carry its dependents
+    /// is what is hidden, and nothing the owner switched on is.
+    pub fn shown(&self) -> bool {
+        self.satisfies()
     }
 
     pub fn word(&self) -> &'static str {
@@ -548,20 +557,32 @@ pub struct Row {
     /// the upgrade notice's case, shown as its own row rather than a bare
     /// `off` (FEATURES-DESIGN.md §4.2).
     pub in_use: bool,
+    /// Whether a surface shows it ([`State::shown`]), so the web app reads
+    /// the rule rather than restating it.
+    pub shown: bool,
+    /// What to run to bring it on ([`fix`]), a `Blocked` row's included —
+    /// the "next command" of FEATURES-DESIGN.md §4.2 item 1. Not `fix`: the
+    /// flattened state already carries one for `Off` and `Unready`.
+    pub next: Option<String>,
 }
 
 /// Every feature, in [`Feature::ALL`] order.
 pub fn all(facts: &Facts) -> Vec<Row> {
     Feature::ALL
         .iter()
-        .map(|&f| Row {
-            id: f,
-            label: f.label(),
-            part_of: f.part_of(),
-            requires: f.requires(),
-            state: state(facts, f),
-            switch: switch(&facts.config, f),
-            in_use: announcement(facts, f).is_some(),
+        .map(|&f| {
+            let state = state(facts, f);
+            Row {
+                id: f,
+                label: f.label(),
+                part_of: f.part_of(),
+                requires: f.requires(),
+                shown: state.shown(),
+                next: fix(facts, f),
+                state,
+                switch: switch(&facts.config, f),
+                in_use: announcement(facts, f).is_some(),
+            }
         })
         .collect()
 }
@@ -591,7 +612,33 @@ pub fn state(facts: &Facts, f: Feature) -> State {
             return State::Blocked { on: need };
         }
     }
-    own_state(facts, f)
+    match own_state(facts, f) {
+        // Past the switch, a feature with one was switched on, so its own
+        // `off` means "said yes, not set up yet": `Unready`, shown with the
+        // fix, never hidden (FEATURES-DESIGN.md §5). A part's `off` stays —
+        // `[documents] ocr = false` is the owner's own no. Harmless while
+        // nothing hid a row; the web app hiding `Off` is what made it matter.
+        State::Off { reason, fix } if f.has_switch() => State::Unready { reason, fix },
+        own => own,
+    }
+}
+
+/// What to run to bring `f` on. A `Blocked` row hanging on a switch that is
+/// not on answers [`enable_command`], which names every such switch at once —
+/// `dictate` with neither `voice` nor `web` on is one command, not two
+/// attempts; one blocked only by a setting follows the need to its fix —
+/// `layout` blocked on `ocr = false` answers the setting, never a switch
+/// that is already on. `None` for `On` and `Unknown`, which have nothing to
+/// run.
+pub fn fix(facts: &Facts, f: Feature) -> Option<String> {
+    match state(facts, f) {
+        State::Off { fix, .. } | State::Unready { fix, .. } => fix,
+        State::Blocked { .. } if !switched_on(&facts.config, f) => {
+            Some(enable_command(&facts.config, f))
+        }
+        State::Blocked { on } => fix(facts, on),
+        State::On { .. } | State::Unknown { .. } => None,
+    }
 }
 
 /// Why a feature is announced on an install that has not answered its
@@ -972,7 +1019,12 @@ fn own_state(facts: &Facts, f: Feature) -> State {
                 },
             },
         },
-        // Reached only when `[documents]` is present: `state` checked it.
+        // Reached with no `[documents]` too: switched on without it, the
+        // parent is `Unready`, which blocks nothing — so the part says the
+        // table is missing, never a setting that is not there to be false.
+        Feature::Ocr if cfg.documents.is_none() => {
+            off("no [documents] table", "add a [documents] table")
+        }
         Feature::Ocr => match &cfg.documents {
             Some(d) if d.ocr => match crate::document::ocr_url(&d.ocr_url) {
                 Ok(url) => on(url.to_string()),
@@ -1233,9 +1285,10 @@ mod tests {
         );
     }
 
-    /// An installed binary with no `[[mcp]]` entry is off: the entry is what
-    /// puts the tools on the surface, and setup's `mail` step checks only
-    /// the binary (FEATURES-DESIGN.md §1.1).
+    /// An installed binary with no `[[mcp]]` entry is not on: the entry is
+    /// what puts the tools on the surface, and setup's `mail` step checks
+    /// only the binary (FEATURES-DESIGN.md §1.1). Switched on, that reads
+    /// `unready` — the owner said yes and the fix is one entry away (§5).
     #[test]
     fn a_server_is_on_only_through_an_enabled_mcp_entry() {
         let mut cfg = Config::default();
@@ -1244,7 +1297,7 @@ mod tests {
             mail_accounts: Some(2),
             ..Facts::default()
         };
-        let State::Off { reason, .. } = state(&at(&cfg, &facts), Feature::Mail) else {
+        let State::Unready { reason, .. } = state(&at(&cfg, &facts), Feature::Mail) else {
             panic!("an installed binary alone is not mail")
         };
         assert!(reason.contains("no [[mcp]] entry"), "{reason}");
@@ -1259,7 +1312,7 @@ mod tests {
         assert_eq!(state(&at(&cfg, &facts), Feature::Mail).word(), "unknown");
 
         cfg.mcp[0].disabled = true;
-        assert_eq!(state(&at(&cfg, &facts), Feature::Mail).word(), "off");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Mail).word(), "unready");
         // A disabled duplicate does not hide an enabled entry.
         cfg.mcp.push(mcp("mail2", "mecha-mail"));
         facts.mail_accounts = Some(1);
@@ -1282,7 +1335,7 @@ mod tests {
         let mut switched = Config::default();
         switched.features.0.insert("graph".into(), true);
         let empty = Facts::read(Path::new("/nonexistent"), &switched);
-        assert_eq!(state(&empty, Feature::Graph).word(), "off");
+        assert_eq!(state(&empty, Feature::Graph).word(), "unready");
         let owners = Facts::read(Path::new("/nonexistent"), &with_graph);
         assert_eq!(state(&owners, Feature::Graph).word(), "on");
     }
@@ -1332,12 +1385,83 @@ mod tests {
         assert_eq!(state(&at(&cfg, &facts), Feature::Publishing).word(), "off");
         cfg.mcp.push(mcp("factory", "factory-publish"));
         assert_eq!(state(&at(&cfg, &facts), Feature::Publishing).word(), "on");
+        // Switched on without its binary, the queue is unready — shown with
+        // the install command — and does not block its part, whose own
+        // entry answers for it.
         facts.has_factory_binary = false;
         assert_eq!(
-            state(&at(&cfg, &facts), Feature::Publishing),
+            state(&at(&cfg, &facts), Feature::Frontdoor).word(),
+            "unready"
+        );
+        assert_eq!(state(&at(&cfg, &facts), Feature::Publishing).word(), "on");
+        // Switched off, the part is blocked on it.
+        let mut off = at(&cfg, &facts);
+        off.config.features.0.insert("frontdoor".into(), false);
+        assert_eq!(
+            state(&off, Feature::Publishing),
             State::Blocked {
                 on: Feature::Frontdoor
             }
+        );
+    }
+
+    /// The owner's yes is never hidden: switched on without its settings, a
+    /// feature is `Unready`, shown, with the fix (FEATURES-DESIGN.md §5). A
+    /// part has no switch, so its own `off` is the owner's no and hides. A
+    /// `Blocked` row's `next` is the command of the need that blocks it,
+    /// not the owner's switch that is already on.
+    #[test]
+    fn a_switched_on_feature_is_never_hidden_and_a_blocked_row_names_its_cause() {
+        let mut cfg = Config::default();
+        cfg.features.0.insert("image".into(), true);
+        let facts = |cfg: &Config| Facts {
+            config: cfg.clone(),
+            ..empty_machine()
+        };
+        let rows = all(&facts(&cfg));
+        let row = |f: Feature| rows.iter().find(|r| r.id == f).unwrap();
+        let State::Unready { reason, fix } = &row(Feature::Image).state else {
+            panic!("image = true with no [image] table is unready")
+        };
+        assert!(reason.contains("[image]"), "{reason}");
+        assert!(fix.is_some());
+        assert!(row(Feature::Image).shown);
+        assert_eq!(row(Feature::Image).next, *fix);
+        // Its part is not blocked by an unready parent.
+        assert!(row(Feature::Library).shown);
+        // Off and blocked hide; the switch's own fix is the next command.
+        assert!(!row(Feature::Mail).shown);
+        assert_eq!(
+            row(Feature::Mail).next.as_deref(),
+            Some("mecha features enable mail")
+        );
+        assert_eq!(
+            row(Feature::Dictate).state,
+            State::Blocked { on: Feature::Voice }
+        );
+        assert!(!row(Feature::Dictate).shown);
+        assert_eq!(
+            row(Feature::Dictate).next.as_deref(),
+            Some("mecha features enable web voice")
+        );
+
+        // A part off by its own setting: hidden, and its dependent's next
+        // command is that setting — not `enable documents`, already on.
+        cfg.features.0.insert("documents".into(), true);
+        cfg.documents =
+            Some(toml::from_str::<crate::document::DocumentsConfig>("ocr = false").unwrap());
+        let rows = all(&facts(&cfg));
+        let row = |f: Feature| rows.iter().find(|r| r.id == f).unwrap();
+        assert!(row(Feature::Documents).shown);
+        assert_eq!(row(Feature::Ocr).state.word(), "off");
+        assert!(!row(Feature::Ocr).shown);
+        assert_eq!(
+            row(Feature::Layout).state,
+            State::Blocked { on: Feature::Ocr }
+        );
+        assert_eq!(
+            row(Feature::Layout).next.as_deref(),
+            Some("set [documents] ocr = true")
         );
     }
 
@@ -1355,7 +1479,10 @@ mod tests {
         };
         assert_eq!(state(&at(&cfg, &facts), Feature::Documents).word(), "on");
         cfg.tools.disabled = vec!["document_read".into()];
-        assert_eq!(state(&at(&cfg, &facts), Feature::Documents).word(), "off");
+        assert_eq!(
+            state(&at(&cfg, &facts), Feature::Documents).word(),
+            "unready"
+        );
 
         // A server off this machine is refused at registration.
         let image = |url: &str| {
@@ -1369,6 +1496,7 @@ mod tests {
         };
         assert_eq!(state(&at(&cfg, &facts), Feature::Image).word(), "on");
         assert_eq!(state(&at(&cfg, &facts), Feature::Library).word(), "on");
+        // A part's own off is the owner's no, and stays off.
         cfg.tools.disabled = vec!["image_library".into()];
         assert_eq!(state(&at(&cfg, &facts), Feature::Library).word(), "off");
         cfg.image = image("http://10.0.0.5:8188");

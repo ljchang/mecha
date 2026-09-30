@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The web app shows only what is switched on.** Its tabs, Home's Mail and
+  Tasks cards, the voice-call button, every dictation mic, the incognito
+  buttons and Review's Graph queue and Front door tabs follow `[features]`,
+  read afresh on each page load from a new `GET /api/features` (the same rows
+  as `mecha features --json`). A feature that is switched on but not ready
+  keeps its tab, marked, with what is missing above it; a link to a hidden
+  page lands on Home with one line saying so. **Settings → Features** lists
+  every feature, off ones included, with the command that turns it on, and
+  says which switches `mecha serve` has not picked up yet. A Home queue with
+  anything waiting stays even when its feature is off. No route refuses
+  anything yet.
+
 - **A persona draws itself (PERSONA-DESIGN §8.6).** In a persona chat,
   `image_generate` knows who "self" is: a prompt that names the persona — by
   its linked character, its folder name or the name it is shown by — gets
@@ -273,6 +285,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it.
 
 ### Changed
+
+- **`mecha features` reads a switched-on feature with missing settings as
+  unready, not off.** `image = true` with no `[image]` table, or mail with no
+  `[[mcp]]` entry, is something you said yes to, and now reads **unready**
+  with the fix — and no longer hides the parts under it. A part turned off by
+  its own setting (`[documents] ocr = false`) still reads off. A blocked row
+  now prints the command that unblocks it, and `--json` rows carry `shown`
+  and `next`.
 
 - **A feature whose switch is not on is off.** Web search, image generation,
   PDF extraction and the mail, docs and graph servers register or

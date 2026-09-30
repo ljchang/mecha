@@ -7,6 +7,9 @@
   import Frontdoor from './Frontdoor.svelte';
   import Proposals from './Proposals.svelte';
 
+  import { features } from './features.svelte.js';
+  import { isShown } from './features.js';
+
   let { initial = null, navigate = () => {} } = $props();
   // The three proposal stores are panes in their own right rather than one
   // `proposals` pane with hidden state: each is a card on the home page, and
@@ -35,8 +38,15 @@
 <div class="review">
   <div class="tabs">
     <button class="tab" class:active={pane === 'outbox'} onclick={() => navigate('review/outbox')}>Outbox</button>
-    <button class="tab" class:active={pane === 'graph'} onclick={() => navigate('review/graph')}>Graph queue</button>
-    <button class="tab" class:active={pane === 'frontdoor'} onclick={() => navigate('review/frontdoor')}>Front door</button>
+    <!-- A tab whose feature is off is not offered; its pane still opens
+         from a link, so Home's card for a front door that is off with
+         requests waiting still lands somewhere (FEATURES-DESIGN.md §5). -->
+    {#if isShown(features.rows, 'graph')}
+      <button class="tab" class:active={pane === 'graph'} onclick={() => navigate('review/graph')}>Graph queue</button>
+    {/if}
+    {#if isShown(features.rows, 'frontdoor') || pane === 'frontdoor'}
+      <button class="tab" class:active={pane === 'frontdoor'} onclick={() => navigate('review/frontdoor')}>Front door</button>
+    {/if}
     <button class="tab" class:active={inProposals} onclick={() => navigate('review/harness')}>Proposals</button>
   </div>
   {#if pane === 'outbox'}

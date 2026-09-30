@@ -10,6 +10,8 @@
   import Personas from './lib/Personas.svelte';
   import Graph from './lib/Graph.svelte';
   import Settings from './lib/Settings.svelte';
+  import { features, loadFeatures } from './lib/features.svelte.js';
+  import { VIEW_FEATURE, isShown, banner, hiddenLine } from './lib/features.js';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
   // A hash may carry a sub-view after a slash (#review/frontdoor), which the
@@ -83,6 +85,35 @@
     else navigate(to, { replace: true });
   }
 
+  // Which optional parts are on (FEATURES-DESIGN.md §4.2 item 3): read when
+  // the app opens and each time it comes back into view, since the route
+  // re-reads the owner's config per request.
+  loadFeatures();
+  $effect(() => {
+    const onShow = () => document.visibilityState === 'visible' && loadFeatures();
+    document.addEventListener('visibilitychange', onShow);
+    return () => document.removeEventListener('visibilitychange', onShow);
+  });
+
+  // A link to a view that is switched off — a bookmark, a Home card from
+  // before the flip — lands on Home with one line saying so and what turns
+  // it on, rather than on a page whose every read fails. Only once the
+  // answer is in: before it, and when it failed, nothing is hidden.
+  let hiddenNotice = $state(null);
+  $effect(() => {
+    const f = VIEW_FEATURE[view];
+    if (f && !isShown(features.rows, f)) {
+      hiddenNotice = hiddenLine(features.rows, f);
+      navigate('home', { replace: true });
+    } else if (view !== 'home') {
+      // Said once, on the Home it landed on; gone as soon as you move on.
+      hiddenNotice = null;
+    }
+  });
+  // Switched on and not working yet, or unreadable: the view stays, with
+  // the reason and the fix above it — never hidden, never silent.
+  const viewBanner = $derived(banner(features.rows, VIEW_FEATURE[view]));
+
   $effect(() => {
     const onNav = () => {
       route = fromHash();
@@ -105,6 +136,18 @@
        column: Home laid its header out *beside* its content. So the shell
        owns the frame and the views keep their shape inside it. -->
   <div class="viewport">
+    {#if hiddenNotice && view === 'home'}
+      <div class="featurebar">
+        <span>{hiddenNotice.text}{#if hiddenNotice.next}{' — '}<code>{hiddenNotice.next}</code>{/if}</span>
+        <button class="dismiss" aria-label="dismiss" onclick={() => (hiddenNotice = null)}>×</button>
+      </div>
+    {:else if viewBanner}
+      <div class="featurebar warn">
+        <span>
+          {viewBanner.label} {viewBanner.word === 'unknown' ? 'could not be read' : 'is not ready'}{#if viewBanner.reason}: {viewBanner.reason}{/if}{#if viewBanner.next}{' — '}<code>{viewBanner.next}</code>{/if}
+        </span>
+      </div>
+    {/if}
     {#if view === 'chat'}
       <Chat resume={route.sub} />
     {:else if view === 'mail'}
@@ -166,6 +209,40 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
+  }
+  /* One line above the view: a hidden view's notice, or the banner of an
+     unready one. Padded clear of the gear's corner, as every header is. */
+  .featurebar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px var(--gutter-gear) 12px var(--gutter);
+    font-size: 12px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--accent-900);
+  }
+  .featurebar span {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .featurebar.warn {
+    color: var(--text);
+  }
+  .featurebar code {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent-400);
+  }
+  .featurebar .dismiss {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 16px;
+    cursor: pointer;
+    min-width: 32px;
+    min-height: 32px;
   }
   .gear {
     position: absolute;
