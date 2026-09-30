@@ -8307,9 +8307,15 @@ in five different ways. The design and its open steps are
   off, and Slack's review-here and `request_state`) and its polls' (the
   TUI's `polls::load`, `commands::polls::pick_next`, which the TUI calls
   directly, and the TUI's `factory_cli`, #452). A `serve` listener mounted
-  once (the voice facade) is the same rule at start. The one opener
+  once (the voice facade) is the same rule at start, and so is a feature's
+  model-facing tool: Slack's `show_file` registers only with `slack` on, read
+  when the session starts — the tool list is the front of the cached
+  prefix, so a flip mid-session (and a mirror attached before it) follows
+  the next session; `detach` ends a mirror now. The replay surface
+  (`setup::surface_only_registry`) keeps it, being never executed. The one opener
   deliberately left open is a count of what waits (`review queues`), which
-  never degrades.
+  never degrades — and reads through `open_existing_default`, so counting
+  never creates the store it counts.
 - **An environment may only narrow.** `trial_env::config_at` refuses an
   environment's `[features]` key set `true` unless
   `Feature::switchable_from_environment` — an exhaustive match, today only
