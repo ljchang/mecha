@@ -229,14 +229,16 @@ pub struct Facts {
     pub mail_accounts: Option<usize>,
     pub docs_accounts: Option<usize>,
     pub slack_linked: Option<bool>,
-    /// The **global** layer's `[[mcp]]` servers, which the four server rows
-    /// read instead of whatever `Config` the caller holds. A project's
-    /// `mecha.toml` keeps its servers through `merge_file` and replaces the
-    /// list wholesale in `apply`, so reading them from a layered config
-    /// would let a cloned repository switch the owner's mail or graph on or
-    /// off (found on review of #427). The type now carries the rule instead
-    /// of a doc comment asking every caller to keep it.
-    pub mcp: Vec<McpServerConfig>,
+    /// The **global** configuration — the only one any row reads.
+    ///
+    /// Carried here, rather than taken beside `Facts`, so the rule is the
+    /// type's and not a doc comment's: [`state`] has no `Config` parameter a
+    /// caller could hand a project-layered value to. A project's `mecha.toml`
+    /// keeps its `[[mcp]]`, `[[search]]`, `[tools]` and `default_provider`
+    /// through `merge_file`, and every one of them decides a row — so a
+    /// layered config would let a cloned repository say what the owner's
+    /// install has on (found on review of #427 and #428).
+    pub config: Config,
 }
 
 impl Facts {
@@ -255,7 +257,7 @@ impl Facts {
             mail_accounts: mail_store_dir().and_then(|d| count_accounts(&d)),
             docs_accounts: docs_store_dir().and_then(|d| count_accounts(&d)),
             slack_linked: slack_linked(home),
-            mcp: global.mcp.clone(),
+            config: global.clone(),
         }
     }
 }
@@ -272,7 +274,7 @@ pub struct Row {
 }
 
 /// Every feature, in [`Feature::ALL`] order.
-pub fn all(cfg: &Config, facts: &Facts) -> Vec<Row> {
+pub fn all(facts: &Facts) -> Vec<Row> {
     Feature::ALL
         .iter()
         .map(|&f| Row {
@@ -280,27 +282,26 @@ pub fn all(cfg: &Config, facts: &Facts) -> Vec<Row> {
             label: f.label(),
             part_of: f.part_of(),
             requires: f.requires(),
-            state: state(cfg, facts, f),
+            state: state(facts, f),
         })
         .collect()
 }
 
 /// Is `f` on? The only place that question is answered.
 ///
-/// The four server rows read [`Facts::mcp`], the global layer's servers,
-/// never `cfg.mcp`; every other table `cfg` is read for is stripped from
-/// project layers, so a layered `cfg` answers the same as the global one.
+/// Every row reads [`Facts::config`], the global configuration, and
+/// nothing else configures it.
 ///
 /// A feature whose parent or requirement is off is `Blocked` on the first
 /// one found, whatever its own switch says: configured-but-unreachable is
 /// different from off, and this says which dependency to fix first.
-pub fn state(cfg: &Config, facts: &Facts, f: Feature) -> State {
+pub fn state(facts: &Facts, f: Feature) -> State {
     for need in f.needs() {
-        if !state(cfg, facts, need).satisfies() {
+        if !state(facts, need).satisfies() {
             return State::Blocked { on: need };
         }
     }
-    own_state(cfg, facts, f)
+    own_state(facts, f)
 }
 
 fn on(detail: impl Into<String>) -> State {
@@ -321,17 +322,17 @@ fn off(reason: impl Into<String>, fix: impl Into<String>) -> State {
 /// module never does. Enabled entries first, so a disabled duplicate does
 /// not hide a working one.
 fn mcp_entry<'a>(facts: &'a Facts, program: &str) -> Option<&'a McpServerConfig> {
+    let servers = &facts.config.mcp;
     let runs = |m: &&McpServerConfig| {
         Path::new(&m.command)
             .file_name()
             .is_some_and(|n| n == program)
     };
-    facts
-        .mcp
+    servers
         .iter()
         .filter(runs)
         .find(|m| !m.disabled)
-        .or_else(|| facts.mcp.iter().find(runs))
+        .or_else(|| servers.iter().find(runs))
 }
 
 /// The shared shape of the three features that are an MCP server.
@@ -381,7 +382,8 @@ fn tools_off(tool: &str) -> State {
     )
 }
 
-fn own_state(cfg: &Config, facts: &Facts, f: Feature) -> State {
+fn own_state(facts: &Facts, f: Feature) -> State {
+    let cfg = &facts.config;
     match f {
         Feature::Web => match cfg.web.owner_login.as_deref() {
             Some(login) if !login.is_empty() => on(match &cfg.web.assets {
@@ -539,7 +541,14 @@ fn own_state(cfg: &Config, facts: &Facts, f: Feature) -> State {
             ),
         },
         // The model's half: publishing tools, from an `[[mcp]]` entry.
-        Feature::Publishing => server_state(facts, "factory-publish", true, "", None, ""),
+        Feature::Publishing => server_state(
+            facts,
+            "factory-publish",
+            facts.has_factory_binary,
+            "install factory-publish from the mecha-factory repository",
+            None,
+            "",
+        ),
         Feature::Messages => match cfg.messages.enabled {
             true => on("[messages] enabled"),
             false => off(
@@ -570,6 +579,15 @@ mod tests {
             mail_accounts: Some(0),
             docs_accounts: Some(0),
             ..Facts::default()
+        }
+    }
+
+    /// `facts` read against `cfg` — the tests' way of saying "this global
+    /// configuration on this machine".
+    fn at(cfg: &Config, facts: &Facts) -> Facts {
+        Facts {
+            config: cfg.clone(),
+            ..facts.clone()
         }
     }
 
@@ -607,7 +625,7 @@ mod tests {
     /// nothing but what has no switch yet — and nothing reads as broken.
     #[test]
     fn a_default_config_on_an_empty_machine_is_off_and_never_unknown() {
-        let rows = all(&Config::default(), &empty_machine());
+        let rows = all(&empty_machine());
         for row in &rows {
             assert!(
                 !matches!(row.state, State::Unknown { .. } | State::Unready { .. }),
@@ -657,51 +675,46 @@ mod tests {
     /// the binary (FEATURES-DESIGN.md §1.1).
     #[test]
     fn a_server_is_on_only_through_an_enabled_mcp_entry() {
-        let cfg = Config::default();
+        let mut cfg = Config::default();
         let mut facts = Facts {
             has_mail_binary: true,
             mail_accounts: Some(2),
             ..Facts::default()
         };
-        let State::Off { reason, .. } = state(&cfg, &facts, Feature::Mail) else {
+        let State::Off { reason, .. } = state(&at(&cfg, &facts), Feature::Mail) else {
             panic!("an installed binary alone is not mail")
         };
         assert!(reason.contains("no [[mcp]] entry"), "{reason}");
 
-        facts
-            .mcp
+        cfg.mcp
             .push(mcp("mail", "/home/someone/.cargo/bin/mecha-mail"));
-        assert_eq!(state(&cfg, &facts, Feature::Mail).word(), "on");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Mail).word(), "on");
 
         facts.mail_accounts = Some(0);
-        assert_eq!(state(&cfg, &facts, Feature::Mail).word(), "unready");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Mail).word(), "unready");
         facts.mail_accounts = None;
-        assert_eq!(state(&cfg, &facts, Feature::Mail).word(), "unknown");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Mail).word(), "unknown");
 
-        facts.mcp[0].disabled = true;
-        assert_eq!(state(&cfg, &facts, Feature::Mail).word(), "off");
+        cfg.mcp[0].disabled = true;
+        assert_eq!(state(&at(&cfg, &facts), Feature::Mail).word(), "off");
         // A disabled duplicate does not hide an enabled entry.
-        facts.mcp.push(mcp("mail2", "mecha-mail"));
+        cfg.mcp.push(mcp("mail2", "mecha-mail"));
         facts.mail_accounts = Some(1);
-        assert_eq!(state(&cfg, &facts, Feature::Mail).word(), "on");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Mail).word(), "on");
     }
 
-    /// The server rows read the global servers carried in `Facts`, never the
-    /// `Config` passed in — which a caller may have layered with a project's
-    /// `mecha.toml`, whose `[[mcp]]` replaces the owner's list wholesale.
+    /// `Facts::read` carries the configuration it was given, and `state`
+    /// reads nothing else: the global-only rule is the signature's.
     #[test]
-    fn a_project_layers_servers_never_decide_a_server_row() {
-        let project = Config {
+    fn a_row_reads_only_the_configuration_facts_carry() {
+        let with_graph = Config {
             mcp: vec![mcp("graph", "mecha-graph-mcp")],
             ..Config::default()
         };
-        let global = Facts::read(Path::new("/nonexistent"), &Config::default());
-        assert_eq!(state(&project, &global, Feature::Graph).word(), "off");
-        let owners = Facts::read(Path::new("/nonexistent"), &project);
-        assert_eq!(
-            state(&Config::default(), &owners, Feature::Graph).word(),
-            "on"
-        );
+        let empty = Facts::read(Path::new("/nonexistent"), &Config::default());
+        assert_eq!(state(&empty, Feature::Graph).word(), "off");
+        let owners = Facts::read(Path::new("/nonexistent"), &with_graph);
+        assert_eq!(state(&owners, Feature::Graph).word(), "on");
     }
 
     /// `Unready` and `Unknown` do not block what depends on them — both are
@@ -728,8 +741,11 @@ mod tests {
             ..Config::default()
         };
         let facts = Facts::default();
-        assert_eq!(state(&cfg, &facts, Feature::Documents).word(), "unready");
-        assert_eq!(state(&cfg, &facts, Feature::Ocr).word(), "on");
+        assert_eq!(
+            state(&at(&cfg, &facts), Feature::Documents).word(),
+            "unready"
+        );
+        assert_eq!(state(&at(&cfg, &facts), Feature::Ocr).word(), "on");
     }
 
     /// The front door's queue needs no mailbox and no `[[mcp]]` entry: the
@@ -737,18 +753,18 @@ mod tests {
     /// entry (found on review of #427 and #428).
     #[test]
     fn the_front_door_is_its_binary_and_publishing_its_entry() {
-        let cfg = Config::default();
+        let mut cfg = Config::default();
         let mut facts = Facts {
             has_factory_binary: true,
             ..Facts::default()
         };
-        assert_eq!(state(&cfg, &facts, Feature::Frontdoor).word(), "on");
-        assert_eq!(state(&cfg, &facts, Feature::Publishing).word(), "off");
-        facts.mcp.push(mcp("factory", "factory-publish"));
-        assert_eq!(state(&cfg, &facts, Feature::Publishing).word(), "on");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Frontdoor).word(), "on");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Publishing).word(), "off");
+        cfg.mcp.push(mcp("factory", "factory-publish"));
+        assert_eq!(state(&at(&cfg, &facts), Feature::Publishing).word(), "on");
         facts.has_factory_binary = false;
         assert_eq!(
-            state(&cfg, &facts, Feature::Publishing),
+            state(&at(&cfg, &facts), Feature::Publishing),
             State::Blocked {
                 on: Feature::Frontdoor
             }
@@ -767,9 +783,9 @@ mod tests {
             documents: docs(),
             ..Config::default()
         };
-        assert_eq!(state(&cfg, &facts, Feature::Documents).word(), "on");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Documents).word(), "on");
         cfg.tools.disabled = vec!["document_read".into()];
-        assert_eq!(state(&cfg, &facts, Feature::Documents).word(), "off");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Documents).word(), "off");
 
         // A server off this machine is refused at registration.
         let image = |url: &str| {
@@ -781,12 +797,12 @@ mod tests {
             image: image("http://127.0.0.1:8188"),
             ..Config::default()
         };
-        assert_eq!(state(&cfg, &facts, Feature::Image).word(), "on");
-        assert_eq!(state(&cfg, &facts, Feature::Library).word(), "on");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Image).word(), "on");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Library).word(), "on");
         cfg.tools.disabled = vec!["image_library".into()];
-        assert_eq!(state(&cfg, &facts, Feature::Library).word(), "off");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Library).word(), "off");
         cfg.image = image("http://10.0.0.5:8188");
-        assert_eq!(state(&cfg, &facts, Feature::Image).word(), "unready");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Image).word(), "unready");
 
         // A backend the chain builder would drop does not make search on.
         let backend =
@@ -797,13 +813,13 @@ mod tests {
             )],
             ..Config::default()
         };
-        assert_eq!(state(&cfg, &facts, Feature::Search).word(), "unready");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Search).word(), "unready");
         cfg.search.push(backend("kind = \"brave\""));
-        assert_eq!(state(&cfg, &facts, Feature::Search).word(), "unready");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Search).word(), "unready");
         cfg.search.push(backend(
             "kind = \"searxng\"\nbase_url = \"http://127.0.0.1:8888\"",
         ));
-        let State::On { detail } = state(&cfg, &facts, Feature::Search) else {
+        let State::On { detail } = state(&at(&cfg, &facts), Feature::Search) else {
             panic!("one live backend is search")
         };
         assert!(detail.starts_with("searxng (dropped"), "{detail}");
@@ -819,14 +835,14 @@ mod tests {
             ..Config::default()
         };
         let facts = Facts::default();
-        assert_eq!(state(&cfg, &facts, Feature::Documents).word(), "on");
-        assert_eq!(state(&cfg, &facts, Feature::Ocr).word(), "on");
-        assert_eq!(state(&cfg, &facts, Feature::Layout).word(), "off");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Documents).word(), "on");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Ocr).word(), "on");
+        assert_eq!(state(&at(&cfg, &facts), Feature::Layout).word(), "off");
     }
 
     #[test]
     fn the_json_row_is_flat_and_names_the_state() {
-        let rows = all(&Config::default(), &Facts::default());
+        let rows = all(&Facts::default());
         let v = serde_json::to_value(&rows[0]).unwrap();
         assert_eq!(v["id"], "web");
         assert_eq!(v["state"], "off");
