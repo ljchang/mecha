@@ -317,7 +317,11 @@ impl Environment {
             // says), which is exactly what `switchable_from_environment`
             // refuses; defaulting them here would assert on the environment's
             // behalf what it may not (found on review of #445).
-            .filter(|f| *f == Feature::Graph || f.switchable_from_environment())
+            // Two named rulings, not a predicate: "may the environment set
+            // it" is not "may the harness default it", and a future feature
+            // with both would otherwise be defaulted on silently (review of
+            // #452).
+            .filter(|f| matches!(f, Feature::Graph | Feature::Frontdoor))
             .collect();
         for f in carried {
             cfg.features.0.entry(f.id().to_string()).or_insert(true);
