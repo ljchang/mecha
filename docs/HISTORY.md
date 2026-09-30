@@ -14,6 +14,45 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-29 — PDFs as a tool, a layout stage for tables, model servers
+that start on demand, and the persona design (#403, #404, #406,
+mecha-graph #26).** Merged and installed the same evening; the install is
+the 20:42–20:56Z entry in HANDOFF's *Machine state, dated*.
+- **`document_read` and `mecha document` (#404).** Each page comes back
+  twice and never merged: poppler's text layer (exact — what `grounding`
+  checks a quote against) and a PaddleOCR-VL 1.6 transcript. Poppler runs
+  confined with no unconfined fallback, page images are re-encoded before the
+  OCR server sees them, and results are cached by content hash in
+  `~/.mecha/documents/`. A parser's diagnostics are the document's words
+  (`ParserSaid`, marked external); the sandbox's own refusal is not. The OCR
+  server is `llama-ocr.socket` (:8085 → :18085), started on first use and
+  stopped after ten idle minutes: cold start 2.96 s to healthy. Measured on
+  10 arXiv papers, 48 pages: median 4.5 s/page on a quiet GPU (up to 53 s
+  under ComfyUI), word recall 0.944 against the text layer.
+- **The layout stage (#406).** PP-DocLayoutV3 (ONNX, Apache-2.0) in a
+  confined, CPU-only Python child that receives only a float tensor from
+  mecha's own decode; each region goes to the model with its own prompt.
+  Tables, 9 tables and 89 rows: rows held on one line 24 (0.27) → 82 (0.92);
+  Transformer Table 2 regains its EN-FR column. One real loss (GCN Table 3's
+  `K` sub-labels). Numbers are commit `99d132d6`'s; re-measure before quoting
+  against a later one.
+- **The embeddings server on the same mechanism.** `llama-embed.socket`
+  holds :8081 from boot; the model starts on first connection (4.1 s cold,
+  0.03 s warm, measured at the switch) and stopped itself after ten idle
+  minutes (20:54:22Z). mecha-graph #26 went in first: `Embedder::health_within`
+  (`EmbedHealth::{Ready, Absent, Failing, Misconfigured}`) waits out a cold
+  start, and `router::needs_vectors` keeps a query that embeds nothing from
+  waking the model.
+- **The persona design (#403, `docs/PERSONA-DESIGN.md`).** Every decision
+  (D1–D23) ruled by the owner. Five review passes reshaped it: separation by
+  *location* (`<persona>/sessions/`) rather than a `SessionKind`, tool
+  eligibility declared per tool and defaulting to no, web search forced
+  through the blind path, and a stated failure direction for every safety
+  check. The build is mecha-69's lane (#405, #407, #409, #415 merged).
+- **Review loops:** #403 five passes, #404 seven, #406 five, mecha-graph #26
+  eleven; every major and medium finding fixed on its branch, the minors
+  filed as mecha #410–#414 and mecha-graph #27–#28.
+
 **2026-09-29 — image edits that came back unchanged: the prompt, not
 chance (#408).** The owner reported that an edit asking to move someone or
 change a pose sometimes returned the same picture, and that only a new chat
@@ -8945,6 +8984,22 @@ and is what finally exercised the path.)
 
 ### Review process
 
+- **`--delete-branch` on someone else's PR can close a third PR stacked on
+  it.** Merging #416 with the flag deleted `docs/handoff-408`, which was
+  #417's base; GitHub logged `base_ref_deleted` and closed #417 in the same
+  second (reopened 12 s later by the session that owned it). Two sessions had
+  also merged #416 in that same second — every session acts as the same
+  GitHub user, so the event log cannot say which. Before any
+  `--delete-branch`, run `gh pr list --base <branch>`; on a peer's PR, leave
+  the flag off and tell the peer before merging.
+- **A timeout wrapped around a future drops the future's own cleanup.**
+  #406 bounded a page's layout read with `tokio::time::timeout`, which on
+  expiry dropped `read_page` — and with it the reset of a worker left
+  mid-exchange, so the next page could have read this page's boxes and
+  cached wrong crops as valid. The reset now lives in the timeout arm. When
+  you add an outer bound, move the inner failure path's state repair into
+  the bound's own arm.
+
 - **A source-scan test must slice the function it guards, not cut at the first
   marker.** #376's `an_incognito_key_never_reaches_the_journal` cut
   `voice/mod.rs` at its first `#[cfg(test)]`, above `echo_span_tests`, read
@@ -9298,6 +9353,22 @@ check the timestamp before re-running anything.**
   skips, which is how they were caught rather than written into the docs.
 
 ### Environment
+
+**A probe whose own request wakes the thing it probes must outwait the
+wake.** mecha-graph's `Embedder::available()` gave up on `/health` after
+1.5 s. Behind a socket-activated server, that request is what starts the
+model (~4 s), so every cold probe read "absent" and semantic search went
+keyword-only without a word — the silent absence the embedding unit was
+created to prevent. It was caught before the switch by listing every
+consumer of :8081 and reading its timeouts, and fixed in mecha-graph #26
+first. **When a service moves to on demand, audit every "is it up?" probe,
+not only the request timeouts.**
+
+**CI's toolchain can be newer than the box's.** #406 passed `RUSTFLAGS="-D
+warnings" cargo clippy --workspace --all-targets --all-features` on the
+box's rustc 1.97.1 and failed CI's 1.98 on a lint the older clippy does not
+have (`chunks_exact_to_as_chunks`). **A green local clippy predicts CI's only
+on the same toolchain: read CI's result after every push.**
 
 **A filter on a sink someone else owns is thrown away with the sink.**
 pipecat's runner calls `logger.remove()` and adds its own `DEBUG` sink after

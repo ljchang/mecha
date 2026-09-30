@@ -1,5 +1,10 @@
 # Document extraction: PDFs, text layers and a local OCR model
 
+> **Addendum (2026-09-29):** built, merged (#404, #406) and installed the same
+> evening; §7's embeddings switch was applied at 20:43Z, after mecha-graph #26.
+> What shipped is in HISTORY under 2026-09-29; the minors left are mecha
+> #410–#413.
+
 2026-09-29. One extraction capability — a PDF's own text layer and a local
 OCR model's transcript, per page, side by side — that every part of mecha can
 call: the assistant reading a workspace file or an attachment

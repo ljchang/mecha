@@ -22,6 +22,38 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-29 — PDFs as a tool (#404), a layout stage for tables (#406),
+model servers on demand, and the persona design (#403, mecha-graph #26):
+merged and installed.** What shipped, and the measurements, are in HISTORY
+under 2026-09-29; the install is the 20:42–20:56Z entry in *Machine state,
+dated*. What is open:
+
+- **Filed follow-ups, all minor:** mecha #410 (the document cache root is
+  0755, so another local user can list which PDFs were read, by hash — the
+  one to do first; and `prune` reports success over an unreadable cache),
+  #411 (`mecha doctor` should say when `layout = true` has no install), #412
+  (region crops on the runtime thread; concurrent layout workers
+  unbounded), #413 (the OCR cache is keyed on the configured model, not the
+  served one; `confine = "none"` is not shown to the model), #414 (persona:
+  a test for the location boundary, file tools reusing `ToolCtx::resolve`,
+  `/queues` and `doctor` wiring); mecha-graph #27 (a keyword-only pack
+  carries no flag — the half of #26's bug it did not close) and #28 (probe
+  edge cases).
+- **What extraction still does not do:** text inside figures is not
+  transcribed (PaddleOCR-VL's default), GCN Table 3 loses its `K`
+  sub-labels, and the layout numbers are `99d132d6`'s.
+- **Embeddings are on demand now.** The first recall after ten idle minutes
+  waits a ~4 s cold start. Rollback, if it misbehaves:
+  `scripts/llama/install-embed.sh --remove` restores the always-on unit.
+- **Personas are mecha-69's lane**, building `docs/PERSONA-DESIGN.md` §17:
+  #405, #407, #409, #415 and #418 (the safety layer's model-free half) are
+  merged, and were deployed at 23:47Z by mecha-69 — `mecha` from `97ebae9c`
+  and a rebuilt dist (`index-BvMDEpUF.js`); that install is its to record.
+  Checked here: `strings ~/.cargo/bin/mecha | grep -c 'Suicide & Crisis
+  Lifeline'` → 1, and `document_read` still registers. Next: 2c-2 (the
+  farewell check and the crisis judge), then 2d (self-portraits, file
+  download).
+
 **2026-09-29 — image edits that came back unchanged: the cause was the
 prompt (#408), merged and installed.** What shipped, and the measurement,
 are in HISTORY under 2026-09-29; the install is in *Machine state, dated*.
@@ -1687,7 +1719,8 @@ survey of tracked content.
 | Port | Model | State |
 |---|---|---|
 | 8080 | Qwen3.6-35B-A3B | **A llama-server router since 2026-09-27** (six presets, one resident; `mecha model list`) — the figures here are production's preset. Up, **`total_slots=4`**, `-c 1048576` → **262,144 per slot**, and **`--mmproj` loaded since 2026-08-21 so `modalities.vision` is true** — the per-slot figure is the model's whole trained window (`qwen35moe.context_length`), raised from 32768 on 2026-08-10 after re-measuring. **`-c` costs nothing in speed**: 32k/64k/128k/256k are within noise of each other (~92 tok/s at a 1k prompt, ~80 at 30k), and the 50x slowdown recorded on 2026-08-07 was that day's OOM, not the flag. It costs memory as a startup *reservation* — 21.4 GB at 32k to 28.5 GB at 256k, i.e. weights ~20.7 GB plus ~32 KiB/token. **The full tables, the needle test at 188k, the `-np` trade-off and the two traps live in `scripts/start-moe-mtp.sh`** — read it before touching any of this. **`--reasoning-budget 4096`** (2026-08-07) was believed to be the mitigation for this model's "non-terminating reasoning" — **that diagnosis was wrong and is retired as of 2026-08-10 evening**: the empty turns were tool calls emitted before `</think>` closed, one of them 120 characters long, so no token budget was ever involved. The flag is harmless and stays; the real cause and fix are in `CHANGELOG.md` under 0.1.2. The nudge-retry allowance still resets on productive turns, which remains correct for its own reasons. `~/.mecha/config.toml` and `bench/mecha_agent.py` carry `context_window` and `max_tokens` (**above** the budget; 8192) — four numbers that move together. **`context_window` is `-c / -np`, not `-c`** — llama-server divides the context across slots, so the rule this line used to state was right only by accident of `-np 1`. Read it off the served model's `/props` (`default_generation_settings.n_ctx`) or the startup line's `n_ctx_slot`, never by arithmetic on the flag; on the router that means `served_props http://127.0.0.1:8080 <id>` after sourcing `scripts/served-props.sh`, since a bare `/props` is a placeholder with `n_ctx: 0`. **A vision model is two files.** The weights carry the language model and the vision tower is a separate `mmproj-*.gguf` that `--mmproj` must name; without it the server starts, answers well, reports `modalities.vision: false`, and the model tells anyone who sends it a screenshot that it cannot see images — which reads as a limitation of the weights. `scripts/mmproj.sh` now refuses to start without one. MoE 3B active, in-GGUF MTP (`--spec-type draft-mtp`, no `-md`). **A transient unit** — now `llama-local.service` (`systemctl --user status llama-local`; it was `llama-qwen` when this was written, and that name no longer resolves), not a tmux pane — see below |
-| 8081 | harrier-oss-v1-0.6b | **up, serving embeddings** (`--embeddings --pooling last --embd-normalize 2`). This is where the graph's embeddings come from — they moved off Ollama onto llama-server, so any doc still naming `MECHA_GRAPH_OLLAMA_URL` is stale. One model per process, so this cannot be the chat port as well: pointing both at 8080 sends embedding requests to the chat model. |
+| 8081 | harrier-oss-v1-0.6b | **On demand since 2026-09-29 20:43Z**: `llama-embed.socket` holds the port from boot, and the first connection starts the model on :18081 (`llama-embed.service`, `--embeddings --pooling last --embd-normalize 2`) — ~4 s cold, then warm until ten idle minutes. This is where the graph's embeddings come from. One model per process, so this cannot be the chat port as well: pointing both at 8080 sends embedding requests to the chat model. Rollback to always-on: `scripts/llama/install-embed.sh --remove`. |
+| 8085 | PaddleOCR-VL 1.6 | **On demand since 2026-09-29**: `llama-ocr.socket` → :18085 (`llama-ocr.service`), for `document_read` and `mecha document`; ~2.6 GB of GPU memory while loaded, none when idle. `scripts/llama/install.sh`. |
 | 8083 | Qwen3.8-27B | **down as of 2026-08-20** (was up on 2026-08-16). Nothing in config depends on it, so nothing is broken by it — noted because the previous pass recorded it up and a reader would otherwise assume it still is |
 | 8082 | (retired 2026-09-27) | **Do not start it.** gemma-4-26B-A4B is a preset on the `:8080` router now, and the `gemma26` entry points there (`mecha model use gemma26`). `scripts/start-gemma26.sh` beside the router loads a second 26B next to the resident model — the memory failure that reaped jobs twice on 2026-09-27. The nightly validate's judge is the stages' model (`scripts/pin.sh`); a rubric that names `gemma26` resolves to `:8080`. |
 | 8888 | SearXNG | up (docker, JSON format enabled) — **but every *general* engine was refusing this IP on 2026-08-21**: brave and google cse `Suspended: too many requests`, duckduckgo and startpage `CAPTCHA`, mojeek `access denied`. The specialist engines (lib.rs, crossref, arxiv, openalex, stackoverflow) answer fine. Partially recovered the same afternoon. This is why Exa and Tavily were added — a scraping metasearch loses the anti-bot race, and the answer is a backend contractually entitled to the data, not a better scraper |
@@ -1818,6 +1851,12 @@ is exactly the set holding a long-lived process.
   `--aged` before 07:00 or the briefing pastes a clap usage error into
   itself** — caught on the day by running the hook rather than reading it. And
   `llama-local.service` is new (below). A fresh clone has neither.
+- **Two model servers are socket-activated since 2026-09-29** —
+  `llama-ocr.socket` (:8085) and `llama-embed.socket` (:8081), shipped in
+  `scripts/llama/`. The mechanism, and why an idle or rebooted server is a
+  cold start and never "connection refused", is `LLAMA-SERVER.md` §Document
+  OCR and `DOCUMENT-EXTRACTION-DESIGN.md` §6–§7; rollback for the
+  embeddings one is `scripts/llama/install-embed.sh --remove`.
 - **ComfyUI is `comfyui.service`** (systemd user, enabled, since
   2026-09-25 17:48Z), and the unit exists in no repository:
   `~/.config/systemd/user/comfyui.service` runs the venv's python on
@@ -3332,6 +3371,41 @@ was closed at the owner's word to free memory, which ended graph child
 2006709. The backfill ran against this binary, 20:30–20:52Z, which started
 before mecha-d7's 20:48Z reinstall and its `[documents]` config edit, and
 neither disturbed it (0 failed).
+
+**2026-09-29 20:42–20:56Z, mecha-d7: mecha-graph and mecha-graph-mcp from
+`1368fba` (#26), `llama-embed` on demand, and `mecha` from `a5ae732e` (#404,
+#406).** In order, with the peers told before and after:
+- **Graph (20:42Z).** `~/Github/mecha-graph` fast-forwarded to `1368fba`;
+  both binaries installed and `target/release/mecha-graph` (the 01:30
+  nightly's) rebuilt. Checked: `strings ~/.cargo/bin/mecha-graph-mcp | grep
+  -c "answers /health 404"` → 1, a literal absent before #26; `tools/list` →
+  13 tools.
+- **Embeddings (20:43Z).** `MECHA_EMBED_COLD_START_OK=1
+  scripts/llama/install-embed.sh`: `llama-embed.socket` enabled on :8081,
+  `llama-embed.service` now the backend on :18081 with no `[Install]`, the
+  always-on unit and launcher kept as `*.always-on.bak`. Measured: a cold
+  `/v1/embeddings` through the socket 4.1 s, warm 0.03 s; a real `mecha-graph
+  query` answered (Recall, 20 items); the model stopped itself at 20:54:22Z
+  with the socket still listening. Rollback: `scripts/llama/install-embed.sh
+  --remove`.
+- **`mecha` (20:48Z).** The shared checkout fast-forwarded `b82ac15f` →
+  `a5ae732e` (launch scripts and `worker.py` unchanged across the move);
+  `cargo install --path mecha-cli`. Checked: `strings ~/.cargo/bin/mecha |
+  grep -c "the page did not finish within"` → 1 (0 before); `mecha tools
+  --json` lists `document_read` once `[documents]` is set.
+- **Config and layout.** `[documents]` appended to `~/.mecha/config.toml`
+  (backup `config.toml.bak-2026-09-29-documents`); `scripts/layout/install.sh`
+  → `~/.mecha/layout` (onnxruntime 1.30.0; the model a symlink into the
+  Hugging Face cache at revision `46bbdf18`). End to end: `mecha document
+  extract` on page 8 of arXiv 1706.03762, cold, 35 s, "read by region: 14",
+  Table 2 with both EN-DE and EN-FR columns.
+- **Restart (20:51Z).** `mecha-slack`, `-triggers`, `-drain` and `-serve`,
+  each logging its startup line; their graph children are the new binary.
+  Still on the old graph binary until they restart: open Claude Code sessions
+  and another session's `mecha distill --backfill-appraisals` run. Not
+  touched: the voice worker, Parakeet, ComfyUI and the dist.
+- **`llama-ocr.socket`** (:8085) had been installed earlier the same day by
+  #404's build, before any of the above.
 
 **2026-09-29 21:05Z, mecha-5d: `mecha` from `b26537b0` (#408).** The
 installed binary already carried `document_read`, so mecha-d7's 20:48Z
