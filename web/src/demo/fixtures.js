@@ -117,7 +117,6 @@ export const library = {
     { kind: 'character', name: 'sam', version: 1, status: 'candidate', origin: 'model_clean', locked: false, text: 'a 16-year-old boy with a mop of sandy hair, freckles and braces, lanky and tall for his age', created: '2026-09-28T22:03:00Z', portrait: null, shown: '2'.repeat(64) },
     { kind: 'style', name: 'watercolour', version: 1, status: 'approved', origin: 'owner', locked: false, text: 'loose watercolour illustration, soft washes bleeding at the edges, visible paper texture', created: '2026-09-28T21:00:00Z', portrait: null, shown: '3'.repeat(64) },
   ],
-  hidden_locked: 1,
   unlocked: false,
   has_password: false,
   unreadable: 0,
@@ -1654,7 +1653,6 @@ export const personas = {
     { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, problems: [], safety: { disclosure: true, crisis: 'degraded', reanchor: true, dose: true, breaks: false, farewell: 'unbuilt' }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
     { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false, breaks: false, farewell: 'off' }, dose: null },
   ],
-  hidden_locked: 1,
   unlocked: false,
   has_password: false,
 };

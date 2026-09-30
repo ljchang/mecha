@@ -621,7 +621,7 @@
     </div>
   {:else if !chosen}
     <div class="scroll">
-      {#if data && personas.length === 0 && !data.hidden_locked}
+      {#if data && personas.length === 0}
         <div class="empty">No personas yet — make one with New persona.</div>
       {/if}
       <div class="grid">
@@ -645,12 +645,6 @@
             {/if}
           </button>
         {/each}
-        {#if data?.hidden_locked}
-          <div class="tile hiddentile" aria-label="locked personas hidden">
-            <div class="noimg hiddencount"><svg class="glyph" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg> {data.hidden_locked}</div>
-            <span class="tname">hidden</span>
-          </div>
-        {/if}
       </div>
     </div>
   {:else}
@@ -824,8 +818,6 @@
   .tile { display: flex; flex-direction: column; gap: 4px; padding: 0 0 10px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); overflow: hidden; cursor: pointer; color: var(--text); text-align: left; font: inherit; }
   .tile img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
   .noimg { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; color: var(--accent-400); font-family: var(--mono); font-size: 28px; }
-  .hiddentile { cursor: default; border-style: dashed; }
-  .hiddentile .noimg { font-size: 14px; color: var(--text-muted); }
   .tname { font-family: var(--mono); font-size: 12px; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .trel { font-size: 11px; color: var(--text-muted); padding: 0 10px; }
   .badge { align-self: flex-start; margin: 2px 10px 0; font-family: var(--mono); font-size: 10px; color: var(--hazard); border: 1px solid var(--hazard); border-radius: var(--radius-chip); padding: 1px 6px; }
@@ -847,7 +839,6 @@
   .adding { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; padding: 10px; border: 1px solid var(--accent-900); border-radius: var(--radius); }
   .adding .editbox { font-size: 14px; }
   .glyph { vertical-align: -1px; color: var(--text-muted); }
-  .hiddencount { display: flex; align-items: center; gap: 6px; font-size: 16px; }
   .addmark { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; color: var(--accent-400); font-size: 40px; font-weight: 300; }
   .lockline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
   .btnrow { display: flex; gap: 10px; }

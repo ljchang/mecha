@@ -515,10 +515,10 @@ impl PersonaChats {
                 })
             })
             .collect();
-        let hidden = store.all().len() - rows.len();
+        // No count of what is hidden: "one hidden" is the lock telling on
+        // itself. A locked page reads exactly like one with nothing locked.
         serde_json::json!({
             "personas": rows,
-            "hidden_locked": hidden,
             "unlocked": unlocked,
             "has_password": mecha_core::imagelib::has_lock_password(&library.dir),
         })
@@ -1892,7 +1892,7 @@ mod tests {
         store::set_locked(&w.store(), "mara", true).unwrap();
         let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
         assert_eq!(listed["personas"].as_array().unwrap().len(), 0);
-        assert_eq!(listed["hidden_locked"], 1);
+        assert!(listed.get("hidden_locked").is_none(), "{listed}");
         for token in [None, Some("not-a-token")] {
             let refused = w
                 .personas()
