@@ -3164,11 +3164,15 @@ mod tests {
                 >= 2,
             "both the registry and the legacy marker are found: {mail:?}"
         );
-        // And the home's own `mail/` is not the registry.
+        // And a dead login under the mecha home's own `mail/` is not the
+        // registry's: the old `home.join("mail")` reported exactly this one.
+        let stray = home("stores-stray");
+        write_marker(&stray, "personal", &valid_marker());
+        let empty = home("stores-empty");
         let at_home = examine_with(
-            &elsewhere,
+            &stray,
             &MailStores {
-                registry: Some(mecha_home.join("mail")),
+                registry: Some(empty.clone()),
                 legacy: Vec::new(),
             },
             utc(NOW),
@@ -3177,8 +3181,10 @@ mod tests {
             !at_home
                 .iter()
                 .any(|f| f.component == "mail" && f.severity == Severity::Broken),
-            "a marker under the home is not read as the registry's"
+            "a marker under the home is not read as the registry's: {at_home:?}"
         );
+        std::fs::remove_dir_all(&stray).ok();
+        std::fs::remove_dir_all(&empty).ok();
         std::fs::remove_dir_all(&mecha_home).ok();
         std::fs::remove_dir_all(&elsewhere).ok();
     }
@@ -3222,6 +3228,35 @@ mod tests {
             Some(v) => std::env::set_var("MECHA_GOOGLE_DIR", v),
             None => std::env::remove_var("MECHA_GOOGLE_DIR"),
         }
+
+        // And the public `examine` locates the stores through `of_owner`
+        // rather than taking the home's — the wiring the test module's
+        // `examine` shadow cannot see. Every mail variable points at a temp
+        // dir, so no real store is read; only the mail crate reads these.
+        let vars = ["MECHA_MAIL_DIR", "MECHA_GOOGLE_DIR", "MECHA_OUTLOOK_DIR"];
+        let saved: Vec<_> = vars.iter().map(|v| std::env::var(v).ok()).collect();
+        let registry = home("owner-registry");
+        let empty_home = home("owner-home");
+        write_marker(&registry, "personal", &valid_marker());
+        std::env::set_var("MECHA_MAIL_DIR", registry.join("mail"));
+        std::env::set_var("MECHA_GOOGLE_DIR", registry.join("google"));
+        std::env::set_var("MECHA_OUTLOOK_DIR", registry.join("outlook"));
+        assert_eq!(MailStores::of_owner().registry, Some(registry.join("mail")));
+        let found = super::examine(&empty_home, utc(NOW));
+        for (v, old) in vars.iter().zip(saved) {
+            match old {
+                Some(val) => std::env::set_var(v, val),
+                None => std::env::remove_var(v),
+            }
+        }
+        assert!(
+            found
+                .iter()
+                .any(|f| f.component == "mail" && f.severity == Severity::Broken),
+            "examine found the dead login in $MECHA_MAIL_DIR: {found:?}"
+        );
+        std::fs::remove_dir_all(&registry).ok();
+        std::fs::remove_dir_all(&empty_home).ok();
     }
 
     /// A legacy store that cannot be located is said, not dropped.
