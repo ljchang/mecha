@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
   taintLabel, safetyLine, doseLine, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
+  fileUrl, uploadUrl,
 } from '../src/lib/persona.js';
+import { pictureOf } from '../src/lib/picture.js';
 
 // Only a key the server could have minted is a persona chat's.
 assert.ok(isPersonaKey('p-0123456789ab'));
@@ -27,7 +29,7 @@ assert.equal(withUnlock('/x?a=1', 'z'), '/x?a=1&unlock=z');
 assert.throws(() => personaUrl('mara', '/delete', null));
 assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 12);
+assert.equal(ENDPOINTS.length, 14);
 assert.ok(ENDPOINTS.includes('/api/personas/authoring') && ENDPOINTS.includes('/api/personas/X/files'));
 assert.equal(authoringUrl('t'), '/api/personas/authoring?unlock=t');
 assert.equal(personaUrl('mara', '/files', null), '/api/personas/mara/files');
@@ -202,6 +204,37 @@ assert.equal(keptCharacter('maya', undefined), '');
   // Not twice, and not when nothing is running.
   assert.equal(withWorking(entries, working).length, entries.length);
   assert.equal(withWorking(entries, null), entries);
+}
+
+// A picture the persona drew: fetched and edited through this chat's own
+// door, the path encoded and the unlock riding last, as every URL here.
+assert.equal(
+  fileUrl('p-0123456789ab', 'images/a b.png'),
+  '/api/persona-chat/p-0123456789ab/file?path=images%2Fa%20b.png',
+);
+assert.equal(
+  fileUrl('p-0123456789ab', 'images/a.png', 't'),
+  '/api/persona-chat/p-0123456789ab/file?path=images%2Fa.png&unlock=t',
+);
+assert.equal(
+  uploadUrl('p-0123456789ab', 'mask-a-1.png', 't'),
+  '/api/persona-chat/p-0123456789ab/upload?name=mask-a-1.png&unlock=t',
+);
+assert.throws(() => fileUrl('chat-abcdef', 'images/a.png'));
+assert.throws(() => uploadUrl('main', 'mask.png'));
+
+// The streamed result keeps its preview, so the picture shows as soon as the
+// call ends — not only after a reload re-reads the transcript. A row still
+// running has none.
+{
+  let r = emptyRun();
+  r = applyEvent(r, { type: 'tool', id: 'g1', name: 'image_generate' });
+  assert.equal(pictureOf(r.entries[0]), null);
+  r = applyEvent(r, {
+    type: 'tool_result', id: 'g1', name: 'image_generate', is_error: false,
+    preview: 'image: images/20260930-120000-1.png\nGenerated a 1024×1024 image in 40 s',
+  });
+  assert.equal(pictureOf(r.entries[0]), 'images/20260930-120000-1.png');
 }
 
 console.log('persona: ok');

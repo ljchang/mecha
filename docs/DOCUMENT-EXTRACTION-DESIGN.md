@@ -543,7 +543,8 @@ under one harness.
   look; OCR of a photographed page would take the same path minus poppler).
 - **Web uploads and Slack attachments** reach the tool as workspace files
   (`inbox/…`) and need nothing new; a surface that renders the regions is not
-  built.
+  built. A persona chat's uploads reach it the same way, once the owner lists
+  `document_read` for that persona (PERSONA-DESIGN D24, 2026-09-30).
 - **`forget` over the cache** (§4) and **incognito support** (it would need
   `cache = false` for the room's runs and an OCR server that keeps nothing,
   which llama-server does — no prompt cache, `-cram 0`).

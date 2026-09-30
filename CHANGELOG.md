@@ -17,6 +17,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Persona chats show their pictures, with the same Edit button.** A picture
+  a persona draws now appears under its row in the Personas tab, as in the
+  main chat, and Edit opens the same paint-a-region modal. A locked persona's
+  pictures stay behind the library lock, and have no link to open them in a
+  new tab.
+
+- **Drop or attach files in a persona chat.** Drag files onto the Personas
+  tab, or use the paperclip, just as in the main chat. Files land in the
+  chat's own `inbox/` and are named in your message. A picture is also shown
+  to the persona when its model can see images.
+
+- **Personas can read PDFs.** Add `"document_read"` to a persona's
+  `[tools] allow` and it can read a PDF dropped into its chat. It gets the
+  PDF's own text, with OCR for scanned pages, as in the main chat. It is off
+  until you list it. A persona set to `answers = "files"` never gets it,
+  because a document's words are third-party content. A persona with both
+  `document_read` and `web_search` could be steered by a hostile PDF into
+  searching for something; drop `web_search` for a persona that reads files
+  you did not write.
+
 - **The charter editor keeps your comments.** Saving the charter from the
   web page now changes only what you changed: comments above and among the
   lines stay, a line you drag takes its comments with it (a comment right

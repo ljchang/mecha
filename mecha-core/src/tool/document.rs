@@ -22,6 +22,7 @@ use crate::document::{Extractor, Mode};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 pub struct DocumentRead {
     extractor: Extractor,
@@ -37,6 +38,18 @@ impl DocumentRead {
 impl Tool for DocumentRead {
     fn name(&self) -> &str {
         "document_read"
+    }
+
+    /// Eligible for a persona (`docs/PERSONA-DESIGN.md` §3.3; the owner's
+    /// ruling of 2026-09-30): it reads a document in the chat's own
+    /// workspace, reaches only the loopback OCR server, and sends nothing.
+    /// The cache it writes is keyed by the document's own bytes, so a
+    /// persona can only ever read back what it was handed. Its results are
+    /// third-party content, so `answers = "files"` withholds it like the web
+    /// tools (`registry_for`), and §10.6's warning about it beside
+    /// `web_search` is the owner's per-persona switch.
+    fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        Some(self)
     }
 
     fn description(&self) -> &str {

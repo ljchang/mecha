@@ -970,6 +970,23 @@ impl PersonaChats {
             .ok_or(Refusal::NotFound)
     }
 
+    /// The chat's workspace, behind the lock as every door here is: the
+    /// pictures it drew and the masks the owner painted are the chat's, so a
+    /// locked persona's answer 404 without the token, as its words do.
+    pub async fn workspace_of(
+        &self,
+        library: &LibraryState,
+        key: &str,
+        token: Option<&str>,
+    ) -> Result<PathBuf, Refusal> {
+        self.persona_of(library, key, token).await?;
+        let sessions = self.sessions.lock().await;
+        sessions
+            .get(key)
+            .map(|ps| ps.workspace.clone())
+            .ok_or(Refusal::NotFound)
+    }
+
     pub async fn transcript(
         &self,
         chat: &Arc<ChatState>,
@@ -1068,6 +1085,8 @@ impl PersonaChats {
     }
 
     /// Start a turn, or steer the one in flight.
+    /// A text-only turn, as the tests drive one; the route is `send_with`.
+    #[cfg(test)]
     pub async fn send(
         self: &Arc<Self>,
         chat: &Arc<ChatState>,
@@ -1076,6 +1095,27 @@ impl PersonaChats {
         text: &str,
         request_id: Option<String>,
         token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        self.send_with(chat, library, key, text, request_id, token, Vec::new())
+            .await
+    }
+
+    /// `send`, with the files the page uploaded for this turn (`upload`),
+    /// already named in `text`. As in the assistant's chat, each picture
+    /// among them also rides on the turn as pixels for a model that can see
+    /// (`chat::attached_images`), which arms `private_data`; a blind model,
+    /// the cap or an unreadable file leave it to its path, and the answer
+    /// says how many were not shown.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_with(
+        self: &Arc<Self>,
+        chat: &Arc<ChatState>,
+        library: &LibraryState,
+        key: &str,
+        text: &str,
+        request_id: Option<String>,
+        token: Option<&str>,
+        attachments: Vec<String>,
     ) -> Result<serde_json::Value, Refusal> {
         let text = text.trim().to_string();
         if text.is_empty() {
@@ -1145,6 +1185,36 @@ impl PersonaChats {
             let (agent, _) = self.agent_for(&bound, &pinned).map_err(failed)?;
             (held, Some((bound, agent)))
         };
+        // Read before the sessions lock the turn takes below, and only for a
+        // model that can see: to a blind one the pixels would render as a
+        // placeholder every turn, and the path is already in the text.
+        let named = attachments
+            .iter()
+            .filter(|p| mecha_core::message::image_media_type(Path::new(p)).is_some())
+            .count();
+        let sees = ready.as_ref().is_some_and(|(_, agent)| agent.vision());
+        let images = if sees && named > 0 {
+            let workspace = self
+                .sessions
+                .lock()
+                .await
+                .get(key)
+                .map(|ps| ps.workspace.clone());
+            match workspace {
+                Some(workspace) => tokio::task::spawn_blocking(move || {
+                    chat::attached_images(&workspace, &attachments)
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("attachments not read: {e}");
+                    Vec::new()
+                }),
+                None => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        let shown = images.len();
 
         let mut sessions = self.sessions.lock().await;
         // Under the lock `stop` takes, so a turn is either cancelled by it or
@@ -1214,6 +1284,9 @@ impl PersonaChats {
         {
             let pre_fold = conversation.messages.clone();
             mecha_core::agent::append_user_text(&mut conversation.messages, said.clone());
+            if let Some(last) = conversation.messages.last_mut() {
+                last.content.extend(images);
+            }
             if let Some(anchor) = &anchor {
                 mecha_core::agent::append_user_text(&mut conversation.messages, anchor.clone());
             }
@@ -1224,6 +1297,7 @@ impl PersonaChats {
                 .map_err(|e| (e, Some(pre_fold)))
         } else {
             let mut user = Message::user(&said);
+            user.content.extend(images);
             // Its own block, in the harness's registered voice: never drawn in
             // the owner's bubble, never read as the owner's words.
             if let Some(anchor) = &anchor {
@@ -1532,7 +1606,13 @@ impl PersonaChats {
             }
         });
         drop(sessions);
-        Ok(serde_json::json!({ "started": true }))
+        // How many pictures the text names and the persona was not shown, for
+        // the page to say — it cleared the chips on send (as `chat::send`).
+        Ok(serde_json::json!({
+            "started": true,
+            "pictures_not_shown": named.saturating_sub(shown),
+            "model_sees": sees,
+        }))
     }
 }
 
@@ -1820,6 +1900,10 @@ pub struct SendBody {
     request_id: Option<String>,
     #[serde(default)]
     unlock: Option<String>,
+    /// Workspace-relative paths the page uploaded for this turn, already
+    /// named in `text` (`PersonaChats::send_with`).
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -2173,13 +2257,14 @@ pub async fn send(
     let personas = Arc::clone(&chat.personas);
     respond(
         personas
-            .send(
+            .send_with(
                 &chat,
                 &state.library,
                 &key,
                 &body.text,
                 body.request_id,
                 body.unlock.as_deref(),
+                body.attachments,
             )
             .await,
     )
@@ -2202,6 +2287,67 @@ pub async fn cancel(
         .await
     {
         Ok(cancelled) => Json(serde_json::json!({ "cancelled": cancelled })).into_response(),
+        Err(r) => r.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct FileQuery {
+    path: String,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// GET /api/persona-chat/{key}/file?path= — a picture out of this chat's
+/// workspace, with the assistant chat's containment and content types
+/// (`files::serve`). The persona chat's own door: an assistant key is
+/// refused, and the assistant's `/api/chat/{key}/file` never finds a
+/// persona chat, whose session map is this one.
+pub async fn download(
+    State(state): Web,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Query(q): Query<FileQuery>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c.clone(),
+        Err(resp) => return resp,
+    };
+    match chat
+        .personas
+        .workspace_of(&state.library, &key, q.unlock.as_deref())
+        .await
+    {
+        Ok(ws) => super::files::serve(ws, q.path).await,
+        Err(r) => r.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct UploadQuery {
+    name: String,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// POST /api/persona-chat/{key}/upload?name= — the edit modal's mask into
+/// this chat's `inbox/` (`files::store`). Named in the message, never
+/// attached: a mask is for `image_generate`, not for the persona to look at.
+pub async fn upload(
+    State(state): Web,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Query(q): Query<UploadQuery>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c.clone(),
+        Err(resp) => return resp,
+    };
+    match chat
+        .personas
+        .workspace_of(&state.library, &key, q.unlock.as_deref())
+        .await
+    {
+        Ok(ws) => super::files::store(ws, &q.name, body).await,
         Err(r) => r.into_response(),
     }
 }
@@ -2242,6 +2388,8 @@ mod tests {
         Mode,
         Arc<StdMutex<JudgeSays>>,
         Arc<StdMutex<usize>>,
+        /// Whether the model can see — off unless a test turns it on.
+        Arc<std::sync::atomic::AtomicBool>,
     );
 
     #[async_trait::async_trait]
@@ -2251,6 +2399,9 @@ mod tests {
         }
         fn default_model(&self) -> &str {
             "test"
+        }
+        fn vision(&self) -> bool {
+            self.4.load(std::sync::atomic::Ordering::SeqCst)
         }
         async fn complete(
             &self,
@@ -2322,6 +2473,7 @@ mod tests {
         chat: Arc<ChatState>,
         library: LibraryState,
         seen: Arc<StdMutex<Vec<CompletionRequest>>>,
+        sees: Arc<std::sync::atomic::AtomicBool>,
         judge: Arc<StdMutex<JudgeSays>>,
         judged: Arc<StdMutex<usize>>,
     }
@@ -2383,6 +2535,8 @@ mod tests {
         let judge = Arc::new(StdMutex::new(JudgeSays::Clear));
         let judged = Arc::new(StdMutex::new(0usize));
         let (for_judge, for_judged) = (Arc::clone(&judge), Arc::clone(&judged));
+        let sees = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let for_sees = Arc::clone(&sees);
         let personas = PersonaChats::with(
             dir,
             root.join("work"),
@@ -2392,6 +2546,7 @@ mod tests {
                     mode.clone(),
                     Arc::clone(&for_judge),
                     Arc::clone(&for_judged),
+                    Arc::clone(&for_sees),
                 ))
                     as Box<dyn mecha_core::provider::Provider>)
             }),
@@ -2407,6 +2562,7 @@ mod tests {
                 Mode::Answer,
                 Arc::new(StdMutex::new(JudgeSays::Clear)),
                 Arc::new(StdMutex::new(0)),
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
             )),
             pool,
             config,
@@ -2418,6 +2574,7 @@ mod tests {
             root,
             chat,
             seen,
+            sees,
             judge,
             judged,
         }
@@ -2645,6 +2802,161 @@ mod tests {
         let again = w.personas().sessions.lock().await[&key2].workspace.clone();
         assert_eq!(again, first);
         assert!(again.join("images/drawn.png").is_file());
+    }
+
+    /// A chat's pictures and masks go through its own door, locked with its
+    /// persona: the Edit button reads the picture and writes the mask here,
+    /// and neither is reachable without the token once the persona locks.
+    #[tokio::test]
+    async fn a_chats_pictures_are_behind_its_persona_lock() {
+        use axum::body::Bytes;
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let ws = w
+            .personas()
+            .workspace_of(&w.library, &key, None)
+            .await
+            .unwrap();
+        std::fs::create_dir_all(ws.join("images")).unwrap();
+        std::fs::write(ws.join("images/drawn.png"), b"png").unwrap();
+
+        let shown = super::super::files::serve(ws.clone(), "images/drawn.png".into()).await;
+        assert_eq!(shown.status(), StatusCode::OK);
+        assert_eq!(shown.headers()["content-type"], "image/png");
+        // A real file just outside the jail, so the 404 is containment and
+        // not absence (review of #438).
+        std::fs::write(ws.parent().unwrap().join("drawn.png"), b"png").unwrap();
+        let outside = super::super::files::serve(ws.clone(), "../drawn.png".into()).await;
+        assert_eq!(outside.status(), StatusCode::NOT_FOUND);
+
+        let stored =
+            super::super::files::store(ws.clone(), "mask-drawn-1.png", Bytes::from_static(b"m"))
+                .await;
+        assert_eq!(stored.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(stored.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let path: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(path["path"], "inbox/mask-drawn-1.png");
+
+        // Locked: the same 404 as a missing chat, until the token comes.
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        for token in [None, Some("not-a-token")] {
+            assert!(matches!(
+                w.personas().workspace_of(&w.library, &key, token).await,
+                Err(Refusal::NotFound)
+            ));
+        }
+        let token = w.library.grant_for_tests();
+        assert_eq!(
+            w.personas()
+                .workspace_of(&w.library, &key, Some(&token))
+                .await
+                .unwrap(),
+            ws
+        );
+        // An assistant chat's key is not this door's to answer.
+        assert!(matches!(
+            w.personas()
+                .workspace_of(&w.library, "0123456789abcdef", None)
+                .await,
+            Err(Refusal::Bad(_))
+        ));
+    }
+
+    /// A dropped picture rides on the persona's turn as pixels when its
+    /// model can see, arming `private` as in the assistant's chat; a blind
+    /// model gets the path alone, and the answer counts what was not shown.
+    #[tokio::test]
+    async fn an_attached_picture_rides_on_the_turn_for_a_model_that_sees() {
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let ws = w
+            .personas()
+            .workspace_of(&w.library, &key, None)
+            .await
+            .unwrap();
+        std::fs::create_dir_all(ws.join("inbox")).unwrap();
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 4)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(ws.join("inbox/photo.png"), &png).unwrap();
+        std::fs::write(ws.join("inbox/notes.txt"), b"notes").unwrap();
+        let attached = vec!["inbox/photo.png".to_string(), "inbox/notes.txt".to_string()];
+        let text = "Look\n\nAttached file at inbox/photo.png\nAttached file at inbox/notes.txt";
+
+        let send = |sees: bool| {
+            w.sees.store(sees, std::sync::atomic::Ordering::SeqCst);
+            let (w, key, attached) = (&w, key.clone(), attached.clone());
+            async move {
+                let (mut rx, _) = w
+                    .personas()
+                    .subscribe(&w.library, &key, None)
+                    .await
+                    .unwrap();
+                let answer = w
+                    .personas()
+                    .send_with(&w.chat, &w.library, &key, text, None, None, attached)
+                    .await
+                    .unwrap();
+                loop {
+                    match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await
+                    {
+                        Ok(Ok(WireEvent::Done {
+                            ok,
+                            error,
+                            taint_private,
+                            ..
+                        })) => {
+                            assert!(ok, "{error:?}");
+                            return (answer, taint_private);
+                        }
+                        Ok(Ok(_)) => continue,
+                        other => panic!("no Done event: {other:?}"),
+                    }
+                }
+            }
+        };
+        let images_in_last_turn = || {
+            let seen = w.seen.lock().unwrap();
+            let last = seen.last().unwrap();
+            let user = last
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == mecha_core::message::Role::User)
+                .unwrap();
+            user.content
+                .iter()
+                .filter(|b| matches!(b, Block::Image { .. }))
+                .count()
+        };
+
+        // Blind: the path is in the text, no pixels, and one not shown.
+        let (answer, private) = send(false).await;
+        assert_eq!(answer["model_sees"], false);
+        assert_eq!(answer["pictures_not_shown"], 1);
+        assert_eq!(images_in_last_turn(), 0);
+        assert!(!private, "nothing private entered a blind turn");
+
+        // Seeing: the picture rides as pixels (the text file never does),
+        // and the chat now holds something private.
+        let (answer, private) = send(true).await;
+        assert_eq!(answer["model_sees"], true);
+        assert_eq!(answer["pictures_not_shown"], 0);
+        assert_eq!(images_in_last_turn(), 1);
+        assert!(private, "an attached picture arms private_data");
     }
 
     /// The tool a run waits on is named until its result arrives.
