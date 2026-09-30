@@ -29,8 +29,10 @@ export function docOf(draft) {
   };
 }
 
-export function isDirty(original, draft, fixed = []) {
-  return JSON.stringify(docOf(draftOf(original, fixed))) !== JSON.stringify(docOf(draft));
+// Against the file as read, before a missing fixed section was put back:
+// restoring `## Core` is itself a change the owner can save (review of #430).
+export function isDirty(original, draft) {
+  return JSON.stringify(docOf(draftOf(original))) !== JSON.stringify(docOf(draft));
 }
 
 export const isFixed = (fixed, s) => fixed.includes(s.heading.trim());

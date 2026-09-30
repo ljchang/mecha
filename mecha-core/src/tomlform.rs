@@ -364,10 +364,6 @@ fn set(root: &mut Table, path: &str, v: &Json) -> Result<()> {
     let mut table: &mut dyn toml_edit::TableLike = root;
     for seg in parents {
         if table.get(seg).is_none() {
-            if v.is_null() {
-                // Removing a key under a table that is not there: done.
-                return Ok(());
-            }
             table.insert(seg, Item::Table(Table::new()));
         }
         table = table
@@ -375,10 +371,7 @@ fn set(root: &mut Table, path: &str, v: &Json) -> Result<()> {
             .and_then(Item::as_table_like_mut)
             .with_context(|| format!("`{seg}` in `{path}` is not a table in the file"))?;
     }
-    if v.is_null() {
-        table.remove(leaf);
-        return Ok(());
-    }
+    // `null` never reaches here: `apply` sends it to `remove`.
     let mut new = to_toml(v)?;
     // Keep the old value's decor — a comment trailing it on its line is the
     // owner's, and it stays beside the value it described.
