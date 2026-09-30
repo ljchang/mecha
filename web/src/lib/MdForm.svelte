@@ -30,10 +30,14 @@
   // Text before the sections: always there for a file without sections (a
   // motivation is mostly this), otherwise once there is some or it is asked for.
   let showBody = $state(untrack(() => Boolean(draft.body.trim()) || draft.sections.length === 0));
-  let notes = $state(new Set());
+  // Notes open now: every note the file already has, plus any the owner
+  // opened. Held here, not read off the text, so emptying a note keeps its
+  // box and the focus (review of #430).
+  const openNotes = (d) => new Set([...(d.note.trim() ? ['title'] : []), ...d.sections.filter((s) => s.note.trim()).map((s) => s.id)]);
+  let notes = $state(untrack(() => openNotes(draft)));
   let menu = $state(null);
 
-  const noteOpen = (key, value) => notes.has(key) || Boolean(value.trim());
+  const noteOpen = (key) => notes.has(key);
 
   function openNote(key) {
     notes = new Set([...notes, key]);
@@ -47,7 +51,7 @@
 
   function discard() {
     draft = draftOf(doc, fixed);
-    notes = new Set();
+    notes = openNotes(draft);
     menu = null;
   }
 
