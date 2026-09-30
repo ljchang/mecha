@@ -272,7 +272,11 @@ allowlist whose entries were all invalid collapsing to **unrestricted**
    here must fail closed.
 2. **Configuration silently ignored** — Codex's unknown key, Hermes's
    ignored overrides, Open WebUI's env-versus-database. mecha's `ConfigLayer`
-   is already `deny_unknown_fields`; any new table keeps that.
+   is already `deny_unknown_fields`; any new table keeps that — **except
+   `[features]`**, where an unknown key warns by name and is listed by `mecha
+   features` rather than failing startup, because one `config.toml` is read by
+   several builds at once and a key cannot turn on a feature a binary does
+   not know (§9 step 1).
 3. **Two sources of truth for one switch** — Open WebUI's env *and* database,
    LibreChat's YAML *and* roles. The enabling fact lives in one place.
 4. **Many parallel switches for one feature** — Hermes has per-platform lists,
@@ -527,7 +531,18 @@ same holds for every **cross-feature reader** — `/api/today`,
 construction, and degrade **per section** (a Today card for mail simply has
 no rows when mail is off), which is the decline rule — a feature being off
 never hides a failure somewhere else — applied to aggregates (found on review
-of #427, pass 6).
+of #427, pass 6). **Counts of what is waiting never degrade.** The front
+door's queue is filled by an external drain the bool does not stop, so
+`frontdoor = false` over a non-empty `~/.mecha/requests` would hide strangers'
+requests the drain keeps delivering — the failure the two-row split below
+exists to prevent, reintroduced by the switch. So `Backlog`'s sections
+(`frontdoor`, `requests_on_owner`) count whatever is on disk whatever the
+bool says, and a feature that is off with work waiting in its store is a
+condition the owner is **shown** — a banner on Home and a row in `mecha
+features` ("off, 3 requests waiting — `mecha features enable frontdoor`") —
+never hidden. `doctor` does not cover it: a queue nobody is looking at is not
+distress, and `backlog` is the reader that counts (found on review of #427,
+pass 7).
 
 Notes on the rows that change:
 
@@ -722,7 +737,7 @@ genuinely not known yet, and the output must say so rather than guess.
 |---|---|---|
 | **F1** | What turns a feature on | **A `[features]` table of bools** in the global config, every feature listed. The owner, overruling the doc's recommendation of table presence: *"The problem with table existing is that users need to know what features are available. I feel like a registry or having to toggle bools is a better design."* §5's three rules are what keep the bool from being a second source of truth |
 | **F2** | Off in the web app | **Removed from navigation**, as the owner asked in the opening message; Settings → Features lists everything. `Unready` and `Unknown` are shown with a banner, never removed (§4.1) |
-| **F3** | Web as a feature | **Optional like the rest** — the owner: *"Web should also be optional feature."* CLI, TUI and Slack are complete without it; voice and incognito, which exist only in the web app, report `Blocked(web)`. A tab's visibility is not a `requires` relation: with `web` off there is no navigation at all, so the Personas and Library tabs need no dependency on it — and giving `personas` one would make `Blocked` refuse `mecha persona` from the CLI, which works without the web (found on review of #427) |
+| **F3** | Web as a feature | **Optional like the rest** — the owner: *"Web should also be optional feature."* CLI, TUI and Slack are complete without it; incognito, and voice's browser parts (`dictate`, `calls`, `cloning`), report `Blocked(web)`. `voice` itself does not: `mecha voice-serve` is its own loopback surface, and `Blocked` would refuse it (found on review of #427, pass 7). A tab's visibility is not a `requires` relation: with `web` off there is no navigation at all, so the Personas and Library tabs need no dependency on it — and giving `personas` one would make `Blocked` refuse `mecha persona` from the CLI, which works without the web (found on review of #427) |
 | **F4** | What an off route returns | **404** with `{"error":"feature_off","feature":"image","fix":"mecha features enable image"}`, only behind `owner_guard` (§4.2 item 4). 503 stays for `Unready` |
 | **F5** | Recommendation tiers | *Open.* Recommended: `hardware.md`'s four (16/32/64/128 GB), so one page and one table agree |
 | **F6** | Existing installs, when `[features]` arrives | **`mecha setup` offers.** It detects a feature in use (an `[image]` table, a mail `[[mcp]]` entry, a non-empty persona store, a running voice unit) and offers to write its bool. Never grandfathered as on: that is a second source of truth. On this machine the deploy that ships the table writes it by hand, in the same change, so nothing disappears |
