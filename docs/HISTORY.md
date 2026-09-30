@@ -14,6 +14,44 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-30 — modular installs: the design, and `mecha features` (#427,
+#428, #432, #433).** The owner asked how a new user installs only the parts
+they want: Slack, the web app, image generation, personas, OCR and voice
+optional, an off feature hidden from the web app and refused by the CLI, and
+model recommendations per feature. `FEATURES-DESIGN.md` (#427, fourteen
+review passes) is the authority. It reads Hermes, OpenClaw and Codex from
+source and the rest from their docs. The owner ruled all six questions the
+same day. F1 is a `[features]` table of bools that ships all `false`, which
+overruled the doc's first recommendation of table presence, because a user
+has to be able to see what exists. F5 is `hardware.md`'s four tiers in two
+columns: unified memory, and a separate GPU beside system RAM.
+
+#428 (`d1da01aa`) is step 0, read-only:
+- `mecha_core::feature` holds a closed `Feature` enum of 21 features and
+  parts and five `State`s: on, off, blocked, unready, unknown.
+- `state(facts, f)` takes no `Config`. `Facts::read` carries the global one,
+  so a project `mecha.toml` cannot decide what the install has on.
+- Each row asks what registration asks: `ToolsConfig::registers`, the
+  loopback validators, `DocumentsConfig::validate`, and
+  `SearchBackendConfig::problem`, which is new and held to
+  `build_search_chain` by a test. It never reads a field's presence.
+- `mecha features [--json]` lists them, with the fix for each off row.
+- `ARCHITECTURE.md` §Features holds the invariants and an "Adding a feature"
+  checklist.
+
+Step 0 found `setup` counting mail accounts under `$MECHA_HOME`, where the
+mail crate never looks. #432 (`5664f245`) moved the rule to
+`onboarding::{mail,docs,legacy}_store_dir`, and made doctor
+(`MailStores::of_owner`), Slack's import check and the booking sweep find
+each store by its owner's rule. #433 (`c599c802`) fixed one test's temp
+directory. Deployed by the mecha-d7 lane at `5664f245` and `c599c802`.
+#441 (`76c3331e`) closed a gap the design found that predated it: `[documents]`
+was stripped from project layers but missing from
+`trial_env::OPERATOR_ONLY_TABLES`, so an experiment environment could point
+OCR at a remote server or run the PDF parser unconfined. `config_at` now
+refuses it like the other five.
+On this machine `mecha features` reads 20 of 21 rows on; `messages` is off.
+
 **2026-09-30 — paint the part of a picture to change (#424, #429).** The
 owner asked for the web chat's Edit button to become a modal where areas can
 be painted. `IMAGE-REGION-EDIT-RESEARCH.md` (#424) measured the ways to
@@ -54,6 +92,20 @@ landed, identical beyond the mask's edge. Installed 2026-09-30 about 04:31Z
 by mecha-d7 (main `c599c802`). Between the dist rsync at 04:29Z and the serve
 restart, the new page ran against the old binary, which ignored `mask` and
 would have edited the whole picture.
+
+**2026-09-30 — the `personal` Google grant outlived seven days.** The
+project was published to production on 2026-09-16, and `personal` was
+re-consented on 2026-09-17 (`granted_at` 2026-09-17T02:10:19Z in its
+`oauth.json`, replacing the 09-15 grant). On 2026-09-30 (day 13) its
+refresh token was still minting access tokens, and a live read-only
+`mecha mail calendars` answered. A grant minted in Testing is revoked on day 7. So the guard the handoff had
+kept for exactly this, `grant_lifetime_days = 7` on that account in
+`~/.mecha/mail/accounts.toml`, came out, as its own note said to once a
+grant was observed past day eight. The owner removed it; the backup is
+`accounts.toml.bak-2026-09-30`. `mecha doctor` went from one mail finding
+("sign-in has expired") to none. The finding had been a declared lifetime,
+never a failure. The clock is a property of the grant rather than the app,
+so only a consent made after publishing could have shown this.
 
 **2026-09-29 — PDFs as a tool, a layout stage for tables, model servers
 that start on demand, and the persona design (#403, #404, #406,
@@ -1114,6 +1166,8 @@ marketing pages, and pruning them as unused would break the consent screen
 with nothing to say why. What this does *not* settle is in HANDOFF: the
 seven-day clock belongs to the grant rather than the app, so the `personal`
 grant minted 2026-09-15 keeps its own expiry and still owes a re-consent.
+(Closed on 2026-09-30: the 2026-09-17 re-consent outlived seven days; see
+that entry.)
 The console states were observed by `mecha-41` and are not verifiable from a
 shell; the DNS row and the three branding URLs were re-checked
 independently.
@@ -10266,6 +10320,20 @@ day.** mecha-graph's first CI used `stable`; Rust 1.98 added
 `chunks_exact_to_as_chunks` and the job went red on code the PR had not
 touched. Pin the toolchain and move it in its own change.
 
+**A reader of another program's store must find it by that program's rule.**
+The mail crate finds its registry by `$MECHA_MAIL_DIR`, else `~/.mecha/mail`
+under the real home, and ignores `$MECHA_HOME`. mecha read it as
+`mecha_home().join("mail")` in five places: `frontdoor::mail_dir` first,
+then `setup`, doctor, Slack's import check, and the booking sweep reading
+mecha's `requests` from the other side. Each agreed with the writer only
+while neither variable was set. So trials, tests and any relocated install
+read a directory nobody writes, and the doctor reported a dead login as all
+clear. Resolve a foreign store through a helper that copies the owner's rule
+(`onboarding::mail_store_dir`), and pin it with a test that sets the
+owner's variable. Test harnesses must isolate `HOME` too, not only
+`MECHA_HOME`, or the fallback lands on the developer's real store (#428,
+#432).
+
 ### A merge, made under a standing authorization, can race a fix in flight elsewhere
 
 **A background fork was given "merge PRs once they pass review" and merged
@@ -10288,6 +10356,12 @@ authorization is a green light for the git state, not a substitute for
 asking whether anyone nearby has unpushed work against the same PR** — a
 `SendMessage` before the merge ("about to merge #86, anyone got fixes in
 flight?") would have cost one round trip and avoided the whole repair.
+
+It recurred on 2026-09-30. Another lane, on the owner's "Do it", merged #428
+and then #432, the latter at its branch tip `0d972f76` while the owning session was
+answering #432's review. That fix was pushed a minute later to a closed PR
+and needed #433 to reach `main`. The merge also landed #428 ahead of the
+design doc its comments cite (#427).
 
 ## Design notes worth keeping
 

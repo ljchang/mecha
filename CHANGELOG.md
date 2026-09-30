@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **An experiment environment can no longer set `[documents]`.** A project's
+  `mecha.toml` was already stripped of it, but an environment's `config.toml`
+  — which arrives with a checkout — could point OCR at a remote server or run
+  the PDF parser unconfined. `mecha exp` now refuses such a file, as it does
+  `[image]`, `[messages]`, `[slack]`, `[web]` and `[harness]`.
+
 ### Added
 
 - **Every optional feature has a switch: `[features]`.** The global
@@ -21,6 +29,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Nothing is turned off by the switch yet: this release only records your
   answers. A project's `mecha.toml` cannot set the table, and an experiment
   environment may only switch features off (and the front door on).
+
+- **Persona chats show their pictures, with the same Edit button.** A picture
+  a persona draws now appears under its row in the Personas tab, as in the
+  main chat, and Edit opens the same paint-a-region modal. A locked persona's
+  pictures stay behind the library lock, and have no link to open them in a
+  new tab.
+
+- **Drop or attach files in a persona chat.** Drag files onto the Personas
+  tab, or use the paperclip, just as in the main chat. Files land in the
+  chat's own `inbox/` and are named in your message. A picture is also shown
+  to the persona when its model can see images.
+
+- **Personas can read PDFs.** Add `"document_read"` to a persona's
+  `[tools] allow` and it can read a PDF dropped into its chat. It gets the
+  PDF's own text, with OCR for scanned pages, as in the main chat. It is off
+  until you list it. A persona set to `answers = "files"` never gets it,
+  because a document's words are third-party content. A persona with both
+  `document_read` and `web_search` could be steered by a hostile PDF into
+  searching for something; drop `web_search` for a persona that reads files
+  you did not write.
 
 - **The charter editor keeps your comments.** Saving the charter from the
   web page now changes only what you changed: comments above and among the

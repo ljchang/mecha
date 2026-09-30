@@ -506,7 +506,8 @@ mod tests {
     /// `[[search]]` chain.
     #[test]
     fn every_real_tool_declares_as_the_design_lists() {
-        const ELIGIBLE: [&str; 4] = [
+        const ELIGIBLE: [&str; 5] = [
+            "document_read",
             "image_generate",
             "image_library",
             "image_view",
@@ -538,6 +539,17 @@ mod tests {
         ));
         pool.insert(Arc::new(crate::tool::recall::Recall::new(
             dir.join("t.jsonl"),
+        )));
+        pool.insert(Arc::new(crate::tool::document::DocumentRead::new(
+            crate::document::Extractor::new(
+                crate::document::DocumentsConfig {
+                    ocr: false,
+                    cache: false,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap(),
         )));
         assert!(
             pool.len() >= 15,
@@ -584,6 +596,40 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// `document_read` is a persona's when the owner lists it and the persona
+    /// answers from anything (owner ruling, 2026-09-30). A files-only persona
+    /// withholds it with the web tools: a document's words are third-party
+    /// content, and the refusal says why rather than dropping it silently.
+    #[test]
+    fn document_read_is_given_when_listed_and_withheld_from_a_files_only_persona() {
+        let mut pool = Registry::new();
+        pool.insert(Arc::new(crate::tool::document::DocumentRead::new(
+            crate::document::Extractor::new(
+                crate::document::DocumentsConfig {
+                    ocr: false,
+                    cache: false,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap(),
+        )));
+        let open = registry_for(&pool, &settings(&["document_read"], Answers::Open));
+        assert!(open.registry.get("document_read").is_some());
+        assert!(open.refused.is_empty(), "{:?}", open.refused);
+        // Not listed: not given. Eligible is not the same as granted.
+        let unlisted = registry_for(&pool, &settings(&["web_search"], Answers::Open));
+        assert!(unlisted.registry.get("document_read").is_none());
+        let files = registry_for(&pool, &settings(&["document_read"], Answers::Files));
+        assert!(files.registry.get("document_read").is_none());
+        assert_eq!(files.refused.len(), 1);
+        assert!(
+            files.refused[0].why.contains("files only"),
+            "{:?}",
+            files.refused
+        );
     }
 
     /// On a mixed chain the persona's web_search reaches only the blind

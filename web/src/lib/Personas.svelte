@@ -4,12 +4,16 @@
   import TomlForm from './TomlForm.svelte';
   import MdForm from './MdForm.svelte';
   import ModelChip from './ModelChip.svelte';
+  import EditModal from './EditModal.svelte';
+  import { composeEditMessage, maskName } from './image-edit.js';
+  import { pictureOf, repeatedPictures } from './picture.js';
+  import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { repairComments, changesOf } from './tomlform.js';
   import { isDirty as mdDirty } from './mdform.js';
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
     taintLabel, safetyLine, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
-    toolStatus, waitingLine, withWorking,
+    toolStatus, waitingLine, withWorking, fileUrl, uploadUrl,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -84,6 +88,123 @@
   let scroller = $state(null);
 
   const personas = $derived(data?.personas ?? []);
+
+  // A picture the persona drew (§8.6), under its row as in the assistant's
+  // chat, with the same Edit button and modal. A locked persona's picture
+  // carries the token and no link: opening it in a tab would write the token
+  // into the browser's history, which outlives the unlock. An open persona's
+  // needs neither, so its URL is safe to open full size.
+  const repeats = $derived(repeatedPictures(run.entries));
+  const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
+
+  // The Edit modal (EditModal.svelte): anything already typed becomes its
+  // instruction. Not `editing`, which is the persona-file editor's.
+  let imageEdit = $state(null);
+  function editImage(path) {
+    imageEdit = { path, src: pictureUrl(path), initial: input.trim(), busy: false, error: null };
+  }
+
+  // The mask goes up into this chat's `inbox/` and is named in the message,
+  // never attached — it is for `image_generate`, not for the persona to look
+  // at (image-edit.js). The words then go out through `send`, like anything
+  // typed, so a live run is steered just as a typed message steers it.
+  async function sendEdit({ text, mask }) {
+    const chatKey = key;
+    const edit = imageEdit;
+    if (!edit || !chatKey) return;
+    edit.busy = true;
+    edit.error = null;
+    try {
+      let maskPath = null;
+      if (mask) {
+        const res = await fetch(uploadUrl(chatKey, maskName(edit.path), token), { method: 'POST', body: mask });
+        if (!res.ok) throw new Error((await res.text()).trim());
+        maskPath = (await res.json()).path;
+      }
+      if (chatKey !== key) return;
+      const message = composeEditMessage(edit.path, maskPath, text);
+      if (!message) {
+        edit.busy = false; // never a modal that no button can close
+        return;
+      }
+      input = message;
+      imageEdit = null;
+      await send();
+    } catch (err) {
+      if (imageEdit === edit) {
+        edit.busy = false;
+        edit.error = `The mask could not be uploaded: ${err?.message ?? err}. Nothing was sent.`;
+      }
+    }
+  }
+
+  // Files for the next turn, as in the assistant's chat: each lands in this
+  // chat's `inbox/` and is named in the message; a picture also rides on the
+  // turn as pixels when the persona's model can see (`send_with`).
+  let fileInput = $state(null);
+  // A count, not a flag: a drop can land while a picked upload is going.
+  let uploads = $state(0);
+  let attachments = $state([]); // workspace-relative paths, announced on send
+  let dragDepth = $state(0); // dragenter/leave fire at every child boundary
+  // Only into an open chat, and not behind the edit modal: a file dropped
+  // there would ride out unseen on the modal's own send (review of #429).
+  const canDrop = $derived(!!key && !imageEdit);
+
+  const notice = (text) => (run = { ...run, entries: [...run.entries, { kind: 'notice', text }] });
+
+  async function uploadFiles(files) {
+    const chatKey = key;
+    for (const f of files) {
+      uploads += 1;
+      try {
+        const res = await fetch(uploadUrl(chatKey, f.name, token), { method: 'POST', body: f });
+        if (!res.ok) throw new Error((await res.text()).trim());
+        const data = await res.json();
+        // A switch mid-upload must not announce this chat's file in the next.
+        if (chatKey !== key) return;
+        attachments.push(data.path);
+      } catch (err) {
+        if (chatKey !== key) return;
+        notice(`upload failed: ${err?.message ?? err}`);
+      } finally {
+        uploads -= 1;
+      }
+    }
+  }
+
+  function uploadPicked(e) {
+    const files = [...(e.target.files ?? [])];
+    e.target.value = '';
+    uploadFiles(files);
+  }
+
+  // On the window, as the assistant's chat does: a file dropped anywhere the
+  // page does not claim is *navigated to* by the browser, which throws the
+  // open chat away. Claimed on every screen of this tab, attached only into
+  // an open chat.
+  function onDragEnter(e) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth += 1;
+  }
+  function onDragOver(e) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = canDrop ? 'copy' : 'none';
+  }
+  function onDragLeave(e) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+  }
+  function onDrop(e) {
+    if (!carriesFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    if (!canDrop) return;
+    const { files, folders } = droppedFiles(e.dataTransfer);
+    for (const name of folders) notice(`not attached: ${name} is a folder — drop the files inside it`);
+    uploadFiles(files);
+  }
 
   async function load() {
     error = '';
@@ -197,6 +318,8 @@
     if (key) {
       close();
       key = null;
+      imageEdit = null;
+      attachments = [];
       run = emptyRun();
       // The chat's switches leave with it: a persona page reads its own
       // (review of #431 — the last chat's `disclosure` decided the tag).
@@ -219,6 +342,8 @@
     editing = null;
     chosen = null;
     key = null;
+    imageEdit = null;
+    attachments = [];
     run = emptyRun();
     history = [];
     refused = [];
@@ -277,6 +402,10 @@
     close();
     key = k;
     run = emptyRun();
+    // A modal over the last chat's picture must not send into this one, and
+    // the last chat's files are paths in another jail.
+    imageEdit = null;
+    attachments = [];
     // Or the previous chat's resources show for a round trip (review of #418).
     safety = null;
     crisisShown = false;
@@ -627,18 +756,38 @@
   }
 
   async function send() {
-    const text = input.trim();
+    const typed = input.trim();
+    const attached = [...attachments];
+    const text = withAttachments(typed, attached);
     if (!text || !key) return;
     input = '';
+    attachments = [];
     try {
       const res = await fetch(chatUrl(key, '/send'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text, unlock: token ?? undefined }),
+        body: JSON.stringify({ text, attachments: attached, unlock: token ?? undefined }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
+      const data = await res.json();
+      // Pictures the persona was not shown, said here since the chips are
+      // gone — the assistant's chat's wording, for the same three reasons.
+      if (data.started && data.pictures_not_shown > 0) {
+        notice(
+          data.model_sees
+            ? `${data.pictures_not_shown} picture(s) went in by name only — ${chosen.display} was not shown them.`
+            : 'This model cannot see images, so the picture(s) went in by name only.',
+        );
+      }
+      // A steer carries text only, so a picture sent into a live run is
+      // named and not shown.
+      if (data.steered && attached.some((p) => /\.(png|jpe?g|gif|webp)$/i.test(p))) {
+        notice(`${chosen.display} was answering, so the picture went in by name only — not shown.`);
+      }
     } catch (e) {
-      input = text;
+      // Nothing was sent: the words and the files come back to the composer.
+      input = typed;
+      attachments = attached;
       error = String(e?.message ?? e);
     }
   }
@@ -677,11 +826,23 @@
 {/snippet}
 
 <svelte:window
+  ondragenter={onDragEnter}
+  ondragover={onDragOver}
+  ondragleave={onDragLeave}
+  ondrop={onDrop}
   onclick={(e) => menuOpen && !e.target.closest?.('.menuwrap') && (menuOpen = false)}
   onkeydown={(e) => e.key === 'Escape' && (menuOpen = false)}
 />
 
 <div class="page">
+  {#if dragDepth > 0 && canDrop}
+    <div class="drop-overlay" aria-hidden="true">
+      <div class="drop-card">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="var(--accent-400)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.5l-8.2 8.2a5.5 5.5 0 01-7.8-7.8L13.6 4.3a3.7 3.7 0 015.2 5.2l-8.4 8.4a1.85 1.85 0 01-2.6-2.6l7.8-7.8" /></svg>
+        <span>drop to attach — files land in this chat's inbox/</span>
+      </div>
+    </div>
+  {/if}
   <header class="head">
     {#if chosen}
       <button class="backbtn" aria-label={key ? `leave the chat with ${chosen.display}` : editing ? 'close the editor' : 'all personas'} onclick={back}>
@@ -1010,9 +1171,22 @@
             <div class="answer">{entry.text}</div>
           {:else if entry.kind === 'tool'}
             {@const status = toolStatus(run.entries, i)}
+            {@const picture = pictureOf(entry)}
             <div class="tool" class:err={status === 'failed'}>
               {entry.name}{status === 'failed' ? ' — failed' : status === 'retried' ? ' — retried' : ''}
             </div>
+            <!-- The picture is the answer, not a detail of the call: drawn
+                 once, from this chat's own workspace (`persona_chat::download`). -->
+            {#if picture && !repeats.has(i)}
+              {#if chosen.locked}
+                <span class="genimg"><img src={pictureUrl(picture)} alt="generated" loading="lazy" /></span>
+              {:else}
+                <a class="genimg" href={pictureUrl(picture)} target="_blank" rel="noopener">
+                  <img src={pictureUrl(picture)} alt="generated" loading="lazy" />
+                </a>
+              {/if}
+              <button class="genedit" onclick={() => editImage(picture)}>Edit</button>
+            {/if}
           {:else if entry.kind === 'notice'}
             <div class="notice">{entry.text}</div>
           {:else if entry.kind === 'crisis'}
@@ -1059,7 +1233,20 @@
       {/if}
     </div>
     {#if key}
+      {#if attachments.length}
+        <div class="attach-row">
+          {#each attachments as p, i}
+            <button class="attach-chip" title="remove" onclick={() => attachments.splice(i, 1)}>
+              {p.split('/').pop()} ✕
+            </button>
+          {/each}
+        </div>
+      {/if}
       <div class="composer">
+        <input type="file" multiple hidden bind:this={fileInput} onchange={uploadPicked} />
+        <button class="attachbtn" disabled={uploads > 0} onclick={() => fileInput?.click()} aria-label="Attach a file" title="attach a file — it lands in this chat's inbox/">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.5l-8.2 8.2a5.5 5.5 0 01-7.8-7.8L13.6 4.3a3.7 3.7 0 015.2 5.2l-8.4 8.4a1.85 1.85 0 01-2.6-2.6l7.8-7.8" /></svg>
+        </button>
         <div class="cfield">
           <textarea
             rows="1"
@@ -1071,7 +1258,7 @@
           ></textarea>
           <!-- Send stays during a run: it steers, and a phone has no Enter to
                spare for that. -->
-          <button class="send" aria-label={run.running ? 'Steer' : 'Send'} title={run.running ? 'Steer' : 'Send'} disabled={!input.trim()} onclick={send}>
+          <button class="send" aria-label={run.running ? 'Steer' : 'Send'} title={run.running ? 'Steer' : 'Send'} disabled={!input.trim() && !attachments.length} onclick={send}>
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
           </button>
         </div>
@@ -1096,6 +1283,18 @@
     </div>
   {/if}
 </div>
+
+{#if imageEdit}
+  <EditModal
+    src={imageEdit.src}
+    path={imageEdit.path}
+    initial={imageEdit.initial}
+    busy={imageEdit.busy}
+    error={imageEdit.error}
+    onsend={sendEdit}
+    onclose={() => (imageEdit = null)}
+  />
+{/if}
 
 <style>
   .page { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
@@ -1153,7 +1352,32 @@
   .answer { max-width: 92%; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
   .tool { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
   .tool.err { color: var(--hazard); }
+  /* As the assistant's chat draws a picture and its Edit button. */
+  .genimg { display: block; max-width: min(100%, 512px); }
+  .genimg img { display: block; width: 100%; height: auto; border-radius: 8px; }
+  .genedit {
+    align-self: flex-start; margin-top: -4px; padding: 4px 12px;
+    font-family: var(--mono); font-size: 12px; color: var(--accent-400);
+    background: none; border: 1px solid var(--accent-400); border-radius: 999px; cursor: pointer;
+  }
   .notice { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+  /* As the assistant's chat attaches: chips above the composer, an overlay
+     while a file is dragged over the page. */
+  .attach-row { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px var(--gutter) 0; }
+  .attach-chip { font-family: var(--mono); font-size: 11px; color: var(--text); background: var(--accent-900); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 6px 10px; cursor: pointer; }
+  .attachbtn { flex: none; display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; background: transparent; border: none; border-radius: 22px; color: var(--accent-400); cursor: pointer; }
+  .attachbtn:disabled { opacity: 0.4; cursor: default; }
+  .drop-overlay {
+    position: fixed; inset: 0; z-index: 60; pointer-events: none;
+    display: flex; align-items: center; justify-content: center; padding: var(--gutter);
+    background: color-mix(in srgb, var(--void) 72%, transparent);
+    outline: 2px dashed var(--accent-500); outline-offset: -12px;
+  }
+  .drop-card {
+    display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 20px 24px;
+    border-radius: var(--radius); background: var(--accent-900); border: 1px solid var(--accent-700);
+    font-family: var(--mono); font-size: 12px; color: var(--text); text-align: center;
+  }
   .composer { display: flex; gap: 8px; align-items: flex-end; padding: 10px var(--gutter) 14px; border-top: 1px solid var(--accent-900); }
   .barnote { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
   .empty { color: var(--text-muted); font-size: 14px; padding: 24px 0; text-align: center; line-height: 1.6; }
