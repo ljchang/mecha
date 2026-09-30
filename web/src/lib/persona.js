@@ -49,6 +49,13 @@ export function authoringUrl(token) {
   return withUnlock('/api/personas/authoring', token);
 }
 
+// The portrait a half-made persona keeps when the character list changes
+// under it — a relock takes locked characters out of the list, and a choice
+// the page can no longer show must not be sent as if it could.
+export function keptCharacter(chosen, characters) {
+  return chosen && (characters ?? []).includes(chosen) ? chosen : '';
+}
+
 // A name as the store will hold it — or null when it cannot be one: the
 // server says why on create, this only saves a round trip for the obvious.
 export function personaName(typed) {
