@@ -32,7 +32,8 @@ assert.equal(hasPaint([{ kind: 'box', x: 0, y: 0, w: 40, h: 40 }]), true);
 assert.equal(hasPaint([{ kind: 'stroke', erase: false, points: [[1, 1]] }]), true);
 
 assert.match(maskName('images/20260929-163113-4012932085.png', 7), /^mask-20260929-163113-4012932085-7\.png$/);
-assert.equal(maskName('inbox/My photo (1).JPG', 7), 'mask-My-photo-1--7.png');
+assert.equal(maskName('inbox/My photo (1).JPG', 7), 'mask-My-photo-1-7.png');
+assert.equal(maskName('inbox/((( ))).png', 7), 'mask-picture-7.png', 'nothing usable in the name');
 
 assert.equal(
   composeEditMessage('images/a.png', 'inbox/mask-a-7.png', '  make the dress green  '),

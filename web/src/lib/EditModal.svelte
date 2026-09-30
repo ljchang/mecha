@@ -24,6 +24,10 @@
   // transparent elsewhere. `base` holds the committed operations; a stroke
   // draws into it as it goes, a box only when it is let go.
   let base = null;
+  // Scratch canvases for `render`, made once at load: a full-size canvas per
+  // pointer event is 50–100 MB of churn on a phone photo (review of #429).
+  let preview = null;
+  let tint = null;
   let live = null; // the operation under the pointer
   let start = null;
 
@@ -53,8 +57,12 @@
     natural = { width: img.naturalWidth, height: img.naturalHeight };
     size = defaultBrush(natural.width);
     base = document.createElement('canvas');
-    base.width = view.width = natural.width;
-    base.height = view.height = natural.height;
+    preview = document.createElement('canvas');
+    tint = document.createElement('canvas');
+    for (const c of [base, view, preview, tint]) {
+      c.width = natural.width;
+      c.height = natural.height;
+    }
     render();
   }
 
@@ -100,10 +108,9 @@
     if (!any) return;
     let mask = base;
     if (live?.kind === 'box') {
-      mask = document.createElement('canvas');
-      mask.width = w;
-      mask.height = h;
+      mask = preview;
       const m = mask.getContext('2d');
+      m.clearRect(0, 0, w, h);
       m.drawImage(base, 0, 0);
       draw(m, live);
     }
@@ -112,10 +119,9 @@
     ctx.globalCompositeOperation = 'destination-out';
     ctx.drawImage(mask, 0, 0);
     ctx.globalCompositeOperation = 'source-over';
-    const tint = document.createElement('canvas');
-    tint.width = w;
-    tint.height = h;
     const t = tint.getContext('2d');
+    t.globalCompositeOperation = 'source-over';
+    t.clearRect(0, 0, w, h);
     t.fillStyle = 'rgb(181, 171, 252)';
     t.fillRect(0, 0, w, h);
     t.globalCompositeOperation = 'destination-in';
@@ -210,8 +216,10 @@
 
   function keydown(e) {
     if (e.key === 'Escape') {
+      // The scrim's rule: an untouched modal closes, paint is work. Cancel
+      // always closes (review of #429).
       e.preventDefault();
-      close();
+      if (!dirty) close();
     } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       send();
