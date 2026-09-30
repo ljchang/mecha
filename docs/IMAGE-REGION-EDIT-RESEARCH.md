@@ -103,16 +103,23 @@ by eye):
 | **P** plain | 4/4 | 2 clear, 1 partial, 1 left sitting; both clear ones redrew the man | 4/4 | 13.6 / 32.2 / 11.4 | 80 |
 | **A** red box | 4/4 | 0 clear, 2 partial, 2 left sitting | 4/4 | 13.3 / 16.6 / 10.9 | 80 |
 | **B** mask as `<image2>` | 4/4 | 1 clear, 1 partial, 2 left sitting | 4/4 | 11.9 / 14.6 / 9.8 | 91 |
-| **C** noise mask + composite | 4/4 | 1 clear, 1 partial, 2 left sitting | 4/4 | **0 / 0 / 0** | 80 |
-| **D** crop, edit, paste | 4/4, basket visibly smaller | **4/4 clear** | 4/4, stripes paler in 2 | **0 / 0 / 0** | 81 |
+| **C** noise mask + composite | 4/4 | 1 clear, 1 partial, 2 left sitting | 4/4 | 0 / 0 / 0 by construction* | 80 |
+| **D** crop, edit, paste | 4/4, basket visibly smaller | **4/4 clear** | 4/4, stripes paler in 2 | 0 / 0 / 0 by construction* | 81 |
 
-The outside figure is the mean absolute pixel difference on a 0–255 scale.
+The outside figure is the mean absolute pixel difference on a 0–255 scale,
+measured outside the box plus its feather. \*For C and D that area is
+copied from the original, so the zeros check the composite rather than
+measure the edit. D's damage lies inside the band the figure leaves out,
+and is judged by eye below.
 P's pose edits reached 49.6 where the scene was recomposed.
 
-- **A and B are hints, and they keep nothing.** Their outside moved as much
-  as a plain edit's, within a few points. They helped the pose edit no more
-  than P did. The red box never survived into a result (at most 0.5% of its
-  outline stayed red).
+- **A and B are hints, and they keep nothing.** On the swap and the detail,
+  their outside moved as much as a plain edit's, within 2 points. On the
+  pose their drift was half of P's, but that is because they mostly failed
+  to stand her up (P landed 2, A 0, B 1). Less change left less to spill,
+  so a lower number there is evidence of failure, not of keeping anything.
+  The red box never survived into a result (at most 0.5% of its outline
+  stayed red).
 - **C is seamless and exact, and it under-edits a pose.** Nothing outside
   the mask moved, and at the boundary the new pixels continue the old ones.
   In T2 the grass, the blanket and the man's arm run straight through. It
@@ -129,10 +136,19 @@ P's pose edits reached 49.6 where the scene was recomposed.
 - **The cost is the same for all of them.** A mask is not a slower edit
   (C: 80 s). B's second reference costs about 10 s.
 
+**What generalises, and what does not.** Every image is the one picnic
+from #408, at four seeds. C's and D's exact outside is by construction and
+holds for any picture. The landing rates, D's scale and seams, and C's
+under-editing of a pose are this scene's, and need a second scene before
+they are general (HANDOFF lists "any scene but the one picnic" as untested
+since #408).
+
 **What this says.** For the local edits the modal will mostly carry (swap
 this, recolour that, change a detail), C does what the owner asked for: the
 change, and nothing else, at no extra cost. A pose or a move is a different
-kind of edit. C holds the rest of the picture but not the change. D makes
+kind of edit. In these four seeds, C held the rest of the picture but
+stood her up once where a plain edit did so twice, which is n = 4 and a
+reason to measure C′ rather than a finding about C. D makes
 the change but cannot blend it when the region's edge crosses a person. Not
 yet run:
 - **C′**, C with the region greyed out of the reference, so the model is not
