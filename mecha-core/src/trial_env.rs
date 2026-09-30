@@ -288,6 +288,40 @@ impl Environment {
             })?;
             cfg.mcp.push(live.clone());
         }
+        // A trial's switches, where the environment left them unanswered
+        // (FEATURES-DESIGN.md §5.1). The rule is that step 1b, which gates
+        // servers and tools on the switch, changes nothing an existing
+        // experiment connects: a feature whose server this trial carries —
+        // declared by the environment, or brought in by the manifest's
+        // `live_servers`, the operator's explicit opt-in — is on; `search`
+        // follows the operator's own switch, as its `[[search]]` backends
+        // are copied from the operator above. An environment's own answer
+        // stands (it may say `false` to anything — the light trial); the
+        // refusal above already kept it from saying `true` to what it could
+        // not configure.
+        use crate::feature::{self, Feature};
+        let carried: Vec<Feature> = cfg
+            .mcp
+            .iter()
+            .filter(|s| !s.disabled)
+            .filter_map(feature::server_feature)
+            .map(Feature::switch_owner)
+            // §5.1 rules on `graph` alone. The only other features a server
+            // can name, mail and docs, run on credentials that are the
+            // operator's wherever the entry was declared (the mail crate's
+            // stores sit under the real home whatever `$MECHA_HOME` says),
+            // which is exactly what `switchable_from_environment` refuses;
+            // defaulting them here would assert on the environment's behalf
+            // what it may not (found on review of #445). `factory-publish`
+            // names no feature until the front door is gated whole.
+            .filter(|f| *f == Feature::Graph)
+            .collect();
+        for f in carried {
+            cfg.features.0.entry(f.id().to_string()).or_insert(true);
+        }
+        if feature::switch(real, Feature::Search) == Some(feature::Switch::On) {
+            cfg.features.0.entry("search".to_string()).or_insert(true);
+        }
         // After the live servers: a copied one carries the operator's zone
         // and must answer in the environment's.
         cfg.hand_zone_to_servers();
@@ -918,6 +952,63 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
             env.base_config(&operator(), tmp.path())
                 .unwrap_or_else(|e| panic!("{body}: {e:#}"));
         }
+    }
+
+    /// A trial's switches where the environment left them unanswered
+    /// (FEATURES-DESIGN.md §5.1): a feature whose server the trial carries is
+    /// on, so gating the server on the switch changes nothing an existing
+    /// experiment connects; an environment's own `false` stands. The four
+    /// graph cases §5.1 names, the positive last — the only one a default of
+    /// `false` would fail.
+    #[test]
+    fn a_trials_switches_follow_the_servers_it_carries() {
+        use crate::feature::{switch, Feature, Switch};
+        let config = |body: &str, live: &[&str]| {
+            let tmp = Scratch::new();
+            let mut env = env_at(tmp.path(), body);
+            env.live_servers = live.iter().map(|s| s.to_string()).collect();
+            env.base_config(&operator(), tmp.path()).unwrap()
+        };
+        // No graph server anywhere: off.
+        let cfg = config("", &[]);
+        assert_eq!(switch(&cfg, Feature::Graph), Some(Switch::Absent));
+        // A `mecha-mail` the environment declares stays unanswered: its
+        // credentials are the operator's (§5.1), so nothing defaults it.
+        let cfg = config("[[mcp]]\nname = \"m\"\ncommand = \"mecha-mail\"", &[]);
+        assert_eq!(switch(&cfg, Feature::Mail), Some(Switch::Absent));
+        // The environment declares its own graph server: on.
+        let cfg = config(
+            "[[mcp]]\nname = \"g\"\ncommand = \"mecha-graph-mcp\"\nargs = [\"--db\", \"${STORE}/g.db\"]",
+            &[],
+        );
+        assert_eq!(switch(&cfg, Feature::Graph), Some(Switch::On));
+        // The manifest carries the operator's in, but the environment said no.
+        let cfg = config("[features]\ngraph = false", &["graph"]);
+        assert_eq!(switch(&cfg, Feature::Graph), Some(Switch::Off));
+        // The manifest carries it in and the environment is silent: on, so
+        // an existing `live_servers` experiment keeps its graph.
+        let cfg = config("", &["graph"]);
+        assert_eq!(switch(&cfg, Feature::Graph), Some(Switch::On));
+
+        // `search` follows the operator's own switch, as its backends do.
+        let tmp = Scratch::new();
+        let env = env_at(tmp.path(), "");
+        let mut real = operator();
+        assert_eq!(
+            switch(
+                &env.base_config(&real, tmp.path()).unwrap(),
+                Feature::Search
+            ),
+            Some(Switch::Absent)
+        );
+        real.features.0.insert("search".into(), true);
+        assert_eq!(
+            switch(
+                &env.base_config(&real, tmp.path()).unwrap(),
+                Feature::Search
+            ),
+            Some(Switch::On)
+        );
     }
 
     /// An environment that is, contains or sits inside the real home is

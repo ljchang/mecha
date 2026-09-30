@@ -1398,9 +1398,37 @@ async fn prepare_tools_carrying(
         handle
     });
 
+    // Each optional feature registers only when its `[features]` switch is on
+    // (FEATURES-DESIGN.md §4.2 item 6): the switch from the owner, the
+    // settings from this session's config as before.
+    //
+    // **Said here only when the run named the tool** (`--tool`), the one
+    // case where its absence would surprise. Every verb that builds a
+    // registry passes through here, including the children `mecha serve`
+    // and Slack spawn per request, so a line per build would repeat into the
+    // journal forever; an unanswered switch is announced once per session or
+    // service start instead (`Cli::announces_features`), and an explicit
+    // `false` is the owner's answer (found on review of #445).
+    use mecha_core::feature::{self, Feature};
+    let feature_on = |f: Feature| feature::switched_on(&cfg, f);
+    let asked_for = |tool: &str| opts.tools.iter().any(|t| t == tool);
+    let switched_off = |f: Feature, tool: &str| {
+        if asked_for(tool) {
+            eprintln!(
+                "mecha: {tool} not registered — `{}` is not switched on in [features] \
+                 (`{}`)",
+                f.switch_owner().id(),
+                feature::enable_command(&cfg, f)
+            )
+        }
+    };
     // Search is only registered when a backend is configured — an agent with a
     // `web_search` tool that always errors is worse than no tool at all.
-    if !cfg.search.is_empty() {
+    if !cfg.search.is_empty() && !feature_on(Feature::Search) {
+        switched_off(Feature::Search, "web_search");
+        switched_off(Feature::Search, "web_open");
+    }
+    if !cfg.search.is_empty() && feature_on(Feature::Search) {
         let (chain, errors) = build_search_chain(&cfg.search);
         for error in errors {
             eprintln!("mecha: search backend unavailable — {error}");
@@ -1434,7 +1462,13 @@ async fn prepare_tools_carrying(
     // rather than registered, because the tool's no-egress declaration would
     // then be false — said loudly, since a tool missing from the list is
     // otherwise indistinguishable from one never configured.
-    if let Some(image) = cfg.image.clone() {
+    if cfg.image.is_some() && !feature_on(Feature::Image) {
+        switched_off(Feature::Image, "image_generate");
+        // The library's two doors ride with `[image]` and the same switch.
+        switched_off(Feature::Library, "image_library");
+        switched_off(Feature::Library, "image_library_propose");
+    }
+    if let Some(image) = cfg.image.clone().filter(|_| feature_on(Feature::Image)) {
         let wants = opts.tools.is_empty() || opts.tools.iter().any(|t| t == "image_generate");
         if wants {
             match mecha_core::imagegen::ImageGenerate::new(image) {
@@ -1496,7 +1530,14 @@ async fn prepare_tools_carrying(
     // docker confinement) is refused out loud rather than registered.
     // `[tools]` narrows it like any builtin. An incognito chat never offers
     // it: its cache writes outside the room (`incognito::ALLOWED_BUILTINS`).
-    if let Some(docs) = cfg.documents.clone() {
+    if cfg.documents.is_some() && !feature_on(Feature::Documents) {
+        switched_off(Feature::Documents, "document_read");
+    }
+    if let Some(docs) = cfg
+        .documents
+        .clone()
+        .filter(|_| feature_on(Feature::Documents))
+    {
         let name = "document_read";
         if (opts.tools.is_empty() || opts.tools.iter().any(|t| t == name))
             && cfg.tools.registers(name)
@@ -1520,10 +1561,18 @@ async fn prepare_tools_carrying(
     // Named servers are dropped before connecting rather than after: a server
     // that is off should not have been spawned, since spawning it is what runs
     // third-party code.
+    // A server that belongs to a feature connects only when that feature is
+    // switched on — the bool gates the server, not just its tab, and dropping
+    // it here means it is never spawned. A server that belongs to none
+    // connects as it always has.
     let wanted: Vec<_> = cfg
         .mcp
         .iter()
         .filter(|c| !opts.no_mcp_servers.iter().any(|n| n == &c.name))
+        .filter(|c| match feature::server_feature(c) {
+            Some(f) => feature_on(f),
+            None => true,
+        })
         .cloned()
         .collect();
     if !opts.no_mcp && !wanted.is_empty() {

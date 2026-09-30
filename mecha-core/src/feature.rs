@@ -18,9 +18,10 @@
 //! bool in `[features]` before anything else ([`switch`]); a part rides its
 //! parent. An install that predates `[features]` has every switch absent, so
 //! every feature reads off — and [`announcements`] names the ones it had set
-//! up, which the upgrade notice prints and `mecha setup` offers. Nothing
-//! registers or connects by this module's answer yet (FEATURES-DESIGN.md §9,
-//! step 1b); for now it is what `mecha features` reports.
+//! up, which the upgrade notice prints and `mecha setup` offers. Tool
+//! registration and server connection ask [`switched_on`] — the switch,
+//! never the readout (FEATURES-DESIGN.md §4.2 item 6) — and `mecha serve`
+//! refuses without `web`.
 
 use crate::config::{Config, McpServerConfig};
 use serde::Serialize;
@@ -178,6 +179,47 @@ impl Feature {
         self.part_of().is_none()
     }
 
+    /// The feature whose bool decides this one: itself, or for a part the
+    /// top of its `part_of` chain (`layout` → `ocr` → `documents`).
+    pub fn switch_owner(self) -> Feature {
+        std::iter::successors(Some(self), |g| g.part_of())
+            .last()
+            .unwrap_or(self)
+    }
+
+    /// Whether switching this off turns something off *today* — its tools
+    /// are unregistered, its server is not started, or its surface refuses.
+    /// The rest (Slack, personas, voice, incognito, the front door — its queue
+    /// and its publishing server together) wait for the route and verb guards
+    /// of FEATURES-DESIGN.md §9 step 3, and
+    /// the upgrade notice must not call them off while they work (found on
+    /// review of #445). Exhaustive: a step that gates one flips its arm.
+    pub fn gated(self) -> bool {
+        match self {
+            Feature::Web
+            | Feature::Mail
+            | Feature::Docs
+            | Feature::Graph
+            | Feature::Search
+            | Feature::Documents
+            | Feature::Image => true,
+            Feature::Slack
+            | Feature::Personas
+            | Feature::Voice
+            | Feature::Incognito
+            | Feature::Frontdoor
+            | Feature::Messages => false,
+            Feature::Tasks
+            | Feature::Ocr
+            | Feature::Layout
+            | Feature::Library
+            | Feature::Dictate
+            | Feature::Calls
+            | Feature::Cloning
+            | Feature::Publishing => self.switch_owner().gated(),
+        }
+    }
+
     /// Whether an experiment environment's `config.toml` may switch this on.
     ///
     /// **An environment may switch a feature on only if it could configure
@@ -316,6 +358,98 @@ pub fn switch(cfg: &Config, f: Feature) -> Option<Switch> {
     })
 }
 
+/// Whether `f` is switched on — its own bool, or for a part its parent's.
+///
+/// What tool registration and server connection ask (FEATURES-DESIGN.md §4.2
+/// item 6): **the switch, never the readout**. Registration builds from the
+/// session's settings as it always has, and a switched-on feature whose
+/// settings are missing or whose server is down still registers what it can,
+/// so the tool list — the front of the cached prefix — does not move with a
+/// server's uptime. `cfg` may be a project-layered config: `[features]` is
+/// stripped from project layers, so its switches are the global file's.
+pub fn switched_on(cfg: &Config, f: Feature) -> bool {
+    // Its own bool (a part has none), and every need's — a parent and each
+    // `requires` edge — so it answers as `state` does for the switch half,
+    // config-only, and cannot register a tool `mecha features` shows
+    // `Blocked` (found on review of #445).
+    let own = match switch(cfg, f) {
+        Some(s) => s == Switch::On,
+        None => true,
+    };
+    own && f.needs().all(|n| switched_on(cfg, n))
+}
+
+/// The command that switches `f` on: its owner, and every `requires` edge of
+/// the owner that is not on, first — the one spelling every surface prints,
+/// so none prints a command `plan_enable` refuses (#443, #445).
+pub fn enable_command(cfg: &Config, f: Feature) -> String {
+    // Every switch `f` hangs on — its owner's and, through `needs`, each
+    // parent's and requirement's owner — that is not on, in `Feature::ALL`
+    // order, which lists what a feature needs before it. `dictate` needs
+    // `voice` (its parent) and `web` (its requirement); the owner's own
+    // switch is always named, so the command is never empty.
+    // Visited-guarded, so it terminates by construction rather than because
+    // the graph happens to be a shallow DAG (review of #445).
+    fn collect(f: Feature, seen: &mut Vec<Feature>, into: &mut Vec<Feature>) {
+        if seen.contains(&f) {
+            return;
+        }
+        seen.push(f);
+        let owner = f.switch_owner();
+        if !into.contains(&owner) {
+            into.push(owner);
+        }
+        for n in f.needs().chain(owner.needs()) {
+            collect(n, seen, into);
+        }
+    }
+    let mut hung = Vec::new();
+    collect(f, &mut Vec::new(), &mut hung);
+    let owner = f.switch_owner();
+    let ids: Vec<&str> = Feature::ALL
+        .iter()
+        .filter(|g| hung.contains(g))
+        .filter(|g| **g == owner || switch(cfg, **g) != Some(Switch::On))
+        .map(|g| g.id())
+        .collect();
+    format!("mecha features enable {}", ids.join(" "))
+}
+
+/// Why `server` must not be started: `Some` when it belongs to a feature whose
+/// switch is not on. Every door that connects a server itself rather than
+/// through `prepare_tools` asks this first — `distill`, `gossip`, `vet` and
+/// `corroborate` find the graph server by name and spawn it directly, and
+/// with `graph = false` they went on writing the owner's graph while
+/// `mecha tasks`, gated, had no board (found on review of #445).
+pub fn server_refusal(cfg: &Config, server: &McpServerConfig) -> Option<String> {
+    let f = server_feature(server)?;
+    (!switched_on(cfg, f)).then(|| {
+        format!(
+            "[[mcp]] `{}` belongs to `{}`, which is not switched on in [features] — `{}`",
+            server.name,
+            f.switch_owner().id(),
+            enable_command(cfg, f)
+        )
+    })
+}
+
+/// The feature an `[[mcp]]` server belongs to, by the program its `command`
+/// runs — the same match the rows use (`mcp_entry`). `None` for a server that
+/// belongs to no feature: it connects as it always has.
+pub fn server_feature(server: &McpServerConfig) -> Option<Feature> {
+    let program = Path::new(&server.command).file_name()?.to_str()?;
+    match program {
+        "mecha-mail" => Some(Feature::Mail),
+        "mecha-docs" => Some(Feature::Docs),
+        "mecha-graph-mcp" => Some(Feature::Graph),
+        // Not `factory-publish` yet: gating the publishing server while the
+        // front door's queue stays ungated made the notice call the front
+        // door "still working" with half of it gone. Both halves follow the
+        // switch together in §9 step 3 (found on review of #445).
+        _ => None,
+    }
+}
+
 /// Keys in `[features]` this build does not know — a newer build's feature,
 /// or a typo. Ignored, never a load failure (see `config::FeaturesConfig`),
 /// and reported so a typo still shows as the feature it meant being off.
@@ -437,25 +571,19 @@ pub fn all(facts: &Facts) -> Vec<Row> {
 /// Every row reads [`Facts::config`], the global configuration, and
 /// nothing else configures it.
 ///
-/// A feature whose parent or requirement is off is `Blocked` on the first
-/// one found, whatever its own switch says: configured-but-unreachable is
-/// different from off, and this says which dependency to fix first.
+/// The owner's switch is read first: absent or `false` is `Off`, whatever the
+/// settings or the dependencies say. With it on (or for a part, which has
+/// none), a feature whose parent or requirement is off is `Blocked` on the
+/// first one found: configured-but-unreachable is different from off, and
+/// this says which dependency to fix first.
 pub fn state(facts: &Facts, f: Feature) -> State {
-    // The owner's switch first: off is off, whatever its settings say. A
-    // part has no switch and is decided by its parent below.
+    // The fix names every dependency that is not on either, because `enable`
+    // refuses a feature alone when its requirement is off — the row must
+    // not print a command the same binary rejects (found on review of #443).
+    let fix = || enable_command(&facts.config, f);
     match switch(&facts.config, f) {
-        Some(Switch::Off) => {
-            return off(
-                "turned off in [features]",
-                format!("mecha features enable {}", f.id()),
-            )
-        }
-        Some(Switch::Absent) => {
-            return off(
-                "not enabled in [features]",
-                format!("mecha features enable {}", f.id()),
-            )
-        }
+        Some(Switch::Off) => return off("turned off in [features]", fix()),
+        Some(Switch::Absent) => return off("not enabled in [features]", fix()),
         Some(Switch::On) | None => {}
     }
     for need in f.needs() {
@@ -1403,6 +1531,69 @@ mod tests {
             plan_enable(&web_on, &ids(&["incognito"])).unwrap(),
             vec![Feature::Incognito]
         );
+        // And every off row's own fix is a command `enable` accepts — the row
+        // must not print one this binary refuses (review of #443).
+        let facts = Facts {
+            config: cfg.clone(),
+            ..empty_machine()
+        };
+        for &f in Feature::ALL.iter().filter(|f| f.has_switch()) {
+            let State::Off { fix: Some(fix), .. } = state(&facts, f) else {
+                panic!("{} is off on an empty machine", f.id())
+            };
+            let args: Vec<String> = fix.split_whitespace().skip(3).map(String::from).collect();
+            plan_enable(&cfg, &args).unwrap_or_else(|e| panic!("{fix}: {e}"));
+        }
+    }
+
+    /// `switched_on` answers as `state` does for the switch half — its own
+    /// bool and every need's — so registration cannot hand out a tool
+    /// `mecha features` shows `Blocked`; and `enable_command` names every
+    /// switch a feature hangs on (review of #445).
+    #[test]
+    fn switched_on_and_its_command_follow_every_need() {
+        let mut cfg = Config::default();
+        cfg.features.0.insert("incognito".into(), true);
+        assert!(!switched_on(&cfg, Feature::Incognito), "web is not on");
+        cfg.features.0.insert("web".into(), true);
+        assert!(switched_on(&cfg, Feature::Incognito));
+        // A part: its parent's switch and its requirement's.
+        assert!(!switched_on(&cfg, Feature::Dictate), "voice is not on");
+        assert_eq!(
+            enable_command(&cfg, Feature::Dictate),
+            "mecha features enable voice"
+        );
+        cfg.features.0.remove("web");
+        assert_eq!(
+            enable_command(&cfg, Feature::Dictate),
+            "mecha features enable web voice"
+        );
+        cfg.features.0.insert("voice".into(), true);
+        cfg.features.0.insert("web".into(), true);
+        assert!(switched_on(&cfg, Feature::Dictate));
+        // Every command it prints is one `enable` accepts.
+        let empty = Config::default();
+        for &f in Feature::ALL {
+            let cmd = enable_command(&empty, f);
+            let args: Vec<String> = cmd.split_whitespace().skip(3).map(String::from).collect();
+            plan_enable(&empty, &args).unwrap_or_else(|e| panic!("{}: {cmd}: {e}", f.id()));
+        }
+    }
+
+    #[test]
+    fn a_server_in_a_switched_off_feature_is_refused_by_name() {
+        let mut cfg = Config::default();
+        let graph = mcp("graph", "/somewhere/mecha-graph-mcp");
+        let other = mcp("notes", "python3");
+        let why = server_refusal(&cfg, &graph).expect("graph is not switched on");
+        assert!(why.contains("mecha features enable graph"), "{why}");
+        assert_eq!(server_refusal(&cfg, &other), None, "a server in no feature");
+        cfg.features.0.insert("graph".into(), true);
+        assert_eq!(server_refusal(&cfg, &graph), None);
+        // The publishing server is not gated yet: the front door is gated
+        // whole in step 3, never one half before the other.
+        let publish = mcp("factory", "factory-publish");
+        assert_eq!(server_refusal(&cfg, &publish), None);
     }
 
     /// The writer edits in place: comments, other tables and a newer build's
