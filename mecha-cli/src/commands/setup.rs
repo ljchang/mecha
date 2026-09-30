@@ -129,8 +129,10 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         has_mail_binary: onboarding::on_path("mecha-mail"),
         has_docs_binary: onboarding::on_path("mecha-docs"),
         has_graph_binary: onboarding::on_path("mecha-graph-mcp"),
-        mail_accounts: onboarding::count_accounts(&home.join("mail")),
-        docs_accounts: onboarding::count_accounts(&home.join("docs")),
+        // Each store by its owner's rule, not `home.join(..)` — see
+        // `onboarding::mail_store_dir`.
+        mail_accounts: onboarding::mail_store_dir().and_then(|d| onboarding::count_accounts(&d)),
+        docs_accounts: onboarding::docs_store_dir().and_then(|d| onboarding::count_accounts(&d)),
         slack_linked: onboarding::slack_linked(&home),
         provider_credential: pcfg.resolve_api_key().is_some(),
         props,

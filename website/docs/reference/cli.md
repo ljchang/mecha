@@ -1642,9 +1642,12 @@ as off. Parts of a feature (`tasks` under `graph`, `ocr` under `documents`)
 are indented under it.
 
 Exit 0 whatever it finds: an install with features off is a light install, not
-a broken one. Mail, docs, the graph and the front door count as on only when an
-enabled `[[mcp]]` entry runs their server — an installed binary alone puts no
-tool on the surface.
+a broken one. Mail, docs, the graph and publishing count as on only when an
+enabled `[[mcp]]` entry in the global config runs their server — an installed
+binary alone puts no tool on the surface, and a project's `mecha.toml` never
+changes the answer. A row that has a tool reads on only where that tool would
+register: turned off in `[tools]`, an image or OCR server off this machine, or
+a search backend with no key reads off or unready, not on.
 
 ## `diagnose`
 

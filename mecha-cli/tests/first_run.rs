@@ -25,8 +25,8 @@
 //!   skipped on exactly the machines it is for.
 //! - **Nothing depends on the developer's machine.** Provider credentials are
 //!   removed from the child's environment, and every assertion about
-//!   *status* is confined to steps whose answer comes from `MECHA_HOME`
-//!   (which is empty and ours) rather than from `PATH` (which is not) — a
+//!   *status* is confined to steps whose answer comes from `MECHA_HOME` and
+//!   `HOME` (both empty and ours) rather than from `PATH` (which is not) — a
 //!   contributor with `mecha-mail` installed and one without must both pass.
 //!   The probe makes this sharper rather than looser: whether anything is
 //!   serving on :8080 is a fact about the developer's box, so the one
@@ -98,6 +98,13 @@ fn run(home: &Home, args: &[&str], with_key: bool) -> Output {
     cmd.args(args)
         .current_dir(&home.work)
         .env("MECHA_HOME", home.path())
+        // The mail and docs account stores are found by the mail crate's
+        // rule — `$MECHA_MAIL_DIR`, else `~/.mecha/{mail,docs}` under the
+        // real home — never under `MECHA_HOME` (`onboarding::mail_store_dir`).
+        // So the home is ours too, or a developer's authorised mailbox turns
+        // `docs` from missing into done on their machine only.
+        .env("HOME", home.path())
+        .env_remove("MECHA_MAIL_DIR")
         // A developer's own key would make `provider-credential` disappear
         // and the test pass for the wrong reason on their machine and fail
         // in CI. Removed rather than blanked: an empty value is a

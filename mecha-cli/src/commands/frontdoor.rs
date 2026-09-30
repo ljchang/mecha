@@ -170,10 +170,7 @@ pub(crate) fn swept_bookings() -> mecha_core::frontdoor::Swept {
 /// fail-closed — nothing settled at all, silently. A reader of somebody else's
 /// store has to use their rule for finding it, not its own.
 fn mail_dir() -> Option<std::path::PathBuf> {
-    if let Ok(dir) = std::env::var("MECHA_MAIL_DIR") {
-        return Some(std::path::PathBuf::from(dir));
-    }
-    Some(dirs::home_dir()?.join(".mecha").join("mail"))
+    mecha_core::onboarding::mail_store_dir()
 }
 
 /// [`swept_bookings`] over an explicit path, so the ledger contract is

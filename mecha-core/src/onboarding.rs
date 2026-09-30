@@ -1082,6 +1082,26 @@ pub fn charter_state(path: &Path) -> CharterState {
     }
 }
 
+/// The mail crate's account store, found **by the mail crate's rule**:
+/// `$MECHA_MAIL_DIR`, else `~/.mecha/mail` under the real home — never
+/// `$MECHA_HOME/mail`. The mail crate honours the first variable and ignores
+/// the second, so a reader of its store that used mecha's own rule looked in
+/// the wrong place whenever either was set, and counted an authorised install
+/// as having no account (found on review of #428; `frontdoor::mail_dir` had
+/// paid for the same mistake first).
+pub fn mail_store_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("MECHA_MAIL_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    Some(dirs::home_dir()?.join(".mecha").join("mail"))
+}
+
+/// `mecha-docs`' account store: always `~/.mecha/docs` under the real home
+/// (`google::docs::docs_home`), which honours neither variable.
+pub fn docs_store_dir() -> Option<PathBuf> {
+    Some(dirs::home_dir()?.join(".mecha").join("docs"))
+}
+
 /// Whether Slack tokens are stored: `None` when `<home>/slack` could not be
 /// read, which is a finding, not an absence.
 pub fn slack_linked(home: &std::path::Path) -> Option<bool> {
