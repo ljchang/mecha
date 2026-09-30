@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Persona chats show their pictures, with the same Edit button.** A picture
+  a persona draws now appears under its row in the Personas tab, as in the
+  main chat, and Edit opens the same paint-a-region modal. A locked persona's
+  pictures stay behind the library lock, and have no link to open them in a
+  new tab.
+
 - **Paint the part of a picture to change.** The web chat's Edit button now
   opens a modal: paint or draw a box over what should change, say what to
   do, send. Only the painted area is redrawn, blended over a narrow edge

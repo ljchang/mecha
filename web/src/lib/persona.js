@@ -29,7 +29,7 @@ export function withUnlock(path, token) {
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
 const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock'];
-const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel'];
+const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload'];
 
 export const ENDPOINTS = [
   '/api/personas',
@@ -82,6 +82,18 @@ export function chatUrl(key, suffix = '', token = null) {
   if (!isPersonaKey(key)) throw new Error(`not a persona chat key: ${key}`);
   if (!CHAT_SUFFIXES.includes(suffix)) throw new Error(`not a persona chat endpoint: ${suffix}`);
   return withUnlock(`/api/persona-chat/${key}${suffix}`, token);
+}
+
+// A picture in the chat's workspace, as an `<img>` asks for it: the tool's
+// own workspace-relative path, the chat's own door (`persona_chat::download`).
+export function fileUrl(key, path, token = null) {
+  return withUnlock(`${chatUrl(key, '/file')}?path=${encodeURIComponent(path)}`, token);
+}
+
+// Where the edit modal's mask goes up: this chat's `inbox/`, never the
+// assistant's (`persona_chat::upload`).
+export function uploadUrl(key, name, token = null) {
+  return withUnlock(`${chatUrl(key, '/upload')}?name=${encodeURIComponent(name)}`, token);
 }
 
 // What an editor save must carry across its reload, per file: the mode each
@@ -234,10 +246,14 @@ export function applyEvent(state, ev) {
       // it from the server's `working.since` instead — `withWorking`.)
       return { ...s, entries: [...s.entries, { kind: 'tool', id: ev.id, name: ev.name, is_error: null, started: Date.now() }] };
     }
+    // The preview is kept: its first line names the picture a finished
+    // `image_generate` drew, which the page shows under the row (`picture.js`).
     case 'tool_result':
       return {
         ...state,
-        entries: state.entries.map((e) => (e.kind === 'tool' && e.id === ev.id ? { ...e, is_error: ev.is_error } : e)),
+        entries: state.entries.map((e) =>
+          e.kind === 'tool' && e.id === ev.id ? { ...e, is_error: ev.is_error, preview: ev.preview } : e,
+        ),
       };
     // The crisis sensor fired and the persona paused: the plain voice's
     // message, drawn as its own card — not the persona's words (§12.2).

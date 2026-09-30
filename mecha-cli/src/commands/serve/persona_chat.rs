@@ -970,6 +970,23 @@ impl PersonaChats {
             .ok_or(Refusal::NotFound)
     }
 
+    /// The chat's workspace, behind the lock as every door here is: the
+    /// pictures it drew and the masks the owner painted are the chat's, so a
+    /// locked persona's answer 404 without the token, as its words do.
+    pub async fn workspace_of(
+        &self,
+        library: &LibraryState,
+        key: &str,
+        token: Option<&str>,
+    ) -> Result<PathBuf, Refusal> {
+        self.persona_of(library, key, token).await?;
+        let sessions = self.sessions.lock().await;
+        sessions
+            .get(key)
+            .map(|ps| ps.workspace.clone())
+            .ok_or(Refusal::NotFound)
+    }
+
     pub async fn transcript(
         &self,
         chat: &Arc<ChatState>,
@@ -2206,6 +2223,67 @@ pub async fn cancel(
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct FileQuery {
+    path: String,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// GET /api/persona-chat/{key}/file?path= — a picture out of this chat's
+/// workspace, with the assistant chat's containment and content types
+/// (`files::serve`). The persona chat's own door: an assistant key is
+/// refused, and the assistant's `/api/chat/{key}/file` never finds a
+/// persona chat, whose session map is this one.
+pub async fn download(
+    State(state): Web,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Query(q): Query<FileQuery>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c.clone(),
+        Err(resp) => return resp,
+    };
+    match chat
+        .personas
+        .workspace_of(&state.library, &key, q.unlock.as_deref())
+        .await
+    {
+        Ok(ws) => super::files::serve(ws, q.path).await,
+        Err(r) => r.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct UploadQuery {
+    name: String,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// POST /api/persona-chat/{key}/upload?name= — the edit modal's mask into
+/// this chat's `inbox/` (`files::store`). Named in the message, never
+/// attached: a mask is for `image_generate`, not for the persona to look at.
+pub async fn upload(
+    State(state): Web,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Query(q): Query<UploadQuery>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c.clone(),
+        Err(resp) => return resp,
+    };
+    match chat
+        .personas
+        .workspace_of(&state.library, &key, q.unlock.as_deref())
+        .await
+    {
+        Ok(ws) => super::files::store(ws, &q.name, body).await,
+        Err(r) => r.into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2645,6 +2723,68 @@ mod tests {
         let again = w.personas().sessions.lock().await[&key2].workspace.clone();
         assert_eq!(again, first);
         assert!(again.join("images/drawn.png").is_file());
+    }
+
+    /// A chat's pictures and masks go through its own door, locked with its
+    /// persona: the Edit button reads the picture and writes the mask here,
+    /// and neither is reachable without the token once the persona locks.
+    #[tokio::test]
+    async fn a_chats_pictures_are_behind_its_persona_lock() {
+        use axum::body::Bytes;
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let ws = w
+            .personas()
+            .workspace_of(&w.library, &key, None)
+            .await
+            .unwrap();
+        std::fs::create_dir_all(ws.join("images")).unwrap();
+        std::fs::write(ws.join("images/drawn.png"), b"png").unwrap();
+
+        let shown = super::super::files::serve(ws.clone(), "images/drawn.png".into()).await;
+        assert_eq!(shown.status(), StatusCode::OK);
+        assert_eq!(shown.headers()["content-type"], "image/png");
+        let outside = super::super::files::serve(ws.clone(), "../drawn.png".into()).await;
+        assert_eq!(outside.status(), StatusCode::NOT_FOUND);
+
+        let stored =
+            super::super::files::store(ws.clone(), "mask-drawn-1.png", Bytes::from_static(b"m"))
+                .await;
+        assert_eq!(stored.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(stored.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let path: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(path["path"], "inbox/mask-drawn-1.png");
+
+        // Locked: the same 404 as a missing chat, until the token comes.
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        for token in [None, Some("not-a-token")] {
+            assert!(matches!(
+                w.personas().workspace_of(&w.library, &key, token).await,
+                Err(Refusal::NotFound)
+            ));
+        }
+        let token = w.library.grant_for_tests();
+        assert_eq!(
+            w.personas()
+                .workspace_of(&w.library, &key, Some(&token))
+                .await
+                .unwrap(),
+            ws
+        );
+        // An assistant chat's key is not this door's to answer.
+        assert!(matches!(
+            w.personas()
+                .workspace_of(&w.library, "0123456789abcdef", None)
+                .await,
+            Err(Refusal::Bad(_))
+        ));
     }
 
     /// The tool a run waits on is named until its result arrives.
