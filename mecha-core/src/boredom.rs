@@ -5,6 +5,8 @@
 //! the only one: it fires on an identical call with an identical result inside
 //! a window after a compaction, and its response is rung 5 — end the run. So a
 //! run that is going nowhere had exactly two states, *proceeding* and *dead*.
+//! (Its second trigger, one call failing identically for `STILL_STUCK + 1`
+//! turns, waits for this ladder to finish on purpose — `agent::LoopGuard`.)
 //! This is the graded version, and it fires earlier for the reason §4.4 gives
 //! for predicting context pressure rather than reacting to it: acting before a
 //! deviation beats reacting to one.
@@ -59,7 +61,7 @@ use std::collections::HashMap;
 const STUCK: u32 = 3;
 
 /// …and after which the cheap escapes have demonstrably not worked.
-const STILL_STUCK: u32 = 6;
+pub(crate) const STILL_STUCK: u32 = 6;
 
 /// What one run may say about being stuck.
 ///

@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   anything waiting stays even when its feature is off. No route refuses
   anything yet.
 
+- **Read a photo or screenshot of a page.** `document_read` and
+  `mecha document extract` now take PNG, JPEG, WebP and GIF as well as PDF.
+  A picture is read as one page by the local OCR model, through the same
+  layout stage, cache and caps as a scanned PDF page. Phone photos are
+  turned upright from their rotation tag first: on an upside-down test page,
+  skipping that put the heading last and misread the paragraph as a table.
+  Transparent screenshots are read on white. HEIC photos and TIFF scans are
+  refused with what to do instead. Personas that have `document_read` get
+  this too.
+
 - **A persona draws itself (PERSONA-DESIGN §8.6).** In a persona chat,
   `image_generate` knows who "self" is: a prompt that names the persona — by
   its linked character, its folder name or the name it is shown by — gets
@@ -345,6 +355,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The owner's amendment to `INCOGNITO-DESIGN.md` §6.1 (2026-09-28).
 
 ### Fixed
+
+- **A chat no longer resends a refused call for minutes.** If a tool
+  refuses the same call the same way, turn after turn, the run now stops
+  after seven tries. You get an answer saying what could not be done, instead
+  of up to forty identical attempts. A call you or a policy turned down never
+  counts toward the seven. One persona chat did this with a
+  picture, twice, and held the GPU while another chat was drawing. Persona
+  chats also get the notes the assistant already had: after three identical
+  results the model is told that nothing is being learned and to try another
+  way, which is what rescued the assistant's two such runs, and after six to
+  say what is blocking it instead.
+  `[agent] loop_guard = false` switches the stop off.
 
 - **A name not in the image library no longer blocks a picture.** When
   the assistant names someone in a picture who isn't a library character,

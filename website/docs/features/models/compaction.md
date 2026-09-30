@@ -203,8 +203,7 @@ Four rules:
   transcript really did change.
 
 Distinct from [the loop guard](#a-compaction-arms-the-loop-guard), which stops a
-run that has already gone wrong and only after a compaction. This runs before
-there is anything to stop.
+run that has already gone wrong. This runs before there is anything to stop.
 
 ### 3. Thin old results, keep the calls
 
@@ -422,11 +421,23 @@ three calls after any compaction, stops the run with `StopCause::Loop`.
 Distinct from `MaxTurns` on purpose: "hit the turn limit" reads as the task
 being too big, when a stuck run is a different problem with a different fix.
 
-The guard is **dormant until a compaction arms it**. Repeated calls in ordinary
+This check is **dormant until a compaction arms it**. Repeated calls in ordinary
 work are the model's business, and a general repeated-call detector would need a
 measurement to justify watching all of it. This one exists to escape a specific
 failure — the run re-living what a summary dropped — at the largest prompts it
 will ever send.
+
+**One loop the guard watches without a compaction:** the same call failing with
+the same error in seven consecutive turns. An error that does not move under an
+unchanged call is not polling. The measurement came from 1,031 recorded
+transcripts. At three, the stop would have ended two runs that recovered on the
+next turn, after the "nothing is being learned" notice. From four to seven it
+catches only the loop that prompted it: a persona chat resending one refused
+picture request forty times. So the stop comes one turn after the notice's
+second rung.
+
+For both checks, a call you, a hook, a policy or the trifecta interlock refused
+never counts, because that is the harness working.
 
 Two details that keep it honest. It is keyed on **call *and* result**, so
 polling (same arguments, changing result) never trips it. And it observes a
