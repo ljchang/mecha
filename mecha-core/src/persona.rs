@@ -1684,6 +1684,7 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
         max,
         optional: true,
         placeholder: Some(placeholder.to_string()),
+        multiline: false,
     };
     Form {
         sections: vec![

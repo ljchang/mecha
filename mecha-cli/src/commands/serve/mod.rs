@@ -1827,6 +1827,69 @@ mod tests {
         );
     }
 
+    /// The list editor's save: rows set in place in the file on disk, so a
+    /// comment among the lines survives a re-rank and an edit, which the JS
+    /// serialiser it replaced could not do — and a page that read a charter
+    /// changed since is refused, not written over.
+    #[tokio::test]
+    async fn a_list_save_edits_the_charter_in_place_and_refuses_a_stale_page() {
+        let home = crate::testenv::HomeGuard::new("serve-charter-rows");
+        let on_disk = home.dir.join("charter.toml");
+        let start = "# Mine.\n\n[[line]]\n# the one that matters\nid = \"first\"\ntext = \"tell the truth early\"\n\n[[line]]\nid = \"second\"\ntext = \"rest\"\n";
+        std::fs::write(&on_disk, start).unwrap();
+        let post = |body: serde_json::Value| {
+            test_router().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings/charter")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+        };
+        let base = mecha_core::charter::digest(start);
+        let rows = serde_json::json!([
+            {"id": "second", "text": "rest well", "sensor": null},
+            {"id": "first", "text": "tell the truth early", "sensor": null},
+        ]);
+        let ok = post(serde_json::json!({ "changes": { "line": rows }, "base": base }))
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let now = std::fs::read_to_string(&on_disk).unwrap();
+        assert!(now.starts_with("# Mine."), "{now}");
+        assert!(now.contains("# the one that matters"), "{now}");
+        let parsed = mecha_core::charter::Charter::parse(&now).unwrap();
+        let ids: Vec<&str> = parsed.lines().iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(ids, ["second", "first"], "{now}");
+
+        // The same base again is stale now: refused, the file as it was.
+        let stale = post(serde_json::json!({ "changes": { "line": [] }, "base": base }))
+            .await
+            .unwrap();
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert_eq!(std::fs::read_to_string(&on_disk).unwrap(), now);
+
+        // A row the form does not offer, and a result the charter refuses,
+        // are both 422 and write nothing.
+        let fresh = mecha_core::charter::digest(&now);
+        for bad in [
+            serde_json::json!([{"id": "x", "text": "y", "rank": 1}]),
+            serde_json::json!([{"id": "has space", "text": "y", "sensor": null}]),
+        ] {
+            let refused = post(serde_json::json!({ "changes": { "line": bad }, "base": fresh }))
+                .await
+                .unwrap();
+            assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(std::fs::read_to_string(&on_disk).unwrap(), now);
+        }
+        // Neither, or both, is a malformed request.
+        let neither = post(serde_json::json!({})).await.unwrap();
+        assert_eq!(neither.status(), StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn a_clone_without_the_wav_content_type_is_refused_before_the_write() {
         // The owner guard already checks request intent. The handler also
