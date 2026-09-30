@@ -34,9 +34,12 @@ quotation, news or a question about someone else, or an idiom (\"this \
 deadline is killing me\") is not a sign. When the words are ambiguous but \
 could be about themselves, answer true.";
 
-/// The screen's answer, one field per question.
+/// The screen's answer, one field per question. Every field is required,
+/// and together they decide the verdict, so an extra key is ignored rather
+/// than refused: without a schema (the local router) one stray key would
+/// otherwise pin a chat to "keywords only" while the judge answers correctly
+/// (review of #426). A missing field is still `Unchecked`.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Screen {
     wish_to_be_dead: bool,
     suicidal_thoughts: bool,
@@ -221,6 +224,12 @@ mod tests {
             matches!(v, Verdict::Unchecked(ref why) if why.contains("ran out of tokens")),
             "{v:?}"
         );
+    }
+
+    #[test]
+    fn an_extra_key_beside_every_answer_still_reads() {
+        let extra = CONCERN.replace('}', r#","confidence":"high"}"#);
+        assert_eq!(parse(&extra), Verdict::Concern);
     }
 
     #[test]

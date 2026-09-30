@@ -9,9 +9,11 @@
 //! is the owner's own Core, handed back.
 //!
 //! **A check that cannot run is never silent.** The keyword tier needs no
-//! model, so it always runs; the model tiers (a classifier and a judge, step
-//! 2c-2) are not built yet, and every surface says so — `CrisisState::Degraded`
-//! is "keywords only", never "passed".
+//! model, so it always runs; the model tier is a structured judge
+//! (`persona::judge`) asked about every owner message. §12.2's middle tier, a
+//! cheap classifier gating the judge, is deferred, not dropped.
+//! `CrisisState::Degraded` means the judge could not answer — "keywords
+//! only", never "passed".
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -26,8 +28,8 @@ pub const DETECTOR: &str = "keywords-1";
 
 /// First-person phrases that name wanting to die or to hurt oneself. A
 /// *conservative* list: a keyword tier cannot read context, so it is kept to
-/// phrases whose ordinary meaning is the one that matters, and the model
-/// tiers (2c-2) are what will read the rest. Matched on normalised text
+/// phrases whose ordinary meaning is the one that matters, and the judge
+/// (`persona::judge`) is what reads the rest. Matched on normalised text
 /// (lowercase, apostrophes straightened, whitespace collapsed) as whole
 /// phrases bounded by non-letters.
 const PHRASES: &[&str] = &[
