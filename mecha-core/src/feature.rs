@@ -266,6 +266,12 @@ pub fn all(cfg: &Config, facts: &Facts) -> Vec<Row> {
 
 /// Is `f` on? The only place that question is answered.
 ///
+/// **`cfg` must be the global configuration** (`Config::load_global`),
+/// never one layered with a project's `mecha.toml`. The four server rows
+/// read `[[mcp]]`, which `merge_file` keeps from project layers and `apply`
+/// replaces wholesale — so a layered config would let a cloned repository
+/// switch the owner's features on or off (FEATURES-DESIGN.md §5).
+///
 /// A feature whose parent or requirement is off is `Blocked` on the first
 /// one found, whatever its own switch says: configured-but-unreachable is
 /// different from off, and this says which dependency to fix first.
