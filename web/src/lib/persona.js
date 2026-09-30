@@ -156,10 +156,14 @@ export function waitingLine(run, display, now) {
 // the one still running; the server names that one (`working`), and it is
 // put back as a pending row with its real start, so a reload during a long
 // render still reads "drawing a picture… 1:24" (review of #431).
-export function withWorking(entries, working) {
+// `now` is this page's clock. The server says how long the tool has run
+// (`elapsed_ms`), not when it began by its clock, so a phone whose clock is
+// off still counts from the right moment (review of #431).
+export function withWorking(entries, working, now = Date.now()) {
   if (!working?.id || entries.some((e) => e.kind === 'tool' && e.id === working.id)) return entries;
-  const started = Date.parse(working.since);
-  return [...entries, { kind: 'tool', id: working.id, name: working.name, is_error: null, started: Number.isNaN(started) ? undefined : started }];
+  const elapsed = Number(working.elapsed_ms);
+  const started = Number.isFinite(elapsed) ? now - elapsed : undefined;
+  return [...entries, { kind: 'tool', id: working.id, name: working.name, is_error: null, started }];
 }
 
 export function emptyRun(entries = [], taint = null) {

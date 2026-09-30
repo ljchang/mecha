@@ -1035,9 +1035,12 @@
         {/if}
         {#if waitingLine(run, chosen.display, now)}
           <!-- A slow local model must never look broken (owner, 2026-09-30). -->
-          <div class="waiting" role="status" aria-live="polite">
+          <!-- Announced once, not once a second: the ticking clock is for
+               the eye (review of #431). -->
+          <div class="waiting">
             <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-            {waitingLine(run, chosen.display, now)}
+            <span aria-hidden="true">{waitingLine(run, chosen.display, now)}</span>
+            <span class="sr" role="status">{waitingLine(run, chosen.display, 0)?.replace(/ \d+:\d\d$/, '')}</span>
           </div>
         {/if}
         {#if safety?.resources && (crisisShown || run.entries.some((e) => e.kind === 'crisis'))}
@@ -1209,4 +1212,5 @@
   @media (prefers-reduced-motion: reduce) { .dots i { animation: none; opacity: 0.7; } }
   .pname .ai { font-family: var(--mono); font-size: 10px; font-weight: 400; line-height: 1.4; margin-left: 6px; }
   .herochips .ai { font-family: var(--mono); font-size: 10px; line-height: 1.4; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 </style>
