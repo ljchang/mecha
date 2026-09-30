@@ -342,7 +342,7 @@ impl RunEnd {
             RunEnd::Parked => "it parked a question to the owner",
             RunEnd::Stopped => "a person stopped it",
             RunEnd::Shutdown => "it was shut down",
-            RunEnd::Loop => "it repeated an identical tool call after compacting",
+            RunEnd::Loop => "it repeated an identical tool call and got the same result each time",
             RunEnd::NoOutput => "it produced no answer and did not recover when asked",
             RunEnd::NoCause => "an outcome was recorded with no cause",
             RunEnd::NoOutcome => "no outcome was recorded (the run errored, or is still going)",

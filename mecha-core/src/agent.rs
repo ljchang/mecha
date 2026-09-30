@@ -891,9 +891,11 @@ pub enum StopCause {
     /// harness's ceiling on the *work* (that is `MaxTurns`' family): a run
     /// that was fine and got restarted under it.
     Shutdown,
-    /// The model repeated an identical tool call, with an identical result,
+    /// The model repeated an identical tool call, with an identical result:
     /// right after a compaction — the sign that compaction did not carry the
-    /// task and the run is stuck re-living it. Distinct from `MaxTurns` on
+    /// task and the run is stuck re-living it — or failing the same way in
+    /// `LoopGuard::REFUSED_REPEATS` consecutive turns, compaction or not.
+    /// Never for a call the harness refused. Distinct from `MaxTurns` on
     /// purpose: "hit the turn limit" reads as the task being too big, when a
     /// stuck run is a different problem with a different fix.
     Loop,
@@ -953,7 +955,7 @@ impl StopCause {
             StopCause::Parked => "parked a question to the owner",
             StopCause::Stopped => "was stopped",
             StopCause::Shutdown => "was shut down",
-            StopCause::Loop => "repeated an identical tool call after compacting",
+            StopCause::Loop => "repeated an identical tool call and got the same result",
             StopCause::NoOutput => "produced no answer, and did not recover when asked",
         }
     }
@@ -1122,21 +1124,46 @@ pub fn owner_text(message: &Message) -> String {
 /// and expensive, because a stuck run there is burning the largest prompts it
 /// will ever send. Keyed on call *and* result: identical arguments with a
 /// changing result is polling, and a poll must never grade as stuck.
+///
+/// **One loop it watches without a compaction: the same call refused the
+/// same way, turn after turn** ([`LoopGuard::REFUSED_REPEATS`]). That
+/// is the measurement the dormancy asks for. Across 1,031 transcripts
+/// (3,187 tool turns, 2026-09-30), anywhere from four to seven identical
+/// errors in consecutive turns happened once — a persona chat that resent
+/// one refused `image_generate` forty times, twice, holding the GPU while
+/// another chat drew. At three it would also have stopped two mail runs that
+/// recovered on the next turn, after boredom's first notice named the
+/// repeat, which is why the stop comes after boredom's whole ladder. An error
+/// cannot be a poll the way a changing result is: the answer did not move,
+/// and neither did the call. A call the harness refused — the approver, a
+/// hook, a policy, the interlock — never counts: that is the harness working.
 struct LoopGuard {
     enabled: bool,
     armed: bool,
     recent: std::collections::VecDeque<u64>,
+    /// Errored call-and-result digests, with how many consecutive turns each
+    /// has come back in. A turn without one ends its streak.
+    refused: std::collections::HashMap<u64, u32>,
 }
 
 impl LoopGuard {
     /// How many prior calls a repeat is checked against.
     const WINDOW: usize = 3;
 
+    /// Consecutive turns one identical call may come back with one identical
+    /// error before the run ends: one past boredom's last rung, so both of
+    /// its notices — change the approach (at three), then say what is
+    /// blocking it (at six) — reach the model before anything stops it. Tied
+    /// to boredom's constant so the ladder cannot lose a rung to a later edit
+    /// (review of #448: at five, the second notice was unreachable).
+    const REFUSED_REPEATS: u32 = crate::boredom::STILL_STUCK + 1;
+
     fn new(enabled: bool) -> Self {
         LoopGuard {
             enabled,
             armed: false,
             recent: std::collections::VecDeque::new(),
+            refused: std::collections::HashMap::new(),
         }
     }
 
@@ -1166,6 +1193,24 @@ impl LoopGuard {
             }
         }
         repeated
+    }
+
+    /// Record one turn's *errored* calls; true when one identical call has
+    /// now come back with one identical error in
+    /// [`Self::REFUSED_REPEATS`] consecutive turns. Watched whether or not a
+    /// compaction armed the guard, and off with it. Per turn, as above: two
+    /// in one batch count once.
+    fn observe_refusals(&mut self, turn: impl IntoIterator<Item = u64>) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let this: std::collections::HashSet<u64> = turn.into_iter().collect();
+        let prior = std::mem::take(&mut self.refused);
+        self.refused = this
+            .into_iter()
+            .map(|d| (d, prior.get(&d).copied().unwrap_or(0) + 1))
+            .collect();
+        self.refused.values().any(|&n| n >= Self::REFUSED_REPEATS)
     }
 
     fn digest(name: &str, input: &Value, result: &str) -> u64 {
@@ -2731,6 +2776,9 @@ impl Agent {
                     // twice in one expression pays that twice on every
                     // tool-calling turn.
                     let transcript_bytes = crate::pressure::message_bytes(messages);
+                    // Where this turn's traces begin: the guard's refusal
+                    // streak skips the calls the harness refused.
+                    let traced = trace.len();
                     let (results, provenance) = self
                         .run_tools(
                             cx,
@@ -2796,36 +2844,70 @@ impl Agent {
                         .map(|(id, name, input)| (id, (name, input)))
                         .collect();
                     //
-                    // One walk, two consumers, for the reason the byte
+                    // One walk, three consumers, for the reason the byte
                     // measurement above is taken once: pairing every result
-                    // with its call renders each input, and both readers need
-                    // the same three values. They key differently on purpose —
+                    // with its call renders each input, and every reader needs
+                    // the same values. They key differently on purpose —
                     // the guard on the exact call, boredom on the *target*, so
                     // two tools that read one file and get the same bytes count
-                    // as the same thing learned twice.
-                    let outcomes: Vec<(&str, &Value, &str)> = results
+                    // as the same thing learned twice. Only the guard's refusal
+                    // streak reads the error flag.
+                    let outcomes: Vec<(&str, &Value, &str, bool)> = results
                         .iter()
                         .filter_map(|block| {
                             let Block::ToolResult {
                                 tool_use_id,
                                 content,
-                                ..
+                                is_error,
                             } = block
                             else {
                                 return None;
                             };
                             let &(name, input) = inputs.get(tool_use_id.as_str())?;
-                            Some((name, input, content.as_str()))
+                            Some((name, input, content.as_str(), *is_error))
                         })
                         .collect();
 
+                    // A call the approver, a hook, a policy or the interlock
+                    // refused is the harness working, not the model stuck:
+                    // appraisal scores `Loop` against the run, and keeps
+                    // denials out of every failure count for that reason. So
+                    // neither of the guard's triggers counts one (review of
+                    // #448). Only this turn's traces: a call refused once and
+                    // later let through still counts when it then fails.
+                    let refused_by_harness: std::collections::HashSet<(&str, String)> = trace
+                        [traced.min(trace.len())..]
+                        .iter()
+                        .filter(|t| t.denied)
+                        .map(|t| (t.name.as_str(), t.input.to_string()))
+                        .collect();
+                    let guarded: Vec<&(&str, &Value, &str, bool)> = outcomes
+                        .iter()
+                        .filter(|(name, input, _, _)| {
+                            !refused_by_harness.contains(&(*name, input.to_string()))
+                        })
+                        .collect();
                     if loop_guard.observe_turn(
-                        outcomes
-                            .iter()
-                            .map(|(name, input, content)| LoopGuard::digest(name, input, content)),
+                        guarded.iter().map(|(name, input, content, _)| {
+                            LoopGuard::digest(name, input, content)
+                        }),
                     ) {
                         tracing::warn!(
                             "identical call and result repeated after a compaction; stopping"
+                        );
+                        loop_detected = true;
+                    }
+                    if loop_guard.observe_refusals(
+                        guarded
+                            .iter()
+                            .filter(|o| o.3)
+                            .map(|(name, input, content, _)| {
+                                LoopGuard::digest(name, input, content)
+                            }),
+                    ) {
+                        tracing::warn!(
+                            repeats = LoopGuard::REFUSED_REPEATS,
+                            "one call refused identically, turn after turn; stopping"
                         );
                         loop_detected = true;
                     }
@@ -2833,7 +2915,7 @@ impl Agent {
                     // that has stopped teaching the run anything, named while
                     // there is still something to do about it.
                     let bored =
-                        boredom.observe_turn(outcomes.iter().map(|(name, input, content)| {
+                        boredom.observe_turn(outcomes.iter().map(|(name, input, content, _)| {
                             (*name, crate::boredom::Boredom::key(name, input, content))
                         }));
 
@@ -12121,6 +12203,278 @@ mod tests {
             StopCause::Completed,
             "the off switch did not take"
         );
+    }
+
+    /// Always refuses, the same way: an expected failure the model is meant
+    /// to route around, as `image_generate` refuses a character named
+    /// outside `cast`.
+    struct Refuse;
+
+    #[async_trait]
+    impl Tool for Refuse {
+        fn name(&self) -> &str {
+            "refuse"
+        }
+        fn description(&self) -> &str {
+            "refuses"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::err("Nothing was drawn: put them in `cast`."))
+        }
+    }
+
+    fn refused_calls(n: usize) -> Vec<CompletionResponse> {
+        (0..n)
+            .map(|i| {
+                assistant(
+                    vec![Block::ToolUse {
+                        id: format!("x{i}"),
+                        name: "refuse".into(),
+                        input: json!({"prompt": "Maya in the garden"}),
+                    }],
+                    StopReason::ToolUse,
+                )
+            })
+            .collect()
+    }
+
+    /// The loop the first persona chats hit (2026-09-30): one refused call,
+    /// resent unchanged until `max_turns`. With no compaction, the guard's
+    /// count of identical refusals ends the run as a loop — after boredom's
+    /// two notices have both reached the model — and the run still answers,
+    /// through the tool-less final turn every ceiling takes.
+    #[tokio::test]
+    async fn one_call_refused_identically_turn_after_turn_stops_the_run() {
+        let n = LoopGuard::REFUSED_REPEATS as usize;
+        let mut turns = refused_calls(n);
+        turns.push(assistant(
+            vec![Block::text("I couldn't draw it.")],
+            StopReason::EndTurn,
+        ));
+        let (mut agent, _) = agent_with(turns, PermissionMode::Allow);
+        agent.registry_mut().insert(Arc::new(Refuse));
+        let mut convo = Conversation::user("draw yourself");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Loop);
+        assert_eq!(outcome.tool_calls.len(), n);
+        assert_eq!(outcome.text, "I couldn't draw it.");
+        // Both rungs spoke before the stop: the ladder is intact.
+        let notices = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter(|b| {
+                matches!(b, Block::Text { text } if text.starts_with(crate::boredom::NOTICE_STEM))
+            })
+            .count();
+        assert_eq!(notices, 2, "a boredom notice did not reach the model");
+    }
+
+    /// One short of the count is still the model's to work out: the two mail
+    /// runs in the corpus recovered on the turn after boredom's first notice.
+    #[tokio::test]
+    async fn refusals_short_of_the_count_are_not_yet_a_loop() {
+        let mut turns = refused_calls(LoopGuard::REFUSED_REPEATS as usize - 1);
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) = agent_with(turns, PermissionMode::Allow);
+        agent.registry_mut().insert(Arc::new(Refuse));
+        let mut convo = Conversation::user("draw yourself");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+        assert_eq!(outcome.text, "done");
+    }
+
+    /// The harness refusing the same call — here a read-only run denying a
+    /// write — is the harness working, not the model stuck: appraisal scores
+    /// `Loop` against the run, and keeps denials out of every failure count
+    /// (review of #448).
+    #[tokio::test]
+    async fn repeated_denials_are_not_a_refusal_loop() {
+        let n = LoopGuard::REFUSED_REPEATS as usize + 1;
+        let mut turns: Vec<CompletionResponse> = (0..n)
+            .map(|i| {
+                assistant(
+                    vec![Block::ToolUse {
+                        id: format!("w{i}"),
+                        name: "fs_write".into(),
+                        input: json!({"path": "a.rs"}),
+                    }],
+                    StopReason::ToolUse,
+                )
+            })
+            .collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (agent, _) =
+            agent_with_tools(turns, vec![Arc::new(WriteTool)], PermissionMode::ReadOnly);
+        let mut convo = Conversation::user("write the file");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert!(
+            outcome.tool_calls.iter().all(|c| c.denied && c.is_error),
+            "the fixture must be denied, and denials must carry is_error, or \
+             this proves nothing"
+        );
+        assert_eq!(outcome.tool_calls.len(), n);
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+    }
+
+    /// The same for the guard's older trigger: a policy refusing one call
+    /// twice after a compaction is not the run re-living a dropped stretch
+    /// (review of #448, pass 3).
+    #[tokio::test]
+    async fn repeated_denials_after_a_compaction_are_not_a_loop() {
+        let write = |id: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "fs_write".into(),
+                    input: json!({"path": "a.rs"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns = three_calls();
+        turns.push(assistant(
+            vec![Block::text("a summary")],
+            StopReason::EndTurn,
+        ));
+        turns.push(assistant(vec![Block::text("NONE")], StopReason::EndTurn));
+        turns.push(write("w0"));
+        turns.push(write("w1"));
+        // At this threshold it compacts again before the answer, as the
+        // polling test above finds.
+        turns.push(assistant(
+            vec![Block::text("a second summary")],
+            StopReason::EndTurn,
+        ));
+        turns.push(assistant(vec![Block::text("NONE")], StopReason::EndTurn));
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![Arc::new(EchoTool), Arc::new(WriteTool)],
+            PermissionMode::ReadOnly,
+        );
+        agent.cfg.compact_at_tokens = Some(1);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.force_final_answer = false;
+        let mut convo = Conversation::user("audit the entries");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert!(outcome.compactions > 0, "the guard was never armed");
+        assert_eq!(
+            outcome.tool_calls.iter().filter(|c| c.denied).count(),
+            2,
+            "both writes must have been refused, or this proves nothing"
+        );
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+    }
+
+    /// Only the turn's own refusals are excluded: a call the owner turned
+    /// down once, then let through, still stops the run when it fails the
+    /// same way every turn after. A whole-run exclusion would miss it.
+    #[tokio::test]
+    async fn a_call_denied_once_then_failing_still_counts() {
+        struct FailingSend;
+        #[async_trait]
+        impl Tool for FailingSend {
+            fn name(&self) -> &str {
+                "send"
+            }
+            fn description(&self) -> &str {
+                "sends"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                false
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::err("the server said no"))
+            }
+        }
+        struct DenyFirst(std::sync::atomic::AtomicBool);
+        #[async_trait]
+        impl Approver for DenyFirst {
+            async fn approve(&self, _tool: &dyn Tool, _input: &Value) -> Decision {
+                if self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    Decision::Allow
+                } else {
+                    Decision::Deny("not yet".into())
+                }
+            }
+        }
+
+        let n = LoopGuard::REFUSED_REPEATS as usize;
+        let mut turns: Vec<CompletionResponse> = (0..=n)
+            .map(|i| {
+                assistant(
+                    vec![Block::ToolUse {
+                        id: format!("s{i}"),
+                        name: "send".into(),
+                        input: json!({"to": "x"}),
+                    }],
+                    StopReason::ToolUse,
+                )
+            })
+            .collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(FailingSend)], PermissionMode::Ask);
+        agent.set_approver(Arc::new(DenyFirst(Default::default())));
+        agent.cfg.force_final_answer = false;
+        let mut convo = Conversation::user("send it");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert!(
+            outcome.tool_calls[0].denied,
+            "the first call must be denied"
+        );
+        assert_eq!(outcome.stop_cause, StopCause::Loop);
+        assert_eq!(outcome.tool_calls.len(), n + 1);
+    }
+
+    #[test]
+    fn the_refusal_streak_is_consecutive_identical_and_per_turn() {
+        let n = LoopGuard::REFUSED_REPEATS as usize;
+        let fire = |turns: &[Vec<u64>], enabled: bool| {
+            let mut g = LoopGuard::new(enabled);
+            turns
+                .iter()
+                .map(|t| g.observe_refusals(t.iter().copied()))
+                .collect::<Vec<_>>()
+        };
+        let same = |k: usize, turn: &[u64]| vec![turn.to_vec(); k];
+        // The count in a row fires on its last, never armed by a compaction.
+        let fired = fire(&same(n, &[1]), true);
+        assert!(
+            fired[n - 1] && !fired[..n - 1].iter().any(|&f| f),
+            "{fired:?}"
+        );
+        // A turn without it — a different error, or none (a success never
+        // reaches this reader) — ends the streak.
+        for gap in [vec![2], vec![]] {
+            let mut turns = same(n - 1, &[1]);
+            turns.push(gap);
+            turns.extend(same(n - 1, &[1]));
+            assert!(!fire(&turns, true).into_iter().any(|f| f), "{turns:?}");
+        }
+        // Twice in one batch is one turn's worth: one turn short of the
+        // count, doubled, would reach it counted per call.
+        assert!(!fire(&same(n - 1, &[1, 1]), true).into_iter().any(|f| f));
+        // Beside other calls it still counts.
+        let mixed: Vec<Vec<u64>> = (0..n as u64).map(|i| vec![1, 100 + i]).collect();
+        assert!(fire(&mixed, true)[n - 1]);
+        // Off is off.
+        assert!(!fire(&same(n + 1, &[1]), false).into_iter().any(|f| f));
     }
 
     #[tokio::test]
