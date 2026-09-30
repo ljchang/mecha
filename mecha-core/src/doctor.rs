@@ -3199,40 +3199,44 @@ mod tests {
     #[test]
     fn the_legacy_stores_follow_the_mail_crates_rule() {
         use crate::onboarding::legacy_store_dir;
-        // A variable nothing else reads, so no parallel test races it.
+        // A variable nothing else reads, so no parallel test races it. An
+        // empty value is a configured empty path, not the fallback — that is
+        // `token::provider_path`'s rule, mirrored as it is, though
+        // `work::mecha_home` treats an empty `$MECHA_HOME` as unset.
         let var = "MECHA_TEST_LEGACY_STORE_DIR_432";
         std::env::remove_var(var);
         let fallback = legacy_store_dir("google", var).unwrap();
+        std::env::set_var(var, "/tmp/somewhere-else");
+        let set = legacy_store_dir("google", var).unwrap();
+        std::env::remove_var(var);
         assert_eq!(
             fallback,
             dirs::home_dir().unwrap().join(".mecha").join("google"),
             "the fallback is the real home's, whatever $MECHA_HOME says"
         );
-        std::env::set_var(var, "/tmp/somewhere-else");
-        assert_eq!(
-            legacy_store_dir("google", var).unwrap(),
-            PathBuf::from("/tmp/somewhere-else")
-        );
-        std::env::remove_var(var);
+        assert_eq!(set, PathBuf::from("/tmp/somewhere-else"));
 
-        // `of_owner` names the mail crate's variables. `$MECHA_GOOGLE_DIR` is
-        // read only by the mail crate, so setting it here races nothing.
+        // `of_owner` names the mail crate's variables. In this crate they are
+        // read by `onboarding`'s store helpers, which other tests reach
+        // (`feature::Facts::read`) — none of them asserts on a mail store, so
+        // the window is harmless today; each block restores before it
+        // asserts, so a failure cannot leak the variable onward.
         let restore = std::env::var("MECHA_GOOGLE_DIR").ok();
         std::env::set_var("MECHA_GOOGLE_DIR", "/tmp/google-elsewhere");
         let legacy = MailStores::of_owner().legacy;
-        assert!(
-            legacy.contains(&("google", Some(PathBuf::from("/tmp/google-elsewhere")))),
-            "{legacy:?}"
-        );
         match restore {
             Some(v) => std::env::set_var("MECHA_GOOGLE_DIR", v),
             None => std::env::remove_var("MECHA_GOOGLE_DIR"),
         }
+        assert!(
+            legacy.contains(&("google", Some(PathBuf::from("/tmp/google-elsewhere")))),
+            "{legacy:?}"
+        );
 
         // And the public `examine` locates the stores through `of_owner`
         // rather than taking the home's — the wiring the test module's
         // `examine` shadow cannot see. Every mail variable points at a temp
-        // dir, so no real store is read; only the mail crate reads these.
+        // dir, so no real store is read.
         let vars = ["MECHA_MAIL_DIR", "MECHA_GOOGLE_DIR", "MECHA_OUTLOOK_DIR"];
         let saved: Vec<_> = vars.iter().map(|v| std::env::var(v).ok()).collect();
         let registry = home("owner-registry");
@@ -3241,7 +3245,7 @@ mod tests {
         std::env::set_var("MECHA_MAIL_DIR", registry.join("mail"));
         std::env::set_var("MECHA_GOOGLE_DIR", registry.join("google"));
         std::env::set_var("MECHA_OUTLOOK_DIR", registry.join("outlook"));
-        assert_eq!(MailStores::of_owner().registry, Some(registry.join("mail")));
+        let located = MailStores::of_owner().registry;
         let found = super::examine(&empty_home, utc(NOW));
         for (v, old) in vars.iter().zip(saved) {
             match old {
@@ -3249,6 +3253,7 @@ mod tests {
                 None => std::env::remove_var(v),
             }
         }
+        assert_eq!(located, Some(registry.join("mail")));
         assert!(
             found
                 .iter()
