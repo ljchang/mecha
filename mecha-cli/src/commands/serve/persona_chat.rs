@@ -478,13 +478,14 @@ impl PersonaChats {
             base = mecha_core::persona::text_digest(&disk);
         }
         let saved = match (body.text, body.changes, body.doc) {
-            (None, None, Some(doc)) => mecha_core::persona::edit_markdown(
-                &self.store,
-                &p.name,
-                body.file,
-                &doc,
-                &body.base,
-            ),
+            (None, None, Some(doc)) if body.file != mecha_core::persona::OwnerFile::Settings => {
+                mecha_core::persona::edit_markdown(&self.store, &p.name, body.file, &doc, &base)
+            }
+            (None, None, Some(_)) => {
+                return Err(Refusal::Bad(
+                    "persona.toml is not edited as Markdown".into(),
+                ))
+            }
             (Some(text), None, None) => {
                 let text = match &hidden {
                     Some(c) => mecha_core::persona::restore_character(&text, c),
@@ -2920,6 +2921,7 @@ mod tests {
             serde_json::json!({ "file": "settings", "base": base }),
             serde_json::json!({ "file": "settings", "text": text, "changes": {}, "base": base }),
             serde_json::json!({ "file": "identity", "changes": {}, "base": after["identity"]["digest"] }),
+            serde_json::json!({ "file": "settings", "doc": { "title": "x" }, "base": base }),
             serde_json::json!({ "file": "settings", "changes": { "tools.deny": [] }, "base": base }),
             serde_json::json!({ "file": "settings", "changes": { "groups": ["strangers"] }, "base": base }),
         ] {
