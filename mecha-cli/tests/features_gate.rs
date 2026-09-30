@@ -302,6 +302,10 @@ fn a_switched_off_feature_s_verbs_refuse_with_one_sentence() {
             "Slack remote control is off (turned off in [features]) — `mecha features enable slack`",
         ),
         (
+            &["slack", "remote", "--sweep"][..],
+            "Slack remote control is off (turned off in [features]) — `mecha features enable slack`",
+        ),
+        (
             &["persona", "new", "ada"][..],
             "Personas is off (turned off in [features]) — `mecha features enable personas`",
         ),
@@ -342,6 +346,9 @@ fn a_switched_off_feature_s_verbs_refuse_with_one_sentence() {
         &["review", "queues"][..],
         // Step 3b: reading what is here, and the way Slack is set up.
         &["slack", "status"][..],
+        // "What is this machine mirroring", answerable when Slack is the
+        // thing that is wrong (review of #452).
+        &["slack", "remote"][..],
         &["persona", "list"][..],
     ] {
         let err = run(off, argv);

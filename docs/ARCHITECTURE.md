@@ -8282,8 +8282,12 @@ in five different ways. The design and its open steps are
   (review of #451). **Step 3b guarded the rest whole**, by flipping their
   `gated` arms: Slack, personas, voice (with dictation, calls and cloning),
   incognito, the front door and messages. Their verbs refuse except where
-  the rules above leave them open — `slack status`, `auth`, `threads` and
-  `unlink`; `persona list`, `show` and `group list` — and `msg`,
+  the rules above leave them open — `slack status`, `auth`, `threads`,
+  `remote` without `--sweep`, and `unlink`; `persona list`, `show` and
+  `group list` — and, as for the graph, Slack's drivers ask for themselves
+  (`send::send_file`, `remote::attach`, the connector), because the TUI's
+  `/send` and `/remote-control` call them without the verb (review of
+  #452) — and `msg`,
   `frontdoor`, `polls` and `voice-serve` refuse whole (`msg` by the owner's
   ruling M1, over its older "works whether or not enabled"; `frontdoor`
   because even its reads create and reconcile the store). **The line

@@ -624,6 +624,10 @@ pub async fn attach(
     taint: (bool, bool),
     prior_messages: usize,
 ) -> Result<(Attached, String)> {
+    // The TUI's `/remote-control` calls this directly, and an attach mirrors
+    // every turn into a Slack DM — so the driver asks (review of #452).
+    // `detach` stays open: ending a mirror is cleanup.
+    crate::commands::features::require(mecha_core::feature::Feature::Slack)?;
     mecha_core::work::valid_producer(name)
         .with_context(|| format!("`{name}` is not a usable remote-control name"))?;
 

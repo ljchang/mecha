@@ -141,6 +141,9 @@ impl ConnectorLock {
 }
 
 pub async fn run(global: &GlobalOpts) -> Result<()> {
+    // Asked here as well as by the verb, so any caller of the connector is
+    // behind the switch (review of #452).
+    crate::commands::features::require(mecha_core::feature::Feature::Slack)?;
     let store = SlackStore::open(mecha_core::work::mecha_home()?.join("slack"))?;
     // Taken before anything else opens a socket or touches the store.
     let _lock = ConnectorLock::take(&store.root().join("connector.lock"))?;
