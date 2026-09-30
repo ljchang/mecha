@@ -458,7 +458,7 @@ request by its `model` field. What follows was read in
   and systemd's default `KillMode=control-group` backstops the whole
   group. Confirmed as a fact at `c841aee`, not relied on as an assumption.
 - **The embedding server stays out of the router.** It keeps its own
-  process on :8081 (`LLAMA-SERVER.md` §Two servers). An embedding request
+  process on :8081 (`LLAMA-SERVER.md` §Three servers). An embedding request
   must never be able to evict the chat model, or the other way round.
 
 Memory decides `--models-max 1`. At current settings: production ~53 GB

@@ -10,7 +10,7 @@ the chat models since the router was installed on 2026-09-27 (§Router mode),
 and `scripts/start-moe-mtp.sh` and its siblings as the rollback; this file is
 the reasoning and the numbers.
 
-## Two servers, one model each
+## Three servers, one model each
 
 llama-server holds **one model per process**. So:
 
