@@ -109,11 +109,12 @@ pub enum Cmd {
 pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     let cmd = args.cmd.unwrap_or(Cmd::Status);
     // Before `open_store`, which creates the store. Open with the switch off:
-    // `status`, `threads` and `remote` without `--sweep` read what is here —
-    // the last "usable when Slack is the thing that is wrong", as its own doc
-    // says (review of #452) — `auth` is how the feature is set up, and
-    // `unlink` deletes a binding, and deleting data you hold is never
-    // refused. What talks to Slack or acts on its threads is refused — and
+    // `threads` and `remote` without `--sweep` read what is here — "usable
+    // when Slack is the thing that is wrong", as `remote`'s doc says (review
+    // of #452); `status` reads the binding and asks Slack only whether the
+    // credential still works; `auth` is how the feature is set up; `unlink`
+    // deletes a binding, and deleting data you hold is never refused. What
+    // posts to Slack, connects to it or acts on its threads is refused — and
     // the drivers themselves (`send_file`, `remote::attach`, the connector)
     // ask too, for the callers that skip this verb.
     if !matches!(

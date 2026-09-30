@@ -1191,6 +1191,8 @@ pub fn import_outcome(
 
 /// The request's state, re-read from the store the CLI wrote.
 fn request_state(seq: i64) -> Option<String> {
+    // Never opens (so never creates) the store with the front door off.
+    crate::commands::features::require(mecha_core::feature::Feature::Frontdoor).ok()?;
     let store = mecha_core::frontdoor::Frontdoor::open_default().ok()?;
     store.record(seq).ok().map(|r| r.state)
 }
