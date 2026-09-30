@@ -129,9 +129,11 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         has_mail_binary: onboarding::on_path("mecha-mail"),
         has_docs_binary: onboarding::on_path("mecha-docs"),
         has_graph_binary: onboarding::on_path("mecha-graph-mcp"),
-        mail_accounts: onboarding::count_accounts(&home.join("mail")),
-        docs_accounts: onboarding::count_accounts(&home.join("docs")),
-        slack_linked: slack_linked(&home),
+        // Each store by its owner's rule, not `home.join(..)` — see
+        // `onboarding::mail_store_dir`.
+        mail_accounts: onboarding::mail_store_dir().and_then(|d| onboarding::count_accounts(&d)),
+        docs_accounts: onboarding::docs_store_dir().and_then(|d| onboarding::count_accounts(&d)),
+        slack_linked: onboarding::slack_linked(&home),
         provider_credential: pcfg.resolve_api_key().is_some(),
         props,
         scheduler_installed: scheduler_installed(),
@@ -764,19 +766,6 @@ fn apply(provider: &str, settings: &[(&'static str, String)]) -> Result<()> {
         backup.display()
     );
     Ok(())
-}
-
-fn slack_linked(home: &std::path::Path) -> Option<bool> {
-    let dir = home.join("slack");
-    match std::fs::read_dir(&dir) {
-        Ok(entries) => Some(entries.flatten().any(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|x| x == "json" || x == "toml")
-        })),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
-        Err(_) => None,
-    }
 }
 
 fn trigger_count(home: &std::path::Path) -> usize {

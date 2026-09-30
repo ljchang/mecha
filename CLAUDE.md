@@ -228,6 +228,8 @@ trial_env.rs the world a trial home is built from: the environment's harness,
 config.rs    layered TOML config
 onboarding.rs what a new install still needs, and the one command that fixes each;
              never writes down a number the user merely believes
+feature.rs   which optional parts are on: a closed registry, five states, read
+             from the global config and the disk — never a server
 ```
 
 `RunContext` is what one *run* gets: the path jail, the approver, its budget,
@@ -453,6 +455,7 @@ documents · the task board · the unified queue (`/queues`) · skills ·
 mecha-slack · the remote control · hooks · the outbox · the work directory ·
 triggers · the run-quality corpus (the gate, diagnosis, harness rumination) ·
 the goal system (charter, appraisal, homeostat, boredom) · the doctor ·
+features ·
 the experiment store ·
 context accounting · timezones · compaction · the eval rig.
 
