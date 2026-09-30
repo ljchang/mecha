@@ -1148,17 +1148,14 @@ pub fn toggle_outcome(
 }
 
 /// Whether the unified registry now holds credentials for the imported
-/// account. The import writes `~/.mecha/mail/<provider>/oauth.json`; its
-/// presence, not the child's exit, is the outcome.
+/// account. The import writes `<registry>/<provider>/oauth.json`; its
+/// presence, not the child's exit, is the outcome. The registry is found by
+/// the mail crate's rule (`onboarding::mail_store_dir`), not under the mecha
+/// home, or a successful import reads as failed whenever `$MECHA_HOME` or
+/// `$MECHA_MAIL_DIR` is set.
 fn registry_credentials_exist(provider: &str) -> bool {
-    mecha_core::work::mecha_home()
-        .map(|home| {
-            home.join("mail")
-                .join(provider)
-                .join("oauth.json")
-                .is_file()
-        })
-        .unwrap_or(false)
+    mecha_core::onboarding::mail_store_dir()
+        .is_some_and(|dir| dir.join(provider).join("oauth.json").is_file())
 }
 
 /// The registry is the outcome. An import moves the login, not its health —
