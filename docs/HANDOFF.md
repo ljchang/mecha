@@ -2047,29 +2047,21 @@ scopes widened, and both are recorded in each account's `oauth.json` under
 
 | Account | Provider | Grant | Expiry |
 |---|---|---|---|
-| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | **still 7 days from consent** — last consent 2026-09-15 (`granted_at` in that account's `oauth.json`), so this grant lapses ≈2026-09-22; it was minted in Testing and keeps its clock, and publishing to production changed only what *future* consents get (see below) |
+| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | none observed — consented 2026-09-17, after the project was published to production, and still refreshing on 2026-09-30 (day 13; a Testing grant is revoked on day 7) |
 | `dartmouth` | Outlook | `Mail.ReadWrite`, `Mail.Read`, `Mail.Send`, `Calendars.ReadWrite` | none — permanent |
 
-**Open: `personal` still owes a re-consent.** The seven-day clock is a
-property of the grant, not of the app. That account's token was minted on
-2026-09-15, while the project was still in Testing, so it keeps its own
-expiry and lapses ≈2026-09-22 whatever the app's status is now — publishing
-changed only what *future* consents get. `~/.mecha/mail/accounts.toml`
-deliberately keeps `grant_lifetime_days = 7` on it so `mecha doctor` goes on
-warning two days out. **That line comes out when a grant is *observed*
-surviving past day eight** — deleted rather than raised to a large number, so
-its absence is the claim and no one has to trust a figure nobody measured.
-
-Everything else here is settled and has left. The publish is in
+All of this is settled. The publish is in
 [`HISTORY.md`](HISTORY.md)'s 2026-09-16 prose — In production, branding
 verified, scope verification deliberately not submitted, with the console
 states attributed to the session that observed them. The hazard that cost the
 time — two verification tracks behind one word, and the cheap one routing onto
-the expensive one — is under its *Traps already hit → Environment*. Only the
-re-consent is open, so only the re-consent is here.
+the expensive one — is under its *Traps already hit → Environment*. The
+re-consent that was open here is closed: the 2026-09-17 grant outlived the
+seven-day clock (HISTORY, 2026-09-30).
 
 `~/.mecha/mail/accounts.toml` is in no git repository, so a fresh clone will
-not have it — including the `grant_lifetime_days = 7` line above.
+not have it. It no longer carries `grant_lifetime_days` on `personal`; the
+backup from before the line came out is `accounts.toml.bak-2026-09-30`.
 
 Dartmouth's Entra registration (also named FlowMail, client
 `bc6a1e19-…`) already had `Mail.ReadWrite` **Delegated** granted tenant-wide,
@@ -3445,6 +3437,37 @@ restarted at 21:05:28Z with no live hold, and each `/proc/<pid>/exe` is
 edits in a row"` → 1. The voice worker, ComfyUI, `llama-*`, the graph
 binaries and the dist were not touched. The 20:48Z install is mecha-d7's to
 record.
+
+**2026-09-30 00:52–04:31Z, mecha-d7: `mecha` four times from main, and
+`mecha-mail` once.** Every install ran from `~/Github/mecha` fast-forwarded to
+`origin/main`, with the launch scripts and `worker.py` unchanged across the
+move, and restarted `mecha-serve`, `mecha-slack`, `mecha-triggers` and
+`mecha-drain` while no restarted unit held the model. At 03:49Z the one hold
+was `mecha-ruminate`'s nightly `validate`, a separate unit left running. Each
+probe string came from the range's own diff (added, or for `hidden_locked`
+removed) and was checked against `/proc/<pid>/exe` of the three long-running
+units:
+- **00:52Z, `259231d6` (#421).** `a cache path is under the cache root`
+  0 → 1.
+- **03:49Z, `930d317e` (#425, with #426).** `hidden_locked` 1 → 0. The web
+  dist was rebuilt, and the door served `index-CSk-mU63.js`. Live
+  `/api/personas` and `/api/library` carry no count.
+- **04:14Z, `5664f245` (#428, #432), with `mecha-mail` reinstalled.** `add a
+  [documents] table` 0 → 1. The mecha-mail change adds no literal, so its only
+  evidence is the install output. `mecha features` exists.
+- **04:31Z, `c599c802` (#429, #433).** `a mask needs the picture it masks;
+  nothing was drawn` 0 → 1. The door serves `index-Bhf8U6Zk.js`, and
+  `voice-uplink-transform.js` returns `200 text/javascript`.
+
+**For about 2 minutes (≈04:29–04:31Z), the new dist ran against the old
+serve.** The dist was rsynced while a persona-chat hold kept serve up. #429's
+page sends `mask`, and the old `image_generate` ignores unknown keys, so a
+painted edit would have redone the whole picture. The order for a change
+that spans the binary and the page is install, then restart serve once the
+holds clear, then rsync. mecha-5d caught it.
+
+The voice worker, ComfyUI, `llama-*` and the graph binaries were not touched.
+mecha-69's 00:46Z restart (persona authoring, `bbfe4b6b`) is theirs to record.
 
 ## What the measurements say
 
