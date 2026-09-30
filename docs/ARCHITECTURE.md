@@ -5923,10 +5923,16 @@ when touching it:
   kind and setpoint are harness-only (containment 2: every exposed number
   invites the model to reason about it); `mecha charter`, the TUI's detail
   view and the web editor show them, the prompt never does. The web editor
-  *carries* a sensor through a save — a serialiser that dropped the table
-  would delete the owner's sensor on the next re-rank, which is why
-  `charter.rs`'s web-editor sample and
-  `website/scripts/check-charter-toml.mjs` pin a sensored line — and, since
+  *carries* a sensor through a save — since 2026-09-30 the page sends its
+  rows (`charter-toml.js`'s `toRows`, with `base`, the digest of the file it
+  read; a charter changed since is a 409) and the server sets them in place
+  with `tomlform` over `charter::form`, rows matched by `id`: an untouched
+  sensor, setpoint spelling included, stays as written, a moved line takes
+  its comments with it, and a comment among the lines no longer sends the
+  owner to raw TOML (`charter.rs`'s
+  `the_list_editors_rows_are_what_this_reader_loads` pins a sensored line
+  through the writer and the reader; the JavaScript serialiser and its
+  byte-for-byte check are gone) — and, since
   2026-09-05, lets the owner **type** one: the author rule is about the
   author, not the verb, so a form the owner fills is the owner authoring.
   What keeps it that way is that the page proposes nothing — the select

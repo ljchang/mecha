@@ -5,10 +5,8 @@
     readingStands,
     rows,
     sensorProblems,
-    sensorsWouldDrop,
-    serialize as toToml,
     slugify,
-    splitHeader,
+    toRows,
   } from './charter-toml.js';
 
   // The charter pane. The lines are edited in place — tap one to open it,
@@ -34,13 +32,11 @@
   let uidSeq = 0;
   let lines = $state([]);
   let original = $state('[]');
-  // Everything above the first `[[line]]`, kept byte-for-byte across a save:
-  // the file's header comments (and, for a first charter, the whole template)
-  // are the owner's writing too.
-  let header = $state('');
-  // Why the structured editor is unavailable, when it is. Never edit blind:
-  // regenerating tables out of a document we could not fully account for
-  // would silently drop whatever we failed to understand.
+  // Why the structured editor is unavailable, when it is: a charter on disk
+  // that does not parse has no trustworthy lines. Comments no longer block
+  // it — a list save is set in place by the server (`charter::form` over
+  // `tomlform`), so the owner's comments, above the lines and among them,
+  // all stay.
   let blocked = $state(null);
 
   let editing = $state(null); // uid of the open line
@@ -75,18 +71,14 @@
     // read. The TOML editor is the only honest surface for that.
     if (c.parse_error) {
       blocked = `The charter on disk does not load, so its lines cannot be edited as a list: ${c.parse_error}`;
-      header = '';
       lines = [];
       original = '[]';
       return;
     }
-    const raw = (c.raw ?? '').trim() ? c.raw : (c.template ?? '');
-    const split = splitHeader(raw);
-    header = split.header;
-    blocked = split.blocked;
+    blocked = null;
     // `sensor` is carried through a re-rank exactly as it was read, and the
     // form under an open line may change it — the owner typing, which is
-    // the author rule's whole condition (see `serialize`, `addSensor`).
+    // the author rule's whole condition (see `toRows`, `addSensor`).
     // `reading` rides beside it for display only — see `rows`.
     lines = rows(c.lines, () => ++uidSeq);
     original = snapshot();
@@ -107,8 +99,6 @@
       // failure arrives as `parse_error` with `raw: ""` and no template.
       (charter.parse_error != null && !charter.raw)
   );
-
-  const serialize = () => toToml(header, lines);
 
   const snapshot = () =>
     JSON.stringify(lines.map((l) => [l.id, l.text, l.sensor?.kind ?? null, l.sensor?.setpoint ?? null]));
@@ -179,7 +169,7 @@
     line.read_for = null;
   }
 
-  const budget = $derived(charter?.budget ?? 2000);
+  const budget = $derived(charter?.budget ?? 2500);
 
   // Derive the id when the row *closes*, whatever closed it. Hanging this off
   // the textarea's `blur` alone is a bet on the browser: `dragStart` removes
@@ -224,7 +214,10 @@
     hydrate(charter);
   }
 
-  async function save(raw) {
+  // `payload` is `{raw}` from the TOML editor, or `{changes, base}` from the
+  // list: its rows and the digest of the charter this page read, so a
+  // charter changed on disk meanwhile is refused (409), not written over.
+  async function save(payload) {
     if (!confirming) {
       confirming = true;
       return;
@@ -235,7 +228,7 @@
       const res = await fetch('/api/settings/charter', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raw }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         // 422 carries the parse error — nothing typed is discarded, which is
@@ -399,7 +392,7 @@
   <textarea class="editor" bind:value={draft} spellcheck="false" rows="18"></textarea>
   {#if saveError}<div class="card notice">not saved: {saveError}</div>{/if}
   <div class="row-actions">
-    <button class="btn primary" class:confirm={confirming} disabled={busy} onclick={() => save(draft)}>
+    <button class="btn primary" class:confirm={confirming} disabled={busy} onclick={() => save({ raw: draft })}>
       {confirming ? 'This rides in every run’s prompt — confirm save' : 'Save'}
     </button>
     <button
@@ -551,7 +544,7 @@
         {/if}
         {#if line.sensor && editing !== line.uid}
           <!-- The owner's own setpoint, in their spelling, kept across a
-               save by `serialize`; tap the line to change it. The current
+               save, untouched unless it is changed; tap the line to change it. The current
                reading beside it is §11.1 containment 5's first guard: a
                setpoint in the wrong unit shows as always past it, here,
                where the owner is editing. -->
@@ -602,8 +595,8 @@
            `prompt_block(..).chars().count()` — what actually rides in the
            cached prefix — so it counts the rendered header and per-line
            formatting and *not* the file's comments, which never reach a
-           prompt. Measuring `serialize().length` against the same budget
-           compared two different quantities. -->
+           prompt. Measuring the file's length against the same budget
+           would compare two different quantities. -->
       <span class="count" class:over={charter.over_budget}>
         {charter.char_count.toLocaleString()} / {budget.toLocaleString()} characters{dirty
           ? ' (on disk)'
@@ -612,33 +605,23 @@
     {:else}
       <span class="count">&nbsp;</span>
     {/if}
-    <!-- The handoff serialises the list, and `serialize` writes no table
-         for a sensor without a kind — so a half-filled sensor would be
-         dropped from the draft at the moment the notice naming it
-         disappears, and the raw editor's save has no problems gate. The
-         same gate as the list save, then: fix the line first (found on
-         review). -->
+    <!-- The file as it is on disk: the list's unsaved edits are not TOML
+         until the server writes them, so the hatch waits for them to be
+         saved or cancelled rather than dropping them unseen. -->
     <button
       class="btn"
       class:ghost={!blocked}
-      disabled={!blocked && dirty && sensorsWouldDrop(lines).length > 0}
+      disabled={!blocked && dirty}
       onclick={() => {
-        // Carry unsaved list edits across rather than silently reverting to
-        // what is on disk.
-        draft = !blocked && dirty ? serialize() : charter?.raw || charter?.template || '';
+        draft = charter?.raw || charter?.template || '';
         confirming = false;
         saveError = null;
       }}>Edit as TOML</button
     >
-    {#if !blocked && dirty && sensorsWouldDrop(lines).length > 0}
+    {#if !blocked && dirty}
       <!-- Said here, not in a title: a disabled button swallows its title in
-           every engine. Only a sensor `serialize` would drop gates the
-           hatch — a kindless one; an empty id, text or setpoint and two
-           lines of one kind serialise faithfully and the server refuses
-           them with the draft kept, so those keep the hatch open. -->
-      <span class="sub hint">
-        line{sensorsWouldDrop(lines).length === 1 ? '' : 's'} {sensorsWouldDrop(lines).join(', ')}: give the sensor a kind or remove it — the TOML draft would drop it
-      </span>
+           every engine. -->
+      <span class="sub hint">save or cancel the list first — the TOML shows the file as it is on disk</span>
     {/if}
   </div>
 
@@ -655,7 +638,7 @@
         class="btn primary"
         class:confirm={confirming}
         disabled={busy || problems.length > 0}
-        onclick={() => save(serialize())}
+        onclick={() => save({ changes: { line: toRows(lines) }, base: charter?.digest })}
       >
         {confirming ? 'This rides in every run’s prompt — confirm save' : 'Save'}
       </button>
