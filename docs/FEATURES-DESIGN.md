@@ -435,7 +435,18 @@ Three rules carry the design:
    than repeating `if let Some(image) = cfg.image`. The existing gates
    (`cfg.search`, `cfg.image`, `cfg.documents`, `vision_enabled`) already key
    on configuration, not liveness — read in the step-0 audit, not in §1; the change is that they share one predicate with
-   the other five readers, so they cannot drift apart.
+   the other five readers, so they cannot drift apart. **The switch comes
+   from the global config, the settings from the layered one** (found on
+   review of #427, pass 11). `prepare_tools` runs on the session's layered
+   `Config`, and a project may legitimately declare a `[[search]]` backend or
+   an `[[mcp]]` server for its own sessions — so registration asks the
+   registry only *whether the feature is on* (the global `[features]` bool,
+   which no project layer can set), then builds from the layered settings as
+   it does today. A project's own `[[search]]` backend therefore works in its
+   sessions when `search = true`; a project-declared `mecha-mail` entry under
+   `mail = false` is **not connected** — the bool gates the known servers
+   whichever layer declared them — and an unknown server a project declares is
+   not a registry feature at all and connects as it does today.
 
 **When a switch takes effect.** A bool written by `mecha features enable`
 is read at different times by different readers, and the design says which,
@@ -547,8 +558,9 @@ Three rules keep one switch from becoming two:
   presence could not guarantee: `merge_file` deliberately keeps a project's
   servers and `ConfigLayer::apply` replaces the list wholesale, so under
   presence a project file would have switched the owner's Mail and Graph tabs.
-  A project's servers still give sessions in that directory tools; they never
-  change what the install says is on. (The registry also reads the server
+  A project's servers still give sessions in that directory tools — where the
+  feature they belong to is on, or where they belong to none — and never
+  change what the install says is on (§4.2 item 6). (The registry also reads the server
   rows' settings from the global layer's `[[mcp]]` only — enforced from step
   0 by `Facts::read` carrying the global configuration, so `state` has no
   `Config` parameter a layered value could be handed to.)
@@ -699,8 +711,9 @@ Three things make it deliberate rather than accidental:
   environment may switch a feature *on* only if it could configure it**,
   judged by the trust of the tables the feature's switch and settings live
   in, not by who happens to supply them: a feature whose table is in
-  `trial_env::OPERATOR_ONLY_TABLES` (`web`, `slack`, `image`, `documents`,
-  and `messages`, whose switch is the alias of `[messages] enabled`) or in
+  `trial_env::OPERATOR_ONLY_TABLES` (`web`, `slack`, `image`, `messages` —
+  whose switch is the alias of `[messages] enabled` — and, once step 1 and
+  step 5 add them, `documents` and `personas`) or in
   `MACHINE_TABLES`
   (`search`, whose backends and keys `config_at` copies from the operator —
   `Egress::Chosen` at deep search, with nothing to degrade to `Unready`)
@@ -890,9 +903,13 @@ Each step is a PR, and each leaves every surface working.
    and `[personas]`. Four places each, and a place on `trial_env`'s lists:
    `[voice]` goes on `OPERATOR_ONLY_TABLES` for `[image]`'s reason —
    `stt_url` is a destination the owner's audio goes to. `[personas]` goes
-   on **neither** list: it holds safety settings (the crisis-pause cooldown),
-   no destination or credential, and an environment that studies personas
-   needs to set them for its trial.
+   there too, for a different reason: it will hold the crisis-pause cooldown
+   (today `persona::safety::CRISIS_COOLDOWN`, a constant), and configuration
+   supplied with a checkout may only narrow, never loosen — an environment
+   file that could shorten a safety pause is the wrong direction whatever the
+   field carries. "No destination or credential" was the wrong test (found on
+   review of #427, pass 11). A study that needs a different cooldown asks the
+   operator.
 6. **Recommendations**: the rows, the probe that sums memory, and a test that
    `hardware.md` matches them. Fix the embeddings page.
 7. **Installers**: one `scripts/<feature>/install.sh` per feature that needs a
