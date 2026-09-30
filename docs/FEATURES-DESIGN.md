@@ -348,7 +348,7 @@ is stripped from project layers, so for the bools a layered value would
 agree anyway. `setup` builds both `Facts` until step 4 has it iterate the
 registry.
 
-`FeatureState` keeps apart the things a bool would merge:
+`State` keeps apart the things a bool would merge:
 
 | State | Meaning | Web | Routes | CLI | Tools |
 |---|---|---|---|---|---|
@@ -416,7 +416,10 @@ Three rules carry the design:
    them with an off feature's route, asserting the probe gets the guard's 403
    and never `feature_off`.
 5. **CLI guards.** A verb that belongs to a feature calls
-   `feature::require(cfg, Feature::Image)?` first, and every verb says the
+   `feature::require(&facts, Feature::Image)?` first — with `facts` built
+   from `Config::load_global()` and the home, **never** from the layered
+   `Config` the verb itself runs with, which is exactly what §4.1's signature
+   refuses to accept (found on review of #427, pass 9) — and every verb says the
    same thing the same way: *"image generation is not enabled — `mecha
    features enable image`"*.
 6. **Tool registration** in `setup::prepare_tools` asks the registry rather
@@ -873,7 +876,10 @@ Each step is a PR, and each leaves every surface working.
 5. **The new settings tables**: `[voice]` (with the URLs out of the code)
    and `[personas]`. Four places each, and a place on `trial_env`'s lists:
    `[voice]` goes on `OPERATOR_ONLY_TABLES` for `[image]`'s reason —
-   `stt_url` is a destination the owner's audio goes to.
+   `stt_url` is a destination the owner's audio goes to. `[personas]` goes
+   on **neither** list: it holds safety settings (the crisis-pause cooldown),
+   no destination or credential, and an environment that studies personas
+   needs to set them for its trial.
 6. **Recommendations**: the rows, the probe that sums memory, and a test that
    `hardware.md` matches them. Fix the embeddings page.
 7. **Installers**: one `scripts/<feature>/install.sh` per feature that needs a
@@ -900,7 +906,10 @@ Each step is a PR, and each leaves every surface working.
      environment may switch the feature on (§5.1);
    - an `own_state` arm that asks **what registration asks** (`[tools]`,
      the loopback validators, `SearchBackendConfig::problem`), never a
-     field's presence;
+     field's presence. Where the real predicate lives in `mecha-cli`, it
+     moves to core so both can call it — `build_search_chain`'s refusals
+     became `SearchBackendConfig::problem` in #428, held to the builder by a
+     test beside it, which is how `search` and its tool cannot drift;
    - its tools registered through the registry; its route group and CLI
      verbs naming it as owner; its web entries keyed on its `id`;
    - a setup step, and its `Recommendation` rows with their evidence;
