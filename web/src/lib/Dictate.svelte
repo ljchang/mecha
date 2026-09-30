@@ -1,5 +1,7 @@
 <script>
   import { apiFetch as fetch } from './api.js';
+  import { features } from './features.svelte.js';
+  import { isShown } from './features.js';
   // Hold nothing, tap twice: a mic button that records, encodes 16 kHz mono
   // WAV in the page, and hands the clip to /api/dictate — the local
   // Parakeet transducer, which cannot obey speech, only transcribe it. The
@@ -183,6 +185,9 @@
   $effect(() => () => cleanup());
 </script>
 
+<!-- Every mic in the app is this component, so dictation being off
+     (FEATURES-DESIGN.md §5) is one test, here. -->
+{#if isShown(features.rows, 'dictate')}
 <!-- type="button", load-bearing: a button defaults to type="submit", so
      inside a form (the graph tab's find row) implicit submission — the
      user hitting Enter in the text field — "clicks" the first submit
@@ -211,6 +216,7 @@
     </svg>
   {/if}
 </button>
+{/if}
 
 <style>
   .dictate {

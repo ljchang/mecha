@@ -9,9 +9,13 @@
 > offers and the environment refusal, gating nothing — shipped as #443;
 > 1b — tools and the known servers register only when switched on, trials
 > default their switches from the servers they carry, and `mecha serve`
-> refuses without `web` — is built. One deliberate departure from §5: `[features] messages` is
+> refuses without `web` — merged as #445. **Step 2 is built**:
+> `/api/features`, and the web app showing and hiding by its rows, with
+> Settings → Features; building it found that `state` answered `Off` for a
+> switched-on feature missing its settings, which §5 calls `Unready`, and
+> fixed that in core. One deliberate departure from §5: `[features] messages` is
 > applied *into* `[messages] enabled` rather than or-ed with it, so experiment
-> levers keep one field (ARCHITECTURE §Features says why). Steps 2–8 are
+> levers keep one field (ARCHITECTURE §Features says why). Steps 3–8 are
 > unbuilt. The owner
 > ruled F1–F6 the same day (§7): the switch is a `[features]` table of
 > bools — not a table's presence, which this doc first recommended — and §5
