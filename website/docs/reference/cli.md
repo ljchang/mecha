@@ -1620,36 +1620,61 @@ succeeded having made none at all. See
 
 ## `features`
 
-Which optional parts of mecha are on, and the way to turn on each of the rest.
-Read from the global config and the disk only — no network, so a server that
-starts on demand is never woken to be asked.
+Which optional parts of mecha are on, the way to turn on each of the rest, and
+the switches themselves. Read from the global config and the disk only — no
+network, so a server that starts on demand is never woken to be asked.
 
 ```
 mecha features [--json]
+mecha features enable <id>...
+mecha features disable <id>...
 ```
 
 | Flag | Description |
 |---|---|
-| `--json` | Machine output: one object per feature, with `state` one of `on`, `off`, `blocked`, `unready`, `unknown`. |
+| `--json` | Machine output: one object per feature, with `state` one of `on`, `off`, `blocked`, `unready`, `unknown`, its `switch` (`on`, `off`, `absent`, or null for a part) and `in_use`. |
 
-Each row is one of five states. **on** and **off** are what they say; an off
-row carries the command or config change that turns it on. **blocked** means
-the feature is configured but something it needs is off — `layout` needs `ocr`,
-voice needs the web app — and names the dependency. **unready** means a fact
-on disk says it cannot work yet, such as mail with no mailbox authorised.
-**unknown** means a store could not be read, which is a finding, never the same
-as off. Parts of a feature (`tasks` under `graph`, `ocr` under `documents`)
-are indented under it.
+Every optional feature has a switch in the global `config.toml`'s `[features]`
+table (see [Configuration](/docs/reference/configuration#features)), and the
+switch comes first: a feature whose switch is absent or `false` reads **off**,
+whatever its settings say. With the switch on, the row reads its settings.
+**on** and **off** are what they say; an off row carries the command or config
+change that turns it on. **blocked** means something it needs is off — `layout`
+needs `ocr`, dictation in the browser needs the web app — and names the
+dependency. **unready** means a fact on disk says it cannot work yet, such as
+mail with no mailbox authorised. **unknown** means a store could not be read,
+which is a finding, never the same as off. Parts of a feature (`tasks` under
+`graph`, `ocr` under `documents`) are indented under it and have no switch of
+their own.
 
-Exit 0 whatever it finds: an install with features off is a light install, not
-a broken one. A global `config.toml` that does not parse is an error (exit 1),
-since no row could be read from it. Mail, docs, the graph and publishing count as on only when an
-enabled `[[mcp]]` entry in the global config has a `command` naming their
-binary; an entry that starts the server through a wrapper script reads off.
-An installed binary alone puts no tool on the surface, and a project's
-`mecha.toml` never changes the answer. A row that has a tool reads on only where that tool would
-register: turned off in `[tools]`, an image or OCR server off this machine, or
-a search backend with no key reads off or unready, not on.
+A feature whose switch is unanswered but which this install has set up — a
+mail server in `[[mcp]]`, an `[image]` table, a persona in the store — is
+marked **not enabled, but set up here**. An install from before `[features]`
+existed has every switch unanswered; the same list is printed as one line when
+a session or a service starts (`run`, `chat`, `tui`, `serve`, `voice-serve`,
+`slack connect`, `trigger daemon`), and `mecha setup` offers each as a step.
+A feature that is set up but not yet usable is named with the reason; one whose
+store could not be read is never named.
+
+**`enable`** writes `true` for each id, **`disable`** writes `false`, in place:
+comments, the order of the file and any key a newer build added are kept, and
+the table is created when it is missing. `enable` refuses a part (`ocr`: switch
+on `documents` and set `[documents] ocr`), and a feature whose dependency is
+not on, printing the command that switches both (`mecha features enable web
+incognito`). `disable` says what it leaves blocked. A service that is already
+running reads the change when it restarts.
+
+Exit 0 whatever the list finds: an install with features off is a light
+install, not a broken one. A global `config.toml` that does not parse is an
+error (exit 1), since no row could be read from it; a `[features]` key this
+build does not know is reported and ignored. Mail, docs, the graph and
+publishing count as on only when an enabled `[[mcp]]` entry in the global config
+has a `command` naming their binary; an entry that starts the server through a
+wrapper script reads off. An installed binary alone puts no tool on the surface,
+and a project's `mecha.toml` never changes the answer. A row that has a tool
+reads on only where that tool would register: turned off in `[tools]`, an image
+or OCR server off this machine, or a search backend with no key reads off or
+unready, not on.
 
 ## `diagnose`
 

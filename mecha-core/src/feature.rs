@@ -14,9 +14,13 @@
 //! separate reading, and `Unready` here only ever means a fact on disk says
 //! the feature cannot work yet (a mail server with no mailbox authorised).
 //!
-//! **Step 0 reports the switches that exist today**, not the ones the design
-//! proposes. Where a feature has no switch yet — personas, voice — it says
-//! so in its detail rather than inventing one.
+//! **The owner's switch comes first.** Every feature with a switch reads its
+//! bool in `[features]` before anything else ([`switch`]); a part rides its
+//! parent. An install that predates `[features]` has every switch absent, so
+//! every feature reads off — and [`announcements`] names the ones it had set
+//! up, which the upgrade notice prints and `mecha setup` offers. Nothing
+//! registers or connects by this module's answer yet (FEATURES-DESIGN.md §9,
+//! step 1b); for now it is what `mecha features` reports.
 
 use crate::config::{Config, McpServerConfig};
 use serde::Serialize;
@@ -168,6 +172,59 @@ impl Feature {
         }
     }
 
+    /// Whether this feature has its own bool in `[features]`. A part rides
+    /// its parent and has none, so `enable` refuses a part id by name.
+    pub fn has_switch(self) -> bool {
+        self.part_of().is_none()
+    }
+
+    /// Whether an experiment environment's `config.toml` may switch this on.
+    ///
+    /// **An environment may switch a feature on only if it could configure
+    /// it**, judged by where the feature's settings and credentials live, not
+    /// by who supplies them (FEATURES-DESIGN.md §5.1). An environment arrives
+    /// with a checkout; `trial_env::config_at` refuses any `[features]` key
+    /// set `true` for which this is `false`. Exhaustive, so a new variant does
+    /// not compile until it decides — the list is a function, not a fourth
+    /// hand-kept list.
+    pub fn switchable_from_environment(self) -> bool {
+        match self {
+            // A binary on PATH, and the trial's own `requests` store under
+            // `$MECHA_HOME`.
+            Feature::Frontdoor => true,
+            // Operator-only tables: the surfaces, the image server, the OCR
+            // server and parser sandbox, the mailbox.
+            Feature::Web
+            | Feature::Slack
+            | Feature::Image
+            | Feature::Documents
+            | Feature::Messages
+            | Feature::Voice
+            | Feature::Personas
+            // The operator's credentials: the mail crate's stores live under
+            // the real home whatever `$MECHA_HOME` says.
+            | Feature::Mail
+            | Feature::Docs
+            // The operator's backends and keys (`MACHINE_TABLES`).
+            | Feature::Search
+            // `default_provider` and `providers` are machine tables.
+            | Feature::Incognito
+            // A manifest's `live_servers` can carry the operator's graph in,
+            // and the row cannot tell that entry from a declared one;
+            // `config_at` defaults this bool instead (FEATURES-DESIGN §5.1).
+            | Feature::Graph => false,
+            // Parts have no switch to set.
+            Feature::Tasks
+            | Feature::Ocr
+            | Feature::Layout
+            | Feature::Library
+            | Feature::Dictate
+            | Feature::Calls
+            | Feature::Cloning
+            | Feature::Publishing => false,
+        }
+    }
+
     fn needs(self) -> impl Iterator<Item = Feature> {
         self.part_of()
             .into_iter()
@@ -224,6 +281,53 @@ impl State {
     }
 }
 
+/// The owner's answer in `[features]` for one feature with a switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Switch {
+    On,
+    Off,
+    /// No key: a question not yet answered, which is what an install that
+    /// predates `[features]` has for every feature.
+    Absent,
+}
+
+/// `f`'s switch, or `None` for a part, which has none.
+///
+/// `messages` is read from `[messages] enabled`, where `apply` puts a
+/// `[features] messages` answer (`config::FeaturesConfig`); its default is
+/// `false`, which reads as `Absent` — nothing distinguishes it from an
+/// unanswered key, and messaging is never announced anyway.
+pub fn switch(cfg: &Config, f: Feature) -> Option<Switch> {
+    if !f.has_switch() {
+        return None;
+    }
+    if f == Feature::Messages {
+        return Some(if cfg.messages.enabled {
+            Switch::On
+        } else {
+            Switch::Absent
+        });
+    }
+    Some(match cfg.features.get(f.id()) {
+        Some(true) => Switch::On,
+        Some(false) => Switch::Off,
+        None => Switch::Absent,
+    })
+}
+
+/// Keys in `[features]` this build does not know — a newer build's feature,
+/// or a typo. Ignored, never a load failure (see `config::FeaturesConfig`),
+/// and reported so a typo still shows as the feature it meant being off.
+pub fn unknown_switches(cfg: &Config) -> Vec<String> {
+    cfg.features
+        .0
+        .keys()
+        .filter(|k| Feature::parse(k).is_none_or(|f| !f.has_switch()))
+        .cloned()
+        .collect()
+}
+
 /// What the impure half read from the disk, so [`state`] stays a function.
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
@@ -235,6 +339,13 @@ pub struct Facts {
     pub mail_accounts: Option<usize>,
     pub docs_accounts: Option<usize>,
     pub slack_linked: Option<bool>,
+    /// Whether the persona store holds at least one persona (a directory
+    /// with a `persona.toml`); `None` where it could not be read.
+    pub personas_stored: Option<bool>,
+    /// Whether a voice unit file is installed for this user
+    /// (`mecha-voice-serve.service` or `mecha-voice-worker.service`).
+    /// Installed, not running: a socket-activated unit is idle until asked.
+    pub voice_unit_installed: bool,
     /// The **global** configuration — the only one any row reads.
     ///
     /// Carried here, rather than taken beside `Facts`, so the rule is the
@@ -263,8 +374,28 @@ impl Facts {
             mail_accounts: mail_store_dir().and_then(|d| count_accounts(&d)),
             docs_accounts: docs_store_dir().and_then(|d| count_accounts(&d)),
             slack_linked: slack_linked(home),
+            personas_stored: personas_stored(&home.join("personas")),
+            voice_unit_installed: dirs::config_dir().is_some_and(|d| {
+                let units = d.join("systemd/user");
+                ["mecha-voice-serve.service", "mecha-voice-worker.service"]
+                    .iter()
+                    .any(|u| units.join(u).is_file())
+            }),
             config: global.clone(),
         }
+    }
+}
+
+/// Does `dir` hold a persona — a directory with a `persona.toml`, which is
+/// what `persona::Store::load` counts? `None` when it could not be read.
+fn personas_stored(dir: &Path) -> Option<bool> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => Some(entries.flatten().any(|e| {
+            let p = e.path();
+            !e.file_name().to_string_lossy().starts_with('.') && p.join("persona.toml").is_file()
+        })),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
     }
 }
 
@@ -277,6 +408,12 @@ pub struct Row {
     pub requires: &'static [Feature],
     #[serde(flatten)]
     pub state: State,
+    /// The owner's answer in `[features]`; `None` for a part.
+    pub switch: Option<Switch>,
+    /// Switch absent, but this install has it set up and it would work —
+    /// the upgrade notice's case, shown as its own row rather than a bare
+    /// `off` (FEATURES-DESIGN.md §4.2).
+    pub in_use: bool,
 }
 
 /// Every feature, in [`Feature::ALL`] order.
@@ -289,6 +426,8 @@ pub fn all(facts: &Facts) -> Vec<Row> {
             part_of: f.part_of(),
             requires: f.requires(),
             state: state(facts, f),
+            switch: switch(&facts.config, f),
+            in_use: announcement(facts, f).is_some(),
         })
         .collect()
 }
@@ -302,12 +441,233 @@ pub fn all(facts: &Facts) -> Vec<Row> {
 /// one found, whatever its own switch says: configured-but-unreachable is
 /// different from off, and this says which dependency to fix first.
 pub fn state(facts: &Facts, f: Feature) -> State {
+    // The owner's switch first: off is off, whatever its settings say. A
+    // part has no switch and is decided by its parent below.
+    match switch(&facts.config, f) {
+        Some(Switch::Off) => {
+            return off(
+                "turned off in [features]",
+                format!("mecha features enable {}", f.id()),
+            )
+        }
+        Some(Switch::Absent) => {
+            return off(
+                "not enabled in [features]",
+                format!("mecha features enable {}", f.id()),
+            )
+        }
+        Some(Switch::On) | None => {}
+    }
     for need in f.needs() {
         if !state(facts, need).satisfies() {
             return State::Blocked { on: need };
         }
     }
     own_state(facts, f)
+}
+
+/// Why a feature is announced on an install that has not answered its
+/// switch: it is set up here and would work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Announcement {
+    pub id: Feature,
+    /// Present when it would be `Unready`: what is still missing.
+    pub caveat: Option<String>,
+    /// The command that answers it, naming any dependency whose switch is
+    /// also absent first — `enable` alone would land in `Blocked`.
+    pub fix: String,
+}
+
+impl Announcement {
+    /// The one line printed on a start.
+    pub fn line(&self) -> String {
+        match &self.caveat {
+            Some(why) => format!(
+                "`{}`: configured but not enabled ({why}) — `{}`",
+                self.id.id(),
+                self.fix
+            ),
+            None => format!(
+                "`{}`: configured but not enabled — `{}`",
+                self.id.id(),
+                self.fix
+            ),
+        }
+    }
+}
+
+/// Evidence that the owner set `f` up on this install — not that it would
+/// work, which `state` answers, but that there is something to lose if it
+/// stays off. Exhaustive, so a new feature decides. Features with no
+/// evidence (incognito, messages, parts) are never announced: they have
+/// nothing an upgrade could take away unannounced.
+fn evidence(facts: &Facts, f: Feature) -> bool {
+    let cfg = &facts.config;
+    match f {
+        Feature::Web => cfg
+            .web
+            .owner_login
+            .as_deref()
+            .is_some_and(|l| !l.is_empty()),
+        Feature::Slack => facts.slack_linked == Some(true),
+        Feature::Mail => mcp_entry(facts, "mecha-mail").is_some_and(|m| !m.disabled),
+        Feature::Docs => mcp_entry(facts, "mecha-docs").is_some_and(|m| !m.disabled),
+        Feature::Graph => mcp_entry(facts, "mecha-graph-mcp").is_some_and(|m| !m.disabled),
+        Feature::Search => cfg.search.iter().any(|b| !b.disabled),
+        Feature::Documents => cfg.documents.is_some(),
+        Feature::Image => cfg.image.is_some(),
+        Feature::Personas => facts.personas_stored == Some(true),
+        Feature::Voice => facts.voice_unit_installed,
+        Feature::Frontdoor => facts.has_factory_binary,
+        Feature::Incognito | Feature::Messages => false,
+        Feature::Tasks
+        | Feature::Ocr
+        | Feature::Layout
+        | Feature::Library
+        | Feature::Dictate
+        | Feature::Calls
+        | Feature::Cloning
+        | Feature::Publishing => false,
+    }
+}
+
+/// `Some` when `f`'s switch is absent, the owner set it up here, and it would
+/// be usable with the unanswered switches treated as on.
+///
+/// The substitution covers **every absent** switch, not only `f`'s, because on
+/// an install that predates `[features]` its dependencies are absent too. An
+/// explicit `false` is an answer and is never substituted, so an owner who
+/// wrote `web = false` is not told to enable what needs it. "Usable" is `On`
+/// or `Unready` — the owner's ruling of 2026-09-30, with `Unready`'s reason
+/// carried — and never `Unknown`, which would offer a switch off a store that
+/// could not be read (FEATURES-DESIGN.md §4.2).
+pub fn announcement(facts: &Facts, f: Feature) -> Option<Announcement> {
+    if switch(&facts.config, f) != Some(Switch::Absent) || !evidence(facts, f) {
+        return None;
+    }
+    let mut assumed = facts.clone();
+    for &g in Feature::ALL {
+        if switch(&facts.config, g) == Some(Switch::Absent) && g != Feature::Messages {
+            assumed.config.features.0.insert(g.id().to_string(), true);
+        }
+    }
+    let caveat = match state(&assumed, f) {
+        State::On { .. } => None,
+        State::Unready { reason, .. } => Some(reason),
+        State::Off { .. } | State::Blocked { .. } | State::Unknown { .. } => return None,
+    };
+    let mut ids: Vec<&str> = f
+        .requires()
+        .iter()
+        .filter(|d| switch(&facts.config, **d) == Some(Switch::Absent))
+        .map(|d| d.id())
+        .collect();
+    ids.push(f.id());
+    Some(Announcement {
+        id: f,
+        caveat,
+        fix: format!("mecha features enable {}", ids.join(" ")),
+    })
+}
+
+/// Every announcement, in `Feature::ALL` order — the upgrade notice's lines
+/// and `mecha setup`'s offers, from one function so the two cannot disagree.
+pub fn announcements(facts: &Facts) -> Vec<Announcement> {
+    Feature::ALL
+        .iter()
+        .filter_map(|&f| announcement(facts, f))
+        .collect()
+}
+
+/// Check a request to switch features on, before anything is written.
+///
+/// A part id is refused by name, pointing at its parent and the setting that
+/// turns it on. A feature whose `requires` is not already on and not in the
+/// same request is refused with the chained command, as Claude Code refuses a
+/// disable that would break another plugin — `enable incognito` alone would
+/// land in `Blocked`.
+pub fn plan_enable(cfg: &Config, ids: &[String]) -> Result<Vec<Feature>, String> {
+    let mut wanted = Vec::new();
+    for id in ids {
+        let f = Feature::parse(id)
+            .ok_or_else(|| format!("`{id}` is not a feature — `mecha features` lists them"))?;
+        if let Some(parent) = f.part_of() {
+            return Err(format!(
+                "`{id}` is part of `{}` and has no switch of its own — enable `{}`, and \
+                 turn `{id}` on in its settings",
+                parent.id(),
+                parent.id()
+            ));
+        }
+        if !wanted.contains(&f) {
+            wanted.push(f);
+        }
+    }
+    let missing: Vec<Feature> = wanted
+        .iter()
+        .flat_map(|f| f.requires().iter().copied())
+        .filter(|d| !wanted.contains(d) && switch(cfg, *d) != Some(Switch::On))
+        .collect();
+    if !missing.is_empty() {
+        let mut chain: Vec<&str> = missing.iter().map(|f| f.id()).collect();
+        chain.dedup();
+        chain.extend(wanted.iter().map(|f| f.id()));
+        return Err(format!(
+            "{} needs {} on as well — `mecha features enable {}`",
+            wanted
+                .iter()
+                .map(|f| format!("`{}`", f.id()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            missing
+                .iter()
+                .map(|f| format!("`{}`", f.id()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            chain.join(" ")
+        ));
+    }
+    Ok(wanted)
+}
+
+/// Write switches into the `[features]` table of the config file at `path`,
+/// editing in place.
+///
+/// **In place, never a rewrite**: comments, ordering and every other table
+/// survive, and so does a `[features]` key this build does not know — the
+/// newer build's feature that a rewrite through `Config` would drop. Creates
+/// the file, and the table, when absent: the state every install that
+/// predates `[features]` is in, where `setup::apply` would bail. Written to a
+/// temporary file beside it and renamed, so a crash leaves the old file.
+pub fn write_switches(path: &Path, changes: &[(Feature, bool)]) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .with_context(|| format!("{} is not valid TOML; nothing was changed", path.display()))?;
+    let table = doc
+        .entry("features")
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_mut()
+        .with_context(|| format!("`features` in {} is not a table", path.display()))?;
+    for (f, on) in changes {
+        anyhow::ensure!(f.has_switch(), "`{}` has no switch of its own", f.id());
+        table.insert(f.id(), toml_edit::value(*on));
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let tmp = path.with_extension("toml.features-tmp");
+    std::fs::write(&tmp, doc.to_string()).with_context(|| format!("writing {}", tmp.display()))?;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    Ok(())
 }
 
 fn on(detail: impl Into<String>) -> State {
@@ -521,10 +881,8 @@ fn own_state(facts: &Facts, f: Feature) -> State {
                 reason: format!("the library's directory: {e:#}"),
             },
         },
-        Feature::Personas => on("no switch yet — always on (FEATURES-DESIGN.md F1)"),
-        Feature::Voice => {
-            on("no switch yet — `mecha voice-serve`, and `mecha serve`'s voice flags")
-        }
+        Feature::Personas => on("~/.mecha/personas"),
+        Feature::Voice => on("`mecha voice-serve`, and `mecha serve`'s voice flags"),
         Feature::Dictate => {
             on("the web app's speech to text, at a fixed address — not yet configurable")
         }
@@ -595,12 +953,23 @@ mod tests {
         }
     }
 
-    /// `facts` read against `cfg` — the tests' way of saying "this global
-    /// configuration on this machine".
+    /// `facts` read against `cfg` with **every switch on** — the tests of a
+    /// row's own settings, which the switch would otherwise hide. The switch
+    /// itself has its own tests, which build their `Facts` as they are.
     fn at(cfg: &Config, facts: &Facts) -> Facts {
+        let mut config = cfg.clone();
+        switch_all(&mut config, true);
         Facts {
-            config: cfg.clone(),
+            config,
             ..facts.clone()
+        }
+    }
+
+    fn switch_all(cfg: &mut Config, on: bool) {
+        for &f in Feature::ALL {
+            if f.has_switch() && f != Feature::Messages {
+                cfg.features.0.insert(f.id().to_string(), on);
+            }
         }
     }
 
@@ -672,7 +1041,7 @@ mod tests {
     }
 
     /// The light install: a default config and an empty machine turn on
-    /// nothing but what has no switch yet — and nothing reads as broken.
+    /// nothing — every switch is absent — and nothing reads as broken.
     #[test]
     fn a_default_config_on_an_empty_machine_is_off_and_never_unknown() {
         let rows = all(&empty_machine());
@@ -692,10 +1061,16 @@ mod tests {
             Feature::Search,
             Feature::Documents,
             Feature::Image,
+            Feature::Personas,
+            Feature::Voice,
+            Feature::Incognito,
+            Feature::Frontdoor,
             Feature::Messages,
         ] {
             assert_eq!(get(&rows, f).word(), "off", "{}", f.id());
         }
+        // And none of it is announced: nothing was set up.
+        assert!(announcements(&empty_machine()).is_empty());
         // Parts and dependents say what they wait on rather than repeating
         // their parent's reason.
         assert_eq!(
@@ -706,16 +1081,23 @@ mod tests {
             get(&rows, Feature::Layout),
             &State::Blocked { on: Feature::Ocr }
         );
-        // Voice has a surface without the web app (`mecha voice-serve`);
-        // the parts that live in `mecha serve` wait on it.
-        assert_eq!(get(&rows, Feature::Voice).word(), "on");
+        // A part waits on its parent first: voice, then web.
         assert_eq!(
             get(&rows, Feature::Dictate),
-            &State::Blocked { on: Feature::Web }
+            &State::Blocked { on: Feature::Voice }
         );
+        // Voice has a surface without the web app (`mecha voice-serve`);
+        // with it on, the parts that live in `mecha serve` wait on web.
+        let mut voice_on = Config::default();
+        voice_on.features.0.insert("voice".into(), true);
+        let facts = Facts {
+            config: voice_on,
+            ..empty_machine()
+        };
+        assert_eq!(state(&facts, Feature::Voice).word(), "on");
         assert_eq!(
-            get(&rows, Feature::Cloning),
-            &State::Blocked { on: Feature::Web }
+            state(&facts, Feature::Cloning),
+            State::Blocked { on: Feature::Web }
         );
         assert_eq!(
             get(&rows, Feature::Library),
@@ -767,7 +1149,11 @@ mod tests {
             mcp: vec![mcp("graph", "mecha-graph-mcp")],
             ..Config::default()
         };
-        let empty = Facts::read(Path::new("/nonexistent"), &Config::default());
+        let mut with_graph = with_graph;
+        with_graph.features.0.insert("graph".into(), true);
+        let mut switched = Config::default();
+        switched.features.0.insert("graph".into(), true);
+        let empty = Facts::read(Path::new("/nonexistent"), &switched);
         assert_eq!(state(&empty, Feature::Graph).word(), "off");
         let owners = Facts::read(Path::new("/nonexistent"), &with_graph);
         assert_eq!(state(&owners, Feature::Graph).word(), "on");
@@ -894,6 +1280,184 @@ mod tests {
         assert_eq!(state(&at(&cfg, &facts), Feature::Documents).word(), "on");
         assert_eq!(state(&at(&cfg, &facts), Feature::Ocr).word(), "on");
         assert_eq!(state(&at(&cfg, &facts), Feature::Layout).word(), "off");
+    }
+
+    /// The owner's switch comes first: absent and `false` are both off,
+    /// whatever the settings say, and only `true` lets the row's own
+    /// settings decide. A part has no switch.
+    #[test]
+    fn the_switch_decides_before_the_settings() {
+        let mut cfg = Config::default();
+        cfg.mcp.push(mcp("graph", "mecha-graph-mcp"));
+        let facts = |cfg: &Config| Facts {
+            config: cfg.clone(),
+            ..empty_machine()
+        };
+        let State::Off { reason, fix } = state(&facts(&cfg), Feature::Graph) else {
+            panic!("an absent switch is off")
+        };
+        assert!(reason.contains("not enabled"), "{reason}");
+        assert_eq!(fix.as_deref(), Some("mecha features enable graph"));
+        cfg.features.0.insert("graph".into(), false);
+        let State::Off { reason, .. } = state(&facts(&cfg), Feature::Graph) else {
+            panic!("a false switch is off")
+        };
+        assert!(reason.contains("turned off"), "{reason}");
+        cfg.features.0.insert("graph".into(), true);
+        assert_eq!(state(&facts(&cfg), Feature::Graph).word(), "on");
+        assert_eq!(switch(&cfg, Feature::Tasks), None);
+        assert_eq!(switch(&cfg, Feature::Graph), Some(Switch::On));
+        // `messages` reads `[messages] enabled`, where `apply` puts the answer.
+        cfg.messages.enabled = true;
+        assert_eq!(switch(&cfg, Feature::Messages), Some(Switch::On));
+    }
+
+    #[test]
+    fn unknown_switches_are_reported_not_fatal() {
+        let mut cfg = Config::default();
+        for k in ["mail", "from_a_newer_build", "ocr"] {
+            cfg.features.0.insert(k.into(), true);
+        }
+        // A part id is not a switch either.
+        assert_eq!(unknown_switches(&cfg), vec!["from_a_newer_build", "ocr"]);
+    }
+
+    /// The upgrade notice: an absent switch over something set up here that
+    /// would work — `On` or `Unready` with its reason (owner, 2026-09-30),
+    /// never `Unknown`, never an explicit `false`, never a feature with
+    /// nothing set up (FEATURES-DESIGN.md §4.2).
+    #[test]
+    fn an_upgrade_announces_what_was_set_up_and_would_work() {
+        let mut cfg = Config::default();
+        cfg.mcp.push(mcp("mail", "mecha-mail"));
+        let mut facts = Facts {
+            config: cfg.clone(),
+            mail_accounts: Some(2),
+            ..empty_machine()
+        };
+        let a = announcement(&facts, Feature::Mail).expect("mail is set up and works");
+        assert_eq!(a.caveat, None);
+        assert_eq!(a.fix, "mecha features enable mail");
+        assert!(
+            a.line().contains("configured but not enabled"),
+            "{}",
+            a.line()
+        );
+        assert!(all(&facts)
+            .iter()
+            .any(|r| r.id == Feature::Mail && r.in_use));
+
+        facts.mail_accounts = Some(0);
+        let a = announcement(&facts, Feature::Mail).expect("unready is announced");
+        assert!(a.caveat.as_deref().unwrap().contains("no account"), "{a:?}");
+
+        facts.mail_accounts = None;
+        assert_eq!(
+            announcement(&facts, Feature::Mail),
+            None,
+            "unknown is never announced"
+        );
+
+        facts.mail_accounts = Some(1);
+        facts.config.features.0.insert("mail".into(), false);
+        assert_eq!(
+            announcement(&facts, Feature::Mail),
+            None,
+            "false is an answer"
+        );
+
+        facts.config.features.0.insert("mail".into(), true);
+        assert_eq!(announcement(&facts, Feature::Mail), None, "already on");
+
+        // Personas and voice need evidence of use, not just "always usable",
+        // or a light install is told about them on every start.
+        let mut facts = empty_machine();
+        assert_eq!(announcement(&facts, Feature::Personas), None);
+        assert_eq!(announcement(&facts, Feature::Voice), None);
+        facts.personas_stored = Some(true);
+        facts.voice_unit_installed = true;
+        assert!(announcement(&facts, Feature::Personas).is_some());
+        assert!(announcement(&facts, Feature::Voice).is_some());
+        // And a part is never announced, having no switch to answer.
+        assert!(announcements(&facts).iter().all(|a| a.id.has_switch()));
+    }
+
+    #[test]
+    fn enabling_refuses_parts_and_names_the_chain() {
+        let cfg = Config::default();
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let err = plan_enable(&cfg, &ids(&["ocr"])).unwrap_err();
+        assert!(err.contains("part of `documents`"), "{err}");
+        assert!(plan_enable(&cfg, &ids(&["nonsense"]))
+            .unwrap_err()
+            .contains("not a feature"));
+        let err = plan_enable(&cfg, &ids(&["incognito"])).unwrap_err();
+        assert!(err.contains("mecha features enable web incognito"), "{err}");
+        assert_eq!(
+            plan_enable(&cfg, &ids(&["web", "incognito"])).unwrap(),
+            vec![Feature::Web, Feature::Incognito]
+        );
+        let mut web_on = cfg.clone();
+        web_on.features.0.insert("web".into(), true);
+        assert_eq!(
+            plan_enable(&web_on, &ids(&["incognito"])).unwrap(),
+            vec![Feature::Incognito]
+        );
+    }
+
+    /// The writer edits in place: comments, other tables and a newer build's
+    /// unknown key survive; a missing file and a missing table are created; a
+    /// file that is not TOML is left alone.
+    #[test]
+    fn switches_are_written_in_place() {
+        let dir = std::env::temp_dir().join(format!("mecha-switches-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "# the owner's note\ndefault_provider = \"local\"\n\n[features]\nfrom_a_newer_build = true\n",
+        )
+        .unwrap();
+        write_switches(&path, &[(Feature::Mail, true), (Feature::Web, false)]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# the owner's note"), "{text}");
+        assert!(text.contains("from_a_newer_build = true"), "{text}");
+        let cfg: Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.features.get("mail"), Some(true));
+        assert_eq!(cfg.features.get("web"), Some(false));
+        assert_eq!(cfg.default_provider, "local");
+
+        let fresh = dir.join("fresh.toml");
+        write_switches(&fresh, &[(Feature::Graph, true)]).unwrap();
+        let cfg: Config = toml::from_str(&std::fs::read_to_string(&fresh).unwrap()).unwrap();
+        assert_eq!(cfg.features.get("graph"), Some(true));
+
+        let broken = dir.join("broken.toml");
+        std::fs::write(&broken, "this is [not toml").unwrap();
+        assert!(write_switches(&broken, &[(Feature::Mail, true)]).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&broken).unwrap(),
+            "this is [not toml"
+        );
+        assert!(
+            write_switches(&fresh, &[(Feature::Ocr, true)]).is_err(),
+            "a part"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only the front door may be switched on from an experiment environment
+    /// (FEATURES-DESIGN.md §5.1): the rest have operator-only tables, the
+    /// operator's credentials, machine tables, or — `graph` — a server a
+    /// manifest can carry in from the operator.
+    #[test]
+    fn only_the_front_door_is_switchable_from_an_environment() {
+        let on: Vec<_> = Feature::ALL
+            .iter()
+            .filter(|f| f.switchable_from_environment())
+            .collect();
+        assert_eq!(on, vec![&Feature::Frontdoor]);
     }
 
     #[test]

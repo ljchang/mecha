@@ -8097,6 +8097,47 @@ in five different ways. The design and its open steps are
   read an authorised install as having no account whenever either variable was
   set; `frontdoor::mail_dir` had paid for it first, and `setup` was still
   paying.
+- **The owner's switch comes first** (ruling F1). `[features]` holds one bool
+  per feature with a switch (`Feature::has_switch`: every one but the parts),
+  and `state` reads it before any setting: absent or `false` is `Off`, and
+  only `true` lets the row's settings decide. It is global-file only
+  (`merge_file` strips it from project layers), merged per key, and the one
+  table without `deny_unknown_fields` — one `config.toml` is read by the
+  installed release, the units and worktree builds at once, and a key a
+  newer build added must not take the older ones down; an unknown key can
+  turn nothing on, so it is reported (`unknown_switches`) and ignored.
+  Nothing registers or connects by the switch until step 1b.
+- **`messages` has one runtime answer.** `apply` writes `[features] messages`
+  into `[messages] enabled` and drops it from the map, rather than or-ing two
+  fields as the design proposed: `Lever::Messages` and every experiment arm
+  (`experiment::config_switch`) read and write `messages.enabled`, and a
+  serialised arm config reloaded with a `messages = true` left in the map
+  would switch messaging back on after a lever turned it off. A test
+  round-trips that case.
+- **The upgrade notice is evidence plus `state`.** An install from before
+  `[features]` has every switch absent, so every feature is off, and
+  `announcements` names the ones it had set up. That is `evidence` —
+  something to lose (an `[[mcp]]` entry, an `[image]` table, a stored
+  persona, an installed voice unit) — and `state` with every *absent* switch
+  treated as on, reading `On` or `Unready` (the owner's ruling of 2026-09-30,
+  with `Unready`'s reason carried). `Unknown` is never announced, an explicit
+  `false` is never substituted, and a feature with no evidence (incognito,
+  messages) is never named, or a light install would hear about it on every
+  start. The same function feeds the one-line notice a session or service
+  prints when it starts and `mecha setup`'s `feature-<id>` offers, so the two
+  cannot disagree.
+- **Switches are written in place.** `write_switches` edits the file with
+  `toml_edit`, creating the table or the file when absent — the state every
+  upgrading install is in, where `setup::apply` bails — and keeping comments,
+  order and unknown keys, which a rewrite through `Config` would drop. It
+  renames a temporary file over the old one.
+- **An environment may only narrow.** `trial_env::config_at` refuses an
+  environment's `[features]` key set `true` unless
+  `Feature::switchable_from_environment` — an exhaustive match, today only
+  the front door — and refuses an unknown key outright: `messages = true`
+  would otherwise reach `[messages] enabled` round the operator-only table,
+  and `graph = true` could meet a manifest's `live_servers` and read the
+  owner's live graph.
 
 ### Adding a feature
 
@@ -8111,9 +8152,16 @@ the full checklist this grows into as each build step lands.
    it (`provider_is_local`, `SearchBackendConfig::problem`).
 3. Any new fact it needs from the disk goes in `Facts::read`, found by the
    owning program's rule.
-4. A row in `mecha features`' docs (`reference/cli.md`) if its off state has a
-   fix worth naming. The tests in `feature::tests` cover order, ids and the
-   empty machine without further edits.
+4. If it has a switch: a line in `FEATURES_STARTER` (`commands/config.rs`,
+   where `the_global_starter_lists_every_switch_off` fails until it is
+   there), an `evidence` arm saying what an owner who set it up would lose,
+   and a `switchable_from_environment` arm — both exhaustive, so the build
+   asks. Whether an environment may switch it on is decided by where its
+   settings and credentials live, never by who supplies them.
+5. A row in `mecha features`' docs (`reference/cli.md`) if its off state has a
+   fix worth naming, and its key in `reference/configuration.md` §`[features]`.
+   The tests in `feature::tests` cover order, ids and the empty machine
+   without further edits.
 
 ## Context, and knowing how much is left
 

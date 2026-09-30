@@ -4,7 +4,13 @@
 > the registry and a read-only `mecha features`, merged as #428 and deployed
 > the same day, with the store-location fixes it surfaced in `doctor`, Slack
 > and the booking sweep as #432 and #433. `docs/ARCHITECTURE.md` §Features
-> describes what is built. Steps 1–8 are unbuilt. The owner
+> describes what is built. **Step 1 is split in two**: 1a — the `[features]`
+> table, `mecha features enable|disable`, the upgrade notice, `mecha setup`'s
+> offers and the environment refusal, gating nothing — is built; 1b, the
+> gating, is next. One deliberate departure from §5: `[features] messages` is
+> applied *into* `[messages] enabled` rather than or-ed with it, so experiment
+> levers keep one field (ARCHITECTURE §Features says why). Steps 2–8 are
+> unbuilt. The owner
 > ruled F1–F6 the same day (§7): the switch is a `[features]` table of
 > bools — not a table's presence, which this doc first recommended — and §5
 > is written to that ruling; F5 is `hardware.md`'s four tiers, in two
@@ -710,7 +716,10 @@ Notes on the rows that change:
 `Config`, `ConfigLayer`, `ConfigLayer::apply`, and the project-layer strip in
 `merge_file`. `every_field_of_config_is_reachable_from_a_file` and
 `every_field_a_layer_can_read_is_a_field_a_layer_applies` catch a missed one
-at the top level only, so the build step adds a nested-layer test alongside.
+at the top level only, so a table with a nested layer gets a nested-layer
+test alongside (`[features]` itself is a map, with none). A fifth decision
+comes with every new settings table: which of `trial_env`'s two lists it
+joins, if either (§9 step 8).
 
 ### 5.1 Light installs, and experiments
 
@@ -749,8 +758,8 @@ Three things make it deliberate rather than accidental:
   judged by the trust of the tables the feature's switch and settings live
   in, not by who happens to supply them: a feature whose table is in
   `trial_env::OPERATOR_ONLY_TABLES` (`web`, `slack`, `image`, `messages` —
-  whose switch is the alias of `[messages] enabled` — and, once step 1 and
-  step 5 add them, `documents`, `voice` and `personas`) or in
+  whose switch is the alias of `[messages] enabled` — `documents` since #441,
+  and, once step 5 adds them, `voice` and `personas`) or in
   `MACHINE_TABLES`
   (`search`, whose backends and keys `config_at` copies from the operator —
   `Egress::Chosen` at deep search, with nothing to degrade to `Unready`)
@@ -791,14 +800,13 @@ Three things make it deliberate rather than accidental:
   passes 1 and 3). A new settings table gets the
   same test the day it is added (§9 step 8). An environment that sets such a
   key to `true` is **refused at load**, with `config_at`'s `ensure!` and its
-  reason. **`[documents]` is not on `OPERATOR_ONLY_TABLES` today**, though
+  reason. **`[documents]` was missing from `OPERATOR_ONLY_TABLES`** though
   `merge_file` strips it from project layers for `[image]`'s reason — its
   `ocr_url` is where the owner's documents go and `confine` is the PDF
-  parser's sandbox — and the constant's own comment still counts "the five a
-  project layer is stripped of". An environment can set both today, with or
-  without this design; step 1 adds `documents` to the list and corrects the
-  comment, since this rule is only as good as that list (found on review of
-  #427, pass 6). The refusal is
+  parser's sandbox — so an environment could set both, with or without this
+  design. #441 added it and corrected the constant's "the five" comment,
+  since this rule is only as good as that list (found on review of #427,
+  pass 6). The refusal is
   reason, never ignored with a warning: a warning fails open in exactly the
   way the `requires` bullet below exists to close — the arm would run without
   the feature it asked for and be scored anyway. An environment may set any
@@ -920,7 +928,7 @@ genuinely not known yet, and the output must say so rather than guess.
 | **F3** | Web as a feature | **Optional like the rest** — the owner: *"Web should also be optional feature."* CLI, TUI and Slack are complete without it; incognito, and voice's browser parts (`dictate`, `calls`, `cloning`), report `Blocked(web)`. `voice` itself does not: `mecha voice-serve` is its own loopback surface, and `Blocked` would refuse it (found on review of #427, pass 7). A tab's visibility is not a `requires` relation: with `web` off there is no navigation at all, so the Personas and Library tabs need no dependency on it — and giving `personas` one would make `Blocked` refuse `mecha persona` from the CLI, which works without the web (found on review of #427) |
 | **F4** | What an off route returns | **404** with `{"error":"feature_off","feature":"image","fix":"mecha features enable image"}`, only behind `owner_guard` (§4.2 item 4). 503 stays for `Unready` |
 | **F5** | Recommendation tiers | **`hardware.md`'s four — 16, 32, 64 and 128 GB — in two columns**: unified memory, and a separate GPU beside system RAM, where the tier is the GPU's memory and the auxiliary models (OCR, embeddings, speech to text) may run from system RAM or the CPU. One page and one table agree on the tiers; the column is what keeps a 24 GB GPU with 64 GB of RAM from being steered as a 24 GB machine. Only the 128 GB unified row is measured (this GB10); every other cell says `Arithmetic` or `Unmeasured`. Ruled by the owner 2026-09-30 |
-| **F6** | Existing installs, when `[features]` arrives | **`mecha setup` offers.** It detects a feature in use (an `[image]` table, a mail `[[mcp]]` entry, a non-empty persona store, an installed voice unit file) and offers to write its bool — the same predicate as the upgrade notice (§4.2), so the two cannot disagree. Never grandfathered as on: that is a second source of truth. On this machine the deploy that ships the table writes it by hand, in the same change, so nothing disappears |
+| **F6** | Existing installs, when `[features]` arrives | **`mecha setup` offers.** It detects a feature in use (an `[image]` table, a mail `[[mcp]]` entry, a non-empty persona store, an installed voice unit file) and offers to write its bool — the same predicate as the upgrade notice (§4.2), so the two cannot disagree. **Which states count** (owner, 2026-09-30): `On` and `Unready`, the latter named with its reason ("no account is authorised yet"); `Unknown` never, or the offer would write a bool off a store it could not read. Never grandfathered as on: that is a second source of truth. On this machine the deploy that ships the table writes it by hand, in the same change, so nothing disappears |
 
 ---
 
@@ -959,8 +967,13 @@ Each step is a PR, and each leaves every surface working.
 0. **`feature.rs` and `mecha features`**, read-only. The registry, `state`,
    and the list command. Nothing else changes; its output on this machine is
    checked by hand against §5.
-1. **The `[features]` table.** `Config`, `ConfigLayer`, `apply`, the
-   project-layer strip and the nested-layer test; `state` reads the bool
+1. **The `[features]` table**, in two PRs. **1a** gates nothing: the table,
+   the writer, the upgrade notice, F6's offers and the environment refusal,
+   so this machine's answers are written before anything reads them. **1b**
+   switches tool registration and server connections to the registry, with
+   `config_at`'s `live_servers` default for `graph`. What 1a builds:
+   `Config`, `ConfigLayer`, `apply` and the project-layer strip (a map, so no
+   nested layer); `state` reads the bool
    first and the settings second; `mecha features enable|disable <id>`
    writes it, refusing an enable whose dependency is off with the chained
    command; `mecha config init` writes the table in full; `[messages]
