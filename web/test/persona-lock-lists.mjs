@@ -25,6 +25,7 @@ function readOut(marker) {
 }
 
 const fns = [
+  readOut('  async function startMaking() {'),
   readOut('  async function unlock() {'),
   readOut('  async function relock() {'),
   readOut('  async function rereadAuthoring() {'),
@@ -40,12 +41,14 @@ const LISTS = (unlocked) => ({
 // A page with the form open, its lists read under `unlocked`, and a fetch
 // that answers as the server would. `hold` delays the authoring answer so a
 // test can close the form while it is in flight.
-function page({ unlocked, character, hold, holdIf = () => true }) {
+function page({ unlocked, character, hold, holdIf = () => true, gate = null, formOpen = true }) {
   const fetch = async (url, init) => {
     if (url === '/api/library/unlock') return { ok: true, json: async () => ({ token: 't1' }) };
     if (url === '/api/library/relock') return { ok: true, json: async () => ({}) };
     if (url.startsWith('/api/personas/authoring')) {
       if (hold && holdIf(url)) await hold;
+      const g = gate?.(url);
+      if (g) await g;
       const lists = LISTS(url.includes('unlock='));
       return { ok: true, json: async () => lists };
     }
@@ -56,18 +59,22 @@ function page({ unlocked, character, hold, holdIf = () => true }) {
     `'use strict';
      let token = start.unlocked ? 't0' : null;
      let authoring = start.lists;
-     let making = { name: '', display: '', relationships: [], character: start.character, groups: [], locked: false };
+     let making = start.formOpen
+       ? { name: '', display: '', relationships: [], character: start.character, groups: [], locked: false }
+       : null;
      let chosen = null, sheet = false, busy = false, password = '', error = '';
      let authoringGen = 0;
      const back = () => {};
      const load = async () => {};
      ${fns}
      return {
-       unlock, relock,
+       startMaking, unlock, relock,
        close: () => { making = null; },
        get: () => ({ token, authoring, making, error }),
      };`,
-  )(fetch, authoringUrl, keptCharacter, { unlocked, character, lists: LISTS(unlocked) });
+  )(fetch, authoringUrl, keptCharacter, {
+    unlocked, character, formOpen, lists: formOpen ? LISTS(unlocked) : null,
+  });
 }
 
 // Unlocking with the form open offers the locked character.
@@ -123,6 +130,30 @@ function page({ unlocked, character, hold, holdIf = () => true }) {
   assert.equal(token, null);
   assert.deepEqual(authoring.characters, ['john', 'priya'], 'a stale unlocked read landed over the relock');
   assert.equal(making.character, '');
+}
+
+// Relock while the form is still opening under an unlock: the form opens
+// with the locked lists, and the unlocked answer is never shown — not even
+// for the round trip before the re-read lands.
+{
+  let releaseUnlocked, releaseLocked;
+  const unlockedHeld = new Promise((r) => (releaseUnlocked = r));
+  const lockedHeld = new Promise((r) => (releaseLocked = r));
+  const gate = (url) => (url.includes('unlock=') ? unlockedHeld : lockedHeld);
+  const p = page({ unlocked: true, character: '', gate, formOpen: false });
+  const opening = p.startMaking();
+  await new Promise((r) => setImmediate(r));
+  const relocking = p.relock();
+  releaseUnlocked();
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  const mid = p.get();
+  assert.ok(mid.making, 'the form opened');
+  assert.ok(!mid.authoring?.characters?.includes('maya'), 'the unlocked list was shown on a relocked page');
+  releaseLocked();
+  await Promise.all([opening, relocking]);
+  const { authoring, error } = p.get();
+  assert.equal(error, '');
+  assert.deepEqual(authoring.characters, ['john', 'priya']);
 }
 
 console.log('persona-lock-lists: ok');
