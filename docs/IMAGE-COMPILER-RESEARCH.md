@@ -58,7 +58,11 @@ principle 10 earning its keep.
 > "Keep <image1> unchanged except: …", gave no clean edit in 2 tries (1
 > near-copy, 1 partial). So the preserve list compiles to named parts,
 > restated in the edit prompt, not one blanket clause. The mask and the
-> validator check are untested.
+> validator check are untested. *(2026-09-30: the mask has since been
+> measured, in `IMAGE-REGION-EDIT-RESEARCH.md` §4. A latent noise mask with
+> a composite kept the outside exact and seamless, and crop-edit-paste left
+> seams where its edge crossed a person. The validator check is still
+> untested.)*
 
 **Three more things the measurements found** (§8). A reference **fills in
 whatever the scene leaves unsaid** — wardrobe, pose, expression — so "a
@@ -180,7 +184,7 @@ what came out except `image_view` on request.
 |---|---|---|---|---|
 | In-context references (`<imageN>`) | yes, native | `TextEncodeQwenImage21` [local] | `-r` / `ref_images` [local] | yes — every current edit model takes references |
 | Character LoRA | yes; ai-toolkit (`qwen_image_2`) and DiffSynth train it; musubi-tuner does not yet [official] | `comfy/lora.py` maps 2.1's fused `img_mlp` keys; GGUF patches on load [local] | `lora` field, from a server-listed directory [local] | **no** — tied to the exact base weights; retrain per model |
-| Mask inpaint / local edit | via crop-edit-paste (below) | generic nodes; not verified for 2.1 | `--mask` / `mask_image` [local] | yes if done as crop-edit-paste in mecha's code |
+| Mask inpaint / local edit | via crop-edit-paste (below) | generic nodes; not verified for 2.1 *(2026-09-30: verified, `SetLatentNoiseMask` with the 2.1 encoder, 12 images, 0 errors; `IMAGE-REGION-EDIT-RESEARCH.md` §4)* | `--mask` / `mask_image` [local] | yes if done as crop-edit-paste in mecha's code |
 | Detect-then-repair (ADetailer) | yes, as crop-edit-paste | custom nodes | native, YOLOv8 [local] | yes |
 | PuLID / InfiniteYou / UNO / USO | **no port** | FLUX only | PuLID FLUX only [local] | n/a |
 | PhotoMaker / IP-Adapter | **no port** | SDXL / SD1.5 | SDXL / SD1.5 only [local] | n/a |
@@ -194,6 +198,10 @@ rewrite at the next model change. Local repair is available on both backends
 relevant references, paste it back through a feathered mask in code. That
 keeps every pixel outside the mask byte-identical (the draft's principle 7,
 structurally) and needs nothing from the backend but "edit this image".
+*(2026-09-30: byte-identical outside the crop is not the same as intact. Where
+the crop's edge crossed a person, the feathered paste left him half
+transparent in every seed measured. A backend noise mask with the same
+composite did not. `IMAGE-REGION-EDIT-RESEARCH.md` §4.)*
 
 ### stable-diffusion.cpp is closer than it was on 2026-09-25
 
@@ -472,7 +480,7 @@ additions, and both exist on both backends:
 | size or follow-canvas | `EmptyLatentImage` or the encoder's latent | `width`, `height` |
 | steps, seed | `KSampler` | `sample_params`, `seed` |
 | references, ordered | `images.image_N` via temp upload | `ref_images` |
-| **mask** | crop-edit-paste in mecha (no backend mask needed) | same; `mask_image` if ever preferred |
+| **mask** | crop-edit-paste in mecha (no backend mask needed) *(2026-09-30: a backend noise mask plus a composite in mecha measured better on seams; `IMAGE-REGION-EDIT-RESEARCH.md` §4, §6)* | same; `mask_image` if ever preferred |
 | **LoRAs, by name** | `LoraLoaderModelOnly`, name from `object_info`'s list | `lora`, name from `capabilities` |
 
 The rewriter, the checks, the compositing and the crop-paste all live in
@@ -489,7 +497,7 @@ the tiers do not notice.
 | 8 | `SceneSpec` | **keep**; the model writes it, closed schema | this is "what varies", exactly the split in tier A |
 | 9 | Scene graph | **defer** to tier C | relationships compile to sentences a Qwen3-VL encoder reads; boxes only matter when compositing |
 | 10 | Reference roles and selection | **keep — the core** | the field's most consistent guidance, and Qwen's rewriter demands roles |
-| 11 | Planner, operation vocabulary | **keep as a closed enum**; `INPAINT` as crop-edit-paste | fixed graphs; pixel preservation without backend masks |
+| 11 | Planner, operation vocabulary | **keep as a closed enum**; `INPAINT` as crop-edit-paste | fixed graphs; pixel preservation without backend masks. *2026-09-30: see `IMAGE-REGION-EDIT-RESEARCH.md` §6 for the measured trade against a backend mask* |
 | 12–13 | Model adapter, ComfyUI executor | **keep**; executor picks among fixed graphs | already `Request`'s shape |
 | 14 | Vision validator with `confidence: 0.94` | **split three ways** | identity by embedding, counts by detector, relationships by VLM; a model's self-reported confidence is hearsay here, as appraisal labels are |
 | 15 | Repair planner | **keep**, re-seed before edit for identity | an edit compounds drift; a fresh seed does not |
