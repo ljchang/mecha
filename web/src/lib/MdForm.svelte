@@ -25,7 +25,7 @@
   // digest, so a new doc means a new form.
   if (!draft) draft = untrack(() => draftOf(doc, fixed));
 
-  const dirty = $derived(isDirty(doc, draft, fixed));
+  const dirty = $derived(isDirty(doc, draft));
   const wrong = $derived(problems(draft, fixed));
   // Text before the sections: always there for a file without sections (a
   // motivation is mostly this), otherwise once there is some or it is asked for.

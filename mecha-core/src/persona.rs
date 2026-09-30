@@ -1867,16 +1867,52 @@ fn root_lines(text: &str) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// `persona.toml` as a locked page may see it: without the `character` line
-/// when the persona's portrait is a locked library character (owner ruling,
-/// 2026-09-30 — the link is hidden, never cut). Everything else is the file
-/// as written.
-pub fn hide_character(text: &str) -> String {
+/// The lines, first and last inclusive, that a root `character = …` spans:
+/// from its key to the end of its value, however many lines that is (a
+/// `"""` string), read with `toml_edit`'s span-keeping parser. A text that
+/// does not parse falls back to the line, and every line after it while a
+/// multi-line string it opened is still open — never to less (review of
+/// #430: a line-based cut left the rest of a multi-line value served).
+fn character_lines(text: &str) -> Option<(usize, usize)> {
+    let line_of = |at: usize| text[..at.min(text.len())].matches('\n').count();
+    if let Ok(doc) = toml_edit::Document::parse(text) {
+        let spanned = doc
+            .as_table()
+            .get_key_value("character")
+            .and_then(|(k, v)| Some((k.span()?.start, v.span()?.end)));
+        match spanned {
+            Some((start, end)) => return Some((line_of(start), line_of(end.saturating_sub(1)))),
+            None if doc.as_table().get("character").is_none() => return None,
+            None => {}
+        }
+    }
     let root = root_lines(text);
+    let lines: Vec<&str> = text.lines().collect();
+    let first = (0..lines.len().min(root)).find(|&i| is_character_line(lines[i]))?;
+    let opens = ["\"\"\"", "'''"]
+        .into_iter()
+        .find(|q| lines[first].matches(q).count() % 2 == 1);
+    let last = match opens {
+        Some(q) => (first + 1..lines.len())
+            .find(|&i| lines[i].contains(q))
+            .unwrap_or(lines.len() - 1),
+        None => first,
+    };
+    Some((first, last))
+}
+
+/// `persona.toml` as a locked page may see it: without the `character`
+/// assignment when the persona's portrait is a locked library character
+/// (owner ruling, 2026-09-30 — the link is hidden, never cut). Everything
+/// else is the file as written.
+pub fn hide_character(text: &str) -> String {
+    let Some((first, last)) = character_lines(text) else {
+        return text.to_string();
+    };
     let mut out: String = text
         .lines()
         .enumerate()
-        .filter(|(i, l)| !(*i < root && is_character_line(l)))
+        .filter(|(i, _)| !(first..=last).contains(i))
         .map(|(_, l)| format!("{l}\n"))
         .collect();
     if !text.ends_with('\n') {
@@ -1886,30 +1922,21 @@ pub fn hide_character(text: &str) -> String {
 }
 
 /// A save from a page that was shown [`hide_character`]'s text: the hidden
-/// line put back **as it is in `disk`** — its spelling and any comment on it
-/// — at its old line number, kept inside the root table (review of #430: a
-/// fresh bare `character = …` lost the owner's comment). Unless the owner
-/// wrote a `character` of their own, which stands.
+/// assignment put back **as it is in `disk`** — its spelling, every line of
+/// it and any comment on it — at its old line number, kept inside the root
+/// table (review of #430: a fresh bare `character = …` lost the owner's
+/// comment). Unless the owner wrote a `character` of their own, which stands.
 pub fn restore_character(text: &str, disk: &str) -> String {
-    let root = root_lines(text);
-    if text
-        .lines()
-        .enumerate()
-        .any(|(i, l)| i < root && is_character_line(l))
-    {
+    if character_lines(text).is_some() {
         return text.to_string();
     }
-    let disk_root = root_lines(disk);
-    let Some((was, line)) = disk
-        .lines()
-        .enumerate()
-        .find(|(i, l)| *i < disk_root && is_character_line(l))
-    else {
+    let Some((first, last)) = character_lines(disk) else {
         return text.to_string();
     };
+    let hidden: Vec<&str> = disk.lines().skip(first).take(last - first + 1).collect();
     let mut lines: Vec<&str> = text.lines().collect();
-    let at = was.min(root).min(lines.len());
-    lines.insert(at, line);
+    let at = first.min(root_lines(text)).min(lines.len());
+    lines.splice(at..at, hidden);
     let mut out = lines.join("\n");
     if text.ends_with('\n') || text.is_empty() {
         out.push('\n');
@@ -2901,6 +2928,42 @@ mod tests {
             "character = \"theo\"\n"
         );
         assert!(!hide_character("character = \"theo\"\ndisplay = ").contains("theo"));
+        // A multi-line value goes whole, parsed or not, and comes back whole.
+        let multi = "display = \"Mara\"\ncharacter = \"\"\"\ntheo\"\"\"\n\n[tools]\nallow = []\n";
+        let shown = hide_character(multi);
+        assert!(!shown.contains("theo"), "{shown}");
+        assert!(toml::from_str::<toml::Table>(&shown).is_ok(), "{shown}");
+        assert_eq!(restore_character(&shown, multi), multi);
+        let broken = "character = '''\ntheo\n'''\ndisplay = ";
+        assert!(
+            !hide_character(broken).contains("theo"),
+            "{}",
+            hide_character(broken)
+        );
+    }
+
+    /// Every path the settings form declares is a key `Settings` carries: a
+    /// typo or a rename would otherwise draw as "off" and fail only at save,
+    /// as an unknown field (review of #430; the shape of
+    /// `every_field_of_config_is_reachable_from_a_file`).
+    #[test]
+    fn every_settings_form_path_is_a_settings_key() {
+        let typed = serde_json::to_value(parse_toml::<Settings>("").unwrap()).unwrap();
+        let form = settings_form(&FormChoices::default());
+        for field in form.sections.iter().flat_map(|s| &s.fields) {
+            let (parents, leaf) = field.path.rsplit_once('.').unwrap_or(("", &field.path));
+            let table = parents
+                .split('.')
+                .filter(|s| !s.is_empty())
+                .try_fold(&typed, |at, seg| at.get(seg))
+                .and_then(|t| t.as_object())
+                .unwrap_or_else(|| panic!("no table for `{}`", field.path));
+            assert!(
+                table.contains_key(leaf),
+                "`{}` is not a Settings key",
+                field.path
+            );
+        }
     }
 
     #[test]

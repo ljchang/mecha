@@ -536,17 +536,21 @@ impl PersonaChats {
         })?;
         let store = Store::load(&self.store);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        // A problem that names a hidden portrait would name it — the one
+        // hidden before the save, and the one the save may have just set: a
+        // guessed `character = "x"` must not come back as "not in the
+        // library" for one name and silence for a locked one (review of #430).
+        let after = store
+            .get(&p.name)
+            .and_then(|q| self.hidden_character(library, q, body.unlock.as_deref()));
+        let named =
+            |m: &str, c: &Option<String>| c.as_ref().is_some_and(|c| m.contains(&format!("`{c}`")));
         let problems: Vec<String> = store
             .get(&p.name)
             .map(|q| store.problems(q, &lib))
             .unwrap_or_default()
             .into_iter()
-            // A problem that names the hidden portrait would name it.
-            .filter(|m| {
-                hidden
-                    .as_ref()
-                    .is_none_or(|c| !m.contains(&format!("`{c}`")))
-            })
+            .filter(|m| !named(m, &hidden) && !named(m, &after))
             .collect();
         Ok(serde_json::json!({ "version": state.version, "problems": problems }))
     }
@@ -2841,6 +2845,25 @@ mod tests {
             .files(&w.library, "mara", Some(&token))
             .unwrap();
         assert_eq!(open["settings"]["form"]["values"]["character"], "theo");
+
+        // A guessed name typed on a locked page learns nothing: no problem
+        // names it, whether it is missing from the library or locked.
+        let files = w.personas().files(&w.library, "mara", None).unwrap();
+        let guess = files["settings"]["text"].as_str().unwrap().replacen(
+            "display",
+            "character = \"nobody\"\ndisplay",
+            1,
+        );
+        let saved = w
+            .personas()
+            .save(
+                &w.library,
+                "mara",
+                body(serde_json::json!({ "file": "settings", "text": guess, "base": files["settings"]["digest"] })),
+            )
+            .unwrap();
+        assert!(!saved.to_string().contains("nobody"), "{saved}");
+        std::fs::write(&toml, &on_disk).unwrap();
 
         // An entry that no longer loads is unknown, and unknown is hidden.
         let entry = w.library.dir.join("characters/theo/entry.toml");
