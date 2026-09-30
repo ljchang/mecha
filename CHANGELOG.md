@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the disk only and wakes no server. `--json` for scripts. The first step
   of making installs modular (`docs/FEATURES-DESIGN.md`).
 
+- **Persona files edit as forms.** A persona's Edit screen is now a form on
+  every tab. Settings are switches, choices and name chips: relationship,
+  groups, portrait, tools, the safety switches and memory. A change is set
+  in place in `persona.toml`, and every comment you wrote stays. Who they are
+  and what they want edit as a title and sections, each with an optional
+  note to yourself, saved in one tidy layout. `## Core` cannot be removed.
+  "Edit as text" is still there on each tab. Switches the harness does not
+  use yet say so. Typed `-->` no longer shows as an arrow, and a comment
+  typed on a phone keeps its dashes.
+
 - **Make and edit personas on the web.** The Personas tab has a New persona
   form: name, relationship templates, a library portrait and groups. New
   kinds of relationship (how someone in it behaves) and new groups can be

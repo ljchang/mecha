@@ -84,6 +84,24 @@ export function chatUrl(key, suffix = '', token = null) {
   return withUnlock(`/api/persona-chat/${key}${suffix}`, token);
 }
 
+// What an editor save must carry across its reload, per file: the mode each
+// tab was in, and for every file but the one just saved, its unsaved text
+// draft and its unsaved form draft. The reload replaces every file's entry,
+// so anything not named here is dropped — which is how form drafts went
+// missing on the first cut (review of #430), as text drafts had (#420).
+export function keptEdits(files, saved) {
+  const out = {};
+  for (const [f, v] of Object.entries(files ?? {})) {
+    const keep = { asText: v.asText };
+    if (f !== saved) {
+      if (v.draft != null && v.draft !== v.text) keep.draft = v.draft;
+      if (v.formDraft) keep.formDraft = v.formDraft;
+    }
+    out[f] = keep;
+  }
+  return out;
+}
+
 export function relationshipLabel(p) {
   const r = p?.relationship ?? [];
   return r.length ? r.join(' · ').replaceAll('_', ' ') : '';
