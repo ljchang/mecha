@@ -1464,6 +1464,9 @@ async fn prepare_tools_carrying(
     // otherwise indistinguishable from one never configured.
     if cfg.image.is_some() && !feature_on(Feature::Image) {
         switched_off(Feature::Image, "image_generate");
+        // The library's two doors ride with `[image]` and the same switch.
+        switched_off(Feature::Library, "image_library");
+        switched_off(Feature::Library, "image_library_propose");
     }
     if let Some(image) = cfg.image.clone().filter(|_| feature_on(Feature::Image)) {
         let wants = opts.tools.is_empty() || opts.tools.iter().any(|t| t == "image_generate");
