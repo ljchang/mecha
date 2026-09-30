@@ -3,11 +3,13 @@
   import { apiFetch as fetch } from './api.js';
   import TomlForm from './TomlForm.svelte';
   import MdForm from './MdForm.svelte';
+  import ModelChip from './ModelChip.svelte';
   import { repairComments, changesOf } from './tomlform.js';
   import { isDirty as mdDirty } from './mdform.js';
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
     taintLabel, safetyLine, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
+    toolStatus, waitingLine, withWorking,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -35,6 +37,27 @@
   let run = $state(emptyRun());
   // The open chat's safety switches, as its transcript reports them (§12).
   let safety = $state(null);
+  // The model the open chat's agent is bound to, for the chip (the same
+  // picker as the assistant's chat: one model serves every surface), and
+  // whether this chat has shown a crisis card — the support resources are
+  // offered only after one (owner ruling, 2026-09-30).
+  let chatModel = $state('');
+  let crisisShown = $state(false);
+  // The AI tag is what the `disclosure` switch shows (§12.1): on unless the
+  // owner turned it off for this persona. The open chat's live switch wins
+  // over the list's reading of the persona.
+  const disclosed = $derived(((key && safety) || chosen?.safety)?.disclosure !== false);
+  // A clock for the waiting line, ticking only while a run is live.
+  let now = $state(Date.now());
+  // On `running` alone, not the whole run: `run` is replaced on every
+  // streamed word, and the tick would restart with each (review of #431).
+  const running = $derived(run.running);
+  $effect(() => {
+    if (!running) return;
+    now = Date.now();
+    const tick = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(tick);
+  });
   // Crisis cards the owner has closed, by id; a closed one leaves a link to
   // its resources rather than vanishing.
   let dismissed = $state(new Set());
@@ -53,6 +76,7 @@
   // `attach`'s first read is noticed (`Chat.svelte`'s `doneSeq`).
   let doneSeq = 0;
   let refused = $state([]);
+  let menuOpen = $state(false);
   let goal = $state('');
   let input = $state('');
   let source = null;
@@ -126,7 +150,7 @@
     // Off the screen now, before the grid's round trip, not after it.
     if (making && authoring) authoring = { ...authoring, characters: [] };
     // A locked persona's chat closes with the lock: the lock hides (§8.3).
-    if (chosen?.locked) back();
+    if (chosen?.locked) toList();
     await load();
     await rereadAuthoring();
     if (t) {
@@ -143,8 +167,54 @@
     source = null;
   }
 
+  // The composer grows with what is typed, up to its max-height.
+  function grow(node) {
+    // Empty keeps the stylesheet's one-line height: measured at mount, before
+    // the flex row has given it a width, the placeholder wraps and reads tall.
+    const fit = () => {
+      node.style.height = '';
+      if (!node.value) return;
+      node.style.height = 'auto';
+      node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
+    };
+    requestAnimationFrame(fit);
+    node.addEventListener('input', fit);
+    // `update` runs when `input` changes — a send clears it — but whether
+    // before or after `bind:value` writes the element is Svelte's ordering to
+    // decide; a frame later the value is settled either way (review of #431).
+    return { update: () => requestAnimationFrame(fit), destroy: () => node.removeEventListener('input', fit) };
+  }
+
+  // An earlier chat's goal, when it was opened with one: what tells two
+  // chats apart. (A session title here is always the automatic
+  // "persona: …", so it is never shown — review of #431.)
+  const chatGoal = (h) => (h.goal ?? '').trim();
+
+  // One step back at a time: out of a chat or the editor to the persona,
+  // and from the persona to the list. The chat's "Done" button was this.
+  // The lock never steps: `toList` hides everything at once (review of #431).
   function back() {
+    if (key) {
+      close();
+      key = null;
+      run = emptyRun();
+      // The chat's switches leave with it: a persona page reads its own
+      // (review of #431 — the last chat's `disclosure` decided the tag).
+      safety = null;
+      loadHistory();
+      return;
+    }
+    if (editing) {
+      editing = null;
+      return;
+    }
+    toList();
+  }
+
+  function toList() {
+    menuOpen = false;
     close();
+    safety = null;
     making = null;
     editing = null;
     chosen = null;
@@ -189,8 +259,11 @@
     if (!res.ok) throw new Error((await res.text()).trim());
     const t = await res.json();
     if (key !== k || gen !== readGen) return;
-    run = { ...emptyRun(settle(t.entries, run), t.taint ?? null), running: !!t.running };
+    const entries = t.running ? withWorking(settle(t.entries, run), t.working) : settle(t.entries, run);
+    run = { ...emptyRun(entries, t.taint ?? null), running: !!t.running };
     safety = t.safety ?? null;
+    chatModel = t.model ?? '';
+    crisisShown = !!t.crisis_shown;
     scrollDown();
     return t;
   }
@@ -204,9 +277,10 @@
     close();
     key = k;
     run = emptyRun();
-    // Or the previous chat's disclosure line and resources show for a round
-    // trip (review of #418).
+    // Or the previous chat's resources show for a round trip (review of #418).
     safety = null;
+    crisisShown = false;
+    chatModel = '';
     dismissed = new Set();
     showResources = false;
     partial = false;
@@ -502,8 +576,8 @@
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       await load();
-      // Locked with no unlock in hand, it is hidden now: back to the grid.
-      if (!chosen) back();
+      // Locked with no unlock in hand, it is hidden now: back to the list.
+      if (!chosen) toList();
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {
@@ -596,17 +670,35 @@
   };
 </script>
 
+{#snippet avatar(p, size)}
+  <span class="avatar" style="width:{size}px;height:{size}px;font-size:{Math.round(size * 0.42)}px">
+    {#if p.portrait}<img src={p.portrait} alt="" />{:else}{p.display.slice(0, 1).toUpperCase()}{/if}
+  </span>
+{/snippet}
+
+<svelte:window
+  onclick={(e) => menuOpen && !e.target.closest?.('.menuwrap') && (menuOpen = false)}
+  onkeydown={(e) => e.key === 'Escape' && (menuOpen = false)}
+/>
+
 <div class="page">
   <header class="head">
     {#if chosen}
-      <button class="backbtn" aria-label="all personas" onclick={back}>
+      <button class="backbtn" aria-label={key ? `leave the chat with ${chosen.display}` : editing ? 'close the editor' : 'all personas'} onclick={back}>
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7" /></svg>
       </button>
-      <div class="who">
-        <span class="dtitle">{chosen.display}</span>
-        <!-- Disclosure is the harness's, not the persona's (§12.1). -->
-        <span class="meta"><span class="ai">AI</span>{#if relationshipLabel(chosen)} · {relationshipLabel(chosen)}{/if} · v{chosen.version}</span>
-      </div>
+      <!-- On the persona's own page the hero says who; the header only
+           needs the way back. -->
+      {#if key || editing}
+        {@render avatar(chosen, 32)}
+        <!-- The name and the AI tag, nothing more (owner, 2026-09-30).
+             Disclosure is the harness's, not the persona's (§12.1). -->
+        <div class="who">
+          <span class="pname">{chosen.display}{#if disclosed}<span class="ai">AI</span>{/if}</span>
+        </div>
+      {:else}
+        <div class="grow"></div>
+      {/if}
       {#if key && taintLabel(run.taint)}
         <!-- What this conversation has touched. With the leak guard lifted
              for personas (D11), this is what is left to say it. -->
@@ -614,6 +706,15 @@
       {/if}
     {:else}
       <div class="dtitle grow">Personas</div>
+      {#if !making}
+        <button class="newbtn" onclick={startMaking}>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          New
+        </button>
+      {/if}
+    {/if}
+    {#if key && chatModel}
+      <ModelChip model={chatModel} />
     {/if}
     <button
       class="lockbtn"
@@ -700,31 +801,38 @@
     </div>
   {:else if !chosen}
     <div class="scroll">
+      <!-- No count of what the lock hides (owner ruling, 2026-09-30, #425):
+           a page with every persona locked reads like one with none. -->
       {#if data && personas.length === 0}
-        <div class="empty">No personas yet — make one with New persona.</div>
+        <div class="empty">
+          No personas yet.
+          <button class="abtn primary" onclick={startMaking}>Make your first persona</button>
+        </div>
       {/if}
-      <div class="grid">
-        <button class="tile addtile" onclick={startMaking}>
-          <div class="addmark"><svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></div>
-          <span class="tname">New persona</span>
-        </button>
-        {#each personas as p (p.name)}
-          <button class="tile" onclick={() => choose(p)}>
-            {#if p.portrait}
-              <img src={p.portrait} alt={p.display} />
-            {:else}
-              <div class="noimg">{p.display.slice(0, 1).toUpperCase()}</div>
-            {/if}
-            <span class="tname">{p.display}{#if p.locked} <svg class="glyph" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>{/if}</span>
-            <span class="trel">{relationshipLabel(p) || 'no relationship'}</span>
-            {#if !p.approved}
-              <span class="badge">not approved</span>
-            {:else if p.problems.length}
-              <span class="badge">{p.problems.length} to fix</span>
-            {/if}
-          </button>
-        {/each}
-      </div>
+      <!-- A contacts list, not a wall of tiles: who they are to you reads at
+           a glance, and a phone shows a dozen rather than three. -->
+      {#if personas.length}
+        <div class="plist">
+          {#each personas as p (p.name)}
+            <button class="prow" onclick={() => choose(p)}>
+              {@render avatar(p, 48)}
+              <span class="pbody">
+                <span class="pname">
+                  {p.display}
+                  {#if p.locked}<svg class="glyph" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="hidden behind the library lock"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>{/if}
+                </span>
+                <span class="prel">{relationshipLabel(p) || 'no relationship'}</span>
+              </span>
+              {#if !p.approved}
+                <span class="badge">not approved</span>
+              {:else if p.problems.length}
+                <span class="badge">{p.problems.length} to fix</span>
+              {/if}
+              <svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+          {/each}
+        </div>
+      {/if}
     </div>
   {:else}
     <div class="scroll" bind:this={scroller}>
@@ -805,10 +913,40 @@
           </div>
         {/if}
       {:else if !key}
-        <div class="btnrow">
-          <button class="abtn" onclick={() => openEditor('identity')}>Edit</button>
-          <button class="abtn" disabled={busy} onclick={() => setLocked(!chosen.locked)}>{chosen.locked ? 'Unlock' : 'Lock'}</button>
-        </div>
+        <!-- A profile: the persona first, one primary action, and the rest
+             quieter (design critique: Edit and Lock outranked starting a chat). -->
+        <section class="hero">
+          {@render avatar(chosen, 72)}
+          <div class="herotext">
+            <div class="heroname">{chosen.display}</div>
+            <div class="herochips">
+              <!-- Disclosure is the harness's (§12.1): this is an AI, on the
+                   page that reads most like a contact. -->
+              {#if disclosed}<span class="ai">AI</span>{/if}
+              {#if chosen.locked}<svg class="glyph" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="hidden behind the library lock"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>{/if}
+              {#each chosen.relationship ?? [] as r}<span class="rchip">{r.replaceAll('_', ' ')}</span>{/each}
+              <span class="ver">v{chosen.version}</span>
+            </div>
+          </div>
+          <div class="herotools">
+            <button class="iconbtn" aria-label="Edit {chosen.display}" title="Edit" onclick={() => openEditor('identity')}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4" /></svg>
+            </button>
+            <div class="menuwrap">
+              <button class="iconbtn" aria-label="More" aria-haspopup="menu" aria-expanded={menuOpen} onclick={() => (menuOpen = !menuOpen)}>
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg>
+              </button>
+              {#if menuOpen}
+                <div class="menu" role="menu">
+                  <button role="menuitem" class="mitem" disabled={busy} onclick={() => { menuOpen = false; setLocked(!chosen.locked); }}>
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>
+                    {chosen.locked ? 'Stop hiding behind the library lock' : 'Hide behind the library lock'}
+                  </button>
+                </div>
+              {/if}
+            </div>
+          </div>
+        </section>
         {#if !chosen.approved}
           <div class="warnline">
             {chosen.display} is not approved — <code>mecha persona approve {chosen.name}</code> after reading them.
@@ -817,31 +955,47 @@
         {#each chosen.problems as problem}
           <div class="warnline">{problem}</div>
         {/each}
-        <div class="barnote">
-          {safetyLine(chosen.safety)}{#if doseLine(chosen.dose)}<br />{doseLine(chosen.dose)}{/if}
-        </div>
         <div class="startbox">
           <input
             class="editbox"
-            placeholder="What you want from this chat (optional)"
+            placeholder="A goal for this chat (optional)"
             maxlength="2000"
             bind:value={goal}
           />
-          <button class="abtn primary" disabled={busy || !chosen.approved} onclick={start}>New chat</button>
+          <button class="abtn primary wide" disabled={busy || !chosen.approved} onclick={start}>Start a chat</button>
+        </div>
+        <div class="status">
+          <span class="stat">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z" /></svg>
+            {safetyLine(chosen.safety)}
+          </span>
+          {#if doseLine(chosen.dose)}
+            <span class="stat">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></svg>
+              {doseLine(chosen.dose)}
+            </span>
+          {/if}
         </div>
         {#if history.length}
-          <div class="earlier">earlier</div>
-          {#each history as h (h.id)}
-            <button class="card rowbtn" disabled={busy} onclick={() => resume(h.id)}>
-              <span class="rowtop"><span class="topic">{when(h.created)}</span><span class="when">{clock(h.created)}</span></span>
-            </button>
-          {/each}
+          <div class="earlier">Earlier chats</div>
+          <div class="plist">
+            {#each history as h (h.id)}
+              <button class="hrow" disabled={busy} onclick={() => resume(h.id)}>
+                {#if chatGoal(h)}
+                  <span class="htitle">{chatGoal(h)}</span>
+                  <span class="when">{when(h.created)} · {clock(h.created)}</span>
+                {:else}
+                  <span class="htitle">{when(h.created)}</span>
+                  <span class="when">{clock(h.created)}</span>
+                {/if}
+                <svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+              </button>
+            {/each}
+          </div>
         {/if}
       {:else}
-        {#if safety?.disclosure}
-          <!-- The harness says it, not the persona (§12.1). -->
-          <div class="disclosure">{chosen.display} is an AI playing a character you wrote.</div>
-        {/if}
+        <!-- No banner: the "AI" tag in the header says it (owner ruling,
+             2026-09-30; the §12.1 disclosure stays in the harness's voice). -->
         {#if refused.length}
           <div class="barnote">
             Not given here: {refused.map((r) => `${r.tool} (${r.why})`).join('; ')}.
@@ -855,7 +1009,10 @@
           {:else if entry.kind === 'assistant'}
             <div class="answer">{entry.text}</div>
           {:else if entry.kind === 'tool'}
-            <div class="tool" class:err={entry.is_error}>{entry.name}{entry.is_error ? ' — failed' : ''}</div>
+            {@const status = toolStatus(run.entries, i)}
+            <div class="tool" class:err={status === 'failed'}>
+              {entry.name}{status === 'failed' ? ' — failed' : status === 'retried' ? ' — retried' : ''}
+            </div>
           {:else if entry.kind === 'notice'}
             <div class="notice">{entry.text}</div>
           {:else if entry.kind === 'crisis'}
@@ -876,9 +1033,20 @@
         {#if run.streaming}
           <div class="answer">{run.streaming}</div>
         {/if}
-        {#if safety?.resources}
-          <!-- One tap away in every chat the sensor watches, whatever a
-               reload did to the card (review of #418). -->
+        {#if waitingLine(run, chosen.display, now)}
+          <!-- A slow local model must never look broken (owner, 2026-09-30). -->
+          <!-- Announced once, not once a second: the ticking clock is for
+               the eye (review of #431). -->
+          <div class="waiting">
+            <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span aria-hidden="true">{waitingLine(run, chosen.display, now)}</span>
+            <span class="sr" role="status">{waitingLine(run, chosen.display, 0)?.replace(/ \d+:\d\d$/, '')}</span>
+          </div>
+        {/if}
+        {#if safety?.resources && (crisisShown || run.entries.some((e) => e.kind === 'crisis'))}
+          <!-- Offered once this chat has shown a crisis card, and from then
+               on one tap away whatever a reload did to the card (owner ruling,
+               2026-09-30; review of #418). -->
           {#if showResources}
             <div class="crisis" role="note">
               <div class="crisistext">{safety.resources}</div>
@@ -892,20 +1060,26 @@
     </div>
     {#if key}
       <div class="composer">
-        <textarea
-          class="editbox"
-          rows="2"
-          placeholder={`Say something to ${chosen.display}`}
-          bind:value={input}
-          onkeydown={onKey}
-        ></textarea>
-        <!-- Send stays during a run: it steers, and a phone has no Enter to
-             spare for that. -->
-        <button class="abtn primary" disabled={!input.trim()} onclick={send}>{run.running ? 'Steer' : 'Send'}</button>
+        <div class="cfield">
+          <textarea
+            rows="1"
+            use:grow={input}
+            placeholder={`Say something to ${chosen.display}`}
+            aria-label={`Message to ${chosen.display}`}
+            bind:value={input}
+            onkeydown={onKey}
+          ></textarea>
+          <!-- Send stays during a run: it steers, and a phone has no Enter to
+               spare for that. -->
+          <button class="send" aria-label={run.running ? 'Steer' : 'Send'} title={run.running ? 'Steer' : 'Send'} disabled={!input.trim()} onclick={send}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+          </button>
+        </div>
         {#if run.running}
-          <button class="abtn" onclick={stop}>Stop</button>
+          <button class="stopbtn" aria-label="Stop" title="Stop" onclick={stop}>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+          </button>
         {/if}
-        <button class="abtn" onclick={() => { close(); key = null; run = emptyRun(); loadHistory(); }}>Done</button>
       </div>
     {/if}
   {/if}
@@ -929,12 +1103,10 @@
   .grow { flex: 1; }
   .who { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .dtitle { font-family: var(--mono); font-size: 13px; color: var(--accent-400); overflow-wrap: anywhere; }
-  .meta { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
   /* Muted, not amber: amber is the taint chip's (Chat.svelte's rule), and
      "this is an AI" is not a security posture. */
   .ai { color: var(--text-muted); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 0 5px; margin-right: 2px; }
   .chip.taint { flex-shrink: 0; font-family: var(--mono); font-size: 10px; color: var(--hazard); border: 1px solid var(--hazard); border-radius: var(--radius-chip); padding: 2px 6px; }
-  .disclosure { font-size: 12px; color: var(--text-muted); border: 1px solid var(--accent-900); border-radius: var(--radius); padding: 8px 12px; }
   .crisis { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--accent-500); border-radius: var(--radius); padding: 14px; }
   .crisistext { font-size: 14px; line-height: 1.55; white-space: pre-wrap; color: var(--text); }
   .crisis .abtn { align-self: flex-start; }
@@ -946,32 +1118,20 @@
   .scroll { flex: 1; overflow-y: auto; padding: 14px var(--gutter); display: flex; flex-direction: column; gap: 10px; }
   .scroll > * { flex-shrink: 0; }
   .pad { padding: 8px var(--gutter) 0; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
-  .tile { display: flex; flex-direction: column; gap: 4px; padding: 0 0 10px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); overflow: hidden; cursor: pointer; color: var(--text); text-align: left; font: inherit; }
-  .tile img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
-  .noimg { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; color: var(--accent-400); font-family: var(--mono); font-size: 28px; }
-  .tname { font-family: var(--mono); font-size: 12px; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .trel { font-size: 11px; color: var(--text-muted); padding: 0 10px; }
   .badge { align-self: flex-start; margin: 2px 10px 0; font-family: var(--mono); font-size: 10px; color: var(--hazard); border: 1px solid var(--hazard); border-radius: var(--radius-chip); padding: 1px 6px; }
-  .card { background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); }
-  .rowbtn { text-align: left; padding: 12px 14px; cursor: pointer; color: var(--text); font: inherit; }
-  .rowtop { display: flex; align-items: center; gap: 8px; }
-  .topic { font-family: var(--mono); font-size: 13px; }
   .when { font-family: var(--mono); font-size: 10px; color: var(--accent-700); margin-left: auto; }
-  .earlier { font-family: var(--mono); font-size: 11px; color: var(--text-muted); margin-top: 8px; }
-  .startbox { display: flex; gap: 10px; }
+  .earlier { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-300); margin-top: 14px; }
+  .startbox { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
   .form { display: flex; flex-direction: column; gap: 12px; max-width: 520px; }
   .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text); }
   .hint { font-size: 11px; color: var(--text-muted); }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .chipbtn { min-height: 36px; padding: 0 12px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); color: var(--text-muted); font-family: var(--mono); font-size: 12px; cursor: pointer; }
   .chipbtn.active { color: var(--text); background: var(--accent-900); border-color: var(--accent-700); }
-  .addtile { border-style: dashed; }
   .newchip { border-style: dashed; color: var(--accent-400); }
   .adding { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; padding: 10px; border: 1px solid var(--accent-900); border-radius: var(--radius); }
   .adding .editbox { font-size: 14px; }
   .glyph { vertical-align: -1px; color: var(--text-muted); }
-  .addmark { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; color: var(--accent-400); font-size: 40px; font-weight: 300; }
   .lockline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
   .btnrow { display: flex; gap: 10px; }
   .btnrow .abtn { flex: 1; }
@@ -995,7 +1155,6 @@
   .tool.err { color: var(--hazard); }
   .notice { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
   .composer { display: flex; gap: 8px; align-items: flex-end; padding: 10px var(--gutter) 14px; border-top: 1px solid var(--accent-900); }
-  .composer .editbox { flex: 1; resize: none; font-size: 14px; }
   .barnote { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
   .empty { color: var(--text-muted); font-size: 14px; padding: 24px 0; text-align: center; line-height: 1.6; }
   .warnline { font-size: 12px; color: var(--hazard); line-height: 1.45; }
@@ -1004,4 +1163,54 @@
   .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--accent-500); border-radius: 16px 16px 0 0; padding: 14px var(--gutter) 28px; display: flex; flex-direction: column; gap: 12px; z-index: 6; }
   .sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-900); align-self: center; }
   .sheet-text { font-size: 15px; font-weight: 500; }
+  .avatar { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 50%; background: linear-gradient(145deg, var(--accent-700), var(--accent-900)); color: var(--accent-100); font-family: var(--sans); font-weight: 600; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .pname { display: flex; align-items: center; gap: 6px; font-family: var(--sans); font-size: 15px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .newbtn { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 14px; background: var(--accent-400); border: none; border-radius: 20px; color: var(--void); font-size: 14px; font-weight: 500; cursor: pointer; }
+  .plist { display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--accent-900); border-radius: 14px; overflow: hidden; }
+  .prow, .hrow { display: flex; align-items: center; gap: 14px; min-height: 72px; padding: 10px 14px 10px 16px; background: transparent; border: none; text-align: left; color: var(--text); cursor: pointer; }
+  .prow + .prow, .hrow + .hrow { border-top: 1px solid var(--accent-900); }
+  .prow:hover, .hrow:hover:not(:disabled) { background: var(--surface); }
+  .pbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .prel { font-size: 13px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prow .badge { margin: 0; align-self: center; }
+  .chev { flex-shrink: 0; color: var(--accent-500); }
+  .hero { display: flex; align-items: center; gap: 16px; padding: 8px 0 4px; }
+  .herotext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+  .heroname { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; color: var(--text); }
+  .herochips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .rchip { padding: 3px 10px; border-radius: 12px; background: var(--accent-900); color: var(--accent-100); font-size: 12px; }
+  .ver { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+  .herotools { display: flex; align-self: flex-start; gap: 2px; }
+  .iconbtn { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; background: transparent; border: none; border-radius: 10px; color: var(--text-muted); cursor: pointer; }
+  .iconbtn:hover, .iconbtn[aria-expanded='true'] { background: var(--surface); color: var(--text); }
+  .menuwrap { position: relative; }
+  .menu { position: absolute; top: 46px; right: 0; z-index: 4; min-width: 250px; padding: 6px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: 12px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); }
+  .mitem { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 0 12px; background: transparent; border: none; border-radius: 8px; color: var(--text); font-size: 14px; text-align: left; cursor: pointer; }
+  .mitem svg { color: var(--text-muted); flex-shrink: 0; }
+  .mitem:hover { background: var(--accent-900); }
+  .abtn.wide { width: 100%; }
+  .status { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+  .stat { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+  .stat svg { color: var(--accent-500); flex-shrink: 0; }
+  .htitle { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hrow { min-height: 56px; }
+  .hrow .when { margin: 0; font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+  .composer .cfield { flex: 1; display: flex; align-items: flex-end; gap: 6px; padding: 6px 6px 6px 14px; background: var(--surface); border: 1px solid var(--accent-700); border-radius: 22px; }
+  .composer .cfield:focus-within { border-color: var(--accent-500); }
+  .composer textarea { flex: 1; width: 100%; min-width: 0; height: 36px; max-height: 160px; padding: 8px 0; box-sizing: border-box; resize: none; background: transparent; border: none; color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.35; text-align: left; outline: none; font-variant-ligatures: none; }
+  .send, .stopbtn { flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border: none; border-radius: 50%; cursor: pointer; }
+  .send { background: var(--accent-400); color: var(--void); }
+  .send:disabled { background: var(--accent-900); color: var(--text-muted); cursor: default; }
+  .stopbtn { width: 44px; height: 44px; background: var(--surface); border: 1px solid var(--accent-900); color: var(--text); }
+  .waiting { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-muted); padding: 2px 0; }
+  .dots { display: inline-flex; gap: 4px; }
+  .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-400); animation: blink 1.2s infinite ease-in-out; }
+  .dots i:nth-child(2) { animation-delay: 0.2s; }
+  .dots i:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+  @media (prefers-reduced-motion: reduce) { .dots i { animation: none; opacity: 0.7; } }
+  .pname .ai { font-family: var(--mono); font-size: 10px; font-weight: 400; line-height: 1.4; margin-left: 6px; }
+  .herochips .ai { font-family: var(--mono); font-size: 10px; line-height: 1.4; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 </style>

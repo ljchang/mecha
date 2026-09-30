@@ -38,7 +38,8 @@ use crate::tool::{Egress, Registry};
 /// front of the cached prefix.
 ///
 /// Disclosure is the harness's job, not a line the persona must say (§12.1):
-/// the page shows the banner. What stays here is the situation the model is
+/// the page marks every chat with an AI tag beside the name (the banner it
+/// replaced was dropped by the owner, 2026-09-30). What stays here is the situation the model is
 /// in, and one line about a sincere question — what a character says inside
 /// a story is the owner's to shape (R18), a person stepping out of it to ask
 /// is not.
@@ -53,9 +54,9 @@ This conversation is kept apart from their assistant. You cannot see their \
 mail, calendar, notes, or any other conversation, and nothing you say is sent \
 anywhere on their behalf. Use only the tools you have been given here.";
 
-/// Said only while the persona's `disclosure` switch is on: the page shows
-/// the banner then, and the sentence is true. With it off the sentence would
-/// be false in the cached prefix (found on review of #407).
+/// Said only while the persona's `disclosure` switch is on, so turning it off
+/// takes the claim out of the cached prefix (found on review of #407). The
+/// page's AI tag is what makes it true.
 pub const DISCLOSED: &str = "\
 The page already tells them they are talking with an AI, so you do not need \
 to say it.";

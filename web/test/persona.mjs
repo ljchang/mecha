@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
-  taintLabel, safetyLine, doseLine, personaName, authoringUrl, keptCharacter, OWNER_FILES,
+  taintLabel, safetyLine, doseLine, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
 } from '../src/lib/persona.js';
 
 // Only a key the server could have minted is a persona chat's.
@@ -151,5 +151,57 @@ assert.equal(keptCharacter('maya', ['john', 'maya']), 'maya');
 assert.equal(keptCharacter('stella', ['john', 'maya']), '');
 assert.equal(keptCharacter('', ['john']), '');
 assert.equal(keptCharacter('maya', undefined), '');
+
+// A slow run says what it is doing; a refused-then-retried call is not
+// "failed" (owner, 2026-09-30). Timed on entries as a re-read builds them,
+// with the server's start (`withWorking`), not the page's clock.
+{
+  let r = applyEvent(emptyRun(), { type: 'user', text: 'a picture?' });
+  assert.equal(waitingLine(r, 'Stella', 0), 'Stella is typing');
+  // The server says 84 s have passed; the page's own clock does the rest,
+  // whatever the server's clock reads.
+  r = { ...r, entries: withWorking(r.entries, { id: 't1', name: 'image_generate', since: '2099-01-01T00:00:00Z', elapsed_ms: 84_000 }, 1_000_000) };
+  assert.equal(waitingLine(r, 'Stella', 1_000_000), 'drawing a picture… 1:24');
+  assert.equal(waitingLine(r, 'Stella', 1_010_000), 'drawing a picture… 1:34');
+  r = applyEvent(r, { type: 'tool_result', id: 't1', name: 'image_generate', is_error: true });
+  r = applyEvent(r, { type: 'tool', id: 't2', name: 'image_generate' });
+  assert.equal(toolStatus(r.entries, 1), 'retried');
+  assert.equal(toolStatus(r.entries, 2), 'running');
+  assert.ok(/^drawing a picture… \d+:\d\d$/.test(waitingLine(r, 'Stella', Date.now())));
+  r = applyEvent(r, { type: 'tool_result', id: 't2', name: 'image_generate', is_error: false });
+  assert.equal(toolStatus(r.entries, 2), 'done');
+  assert.equal(waitingLine(r, 'Stella', 99_000), 'Stella is typing');
+  // A refused call is closed, not waited on for the rest of the run.
+  r = applyEvent(r, { type: 'tool', id: 't3', name: 'web_search' });
+  r = applyEvent(r, { type: 'denied', name: 'web_search', reason: 'blocked' });
+  assert.equal(waitingLine(r, 'Stella', 99_000), 'Stella is typing');
+  assert.equal(toolStatus(r.entries, 3), 'failed');
+  r = applyEvent(r, { type: 'delta', text: 'Here' });
+  assert.equal(waitingLine(r, 'Stella', 99_000), null);
+  r = applyEvent(r, { type: 'done', ok: true });
+  assert.equal(waitingLine(r, 'Stella', 99_000), null);
+  // A lone failure stays a failure — and a same-named call in a later turn
+  // is not its retry.
+  const lone = [{ kind: 'tool', name: 'web_search', is_error: true }];
+  assert.equal(toolStatus(lone, 0), 'failed');
+  const later = [
+    { kind: 'tool', name: 'web_search', is_error: true },
+    { kind: 'user', text: 'something else' },
+    { kind: 'tool', name: 'web_search', is_error: false },
+  ];
+  assert.equal(toolStatus(later, 0), 'failed');
+}
+
+// A page re-read mid-run puts back the tool still running, from the
+// server's own report of it — not a start the page invented.
+{
+  const working = { id: 't9', name: 'image_generate', since: '2026-09-30T04:00:00Z', elapsed_ms: 84_000 };
+  const entries = withWorking([{ kind: 'user', text: 'a picture?' }], working, 5_000);
+  const run = { ...emptyRun(entries), running: true };
+  assert.equal(waitingLine(run, 'Stella', 5_000), 'drawing a picture… 1:24');
+  // Not twice, and not when nothing is running.
+  assert.equal(withWorking(entries, working).length, entries.length);
+  assert.equal(withWorking(entries, null), entries);
+}
 
 console.log('persona: ok');

@@ -109,6 +109,63 @@ export function relationshipLabel(p) {
 
 // The state a streamed run folds into: the transcript so far, the answer
 // still arriving, and whether a run is live.
+// What a tool row says. A call the tool refused with instructions and the
+// persona then made again reads as retried, not failed — "failed" twice
+// before a picture arrived read as broken to the owner (2026-09-30).
+export function toolStatus(entries, i) {
+  const e = entries[i];
+  if (e.is_error == null) return 'running';
+  if (!e.is_error) return 'done';
+  // Within the same turn only: the owner's next message ends the search, or
+  // a failure reads "retried" because the tool ran again days later
+  // (review of #431).
+  const after = entries.slice(i + 1);
+  const turnEnd = after.findIndex((x) => x.kind === 'user');
+  const sameTurn = turnEnd === -1 ? after : after.slice(0, turnEnd);
+  const again = sameTurn.some((x) => x.kind === 'tool' && x.name === e.name);
+  return again ? 'retried' : 'failed';
+}
+
+const DOING = {
+  image_generate: 'drawing a picture',
+  image_view: 'looking at an image',
+  web_search: 'searching the web',
+  fs_read: 'reading a file',
+};
+
+const clockOf = (ms) => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+
+// The line under a run that has not answered yet, so a slow local model
+// never looks broken (owner, 2026-09-30): the tool it is waiting on and for
+// how long, else that the persona is typing. Nothing once text streams, and
+// nothing when no run is live.
+export function waitingLine(run, display, now) {
+  if (!run?.running || run.streaming) return null;
+  const pending = [...(run.entries ?? [])].reverse().find((e) => e.kind === 'tool' && e.is_error == null);
+  if (pending) {
+    const doing = DOING[pending.name] ?? `using ${pending.name}`;
+    return pending.started ? `${doing}… ${clockOf(now - pending.started)}` : `${doing}…`;
+  }
+  return `${display} is typing`;
+}
+
+// The transcript a page re-reads mid-run has every finished tool call, not
+// the one still running; the server names that one (`working`), and it is
+// put back as a pending row with its real start, so a reload during a long
+// render still reads "drawing a picture… 1:24" (review of #431).
+// `now` is this page's clock. The server says how long the tool has run
+// (`elapsed_ms`), not when it began by its clock, so a phone whose clock is
+// off still counts from the right moment (review of #431).
+export function withWorking(entries, working, now = Date.now()) {
+  if (!working?.id || entries.some((e) => e.kind === 'tool' && e.id === working.id)) return entries;
+  const elapsed = Number(working.elapsed_ms);
+  const started = Number.isFinite(elapsed) ? now - elapsed : undefined;
+  return [...entries, { kind: 'tool', id: working.id, name: working.name, is_error: null, started }];
+}
+
 export function emptyRun(entries = [], taint = null) {
   // `crisisSeq` carries on past the entries it numbered, so ids never repeat
   // within a page's life of the chat.
@@ -172,7 +229,10 @@ export function applyEvent(state, ev) {
       return { ...state, running: true, streaming: (state.streaming ?? '') + ev.text };
     case 'tool': {
       const s = flush(state);
-      return { ...s, entries: [...s.entries, { kind: 'tool', id: ev.id, name: ev.name, is_error: null }] };
+      // `started` is the page's clock, for the "drawing a picture… 1:24"
+      // line: a local model can take minutes on an image. (A re-read takes
+      // it from the server's `working.since` instead — `withWorking`.)
+      return { ...s, entries: [...s.entries, { kind: 'tool', id: ev.id, name: ev.name, is_error: null, started: Date.now() }] };
     }
     case 'tool_result':
       return {
@@ -189,8 +249,13 @@ export function applyEvent(state, ev) {
       return { ...s, crisisSeq: seq, entries: [...s.entries, { kind: 'crisis', text: ev.text, id: `crisis-${seq}` }] };
     }
     // A call refused before it ran: the row says so, with the reason.
-    case 'denied':
-      return { ...state, entries: [...state.entries, { kind: 'notice', text: `${ev.name} refused: ${ev.reason}` }] };
+    // A refused call gets no result: its pending row is closed as failed, or
+    // the waiting line would count it for the rest of the run (review of #431).
+    case 'denied': {
+      const at = state.entries.findLastIndex((e) => e.kind === 'tool' && e.name === ev.name && e.is_error == null);
+      const entries = at === -1 ? state.entries : state.entries.map((e, i) => (i === at ? { ...e, is_error: true } : e));
+      return { ...state, entries: [...entries, { kind: 'notice', text: `${ev.name} refused: ${ev.reason}` }] };
+    }
     case 'notice':
       return { ...state, entries: [...state.entries, { kind: 'notice', text: ev.text }] };
     case 'done': {

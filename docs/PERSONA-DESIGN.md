@@ -1289,7 +1289,7 @@ owner only, never by a template or a model:
 
 | Switch | Section | Off means |
 |---|---|---|
-| `disclosure` | §12.1 | no "this is an AI" banner or spoken line |
+| `disclosure` | §12.1 | no "AI" tag beside the name, no spoken line, and the persona is not told the page marks it |
 | `crisis` | §12.2 | no detector over this persona's chats |
 | `dose` | §12.3 | no session or call-minute sensors for it |
 | `breaks` | §12.3 | no break reminders (off unless turned on) |
@@ -1321,8 +1321,10 @@ off*, so neither can pass for the other:
 
 ### 12.1 Disclosure
 
-The harness shows that this is an AI — a banner in the page, a spoken line
-at the start of a call, on a clock — and the persona never has to say it. What
+The harness shows that this is an AI — an "AI" tag beside the persona's name
+on the page (a banner at the top of each chat until the owner dropped it,
+2026-09-30), a spoken line at the start of a call, on a clock — and the
+persona never has to say it. What
 a character says inside a story is the owner's creative choice (R18); the
 disclosure is the harness's job, not a line in the persona. For the owner
 alone it is a courtesy the owner can quiet; for anyone else it is the one duty
