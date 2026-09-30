@@ -1612,6 +1612,52 @@ impl OwnerFile {
     }
 }
 
+/// A save made against a file that changed since it was opened — an edit
+/// made elsewhere. Typed, so a surface can tell it from bad input (a 409, not
+/// a 400).
+#[derive(Debug)]
+pub struct StaleEdit(pub OwnerFile);
+
+impl std::fmt::Display for StaleEdit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} changed since it was opened (an edit made elsewhere); open it again",
+            self.0.file_name()
+        )
+    }
+}
+
+impl std::error::Error for StaleEdit {}
+
+/// The relationship templates a new persona can name, read without writing:
+/// the owner's templates on disk, and each shipped starter not yet offered,
+/// which `create` copies in on first use. A starter the owner deleted stays
+/// deleted — it is in the offered ledger — so it is not listed again.
+pub fn relationship_choices(dir: &Path) -> Vec<(String, bool)> {
+    let store = Store::load(dir);
+    let offered: BTreeSet<String> = std::fs::read_to_string(dir.join("relationships").join(SEEDED))
+        .map(|s| {
+            s.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out: BTreeMap<String, bool> = store
+        .relationships()
+        .values()
+        .map(|r| (r.name.clone(), r.starter))
+        .collect();
+    for (name, _) in STARTERS {
+        if !offered.contains(name) {
+            out.entry(name.to_string()).or_insert(true);
+        }
+    }
+    out.into_iter().collect()
+}
+
 /// A text's digest, as a page holds it to say which version of a file it
 /// opened.
 pub fn text_digest(text: &str) -> String {
@@ -1678,10 +1724,7 @@ pub fn write_owner_file(
     };
     if let Some(base) = base {
         if text_digest(old.as_deref().unwrap_or("")) != base {
-            bail!(
-                "{} changed since it was opened (an edit made elsewhere); open it again",
-                file.file_name()
-            );
+            return Err(StaleEdit(file).into());
         }
     }
     write_private(&path, text.as_bytes())?;
@@ -2497,6 +2540,28 @@ mod tests {
         ] {
             assert!(add_relationship(&dir, name, text).is_err(), "{name}");
         }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Listing what a persona can name writes nothing, and a deleted starter
+    /// is not offered again.
+    #[test]
+    fn relationship_choices_are_read_without_writing() {
+        let dir = scratch();
+        let fresh = relationship_choices(&dir);
+        assert_eq!(fresh.len(), STARTERS.len());
+        assert!(
+            !dir.join("relationships").exists(),
+            "listing wrote the store"
+        );
+        seed_starters(&dir).unwrap();
+        std::fs::remove_file(dir.join("relationships/coach.md")).unwrap();
+        add_relationship(&dir, "mentor", "# Mentor\n").unwrap();
+        let names: Vec<String> = relationship_choices(&dir)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(!names.contains(&"coach".to_string()) && names.contains(&"mentor".to_string()));
         std::fs::remove_dir_all(dir).ok();
     }
 
