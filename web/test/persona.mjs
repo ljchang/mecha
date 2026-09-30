@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
-  taintLabel, safetyLine, doseLine, personaName, authoringUrl, OWNER_FILES,
+  taintLabel, safetyLine, doseLine, personaName, authoringUrl, keptCharacter, OWNER_FILES,
 } from '../src/lib/persona.js';
 
 // Only a key the server could have minted is a persona chat's.
@@ -100,9 +100,13 @@ assert.deepEqual(s.entries.map((e) => e.delivery), ['delivered', 'discarded']);
 assert.equal(taintLabel({ private: true, untrusted: true }), 'private + untrusted');
 assert.equal(taintLabel({ private: false, untrusted: false }), '');
 assert.equal(taintLabel(null), '');
-assert.equal(safetyLine({ crisis: 'degraded', disclosure: true, reanchor: true, dose: true }), 'crisis detection: keywords only');
+assert.equal(safetyLine({ crisis: 'on', disclosure: true, reanchor: true, dose: true }), 'crisis detection on');
+assert.equal(safetyLine({ crisis: 'enabled' }), 'crisis detection: keywords + a model check on each message');
+assert.equal(safetyLine({ crisis: 'degraded', disclosure: true, reanchor: true, dose: true }), 'crisis detection: keywords only (the model check could not answer)');
+// A state this page does not know reads as the cautious one, never as "on".
+assert.ok(safetyLine({ crisis: 'judged-v2' }).includes('keywords only'));
 assert.equal(safetyLine({ crisis: 'off', disclosure: false, reanchor: true, dose: false }), 'crisis detection off · off: disclosure, dose');
-assert.equal(safetyLine({ crisis: 'degraded', disclosure: true, reanchor: true, dose: true, farewell: 'off' }), 'crisis detection: keywords only · off: farewell');
+assert.equal(safetyLine({ crisis: 'on', disclosure: true, reanchor: true, dose: true, farewell: 'off' }), 'crisis detection on · off: farewell');
 // Two crisis cards get two ids, and a re-read keeps each card's own.
 {
   let r = emptyRun();
@@ -140,5 +144,12 @@ assert.equal(applyEvent(before, { type: 'affect', label: 'calm' }), before);
     settings: { asText: undefined, formDraft: { 'safety.dose': false } },
   });
 }
+
+// A relock drops a locked portrait the form had chosen; an unlock keeps
+// whatever was chosen, since the list only grows.
+assert.equal(keptCharacter('priya', ['john', 'priya']), 'priya');
+assert.equal(keptCharacter('maya', ['john', 'priya']), '');
+assert.equal(keptCharacter('', ['john']), '');
+assert.equal(keptCharacter('priya', undefined), '');
 
 console.log('persona: ok');

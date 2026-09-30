@@ -28,7 +28,7 @@ use axum::Json;
 use mecha_core::agent::{Agent, AgentEvent, Conversation};
 use mecha_core::message::{Message, Usage};
 use mecha_core::persona::agent::{self as persona_agent, Pinned, Refused};
-use mecha_core::persona::safety;
+use mecha_core::persona::{judge, safety};
 use mecha_core::persona::{Persona, Store};
 use mecha_core::session::{Record, Session, SessionMeta};
 use std::collections::{HashMap, VecDeque};
@@ -108,6 +108,10 @@ struct PersonaSession {
     /// the run is stopped, and its hand-back records this so the words are
     /// kept although the persona never answers them.
     pending_crisis: Option<String>,
+    /// Whether the crisis judge answered the last time it was asked: `None`
+    /// before it has been asked, which reads as keywords only — "on" is
+    /// claimed only once it has answered (review of #426).
+    judge_answered: Option<bool>,
 }
 
 struct Live {
@@ -138,6 +142,14 @@ struct PinRecord {
 fn pin_path(sessions: &Path, id: &str) -> PathBuf {
     sessions.join(format!("{id}.persona.json"))
 }
+
+/// A crisis judge ready to ask — its provider, model and the owner's words —
+/// or why it could not be made.
+type JudgeJob = Result<(Box<dyn mecha_core::provider::Provider>, String, String), String>;
+
+/// How long a verdict still out when the persona finished may take before it
+/// is "couldn't check".
+const JUDGE_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// The most text a session goal may carry.
 const MAX_GOAL: usize = 2000;
@@ -171,13 +183,22 @@ fn failed(e: anyhow::Error) -> Refusal {
 }
 
 /// What the safety layer can do for a persona, as every surface shows it
-/// (§12): each switch, with the crisis sensor said as it is — `degraded`
-/// (keywords only) until its model tiers exist — and the farewell check as
+/// (§12): each switch, with the crisis sensor said as it is — `on` only once
+/// its judge has answered, `degraded` (keywords only) before then and while
+/// it cannot — and the farewell check as
 /// unbuilt, so neither can pass for "checked".
-fn safety_json(s: &mecha_core::persona::Safety) -> serde_json::Value {
+/// `judge` is a chat's judge state (`Some(answered)`), or `None` for the
+/// persona itself, where no judge has been asked: that reads `enabled` —
+/// what is configured — never `on`, which a chat earns (review of #426).
+fn safety_json(s: &mecha_core::persona::Safety, judge: Option<bool>) -> serde_json::Value {
+    let crisis = match judge {
+        Some(answered) => serde_json::json!(safety::crisis_state(s.crisis, answered)),
+        None if s.crisis => serde_json::json!("enabled"),
+        None => serde_json::json!("off"),
+    };
     serde_json::json!({
         "disclosure": s.disclosure,
-        "crisis": safety::crisis_state(s.crisis),
+        "crisis": crisis,
         "reanchor": s.reanchor,
         "dose": s.dose,
         "breaks": s.breaks,
@@ -328,19 +349,10 @@ impl PersonaChats {
         p: &Persona,
         token: Option<&str>,
     ) -> Option<String> {
-        let name = p.settings.character.as_ref()?;
-        if library.unlocked(token) {
-            return None;
-        }
-        // Shown only when the library holds it, open. An entry that did not
-        // load (a damaged `entry.toml`) is unknown, and unknown reads as
-        // locked (review of #430). Locked keys on `locked`, not approval: a
-        // locked candidate is hidden too.
+        // One rule for the list and the Edit screen: the free fn below, which
+        // fails closed on an entry that does not load (#425, #430).
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
-        match lib.get(mecha_core::imagelib::Kind::Character, name) {
-            Some(e) if !e.locked => None,
-            _ => Some(name.clone()),
-        }
+        hidden_character(p, &lib, library.unlocked(token)).map(str::to_string)
     }
 
     /// What the settings form offers, from the stores as they stand — built
@@ -536,22 +548,11 @@ impl PersonaChats {
         })?;
         let store = Store::load(&self.store);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
-        // A problem that names a hidden portrait would name it — the one
-        // hidden before the save, and the one the save may have just set: a
-        // guessed `character = "x"` must not come back as "not in the
-        // library" for one name and silence for a locked one (review of #430).
-        let after = store
+        let unlocked = library.unlocked(body.unlock.as_deref());
+        let problems = store
             .get(&p.name)
-            .and_then(|q| self.hidden_character(library, q, body.unlock.as_deref()));
-        let named =
-            |m: &str, c: &Option<String>| c.as_ref().is_some_and(|c| m.contains(&format!("`{c}`")));
-        let problems: Vec<String> = store
-            .get(&p.name)
-            .map(|q| store.problems(q, &lib))
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|m| !named(m, &hidden) && !named(m, &after))
-            .collect();
+            .map(|q| unnamed(store.problems(q, &lib), hidden_character(q, &lib, unlocked)))
+            .unwrap_or_default();
         Ok(serde_json::json!({ "version": state.version, "problems": problems }))
     }
 
@@ -613,13 +614,22 @@ impl PersonaChats {
         let rows: Vec<serde_json::Value> = store
             .visible(unlocked)
             .map(|p| {
-                // The linked character's portrait, by the library's own rule:
-                // approved only, and a locked one only with the live token.
-                let portrait = p
+                let linked = p
                     .settings
                     .character
                     .as_deref()
-                    .and_then(|c| lib.get(mecha_core::imagelib::Kind::Character, c))
+                    .and_then(|c| lib.get(mecha_core::imagelib::Kind::Character, c));
+                // A visible persona linked to a locked character does not name
+                // it to a locked page: a name says more than the count the
+                // owner ruled out (2026-09-30). The link itself is untouched.
+                let hidden = hidden_character(p, &lib, unlocked);
+                let character = match hidden {
+                    Some(_) => None,
+                    None => p.settings.character.as_deref(),
+                };
+                // The linked character's portrait, by the library's own rule:
+                // approved only, and a locked one only with the live token.
+                let portrait = linked
                     .filter(|e| e.status == mecha_core::persona::Status::Approved)
                     .filter(|e| !e.locked || unlocked)
                     .and_then(|e| super::library::portrait_url(e, token.filter(|_| unlocked)));
@@ -627,13 +637,13 @@ impl PersonaChats {
                     "name": p.name,
                     "display": p.display(),
                     "relationship": p.settings.relationship.0,
-                    "character": p.settings.character,
+                    "character": character,
                     "portrait": portrait,
                     "version": p.state.version,
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     "locked": p.state.locked,
-                    "problems": store.problems(p, &lib),
-                    "safety": safety_json(&p.settings.safety),
+                    "problems": unnamed(store.problems(p, &lib), hidden),
+                    "safety": safety_json(&p.settings.safety, None),
                     // The meters are shown to the owner, never to the model.
                     "dose": p.settings.safety.dose.then(|| match &doses.unreadable {
                         // Unread is said, not shown as zero turns.
@@ -651,10 +661,10 @@ impl PersonaChats {
                 })
             })
             .collect();
-        let hidden = store.all().len() - rows.len();
+        // No count of what is hidden: "one hidden" is the lock telling on
+        // itself. A locked page reads exactly like one with nothing locked.
         serde_json::json!({
             "personas": rows,
-            "hidden_locked": hidden,
             "unlocked": unlocked,
             "has_password": mecha_core::imagelib::has_lock_password(&library.dir),
         })
@@ -738,6 +748,7 @@ impl PersonaChats {
                 anchor_due: false,
                 crisis_paused_at: None,
                 pending_crisis: None,
+                judge_answered: None,
             },
         );
         Ok(serde_json::json!({
@@ -869,6 +880,7 @@ impl PersonaChats {
                 anchor_due,
                 crisis_paused_at: None,
                 pending_crisis: None,
+                judge_answered: None,
             },
         );
         Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }))
@@ -921,7 +933,14 @@ impl PersonaChats {
             "running": ps.live.is_some(),
             "goal": ps.goal,
             "display": ps.pinned.settings.display,
-            "safety": safety_json(&ps.pinned.settings.safety),
+            // The switches as they stand, not as pinned: they are read live.
+            "safety": safety_json(
+                &Store::load(&self.store)
+                    .get(&ps.pinned.name)
+                    .map(|p| p.settings.safety)
+                    .unwrap_or(ps.pinned.settings.safety),
+                Some(ps.judge_answered == Some(true)),
+            ),
             "entries": entries,
             "taint": taint.map(|t| serde_json::json!({
                 "private": t.private, "untrusted": t.untrusted,
@@ -991,9 +1010,15 @@ impl PersonaChats {
         let name = self.persona_of(library, key, token).await?;
         // An open chat stops answering when its persona stops being approved,
         // as `open` and `resume` refuse one — not only after a restart.
-        let approved = Store::load(&self.store)
-            .get(&name)
+        let live = Store::load(&self.store).get(&name).cloned();
+        let approved = live
+            .as_ref()
             .is_some_and(|p| p.state.status == mecha_core::persona::Status::Approved);
+        // The safety switches as the persona stands now, not as the chat
+        // pinned it: switching a protection back on reaches an open chat
+        // (review of #418), as revoking approval already does. The prompt
+        // stays the pinned version's.
+        let live_switches = live.map(|p| p.settings.safety);
         if !approved {
             return Err(Refusal::Conflict(format!(
                 "`{name}` is not approved — `mecha persona approve {name}` after reading it"
@@ -1003,12 +1028,15 @@ impl PersonaChats {
             let mut sessions = self.sessions.lock().await;
             let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
             if ps.live.is_some() {
-                return self.steer_or_pause(ps, &name, text, request_id);
+                let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
+                let bound = chat.follower.current();
+                return self
+                    .steer_or_pause(chat, key, ps, &name, switches, &bound, text, request_id);
             }
             // A pause needs no model: decided here, from the owner's words,
             // it skips the router hold and the agent below, so 988 is not
             // queued behind a model load it never uses (review of #418).
-            let switches = ps.pinned.settings.safety;
+            let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
             let early_pause = switches.crisis
                 && safety::keyword_hit(&text)
                 && !ps
@@ -1048,7 +1076,9 @@ impl PersonaChats {
         }
         let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
         if ps.live.is_some() {
-            return self.steer_or_pause(ps, &name, text, request_id);
+            let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
+            let bound = chat.follower.current();
+            return self.steer_or_pause(chat, key, ps, &name, switches, &bound, text, request_id);
         }
         let Some(mut conversation) = ps.conversation.take() else {
             return Err(Refusal::Conflict("a turn is still finishing".into()));
@@ -1075,8 +1105,8 @@ impl PersonaChats {
         // anything runs: a crisis hit outside the cooldown pauses the persona
         // (the owner's ruling, 2026-09-29) — the message is recorded, the
         // persona does not answer it, and a plain voice does.
-        let switches = pinned.settings.safety;
-        let crisis_state = safety::crisis_state(switches.crisis);
+        let switches = live_switches.unwrap_or(pinned.settings.safety);
+        let crisis_state = safety::crisis_state(switches.crisis, ps.judge_answered == Some(true));
         // `said`, not `text`: a goal typed at open rides in the first turn,
         // and is the owner's words as much as the message is.
         let hit = switches.crisis && safety::keyword_hit(&said);
@@ -1141,6 +1171,7 @@ impl PersonaChats {
             ps.goal = goal;
             return Err(Refusal::Failed(format!("recording: {e:#}")));
         }
+        let said_for_judge = said.clone();
         let _ = ps.events.send(WireEvent::User {
             text: said,
             spoken: false,
@@ -1155,7 +1186,8 @@ impl PersonaChats {
             }
         }
         if hit {
-            if let Err(e) = safety::record_crisis(&self.store, "web", pause) {
+            if let Err(e) = safety::record_crisis(&self.store, "web", safety::Tier::Keyword, pause)
+            {
                 tracing::warn!("a crisis record was not written: {e:#}");
             }
         }
@@ -1180,6 +1212,15 @@ impl PersonaChats {
             ps.conversation = Some(conversation);
             return Err(Refusal::Failed("a paused turn reached the model".into()));
         };
+        // The crisis judge, alongside the turn, on words the keywords passed
+        // (§12.2): a concern while the persona is still answering stops the
+        // run and pauses it, as a keyword hit does. Not inside the cooldown,
+        // which a pause would not break anyway.
+        let judge_job: Option<JudgeJob> = (switches.crisis && !hit && !cooling).then(|| {
+            (self.provider)(&bound)
+                .map(|p| (p, bound.model.clone(), said_for_judge.clone()))
+                .map_err(|e| format!("the judge could not be reached: {e:#}"))
+        });
         let anchored = anchor.is_some();
         if anchored {
             ps.turns_since_anchor = 0;
@@ -1213,6 +1254,7 @@ impl PersonaChats {
         if cx.budget.max_turns.is_none() {
             cx.budget.max_turns = Some(40);
         }
+        let judge_cancel = cancel.clone();
         cx = cx.with_cancel_handle(cancel);
         cx.queued_input = Some(queue);
 
@@ -1223,6 +1265,7 @@ impl PersonaChats {
         let context_window = bound.context_window;
         let chats = Arc::clone(self);
         let key = key.to_string();
+        let stopping = chat.stopping.clone();
         // Spawned under the sessions lock, as the assistant's `begin_turn`
         // spawns under its map: `stop` takes this lock before it closes
         // `runs`, so the run is on the tracker before `drain` can report
@@ -1252,7 +1295,40 @@ impl PersonaChats {
                     }
                 })
             };
-            let outcome = agent.run_in(&cx, &mut conversation, Some(tx)).await;
+            // The judge races the run: a concern that lands first stops it.
+            let (mut judge_handle, mut verdict) = match judge_job {
+                Some(Ok((provider, model, words))) => (
+                    Some(tokio::spawn(async move {
+                        judge::screen(provider.as_ref(), &model, &words).await
+                    })),
+                    None,
+                ),
+                Some(Err(why)) => (None, Some(judge::Verdict::Unchecked(why))),
+                None => (None, None),
+            };
+            let mut stopped_by_judge = false;
+            let outcome = {
+                let run = agent.run_in(&cx, &mut conversation, Some(tx));
+                tokio::pin!(run);
+                match judge_handle.as_mut() {
+                    Some(handle) => tokio::select! {
+                        out = &mut run => out,
+                        joined = handle => {
+                            let v = joined.unwrap_or_else(|e| {
+                                judge::Verdict::Unchecked(format!("the judge task failed: {e}"))
+                            });
+                            if v == judge::Verdict::Concern {
+                                judge_cancel.cancel(mecha_core::agent::CancelReason::Stopped);
+                                stopped_by_judge = true;
+                            }
+                            verdict = Some(v);
+                            judge_handle = None;
+                            run.await
+                        }
+                    },
+                    None => run.await,
+                }
+            };
             let _ = forwarder.await;
             match &outcome {
                 Ok(o) => {
@@ -1353,6 +1429,25 @@ impl PersonaChats {
             }
             drop(sessions);
             let _ = bcast.send(done);
+            // A verdict still out when the run ended: waited for here, after
+            // the reply is handed back — bounded, and a judge that does not
+            // answer in time is "couldn't check", never clear.
+            if let Some(handle) = judge_handle {
+                // The reply is handed back: the router need not stay held for
+                // the wait, and a shutdown need not wait out the judge.
+                drop(_held);
+                verdict = Some(tokio::select! {
+                    joined = tokio::time::timeout(JUDGE_WAIT, handle) => match joined {
+                        Ok(Ok(v)) => v,
+                        Ok(Err(e)) => judge::Verdict::Unchecked(format!("the judge task failed: {e}")),
+                        Err(_) => judge::Verdict::Unchecked("the judge did not answer in time".into()),
+                    },
+                    _ = stopping.cancelled() => judge::Verdict::Unchecked("the server is shutting down".into()),
+                });
+            }
+            if let Some(v) = verdict {
+                chats.apply_verdict(&key, v, stopped_by_judge, None).await;
+            }
         });
         drop(sessions);
         Ok(serde_json::json!({ "started": true }))
@@ -1360,26 +1455,130 @@ impl PersonaChats {
 }
 
 impl PersonaChats {
+    /// Act on the crisis judge's verdict for a chat (§12.2). A concern is
+    /// counted (tier `judge`), arms the cooldown and sends the warning; with
+    /// `cancel_live` it also stops the run in flight (a steer's). A verdict
+    /// the judge could not reach is "couldn't check": the chat says crisis
+    /// detection is on keywords only until the judge answers again — the
+    /// change is announced both ways, never silent.
+    async fn apply_verdict(
+        &self,
+        key: &str,
+        verdict: judge::Verdict,
+        paused: bool,
+        steer: Option<(String, String)>,
+    ) {
+        let mut sessions = self.sessions.lock().await;
+        let Some(ps) = sessions.get_mut(key) else {
+            // Closed before the verdict came: a concern is still counted —
+            // the counter is what a host's report is built from.
+            if verdict == judge::Verdict::Concern {
+                tracing::warn!("a crisis judge concern arrived for a closed persona chat");
+                if let Err(e) =
+                    safety::record_crisis(&self.store, "web", safety::Tier::Judge, false)
+                {
+                    tracing::warn!("a crisis record was not written: {e:#}");
+                }
+            }
+            return;
+        };
+        match verdict {
+            judge::Verdict::Concern => {
+                let mut paused = paused;
+                // A steer the judge stopped: its run is cancelled, and its
+                // words — still in the queue unless the run already took them
+                // — are held for the hand-back to record, as a keyword pause
+                // holds them, rather than coming back "not delivered"
+                // (review of #426).
+                if let (Some((text, request_id)), Some(live)) = (steer, &ps.live) {
+                    let held = match (live.queue.lock(), live.queued_ids.lock()) {
+                        (Ok(mut queue), Ok(mut ids)) => {
+                            take_undrained(&mut queue, &mut ids, &request_id)
+                        }
+                        _ => false,
+                    };
+                    live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
+                    paused = true;
+                    if held {
+                        ps.pending_crisis = Some(match ps.pending_crisis.take() {
+                            Some(before) => format!("{before}\n\n{text}"),
+                            None => text,
+                        });
+                        // Its receipt: kept, and it reaches the persona with
+                        // the owner's next turn — or the page's bubble reads
+                        // "queued" forever (review of #426).
+                        let _ = ps.events.send(WireEvent::QueuedDelivered { request_id });
+                    }
+                }
+                if let Err(e) =
+                    safety::record_crisis(&self.store, "web", safety::Tier::Judge, paused)
+                {
+                    tracing::warn!("a crisis record was not written: {e:#}");
+                }
+                // The cooldown means "a pause just happened": a late concern
+                // paused nothing, and must not disarm both tiers for 15
+                // minutes (review of #426).
+                if paused {
+                    ps.crisis_paused_at = Some(std::time::Instant::now());
+                }
+                // Recovered, and said so, as the `Clear` arm does: the doc
+                // promises the change is announced both ways (review of #426).
+                if ps.judge_answered == Some(false) {
+                    let _ = ps.events.send(WireEvent::Notice {
+                        text: "Crisis detection's model check is answering again.".into(),
+                    });
+                }
+                ps.judge_answered = Some(true);
+                let _ = ps.events.send(WireEvent::Crisis {
+                    text: safety::SAFE_MESSAGE.to_string(),
+                });
+            }
+            judge::Verdict::Clear => {
+                if ps.judge_answered == Some(false) {
+                    let _ = ps.events.send(WireEvent::Notice {
+                        text: "Crisis detection's model check is answering again.".into(),
+                    });
+                }
+                ps.judge_answered = Some(true);
+            }
+            judge::Verdict::Unchecked(why) => {
+                if ps.judge_answered != Some(false) {
+                    let _ = ps.events.send(WireEvent::Notice {
+                        text: format!(
+                            "Crisis detection is on keywords only for now: the model check \
+                             could not answer ({why})."
+                        ),
+                    });
+                }
+                ps.judge_answered = Some(false);
+            }
+        }
+    }
+
     /// A message sent while a run is live. The safety layer reads it as it
     /// reads any other (found on review of #418: the steer path skipped it,
     /// so a crisis message typed mid-answer reached the persona in
     /// character): it is metered, and a crisis hit outside the cooldown stops
     /// the run and pauses the persona — the message is kept, the plain voice
     /// answers. Anything else steers, as before.
+    #[allow(clippy::too_many_arguments)]
     fn steer_or_pause(
-        &self,
+        self: &Arc<Self>,
+        chat: &Arc<ChatState>,
+        key: &str,
         ps: &mut PersonaSession,
         name: &str,
+        switches: mecha_core::persona::Safety,
+        bound: &crate::follow::Bound,
         text: String,
         request_id: String,
     ) -> Result<serde_json::Value, Refusal> {
-        let switches = ps.pinned.settings.safety;
         if switches.dose {
             if let Err(e) = safety::record_dose(
                 &self.store,
                 name,
                 &ps.session.meta.id,
-                safety::crisis_state(switches.crisis),
+                safety::crisis_state(switches.crisis, ps.judge_answered == Some(true)),
             ) {
                 tracing::warn!("a persona dose record was not written: {e:#}");
             }
@@ -1388,7 +1587,9 @@ impl PersonaChats {
             let cooling = ps
                 .crisis_paused_at
                 .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
-            if let Err(e) = safety::record_crisis(&self.store, "web", !cooling) {
+            if let Err(e) =
+                safety::record_crisis(&self.store, "web", safety::Tier::Keyword, !cooling)
+            {
                 tracing::warn!("a crisis record was not written: {e:#}");
             }
             if !cooling {
@@ -1406,6 +1607,47 @@ impl PersonaChats {
                     text: safety::SAFE_MESSAGE.to_string(),
                 });
                 return Ok(serde_json::json!({ "steered": false, "paused": true }));
+            }
+        }
+        // The judge reads a steer too, alongside the run it joins: a concern
+        // the keywords missed stops that run and pauses the persona.
+        let cooling = ps
+            .crisis_paused_at
+            .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
+        if switches.crisis && !cooling {
+            let chats = Arc::clone(self);
+            let key = key.to_string();
+            let words = text.clone();
+            // Its words and receipt, so a concern can hold them back.
+            let steered = Some((text.clone(), request_id.clone()));
+            match (self.provider)(bound) {
+                Ok(provider) => {
+                    let model = bound.model.clone();
+                    let stopping = chat.stopping.clone();
+                    // Bounded and stoppable, as the turn's judge is: a judge
+                    // that hangs must not hold `drain` at shutdown (#409's
+                    // rule) or wait forever (review of #426).
+                    chat.runs.spawn(async move {
+                        let v = tokio::select! {
+                            judged = tokio::time::timeout(
+                                JUDGE_WAIT,
+                                judge::screen(provider.as_ref(), &model, &words),
+                            ) => judged.unwrap_or_else(|_| {
+                                judge::Verdict::Unchecked("the judge did not answer in time".into())
+                            }),
+                            _ = stopping.cancelled() => {
+                                judge::Verdict::Unchecked("the server is shutting down".into())
+                            }
+                        };
+                        chats.apply_verdict(&key, v, false, steered).await;
+                    });
+                }
+                Err(e) => {
+                    let v =
+                        judge::Verdict::Unchecked(format!("the judge could not be reached: {e:#}"));
+                    chat.runs
+                        .spawn(async move { chats.apply_verdict(&key, v, false, steered).await });
+                }
             }
         }
         steer(ps, text, request_id)
@@ -1437,6 +1679,34 @@ fn steer(
 // ─── Routes ────────────────────────────────────────────────────────────────
 
 type Web = State<super::WebState>;
+
+/// Take a steer back out of what the run has not read yet, by its receipt.
+/// True only when its words were really removed before the agent saw them.
+///
+/// The two deques are pushed together under both locks, but drained apart:
+/// the agent empties `queue` wholesale (`take_queued_input`) and the
+/// forwarder then pops `ids` one event at a time. So, with both locks held,
+/// the steers still in `queue` are the *last* `queue.len()` entries of `ids`
+/// — the ones before them were already folded into the request, and their
+/// words reached the persona (review of #426: an index into both, as if they
+/// were aligned, "held" words the agent had already read).
+fn take_undrained(
+    queue: &mut VecDeque<String>,
+    ids: &mut VecDeque<String>,
+    request_id: &str,
+) -> bool {
+    let Some(offset) = ids.len().checked_sub(queue.len()) else {
+        return false;
+    };
+    match ids.iter().position(|id| id == request_id) {
+        Some(at) if at >= offset => {
+            ids.remove(at);
+            queue.remove(at - offset);
+            true
+        }
+        _ => false,
+    }
+}
 
 #[derive(serde::Deserialize)]
 pub struct UnlockQuery {
@@ -1560,6 +1830,43 @@ pub async fn list(State(state): Web, Query(q): Query<UnlockQuery>) -> axum::resp
     {
         Ok(v) => Json(v).into_response(),
         Err(e) => Refusal::Failed(format!("listing personas: {e}")).into_response(),
+    }
+}
+
+/// The name of a persona's linked character when the lock hides it from
+/// this viewer. Fails closed: on a locked page the name is shown only for an
+/// entry that loads *and* is unlocked — `Library::load` drops a damaged
+/// entry, and "could not read it" must not read as "not locked" (#430's
+/// review found the same shape there).
+fn hidden_character<'a>(
+    p: &'a Persona,
+    lib: &mecha_core::imagelib::Library,
+    unlocked: bool,
+) -> Option<&'a str> {
+    if unlocked {
+        return None;
+    }
+    let c = p.settings.character.as_deref()?;
+    match lib.get(mecha_core::imagelib::Kind::Character, c) {
+        Some(e) if !e.locked => None,
+        _ => Some(c),
+    }
+}
+
+/// Problems as a viewer may read them: one that names a character the lock
+/// hides is left out, not reworded — a locked candidate's "names character
+/// `x`, which is a candidate" would say what the nulled `character` does not
+/// (review of #425). The owner reads it again once unlocked.
+fn unnamed(problems: Vec<String>, hidden: Option<&str>) -> Vec<String> {
+    match hidden {
+        Some(c) => {
+            let quoted = format!("`{c}`");
+            problems
+                .into_iter()
+                .filter(|s| !s.contains(&quoted))
+                .collect()
+        }
+        None => problems,
     }
 }
 
@@ -1832,9 +2139,26 @@ mod tests {
         Fail,
     }
 
-    /// A provider that keeps a copy of every request and then does what its
-    /// mode says.
-    struct Capture(Arc<StdMutex<Vec<CompletionRequest>>>, Mode);
+    /// What the crisis judge answers in a test world.
+    #[derive(Clone)]
+    enum JudgeSays {
+        Clear,
+        Concern,
+        /// Refuses: "couldn't check".
+        Refuse,
+        /// Answers `Concern` once the gate opens.
+        ConcernAfter(Arc<tokio::sync::Notify>),
+    }
+
+    /// A provider that keeps a copy of every persona request and then does
+    /// what its mode says. A crisis judge's request (its quarantined system
+    /// prompt) is answered as the world's `JudgeSays` and counted apart.
+    struct Capture(
+        Arc<StdMutex<Vec<CompletionRequest>>>,
+        Mode,
+        Arc<StdMutex<JudgeSays>>,
+        Arc<StdMutex<usize>>,
+    );
 
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for Capture {
@@ -1849,6 +2173,46 @@ mod tests {
             req: &CompletionRequest,
             _: Option<&mecha_core::provider::StreamSink>,
         ) -> Result<CompletionResponse> {
+            if req
+                .system
+                .as_deref()
+                .is_some_and(|s| s.starts_with("You screen one message"))
+            {
+                *self.3.lock().unwrap() += 1;
+                // Room past the router's reasoning budget (review of #426).
+                assert!(
+                    req.max_tokens >= mecha_core::provider::LOCAL_MAX_TOKENS,
+                    "the judge asked for {} tokens",
+                    req.max_tokens
+                );
+                let says = self.2.lock().unwrap().clone();
+                let (text, stop) = match says {
+                    JudgeSays::Clear => (
+                        r#"{"wish_to_be_dead":false,"suicidal_thoughts":false,"method":false,"intent":false,"preparation":false,"self_harm":false}"#,
+                        StopReason::EndTurn,
+                    ),
+                    JudgeSays::Concern => (
+                        r#"{"wish_to_be_dead":true,"suicidal_thoughts":false,"method":false,"intent":false,"preparation":false,"self_harm":false}"#,
+                        StopReason::EndTurn,
+                    ),
+                    JudgeSays::Refuse => ("I can't help with that.", StopReason::Refusal),
+                    JudgeSays::ConcernAfter(gate) => {
+                        gate.notified().await;
+                        (
+                            r#"{"wish_to_be_dead":true,"suicidal_thoughts":false,"method":false,"intent":false,"preparation":false,"self_harm":false}"#,
+                            StopReason::EndTurn,
+                        )
+                    }
+                };
+                return Ok(CompletionResponse {
+                    message: Message::assistant(vec![Block::Text { text: text.into() }]),
+                    stop_reason: stop,
+                    usage: Usage::default(),
+                    refusal: None,
+                    model: "test".into(),
+                    malformed_tool_args: 0,
+                });
+            }
             self.0.lock().unwrap().push(req.clone());
             match &self.1 {
                 Mode::Answer => {}
@@ -1874,6 +2238,8 @@ mod tests {
         chat: Arc<ChatState>,
         library: LibraryState,
         seen: Arc<StdMutex<Vec<CompletionRequest>>>,
+        judge: Arc<StdMutex<JudgeSays>>,
+        judged: Arc<StdMutex<usize>>,
     }
 
     impl Drop for World {
@@ -1930,11 +2296,19 @@ mod tests {
 
         let seen = Arc::new(StdMutex::new(Vec::new()));
         let for_persona = Arc::clone(&seen);
+        let judge = Arc::new(StdMutex::new(JudgeSays::Clear));
+        let judged = Arc::new(StdMutex::new(0usize));
+        let (for_judge, for_judged) = (Arc::clone(&judge), Arc::clone(&judged));
         let personas = PersonaChats::with(
             dir,
             root.join("work"),
             Arc::new(move |_| {
-                Ok(Box::new(Capture(Arc::clone(&for_persona), mode.clone()))
+                Ok(Box::new(Capture(
+                    Arc::clone(&for_persona),
+                    mode.clone(),
+                    Arc::clone(&for_judge),
+                    Arc::clone(&for_judged),
+                ))
                     as Box<dyn mecha_core::provider::Provider>)
             }),
         );
@@ -1944,7 +2318,12 @@ mod tests {
         let mut config = mecha_core::config::Config::default();
         config.agent.system_prompt = Some("ASSISTANT-ONLY: the owner's charter".into());
         let chat = chat::test_chat_built(
-            Box::new(Capture(Arc::new(StdMutex::new(Vec::new())), Mode::Answer)),
+            Box::new(Capture(
+                Arc::new(StdMutex::new(Vec::new())),
+                Mode::Answer,
+                Arc::new(StdMutex::new(JudgeSays::Clear)),
+                Arc::new(StdMutex::new(0)),
+            )),
             pool,
             config,
             None,
@@ -1955,6 +2334,8 @@ mod tests {
             root,
             chat,
             seen,
+            judge,
+            judged,
         }
     }
 
@@ -2047,7 +2428,7 @@ mod tests {
         store::set_locked(&w.store(), "mara", true).unwrap();
         let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
         assert_eq!(listed["personas"].as_array().unwrap().len(), 0);
-        assert_eq!(listed["hidden_locked"], 1);
+        assert!(listed.get("hidden_locked").is_none(), "{listed}");
         for token in [None, Some("not-a-token")] {
             let refused = w
                 .personas()
@@ -2470,7 +2851,8 @@ mod tests {
 
     /// A persona's card shows its character's portrait only by the library's
     /// rule: approved, and a locked one only with the live token — a locked
-    /// character's blob name must not reach a page that is not unlocked.
+    /// character's blob name must not reach a page that is not unlocked, and
+    /// neither must its name (owner ruling, 2026-09-30).
     #[tokio::test]
     async fn a_portrait_is_shown_by_the_librarys_rule() {
         let w = world();
@@ -2482,6 +2864,7 @@ mod tests {
         for (name, origin, locked) in [
             ("maya", mecha_core::imagelib::Origin::Owner, true),
             ("sam", mecha_core::imagelib::Origin::ModelClean, false),
+            ("wren", mecha_core::imagelib::Origin::ModelClean, true),
         ] {
             mecha_core::imagelib::create(
                 &lib_dir,
@@ -2497,7 +2880,7 @@ mod tests {
             )
             .unwrap();
         }
-        let portrait_of = |links: &str, token: Option<&str>| {
+        let row_of = |links: &str, token: Option<&str>| {
             let toml = w.store().join("mara/persona.toml");
             let text = std::fs::read_to_string(&toml).unwrap();
             let text = text
@@ -2506,12 +2889,72 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n");
             std::fs::write(&toml, format!("character = \"{links}\"\n{text}\n")).unwrap();
-            w.personas().list(&w.library, token, Some(chrono_tz::UTC))["personas"][0]["portrait"]
-                .clone()
+            w.personas().list(&w.library, token, Some(chrono_tz::UTC))["personas"][0].clone()
         };
-        // Locked character: no portrait, not even its blob name, until unlocked.
-        assert!(portrait_of("maya", None).is_null());
+        let portrait_of =
+            |links: &str, token: Option<&str>| row_of(links, token)["portrait"].clone();
+        // Locked character: no portrait, not even its blob name, until
+        // unlocked — and no name either, while the link itself stays put.
+        let locked = row_of("maya", None);
+        assert!(locked["portrait"].is_null());
+        assert!(locked["character"].is_null(), "{locked}");
+        assert!(!locked.to_string().contains("maya"), "{locked}");
+        let text = std::fs::read_to_string(w.store().join("mara/persona.toml")).unwrap();
+        assert!(
+            text.contains("character = \"maya\""),
+            "the link is hidden, not cut"
+        );
         let token = w.library.grant_for_tests();
+        assert_eq!(row_of("maya", Some(&token))["character"], "maya");
+        // A link the lock does not cover is named as ever.
+        assert_eq!(row_of("sam", None)["character"], "sam");
+        // A locked *candidate*: its problem names it, so the problem is left
+        // out while locked and back once unlocked (review of #425).
+        let locked = row_of("wren", None);
+        assert!(!locked.to_string().contains("wren"), "{locked}");
+        let problems = row_of("wren", Some(&token))["problems"].to_string();
+        assert!(problems.contains("`wren`"), "{problems}");
+        // A damaged entry is dropped by `Library::load`: unreadable is not
+        // unlocked, so a locked page does not name it either.
+        mecha_core::imagelib::create(
+            &lib_dir,
+            mecha_core::imagelib::NewEntry {
+                kind: mecha_core::imagelib::Kind::Character,
+                name: "ivy".into(),
+                text: "tall".into(),
+                portrait: Some(png.clone()),
+                source_seed: None,
+                origin: mecha_core::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            row_of("ivy", None)["character"],
+            "ivy",
+            "readable and unlocked: named"
+        );
+        let damaged = lib_dir.join("characters/ivy/entry.toml");
+        assert!(damaged.exists(), "{}", damaged.display());
+        std::fs::write(&damaged, "not = [toml").unwrap();
+        let row = row_of("ivy", None);
+        assert!(!row.to_string().contains("ivy"), "{row}");
+        assert_eq!(row_of("ivy", Some(&token))["character"], "ivy");
+        // A save from the locked page answers with the same filtered problems.
+        let files = w.personas().files(&w.library, "mara", None).unwrap();
+        let saved = w
+            .personas()
+            .save(
+                &w.library,
+                "mara",
+                body(serde_json::json!({
+                    "file": "identity",
+                    "text": files["identity"]["text"],
+                    "base": files["identity"]["digest"],
+                })),
+            )
+            .unwrap();
+        assert!(!saved.to_string().contains("wren"), "{saved}");
         let shown = portrait_of("maya", Some(&token));
         let url = shown.as_str().expect("unlocked: the portrait is shown");
         assert!(
@@ -2712,7 +3155,8 @@ mod tests {
                 .contains("A reminder from the harness"),
             "{t}"
         );
-        assert_eq!(t["safety"]["crisis"], "degraded");
+        // Both tiers answering: the keywords and the judge.
+        assert_eq!(t["safety"]["crisis"], "on");
     }
 
     #[tokio::test]
@@ -2770,6 +3214,9 @@ mod tests {
 
         let files = w.personas().files(&w.library, "mara", None).unwrap();
         assert!(!files.to_string().contains("theo"), "{files}");
+        // Nor the list the page loads first (review of #430; #425's rule).
+        let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
+        assert!(!listed.to_string().contains("theo"), "{listed}");
         let settings = &files["settings"];
         assert!(settings["form"]["values"]["character"].is_null());
         assert_ne!(
@@ -3108,6 +3555,413 @@ mod tests {
                 serde_json::json!({ "name": "g2", "description": "a\nb" })
             ))
             .is_err());
+    }
+
+    /// Wait until the judge has been asked `n` times.
+    async fn judged(w: &World, n: usize) {
+        for _ in 0..300 {
+            if *w.judged.lock().unwrap() >= n {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!(
+            "the judge was asked {} times, not {n}",
+            *w.judged.lock().unwrap()
+        );
+    }
+
+    /// A concern the keywords missed, found while the persona is still
+    /// answering, stops the run and pauses it — counted as the judge's.
+    #[tokio::test]
+    async fn the_judge_stops_a_turn_the_keywords_missed() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_with(Mode::Gate(Arc::clone(&gate)));
+        *w.judge.lock().unwrap() = JudgeSays::Concern;
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        let words = "everything feels pointless and I keep thinking everyone would cope";
+        assert!(
+            !safety::keyword_hit(words),
+            "the keywords must miss this one"
+        );
+        w.personas()
+            .send(&w.chat, &w.library, &key, words, None, None)
+            .await
+            .unwrap();
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Done { .. }).then_some(())
+        })
+        .await;
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Crisis { .. }).then_some(())
+        })
+        .await;
+        let counted = std::fs::read_to_string(w.store().join("safety.jsonl")).unwrap();
+        assert!(
+            counted.contains("\"tier\":\"judge\"") && counted.contains("\"paused\":true"),
+            "{counted}"
+        );
+        assert!(counted.contains(judge::JUDGE), "{counted}");
+    }
+
+    /// A judge that cannot answer is "couldn't check": the chat says crisis
+    /// detection is on keywords only, and says so again when it recovers.
+    #[tokio::test]
+    async fn a_judge_that_cannot_answer_is_said_both_ways() {
+        let w = world();
+        *w.judge.lock().unwrap() = JudgeSays::Refuse;
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        let said = next(&mut rx, |ev| match ev {
+            WireEvent::Notice { text } if text.contains("keywords only") => Some(text.clone()),
+            _ => None,
+        })
+        .await;
+        assert!(said.contains("refused"), "{said}");
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(t["safety"]["crisis"], "degraded");
+
+        *w.judge.lock().unwrap() = JudgeSays::Clear;
+        turn(&w, &key, "Hello again").await;
+        judged(&w, 2).await;
+        for _ in 0..200 {
+            let t = w
+                .personas()
+                .transcript(&w.chat, &w.library, &key, None)
+                .await
+                .unwrap();
+            if t["safety"]["crisis"] == "on" {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the judge answered again and the chat still reads degraded");
+    }
+
+    /// A concern that lands after the persona answered still shows the
+    /// warning, and is counted as not paused — what was said stands.
+    #[tokio::test]
+    async fn a_late_concern_still_warns() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world();
+        *w.judge.lock().unwrap() = JudgeSays::ConcernAfter(Arc::clone(&gate));
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "it all feels like too much",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Done { ok: true, .. }).then_some(())
+        })
+        .await;
+        assert_eq!(w.seen.lock().unwrap().len(), 1, "the persona answered");
+        gate.notify_one();
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Crisis { .. }).then_some(())
+        })
+        .await;
+        let counted = std::fs::read_to_string(w.store().join("safety.jsonl")).unwrap();
+        assert!(counted.contains("\"paused\":false"), "{counted}");
+    }
+
+    /// A steer the keywords miss is judged too, and a concern stops the run
+    /// it joined.
+    #[tokio::test]
+    async fn a_steer_is_judged_too() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_with(Mode::Gate(Arc::clone(&gate)));
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        judged(&w, 1).await;
+        *w.judge.lock().unwrap() = JudgeSays::Concern;
+        let steered = w
+            .personas()
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "honestly I don't see the point of going on",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            steered["steered"], true,
+            "the keywords miss it, so it steers first"
+        );
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Crisis { .. }).then_some(())
+        })
+        .await;
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Done { .. }).then_some(())
+        })
+        .await;
+        let counted = std::fs::read_to_string(w.store().join("safety.jsonl")).unwrap();
+        assert!(
+            counted.contains("\"tier\":\"judge\"") && counted.contains("\"paused\":true"),
+            "{counted}"
+        );
+    }
+
+    /// The safety switches are read as the persona stands, not as the chat
+    /// pinned it: switching crisis off reaches an open chat, and so does
+    /// switching it back on (review of #418).
+    #[tokio::test]
+    async fn safety_switches_reach_an_open_chat() {
+        let w = world();
+        let key = open_chat(&w).await;
+        set_switch(&w, "crisis    ", false);
+        turn(&w, &key, "I want to die laughing at this").await;
+        assert_eq!(
+            w.seen.lock().unwrap().len(),
+            1,
+            "switched off: the persona answered"
+        );
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(t["safety"]["crisis"], "off");
+        set_switch(&w, "crisis    ", true);
+        let paused = w
+            .personas()
+            .send(&w.chat, &w.library, &key, "I want to die", None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            paused["paused"], true,
+            "switched back on: the open chat pauses"
+        );
+    }
+
+    /// A late concern paused nothing, so it does not start the cooldown: a
+    /// keyword hit right after still pauses (review of #426).
+    #[tokio::test]
+    async fn a_late_concern_does_not_disarm_the_sensor() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world();
+        *w.judge.lock().unwrap() = JudgeSays::ConcernAfter(Arc::clone(&gate));
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "it all feels like too much",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Done { .. }).then_some(())
+        })
+        .await;
+        gate.notify_one();
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Crisis { .. }).then_some(())
+        })
+        .await;
+        let paused = w
+            .personas()
+            .send(&w.chat, &w.library, &key, "I want to die", None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            paused["paused"], true,
+            "a late concern must not have armed the cooldown"
+        );
+    }
+
+    /// A steer the judge stops is kept — recorded, not bounced back as
+    /// "not delivered" (review of #426).
+    #[tokio::test]
+    async fn a_steer_the_judge_stops_keeps_its_words() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_with(Mode::Gate(Arc::clone(&gate)));
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        judged(&w, 1).await;
+        *w.judge.lock().unwrap() = JudgeSays::Concern;
+        let words = "honestly I don't see the point of going on";
+        w.personas()
+            .send(&w.chat, &w.library, &key, words, Some("r-9".into()), None)
+            .await
+            .unwrap();
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Done { .. }).then_some(())
+        })
+        .await;
+        for _ in 0..200 {
+            let t = w
+                .personas()
+                .transcript(&w.chat, &w.library, &key, None)
+                .await
+                .unwrap();
+            if t["running"] == false {
+                assert!(
+                    t["entries"].to_string().contains(words),
+                    "the steer was lost: {t}"
+                );
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the run did not end");
+    }
+
+    /// Before the judge has answered, a chat does not claim "on" — and the
+    /// first dose record says so (review of #426).
+    #[tokio::test]
+    async fn a_new_chat_claims_on_only_once_the_judge_answers() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(t["safety"]["crisis"], "degraded");
+        turn(&w, &key, "Hello").await;
+        let dose = std::fs::read_to_string(w.store().join("dose.jsonl")).unwrap();
+        assert!(
+            dose.lines()
+                .next()
+                .unwrap()
+                .contains("\"crisis\":\"degraded\""),
+            "{dose}"
+        );
+        judged(&w, 1).await;
+        for _ in 0..200 {
+            let t = w
+                .personas()
+                .transcript(&w.chat, &w.library, &key, None)
+                .await
+                .unwrap();
+            if t["safety"]["crisis"] == "on" {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the judge answered and the chat never read on");
+    }
+
+    /// A steer the judge held back gets its receipt — not "queued" forever —
+    /// and the persona list never claims "on" for a judge nobody has asked
+    /// (review of #426).
+    #[tokio::test]
+    async fn a_held_steer_is_receipted_and_the_list_claims_only_enabled() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_with(Mode::Gate(Arc::clone(&gate)));
+        let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
+        assert_eq!(listed["personas"][0]["safety"]["crisis"], "enabled");
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        judged(&w, 1).await;
+        *w.judge.lock().unwrap() = JudgeSays::Concern;
+        w.personas()
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "same words",
+                Some("r-1".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let receipt = next(&mut rx, |ev| match ev {
+            WireEvent::QueuedDelivered { request_id } => Some(request_id.clone()),
+            WireEvent::QueuedDiscarded { request_ids } => {
+                Some(format!("discarded {request_ids:?}"))
+            }
+            _ => None,
+        })
+        .await;
+        assert_eq!(receipt, "r-1");
+    }
+
+    /// Mid-drain, the queue is shorter than the receipts: a steer the agent
+    /// already read is not "held", and a later one is found at its own place.
+    #[test]
+    fn a_steer_is_held_only_if_the_agent_has_not_read_it() {
+        let q = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<VecDeque<_>>();
+        // Drained, receipt not yet popped: already delivered.
+        let (mut queue, mut ids) = (q(&[]), q(&["r-9"]));
+        assert!(!take_undrained(&mut queue, &mut ids, "r-9"));
+        assert_eq!(ids, q(&["r-9"]));
+        // One drained, one still waiting: only the waiting one is held, and
+        // the right words go with it.
+        let (mut queue, mut ids) = (q(&["second"]), q(&["r-1", "r-2"]));
+        assert!(!take_undrained(&mut queue, &mut ids, "r-1"));
+        assert!(take_undrained(&mut queue, &mut ids, "r-2"));
+        assert_eq!((queue, ids), (q(&[]), q(&["r-1"])));
+        // Nothing drained: aligned, and an unknown receipt takes nothing.
+        let (mut queue, mut ids) = (q(&["a", "b"]), q(&["r-1", "r-2"]));
+        assert!(!take_undrained(&mut queue, &mut ids, "r-3"));
+        assert!(take_undrained(&mut queue, &mut ids, "r-1"));
+        assert_eq!((queue, ids), (q(&["b"]), q(&["r-2"])));
     }
 
     #[tokio::test]
