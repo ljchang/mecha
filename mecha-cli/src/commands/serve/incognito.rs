@@ -230,43 +230,9 @@ pub fn hooks_allow(config: &mecha_core::config::Config) -> std::result::Result<(
 /// withheld, and that is two lists agreeing by accident — so both refuse.
 const DENY_GATES: [&str; 2] = ["pre_tool", "pre_task_close"];
 
-/// Whether this process's chat provider may serve an incognito chat: a
-/// local server on this machine, with no fallbacks. A cloud provider keeps
-/// the text on someone else's servers; a fallback would re-send the whole
-/// conversation there on a transient local error, silently (design §6.1).
-pub fn provider_is_local(
-    config: &mecha_core::config::Config,
-    provider_name: &str,
-) -> std::result::Result<(), String> {
-    let Some(provider) = config.providers.get(provider_name) else {
-        return Err(format!("the provider `{provider_name}` is not configured"));
-    };
-    if !provider.fallbacks.is_empty() {
-        return Err(format!(
-            "the provider `{provider_name}` has fallbacks ({}), which could send the \
-             conversation elsewhere",
-            provider.fallbacks.join(", ")
-        ));
-    }
-    let loopback = provider
-        .base_url
-        .as_deref()
-        .and_then(|u| reqwest::Url::parse(u).ok())
-        .and_then(|u| {
-            u.host_str()
-                .map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())
-        })
-        .is_some_and(|h| match h.parse::<std::net::IpAddr>() {
-            Ok(ip) => ip.is_loopback(),
-            Err(_) => h.eq_ignore_ascii_case("localhost"),
-        });
-    if !loopback {
-        return Err(format!(
-            "the provider `{provider_name}` is not a server on this machine"
-        ));
-    }
-    Ok(())
-}
+/// Moved to core so `mecha features` asks the same question (FEATURES-DESIGN
+/// §5); re-exported so the chat and model call sites read as before.
+pub use mecha_core::config::provider_is_local;
 
 /// Where incognito rooms live: a directory in the per-user runtime
 /// directory, which must be tmpfs, and within it one per mecha home — so a

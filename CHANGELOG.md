@@ -13,10 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opens a modal: paint or draw a box over what should change, say what to do,
   send. Only the painted area is redrawn, blended over a narrow edge around
   it. Everything else comes back exactly as it was, pixel for pixel, so
-  "make her dress green" no longer nudges the rest of the scene. A large photo is edited at the model's working size, as
-  any edit of it is. With nothing painted, the whole picture is edited, as
+  "make her dress green" no longer nudges the rest of the scene. A large
+  photo is edited at the model's working size, as any edit of it is. With nothing painted, the whole picture is edited, as
   before. Local swaps, recolours and details land reliably this way. To
   move someone or change a pose, use a plain edit or redraw from the library.
+
+- **`mecha features` lists which optional parts of mecha are on.** Web,
+  Slack, mail, docs, the graph, search, PDF extraction, image generation,
+  personas, voice, incognito, the front door and messages, each marked on,
+  off, blocked (waiting on something else that is off), unready or unknown,
+  with the command that turns on each one that is off. It reads the config
+  and the disk only and wakes no server. `--json` for scripts. The first step
+  of making installs modular (`docs/FEATURES-DESIGN.md`).
 
 - **Make and edit personas on the web.** The Personas tab has a New persona
   form: name, relationship templates, a library portrait and groups. New
