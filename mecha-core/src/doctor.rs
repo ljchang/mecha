@@ -797,11 +797,14 @@ mod grant_age_tests {
     }
 }
 
-/// The legacy per-provider stores — `<home>/google/oauth.json` and
-/// `<home>/outlook/oauth.json`, still served by the shipped `mecha-google`
-/// and `mecha-outlook` binaries and what `mecha-mail import` exists to
-/// migrate — get the same marker written beside their credentials by the
-/// same token lifecycle. A doctor that reads only the registry layout
+/// The legacy per-provider stores — `google` and `outlook`, still served by
+/// the shipped `mecha-google` and `mecha-outlook` binaries and what
+/// `mecha-mail import` exists to migrate — get the same marker written beside
+/// their credentials by the same token lifecycle. Each arrives already
+/// located by the mail crate's rule (`$MECHA_GOOGLE_DIR` /
+/// `$MECHA_OUTLOOK_DIR`, else `~/.mecha/<provider>` under the **real** home,
+/// never the mecha home — see [`MailStores::of_owner`]); this joins nothing
+/// onto a home. A doctor that reads only the registry layout
 /// reports "all clear" over a dead legacy login.
 fn check_legacy_mail(stores: &[(&'static str, Option<PathBuf>)]) -> Vec<Finding> {
     let mut out = Vec::new();
