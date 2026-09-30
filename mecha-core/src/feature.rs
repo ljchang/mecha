@@ -442,10 +442,15 @@ pub fn refusal(facts: &Facts, f: Feature) -> Option<Refusal> {
     if st.shown() {
         return None;
     }
+    // Only off and blocked hide today; a state `shown` learns to hide later
+    // refuses with its own reason rather than panicking a start or a verb
+    // (review of #451).
     let why = match &st {
         State::Blocked { on } => format!("needs {}", on.label().to_lowercase()),
-        State::Off { reason, .. } => reason.clone(),
-        _ => unreachable!("only off and blocked hide"),
+        State::Off { reason, .. } | State::Unready { reason, .. } | State::Unknown { reason } => {
+            reason.clone()
+        }
+        State::On { detail } => detail.clone(),
     };
     Some(Refusal {
         feature: f,

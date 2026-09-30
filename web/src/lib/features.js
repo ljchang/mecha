@@ -80,7 +80,7 @@ export function opensAnyway(view, sub) {
  * ask before offering a way to another of its sub-views.
  */
 export function opens(rows, view, sub) {
-  return isShown(rows, VIEW_FEATURE[view]) || opensAnyway(view, sub);
+  return isShown(rows, featureOf(view, sub)) || opensAnyway(view, sub);
 }
 
 /** `/api/features`'s body as a map from id to row, or null when unanswered. */

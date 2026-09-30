@@ -8258,10 +8258,13 @@ in five different ways. The design and its open steps are
   what another feature shares — the library's lock password, unlock, relock
   and portraits, which Personas uses (ruling L1: the library follows
   `image`, and `[tools]` withholds only the model's library tools). The
-  graph's own verbs and routes ran `mecha-graph` directly (`graph_cli`,
-  `board::graph_verb`), past `prepare_tools`, so before this `graph = false`
-  still let `review accept` and the web's entity create and merge write the
-  owner's graph. A graph tool missing from a run's surface now names the
+  graph's own verbs and routes ran `mecha-graph` directly, past
+  `prepare_tools` — three drivers: `review::graph_cli`, the web's
+  `board::graph_verb`, and the TUI's `graph_cli` / `graph_cli_raw` (`/queues`
+  and the entity modal) — so before this `graph = false` still let `review
+  accept`, the web's entity create and merge, and the TUI's accept keys and
+  merges write the owner's graph. Each driver now asks `require` itself; a
+  fourth that spawns `mecha-graph` has to as well. A graph tool missing from a run's surface now names the
   switch when that is the cause (`features::graph_tool_absent`), not
   `[[mcp]]`. Home's queue card for an off feature is flat, with its command:
   the pane it would open answers `feature_off`, and a feature's pane in a
