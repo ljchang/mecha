@@ -22,6 +22,51 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-30 — modular installs: designed, step 0 shipped (#427, #428,
+#432, #433), steps 1–8 open.** `FEATURES-DESIGN.md` is the authority: §7
+holds the owner's six rulings (all made), and §9 the build order. What
+shipped is in HISTORY under 2026-09-30. `ARCHITECTURE.md` §Features
+describes the registry and is the checklist for adding a feature. Open:
+
+- **Step 1 is next**, and it is the first one that changes behaviour for an
+  existing install:
+  - the `[features]` table (`Config`, `ConfigLayer`, `apply`, the project
+    strip and a nested-layer test);
+  - an in-place `mecha features enable|disable` writer, since
+    `setup::apply` bails when the header is absent;
+  - tool registration gated on the global bool;
+  - the upgrade notice on every start;
+  - `Feature::switchable_from_environment`, which `trial_env::config_at`
+    asks of every `[features]` key an environment sets. (`voice` and
+    `personas` join `OPERATOR_ONLY_TABLES` in step 5, with the tables they
+    gate.)
+  Step 1 ships in two PRs: **1a** adds the table, the writer, the notice and
+  the environment refusal, and gates nothing. **1b** gates registration and
+  connections on the switch, so the notice and this machine's table are in
+  place before anything can turn off.
+  `personas` and `voice` still read "always on" in step 0, and step 1 must
+  give them real evidence before the notice keys on it (§4.2). Three
+  decisions the design leaves to step 1, from #435's last pass:
+  - which `state`s count as "usable" for the notice and F6's offer — **ruled
+    by the owner 2026-09-30: `On` and `Unready`, each with its reason**
+    ("mail: configured but not enabled — no account authorised yet").
+    `Unknown` is never announced, or F6 would write `slack = true` off a store
+    it could not read;
+  - F6's row in §7 still lists presence evidence ("an `[image]` table"),
+    while §4.2 says the detector is `state`. Code it as `state`, which is
+    what step 0 already paid for — its rows ask what registration asks and
+    never a field's presence;
+  - the test "`graph` absent with no manifest server reads off" should also
+    say the environment declares no graph server of its own.
+- **Minor, from the #428/#432/#433 reviews:**
+  - The `incognito` row asks `provider_is_local` of `default_provider`, not
+    the bound router preset.
+  - `every_variant_is_in_all` relies on a count raised by hand.
+  - `mcp_entry` matches a command's file name, so a wrapper script reads off.
+  - `testenv::HomeGuard`'s `STORE_OVERRIDES` omits `MECHA_MAIL_DIR`.
+  - `onboarding`'s store helpers copy the mail crate's rule with nothing
+    that fails when the two diverge.
+
 **2026-09-30 — region-targeted edits: measured, C chosen by the owner,
 built in #429, merged and installed (04:31Z).** `IMAGE-REGION-EDIT-RESEARCH.md` is the authority: the
 Edit button opens a modal where the owner paints the area to change. C (a
@@ -2047,29 +2092,22 @@ scopes widened, and both are recorded in each account's `oauth.json` under
 
 | Account | Provider | Grant | Expiry |
 |---|---|---|---|
-| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | **still 7 days from consent** — last consent 2026-09-15 (`granted_at` in that account's `oauth.json`), so this grant lapses ≈2026-09-22; it was minted in Testing and keeps its clock, and publishing to production changed only what *future* consents get (see below) |
+| `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | none observed: `granted_at` 2026-09-17T02:10:19Z, after the 2026-09-16 publish; still refreshing on 2026-09-30, day 13 (a Testing grant dies on day 7) |
 | `dartmouth` | Outlook | `Mail.ReadWrite`, `Mail.Read`, `Mail.Send`, `Calendars.ReadWrite` | none — permanent |
 
-**Open: `personal` still owes a re-consent.** The seven-day clock is a
-property of the grant, not of the app. That account's token was minted on
-2026-09-15, while the project was still in Testing, so it keeps its own
-expiry and lapses ≈2026-09-22 whatever the app's status is now — publishing
-changed only what *future* consents get. `~/.mecha/mail/accounts.toml`
-deliberately keeps `grant_lifetime_days = 7` on it so `mecha doctor` goes on
-warning two days out. **That line comes out when a grant is *observed*
-surviving past day eight** — deleted rather than raised to a large number, so
-its absence is the claim and no one has to trust a figure nobody measured.
-
-Everything else here is settled and has left. The publish is in
+All of this is settled. The publish is in
 [`HISTORY.md`](HISTORY.md)'s 2026-09-16 prose — In production, branding
 verified, scope verification deliberately not submitted, with the console
 states attributed to the session that observed them. The hazard that cost the
 time — two verification tracks behind one word, and the cheap one routing onto
-the expensive one — is under its *Traps already hit → Environment*. Only the
-re-consent is open, so only the re-consent is here.
+the expensive one — is under its *Traps already hit → Environment*. The
+re-consent that was open here is closed: the 2026-09-17 grant outlived the
+seven-day clock (HISTORY, 2026-09-30).
 
 `~/.mecha/mail/accounts.toml` is in no git repository, so a fresh clone will
-not have it — including the `grant_lifetime_days = 7` line above.
+not have it. It no longer carries `grant_lifetime_days` on `personal`, and a
+re-auth will not put it back: `mecha-mail auth` never sets the field. The
+backup from before the line came out is `accounts.toml.bak-2026-09-30`.
 
 Dartmouth's Entra registration (also named FlowMail, client
 `bc6a1e19-…`) already had `Mail.ReadWrite` **Delegated** granted tenant-wide,
@@ -2889,9 +2927,10 @@ grant is seven days and refreshing does not extend it, so it was due to end
 (`GRANT_WARN_WITHIN_DAYS`); the re-auth is a terminal-only flow —
 `--paste` from an ssh session — and never a button.
 
-**Superseded by a later consent.** `granted_at` in that account's
-`oauth.json` reads 2026-09-15T17:13:06Z, so the live grant is the one minted
-that day and it lapses 2026-09-22 17:13Z, not the 21st. `mecha doctor` first
+**Superseded by a later consent.** Before the 02:10Z re-consent,
+`granted_at` in that account's `oauth.json` read 2026-09-15T17:13:06Z, so
+the live grant was then the one minted that day, due to lapse 2026-09-22
+17:13Z rather than the 21st. `mecha doctor` first
 warns at **16:13Z on the 20th**, not at the start of it:
 `doctor::check_grant_age` truncates the hours remaining and *then* rounds
 that up to whole days before comparing against `GRANT_WARN_WITHIN_DAYS`, so
@@ -2900,7 +2939,10 @@ boundary — a run earlier that day saying nothing is correct, not broken.
 Neither date above has arrived yet, as of 2026-09-17. It was still minted
 while the project was in Testing, so it keeps the seven-day clock whatever
 the app's status is now — the publish on 2026-09-16 changed only what
-*future* consents get (`HISTORY.md`, 2026-09-16).
+*future* consents get (`HISTORY.md`, 2026-09-16). **Superseded again:** a
+re-consent on 2026-09-17T02:10:19Z (`granted_at`), after the publish,
+replaced the 09-15 grant, and it was still live on day 13. See *Mail OAuth
+grants* above and `HISTORY.md`, 2026-09-30.
 
 **2026-09-16, 19:44Z, mecha-7b: #238 (the clock, asked per turn) merged at
 `42c359f1` and deployed.** `~/.cargo/bin/mecha` reinstalled from mecha `main`
@@ -3445,6 +3487,37 @@ restarted at 21:05:28Z with no live hold, and each `/proc/<pid>/exe` is
 edits in a row"` → 1. The voice worker, ComfyUI, `llama-*`, the graph
 binaries and the dist were not touched. The 20:48Z install is mecha-d7's to
 record.
+
+**2026-09-30 00:52–04:31Z, mecha-d7: `mecha` four times from main, and
+`mecha-mail` once.** Every install ran from `~/Github/mecha` fast-forwarded to
+`origin/main`, with the launch scripts and `worker.py` unchanged across the
+move, and restarted `mecha-serve`, `mecha-slack`, `mecha-triggers` and
+`mecha-drain` while no restarted unit held the model. At 03:49Z the one hold
+was `mecha-ruminate`'s nightly `validate`, a separate unit left running. Each
+probe string came from the range's own diff (added, or for `hidden_locked`
+removed) and was checked against `/proc/<pid>/exe` of the three long-running
+units:
+- **00:52Z, `259231d6` (#421).** `a cache path is under the cache root`
+  0 → 1.
+- **03:49Z, `930d317e` (#425, with #426).** `hidden_locked` 1 → 0. The web
+  dist was rebuilt, and the door served `index-CSk-mU63.js`. Live
+  `/api/personas` and `/api/library` carry no count.
+- **04:14Z, `5664f245` (#428, #432), with `mecha-mail` reinstalled.** `add a
+  [documents] table` 0 → 1. The mecha-mail change adds no literal, so its only
+  evidence is the install output. `mecha features` exists.
+- **04:31Z, `c599c802` (#429, #433).** `a mask needs the picture it masks;
+  nothing was drawn` 0 → 1. The door serves `index-Bhf8U6Zk.js`, and
+  `voice-uplink-transform.js` returns `200 text/javascript`.
+
+**For about 2 minutes (≈04:29–04:31Z), the new dist ran against the old
+serve.** The dist was rsynced while a persona-chat hold kept serve up. #429's
+page sends `mask`, and the old `image_generate` ignores unknown keys, so a
+painted edit would have redone the whole picture. The order for a change
+that spans the binary and the page is install, then restart serve once the
+holds clear, then rsync. mecha-5d caught it.
+
+The voice worker, ComfyUI, `llama-*` and the graph binaries were not touched.
+mecha-69's 00:46Z restart (persona authoring, `bbfe4b6b`) is theirs to record.
 
 ## What the measurements say
 

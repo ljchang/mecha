@@ -5,6 +5,8 @@
   import ModelChip from './ModelChip.svelte';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, maskName } from './image-edit.js';
+  import { pictureOf, repeatedPictures } from './picture.js';
+  import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   // The chat view: a rendering of the conversation the server owns, plus a
   // live SSE feed of the run in flight. Sending during a run steers it —
@@ -1193,16 +1195,10 @@
   $effect(() => () => vSession?.end());
 
   async function send() {
-    let text = draft.trim();
-    // Named in the text, so the model has a path to hand a tool, and listed
-    // beside it, so the server can put each picture on the turn for a model
-    // that can see (REMOTE-SURFACE-DESIGN D6) — the Slack door's pairing.
+    // Named in the text and listed beside it (`withAttachments`).
     const attached = [...attachments];
-    if (attachments.length) {
-      const lines = attachments.map((p) => `Attached file at ${p}`).join('\n');
-      text = text ? `${text}\n\n${lines}` : lines;
-      attachments = [];
-    }
+    const text = withAttachments(draft.trim(), attached);
+    attachments = [];
     if (!text) return;
     draft = '';
     const sessionKey = key;
@@ -1262,43 +1258,6 @@
   const uploading = $derived(uploads > 0);
   let attachments = $state([]); // workspace-relative paths, announced on send
 
-  // The picture under a row: the file `image_generate` saved, or the one
-  // `image_view` put in front of the model — which the owner must be able to
-  // see too, since the model's answer is about it. Read off the first line of
-  // the tool's own result and matched strictly, so no other text in a preview
-  // is ever taken for a path to fetch: `image_generate` only ever writes
-  // `images/<name>.png`; `image_view` reports a workspace-relative path of
-  // plain segments, none starting with a dot. A refusal or failure has no
-  // picture.
-  const PICTURE = {
-    image_generate: /^image: (images\/[A-Za-z0-9._-]+\.png)$/,
-    image_view: /^image: ((?:[A-Za-z0-9_-][A-Za-z0-9._ -]*\/)*[A-Za-z0-9_-][A-Za-z0-9._ -]*\.(?:png|jpe?g|gif|webp))$/i,
-  };
-  function pictureOf(entry) {
-    const pattern = Object.hasOwn(PICTURE, entry.name) ? PICTURE[entry.name] : null;
-    if (!pattern || entry.pending || entry.is_error || entry.blocked) {
-      return null;
-    }
-    const first = (entry.preview ?? '').split('\n', 1)[0];
-    const m = pattern.exec(first);
-    return m ? m[1] : null;
-  }
-
-  // The rows whose picture is already drawn higher up — an `image_view` of the
-  // file `image_generate` just saved, most often. A repeat keeps its row and
-  // shows the picture inside the disclosure instead of drawing it inline a
-  // second time. Indices into `entries`, first occurrence wins.
-  function repeatedPictures(entries) {
-    const seen = new Set();
-    const again = new Set();
-    entries.forEach((entry, i) => {
-      const picture = entry.kind === 'tool' ? pictureOf(entry) : null;
-      if (!picture) return;
-      if (seen.has(picture)) again.add(i);
-      else seen.add(picture);
-    });
-    return again;
-  }
   const repeats = $derived(repeatedPictures(entries));
 
   const workspaceFile = (path) => `/api/chat/${key}/file?path=${encodeURIComponent(path)}`;
@@ -1421,24 +1380,6 @@
   // Not behind the edit modal: a file dropped there would join
   // `attachments` unseen and ride out on the modal's own send (review of #429).
   const canDrop = $derived(!gone && !voiceOpen && !editing);
-
-  const carriesFiles = (dt) => [...(dt?.types ?? [])].includes('Files');
-
-  // A dropped folder arrives as a File too — zero bytes, or a read error
-  // once fetch sends it — so it is told apart by its entry, never by size.
-  function droppedFiles(dt) {
-    const items = [...(dt?.items ?? [])].filter((it) => it.kind === 'file');
-    if (!items.length) return { files: [...(dt?.files ?? [])], folders: [] };
-    const files = [];
-    const folders = [];
-    for (const it of items) {
-      const f = it.getAsFile();
-      if (!f) continue;
-      if (it.webkitGetAsEntry?.()?.isDirectory) folders.push(f.name);
-      else files.push(f);
-    }
-    return { files, folders };
-  }
 
   function onDragEnter(e) {
     if (!carriesFiles(e.dataTransfer)) return;

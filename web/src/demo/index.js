@@ -206,6 +206,9 @@ export const ROUTES = [
     },
   ],
   ['POST', /^\/api\/persona-chat\/[^/]+\/cancel$/, () => ({ cancelled: false })],
+  // The demo's persona draws nothing, so there is no picture to show or edit.
+  ['GET', /^\/api\/persona-chat\/[^/]+\/file$/, () => new Response('no such file', { status: 404 })],
+  ['POST', /^\/api\/persona-chat\/[^/]+\/upload$/, () => new Response('the demo does not keep uploads', { status: 501 })],
 
   ['GET', /^\/api\/sessions$/, () => fx.sessions],
   // The drawer's archive: nothing is filed away in the demo, and saying so

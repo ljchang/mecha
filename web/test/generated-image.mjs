@@ -1,8 +1,9 @@
 // Behaviour checks for the chat's inline picture under an `image_generate` or
 // `image_view` row.
 //
-// `npm test` in web/. Plain node, same rig as `tool-digest.mjs`, and the
-// function is read OUT of the component so this exercises the text that ships.
+// `npm test` in web/. Plain node, same rig as `tool-digest.mjs`. The matcher
+// lives in `picture.js`, which both chats import, so this exercises the text
+// that ships in each.
 //
 // **Why it needs a test.** The page turns text into a URL it fetches. The
 // text is the tool's own first line, but a preview is whatever came back, so
@@ -10,30 +11,7 @@
 // or `image_view` (a workspace-relative path of plain segments, none starting
 // with a dot, with an image extension), only a finished call — never a `..`,
 // a leading `/`, or anything a different tool happened to print.
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const src = fs.readFileSync(path.join(here, '..', 'src', 'lib', 'Chat.svelte'), 'utf8');
-
-function readOut(marker, end = '\n  }\n') {
-  const start = src.indexOf(marker);
-  if (start < 0) throw new Error(`Chat.svelte no longer defines ${marker.trim()}`);
-  return src.slice(start, src.indexOf(end, start) + end.length);
-}
-
-const generatedImage = new Function(
-  `${readOut('  const PICTURE = {', '\n  };\n')}
-   ${readOut('  function pictureOf(entry) {')}
-   return pictureOf;`
-)();
-const repeatedPictures = new Function(
-  `${readOut('  const PICTURE = {', '\n  };\n')}
-   ${readOut('  function pictureOf(entry) {')}
-   ${readOut('  function repeatedPictures(entries) {')}
-   return repeatedPictures;`
-)();
+import { pictureOf as generatedImage, repeatedPictures } from '../src/lib/picture.js';
 
 let passed = 0;
 let failed = 0;
