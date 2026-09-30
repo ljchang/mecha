@@ -666,7 +666,9 @@ on 2026-09-28: **the lock hides, it never withholds.**
 - Nothing says how much is hidden (owner ruling, 2026-09-30): no count, tile
   or placeholder for locked personas on the page or in `/api/personas`, so
   a page whose every persona is locked reads as one with none
-  (`IMAGE-COMPILER-DESIGN.md` §7, *Nothing says how much is hidden*).
+  (`IMAGE-COMPILER-DESIGN.md` §7, *Nothing says how much is hidden*). A
+  visible persona whose portrait is a locked character does not name that
+  character to a locked page either; the link is hidden, never cut.
 - **It is not encryption.** Transcripts are plaintext on disk; the nightly
   memory writer still reads locked chats. The page and the CLI say so, because
   a lock that implies more than it does is the silently-degrading guard.

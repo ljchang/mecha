@@ -205,7 +205,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are gone, and so is the `hidden_locked` count in `/api/personas` and
   `/api/library` behind them: a locked page now reads exactly like one with
   nothing locked, as a locked entry's own URL already answered 404 like a
-  missing one.
+  missing one. A visible persona whose portrait is a locked character no
+  longer names that character to a locked page either (`character` is
+  `null` in `/api/personas` until unlocked); the link itself is kept.
 - **Unlocking on the new-persona form now offers locked characters as
   portraits.** The form read its character list once, when it opened, so
   the lock button refreshed the persona grid and left the portrait list as
