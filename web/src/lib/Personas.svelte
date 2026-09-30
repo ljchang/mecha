@@ -46,7 +46,7 @@
   // The AI tag is what the `disclosure` switch shows (§12.1): on unless the
   // owner turned it off for this persona. The open chat's live switch wins
   // over the list's reading of the persona.
-  const disclosed = $derived((safety ?? chosen?.safety)?.disclosure !== false);
+  const disclosed = $derived(((key && safety) || chosen?.safety)?.disclosure !== false);
   // A clock for the waiting line, ticking only while a run is live.
   let now = $state(Date.now());
   // On `running` alone, not the whole run: `run` is replaced on every
@@ -198,6 +198,9 @@
       close();
       key = null;
       run = emptyRun();
+      // The chat's switches leave with it: a persona page reads its own
+      // (review of #431 — the last chat's `disclosure` decided the tag).
+      safety = null;
       loadHistory();
       return;
     }
@@ -211,6 +214,7 @@
   function toList() {
     menuOpen = false;
     close();
+    safety = null;
     making = null;
     editing = null;
     chosen = null;
@@ -1204,4 +1208,5 @@
   @keyframes blink { 0%, 80%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
   @media (prefers-reduced-motion: reduce) { .dots i { animation: none; opacity: 0.7; } }
   .pname .ai { font-family: var(--mono); font-size: 10px; font-weight: 400; line-height: 1.4; margin-left: 6px; }
+  .herochips .ai { font-family: var(--mono); font-size: 10px; line-height: 1.4; }
 </style>
