@@ -8437,16 +8437,21 @@ The things that decide the design:
   model is measurably likelier to fail a step when its context holds its own
   earlier errors, which makes nagging a stuck run a way of keeping it stuck.
 - **One loop the guard watches without a compaction: the same call refused
-  the same way in five consecutive turns** (`LoopGuard::REFUSED_REPEATS`),
-  under the same switch and the same `StopCause::Loop`. An error that does
-  not move under an unchanged call cannot be a poll. The dormancy above
-  asked for a measurement, and this is it (2026-09-30, 1,031 transcripts,
-  3,187 tool turns). At five it fires once: a persona chat that resent one
-  refused `image_generate` forty times a run, twice, holding the GPU while
-  another chat drew. At three it would also have stopped two mail runs that
-  recovered on the next turn, after boredom's notice named the repeat. So
-  the stop is two turns past that notice, and persona chats now carry
-  boredom from the base config rather than switching it off.
+  the same way in seven consecutive turns** (`LoopGuard::REFUSED_REPEATS`,
+  one past boredom's last rung), under the same switch and the same
+  `StopCause::Loop`. An error that does not move under an unchanged call
+  cannot be a poll. The dormancy above asked for a measurement, and this is
+  it (2026-09-30, 1,031 transcripts, 3,187 tool turns). Anywhere from four
+  to seven it fires once: a persona chat that resent one refused
+  `image_generate` forty times a run, twice, holding the GPU while another
+  chat drew. At three it would also have stopped two mail runs that
+  recovered on the next turn, after boredom's first notice named the
+  repeat. So both of boredom's notices reach the model before the stop, and
+  persona chats now carry boredom from the base config rather than
+  switching it off. A call the harness refused (the approver, a hook, a
+  policy, the interlock: `denied` in the trace) never counts, because
+  appraisal scores `Loop` against the run and a well-defended run must not
+  read as a stuck one.
 - **The record is searchable after the summary.** `tool/recall.rs` registers
   `recall` on the session-recording front-ends (chat, the TUI, resumed runs):
   it searches the union of everything the transcript ever recorded — including
