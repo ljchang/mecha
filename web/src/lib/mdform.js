@@ -29,8 +29,10 @@ export function docOf(draft) {
   };
 }
 
-export function isDirty(original, draft, fixed = []) {
-  return JSON.stringify(docOf(draftOf(original, fixed))) !== JSON.stringify(docOf(draft));
+// Against the file as read, before a missing fixed section was put back:
+// restoring `## Core` is itself a change the owner can save (review of #430).
+export function isDirty(original, draft) {
+  return JSON.stringify(docOf(draftOf(original))) !== JSON.stringify(docOf(draft));
 }
 
 export const isFixed = (fixed, s) => fixed.includes(s.heading.trim());
@@ -54,14 +56,26 @@ export function noteProblem(note) {
 }
 
 // Every problem the server would refuse, so the Save button can say why not.
+// A title or heading is one line of prompt text; a comment marker in one
+// would open or close a comment. The server refuses both (`mdform::one_line`);
+// saying so here keeps Save from sending what will come back a 400.
+export const MAX_HEADING = 120;
+function headingProblem(what, text) {
+  if (/<!--|-->/.test(text ?? '')) return `${what} cannot hold <!-- or -->.`;
+  if ([...(text ?? '')].length > MAX_HEADING) return `${what} is at most ${MAX_HEADING} characters.`;
+  return null;
+}
+
 export function problems(draft, fixed = []) {
   const out = [];
+  if (headingProblem('The title', draft.title)) out.push(headingProblem('The title', draft.title));
   if (noteProblem(draft.note)) out.push(`Title note: ${noteProblem(draft.note)}`);
   const seen = new Set();
   for (const s of draft.sections) {
     const h = s.heading.trim();
     if (!h) out.push('A section needs a heading.');
     if (h && seen.has(h)) out.push(`Two sections are called “${h}”.`);
+    if (headingProblem(`“${h}”`, h)) out.push(headingProblem(`“${h}”`, h));
     seen.add(h);
     if (noteProblem(s.note)) out.push(`${h || 'A section'}: ${noteProblem(s.note)}`);
   }
