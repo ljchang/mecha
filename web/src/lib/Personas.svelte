@@ -290,6 +290,11 @@
   async function rereadAuthoring() {
     if (!making) return;
     const gen = ++authoringGen;
+    // Reading under the lock: the list on screen may name locked characters,
+    // so it goes now, not when the answer lands — the rule `startMaking`
+    // keeps for the same race (review of #425). The choice itself waits for
+    // the answer, so a relock never costs an unlocked pick.
+    if (!token && authoring) authoring = { ...authoring, characters: [] };
     try {
       const res = await fetch(authoringUrl(token));
       if (!res.ok) throw new Error((await res.text()).trim());
@@ -300,6 +305,11 @@
       making.character = keptCharacter(making.character, authoring.characters);
     } catch (e) {
       error = String(e?.message ?? e);
+      // No answer: keep only a choice the list on screen still offers, which
+      // after a relock is none — never a locked pick the page now hides.
+      if (making && gen === authoringGen) {
+        making.character = keptCharacter(making.character, authoring?.characters);
+      }
     }
   }
 
