@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Make and edit personas on the web.** The Personas tab has a New persona
+  form: name, relationship templates, a library portrait and groups. New
+  kinds of relationship (how someone in it behaves) and new groups can be
+  added from the same form. Each
+  persona has an Edit screen for who they are, what they want, and its
+  settings, saved exactly as you type them, comments included. A settings
+  file that would not load is refused and left as it was, and an edit made
+  elsewhere in the meantime is never overwritten. Lock and unlock from the
+  same screen.
+
 - **Personas: characters you write and talk to, in their own tab.** A new
   Personas tab on the web page lists the personas you made with `mecha
   persona`, each with its library portrait. Choose one to start a chat, with
