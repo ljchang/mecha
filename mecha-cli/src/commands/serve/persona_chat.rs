@@ -148,6 +148,14 @@ fn track_working(slot: &StdMutex<Vec<serde_json::Value>>, event: &AgentEvent) {
             "since": chrono::Utc::now().to_rfc3339(),
         })),
         AgentEvent::ToolResult { id, .. } => slot.retain(|w| w["id"] != *id),
+        // A refused call gets no result — the interlock, a hook or the
+        // approver said no — and carries no id: the latest call of that name
+        // is the one refused (review of #431: it stayed "working" all run).
+        AgentEvent::ToolDenied { name, .. } => {
+            if let Some(at) = slot.iter().rposition(|w| w["name"] == *name) {
+                slot.remove(at);
+            }
+        }
         _ => {}
     }
 }
@@ -2654,6 +2662,16 @@ mod tests {
         assert_eq!(held[0]["name"], "image_generate");
         assert!(held[0]["since"].as_str().is_some());
         track_working(&slot, &result("t1"));
+        assert!(slot.lock().unwrap().is_empty());
+        // A refused call is no longer waited on.
+        track_working(&slot, &call("t3", "web_search"));
+        track_working(
+            &slot,
+            &AgentEvent::ToolDenied {
+                name: "web_search".into(),
+                reason: "blocked".into(),
+            },
+        );
         assert!(slot.lock().unwrap().is_empty());
     }
 

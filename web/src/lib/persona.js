@@ -226,8 +226,9 @@ export function applyEvent(state, ev) {
     case 'tool': {
       const s = flush(state);
       // `started` is the page's clock, for the "drawing a picture… 1:24"
-      // line: a local model can take minutes on an image.
-      return { ...s, entries: [...s.entries, { kind: 'tool', id: ev.id, name: ev.name, is_error: null, started: ev.started ?? Date.now() }] };
+      // line: a local model can take minutes on an image. (A re-read takes
+      // it from the server's `working.since` instead — `withWorking`.)
+      return { ...s, entries: [...s.entries, { kind: 'tool', id: ev.id, name: ev.name, is_error: null, started: Date.now() }] };
     }
     case 'tool_result':
       return {
@@ -244,8 +245,13 @@ export function applyEvent(state, ev) {
       return { ...s, crisisSeq: seq, entries: [...s.entries, { kind: 'crisis', text: ev.text, id: `crisis-${seq}` }] };
     }
     // A call refused before it ran: the row says so, with the reason.
-    case 'denied':
-      return { ...state, entries: [...state.entries, { kind: 'notice', text: `${ev.name} refused: ${ev.reason}` }] };
+    // A refused call gets no result: its pending row is closed as failed, or
+    // the waiting line would count it for the rest of the run (review of #431).
+    case 'denied': {
+      const at = state.entries.findLastIndex((e) => e.kind === 'tool' && e.name === ev.name && e.is_error == null);
+      const entries = at === -1 ? state.entries : state.entries.map((e, i) => (i === at ? { ...e, is_error: true } : e));
+      return { ...state, entries: [...entries, { kind: 'notice', text: `${ev.name} refused: ${ev.reason}` }] };
+    }
     case 'notice':
       return { ...state, entries: [...state.entries, { kind: 'notice', text: ev.text }] };
     case 'done': {

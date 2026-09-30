@@ -153,19 +153,26 @@ assert.equal(keptCharacter('', ['john']), '');
 assert.equal(keptCharacter('priya', undefined), '');
 
 // A slow run says what it is doing; a refused-then-retried call is not
-// "failed" (owner, 2026-09-30).
+// "failed" (owner, 2026-09-30). Timed on entries as a re-read builds them,
+// with the server's start (`withWorking`), not the page's clock.
 {
   let r = applyEvent(emptyRun(), { type: 'user', text: 'a picture?' });
   assert.equal(waitingLine(r, 'Maya', 0), 'Maya is typing');
-  r = applyEvent(r, { type: 'tool', id: 't1', name: 'image_generate', started: 1000 });
+  r = { ...r, entries: withWorking(r.entries, { id: 't1', name: 'image_generate', since: '1970-01-01T00:00:01Z' }) };
   assert.equal(waitingLine(r, 'Maya', 85_000), 'drawing a picture… 1:24');
   r = applyEvent(r, { type: 'tool_result', id: 't1', name: 'image_generate', is_error: true });
-  r = applyEvent(r, { type: 'tool', id: 't2', name: 'image_generate', started: 90_000 });
+  r = applyEvent(r, { type: 'tool', id: 't2', name: 'image_generate' });
   assert.equal(toolStatus(r.entries, 1), 'retried');
   assert.equal(toolStatus(r.entries, 2), 'running');
+  assert.ok(/^drawing a picture… \d+:\d\d$/.test(waitingLine(r, 'Maya', Date.now())));
   r = applyEvent(r, { type: 'tool_result', id: 't2', name: 'image_generate', is_error: false });
   assert.equal(toolStatus(r.entries, 2), 'done');
   assert.equal(waitingLine(r, 'Maya', 99_000), 'Maya is typing');
+  // A refused call is closed, not waited on for the rest of the run.
+  r = applyEvent(r, { type: 'tool', id: 't3', name: 'web_search' });
+  r = applyEvent(r, { type: 'denied', name: 'web_search', reason: 'blocked' });
+  assert.equal(waitingLine(r, 'Maya', 99_000), 'Maya is typing');
+  assert.equal(toolStatus(r.entries, 3), 'failed');
   r = applyEvent(r, { type: 'delta', text: 'Here' });
   assert.equal(waitingLine(r, 'Maya', 99_000), null);
   r = applyEvent(r, { type: 'done', ok: true });
