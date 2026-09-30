@@ -28,7 +28,7 @@ use axum::Json;
 use mecha_core::agent::{Agent, AgentEvent, Conversation};
 use mecha_core::message::{Message, Usage};
 use mecha_core::persona::agent::{self as persona_agent, Pinned, Refused};
-use mecha_core::persona::safety;
+use mecha_core::persona::{judge, safety};
 use mecha_core::persona::{Persona, Store};
 use mecha_core::session::{Record, Session, SessionMeta};
 use std::collections::{HashMap, VecDeque};
@@ -108,6 +108,9 @@ struct PersonaSession {
     /// the run is stopped, and its hand-back records this so the words are
     /// kept although the persona never answers them.
     pending_crisis: Option<String>,
+    /// Whether the crisis judge answered the last time it was asked — false
+    /// is "keywords only", said to the owner, never passed off as checked.
+    judge_ok: bool,
 }
 
 struct Live {
@@ -138,6 +141,14 @@ struct PinRecord {
 fn pin_path(sessions: &Path, id: &str) -> PathBuf {
     sessions.join(format!("{id}.persona.json"))
 }
+
+/// A crisis judge ready to ask — its provider, model and the owner's words —
+/// or why it could not be made.
+type JudgeJob = Result<(Box<dyn mecha_core::provider::Provider>, String, String), String>;
+
+/// How long a verdict still out when the persona finished may take before it
+/// is "couldn't check".
+const JUDGE_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// The most text a session goal may carry.
 const MAX_GOAL: usize = 2000;
@@ -174,10 +185,10 @@ fn failed(e: anyhow::Error) -> Refusal {
 /// (§12): each switch, with the crisis sensor said as it is — `degraded`
 /// (keywords only) until its model tiers exist — and the farewell check as
 /// unbuilt, so neither can pass for "checked".
-fn safety_json(s: &mecha_core::persona::Safety) -> serde_json::Value {
+fn safety_json(s: &mecha_core::persona::Safety, judge_ok: bool) -> serde_json::Value {
     serde_json::json!({
         "disclosure": s.disclosure,
-        "crisis": safety::crisis_state(s.crisis),
+        "crisis": safety::crisis_state(s.crisis, judge_ok),
         "reanchor": s.reanchor,
         "dose": s.dose,
         "breaks": s.breaks,
@@ -497,7 +508,7 @@ impl PersonaChats {
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     "locked": p.state.locked,
                     "problems": store.problems(p, &lib),
-                    "safety": safety_json(&p.settings.safety),
+                    "safety": safety_json(&p.settings.safety, true),
                     // The meters are shown to the owner, never to the model.
                     "dose": p.settings.safety.dose.then(|| match &doses.unreadable {
                         // Unread is said, not shown as zero turns.
@@ -602,6 +613,7 @@ impl PersonaChats {
                 anchor_due: false,
                 crisis_paused_at: None,
                 pending_crisis: None,
+                judge_ok: true,
             },
         );
         Ok(serde_json::json!({
@@ -733,6 +745,7 @@ impl PersonaChats {
                 anchor_due,
                 crisis_paused_at: None,
                 pending_crisis: None,
+                judge_ok: true,
             },
         );
         Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }))
@@ -785,7 +798,14 @@ impl PersonaChats {
             "running": ps.live.is_some(),
             "goal": ps.goal,
             "display": ps.pinned.settings.display,
-            "safety": safety_json(&ps.pinned.settings.safety),
+            // The switches as they stand, not as pinned: they are read live.
+            "safety": safety_json(
+                &Store::load(&self.store)
+                    .get(&ps.pinned.name)
+                    .map(|p| p.settings.safety)
+                    .unwrap_or(ps.pinned.settings.safety),
+                ps.judge_ok,
+            ),
             "entries": entries,
             "taint": taint.map(|t| serde_json::json!({
                 "private": t.private, "untrusted": t.untrusted,
@@ -855,9 +875,15 @@ impl PersonaChats {
         let name = self.persona_of(library, key, token).await?;
         // An open chat stops answering when its persona stops being approved,
         // as `open` and `resume` refuse one — not only after a restart.
-        let approved = Store::load(&self.store)
-            .get(&name)
+        let live = Store::load(&self.store).get(&name).cloned();
+        let approved = live
+            .as_ref()
             .is_some_and(|p| p.state.status == mecha_core::persona::Status::Approved);
+        // The safety switches as the persona stands now, not as the chat
+        // pinned it: switching a protection back on reaches an open chat
+        // (review of #418), as revoking approval already does. The prompt
+        // stays the pinned version's.
+        let live_switches = live.map(|p| p.settings.safety);
         if !approved {
             return Err(Refusal::Conflict(format!(
                 "`{name}` is not approved — `mecha persona approve {name}` after reading it"
@@ -867,12 +893,15 @@ impl PersonaChats {
             let mut sessions = self.sessions.lock().await;
             let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
             if ps.live.is_some() {
-                return self.steer_or_pause(ps, &name, text, request_id);
+                let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
+                let bound = chat.follower.current();
+                return self
+                    .steer_or_pause(chat, key, ps, &name, switches, &bound, text, request_id);
             }
             // A pause needs no model: decided here, from the owner's words,
             // it skips the router hold and the agent below, so 988 is not
             // queued behind a model load it never uses (review of #418).
-            let switches = ps.pinned.settings.safety;
+            let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
             let early_pause = switches.crisis
                 && safety::keyword_hit(&text)
                 && !ps
@@ -912,7 +941,9 @@ impl PersonaChats {
         }
         let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
         if ps.live.is_some() {
-            return self.steer_or_pause(ps, &name, text, request_id);
+            let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
+            let bound = chat.follower.current();
+            return self.steer_or_pause(chat, key, ps, &name, switches, &bound, text, request_id);
         }
         let Some(mut conversation) = ps.conversation.take() else {
             return Err(Refusal::Conflict("a turn is still finishing".into()));
@@ -939,8 +970,8 @@ impl PersonaChats {
         // anything runs: a crisis hit outside the cooldown pauses the persona
         // (the owner's ruling, 2026-09-29) — the message is recorded, the
         // persona does not answer it, and a plain voice does.
-        let switches = pinned.settings.safety;
-        let crisis_state = safety::crisis_state(switches.crisis);
+        let switches = live_switches.unwrap_or(pinned.settings.safety);
+        let crisis_state = safety::crisis_state(switches.crisis, ps.judge_ok);
         // `said`, not `text`: a goal typed at open rides in the first turn,
         // and is the owner's words as much as the message is.
         let hit = switches.crisis && safety::keyword_hit(&said);
@@ -1005,6 +1036,7 @@ impl PersonaChats {
             ps.goal = goal;
             return Err(Refusal::Failed(format!("recording: {e:#}")));
         }
+        let said_for_judge = said.clone();
         let _ = ps.events.send(WireEvent::User {
             text: said,
             spoken: false,
@@ -1019,7 +1051,8 @@ impl PersonaChats {
             }
         }
         if hit {
-            if let Err(e) = safety::record_crisis(&self.store, "web", pause) {
+            if let Err(e) = safety::record_crisis(&self.store, "web", safety::Tier::Keyword, pause)
+            {
                 tracing::warn!("a crisis record was not written: {e:#}");
             }
         }
@@ -1044,6 +1077,15 @@ impl PersonaChats {
             ps.conversation = Some(conversation);
             return Err(Refusal::Failed("a paused turn reached the model".into()));
         };
+        // The crisis judge, alongside the turn, on words the keywords passed
+        // (§12.2): a concern while the persona is still answering stops the
+        // run and pauses it, as a keyword hit does. Not inside the cooldown,
+        // which a pause would not break anyway.
+        let judge_job: Option<JudgeJob> = (switches.crisis && !hit && !cooling).then(|| {
+            (self.provider)(&bound)
+                .map(|p| (p, bound.model.clone(), said_for_judge.clone()))
+                .map_err(|e| format!("the judge could not be reached: {e:#}"))
+        });
         let anchored = anchor.is_some();
         if anchored {
             ps.turns_since_anchor = 0;
@@ -1077,6 +1119,7 @@ impl PersonaChats {
         if cx.budget.max_turns.is_none() {
             cx.budget.max_turns = Some(40);
         }
+        let judge_cancel = cancel.clone();
         cx = cx.with_cancel_handle(cancel);
         cx.queued_input = Some(queue);
 
@@ -1116,7 +1159,40 @@ impl PersonaChats {
                     }
                 })
             };
-            let outcome = agent.run_in(&cx, &mut conversation, Some(tx)).await;
+            // The judge races the run: a concern that lands first stops it.
+            let (mut judge_handle, mut verdict) = match judge_job {
+                Some(Ok((provider, model, words))) => (
+                    Some(tokio::spawn(async move {
+                        judge::screen(provider.as_ref(), &model, &words).await
+                    })),
+                    None,
+                ),
+                Some(Err(why)) => (None, Some(judge::Verdict::Unchecked(why))),
+                None => (None, None),
+            };
+            let mut stopped_by_judge = false;
+            let outcome = {
+                let run = agent.run_in(&cx, &mut conversation, Some(tx));
+                tokio::pin!(run);
+                match judge_handle.as_mut() {
+                    Some(handle) => tokio::select! {
+                        out = &mut run => out,
+                        joined = handle => {
+                            let v = joined.unwrap_or_else(|e| {
+                                judge::Verdict::Unchecked(format!("the judge task failed: {e}"))
+                            });
+                            if v == judge::Verdict::Concern {
+                                judge_cancel.cancel(mecha_core::agent::CancelReason::Stopped);
+                                stopped_by_judge = true;
+                            }
+                            verdict = Some(v);
+                            judge_handle = None;
+                            run.await
+                        }
+                    },
+                    None => run.await,
+                }
+            };
             let _ = forwarder.await;
             match &outcome {
                 Ok(o) => {
@@ -1217,6 +1293,19 @@ impl PersonaChats {
             }
             drop(sessions);
             let _ = bcast.send(done);
+            // A verdict still out when the run ended: waited for here, after
+            // the reply is handed back — bounded, and a judge that does not
+            // answer in time is "couldn't check", never clear.
+            if let Some(handle) = judge_handle {
+                verdict = Some(match tokio::time::timeout(JUDGE_WAIT, handle).await {
+                    Ok(Ok(v)) => v,
+                    Ok(Err(e)) => judge::Verdict::Unchecked(format!("the judge task failed: {e}")),
+                    Err(_) => judge::Verdict::Unchecked("the judge did not answer in time".into()),
+                });
+            }
+            if let Some(v) = verdict {
+                chats.apply_verdict(&key, v, stopped_by_judge, false).await;
+            }
         });
         drop(sessions);
         Ok(serde_json::json!({ "started": true }))
@@ -1224,26 +1313,89 @@ impl PersonaChats {
 }
 
 impl PersonaChats {
+    /// Act on the crisis judge's verdict for a chat (§12.2). A concern is
+    /// counted (tier `judge`), arms the cooldown and sends the warning; with
+    /// `cancel_live` it also stops the run in flight (a steer's). A verdict
+    /// the judge could not reach is "couldn't check": the chat says crisis
+    /// detection is on keywords only until the judge answers again — the
+    /// change is announced both ways, never silent.
+    async fn apply_verdict(
+        &self,
+        key: &str,
+        verdict: judge::Verdict,
+        paused: bool,
+        cancel_live: bool,
+    ) {
+        let mut sessions = self.sessions.lock().await;
+        let Some(ps) = sessions.get_mut(key) else {
+            return;
+        };
+        match verdict {
+            judge::Verdict::Concern => {
+                let mut paused = paused;
+                if cancel_live {
+                    if let Some(live) = &ps.live {
+                        live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
+                        paused = true;
+                    }
+                }
+                if let Err(e) =
+                    safety::record_crisis(&self.store, "web", safety::Tier::Judge, paused)
+                {
+                    tracing::warn!("a crisis record was not written: {e:#}");
+                }
+                ps.crisis_paused_at = Some(std::time::Instant::now());
+                ps.judge_ok = true;
+                let _ = ps.events.send(WireEvent::Crisis {
+                    text: safety::SAFE_MESSAGE.to_string(),
+                });
+            }
+            judge::Verdict::Clear => {
+                if !ps.judge_ok {
+                    let _ = ps.events.send(WireEvent::Notice {
+                        text: "Crisis detection's model check is answering again.".into(),
+                    });
+                }
+                ps.judge_ok = true;
+            }
+            judge::Verdict::Unchecked(why) => {
+                if ps.judge_ok {
+                    let _ = ps.events.send(WireEvent::Notice {
+                        text: format!(
+                            "Crisis detection is on keywords only for now: the model check \
+                             could not answer ({why})."
+                        ),
+                    });
+                }
+                ps.judge_ok = false;
+            }
+        }
+    }
+
     /// A message sent while a run is live. The safety layer reads it as it
     /// reads any other (found on review of #418: the steer path skipped it,
     /// so a crisis message typed mid-answer reached the persona in
     /// character): it is metered, and a crisis hit outside the cooldown stops
     /// the run and pauses the persona — the message is kept, the plain voice
     /// answers. Anything else steers, as before.
+    #[allow(clippy::too_many_arguments)]
     fn steer_or_pause(
-        &self,
+        self: &Arc<Self>,
+        chat: &Arc<ChatState>,
+        key: &str,
         ps: &mut PersonaSession,
         name: &str,
+        switches: mecha_core::persona::Safety,
+        bound: &crate::follow::Bound,
         text: String,
         request_id: String,
     ) -> Result<serde_json::Value, Refusal> {
-        let switches = ps.pinned.settings.safety;
         if switches.dose {
             if let Err(e) = safety::record_dose(
                 &self.store,
                 name,
                 &ps.session.meta.id,
-                safety::crisis_state(switches.crisis),
+                safety::crisis_state(switches.crisis, ps.judge_ok),
             ) {
                 tracing::warn!("a persona dose record was not written: {e:#}");
             }
@@ -1252,7 +1404,9 @@ impl PersonaChats {
             let cooling = ps
                 .crisis_paused_at
                 .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
-            if let Err(e) = safety::record_crisis(&self.store, "web", !cooling) {
+            if let Err(e) =
+                safety::record_crisis(&self.store, "web", safety::Tier::Keyword, !cooling)
+            {
                 tracing::warn!("a crisis record was not written: {e:#}");
             }
             if !cooling {
@@ -1270,6 +1424,31 @@ impl PersonaChats {
                     text: safety::SAFE_MESSAGE.to_string(),
                 });
                 return Ok(serde_json::json!({ "steered": false, "paused": true }));
+            }
+        }
+        // The judge reads a steer too, alongside the run it joins: a concern
+        // the keywords missed stops that run and pauses the persona.
+        let cooling = ps
+            .crisis_paused_at
+            .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
+        if switches.crisis && !cooling {
+            let chats = Arc::clone(self);
+            let key = key.to_string();
+            let words = text.clone();
+            match (self.provider)(bound) {
+                Ok(provider) => {
+                    let model = bound.model.clone();
+                    chat.runs.spawn(async move {
+                        let v = judge::screen(provider.as_ref(), &model, &words).await;
+                        chats.apply_verdict(&key, v, false, true).await;
+                    });
+                }
+                Err(e) => {
+                    let v =
+                        judge::Verdict::Unchecked(format!("the judge could not be reached: {e:#}"));
+                    chat.runs
+                        .spawn(async move { chats.apply_verdict(&key, v, false, true).await });
+                }
             }
         }
         steer(ps, text, request_id)
@@ -1677,9 +1856,26 @@ mod tests {
         Fail,
     }
 
-    /// A provider that keeps a copy of every request and then does what its
-    /// mode says.
-    struct Capture(Arc<StdMutex<Vec<CompletionRequest>>>, Mode);
+    /// What the crisis judge answers in a test world.
+    #[derive(Clone)]
+    enum JudgeSays {
+        Clear,
+        Concern,
+        /// Refuses: "couldn't check".
+        Refuse,
+        /// Answers `Concern` once the gate opens.
+        ConcernAfter(Arc<tokio::sync::Notify>),
+    }
+
+    /// A provider that keeps a copy of every persona request and then does
+    /// what its mode says. A crisis judge's request (its quarantined system
+    /// prompt) is answered as the world's `JudgeSays` and counted apart.
+    struct Capture(
+        Arc<StdMutex<Vec<CompletionRequest>>>,
+        Mode,
+        Arc<StdMutex<JudgeSays>>,
+        Arc<StdMutex<usize>>,
+    );
 
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for Capture {
@@ -1694,6 +1890,40 @@ mod tests {
             req: &CompletionRequest,
             _: Option<&mecha_core::provider::StreamSink>,
         ) -> Result<CompletionResponse> {
+            if req
+                .system
+                .as_deref()
+                .is_some_and(|s| s.starts_with("You screen one message"))
+            {
+                *self.3.lock().unwrap() += 1;
+                let says = self.2.lock().unwrap().clone();
+                let (text, stop) = match says {
+                    JudgeSays::Clear => (
+                        r#"{"wish_to_be_dead":false,"suicidal_thoughts":false,"method":false,"intent":false,"preparation":false,"self_harm":false}"#,
+                        StopReason::EndTurn,
+                    ),
+                    JudgeSays::Concern => (
+                        r#"{"wish_to_be_dead":true,"suicidal_thoughts":false,"method":false,"intent":false,"preparation":false,"self_harm":false}"#,
+                        StopReason::EndTurn,
+                    ),
+                    JudgeSays::Refuse => ("I can't help with that.", StopReason::Refusal),
+                    JudgeSays::ConcernAfter(gate) => {
+                        gate.notified().await;
+                        (
+                            r#"{"wish_to_be_dead":true,"suicidal_thoughts":false,"method":false,"intent":false,"preparation":false,"self_harm":false}"#,
+                            StopReason::EndTurn,
+                        )
+                    }
+                };
+                return Ok(CompletionResponse {
+                    message: Message::assistant(vec![Block::Text { text: text.into() }]),
+                    stop_reason: stop,
+                    usage: Usage::default(),
+                    refusal: None,
+                    model: "test".into(),
+                    malformed_tool_args: 0,
+                });
+            }
             self.0.lock().unwrap().push(req.clone());
             match &self.1 {
                 Mode::Answer => {}
@@ -1719,6 +1949,8 @@ mod tests {
         chat: Arc<ChatState>,
         library: LibraryState,
         seen: Arc<StdMutex<Vec<CompletionRequest>>>,
+        judge: Arc<StdMutex<JudgeSays>>,
+        judged: Arc<StdMutex<usize>>,
     }
 
     impl Drop for World {
@@ -1775,11 +2007,19 @@ mod tests {
 
         let seen = Arc::new(StdMutex::new(Vec::new()));
         let for_persona = Arc::clone(&seen);
+        let judge = Arc::new(StdMutex::new(JudgeSays::Clear));
+        let judged = Arc::new(StdMutex::new(0usize));
+        let (for_judge, for_judged) = (Arc::clone(&judge), Arc::clone(&judged));
         let personas = PersonaChats::with(
             dir,
             root.join("work"),
             Arc::new(move |_| {
-                Ok(Box::new(Capture(Arc::clone(&for_persona), mode.clone()))
+                Ok(Box::new(Capture(
+                    Arc::clone(&for_persona),
+                    mode.clone(),
+                    Arc::clone(&for_judge),
+                    Arc::clone(&for_judged),
+                ))
                     as Box<dyn mecha_core::provider::Provider>)
             }),
         );
@@ -1789,7 +2029,12 @@ mod tests {
         let mut config = mecha_core::config::Config::default();
         config.agent.system_prompt = Some("ASSISTANT-ONLY: the owner's charter".into());
         let chat = chat::test_chat_built(
-            Box::new(Capture(Arc::new(StdMutex::new(Vec::new())), Mode::Answer)),
+            Box::new(Capture(
+                Arc::new(StdMutex::new(Vec::new())),
+                Mode::Answer,
+                Arc::new(StdMutex::new(JudgeSays::Clear)),
+                Arc::new(StdMutex::new(0)),
+            )),
             pool,
             config,
             None,
@@ -1800,6 +2045,8 @@ mod tests {
             root,
             chat,
             seen,
+            judge,
+            judged,
         }
     }
 
@@ -2557,7 +2804,8 @@ mod tests {
                 .contains("A reminder from the harness"),
             "{t}"
         );
-        assert_eq!(t["safety"]["crisis"], "degraded");
+        // Both tiers answering: the keywords and the judge.
+        assert_eq!(t["safety"]["crisis"], "on");
     }
 
     #[tokio::test]
@@ -2724,6 +2972,223 @@ mod tests {
                 serde_json::json!({ "name": "g2", "description": "a\nb" })
             ))
             .is_err());
+    }
+
+    /// Wait until the judge has been asked `n` times.
+    async fn judged(w: &World, n: usize) {
+        for _ in 0..300 {
+            if *w.judged.lock().unwrap() >= n {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!(
+            "the judge was asked {} times, not {n}",
+            *w.judged.lock().unwrap()
+        );
+    }
+
+    /// A concern the keywords missed, found while the persona is still
+    /// answering, stops the run and pauses it — counted as the judge's.
+    #[tokio::test]
+    async fn the_judge_stops_a_turn_the_keywords_missed() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_with(Mode::Gate(Arc::clone(&gate)));
+        *w.judge.lock().unwrap() = JudgeSays::Concern;
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        let words = "everything feels pointless and I keep thinking everyone would cope";
+        assert!(
+            !safety::keyword_hit(words),
+            "the keywords must miss this one"
+        );
+        w.personas()
+            .send(&w.chat, &w.library, &key, words, None, None)
+            .await
+            .unwrap();
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Done { .. }).then_some(())
+        })
+        .await;
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Crisis { .. }).then_some(())
+        })
+        .await;
+        let counted = std::fs::read_to_string(w.store().join("safety.jsonl")).unwrap();
+        assert!(
+            counted.contains("\"tier\":\"judge\"") && counted.contains("\"paused\":true"),
+            "{counted}"
+        );
+        assert!(counted.contains(judge::JUDGE), "{counted}");
+    }
+
+    /// A judge that cannot answer is "couldn't check": the chat says crisis
+    /// detection is on keywords only, and says so again when it recovers.
+    #[tokio::test]
+    async fn a_judge_that_cannot_answer_is_said_both_ways() {
+        let w = world();
+        *w.judge.lock().unwrap() = JudgeSays::Refuse;
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        let said = next(&mut rx, |ev| match ev {
+            WireEvent::Notice { text } if text.contains("keywords only") => Some(text.clone()),
+            _ => None,
+        })
+        .await;
+        assert!(said.contains("refused"), "{said}");
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(t["safety"]["crisis"], "degraded");
+
+        *w.judge.lock().unwrap() = JudgeSays::Clear;
+        turn(&w, &key, "Hello again").await;
+        judged(&w, 2).await;
+        for _ in 0..200 {
+            let t = w
+                .personas()
+                .transcript(&w.chat, &w.library, &key, None)
+                .await
+                .unwrap();
+            if t["safety"]["crisis"] == "on" {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the judge answered again and the chat still reads degraded");
+    }
+
+    /// A concern that lands after the persona answered still shows the
+    /// warning, and is counted as not paused — what was said stands.
+    #[tokio::test]
+    async fn a_late_concern_still_warns() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world();
+        *w.judge.lock().unwrap() = JudgeSays::ConcernAfter(Arc::clone(&gate));
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "it all feels like too much",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Done { ok: true, .. }).then_some(())
+        })
+        .await;
+        assert_eq!(w.seen.lock().unwrap().len(), 1, "the persona answered");
+        gate.notify_one();
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Crisis { .. }).then_some(())
+        })
+        .await;
+        let counted = std::fs::read_to_string(w.store().join("safety.jsonl")).unwrap();
+        assert!(counted.contains("\"paused\":false"), "{counted}");
+    }
+
+    /// A steer the keywords miss is judged too, and a concern stops the run
+    /// it joined.
+    #[tokio::test]
+    async fn a_steer_is_judged_too() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_with(Mode::Gate(Arc::clone(&gate)));
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        judged(&w, 1).await;
+        *w.judge.lock().unwrap() = JudgeSays::Concern;
+        let steered = w
+            .personas()
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "honestly I don't see the point of going on",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            steered["steered"], true,
+            "the keywords miss it, so it steers first"
+        );
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Crisis { .. }).then_some(())
+        })
+        .await;
+        next(&mut rx, |ev| {
+            matches!(ev, WireEvent::Done { .. }).then_some(())
+        })
+        .await;
+        let counted = std::fs::read_to_string(w.store().join("safety.jsonl")).unwrap();
+        assert!(
+            counted.contains("\"tier\":\"judge\"") && counted.contains("\"paused\":true"),
+            "{counted}"
+        );
+    }
+
+    /// The safety switches are read as the persona stands, not as the chat
+    /// pinned it: switching crisis off reaches an open chat, and so does
+    /// switching it back on (review of #418).
+    #[tokio::test]
+    async fn safety_switches_reach_an_open_chat() {
+        let w = world();
+        let key = open_chat(&w).await;
+        set_switch(&w, "crisis    ", false);
+        turn(&w, &key, "I want to die laughing at this").await;
+        assert_eq!(
+            w.seen.lock().unwrap().len(),
+            1,
+            "switched off: the persona answered"
+        );
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(t["safety"]["crisis"], "off");
+        set_switch(&w, "crisis    ", true);
+        let paused = w
+            .personas()
+            .send(&w.chat, &w.library, &key, "I want to die", None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            paused["paused"], true,
+            "switched back on: the open chat pauses"
+        );
     }
 
     #[tokio::test]

@@ -190,7 +190,12 @@ export function taintLabel(taint) {
 // is, so "keywords only" never reads as a check that passed.
 export function safetyLine(safety) {
   if (!safety) return '';
-  const crisis = safety.crisis === 'off' ? 'crisis detection off' : 'crisis detection: keywords only';
+  // Three states, each said as it is: both tiers answering, keywords only
+  // because the model check could not answer, or switched off.
+  const crisis = {
+    off: 'crisis detection off',
+    on: 'crisis detection on',
+  }[safety.crisis] ?? 'crisis detection: keywords only (the model check could not answer)';
   const off = ['disclosure', 'reanchor', 'dose'].filter((k) => safety[k] === false);
   // The farewell check arrives as a state, not a flag (review of #418).
   if (safety.farewell === 'off') off.push('farewell');
