@@ -967,6 +967,12 @@ pub(super) fn wire_event(event: &AgentEvent, context_window: Option<u64>) -> Opt
 pub enum Entry {
     User {
         text: String,
+        /// Words the owner sent while the run was going, folded into the
+        /// message that carries its tool results (a steer), not a new turn.
+        /// The page counts turns from the owner's messages, and a steer read
+        /// back as one split its turn (review of #444).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        steered: bool,
     },
     Assistant {
         text: String,
@@ -1097,7 +1103,10 @@ pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                     }
                 }
                 if !text.is_empty() {
-                    entries.push(Entry::User { text });
+                    entries.push(Entry::User {
+                        text,
+                        steered: results,
+                    });
                 }
             }
             Role::Assistant => {
@@ -4233,6 +4242,68 @@ mod wire_tests {
         }
     }
 
+    /// A steer folded into the message carrying a turn's tool results comes
+    /// back marked, so the page does not read it as a new turn: the
+    /// persona page's "no picture was made" note is placed per turn, and an
+    /// unmarked steer split one (review of #444). The owner's own message
+    /// is not a steer.
+    #[test]
+    fn a_steer_is_read_back_as_part_of_its_turn() {
+        let msg = |role, content| Message {
+            harness: false,
+            planning: None,
+            tool_provenance: Default::default(),
+            role,
+            content,
+        };
+        let messages = vec![
+            msg(
+                Role::User,
+                vec![Block::Text {
+                    text: "draw yourself".into(),
+                }],
+            ),
+            msg(
+                Role::Assistant,
+                vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "image_generate".into(),
+                    input: serde_json::json!({}),
+                }],
+            ),
+            msg(
+                Role::User,
+                vec![
+                    Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "Nothing was drawn.".into(),
+                        is_error: true,
+                    },
+                    Block::Text {
+                        text: "and add the cat".into(),
+                    },
+                ],
+            ),
+        ];
+        let users: Vec<(String, bool)> = transcript_entries(&messages)
+            .into_iter()
+            .filter_map(|e| match e {
+                Entry::User { text, steered } => Some((text, steered)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            users,
+            [
+                ("draw yourself".to_string(), false),
+                ("and add the cat".to_string(), true)
+            ]
+        );
+        let wire = serde_json::to_value(transcript_entries(&messages)).unwrap();
+        assert_eq!(wire[0].get("steered"), None, "false is left off the wire");
+        assert_eq!(wire[2]["steered"], true, "{wire}");
+    }
+
     #[test]
     fn transcript_names_a_tool_result_from_its_call() {
         let messages = vec![
@@ -4275,7 +4346,10 @@ mod wire_tests {
         assert_eq!(
             entries,
             vec![
-                Entry::User { text: "hi".into() },
+                Entry::User {
+                    text: "hi".into(),
+                    steered: false,
+                },
                 Entry::Assistant {
                     text: "looking".into()
                 },
@@ -4321,7 +4395,7 @@ mod wire_tests {
         let owner: Vec<_> = entries
             .iter()
             .filter_map(|e| match e {
-                Entry::User { text } => Some(text.as_str()),
+                Entry::User { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
@@ -4359,7 +4433,8 @@ mod wire_tests {
         assert_eq!(
             transcript_entries(&messages),
             vec![Entry::User {
-                text: "book the room".into()
+                text: "book the room".into(),
+                steered: false,
             }]
         );
     }
@@ -4390,7 +4465,8 @@ mod wire_tests {
         assert_eq!(
             transcript_entries(&messages),
             vec![Entry::User {
-                text: "what's on today?".into()
+                text: "what's on today?".into(),
+                steered: false,
             }]
         );
     }
@@ -4417,7 +4493,7 @@ mod wire_tests {
         );
         let entries = transcript_entries(&rebuilt);
         for e in &entries {
-            if let Entry::User { text } = e {
+            if let Entry::User { text, .. } = e {
                 assert!(!text.contains("Wire transfer"), "summary leaked: {text:?}");
                 assert!(!text.contains("passwd"), "carried state leaked: {text:?}");
             }
@@ -4425,7 +4501,8 @@ mod wire_tests {
         assert_eq!(
             entries.first(),
             Some(&Entry::User {
-                text: "what did the retrieval-practice page say?".into()
+                text: "what did the retrieval-practice page say?".into(),
+                steered: false,
             })
         );
     }
