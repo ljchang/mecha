@@ -117,7 +117,6 @@ export const library = {
     { kind: 'character', name: 'sam', version: 1, status: 'candidate', origin: 'model_clean', locked: false, text: 'a 16-year-old boy with a mop of sandy hair, freckles and braces, lanky and tall for his age', created: '2026-09-28T22:03:00Z', portrait: null, shown: '2'.repeat(64) },
     { kind: 'style', name: 'watercolour', version: 1, status: 'approved', origin: 'owner', locked: false, text: 'loose watercolour illustration, soft washes bleeding at the edges, visible paper texture', created: '2026-09-28T21:00:00Z', portrait: null, shown: '3'.repeat(64) },
   ],
-  hidden_locked: 1,
   unlocked: false,
   has_password: false,
   unreadable: 0,
@@ -1650,11 +1649,10 @@ export const learningReport = {
 
 export const personas = {
   personas: [
-    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, problems: [], safety: { disclosure: true, crisis: 'degraded', reanchor: true, dose: true, breaks: false, farewell: 'unbuilt' }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
-    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, problems: [], safety: { disclosure: true, crisis: 'degraded', reanchor: true, dose: true, breaks: false, farewell: 'unbuilt' }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
+    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true, breaks: false, farewell: 'unbuilt' }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
+    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true, breaks: false, farewell: 'unbuilt' }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
     { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false, breaks: false, farewell: 'off' }, dose: null },
   ],
-  hidden_locked: 1,
   unlocked: false,
   has_password: false,
 };
@@ -1675,7 +1673,7 @@ export const personaTranscript = {
   running: false,
   goal: null,
   display: 'Mara',
-  safety: { disclosure: true, crisis: 'degraded', reanchor: true, dose: true, breaks: false, farewell: 'unbuilt' },
+  safety: { disclosure: true, crisis: 'on', reanchor: true, dose: true, breaks: false, farewell: 'unbuilt' },
   entries: [
     { kind: 'user', text: 'I think the kelp survey can skip the winter transects this year.' },
     { kind: 'assistant', text: 'Before I agree — what would we lose? The winter transects are the only ones that catch the die-back before spring recruitment. Skipping them saves two field weeks, but it also means next year\'s comparison starts from a guess.' },

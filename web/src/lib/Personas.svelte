@@ -7,7 +7,7 @@
   import { isDirty as mdDirty } from './mdform.js';
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
-    taintLabel, safetyLine, doseLine, authoringUrl, personaName, OWNER_FILES, keptEdits,
+    taintLabel, safetyLine, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -111,6 +111,7 @@
       token = (await res.json()).token;
       sheet = false;
       await load();
+      await rereadAuthoring();
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {
@@ -122,9 +123,12 @@
   async function relock() {
     const t = token;
     token = null;
+    // Off the screen now, before the grid's round trip, not after it.
+    if (making && authoring) authoring = { ...authoring, characters: [] };
     // A locked persona's chat closes with the lock: the lock hides (§8.3).
     if (chosen?.locked) back();
     await load();
+    await rereadAuthoring();
     if (t) {
       fetch('/api/library/relock', {
         method: 'POST',
@@ -259,15 +263,59 @@
 
   // ─── Authoring ───────────────────────────────────────────────────────
 
+  // Every read of the form's lists is numbered, as `reread` numbers the
+  // transcript's: the lock button is live while one is in flight, and an
+  // unlocked answer landing after a relock's would put locked characters
+  // back in the portrait list of a locked page (review of #425).
+  let authoringGen = 0;
+
   async function startMaking() {
     error = '';
+    const gen = ++authoringGen;
+    const issued = token;
     try {
       const res = await fetch(authoringUrl(token));
       if (!res.ok) throw new Error((await res.text()).trim());
-      authoring = await res.json();
+      const lists = await res.json();
+      if (gen !== authoringGen) return;
+      // The lock moved while the form was opening, and with no form open
+      // then, nothing re-read the lists for it. An answer read under the
+      // other lock is never shown, not even until the re-read lands.
+      authoring = issued === token ? lists : null;
       making = { name: '', display: '', relationships: [], character: '', groups: [], locked: false };
     } catch (e) {
       error = String(e?.message ?? e);
+      return;
+    }
+    if (issued !== token) await rereadAuthoring();
+  }
+
+  // The form's lists follow the lock: `authoring` was read when the form
+  // opened, so an unlock after that left locked characters out of the
+  // portrait list, and a relock left them in.
+  async function rereadAuthoring() {
+    if (!making) return;
+    const gen = ++authoringGen;
+    // Reading under the lock: the list on screen may name locked characters,
+    // so it goes now, not when the answer lands — the rule `startMaking`
+    // keeps for the same race (review of #425). The choice itself waits for
+    // the answer, so a relock never costs an unlocked pick.
+    if (!token && authoring) authoring = { ...authoring, characters: [] };
+    try {
+      const res = await fetch(authoringUrl(token));
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const lists = await res.json();
+      // Cancelled, or overtaken by a newer read, while this one was in flight.
+      if (!making || gen !== authoringGen) return;
+      authoring = lists;
+      making.character = keptCharacter(making.character, authoring.characters);
+    } catch (e) {
+      error = String(e?.message ?? e);
+      // No answer: keep only a choice the list on screen still offers, which
+      // after a relock is none — never a locked pick the page now hides.
+      if (making && gen === authoringGen) {
+        making.character = keptCharacter(making.character, authoring?.characters);
+      }
     }
   }
 
@@ -299,8 +347,13 @@
         ),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
-      const reread = await fetch(authoringUrl(token));
-      if (reread.ok) authoring = await reread.json();
+      // The one reader of the lists once the form is open, so the new name
+      // arrives under the same numbering and portrait check a lock change
+      // uses — its own read took a newer number than a relock's and skipped
+      // the check (review of #425).
+      await rereadAuthoring();
+      // Cancelled while the add was in flight: no form left to pick it for.
+      if (!making) return;
       if (relationship) making.relationships = [...making.relationships, name];
       else making.groups = [...making.groups, name];
       adding = null;
@@ -647,7 +700,7 @@
     </div>
   {:else if !chosen}
     <div class="scroll">
-      {#if data && personas.length === 0 && !data.hidden_locked}
+      {#if data && personas.length === 0}
         <div class="empty">No personas yet — make one with New persona.</div>
       {/if}
       <div class="grid">
@@ -671,12 +724,6 @@
             {/if}
           </button>
         {/each}
-        {#if data?.hidden_locked}
-          <div class="tile hiddentile" aria-label="locked personas hidden">
-            <div class="noimg hiddencount"><svg class="glyph" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg> {data.hidden_locked}</div>
-            <span class="tname">hidden</span>
-          </div>
-        {/if}
       </div>
     </div>
   {:else}
@@ -903,8 +950,6 @@
   .tile { display: flex; flex-direction: column; gap: 4px; padding: 0 0 10px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); overflow: hidden; cursor: pointer; color: var(--text); text-align: left; font: inherit; }
   .tile img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
   .noimg { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; color: var(--accent-400); font-family: var(--mono); font-size: 28px; }
-  .hiddentile { cursor: default; border-style: dashed; }
-  .hiddentile .noimg { font-size: 14px; color: var(--text-muted); }
   .tname { font-family: var(--mono); font-size: 12px; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .trel { font-size: 11px; color: var(--text-muted); padding: 0 10px; }
   .badge { align-self: flex-start; margin: 2px 10px 0; font-family: var(--mono); font-size: 10px; color: var(--hazard); border: 1px solid var(--hazard); border-radius: var(--radius-chip); padding: 1px 6px; }
@@ -926,7 +971,6 @@
   .adding { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; padding: 10px; border: 1px solid var(--accent-900); border-radius: var(--radius); }
   .adding .editbox { font-size: 14px; }
   .glyph { vertical-align: -1px; color: var(--text-muted); }
-  .hiddencount { display: flex; align-items: center; gap: 6px; font-size: 16px; }
   .addmark { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; color: var(--accent-400); font-size: 40px; font-weight: 300; }
   .lockline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
   .btnrow { display: flex; gap: 10px; }
