@@ -9,7 +9,7 @@
   // first cut — the chrome repeated more often than the text did).
   import { untrack } from 'svelte';
   import './form.css';
-  import { draftOf, docOf, isDirty, isFixed, move, addSection, problems } from './mdform.js';
+  import { draftOf, docOf, isDirty, isFixed, move, addSection, problems, MAX_HEADING } from './mdform.js';
 
   let {
     doc,
@@ -126,6 +126,7 @@
           class="tf-title"
           aria-label="Title"
           placeholder={labels.title ?? 'Title'}
+          maxlength={MAX_HEADING}
           disabled={busy}
           bind:value={draft.title}
         />
@@ -166,7 +167,7 @@
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-label="always kept"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>
             </span>
           {:else}
-            <input class="tf-heading" aria-label="Section heading" placeholder="Heading" disabled={busy} bind:value={s.heading} />
+            <input class="tf-heading" aria-label="Section heading" placeholder="Heading" maxlength={MAX_HEADING} disabled={busy} bind:value={s.heading} />
           {/if}
           <div class="tf-menuwrap">
             {@render dots(s.id, `More for ${s.heading || 'this section'}`)}
