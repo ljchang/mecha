@@ -94,6 +94,11 @@ pub enum Cmd {
 }
 
 pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
+    // The whole verb: even `list` and `show` open the store, which creates
+    // it, and `list` reconciles and settles bookings. What waits in the
+    // queue stays counted on Home and in `mecha review queues` whatever the
+    // switch says.
+    super::features::require(mecha_core::feature::Feature::Frontdoor)?;
     let store = Frontdoor::open_default()?;
     match args.cmd.unwrap_or(Cmd::List { state: None }) {
         Cmd::List { state } => {

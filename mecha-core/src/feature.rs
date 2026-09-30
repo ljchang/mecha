@@ -189,13 +189,13 @@ impl Feature {
 
     /// Whether switching this off turns something off *today* — its tools
     /// are unregistered, its server is not started, its web routes answer
-    /// `feature_off` and its verbs refuse ([`refusal`], step 3a). The rest
-    /// (Slack, personas, voice, incognito, the front door — its queue and its
-    /// publishing server together) are guarded whole in step 3b: their routes
-    /// already declare their owner and pass while this says `false`, and the
-    /// upgrade notice must not call them off while they work (found on review
-    /// of #445). Exhaustive: flipping an arm is what turns a feature's guards
-    /// on, everywhere at once.
+    /// `feature_off` and its verbs refuse ([`refusal`]). Every feature is
+    /// guarded since step 3b; 3a guarded the first seven, and 3b Slack,
+    /// personas, voice, incognito, the front door (its queue and its
+    /// publishing server together) and messages, each whole. The upgrade
+    /// notice calls off only what this says is off, so a feature added with
+    /// its guards still to come answers `false` until they land (found on
+    /// review of #445). Exhaustive: a new feature decides.
     pub fn gated(self) -> bool {
         match self {
             Feature::Web
@@ -204,13 +204,13 @@ impl Feature {
             | Feature::Graph
             | Feature::Search
             | Feature::Documents
-            | Feature::Image => true,
-            Feature::Slack
+            | Feature::Image
+            | Feature::Slack
             | Feature::Personas
             | Feature::Voice
             | Feature::Incognito
             | Feature::Frontdoor
-            | Feature::Messages => false,
+            | Feature::Messages => true,
             Feature::Tasks
             | Feature::Ocr
             | Feature::Layout
@@ -507,10 +507,10 @@ pub fn server_feature(server: &McpServerConfig) -> Option<Feature> {
         "mecha-mail" => Some(Feature::Mail),
         "mecha-docs" => Some(Feature::Docs),
         "mecha-graph-mcp" => Some(Feature::Graph),
-        // Not `factory-publish` yet: gating the publishing server while the
-        // front door's queue stays ungated made the notice call the front
-        // door "still working" with half of it gone. Both halves follow the
-        // switch together in §9 step 3 (found on review of #445).
+        // The front door's other half, gated with its queue in step 3b — never
+        // one half first, or the notice called the front door "still working"
+        // with half of it gone (found on review of #445).
+        "factory-publish" => Some(Feature::Publishing),
         _ => None,
     }
 }
@@ -1889,9 +1889,12 @@ mod tests {
         assert_eq!(server_refusal(&cfg, &other), None, "a server in no feature");
         cfg.features.0.insert("graph".into(), true);
         assert_eq!(server_refusal(&cfg, &graph), None);
-        // The publishing server is not gated yet: the front door is gated
-        // whole in step 3, never one half before the other.
+        // The publishing server is the front door's other half, gated with
+        // its queue since step 3b and refused by the front door's switch.
         let publish = mcp("factory", "factory-publish");
+        let why = server_refusal(&cfg, &publish).expect("frontdoor is not switched on");
+        assert!(why.contains("mecha features enable frontdoor"), "{why}");
+        cfg.features.0.insert("frontdoor".into(), true);
         assert_eq!(server_refusal(&cfg, &publish), None);
     }
 

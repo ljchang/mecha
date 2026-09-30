@@ -56,6 +56,9 @@ pub enum Cmd {
 }
 
 pub async fn run(_global: &GlobalOpts, args: Args) -> Result<()> {
+    // Polls are the front door's (FEATURES-DESIGN.md §5): the timer's
+    // `sweep` and the owner's `pick` alike.
+    super::features::require(mecha_core::feature::Feature::Frontdoor)?;
     match args.cmd {
         Cmd::List => {
             let dir = records_dir()?;

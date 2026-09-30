@@ -101,12 +101,14 @@
   // answer is in: before it, and when it failed, nothing is hidden.
   let hiddenNotice = $state(null);
   $effect(() => {
-    // A hidden view goes home (step 2); a feature's pane in a core view only
-    // when its routes refuse — before its guard lands it still works.
-    const pane = PANE_FEATURE[`${view}/${route.sub}`];
-    const hidden = pane ? refuses(features.rows, pane) : !isShown(features.rows, VIEW_FEATURE[view]);
-    const f = pane ?? VIEW_FEATURE[view];
-    if (f && hidden && !opensAnyway(view, route.sub)) {
+    // A hidden view goes home (step 2), and so does a feature's pane whose
+    // routes refuse — either one, never the pane's standing in for the
+    // view's (review of #451).
+    const viewF = VIEW_FEATURE[view];
+    const paneF = PANE_FEATURE[`${view}/${route.sub}`];
+    const f =
+      viewF && !isShown(features.rows, viewF) ? viewF : paneF && refuses(features.rows, paneF) ? paneF : null;
+    if (f && !opensAnyway(view, route.sub)) {
       hiddenNotice = hiddenLine(features.rows, f);
       navigate('home', { replace: true });
     } else if (view !== 'home') {

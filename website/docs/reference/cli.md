@@ -698,9 +698,11 @@ mecha msg <send|list|show|dismiss|agents> [ARGS]
 | `dismiss` | `--to <NAME>` | With `--all`: only this recipient's mailbox. |
 | `agents` | | Which agents are live right now, per the session markers. |
 
-The agents are wired up by `[messages] enabled`, which is off by default, but
-this surface is not gated on it: the store is yours, and "what did the overnight
-run tell me" must not depend on a feature flag.
+`mecha msg` follows the `messages` switch (`[features] messages`, the same
+switch as `[messages] enabled`), which is off by default: with it off, every
+subcommand refuses with `mecha features enable messages`. Nothing new arrives
+while it is off — no session has the mailbox tools — and what is already in the
+store stays there for when it is on.
 
 `dismiss` rather than `rm` is the shape that matters — a full mailbox refuses
 new sends, so a backlog nobody is coming to claim needs setting aside, and the
