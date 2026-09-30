@@ -18,8 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Drop or attach files in a persona chat.** Drag files onto the Personas
   tab, or use the paperclip, just as in the main chat. Files land in the
   chat's own `inbox/` and are named in your message. A picture is also shown
-  to the persona when its model can see images. Other files are named only:
-  a persona has no tool to read a PDF or a text file yet.
+  to the persona when its model can see images.
+
+- **Personas can read PDFs.** Add `"document_read"` to a persona's
+  `[tools] allow` and it can read a PDF dropped into its chat. It gets the
+  PDF's own text, with OCR for scanned pages, as in the main chat. It is off
+  until you list it. A persona set to `answers = "files"` never gets it,
+  because a document's words are third-party content. A persona with both
+  `document_read` and `web_search` could be steered by a hostile PDF into
+  searching for something; drop `web_search` for a persona that reads files
+  you did not write.
 
 - **Paint the part of a picture to change.** The web chat's Edit button now
   opens a modal: paint or draw a box over what should change, say what to
