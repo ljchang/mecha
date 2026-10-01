@@ -1045,7 +1045,9 @@ not as a precedent.
 *Building, 2026-10-01 (step 3a):* the three folders listed and read by name
 (`persona::files`), `file_read`, the whole collection — or its list — in a
 chat's first turn, and a Files list with upload and remove on the persona's
-page. Checked citations (3b), search over large collections (3c) and saving
+page. `file_read` is every persona's, outside `[tools] allow` and `answers` —
+deliberately: reading its own files is what a persona with files is for, and
+the tool reaches nothing but them. Checked citations (3b), search over large collections (3c) and saving
 study material (3d) come next.
 
 R14 asks for NotebookLM's usefulness — upload a paper or other material, ask

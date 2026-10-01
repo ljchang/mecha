@@ -982,6 +982,7 @@ impl PersonaChats {
     /// each with whether its text is already extracted.
     pub async fn sources(
         &self,
+        chat: &Arc<ChatState>,
         library: &LibraryState,
         name: &str,
         token: Option<&str>,
@@ -989,6 +990,16 @@ impl PersonaChats {
         let p = self
             .visible(library, name, token)
             .ok_or(Refusal::NotFound)?;
+        // Past this a document cannot be extracted, so it is never "ready"
+        // and is never read to find out (review of #459).
+        let max_bytes = chat
+            .follower
+            .current()
+            .config
+            .documents
+            .as_ref()
+            .map(|d| d.max_file_bytes())
+            .unwrap_or(0);
         let store_dir = self.store.clone();
         let processing = self
             .processing
@@ -1015,7 +1026,7 @@ impl PersonaChats {
                             mecha_core::persona::files::Kind::Text => "text",
                         },
                         "shared": s.name.starts_with('@'),
-                        "ready": mecha_core::persona::files::ready(s, cache.as_ref()),
+                        "ready": mecha_core::persona::files::ready(s, cache.as_ref(), max_bytes),
                         "processing": processing.contains(&s.path),
                     })
                 })
@@ -1106,10 +1117,17 @@ impl PersonaChats {
     /// their text when it fits about a quarter of the context window (D15),
     /// or the list to read with `file_read`. `None` with no files.
     async fn files_block(&self, name: &str, bound: &crate::follow::Bound) -> Option<String> {
-        let store = Store::load(&self.store);
-        let p = store.get(name)?;
-        let sources =
-            mecha_core::persona::files::list(&mecha_core::persona::files::roots(&store, p));
+        let (store_dir, name) = (self.store.clone(), name.to_string());
+        // The store and the walk are file I/O: off the runtime.
+        let (sources, omitted) = tokio::task::spawn_blocking(move || {
+            let store = Store::load(&store_dir);
+            store.get(&name).map(|p| {
+                mecha_core::persona::files::listing(&mecha_core::persona::files::roots(&store, p))
+            })
+        })
+        .await
+        .ok()
+        .flatten()?;
         if sources.is_empty() {
             return None;
         }
@@ -1117,7 +1135,7 @@ impl PersonaChats {
         // A quarter of the window in tokens, at about four characters a
         // token, is about the window's size in characters.
         let budget = bound.context_window.unwrap_or(32_768) as usize;
-        mecha_core::persona::files::first_turn(&sources, extractor.as_ref(), budget).await
+        mecha_core::persona::files::first_turn(&sources, omitted, extractor.as_ref(), budget).await
     }
 
     pub async fn workspace_of(
@@ -1310,9 +1328,12 @@ impl PersonaChats {
             // The persona's files ride in the first turn that runs the model
             // and does not carry them yet (§10.4) — read here, outside the
             // lock, since a first read of a scanned paper is a model call.
+            // The owner's turns only, as `Taint::arm_for_content` reads the
+            // stem: the two must agree on what "carried" means.
             let wants_files = ps.conversation.as_ref().is_some_and(|c| {
                 !c.messages.iter().any(|m| {
-                    m.content.iter().any(|b| {
+                    m.role == mecha_core::message::Role::User
+                        && m.content.iter().any(|b| {
                         matches!(b, mecha_core::message::Block::Text { text }
                             if text.trim_start().starts_with(mecha_core::persona::files::FILES_STEM))
                     })
@@ -1453,6 +1474,12 @@ impl PersonaChats {
             mecha_core::agent::append_user_text(&mut conversation.messages, said.clone());
             if let Some(last) = conversation.messages.last_mut() {
                 last.content.extend(images);
+            }
+            // Folded too: a turn cancelled after a tool ran leaves the tail
+            // the owner's, and dropping the files here threw away a read
+            // that may have been an OCR call (review of #459).
+            if let Some(files) = &files_block {
+                mecha_core::agent::append_user_text(&mut conversation.messages, files.clone());
             }
             if let Some(anchor) = &anchor {
                 mecha_core::agent::append_user_text(&mut conversation.messages, anchor.clone());
@@ -2551,7 +2578,7 @@ pub async fn sources(
     };
     respond(
         chat.personas
-            .sources(&state.library, &name, q.unlock.as_deref())
+            .sources(&chat, &state.library, &name, q.unlock.as_deref())
             .await,
     )
 }
@@ -2969,6 +2996,46 @@ mod tests {
             .collect();
         assert_eq!(bubbles, ["What do urchins do?", "And then?"], "{t}");
         assert_eq!(t["taint"]["untrusted"], true, "{t}");
+    }
+
+    /// A first turn that folds into the owner's tail — the state a turn
+    /// cancelled after a tool ran leaves — still carries the files (review of
+    /// #459: the fold path dropped them).
+    #[tokio::test]
+    async fn the_files_ride_a_folded_first_turn_too() {
+        let w = world();
+        std::fs::write(
+            w.store().join("mara/files/urchins.md"),
+            "Urchins graze kelp.",
+        )
+        .unwrap();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        {
+            let personas = w.personas();
+            let mut sessions = personas.sessions.lock().await;
+            let ps = sessions.get_mut(&key).unwrap();
+            ps.conversation
+                .as_mut()
+                .unwrap()
+                .push(Message::user("a turn that was cancelled"));
+        }
+        turn(&w, &key, "Go on").await;
+        let seen = w.seen.lock().unwrap().clone();
+        let first = seen[0].messages[0].text();
+        assert!(
+            first.contains("a turn that was cancelled") && first.contains("Go on"),
+            "{first}"
+        );
+        assert!(
+            first.contains(mecha_core::persona::files::FILES_STEM)
+                && first.contains("Urchins graze kelp."),
+            "{first}"
+        );
     }
 
     #[tokio::test]

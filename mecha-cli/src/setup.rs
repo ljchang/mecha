@@ -1533,27 +1533,18 @@ async fn prepare_tools_carrying(
     if cfg.documents.is_some() && !feature_on(Feature::Documents) {
         switched_off(Feature::Documents, "document_read");
     }
-    if let Some(docs) = cfg
-        .documents
-        .clone()
-        .filter(|_| feature_on(Feature::Documents))
-    {
+    if cfg.documents.is_some() && feature_on(Feature::Documents) {
         let name = "document_read";
         if (opts.tools.is_empty() || opts.tools.iter().any(|t| t == name))
             && cfg.tools.registers(name)
         {
-            let cache = if docs.cache {
-                mecha_core::document::Cache::default_dir()
-                    .ok()
-                    .map(mecha_core::document::Cache::new)
+            // One construction, shared with a persona's files (§10), so the
+            // cache and confinement rules cannot drift between the two
+            // (review of #459). Its warning names what refused it.
+            if let Some(ex) = document_extractor(&cfg) {
+                registry.insert(Arc::new(mecha_core::tool::document::DocumentRead::new(ex)));
             } else {
-                None
-            };
-            match mecha_core::document::Extractor::new(docs, cache) {
-                Ok(ex) => {
-                    registry.insert(Arc::new(mecha_core::tool::document::DocumentRead::new(ex)));
-                }
-                Err(e) => eprintln!("mecha: document_read not registered — {e:#}"),
+                eprintln!("mecha: document_read not registered — see the warning above");
             }
         }
     }
@@ -1943,7 +1934,7 @@ pub fn document_extractor(cfg: &Config) -> Option<mecha_core::document::Extracto
         None
     };
     mecha_core::document::Extractor::new(docs, cache)
-        .map_err(|e| tracing::warn!("document extractor not built: {e:#}"))
+        .map_err(|e| eprintln!("mecha: the document extractor was not built — {e:#}"))
         .ok()
 }
 

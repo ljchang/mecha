@@ -29,12 +29,18 @@ use std::sync::Arc;
 /// is untrusted and private however it was resumed.
 pub const FILES_STEM: &str = "(Your files, from the harness";
 
-/// More files than this in one persona's reach are listed up to here; the
-/// rest are said to exist rather than silently dropped.
+/// More files than this in one persona's reach are listed up to here, the
+/// first by name; how many were left out is counted ([`listing`]) and said
+/// in a chat's first turn, never dropped silently.
 const MAX_SOURCES: usize = 200;
 
-/// How deep a folder is walked: `files/topic/paper.pdf` is read,
-/// `files/a/b/c/d.pdf` is not.
+/// Entries looked at before a walk stops, so a folder of millions costs a
+/// bounded scan rather than the whole of it.
+const MAX_SCANNED: usize = 10_000;
+
+/// How many folders deep a file may sit: `files/paper.pdf`,
+/// `files/topic/paper.pdf` and `files/a/b/paper.pdf` are read;
+/// `files/a/b/c/paper.pdf` is not.
 const MAX_DEPTH: usize = 3;
 
 /// A text file read whole: Markdown and plain text, up to this size.
@@ -92,36 +98,64 @@ pub fn roots(store: &Store, p: &Persona) -> Vec<(String, PathBuf)> {
                     .and_then(|g| g.file_name())
                     .and_then(|g| g.to_str())
                     .unwrap_or("group");
-                format!("@{group}/")
+                // A group called `all` is not everyone (review of #459).
+                if group == "all" {
+                    "@group:all/".to_string()
+                } else {
+                    format!("@{group}/")
+                }
             };
             (prefix, root)
         })
         .collect()
 }
 
-/// Every readable file under `roots`, named, sorted by name. A root that
-/// does not exist yet contributes nothing.
+/// Every readable file under `roots`, named, sorted by name, the first
+/// [`MAX_SOURCES`] of them. A root that does not exist yet contributes
+/// nothing.
 pub fn list(roots: &[(String, PathBuf)]) -> Vec<Source> {
+    listing(roots).0
+}
+
+/// [`list`], and how many files past the cap were left out — sorted before
+/// the cap, so the same folder lists the same files every time (review of
+/// #459: capping during the walk kept `read_dir` order).
+pub fn listing(roots: &[(String, PathBuf)]) -> (Vec<Source>, usize) {
     let mut out = Vec::new();
+    let mut scanned = 0usize;
     for (prefix, root) in roots {
         let Ok(root) = root.canonicalize() else {
             continue;
         };
-        walk(&root, &root, prefix, 0, &mut out);
+        walk(&root, &root, prefix, 0, &mut out, &mut scanned);
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
+    let omitted = out.len().saturating_sub(MAX_SOURCES);
     out.truncate(MAX_SOURCES);
-    out
+    (out, omitted)
 }
 
-fn walk(root: &Path, dir: &Path, prefix: &str, depth: usize, out: &mut Vec<Source>) {
-    if depth > MAX_DEPTH || out.len() >= MAX_SOURCES {
+fn walk(
+    root: &Path,
+    dir: &Path,
+    prefix: &str,
+    depth: usize,
+    out: &mut Vec<Source>,
+    scanned: &mut usize,
+) {
+    // `depth` is how many folders below the root `dir` is; its files are
+    // listed only while that is under `MAX_DEPTH`.
+    if depth >= MAX_DEPTH || *scanned >= MAX_SCANNED {
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
+        *scanned += 1;
+        if *scanned >= MAX_SCANNED {
+            return;
+        }
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
             continue;
@@ -138,7 +172,7 @@ fn walk(root: &Path, dir: &Path, prefix: &str, depth: usize, out: &mut Vec<Sourc
         }
         let path = entry.path();
         if meta.is_dir() {
-            walk(root, &path, prefix, depth + 1, out);
+            walk(root, &path, prefix, depth + 1, out, scanned);
             continue;
         }
         if !meta.is_file() {
@@ -311,20 +345,43 @@ pub fn remove(store: &Store, p: &Persona, name: &str) -> Result<(), String> {
 }
 
 /// Whether a document's text is already in the extraction cache, so a chat
-/// reads it without waiting. A text file is always ready.
-pub fn ready(src: &Source, cache: Option<&crate::document::Cache>) -> bool {
+/// reads it without waiting. A text file is always ready; a document over
+/// `max_bytes` never is, since it cannot be extracted — and is not read to
+/// find out (review of #459: hashing it unbounded, every three seconds).
+/// A document's hash is remembered by path, size and modified time, so a
+/// page polling the list does not re-read an unchanged file.
+pub fn ready(src: &Source, cache: Option<&crate::document::Cache>, max_bytes: u64) -> bool {
     match src.kind {
         Kind::Text => true,
-        Kind::Document => cache.is_some_and(|cache| {
-            std::fs::read(&src.path)
-                .map(|bytes| {
-                    cache
-                        .load_layer(&crate::document::sha256_hex(&bytes))
-                        .is_some()
-                })
-                .unwrap_or(false)
-        }),
+        Kind::Document if src.bytes > max_bytes => false,
+        Kind::Document => {
+            let Some(cache) = cache else {
+                return false;
+            };
+            sha_of(src).is_some_and(|sha| cache.load_layer(&sha).is_some())
+        }
     }
+}
+
+type ShaKey = (PathBuf, u64, Option<std::time::SystemTime>);
+static SHAS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<ShaKey, String>>> =
+    std::sync::OnceLock::new();
+
+fn sha_of(src: &Source) -> Option<String> {
+    let modified = std::fs::metadata(&src.path).ok()?.modified().ok();
+    let key = (src.path.clone(), src.bytes, modified);
+    let memo = SHAS.get_or_init(Default::default);
+    if let Some(sha) = memo.lock().ok()?.get(&key) {
+        return Some(sha.clone());
+    }
+    let sha = crate::document::sha256_hex(&std::fs::read(&src.path).ok()?);
+    let mut memo = memo.lock().ok()?;
+    // A long-lived server sees files come and go: a bound, not a leak.
+    if memo.len() > 4096 {
+        memo.clear();
+    }
+    memo.insert(key, sha.clone());
+    Some(sha)
 }
 
 /// A file name as the owner gave it, made safe to save: the last path
@@ -351,6 +408,7 @@ fn tame(name: &str) -> Option<String> {
 /// when there are no files.
 pub async fn first_turn(
     sources: &[Source],
+    omitted: usize,
     extractor: Option<&Extractor>,
     budget_chars: usize,
 ) -> Option<String> {
@@ -397,6 +455,12 @@ pub async fn first_turn(
     } else {
         out.push_str(&whole.join("\n\n"));
     }
+    if omitted > 0 {
+        out.push_str(&format!(
+            "\n\n{omitted} more file(s) are in your folders than are listed here; \
+             the owner can move some into a subfolder or remove them."
+        ));
+    }
     if !unreadable.is_empty() {
         out.push_str("\n\nNot readable:\n");
         for why in unreadable {
@@ -421,14 +485,6 @@ impl FileRead {
             store,
             persona,
             extractor,
-        }
-    }
-
-    fn sources(&self) -> Vec<Source> {
-        let store = Store::load(&self.store);
-        match store.get(&self.persona) {
-            Some(p) => list(&roots(&store, p)),
-            None => Vec::new(),
         }
     }
 }
@@ -482,7 +538,17 @@ impl Tool for FileRead {
             .and_then(Value::as_str)
             .filter(|p| !p.trim().is_empty())
             .unwrap_or("1-5");
-        let sources = self.sources();
+        // `Store::load` and the walk are file I/O: off the runtime.
+        let (store, persona) = (self.store.clone(), self.persona.clone());
+        let sources = tokio::task::spawn_blocking(move || {
+            let store = Store::load(&store);
+            store
+                .get(&persona)
+                .map(|p| list(&roots(&store, p)))
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
         let src = match find(&sources, file) {
             Ok(src) => src,
             Err(why) => return Ok(ToolOutput::err(why)),
@@ -529,8 +595,9 @@ mod tests {
         let own = dir.join("mara/files");
         std::fs::write(own.join(".secret.md"), "hidden").unwrap();
         std::fs::write(own.join("run.sh"), "echo").unwrap();
-        std::fs::create_dir_all(own.join("a/b/c/d")).unwrap();
-        std::fs::write(own.join("a/b/c/d/deep.md"), "too deep").unwrap();
+        std::fs::create_dir_all(own.join("a/b/c")).unwrap();
+        std::fs::write(own.join("a/b/c/deep.md"), "too deep").unwrap();
+        std::fs::write(own.join("a/b/deep-enough.md"), "two folders down").unwrap();
         std::fs::create_dir_all(own.join("topic")).unwrap();
         std::fs::write(own.join("topic/paper.txt"), "nested").unwrap();
         // A link out of the folder — to the persona's own transcripts.
@@ -542,6 +609,7 @@ mod tests {
             [
                 "@all/guide.md",
                 "@kelp/survey.txt",
+                "a/b/deep-enough.md",
                 "notes.md",
                 "topic/paper.txt"
             ]
@@ -615,17 +683,17 @@ mod tests {
     async fn the_first_turn_carries_the_files_whole_or_their_list() {
         let (dir, store, p) = world();
         let sources = list(&roots(&store, &p));
-        let whole = first_turn(&sources, None, 10_000).await.unwrap();
+        let whole = first_turn(&sources, 0, None, 10_000).await.unwrap();
         assert!(whole.starts_with(FILES_STEM), "{whole}");
         assert!(whole.contains("Urchins graze kelp.") && whole.contains("A field guide."));
-        let listed = first_turn(&sources, None, 20).await.unwrap();
+        let listed = first_turn(&sources, 0, None, 20).await.unwrap();
         assert!(listed.contains("too long to include whole") && listed.contains("`notes.md`"));
         assert!(!listed.contains("Urchins graze kelp."));
-        assert!(first_turn(&[], None, 10_000).await.is_none());
+        assert!(first_turn(&[], 0, None, 10_000).await.is_none());
         // A PDF with document reading switched off is said, not dropped.
         std::fs::write(dir.join("mara/files/paper.pdf"), b"%PDF-1.4").unwrap();
         let sources = list(&roots(&store, &p));
-        let block = first_turn(&sources, None, 10_000).await.unwrap();
+        let block = first_turn(&sources, 0, None, 10_000).await.unwrap();
         assert!(
             block.contains("Not readable") && block.contains("switched off"),
             "{block}"
@@ -677,6 +745,63 @@ mod tests {
             caps.private_data && caps.untrusted_input && caps.egress == crate::tool::Egress::None
         );
         let _ = store;
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Past the cap, the same files by name every time, and the first turn
+    /// says how many were left out (review of #459).
+    #[tokio::test]
+    async fn past_the_cap_the_first_by_name_are_listed_and_the_rest_counted() {
+        let (dir, store, p) = world();
+        for i in 0..MAX_SOURCES {
+            std::fs::write(dir.join(format!("mara/files/n{i:03}.md")), "x").unwrap();
+        }
+        let (sources, omitted) = listing(&roots(&store, &p));
+        assert_eq!(sources.len(), MAX_SOURCES);
+        // world()'s three plus MAX_SOURCES more: three left out, by name.
+        assert_eq!(omitted, 3);
+        assert_eq!(sources.first().unwrap().name, "@all/guide.md");
+        assert_eq!(
+            list(&roots(&store, &p)),
+            sources,
+            "the same list every time"
+        );
+        let block = first_turn(&sources, omitted, None, 1).await.unwrap();
+        assert!(block.contains("3 more file(s)"), "{block}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A group called `all` is named apart from everyone's folder.
+    #[test]
+    fn a_group_called_all_is_not_everyone() {
+        let dir = scratch();
+        ensure_layout(&dir).unwrap();
+        add_group(&dir, "all", "a group that happens to be called all").unwrap();
+        let mut n = new("mara");
+        n.groups = vec!["all".into()];
+        create(&dir, &no_lib(), n).unwrap();
+        std::fs::create_dir_all(dir.join("groups/all/files")).unwrap();
+        std::fs::write(dir.join("groups/all/files/g.md"), "group's").unwrap();
+        std::fs::write(dir.join("files/g.md"), "everyone's").unwrap();
+        let store = Store::load(&dir);
+        let p = store.get("mara").unwrap();
+        let sources = list(&roots(&store, p));
+        assert_eq!(names(&sources), ["@all/g.md", "@group:all/g.md"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A document over the extraction cap is never ready, and is not read to
+    /// find out; a text file always is.
+    #[test]
+    fn ready_never_reads_a_document_it_could_not_extract() {
+        let (dir, store, p) = world();
+        std::fs::write(dir.join("mara/files/big.pdf"), vec![0u8; 4096]).unwrap();
+        let sources = list(&roots(&store, &p));
+        let big = find(&sources, "big.pdf").unwrap();
+        let cache = crate::document::Cache::new(dir.join("cache"));
+        assert!(!ready(big, Some(&cache), 1024));
+        assert!(!ready(big, Some(&cache), 1 << 20), "not extracted yet");
+        assert!(ready(find(&sources, "notes.md").unwrap(), None, 0));
         std::fs::remove_dir_all(dir).ok();
     }
 }
