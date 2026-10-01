@@ -17,6 +17,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A persona reads its files.** Each persona has a Files list on its page:
+  add a paper, notes or an image there (or drop them into its `files/`
+  folder), and every new chat with it carries them. If the whole collection
+  fits in about a quarter of the context window, it rides in full in the
+  chat's first turn; otherwise the chat gets the list and reads pages with a
+  new `file_read` tool. A persona also reads its groups' and everyone's
+  `files/`, named `@group/…` and `@all/…`. Files are processed once on upload,
+  one at a time, and the list says which are ready, and why one cannot be
+  read. A chat never waits on a document still being processed: its first
+  turn says the file is on its way, and `file_read` reads it later. A
+  file's words are treated as outside
+  content, so a chat that carried them is marked untrusted and private. With
+  `[security] block_sends_after_private` on, a persona with files therefore
+  stops `web_search` in its chats. `answers = "files"` keeps `file_read`,
+  since that is what reading the files means.
+
 - **`mecha setup` covers every optional feature.** It has a step for each —
   the web app, Slack, mail, docs, the knowledge graph, web search, PDF
   extraction, image generation, personas, voice, incognito chat, the front

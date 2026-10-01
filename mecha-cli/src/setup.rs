@@ -1533,27 +1533,18 @@ async fn prepare_tools_carrying(
     if cfg.documents.is_some() && !feature_on(Feature::Documents) {
         switched_off(Feature::Documents, "document_read");
     }
-    if let Some(docs) = cfg
-        .documents
-        .clone()
-        .filter(|_| feature_on(Feature::Documents))
-    {
+    if cfg.documents.is_some() && feature_on(Feature::Documents) {
         let name = "document_read";
         if (opts.tools.is_empty() || opts.tools.iter().any(|t| t == name))
             && cfg.tools.registers(name)
         {
-            let cache = if docs.cache {
-                mecha_core::document::Cache::default_dir()
-                    .ok()
-                    .map(mecha_core::document::Cache::new)
+            // One construction, shared with a persona's files (§10), so the
+            // cache and confinement rules cannot drift between the two
+            // (review of #459). Its warning names what refused it.
+            if let Some(ex) = document_extractor(&cfg) {
+                registry.insert(Arc::new(mecha_core::tool::document::DocumentRead::new(ex)));
             } else {
-                None
-            };
-            match mecha_core::document::Extractor::new(docs, cache) {
-                Ok(ex) => {
-                    registry.insert(Arc::new(mecha_core::tool::document::DocumentRead::new(ex)));
-                }
-                Err(e) => eprintln!("mecha: document_read not registered — {e:#}"),
+                eprintln!("mecha: document_read not registered — see the warning above");
             }
         }
     }
@@ -1927,13 +1918,52 @@ pub fn persona_provider(
 /// and it gets no hooks, approval policy, outbox or mailbox. Its approver is
 /// read-only: every persona tool today is read-only and never reaches it,
 /// and one that stopped being so is refused rather than approved.
+/// The document extractor `[documents]` configures, when documents are
+/// switched on — what `document_read` reads with, and what a persona's
+/// files are read with (§10). `None` when off or unconfigured: a persona's
+/// text files are still read, its PDFs are not.
+pub fn document_extractor(cfg: &Config) -> Option<mecha_core::document::Extractor> {
+    let docs = cfg.documents.clone().filter(|_| {
+        mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::Documents)
+    })?;
+    let cache = if docs.cache {
+        mecha_core::document::Cache::default_dir()
+            .ok()
+            .map(mecha_core::document::Cache::new)
+    } else {
+        None
+    };
+    mecha_core::document::Extractor::new(docs, cache)
+        .map_err(|e| eprintln!("mecha: the document extractor was not built — {e:#}"))
+        .ok()
+}
+
 pub fn persona_agent(
     bound: &crate::follow::Bound,
     pinned: &mecha_core::persona::agent::Pinned,
     provider: Box<dyn mecha_core::provider::Provider>,
+    store: &std::path::Path,
 ) -> Result<(Agent, Vec<mecha_core::persona::agent::Refused>)> {
     use mecha_core::persona::agent as persona;
-    let tools = persona::registry_as(bound.agent.registry(), &pinned.name, &pinned.settings);
+    let mut tools = persona::registry_as(bound.agent.registry(), &pinned.name, &pinned.settings);
+    // The persona's files (§10): its own reader over its own folders, put in
+    // after the registry is built — so `answers = "files"`, which withholds
+    // what reads beyond them, keeps the one tool that reads them — and never
+    // in the assistant's registry, which has no persona to read for. Over
+    // the store the caller's chats live in, never a second guess at it.
+    let reader = mecha_core::persona::files::FileRead::new(
+        store.to_path_buf(),
+        pinned.name.clone(),
+        document_extractor(&bound.config).map(Arc::new),
+    );
+    // It skips `registry_as`'s refusal of anything that can aim: so it
+    // must never be able to, and is left out — in a release build too —
+    // if it ever could (review of #459).
+    if mecha_core::tool::Tool::capabilities(&reader).egress == mecha_core::tool::Egress::None {
+        tools.registry.insert(Arc::new(reader));
+    } else {
+        eprintln!("mecha: file_read can send, so this persona chat goes without it");
+    }
     let system = persona::system_prompt(pinned)?;
     let ctx = bound.agent.ctx();
     let agent = Agent::new(

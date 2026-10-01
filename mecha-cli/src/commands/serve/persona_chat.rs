@@ -28,6 +28,7 @@ use axum::Json;
 use mecha_core::agent::{Agent, AgentEvent, Conversation};
 use mecha_core::message::{Message, Usage};
 use mecha_core::persona::agent::{self as persona_agent, Pinned, Refused};
+use mecha_core::persona::files::{readiness, Readiness};
 use mecha_core::persona::{judge, safety};
 use mecha_core::persona::{Persona, Store};
 use mecha_core::session::{Record, Session, SessionMeta};
@@ -83,6 +84,17 @@ pub struct PersonaChats {
     /// persona follows the router's model as the assistant does (§3.4).
     agents: StdMutex<HashMap<(String, String), Built>>,
     provider: ProviderFactory,
+    /// Files being read for the first time after an upload (§10.3), so the
+    /// page can say "processing" rather than "not yet read".
+    /// With when each began — `None` while it waits its turn — so a read
+    /// whose task died stops reading as "processing" after a while rather
+    /// than for the life of the server, and a long queue is not taken for
+    /// dead reads and queued again.
+    processing: Arc<StdMutex<HashMap<PathBuf, Option<std::time::Instant>>>>,
+    /// One background read at a time: each takes a layout child and a share
+    /// of the one on-demand OCR model, so twenty unread papers are a queue,
+    /// not twenty extractions at once (review of #459, pass 7).
+    reading: Arc<tokio::sync::Semaphore>,
 }
 
 struct PersonaSession {
@@ -252,6 +264,52 @@ fn refused_json(refused: &[Refused]) -> serde_json::Value {
     )
 }
 
+/// The document reader as `setup::document_extractor` would build it: its
+/// cap (`0` while document reading is switched off, so nothing is "ready"
+/// that no chat could read) and whether `[documents] cache` keeps its reads
+/// — read off the config, never by building an extractor on every poll.
+/// A readiness that consulted a cache the reader never writes is how every
+/// document read "not read yet" forever with the cache off (review of
+/// #459, pass 7).
+fn reader_shape(config: &mecha_core::config::Config) -> (u64, bool) {
+    config
+        .documents
+        .as_ref()
+        .filter(|_| {
+            mecha_core::feature::switched_on(config, mecha_core::feature::Feature::Documents)
+        })
+        // A `[documents]` that will not build a reader is no reader: refused,
+        // not promised (review of #459, pass 8). `files_block` builds the
+        // real one and asks it; this is the poll's cheap check.
+        .filter(|d| d.validate().is_ok())
+        .map(|d| (d.max_file_bytes(), d.cache))
+        .unwrap_or((0, false))
+}
+
+/// Whether a turn should carry the persona's files: only before the chat's
+/// first reply, so they land in `messages[0]` — the one message compaction
+/// keeps whole. Any later, they would sit mid-conversation, a compaction
+/// would summarise them away, and the next turn would fold the whole
+/// collection back in just after context ran short (review of #459, pass
+/// 8). A file added while a chat is open reaches the next chat; this one
+/// can still read it with `file_read`, which lists the folders live. The
+/// owner's turns only, as `Taint::arm_for_content` reads the stem: the two
+/// must agree on what "carried" means.
+fn carries_files_now(messages: &[Message]) -> bool {
+    !messages
+        .iter()
+        .any(|m| m.role == mecha_core::message::Role::Assistant)
+        && !mecha_core::persona::files::carries(messages)
+}
+
+/// The extraction cache, where the reader keeps one.
+fn reader_cache(cached: bool) -> Option<mecha_core::document::Cache> {
+    cached
+        .then(mecha_core::document::Cache::default_dir)
+        .and_then(Result::ok)
+        .map(mecha_core::document::Cache::new)
+}
+
 impl PersonaChats {
     pub fn new() -> Result<Self> {
         Ok(Self::with(
@@ -268,6 +326,8 @@ impl PersonaChats {
             sessions: Mutex::new(HashMap::new()),
             agents: StdMutex::new(HashMap::new()),
             provider,
+            processing: Arc::default(),
+            reading: Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 
@@ -310,7 +370,8 @@ impl PersonaChats {
         {
             return Ok((Arc::clone(&b.agent), b.refused.clone()));
         }
-        let (agent, refused) = crate::setup::persona_agent(bound, pinned, (self.provider)(bound)?)?;
+        let (agent, refused) =
+            crate::setup::persona_agent(bound, pinned, (self.provider)(bound)?, &self.store)?;
         let agent = Arc::new(agent);
         agents.retain(|_, b| b.generation == bound.generation);
         agents.insert(
@@ -973,6 +1034,242 @@ impl PersonaChats {
     /// The chat's workspace, behind the lock as every door here is: the
     /// pictures it drew and the masks the owner painted are the chat's, so a
     /// locked persona's answer 404 without the token, as its words do.
+    /// The files `name` can read (§10.2): its own, its groups', everyone's,
+    /// each with whether its text is already extracted.
+    pub async fn sources(
+        &self,
+        chat: &Arc<ChatState>,
+        library: &LibraryState,
+        name: &str,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        // Read off the config rather than by building an extractor on every
+        // poll (review of #459).
+        let (max_bytes, cached) = reader_shape(&chat.follower.current().config);
+        let store_dir = self.store.clone();
+        // A read longer than this has died, or is not worth a spinner.
+        const STALE: std::time::Duration = std::time::Duration::from_secs(600);
+        let processing: std::collections::HashSet<PathBuf> = self
+            .processing
+            .lock()
+            .map(|mut s| {
+                s.retain(|_, since| since.is_none_or(|t| t.elapsed() < STALE));
+                s.keys().cloned().collect()
+            })
+            .unwrap_or_default();
+        // Hashing every document to ask the cache is file I/O: off the
+        // runtime.
+        let rows = tokio::task::spawn_blocking(move || {
+            let store = Store::load(&store_dir);
+            let cache = reader_cache(cached);
+            let sources =
+                mecha_core::persona::files::list(&mecha_core::persona::files::roots(&store, &p));
+            sources
+                .iter()
+                .map(|s| {
+                    let state = readiness(s, cache.as_ref(), max_bytes);
+                    serde_json::json!({
+                        "name": s.name,
+                        "bytes": s.bytes,
+                        "kind": match s.kind {
+                            mecha_core::persona::files::Kind::Document => "document",
+                            mecha_core::persona::files::Kind::Text => "text",
+                        },
+                        "shared": s.name.starts_with('@'),
+                        // Ready, or why it never will be; "processing"
+                        // says a read is queued or running.
+                        "ready": matches!(state, Readiness::Ready),
+                        // Read when a chat asks: nothing keeps a read ahead.
+                        "on_request": matches!(state, Readiness::OnRequest),
+                        "unreadable": match &state {
+                            Readiness::Refused(why) => Some(why.as_str()),
+                            _ => None,
+                        },
+                        "processing": processing.contains(&s.path),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("listing files: {e}")))?;
+        Ok(serde_json::json!({ "sources": rows }))
+    }
+
+    /// Add a file the owner dropped on `name`'s page to its own folder
+    /// (§10.3), then read it once in the background so the first chat that
+    /// uses it does not wait.
+    pub async fn add_source(
+        &self,
+        chat: &Arc<ChatState>,
+        library: &LibraryState,
+        name: &str,
+        file_name: &str,
+        token: Option<&str>,
+        body: axum::body::Bytes,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let store_dir = self.store.clone();
+        let file_name = file_name.to_string();
+        let config = chat.follower.current().config.clone();
+        let (max_bytes, cached) = reader_shape(&config);
+        let (saved, src) = tokio::task::spawn_blocking(move || {
+            let store = Store::load(&store_dir);
+            let saved = mecha_core::persona::files::add(&store, &p, &file_name, &body)?;
+            let own = store.files_roots(&p).into_iter().next();
+            let src = own.and_then(|root| {
+                let listed = mecha_core::persona::files::list(&[(String::new(), root)]);
+                mecha_core::persona::files::find(&listed, &saved)
+                    .ok()
+                    .cloned()
+            });
+            // Read only what a read would leave in the cache, as
+            // `files_block` does: not with the cache off, not a file that
+            // will be refused (review of #459, pass 9).
+            let cache = reader_cache(cached);
+            let src = src.filter(|s| readiness(s, cache.as_ref(), max_bytes) == Readiness::Reading);
+            Ok::<_, String>((saved, src))
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("saving the file: {e}")))?
+        .map_err(Refusal::Bad)?;
+        if let (Some(src), Some(extractor)) = (src, crate::setup::document_extractor(&config)) {
+            self.read_in_background(src, Arc::new(extractor));
+        }
+        Ok(serde_json::json!({ "name": saved }))
+    }
+
+    /// Take one of `name`'s own files out of reach (§10.3).
+    pub async fn remove_source(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        file: &str,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let store_dir = self.store.clone();
+        let file = file.to_string();
+        tokio::task::spawn_blocking(move || {
+            mecha_core::persona::files::remove(&Store::load(&store_dir), &p, &file)
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("removing the file: {e}")))?
+        .map_err(Refusal::Bad)?;
+        Ok(serde_json::json!({ "removed": true }))
+    }
+
+    /// What this persona's files say for a chat's first turn (§10.4): all
+    /// their text when it fits about a quarter of the context window (D15),
+    /// or the list to read with `file_read`. `None` with no files.
+    async fn files_block(&self, name: &str, bound: &crate::follow::Bound) -> Option<String> {
+        let (store_dir, name) = (self.store.clone(), name.to_string());
+        let config = &bound.config;
+        let extractor = crate::setup::document_extractor(config).map(Arc::new);
+        let (max_bytes, cached) = match extractor {
+            Some(_) => reader_shape(config),
+            // No reader was built, whatever the config says: nothing waits
+            // on one (review of #459, pass 8).
+            None => (0, false),
+        };
+        // The store, the walk and the readiness hashes are file I/O: off the
+        // runtime.
+        let (sources, omitted, states) = tokio::task::spawn_blocking(move || {
+            let store = Store::load(&store_dir);
+            let p = store.get(&name)?;
+            let (sources, omitted) =
+                mecha_core::persona::files::listing(&mecha_core::persona::files::roots(&store, p));
+            let cache = reader_cache(cached);
+            let states: HashMap<PathBuf, Readiness> = sources
+                .iter()
+                .map(|s| (s.path.clone(), readiness(s, cache.as_ref(), max_bytes)))
+                .collect();
+            Some((sources, omitted, states))
+        })
+        .await
+        .map_err(|e| tracing::warn!("a persona's files were not listed: {e}"))
+        .ok()
+        .flatten()?;
+        if sources.is_empty() {
+            return None;
+        }
+        // What the first turn cannot include yet is read in the background,
+        // so a later `file_read` — or the next chat — finds it ready. Only
+        // what a read would leave in the cache: a refused file never will
+        // be, and with the cache off the read would be thrown away.
+        if let Some(extractor) = &extractor {
+            for src in sources
+                .iter()
+                .filter(|s| states.get(&s.path) == Some(&Readiness::Reading))
+            {
+                self.read_in_background(src.clone(), Arc::clone(extractor));
+            }
+        }
+        // A quarter of the window in tokens, at about four characters a
+        // token, is about the window's size in characters.
+        let budget = bound.context_window.unwrap_or(32_768) as usize;
+        mecha_core::persona::files::first_turn(
+            &sources,
+            omitted,
+            extractor.as_deref(),
+            budget,
+            &|s| {
+                states
+                    .get(&s.path)
+                    .cloned()
+                    // Listed since the walk: not seen, so not read here.
+                    .unwrap_or(Readiness::Reading)
+            },
+        )
+        .await
+    }
+
+    /// Read a document once in the background (§10.3), so a chat that wants
+    /// it later does not wait — after an upload, and for whatever a first
+    /// turn could not include yet. Marked processing while it waits and
+    /// while it runs; a file already queued or being read is left to that
+    /// read.
+    fn read_in_background(
+        &self,
+        src: mecha_core::persona::files::Source,
+        extractor: Arc<mecha_core::document::Extractor>,
+    ) {
+        let processing = Arc::clone(&self.processing);
+        match processing.lock() {
+            Ok(mut set) => {
+                if set.contains_key(&src.path) {
+                    return;
+                }
+                set.insert(src.path.clone(), None);
+            }
+            Err(_) => return,
+        }
+        let reading = Arc::clone(&self.reading);
+        tokio::spawn(async move {
+            // Its turn: one read at a time, timed from when it starts.
+            let Ok(_turn) = reading.acquire_owned().await else {
+                return;
+            };
+            if let Ok(mut set) = processing.lock() {
+                set.insert(src.path.clone(), Some(std::time::Instant::now()));
+            }
+            if let Err(e) =
+                mecha_core::persona::files::read(&src, Some(&extractor), "all", None).await
+            {
+                tracing::warn!("a persona file was not read: {}", e.why);
+            }
+            if let Ok(mut set) = processing.lock() {
+                set.remove(&src.path);
+            }
+        });
+    }
+
     pub async fn workspace_of(
         &self,
         library: &LibraryState,
@@ -1142,7 +1439,7 @@ impl PersonaChats {
                 "`{name}` is not approved — `mecha persona approve {name}` after reading it"
             )));
         }
-        let (pinned, notices, early_pause) = {
+        let (pinned, notices, early_pause, wants_files) = {
             let mut sessions = self.sessions.lock().await;
             let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
             if ps.live.is_some() {
@@ -1160,7 +1457,18 @@ impl PersonaChats {
                 && !ps
                     .crisis_paused_at
                     .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
-            (Arc::clone(&ps.pinned), ps.events.clone(), early_pause)
+            // The persona's files ride before the chat's first reply (§10.4),
+            // listed here and read outside the lock.
+            let wants_files = ps
+                .conversation
+                .as_ref()
+                .is_some_and(|c| carries_files_now(&c.messages));
+            (
+                Arc::clone(&ps.pinned),
+                ps.events.clone(),
+                early_pause,
+                wants_files,
+            )
         };
         if chat.stopping.is_cancelled() {
             return Err(Refusal::Failed("server is shutting down".into()));
@@ -1215,6 +1523,10 @@ impl PersonaChats {
             Vec::new()
         };
         let shown = images.len();
+        let files_block = match (&ready, wants_files) {
+            (Some((bound, _)), true) => self.files_block(&name, bound).await,
+            _ => None,
+        };
 
         let mut sessions = self.sessions.lock().await;
         // Under the lock `stop` takes, so a turn is either cancelled by it or
@@ -1231,6 +1543,10 @@ impl PersonaChats {
         let Some(mut conversation) = ps.conversation.take() else {
             return Err(Refusal::Conflict("a turn is still finishing".into()));
         };
+        // Asked again with the conversation in hand: `wants_files` was read
+        // under the first lock, two awaits ago, and a turn that finished in
+        // between may have carried the files already (review of #459).
+        let files_block = files_block.filter(|_| carries_files_now(&conversation.messages));
         // The session goal rides in the first turn, never the system prompt,
         // so setting one costs the persona's cached prefix nothing (§6).
         let goal = ps.goal.take();
@@ -1287,6 +1603,13 @@ impl PersonaChats {
             if let Some(last) = conversation.messages.last_mut() {
                 last.content.extend(images);
             }
+            // Folded too: a first turn that died before any reply leaves the
+            // owner's message as the tail, and the files must still ride in
+            // `messages[0]` (review of #459). Past a reply they never ride
+            // (`carries_files_now`).
+            if let Some(files) = &files_block {
+                mecha_core::agent::append_user_text(&mut conversation.messages, files.clone());
+            }
             if let Some(anchor) = &anchor {
                 mecha_core::agent::append_user_text(&mut conversation.messages, anchor.clone());
             }
@@ -1298,6 +1621,14 @@ impl PersonaChats {
         } else {
             let mut user = Message::user(&said);
             user.content.extend(images);
+            // The files, in the harness's voice like the anchor below
+            // (`FILES_STEM` is registered): never the owner's words, and
+            // armed untrusted and private by `Taint::arm_for_content`.
+            if let Some(files) = &files_block {
+                user.content.push(mecha_core::message::Block::Text {
+                    text: files.clone(),
+                });
+            }
             // Its own block, in the harness's registered voice: never drawn in
             // the owner's bubble, never read as the owner's words.
             if let Some(anchor) = &anchor {
@@ -2364,6 +2695,72 @@ pub async fn upload(
     }
 }
 
+/// GET /api/personas/{name}/sources — the files it can read.
+pub async fn sources(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(q): Query<UnlockQuery>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c.clone(),
+        Err(resp) => return resp,
+    };
+    respond(
+        chat.personas
+            .sources(&chat, &state.library, &name, q.unlock.as_deref())
+            .await,
+    )
+}
+
+/// POST /api/personas/{name}/sources?name= — a file into its own folder.
+pub async fn add_source(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(q): Query<UploadQuery>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c.clone(),
+        Err(resp) => return resp,
+    };
+    respond(
+        chat.personas
+            .add_source(
+                &chat,
+                &state.library,
+                &name,
+                &q.name,
+                q.unlock.as_deref(),
+                body,
+            )
+            .await,
+    )
+}
+
+#[derive(serde::Deserialize)]
+pub struct RemoveSourceBody {
+    file: String,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// POST /api/personas/{name}/sources/remove — one of its own files out of reach.
+pub async fn remove_source(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<RemoveSourceBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c.clone(),
+        Err(resp) => return resp,
+    };
+    respond(
+        chat.personas
+            .remove_source(&state.library, &name, &body.file, body.unlock.as_deref())
+            .await,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2650,7 +3047,8 @@ mod tests {
             "the assistant's prompt leaked:\n{system}"
         );
         let tools: Vec<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(tools, vec!["image_view"]);
+        // `file_read` is every persona's (§10), whatever `[tools] allow` says.
+        assert_eq!(tools, vec!["file_read", "image_view"]);
         // The goal rode in the first turn, not the system prompt.
         let first = req.messages[0].text();
         assert!(first.starts_with("(What I want from this conversation: Plan the kelp survey)"));
@@ -2673,6 +3071,132 @@ mod tests {
             .unwrap();
         assert_eq!(t["persona"], "mara");
         assert_eq!(t["running"], false);
+    }
+
+    /// A persona's files ride in the first turn that runs the model (§10.4),
+    /// once: the block is the harness's — never drawn in the owner's bubble —
+    /// and the chat that carried it is untrusted (§10.6).
+    #[tokio::test]
+    async fn the_personas_files_ride_in_the_first_turn_once() {
+        let w = world();
+        std::fs::write(
+            w.store().join("mara/files/urchins.md"),
+            "Sea urchins graze kelp holdfasts.",
+        )
+        .unwrap();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        turn(&w, &key, "What do urchins do?").await;
+        turn(&w, &key, "And then?").await;
+
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2);
+        let first = seen[0].messages[0].text();
+        assert!(first.contains("What do urchins do?"), "{first}");
+        assert!(
+            first.contains(mecha_core::persona::files::FILES_STEM)
+                && first.contains("Sea urchins graze kelp holdfasts."),
+            "{first}"
+        );
+        // Once: the second turn's own message carries no second copy.
+        let second = seen[1].messages.last().unwrap().text();
+        assert!(second.contains("And then?"), "{second}");
+        assert!(
+            !second.contains(mecha_core::persona::files::FILES_STEM),
+            "{second}"
+        );
+
+        // The owner's bubble is the owner's words; the chat is untrusted.
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        let bubbles: Vec<String> = t["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "user")
+            .map(|e| e["text"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(bubbles, ["What do urchins do?", "And then?"], "{t}");
+        assert_eq!(t["taint"]["untrusted"], true, "{t}");
+    }
+
+    /// Pass 8 of #459: the files ride before the first reply or not at all.
+    /// Mid-conversation a compaction would summarise them away and the next
+    /// turn would fold the whole collection back in; so a file added to an
+    /// open chat reaches the next chat, and this one reads it on request.
+    #[tokio::test]
+    async fn a_file_added_after_the_first_reply_waits_for_the_next_chat() {
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        turn(&w, &key, "Hello").await;
+        std::fs::write(
+            w.store().join("mara/files/urchins.md"),
+            "Sea urchins graze kelp holdfasts.",
+        )
+        .unwrap();
+        turn(&w, &key, "Anything new?").await;
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2);
+        assert!(
+            seen[1]
+                .messages
+                .iter()
+                .all(|m| !m.text().contains(mecha_core::persona::files::FILES_STEM)),
+            "{:?}",
+            seen[1].messages
+        );
+    }
+
+    /// A first turn that folds into the owner's tail — the state a first
+    /// turn that died before any reply leaves — still carries the files
+    /// (review of #459: the fold path dropped them).
+    #[tokio::test]
+    async fn the_files_ride_a_folded_first_turn_too() {
+        let w = world();
+        std::fs::write(
+            w.store().join("mara/files/urchins.md"),
+            "Urchins graze kelp.",
+        )
+        .unwrap();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        {
+            let personas = w.personas();
+            let mut sessions = personas.sessions.lock().await;
+            let ps = sessions.get_mut(&key).unwrap();
+            ps.conversation
+                .as_mut()
+                .unwrap()
+                .push(Message::user("a turn that was cancelled"));
+        }
+        turn(&w, &key, "Go on").await;
+        let seen = w.seen.lock().unwrap().clone();
+        let first = seen[0].messages[0].text();
+        assert!(
+            first.contains("a turn that was cancelled") && first.contains("Go on"),
+            "{first}"
+        );
+        assert!(
+            first.contains(mecha_core::persona::files::FILES_STEM)
+                && first.contains("Urchins graze kelp."),
+            "{first}"
+        );
     }
 
     #[tokio::test]
@@ -4554,5 +5078,53 @@ mod tests {
                 .await;
             assert!(r.is_err(), "{key}");
         }
+    }
+
+    /// Pass 7 of #459: one background read at a time. Each takes a layout
+    /// child and a share of the one OCR model, so a collection opened in
+    /// one chat is a queue — every file marked processing, none started
+    /// until the one before it is done.
+    #[tokio::test]
+    async fn background_reads_wait_their_turn() {
+        let chats = PersonaChats::for_tests();
+        let extractor = Arc::new(
+            mecha_core::document::Extractor::new(
+                mecha_core::document::DocumentsConfig::default(),
+                None,
+            )
+            .unwrap(),
+        );
+        // Held here, as a read in progress would hold it.
+        let busy = Arc::clone(&chats.reading).acquire_owned().await.unwrap();
+        let dir = std::env::temp_dir().join(format!("mecha-queue-{}", uuid::Uuid::new_v4()));
+        for n in 0..3 {
+            chats.read_in_background(
+                mecha_core::persona::files::Source {
+                    name: format!("p{n}.pdf"),
+                    // Nothing there: the read fails at once when its turn comes.
+                    path: dir.join(format!("p{n}.pdf")),
+                    bytes: 10,
+                    kind: mecha_core::persona::files::Kind::Document,
+                },
+                Arc::clone(&extractor),
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        {
+            let queued = chats.processing.lock().unwrap();
+            assert_eq!(queued.len(), 3, "every file reads as processing");
+            assert!(
+                queued.values().all(Option::is_none),
+                "none started while another read holds the turn: {queued:?}"
+            );
+        }
+        drop(busy);
+        for _ in 0..100 {
+            if chats.processing.lock().unwrap().is_empty() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("the queue never drained");
     }
 }
