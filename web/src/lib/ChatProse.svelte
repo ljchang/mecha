@@ -17,9 +17,10 @@
   // — Copy and Download act on the reply as written, and every code block
   // gets its own Copy (owner request, 2026-10-01). Left out while a reply
   // streams: half an answer is not one to save. `download` is opted into by
-  // each call site, never assumed: a file on the device outlives the room,
-  // so an incognito chat keeps Copy and has no Download (INCOGNITO-DESIGN
-  // R2), and a surface that forgets to say fails closed (review of #484).
+  // each call site, never assumed, so a surface that forgets to say fails
+  // closed (review of #484). Every chat opts in, incognito included (owner,
+  // 2026-10-01): the file is made in the browser, so the server keeps no
+  // trace, and saving it is the owner's own act (INCOGNITO-DESIGN §1).
   import { onDestroy } from 'svelte';
   import { parseBlocks, hiddenTarget } from './mail-markdown.js';
   import { citeNote, citeOpens, citeMark, citeUnmark } from './persona.js';

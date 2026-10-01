@@ -763,6 +763,9 @@ fn a_test_chat_never_becomes_a_memory_and_an_unreadable_one_is_said() {
         p.due.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
         ["real"]
     );
+    // The id is the file's stem: the persona page joins episodes to chats on
+    // it (#479), so it must never become anything else.
+    assert_eq!(p.due[0].1.file_stem().unwrap(), "real");
     assert_eq!(p.marked, 2);
     assert_eq!(p.problems.len(), 1, "{:?}", p.problems);
     assert!(p.problems[0].contains("torn"));

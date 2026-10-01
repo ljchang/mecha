@@ -810,3 +810,364 @@ fn a_store_from_before_the_ledger_upgrades_and_reads_as_never_written() {
     m.write_stretch("c1", 0, 3, |_| Ok(())).unwrap().unwrap();
     assert_eq!(m.written_upto("c1").unwrap(), 3);
 }
+
+fn recall_words(m: &Memory, q: &str) -> Vec<String> {
+    let kinds = [
+        Recallable::Episodes,
+        Recallable::Facts(Table::Persona),
+        Recallable::Facts(Table::User),
+        Recallable::Facts(Table::Inferred),
+    ];
+    m.recall_search(q, None, &kinds, &|_| false, 5)
+        .unwrap()
+        .0
+        .into_iter()
+        .map(|r| r.text)
+        .collect()
+}
+
+#[test]
+fn recall_finds_by_words_and_never_a_candidate_or_a_withdrawn_record() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    m.add_fact(
+        Table::Persona,
+        fact(
+            "We call the kelp project Holdfast.",
+            Kind::Observed,
+            "c1",
+            Origin::ModelClean,
+        ),
+    )
+    .unwrap();
+    m.add_fact(
+        Table::Persona,
+        fact(
+            "A page said Holdfast sings.",
+            Kind::Observed,
+            "c1",
+            Origin::ModelUntrusted,
+        ),
+    )
+    .unwrap();
+    let old = m
+        .add_fact(
+            Table::User,
+            fact(
+                "Holdfast is due in May.",
+                Kind::Stated,
+                "c1",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    m.correct(&old.uid, "Holdfast is due in June.").unwrap();
+    let found = recall_words(&m, "what about holdfast?");
+    assert!(found.contains(&"We call the kelp project Holdfast.".to_string()));
+    assert!(found.contains(&"Holdfast is due in June.".to_string()));
+    assert!(
+        !found.iter().any(|t| t.contains("sings")),
+        "a candidate: {found:?}"
+    );
+    assert!(
+        !found.iter().any(|t| t.contains("May")),
+        "withdrawn: {found:?}"
+    );
+    assert!(recall_words(&m, "something else entirely").is_empty());
+}
+
+#[test]
+fn a_store_from_before_the_index_is_indexed_when_it_upgrades() {
+    let dir = store(&["mara"]);
+    {
+        let m = Memory::open(&dir, "mara").unwrap();
+        m.add_fact(
+            Table::User,
+            fact(
+                "Teaches a seminar on kelp.",
+                Kind::Stated,
+                "c1",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+        m.conn
+            .execute_batch("DROP TABLE recall_fts; DROP TABLE vectors; PRAGMA user_version = 2;")
+            .unwrap();
+    }
+    let ro = Memory::open_existing(&dir, "mara").unwrap().unwrap();
+    assert!(
+        recall_words(&ro, "kelp seminar").is_empty(),
+        "no index, no recall, no error"
+    );
+    drop(ro);
+    let m = Memory::open(&dir, "mara").unwrap();
+    assert_eq!(
+        recall_words(&m, "kelp seminar"),
+        ["Teaches a seminar on kelp."]
+    );
+}
+
+#[test]
+fn meaning_needs_a_floor_and_recency_breaks_ties() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let a = m
+        .add_fact(
+            Table::User,
+            fact("Likes the sea.", Kind::Stated, "c1", Origin::ModelClean),
+        )
+        .unwrap();
+    // Timestamps are to the millisecond; a fast runner wrote both in one
+    // (CI on #481), leaving no recency to break the tie with.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let b = m
+        .add_fact(
+            Table::User,
+            fact("Owns a boat.", Kind::Stated, "c1", Origin::ModelClean),
+        )
+        .unwrap();
+    m.store_vectors(&[
+        (a.uid.clone(), vec![1.0, 0.0]),
+        (b.uid.clone(), vec![0.0, 1.0]),
+    ])
+    .unwrap();
+    let kinds = [Recallable::Facts(Table::User)];
+    // Near `a` only: `b` is orthogonal, under the floor.
+    let (found, meaning) = m
+        .recall_search("zzz", Some(&[1.0, 0.1]), &kinds, &|_| false, 5)
+        .unwrap();
+    assert!(meaning);
+    assert_eq!(
+        found.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+        ["Likes the sea."]
+    );
+    // Equal by meaning: the newer comes first.
+    let (found, _) = m
+        .recall_search("zzz", Some(&[1.0, 1.0]), &kinds, &|_| false, 5)
+        .unwrap();
+    assert_eq!(found[0].text, "Owns a boat.", "{found:?}");
+    // A vector of another model's length is never compared.
+    let (found, meaning) = m
+        .recall_search("zzz", Some(&[1.0, 0.0, 0.0]), &kinds, &|_| false, 5)
+        .unwrap();
+    assert!(!meaning && found.is_empty());
+}
+
+#[test]
+fn forgetting_takes_a_record_out_of_the_index_and_its_vector_with_it() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let f = m
+        .add_fact(
+            Table::User,
+            fact(
+                "Grows zqxjkvbw orchids.",
+                Kind::Stated,
+                "c1",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    m.store_vectors(&[(f.uid.clone(), vec![1.0, 0.0])]).unwrap();
+    for i in 0..20 {
+        m.add_fact(
+            Table::User,
+            fact(
+                &format!("filler {i}"),
+                Kind::Stated,
+                "c2",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    }
+    forget(&dir, "mara", &f.uid).unwrap();
+    assert!(recall_words(&m, "zqxjkvbw orchids").is_empty());
+    let left: i64 = m
+        .conn
+        .query_row("SELECT count(*) FROM vectors", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0);
+    for name in [MEMORY_DB, "memory.db-wal"] {
+        if let Ok(bytes) = std::fs::read(dir.join("mara").join(name)) {
+            assert!(
+                !bytes.windows(8).any(|w| w == b"zqxjkvbw"),
+                "the term survives in {name}"
+            );
+        }
+    }
+    // And forgetting a chat does the same.
+    m.add_fact(
+        Table::User,
+        fact("Keeps bees.", Kind::Stated, "c9", Origin::ModelClean),
+    )
+    .unwrap();
+    forget_chat(&dir, "mara", "c9").unwrap();
+    assert!(recall_words(&m, "bees").is_empty());
+}
+
+#[test]
+fn a_common_word_alone_recalls_nothing() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    m.add_fact(
+        Table::Persona,
+        fact(
+            "Named the kelp project Holdfast.",
+            Kind::Observed,
+            "c1",
+            Origin::ModelClean,
+        ),
+    )
+    .unwrap();
+    assert!(recall_words(&m, "Thanks, that is all for the day").is_empty());
+    assert_eq!(
+        recall_words(&m, "the kelp?"),
+        ["Named the kelp project Holdfast."]
+    );
+}
+
+#[test]
+fn an_upgrade_run_twice_indexes_each_record_once() {
+    let dir = store(&["mara"]);
+    let f = {
+        let m = Memory::open(&dir, "mara").unwrap();
+        let f = m
+            .add_fact(
+                Table::User,
+                fact("Keeps bees.", Kind::Stated, "c1", Origin::ModelClean),
+            )
+            .unwrap();
+        // As a second opener sees it: it read version 2 before the first
+        // one's upgrade committed.
+        m.conn.pragma_update(None, "user_version", 2).unwrap();
+        f
+    };
+    let m = Memory::open(&dir, "mara").unwrap();
+    let n: i64 = m
+        .conn
+        .query_row(
+            "SELECT count(*) FROM recall_fts WHERE uid = ?1",
+            [&f.uid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+}
+
+#[test]
+fn withdrawn_rows_never_crowd_the_live_one_out_of_a_word_search() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    for i in 0..250 {
+        let f = m
+            .add_fact(
+                Table::User,
+                fact(
+                    &format!("Holdfast note {i}."),
+                    Kind::Stated,
+                    "c1",
+                    Origin::ModelClean,
+                ),
+            )
+            .unwrap();
+        m.invalidate(&f.uid).unwrap();
+    }
+    m.add_fact(
+        Table::User,
+        fact(
+            "Holdfast is due in June.",
+            Kind::Stated,
+            "c2",
+            Origin::ModelClean,
+        ),
+    )
+    .unwrap();
+    assert_eq!(recall_words(&m, "holdfast"), ["Holdfast is due in June."]);
+}
+
+#[test]
+fn an_episode_is_indexed_and_embedded_as_prose_never_json() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let ep = |summary: &str| NewEpisode {
+        source: Some(src("c1")),
+        summary: summary.into(),
+        topics: vec!["kelp".into()],
+        origin: Origin::ModelClean,
+        model: "m".into(),
+        ..NewEpisode::default()
+    };
+    let live = m.add_episode(ep("Named the project.")).unwrap();
+    // Backfilled: a store from before the index, upgraded.
+    let old = m.add_episode(ep("Planned the survey.")).unwrap();
+    m.conn
+        .execute_batch("DROP TABLE recall_fts; DROP TABLE vectors; PRAGMA user_version = 2;")
+        .unwrap();
+    drop(m);
+    let m = Memory::open(&dir, "mara").unwrap();
+    for uid in [&live.uid, &old.uid] {
+        let text: String = m
+            .conn
+            .query_row("SELECT text FROM recall_fts WHERE uid = ?1", [uid], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(!text.contains('[') && text.contains("kelp"), "{text}");
+    }
+    for (_, text) in m.unembedded(10).unwrap() {
+        assert!(!text.contains('[') && !text.contains('"'), "{text}");
+    }
+}
+
+#[test]
+fn equal_by_words_and_recency_the_newer_wins() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    // A: the better word match, older. B: the weaker match, newer. Their
+    // word and recency ranks are swapped, so the fused scores tie exactly.
+    let a = m
+        .add_fact(
+            Table::User,
+            fact(
+                "Holdfast holdfast kelp.",
+                Kind::Stated,
+                "c1",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let b = m
+        .add_fact(
+            Table::User,
+            fact(
+                "Holdfast, among many other words here.",
+                Kind::Stated,
+                "c1",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    // The older gets the lower uid, so a tie broken by uid alone always picks
+    // it: the old rule fails here every time, not half the time.
+    for (uid, to) in [
+        (&a.uid, "00000000000000000000000000000001"),
+        (&b.uid, "ffffffffffffffffffffffffffffffff"),
+    ] {
+        for table in ["user_facts", "recall_fts"] {
+            m.conn
+                .execute(
+                    &format!("UPDATE {table} SET uid = ?2 WHERE uid = ?1"),
+                    [uid, to],
+                )
+                .unwrap();
+        }
+    }
+    let found = recall_words(&m, "holdfast kelp");
+    assert_eq!(
+        found[0], "Holdfast, among many other words here.",
+        "{found:?}"
+    );
+}
