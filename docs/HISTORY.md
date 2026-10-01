@@ -14,6 +14,69 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-10-01 — modular installs, step 4: setup reads the registry, and a
+trial carries its switches (#460, #461, #464, #466, #470, #472, #474).**
+Each was merged on a clean review pass — by the mecha-d7 lane, and #474
+by mecha-5d's under the owner's "merge everything" — and the first six went
+live in mecha-d7's deploys of `9f306d8f` (#460, #461), `85ca4dfe` (#464,
+#466) and `6565cfd8` (#470, #472); HANDOFF's dated machine-state log has
+each. #474 was merged and not yet deployed when this was written.
+#470, #472 and #474 carry the owner's five rulings of the same day on the
+questions #464 and #466 left open; ruling 3 needed no code, and ruling 5's
+wording rode in #470.
+
+- **4a, #460:** `onboarding::plan`'s feature steps come from `feature::all`
+  (`onboarding::feature_steps`), replacing the hand-kept integration steps
+  and 1a's `feature-<id>` offers. A switch written `false` reads Declined,
+  an unanswered one Missing and declinable, a blocked or unready one Wrong,
+  and an on one Done with its parts. `onboarding::runnable` runs only
+  mecha's own binaries. `mecha setup <feature>` runs one step, and
+  `--minimal` declines every optional one without writing config.
+- **#461:** each decline carries its way back (`Step::undo`): `mecha setup
+  --undecline <id>` for an answer given in setup, `mecha features enable
+  <id>` for a switch written `false`. `mecha setup <feature>` reopens a
+  declined step, in memory only.
+- **#464:** `--json` never reopens, so a recorded answer exits 0, and the
+  closing note prints both ways back as one group. The owner's ruling 5:
+  only `--json` keeps a decline, and a plain run reopens whether or not a
+  terminal is attached — one rule with nothing about the terminal in it.
+- **4b, #466:** `RunConfig.features_on` records the switches a run had
+  (`feature::switches_on`), loaded all-or-nothing by `lenient_features` as
+  `lenient_levers` loads levers. `environment.toml`'s `requires` refuses a
+  trial home with a required feature `Off` or `Blocked` before any trial
+  starts. It checks switches, not readiness or an arm's levers; ruling 3
+  kept it so.
+- **#470, ruling 2:** `[messages] enabled` is an `Option<bool>`
+  (`MessagesConfig::on`), so `[features] messages = false` reads `Off` like
+  every other switch — Declined in setup, with `mecha features enable
+  messages` as the way back. It had read as unanswered, and kept `mecha
+  setup`'s exit non-zero for anyone who switched messaging off. The default
+  is still off.
+- **#472, ruling 1:** the switched-on set is a term of every experiment
+  row's condition hash (`|features=`, from `Manifest::env_conditions` and
+  `Environment::features_on`). The environment's digest held every switch
+  but `search`, which follows the operator's, so two experiments differing
+  only there shared every hash. Every newly planned row rehashed once.
+  Building it found `config_at` re-reading the environment's own
+  `config.toml`, which for an `extends` variant holds only its half; the
+  config now loads from the resolved text (`Config::merge_environment_text`).
+- **#474, ruling 4:** a `requires` naming a feature no trial home can have
+  refuses at load, listing the five that can (`graph`, `tasks`, `search`,
+  `frontdoor`, `publishing`) and pointing at fixture servers.
+  `trial_env::can_be_on_in_a_trial` reads the lists `config_at` defaults
+  from, and a test holds it to what a trial actually switches on.
+  Its pass 3 found the refusal calling `messages` "never on in a trial",
+  though an arm's `levers_on` switches it on: follow-up #476
+  (`experiment::lever_that_switches_on`, derived by applying each lever)
+  names `levers_on` there instead. #476's review loop ended clean and it was
+  handed to mecha-d7 to merge as this was written.
+
+Fifteen review passes across the seven PRs (#460: 2, #461: 1, #464: 3,
+#466: 3, #470: 1, #472: 2, #474: 3, counted from each PR's record). Ruling 1 was put to the owner on a wrong premise — that an arm naming
+no environment runs on the operator's config — and put again when the code
+showed every arm runs in one (the traps section has the lesson); the owner
+chose the whole set both times.
+
 **2026-09-30/10-01 — files and pictures in chats, and a measured "no" to
 OCR for images (#438, #447, #450, #453).** The owner asked for the persona
 chat to show pictures like the main chat does, then for files to be
@@ -9306,6 +9369,17 @@ and is what finally exercised the path.)
   (2026-08-25.)
 
 ### Review process
+
+**Read the code's own account of an invariant before putting a question
+about it to the owner.** On 2026-10-01 #466's open question — should an
+experiment's condition hash carry the feature set? — went to the owner with
+pros and cons resting on "an arm with no environment runs on the operator's
+config", taken from the PR body rather than the tree. The owner ruled on
+it. `condition_hash_world`'s own comment said every planned row has an
+environment digest, and the real gap was one switch; the question was put
+again before any code was written. A ruling is only as good as the picture
+it was given, and the cheapest place to check that picture is before it is
+sent.
 
 **Every check failing at once, with zero steps, is the runners, not the
 code.** #446's first CI run showed 13 jobs failed, rustfmt included,
