@@ -1147,9 +1147,10 @@ module.
   evidence), over `Session::messages_ever` so a page compaction evicted
   still counts for the answer that quoted it.
   - Both sides go through one tokeniser (`cite::tokens`) before
-    containment: case, typographic quotes, ligatures, an en or em dash as a
-    word break, the punctuation around each word, and **every hyphen inside
-    a word dropped** — no rule about the letter after a line break can tell
+    containment: case, typographic quotes, ligatures, an em dash as a word
+    break, an en dash or soft hyphen as a hyphen, the punctuation around each
+    word, and **every hyphen inside a word dropped** (one between digits
+    parts them instead) — no rule about the letter after a line break can tell
     a compound's hyphen from the line's. Whole words only. `mark` uses the
     same tokens, so the passage marked is the passage admitted.
   - "Quoted" is the most a check says — never "verified". A real quote can
