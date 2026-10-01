@@ -1342,10 +1342,10 @@ the template too.
 
 *Built 2026-10-01 (step 7, calls):* a call into a persona chat is answered
 by the persona (`PersonaChats::speak`). It goes behind the lock, through the
-crisis layer, and the pause is spoken as the plain words. A profile with a
-`voice` the worker lists is bound when the call starts. A reference clip, a
-missing profile, an out-of-range value, or a voice the worker does not list
-refuses the call by name. The page's call button sits beside send
+crisis layer, and the pause is spoken as the plain words. The library voice
+the persona names is bound when the call starts, at its `voice_speed` if set.
+A voice the worker does not list, or a speed out of range, refuses the call
+by name. The page's call button sits beside send
 (`PersonaCall.svelte`). The meters count call minutes in their own
 `calls.jsonl`, by the day each call ended. Recording a voice and binding
 it (writing the clip into `VOICES_DIR`) came with the voice library on
