@@ -860,7 +860,7 @@
         await choose(made);
         await openEditor('identity');
         // A persona made with a portrait is framed first (owner, 2026-10-01).
-        if (chosen?.portrait) openFraming();
+        if (chosen?.portrait) openFraming(true);
       }
     } catch (e) {
       error = String(e?.message ?? e);
@@ -973,7 +973,7 @@
       await load();
       // A new portrait — a character named in the settings — is framed
       // straight away (owner, 2026-10-01).
-      if (chosen?.portrait && chosen.portrait !== portrait) openFraming();
+      if (chosen?.portrait && chosen.portrait !== portrait) openFraming(true);
       await openEditor(file);
       for (const [f, v] of Object.entries(kept)) Object.assign(editing.files[f], v);
       editing.saved = `saved — now v${saved.version}; new chats use it`;
@@ -996,8 +996,11 @@
   let framing = $state(null);
   const FRAME_SIZE = 220;
 
-  function openFraming() {
-    framing = { frame: frameOf(chosen.frame), aspect: 1, from: null };
+  // `fresh` for a new portrait: the stored frame was measured against the
+  // old picture, so the sheet starts from the default and Cancel leaves no
+  // stale crop pretending to fit (review of #491).
+  function openFraming(fresh = false) {
+    framing = { frame: frameOf(fresh ? null : chosen.frame), aspect: 1, from: null };
   }
 
   function frameDown(e) {
@@ -1371,11 +1374,11 @@
           <div class="lockrow">
             <span class="locktext">
               Hide behind the library lock
-              <span class="hint">{lockWaits ? 'save or undo your changes first — locking closes the editor' : chosen.locked ? 'shown only while the library is unlocked' : 'locking hides it until the library is unlocked'}</span>
+              <span class="hint" id="lockhint">{lockWaits ? 'save or undo your changes first — locking closes the editor' : chosen.locked ? 'shown only while the library is unlocked' : token ? 'locking hides it until the library is unlocked' : 'locking hides it now, and closes the editor, until the library is unlocked'}</span>
             </span>
             <!-- The settings form's own switch (form.css), so it looks and
                  focuses as the toggles below it do. -->
-            <button type="button" role="switch" class="tf-switch" aria-checked={chosen.locked} aria-label="Hide behind the library lock" disabled={busy || lockWaits} onclick={() => setLocked(!chosen.locked)}><span class="tf-knob"></span></button>
+            <button type="button" role="switch" class="tf-switch" aria-checked={chosen.locked} aria-label="Hide behind the library lock" aria-describedby="lockhint" disabled={busy || lockWaits} onclick={() => setLocked(!chosen.locked)}><span class="tf-knob"></span></button>
           </div>
         {/if}
         {#if asForm && current.form.form}
@@ -1436,7 +1439,7 @@
           {#if chosen.portrait}
             <!-- The picture is its own control (owner, 2026-10-01): tap it to
                  frame it, rather than hunting in a menu. -->
-            <button class="avatarbtn" disabled={busy} aria-label={`Adjust ${chosen.display}'s picture`} title="Adjust the picture" onclick={openFraming}>
+            <button class="avatarbtn" disabled={busy} aria-label={`Adjust ${chosen.display}'s picture`} title="Adjust the picture" onclick={() => openFraming()}>
               {@render avatar(chosen, 72)}
             </button>
           {:else}
