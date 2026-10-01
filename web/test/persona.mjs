@@ -377,6 +377,25 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   assert.equal(sourceFileUrl('mara', 'n.md', 'text', 'tok'), '/api/personas/mara/sources/text?unlock=tok&file=n.md');
 }
 
+// A citation keeps its badge through the Markdown parser, whatever it
+// holds (review of #479): a backtick, a `*` pair, a bare URL.
+{
+  const { citeMark, citeUnmark } = await import('../src/lib/persona.js');
+  const { parseBlocks } = await import('../src/lib/mail-markdown.js');
+  const raw = '[notes.md: "the `holdfast` is **not** at https://example.org/kelp"]';
+  const check = { raw, status: 'quoted' };
+  const reply = `## Point\n\nThey say ${raw} and more.`;
+  const { text, marks } = citeMark(reply, [[raw, check]]);
+  const blocks = parseBlocks(text);
+  const nodes = blocks[1].inline.filter((n) => n.t === 'text');
+  const drawn = nodes.flatMap((n) => citeUnmark(n.v, marks));
+  const cite = drawn.find((p) => p.check);
+  assert.equal(cite?.text, raw, JSON.stringify(drawn));
+  assert.equal(drawn.map((p) => p.text).join(''), `They say ${raw} and more.`);
+  assert.deepEqual(citeUnmark('plain', marks), [{ text: 'plain' }]);
+  assert.equal(citeMark('no cites', null).text, 'no cites');
+}
+
 console.log('persona: ok');
 
 // The avatar's framing: a sent frame held to the server's ranges, the style

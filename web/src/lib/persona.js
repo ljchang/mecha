@@ -532,10 +532,46 @@ export function toolRun(entries, i, plain = () => true, failed = () => false) {
   const e = entries[i];
   const joins = (x) => x?.kind === 'tool' && x.name === e.name && plain(x) && !failed(x);
   if (!joins(e)) return { first: true, count: 1 };
-  if (i > 0 && joins(entries[i - 1]) && failed(entries[i - 1]) === failed(e)) {
+  if (i > 0 && joins(entries[i - 1])) {
     return { first: false, count: 0 };
   }
   let count = 1;
   while (joins(entries[i + count])) count++;
   return { first: true, count };
+}
+
+// A reply's checked citations swapped for placeholders before its Markdown
+// is parsed, and drawn back from them after (`ChatProse`): a citation
+// holding a backtick, a `*` pair or a bare URL would otherwise be split
+// across the parser's nodes and lose its badge silently (review of #479).
+// The placeholders are private-use characters a reply does not contain.
+const MARK_OPEN = '\uE000';
+const MARK_CLOSE = '\uE001';
+export function citeMark(text, cites) {
+  const byRaw = new Map((cites ?? []).map(([r, c]) => [r, c]).reverse());
+  const marks = [];
+  let out = text ?? '';
+  for (const [r, check] of byRaw) {
+    if (!r || !out.includes(r)) continue;
+    out = out.split(r).join(`${MARK_OPEN}${marks.length}${MARK_CLOSE}`);
+    marks.push({ text: r, check });
+  }
+  return { text: out, marks };
+}
+
+// A parsed text node cut at the placeholders it holds, each drawn back as
+// its citation.
+export function citeUnmark(v, marks) {
+  if (!marks?.length || !v.includes(MARK_OPEN)) return [{ text: v }];
+  const out = [];
+  const re = new RegExp(`${MARK_OPEN}(\\d+)${MARK_CLOSE}`, 'g');
+  let pos = 0;
+  for (const m of v.matchAll(re)) {
+    if (m.index > pos) out.push({ text: v.slice(pos, m.index) });
+    const mark = marks[Number(m[1])];
+    out.push(mark ? { text: mark.text, check: mark.check } : { text: m[0] });
+    pos = m.index + m[0].length;
+  }
+  if (pos < v.length) out.push({ text: v.slice(pos) });
+  return out;
 }
