@@ -1345,8 +1345,12 @@ a voice the worker does not list refuses the call by name. Still unbuilt:
 - binding a reference clip (writing it into `VOICES_DIR`);
 - recording a voice on the page.
 
-The crisis pause is spoken in the persona's bound voice, not a plain one;
-that is open for the owner (ARCHITECTURE §Personas).
+Two questions are open for the owner (ARCHITECTURE §Personas):
+
+- The crisis pause is spoken in the persona's bound voice, not a plain one.
+- A judge verdict that lands after a spoken reply has finished reaches only
+  the page. The call's turn has already closed, and waiting for the verdict
+  would hold every turn open for up to 90 s.
 
 The voice stack already takes everything a profile needs. The worker's TTS
 leg is Chatterbox Turbo (`scripts/voice/worker.py`): voice name, speed,
