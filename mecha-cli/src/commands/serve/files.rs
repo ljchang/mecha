@@ -151,6 +151,45 @@ pub async fn download(
     serve(ws, q.path).await
 }
 
+/// A file the caller already proved is one it may hand out — a persona's
+/// file found by name in its own listing — as an attachment of inert bytes
+/// under a tamed name, streamed and bounded like `serve`. Never inline: a
+/// paper is third-party content (see the module header).
+pub(super) async fn attachment(path: std::path::PathBuf, name: &str) -> Response {
+    let opened = tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&path)?;
+        let len = file.metadata()?.len();
+        Ok::<_, std::io::Error>((file, len))
+    })
+    .await;
+    let (file, len) = match opened {
+        Ok(Ok(opened)) => opened,
+        _ => return (StatusCode::NOT_FOUND, "no such file\n").into_response(),
+    };
+    let file = tokio::fs::File::from_std(file).take(len);
+    let body = Body::from_stream(tokio_util::io::ReaderStream::new(file));
+    let leaf = name.rsplit('/').next().unwrap_or(name);
+    let mut response = (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", tame_filename(leaf)),
+            ),
+        ],
+        body,
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(header::CONTENT_LENGTH, len.into());
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    response
+}
+
 /// One file out of `ws`, images inline and everything else inert. Shared
 /// with the persona chat's door (`persona_chat::download`).
 pub(super) async fn serve(ws: std::path::PathBuf, path: String) -> Response {
