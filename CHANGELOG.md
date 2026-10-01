@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Type during a call.** A call, with the assistant or a persona, has a text
+  box under its transcript. A typed line is a turn like a spoken one, and the
+  answer is spoken in the call's voice. The microphone pauses while the box
+  has focus and comes back as it was; the mute button stays yours.
+
 - **Make a persona from the main chat.** Ask for one ("help me make a
   persona who…") and the assistant drafts who they are and what they want,
   and stages it with a new `persona_propose` tool. It waits on the Personas

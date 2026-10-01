@@ -45,6 +45,9 @@
  *   });
  *   await session.connect();   // user gesture required (audio unlock)
  *   session.end();             // graceful; abrupt loss fires the same chime
+ *   session.sendText(text)     // a typed turn into the live call: answered
+ *                              // aloud as speech would be; false when the
+ *                              // line is not open to carry it
  *   session.setMicEnabled(on); // mute control: pauses the outbound track
  *                              // without ending the call; state is readable
  *                              // as session.micEnabled
@@ -1168,5 +1171,16 @@ export function createVoiceSession(opts = {}) {
        the browser could not tap the sender and the old path is in use. */
     get uplinkMode() { return uplinkMode; },
     voiceConfig,
+    /* A typed line into the call (the owner's ask, 2026-10-01): the worker
+       gives it to the model as a user turn and the answer is spoken, as a
+       heard one is. Shown at once as the user's, since nothing transcribes
+       it back. False when the data channel cannot carry it. */
+    sendText(text) {
+      const t = typeof text === "string" ? text.trim() : "";
+      if (!t) return false;
+      if (!sendClientMessage("typed", { text: t })) return false;
+      cfg.onTranscript({ who: "user", text: t, interim: false });
+      return true;
+    },
   };
 }

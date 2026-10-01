@@ -2114,6 +2114,24 @@ def session_line(session_key: str, named: str | None) -> str:
     return f"voice session key: {session_key}"
 
 
+# The longest typed turn a call takes: a message, not a document.
+MAX_TYPED_CHARS = 4000
+
+
+def typed_turn(data) -> str | None:
+    """The text a page typed into a live call (`{"t": "typed", "d":
+    {"text": ...}}`), as the turn the model is given, or None for nothing
+    worth a turn. Trimmed and capped; anything that is not a string is
+    nothing. A typed line enters exactly as heard speech does - a user turn,
+    with the trust the audio on this same channel already has - and is
+    answered aloud, since that is what being in a call means."""
+    text = data.get("text") if isinstance(data, dict) else None
+    if not isinstance(text, str):
+        return None
+    text = text.strip()[:MAX_TYPED_CHARS]
+    return text or None
+
+
 def spoken_words(text: str, limit: int) -> str:
     """Words for a log line: the first `limit` characters, or a placeholder
     while any incognito call is live. The rest of the line - durations, RMS,
@@ -2324,12 +2342,15 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
     # for "what is the voice now" and cannot render a control that
     # disagrees with the server.
     #
-    # This is a *presentation* channel and nothing else: it can pick a
-    # voice and a rate, and there is deliberately no field here that
-    # reaches the agent, the workspace or the posture. The remote-control
-    # rule - inbound text is a prompt, never a command - is what keeps a
-    # data channel from becoming a control plane, and the way to keep it
-    # true is that the only settable things are how the answer sounds.
+    # This is a *presentation* channel: it can pick a voice and a rate, and
+    # there is deliberately no field here that reaches the workspace or the
+    # posture. The remote-control rule - inbound text is a prompt, never a
+    # command - is what keeps a data channel from becoming a control plane.
+    # The one way in to the agent is a typed turn (`typed`, 2026-10-01): it
+    # is a prompt in exactly that sense, the owner's words as a user turn
+    # with the trust the audio on this channel already has (the buffered
+    # uplink carries that audio here too), and never a field, a setting or
+    # a command.
     @rtvi.event_handler("on_client_message")
     async def on_client_message(rtvi, msg):
         # The uplink's own messages: audio, and the clock it is stamped on.
@@ -2341,6 +2362,24 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
         # everything but audio.
         if uplink is not None:
             transport.input().note_channel()
+        if msg.type == "typed":
+            text = typed_turn(msg.data)
+            if text is None:
+                return
+            # Not over the answer being spoken, within reason - as a late
+            # turn waits (`LATE_BOT_WAIT_SECS`). Each client message runs as
+            # its own task, so the wait holds nothing else up.
+            for _ in range(int(LATE_BOT_WAIT_SECS * 10)):
+                if not getattr(stt, "_bot_speaking", False):
+                    break
+                await asyncio.sleep(0.1)
+            print(f"voice typed turn: {spoken_words(text, 80)}", flush=True)
+            # Appended and run at once, as a late turn is: a transcript-only
+            # turn has no VAD edge for a stop strategy to rule on.
+            await transport.input().push_frame(
+                LLMMessagesAppendFrame(messages=[{"role": "user", "content": text}], run_llm=True)
+            )
+            return
         if msg.type == "heartbeat":
             return
         if msg.type == "uplink":

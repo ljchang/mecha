@@ -1180,7 +1180,26 @@
   function toggleMute() {
     if (!vSession) return;
     vMuted = !vMuted;
-    vSession.setMicEnabled(!vMuted);
+    vSession.setMicEnabled(!vMuted && !vTyping);
+  }
+
+  // Typing into the call (the owner's ask, 2026-10-01): a typed line is a
+  // turn answered aloud, as a spoken one is. The mic is paused while the box
+  // has focus — keys and a room are not words — and given back as it was;
+  // the mute button stays the owner's. Same as a persona call
+  // (`PersonaCall.svelte`).
+  let vTyped = $state('');
+  let vTyping = $state(false);
+  function typingStart() {
+    vTyping = true;
+    if (vSession && !vMuted) vSession.setMicEnabled(false);
+  }
+  function typingEnd() {
+    vTyping = false;
+    if (vSession && !vMuted) vSession.setMicEnabled(true);
+  }
+  function sendTyped() {
+    if (vSession?.sendText(vTyped)) vTyped = '';
   }
 
   function endVoice() {
@@ -2285,6 +2304,22 @@
            they are preferences, not call controls, and a pane that is
            mostly a form is a worse call surface. voice-core still applies
            the remembered choice the moment the data channel opens. -->
+      <form class="typerow" onsubmit={(e) => { e.preventDefault(); sendTyped(); }}>
+        <input
+          class="typebox"
+          placeholder="Type instead of speaking"
+          aria-label="Type into the call"
+          bind:value={vTyped}
+          onfocus={typingStart}
+          onblur={typingEnd}
+          disabled={!vLinked}
+          maxlength="4000"
+        />
+        <button type="submit" class="typesend" aria-label="send" disabled={!vLinked || !vTyped.trim()}>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+        </button>
+      </form>
+      {#if vTyping && !vMuted}<div class="typehint">mic paused while you type</div>{/if}
       <div class="voice-controls">
         <button class="mutebtn" class:muted={vMuted} onclick={toggleMute} title={vMuted ? 'unmute' : 'mute'}>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -3498,12 +3533,55 @@
   .vanswer.interim {
     color: var(--text-muted);
   }
+  .typerow {
+    display: flex;
+    gap: 8px;
+    margin: 14px 20px 0;
+  }
+  .typebox {
+    flex: 1;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 14px;
+    border-radius: 22px;
+    border: 1px solid var(--accent-900);
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    font-size: 16px;
+  }
+  .typebox:focus {
+    outline: none;
+    border-color: var(--accent-500);
+  }
+  .typesend {
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--accent-400);
+    color: var(--void);
+    border: none;
+    cursor: pointer;
+  }
+  .typesend:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .typehint {
+    margin: 6px 20px 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
   .voice-controls {
     display: flex;
     justify-content: center;
     align-items: center;
     gap: 24px;
-    padding: 24px 0 34px;
+    padding: 16px 0 34px;
   }
   .mutebtn {
     width: 56px;
