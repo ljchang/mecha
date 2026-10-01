@@ -121,16 +121,26 @@ pub fn list(roots: &[(String, PathBuf)]) -> Vec<Source> {
 /// the cap, so the same folder lists the same files every time (review of
 /// #459: capping during the walk kept `read_dir` order).
 pub fn listing(roots: &[(String, PathBuf)]) -> (Vec<Source>, usize) {
+    // Most specific first, then by name within each folder: past the cap a
+    // persona keeps its own files over everyone's (review of #459 — one sort
+    // by name put `@all/…` first, since `@` sorts before every letter).
     let mut out = Vec::new();
     let mut scanned = 0usize;
     for (prefix, root) in roots {
         let Ok(root) = root.canonicalize() else {
             continue;
         };
-        walk(&root, &root, prefix, 0, &mut out, &mut scanned);
+        let mut here = Vec::new();
+        walk(&root, &root, prefix, 0, &mut here, &mut scanned);
+        here.sort_by(|a, b| a.name.cmp(&b.name));
+        out.extend(here);
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    let omitted = out.len().saturating_sub(MAX_SOURCES);
+    let mut omitted = out.len().saturating_sub(MAX_SOURCES);
+    // A walk stopped by the scan bound saw only part of the folders: there
+    // is at least one more, uncounted.
+    if scanned >= MAX_SCANNED {
+        omitted = omitted.max(1);
+    }
     out.truncate(MAX_SOURCES);
     (out, omitted)
 }
@@ -513,6 +523,7 @@ pub async fn first_turn(
     omitted: usize,
     extractor: Option<&Extractor>,
     budget_chars: usize,
+    is_ready: &(dyn Fn(&Source) -> bool + Send + Sync),
 ) -> Option<String> {
     if sources.is_empty() {
         return None;
@@ -521,9 +532,18 @@ pub async fn first_turn(
     let mut total = 0usize;
     let mut over = false;
     let mut unreadable = Vec::new();
+    let mut pending = Vec::new();
     for src in sources {
         if over {
             break;
+        }
+        // A document whose text is not to hand yet is not read here: the
+        // first turn runs before the chat can be stopped and while the
+        // router is held, so an OCR pass would hold both (review of #459).
+        // It is listed, and read in the background meanwhile.
+        if src.kind == Kind::Document && extractor.is_some() && !is_ready(src) {
+            pending.push(format!("- `{}`", src.name));
+            continue;
         }
         match read(src, extractor, "all", None).await {
             Ok(text) => {
@@ -556,6 +576,13 @@ pub async fn first_turn(
         out.push_str(&names);
     } else {
         out.push_str(&whole.join("\n\n"));
+    }
+    if !pending.is_empty() && !over {
+        out.push_str(
+            "\n\nStill being read, so not included yet — read them with `file_read` \
+             later in this chat:\n",
+        );
+        out.push_str(&pending.join("\n"));
     }
     if omitted > 0 {
         out.push_str(&format!(
@@ -718,11 +745,11 @@ mod tests {
         assert_eq!(
             names(&sources),
             [
-                "@all/guide.md",
-                "@kelp/survey.txt",
                 "a/b/deep-enough.md",
                 "notes.md",
-                "topic/paper.txt"
+                "topic/paper.txt",
+                "@kelp/survey.txt",
+                "@all/guide.md"
             ]
         );
         std::fs::remove_dir_all(dir).ok();
@@ -794,17 +821,21 @@ mod tests {
     async fn the_first_turn_carries_the_files_whole_or_their_list() {
         let (dir, store, p) = world();
         let sources = list(&roots(&store, &p));
-        let whole = first_turn(&sources, 0, None, 10_000).await.unwrap();
+        let whole = first_turn(&sources, 0, None, 10_000, &|_| true)
+            .await
+            .unwrap();
         assert!(whole.starts_with(FILES_STEM), "{whole}");
         assert!(whole.contains("Urchins graze kelp.") && whole.contains("A field guide."));
-        let listed = first_turn(&sources, 0, None, 20).await.unwrap();
+        let listed = first_turn(&sources, 0, None, 20, &|_| true).await.unwrap();
         assert!(listed.contains("too long to include whole") && listed.contains("`notes.md`"));
         assert!(!listed.contains("Urchins graze kelp."));
-        assert!(first_turn(&[], 0, None, 10_000).await.is_none());
+        assert!(first_turn(&[], 0, None, 10_000, &|_| true).await.is_none());
         // A PDF with document reading switched off is said, not dropped.
         std::fs::write(dir.join("mara/files/paper.pdf"), b"%PDF-1.4").unwrap();
         let sources = list(&roots(&store, &p));
-        let block = first_turn(&sources, 0, None, 10_000).await.unwrap();
+        let block = first_turn(&sources, 0, None, 10_000, &|_| true)
+            .await
+            .unwrap();
         assert!(
             block.contains("Not readable") && block.contains("switched off"),
             "{block}"
@@ -871,13 +902,17 @@ mod tests {
         assert_eq!(sources.len(), MAX_SOURCES);
         // world()'s three plus MAX_SOURCES more: three left out, by name.
         assert_eq!(omitted, 3);
-        assert_eq!(sources.first().unwrap().name, "@all/guide.md");
+        // Its own files first: everyone's guide is the one left out.
+        assert_eq!(sources.first().unwrap().name, "n000.md");
+        assert!(!sources.iter().any(|s| s.name == "@all/guide.md"));
         assert_eq!(
             list(&roots(&store, &p)),
             sources,
             "the same list every time"
         );
-        let block = first_turn(&sources, omitted, None, 1).await.unwrap();
+        let block = first_turn(&sources, omitted, None, 1, &|_| true)
+            .await
+            .unwrap();
         assert!(block.contains("3 more file(s)"), "{block}");
         std::fs::remove_dir_all(dir).ok();
     }
@@ -897,7 +932,8 @@ mod tests {
         let store = Store::load(&dir);
         let p = store.get("mara").unwrap();
         let sources = list(&roots(&store, p));
-        assert_eq!(names(&sources), ["@all/g.md", "@group:all/g.md"]);
+        // Its group's first, then everyone's: most specific first.
+        assert_eq!(names(&sources), ["@group:all/g.md", "@all/g.md"]);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1029,6 +1065,34 @@ mod tests {
         let sources = list(&roots(&store, &p));
         assert!(!ready(find(&sources, "huge.txt").unwrap(), None, 0));
         assert!(ready(find(&sources, "notes.md").unwrap(), None, 0));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A document whose text is not to hand is listed as still being read on
+    /// the first turn — never read there, where an OCR pass would hold the
+    /// router and could not be stopped (review of #459). Text still rides.
+    #[tokio::test]
+    async fn the_first_turn_lists_a_document_not_yet_read() {
+        let (dir, store, p) = world();
+        std::fs::write(dir.join("mara/files/scan.pdf"), b"%PDF-1.4 not a real pdf").unwrap();
+        let sources = list(&roots(&store, &p));
+        let extractor =
+            crate::document::Extractor::new(crate::document::DocumentsConfig::default(), None)
+                .unwrap();
+        let block = first_turn(&sources, 0, Some(&extractor), 10_000, &|s| {
+            s.kind == Kind::Text
+        })
+        .await
+        .unwrap();
+        assert!(
+            block.contains("Still being read") && block.contains("`scan.pdf`"),
+            "{block}"
+        );
+        assert!(block.contains("Urchins graze kelp."), "{block}");
+        assert!(
+            !block.contains("Not readable"),
+            "it was read inline: {block}"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 }
