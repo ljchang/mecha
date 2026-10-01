@@ -765,6 +765,13 @@ fn a_meaningless_flag_pair_is_refused_rather_than_silently_resolved() {
         vec!["setup", "--json", "--undecline", "all"],
         vec!["setup", "--json", "--write"],
         vec!["setup", "--write", "--undecline", "all"],
+        // `--minimal` and a named feature (step 4a): each a verb of its own.
+        vec!["setup", "--minimal", "--json"],
+        vec!["setup", "--minimal", "--write"],
+        vec!["setup", "--minimal", "--undecline", "all"],
+        vec!["setup", "mail", "--minimal"],
+        vec!["setup", "mail", "--write"],
+        vec!["setup", "mail", "--undecline", "all"],
     ] {
         let out = mecha(&home, &pair);
         assert!(!out.status.success(), "{pair:?} must not be accepted");
@@ -1119,4 +1126,34 @@ fn setup_offers_every_feature_and_minimal_declines_them_without_touching_config(
     for id in features {
         assert_eq!(step(&after, id)["status"], "declined", "{id}");
     }
+
+    // Naming a declined feature offers it again, for this run only: the
+    // decline is still on disk afterwards (review of #460).
+    let named = mecha(&home, &["setup", "mail", "--json"]);
+    let one = steps(&named);
+    assert_eq!(one[0]["status"], "missing", "{one:?}");
+    assert_eq!(
+        one[0]["remedy"]["argv"],
+        serde_json::json!(["mecha", "features", "enable", "mail"])
+    );
+    assert!(String::from_utf8_lossy(&named.stderr).contains("offered again"));
+    assert_eq!(
+        step(&steps(&mecha(&home, &["setup", "--json"])), "mail")["status"],
+        "declined"
+    );
+
+    // A switch written `false` is offered back on by name, and the plain
+    // plan names its way back as the switch, not `--undecline`.
+    std::fs::write(&config, "[features]\nslack = false\n").unwrap();
+    let plan = steps(&mecha(&home, &["setup", "--json"]));
+    assert_eq!(
+        step(&plan, "slack")["undo"],
+        serde_json::json!(["mecha", "features", "enable", "slack"])
+    );
+    let one = steps(&mecha(&home, &["setup", "slack", "--json"]));
+    assert_eq!(one[0]["status"], "missing");
+    assert_eq!(
+        one[0]["remedy"]["argv"],
+        serde_json::json!(["mecha", "features", "enable", "slack"])
+    );
 }
