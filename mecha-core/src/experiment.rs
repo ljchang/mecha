@@ -2043,9 +2043,13 @@ pub fn lever_that_switches_on(f: crate::feature::Feature) -> Option<Lever> {
     let owner = f.switch_owner();
     Lever::ALL.into_iter().find(|&lever| {
         config_switch(lever).is_some_and(|set| {
+            // Sampled before and after: the lever is the cause only where
+            // the switch was not already on (review of #476).
             let mut cfg = crate::config::Config::default();
+            let before = crate::feature::switch(&cfg, owner);
             set(&mut cfg, true);
-            crate::feature::switch(&cfg, owner) == Some(crate::feature::Switch::On)
+            before != Some(crate::feature::Switch::On)
+                && crate::feature::switch(&cfg, owner) == Some(crate::feature::Switch::On)
         })
     })
 }

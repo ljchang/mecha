@@ -361,14 +361,14 @@ When a trial home has one of them switched off, or waiting on a feature
 that is, `mecha exp run` refuses to start and names it, rather than scoring
 the model on tasks it could not attempt. A variant needs what its base
 needs. A name that is not a feature is refused when the experiment loads,
-and so is one that can never be on in a trial: only `graph` (and its
-`tasks`), `search`, and the front door (and its `publishing`) can be. Your
-mail, documents, web and the rest stay out of every trial home by design,
-so a task that needs mail gets it from a fixture server (`[fixtures]` in
-the experiment's manifest, not in `environment.toml`), not from the `mail`
-feature. Messages are the one exception an arm can switch on, with
-`levers_on = ["messages"]`; ask for them there, since `requires` is checked
-before an arm's levers apply.
+and so is one no experiment environment can switch on: only `graph` (and
+its `tasks`), `search`, and the front door (and its `publishing`) can be on
+from one. Your mail, documents, web and the rest stay out of every trial
+home by design, so a task that needs mail gets it from a fixture server
+(`[fixtures]` in the experiment's manifest, not in `environment.toml`), not
+from the `mail` feature. Messages are different: an arm switches them on,
+with `levers_on = ["messages"]`, so ask for them there — `requires` is
+checked before an arm's levers apply.
 
 `requires` checks the switches only. It does not check that a switched-on
 feature is set up — `search` with no backend configured passes — and it is
