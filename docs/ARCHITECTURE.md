@@ -1250,6 +1250,41 @@ module.
     an unknown status is a candidate.
   - Read paths (`open_existing`) never create a file — what recall and an
     incognito chat will use.
+  - **Recall at chat start** (`persona::recall`, §9.7): one block, folded into
+    the first turn beside the files block and only before the first reply
+    (`carries_now`), so it lands in `messages[0]`, which compaction keeps
+    whole. It holds about-me, the user facts the persona may see (its own,
+    plus `Shared::visible_to` its groups under `user_facts = "shared"`),
+    its own facts and recent episodes, honouring each `[memory]` switch read
+    **live**. Candidates are never recalled, and a copy the owner shared of
+    the persona's own fact is not said twice.
+    - `BUDGET_CHARS` is split, not shared first-come: about-me takes at most
+      a third, each note a fair share and cut rather than dropped; recent
+      episodes have a third of their own, so facts can never price them out,
+      and each episode is likewise a fair share, cut not dropped (a stored
+      summary can be longer than the whole share);
+      the fact sections share the rest fairly — each an equal part of what
+      is left, unused parts passed on — so owner facts can never price out
+      the persona's own canon; a section cut, even to nothing, keeps its
+      heading and says how many it left out (review of #477).
+    - **Two stems, chosen by the harness.** `MEMORY_STEM` arms `private`;
+      `UNTRUSTED_MEMORY_STEM` (any record of untrusted origin folded) arms
+      `private` and `untrusted`. `Taint::arm_for_content` re-reads the
+      conversation at every run start, so §9.7's single stem arming both
+      would have made every chat that remembered anything untrusted — and
+      the writer would then have turned all its later memories into
+      candidates. `stem_of` is the one predicate for the taint, the harness
+      voice and `carries`; typing a stem only arms more.
+    - An unreadable store, or an about-me file that cannot be read or is
+      over `MAX_PROSE_BYTES`, is a notice on the page and a log line
+      (`Recalled::problems`), and the turn goes ahead without it — never
+      "remembers nothing". So is a shared row this version cannot read
+      (`Listing::unreadable`), and a `memory.db` that will not read
+      (`Memory::readable`: SQLite opens lazily) costs its own sections, not
+      the about-me notes. The notice names a file as the owner knows it,
+      never as a path on the machine.
+    - `what_a_persona_remembers_rides_in_the_first_turn_with_its_taint`
+      drives the real doors and reads the chat's taint back.
   - **The writer** (`persona::writer`, §9.6) runs from `mecha persona memory
     write`, which `scripts/ruminate.sh` calls nightly; nothing writes after a
     chat yet. It never runs during a chat, and only on a provider that

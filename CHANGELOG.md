@@ -39,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the goal framing sent ahead of it, and repeated calls to one tool show as
   one row (`file_read ×6`).
 
+- **Personas remember you in the next chat.** A new chat with a persona
+  starts with what it remembers: your about-me notes, what it knows about you
+  (and what you shared with it), its own facts, and its last few
+  conversations, each switch on its settings page honoured. Memory that came
+  from something read from outside — a search, a file — marks the chat as
+  having outside content, as reading it again would; ordinary memory does
+  not. Searching memory during a chat comes next.
+
 - **A persona's picture can be framed.** "Adjust picture" in a persona's ⋯
   menu opens its portrait in the circle: drag it into place and zoom, then
   Save; Reset centres it again. Until you do, a tall portrait now shows its
