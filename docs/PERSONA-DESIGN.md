@@ -1086,6 +1086,14 @@ not the PDF with a box drawn on it — the PDF would have to be served
 renderable from this origin, which nothing but an image is, for the reason
 the assistant's downloads give.
 
+*Building, 2026-10-01 (step 3d):* a *Save to files* link under each reply
+writes it into the persona's own `files/` as Markdown, named from its first
+heading, with a line saying which chat and day — the harness writing on the
+owner's word, as §10.2 requires, and only text that is one of the chat's
+own replies (`PersonaChats::save_reply`). The `teacher` starter gains the
+quiz line for new installs. With this the build steps of §10 are done;
+measuring D15's threshold is what is owed.
+
 *Building, 2026-10-01 (step 3c):* search. Every file a persona can read is
 cut into passages page by page and kept in one index for the store
 (`<store>/.search.db`, `persona::search`), keyed by the file's content hash,
