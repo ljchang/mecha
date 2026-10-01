@@ -15,7 +15,7 @@ The three legs are env-configurable base URLs (D6):
     MECHA_VOICE_TTS_VOICE  voice name for the TTS leg (start value; the
                       page can change it per session)
     MECHA_VOICE_TTS_SPEED  speaking rate, 0.5-2.0 (start value, likewise)
-    MECHA_VOICE_TTS_EXAGGERATION  emotion intensity, 0.0-1.0
+    MECHA_VOICE_TTS_EXAGGERATION  emotion intensity, 0.0-2.0
     MECHA_VOICE_TTS_CFG_WEIGHT    guidance weight, 0.0-1.0 (lower = more
                       expressive pacing; it moves *against* exaggeration)
 """
@@ -919,8 +919,9 @@ def available_voices(refresh=False):
     renders no choices and a picker that could not ask are opposite
     findings and only one of them should hide the control.
 
-    `refresh` drops the cache first. The one caller that passes it is the
-    voice-config handler on a *miss*: a voice can be cloned onto the box
+    `refresh` drops the cache first. The voice-config handler passes it on a
+    *miss*, and the library's routes (`/mecha/voices`, `/mecha/sample`)
+    always do, since they answer what the box has now: a voice can be cloned onto the box
     while this process runs (the settings page writes a WAV into the same
     directory the TTS lists), and a forever-cache would refuse the new name
     until a worker restart nobody was told to do. Refetching only on a miss
@@ -2079,6 +2080,36 @@ class OfferSilence:
             await self.app(scope, replay, send)
 
 
+# What a voice says when the library previews it: fixed, so the route speaks
+# nothing a page wrote. A statement, a question and a pause, because those are
+# where clones differ.
+SAMPLE_LINE = (
+    "Hello. This is how I sound reading something aloud. "
+    "Does a question rise at the end? It should. And a pause... carries too."
+)
+
+
+async def tts_sample(voice: str) -> bytes:
+    """`SAMPLE_LINE` in `voice`, as a WAV, from the TTS server - the same
+    expressiveness a call opens with, so the preview is the voice as it
+    will be heard. Raises on any failure; the route says which."""
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            f"{TTS_URL}/audio/speech",
+            json={
+                "input": SAMPLE_LINE,
+                "model": "tts",
+                "voice": voice,
+                "response_format": "wav",
+                "speed": 1.0,
+                "exaggeration": TTS_EXAGGERATION,
+                "cfg_weight": TTS_CFG_WEIGHT,
+            },
+        )
+        r.raise_for_status()
+        return r.content
+
+
 def install(app) -> None:
     """What this worker adds to the runner's app, before `main` starts it.
 
@@ -2100,6 +2131,24 @@ def install(app) -> None:
     @app.get("/mecha/voices")
     async def voices():
         return {"voices": available_voices(refresh=True)}
+
+    # The voice library's preview (Library -> Voices): `SAMPLE_LINE` spoken
+    # in a voice the TTS lists. Fixed text, so this route cannot be made to
+    # say anything; an unlisted voice is refused before the TTS is asked.
+    @app.get("/mecha/sample")
+    async def sample(voice: str):
+        from fastapi.responses import JSONResponse, Response
+
+        known = available_voices(refresh=True)
+        if known is None:
+            return JSONResponse({"error": "the TTS server could not say which voices it has"}, 503)
+        if voice not in known:
+            return JSONResponse({"error": f"no voice named {voice!r}"}, 404)
+        try:
+            wav = await tts_sample(voice)
+        except Exception as e:  # noqa: BLE001 - said, not raised: the page shows it
+            return JSONResponse({"error": f"the TTS server did not speak: {e.__class__.__name__}"}, 502)
+        return Response(content=wav, media_type="audio/wav")
 
     app.add_middleware(OfferSilence)
 

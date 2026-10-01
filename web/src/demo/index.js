@@ -174,6 +174,7 @@ export const ROUTES = [
       fx.reflectionDetail['20260826T143000-7f21a9c4'],
   ],
   ['GET', /^\/api\/settings\/voice$/, () => fx.voice],
+  ['GET', /^\/api\/library\/voices$/, () => fx.voices],
   ['GET', /^\/api\/settings\/lock$/, () => fx.lockSettings],
 
   // Personas: their own door, as on the server (`persona_chat.rs`).
@@ -336,6 +337,7 @@ export const ROUTES = [
           'settings/reflections/(edit|drop|restore)',
           'settings/rules/(retire|restore)',
           'settings/voice/clone(/delete)?',
+          'library/voices/sample',
           'settings/lock',
           'model/(use|cancel)',
           'resume',
