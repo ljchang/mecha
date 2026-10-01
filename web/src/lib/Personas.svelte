@@ -18,7 +18,7 @@
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
     taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
-    toolStatus, waitingLine, withWorking, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
+    toolStatus, waitingLine, withWorking, unsavedFiles, lockWaits, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
     citeEntries, citeOpens, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
     frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM,
   } from './persona.js';
@@ -443,6 +443,8 @@
   async function relock() {
     const t = token;
     dropToken();
+    // A framing sheet over a persona the lock may hide goes with it.
+    framing = null;
     // Off the screen now, before the grid's round trip, not after it.
     if (making && authoring) authoring = { ...authoring, characters: [] };
     // A locked persona's chat closes with the lock: the lock hides (§8.3).
@@ -860,7 +862,7 @@
         await choose(made);
         await openEditor('identity');
         // A persona made with a portrait is framed first (owner, 2026-10-01).
-        if (chosen?.portrait) openFraming(true);
+        if (chosen?.portrait) openFraming();
       }
     } catch (e) {
       error = String(e?.message ?? e);
@@ -907,24 +909,10 @@
     return mdDirty(f.doc, current.formDraft);
   });
 
-  // Whether any file in the editor holds unsaved changes — this one's text or
-  // form, or another tab's kept draft.
-  const anyUnsaved = $derived.by(() => {
-    if (!editing) return false;
-    if (textDirty || formDirty) return true;
-    return Object.entries(editing.files).some(([f, v]) => {
-      if (f === editing.file) return false;
-      if (v.draft != null && v.draft !== v.text) return true;
-      if (!v.formDraft || !v.form) return false;
-      if (v.form.form) return Object.keys(changesOf(v.form.form, v.form.values, v.formDraft)).length > 0;
-      return v.form.doc ? mdDirty(v.form.doc, v.formDraft) : false;
-    });
-  });
-  // Locking without the library's unlock hides the persona at once, and the
-  // page goes back to the list — the editor and its drafts with it. So it
-  // waits for them to be saved or dropped (review of #491). Unlocking, or
-  // locking with the unlock in hand, hides nothing.
-  const lockWaits = $derived(Boolean(chosen && !chosen.locked && !token && anyUnsaved));
+  // Locking without the unlock closes the editor, so it waits for unsaved
+  // changes in any tab, which the hint names (`persona.js`).
+  const waitingTabs = $derived(lockWaits({ chosen, token, editing }) ? unsavedFiles(editing) : []);
+  const lockWaitsNow = $derived(waitingTabs.length > 0);
 
   // Switch between the form and the text. Refused while the side being left
   // holds unsaved changes — each saves against the file as it stands, so
@@ -973,7 +961,7 @@
       await load();
       // A new portrait — a character named in the settings — is framed
       // straight away (owner, 2026-10-01).
-      if (chosen?.portrait && chosen.portrait !== portrait) openFraming(true);
+      if (chosen?.portrait && chosen.portrait !== portrait) openFraming();
       await openEditor(file);
       for (const [f, v] of Object.entries(kept)) Object.assign(editing.files[f], v);
       editing.saved = `saved — now v${saved.version}; new chats use it`;
@@ -996,11 +984,11 @@
   let framing = $state(null);
   const FRAME_SIZE = 220;
 
-  // `fresh` for a new portrait: the stored frame was measured against the
-  // old picture, so the sheet starts from the default and Cancel leaves no
-  // stale crop pretending to fit (review of #491).
-  function openFraming(fresh = false) {
-    framing = { frame: frameOf(fresh ? null : chosen.frame), aspect: 1, from: null };
+  // A new portrait arrives unframed — the server clears the old picture's
+  // crop when the character changes (`persona::write_owner_file`) — so the
+  // sheet opens on the default and Cancel leaves the default (review of #491).
+  function openFraming() {
+    framing = { frame: frameOf(chosen.frame), aspect: 1, from: null };
   }
 
   function frameDown(e) {
@@ -1374,11 +1362,11 @@
           <div class="lockrow">
             <span class="locktext">
               Hide behind the library lock
-              <span class="hint" id="lockhint">{lockWaits ? 'save or undo your changes first — locking closes the editor' : chosen.locked ? 'shown only while the library is unlocked' : token ? 'locking hides it until the library is unlocked' : 'locking hides it now, and closes the editor, until the library is unlocked'}</span>
+              <span class="hint" id="lockhint">{lockWaitsNow ? `save or undo your changes in ${waitingTabs.map((f) => OWNER_FILES.find(([k]) => k === f)?.[1]).join(' and ')} first — locking closes the editor` : chosen.locked ? 'shown only while the library is unlocked' : token ? 'locking hides it until the library is unlocked' : 'locking hides it now, and closes the editor, until the library is unlocked'}</span>
             </span>
             <!-- The settings form's own switch (form.css), so it looks and
                  focuses as the toggles below it do. -->
-            <button type="button" role="switch" class="tf-switch" aria-checked={chosen.locked} aria-label="Hide behind the library lock" aria-describedby="lockhint" disabled={busy || lockWaits} onclick={() => setLocked(!chosen.locked)}><span class="tf-knob"></span></button>
+            <button type="button" role="switch" class="tf-switch" aria-checked={chosen.locked} aria-label="Hide behind the library lock" aria-describedby="lockhint" disabled={busy || lockWaitsNow} onclick={() => setLocked(!chosen.locked)}><span class="tf-knob"></span></button>
           </div>
         {/if}
         {#if asForm && current.form.form}
@@ -1744,7 +1732,10 @@
 
   {#if framing && chosen?.portrait}
     <button class="scrim" aria-label="close" onclick={() => (framing = null)}></button>
-    <div class="sheet framesheet">
+    <!-- It can open unasked (a new portrait), so it says what it is and
+         Escape closes it, as Cancel does (review of #491). -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="sheet framesheet" role="dialog" aria-label={`Adjust ${chosen.display}'s picture`} tabindex="-1" onkeydown={(e) => e.key === 'Escape' && (framing = null)}>
       <div class="sheet-grip"></div>
       <div class="sheet-text">Adjust {chosen.display}'s picture</div>
       <div
