@@ -394,6 +394,9 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   assert.equal(drawn.map((p) => p.text).join(''), `They say ${raw} and more.`);
   assert.deepEqual(citeUnmark('plain', marks), [{ text: 'plain' }]);
   assert.equal(citeMark('no cites', null).text, 'no cites');
+  // A reply that already holds the placeholder characters cannot forge one.
+  const forged = citeMark('a \uE0000\uE001 b', [[raw, check]]);
+  assert.deepEqual(citeUnmark(forged.text, forged.marks), [{ text: 'a 0 b' }]);
 }
 
 console.log('persona: ok');
