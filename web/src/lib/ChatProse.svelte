@@ -16,15 +16,16 @@
   // `actions`: who said it (`mecha`, a persona's name), for a finished reply
   // — Copy and Download act on the reply as written, and every code block
   // gets its own Copy (owner request, 2026-10-01). Left out while a reply
-  // streams: half an answer is not one to save. `download={false}` keeps
-  // Copy and drops Download — an incognito chat's, since a file on the
-  // device outlives the room (INCOGNITO-DESIGN R2; review of #484).
+  // streams: half an answer is not one to save. `download` is opted into by
+  // each call site, never assumed: a file on the device outlives the room,
+  // so an incognito chat keeps Copy and has no Download (INCOGNITO-DESIGN
+  // R2), and a surface that forgets to say fails closed (review of #484).
   import { onDestroy } from 'svelte';
   import { parseBlocks, hiddenTarget } from './mail-markdown.js';
   import { citeNote, citeOpens, citeMark, citeUnmark } from './persona.js';
   import { replyFilename, copyText, downloadText } from './reply-export.js';
 
-  let { text = '', cites = null, onCite = null, actions = null, download = true } = $props();
+  let { text = '', cites = null, onCite = null, actions = null, download = false } = $props();
   let raw = $state(false);
   // Which control just copied — 'reply' or the code block itself — for a
   // moment's "copied", or 'failed' when the phone refused. Raw, so a block
@@ -99,7 +100,7 @@
         Download
       </button>
     {/if}
-    {#if copied === 'failed'}<span class="copyfail">this browser would not copy — double-click the reply to select it as written</span>{/if}
+    {#if copied === 'failed'}<span class="copyfail">this browser would not copy — select the text and copy it by hand</span>{/if}
   </div>
 {/if}
 
