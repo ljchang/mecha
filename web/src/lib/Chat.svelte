@@ -702,6 +702,7 @@
     // mask into this chat's jail and name the other chat's picture in this
     // transcript (review of #429).
     editing = null;
+    pictureNote = null; // a path in the chat being left, as the modal's is
     incognito = false;
     gone = null;
     goneNote = null;
@@ -720,6 +721,7 @@
     draft = '';
     attachments = [];
     editing = null; // the modal carries this chat's draft and paths too
+    pictureNote = null; // and a download's note names one of its pictures
     todo = [];
     usage = null;
     taint = null;
@@ -1270,7 +1272,10 @@
   // (the reason its picture is not a link). Why one failed shows under it.
   let pictureNote = $state(null); // { path, why }
   async function savePicture(path) {
+    const k = key;
     const why = await downloadPicture(fetch, workspaceFile(path), path);
+    // A chat left while the download ran keeps no note of it (review of #494).
+    if (key !== k) return;
     // Only this picture's note: another's failure is not cleared by this one
     // succeeding (review of #494).
     if (why) pictureNote = { path, why };

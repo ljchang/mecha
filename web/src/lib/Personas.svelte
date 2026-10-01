@@ -147,7 +147,10 @@
   // under it.
   let pictureNote = $state(null); // { path, why }
   async function savePicture(path) {
+    const k = key;
     const why = await downloadPicture(fetch, pictureUrl(path), path);
+    // A chat left while the download ran keeps no note of it (review of #494).
+    if (key !== k) return;
     // Only this picture's note: another's failure is not cleared by this one
     // succeeding (review of #494).
     if (why) pictureNote = { path, why };
@@ -497,6 +500,7 @@
       close();
       key = null;
       imageEdit = null;
+      pictureNote = null;
       attachments = [];
       run = emptyRun();
       // The chat's switches leave with it: a persona page reads its own
@@ -521,6 +525,7 @@
     chosen = null;
     key = null;
     imageEdit = null;
+    pictureNote = null;
     // A sheet over a persona that has gone — a relock lands here — must go
     // with it, or it renders without one (review of #479).
     fileSheet = null;
@@ -683,6 +688,7 @@
     // A modal over the last chat's picture must not send into this one, and
     // the last chat's files are paths in another jail.
     imageEdit = null;
+    pictureNote = null;
     attachments = [];
     // Or the previous chat's resources show for a round trip (review of #418).
     safety = null;
