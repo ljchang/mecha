@@ -1275,6 +1275,27 @@ module.
       never as a path on the machine.
     - `what_a_persona_remembers_rides_in_the_first_turn_with_its_taint`
       drives the real doors and reads the chat's taint back.
+  - **Recall on every turn** (`recall::per_turn`, §9.7): past the first
+    reply, the owner's message — never the persona's — keys a search of the
+    persona's records (`Memory::recall_search`): words by FTS5, meaning by
+    cosine over `vectors` (blobs, D19), recency as a third ranking, fused by
+    reciprocal rank. The best `PER_TURN` that the conversation does not
+    already hold ride in that turn's message under the same two stems.
+    - Chat start covers what fits its budget, so per-turn recall reaches what
+      it left out: episodes past the newest five, and facts the budget cut.
+    - A meaning hit needs `MIN_COSINE` (0.5, unmeasured), and meaning counts
+      only when half the candidates carry a vector of the query's length;
+      equal by meaning, the newer ranks first so recency is not cancelled. A
+      message under `MIN_QUERY_CHARS` searches nothing.
+    - The index is schema v3 of `memory.db`, backfilled on upgrade. FTS5 is
+      created with `secure-delete`, and every delete takes the record out of
+      `recall_fts` and `vectors` first; without `secure-delete` a forgotten
+      term survives in the file — `forgetting_takes_a_record_out_of_the_index_and_its_vector_with_it`
+      reads the bytes.
+    - The query is embedded with `Task::Recall` (its own instruction) under
+      `RECALL_EMBED_WAIT` (8 s, past the on-demand server's cold start);
+      slower or down, recall is by words. `persona memory write` embeds what
+      has no vector after writing.
   - **The writer** (`persona::writer`, §9.6) runs from `mecha persona memory
     write`, which `scripts/ruminate.sh` calls nightly; nothing writes after a
     chat yet. It never runs during a chat, and only on a provider that

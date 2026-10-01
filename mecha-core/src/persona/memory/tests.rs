@@ -810,3 +810,196 @@ fn a_store_from_before_the_ledger_upgrades_and_reads_as_never_written() {
     m.write_stretch("c1", 0, 3, |_| Ok(())).unwrap().unwrap();
     assert_eq!(m.written_upto("c1").unwrap(), 3);
 }
+
+fn recall_words(m: &Memory, q: &str) -> Vec<String> {
+    let kinds = [
+        Recallable::Episodes,
+        Recallable::Facts(Table::Persona),
+        Recallable::Facts(Table::User),
+        Recallable::Facts(Table::Inferred),
+    ];
+    m.recall_search(q, None, &kinds, &|_| false, 5)
+        .unwrap()
+        .0
+        .into_iter()
+        .map(|r| r.text)
+        .collect()
+}
+
+#[test]
+fn recall_finds_by_words_and_never_a_candidate_or_a_withdrawn_record() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    m.add_fact(
+        Table::Persona,
+        fact(
+            "We call the kelp project Holdfast.",
+            Kind::Observed,
+            "c1",
+            Origin::ModelClean,
+        ),
+    )
+    .unwrap();
+    m.add_fact(
+        Table::Persona,
+        fact(
+            "A page said Holdfast sings.",
+            Kind::Observed,
+            "c1",
+            Origin::ModelUntrusted,
+        ),
+    )
+    .unwrap();
+    let old = m
+        .add_fact(
+            Table::User,
+            fact(
+                "Holdfast is due in May.",
+                Kind::Stated,
+                "c1",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    m.correct(&old.uid, "Holdfast is due in June.").unwrap();
+    let found = recall_words(&m, "what about holdfast?");
+    assert!(found.contains(&"We call the kelp project Holdfast.".to_string()));
+    assert!(found.contains(&"Holdfast is due in June.".to_string()));
+    assert!(
+        !found.iter().any(|t| t.contains("sings")),
+        "a candidate: {found:?}"
+    );
+    assert!(
+        !found.iter().any(|t| t.contains("May")),
+        "withdrawn: {found:?}"
+    );
+    assert!(recall_words(&m, "something else entirely").is_empty());
+}
+
+#[test]
+fn a_store_from_before_the_index_is_indexed_when_it_upgrades() {
+    let dir = store(&["mara"]);
+    {
+        let m = Memory::open(&dir, "mara").unwrap();
+        m.add_fact(
+            Table::User,
+            fact(
+                "Teaches a seminar on kelp.",
+                Kind::Stated,
+                "c1",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+        m.conn
+            .execute_batch("DROP TABLE recall_fts; DROP TABLE vectors; PRAGMA user_version = 2;")
+            .unwrap();
+    }
+    let ro = Memory::open_existing(&dir, "mara").unwrap().unwrap();
+    assert!(
+        recall_words(&ro, "kelp seminar").is_empty(),
+        "no index, no recall, no error"
+    );
+    drop(ro);
+    let m = Memory::open(&dir, "mara").unwrap();
+    assert_eq!(
+        recall_words(&m, "kelp seminar"),
+        ["Teaches a seminar on kelp."]
+    );
+}
+
+#[test]
+fn meaning_needs_a_floor_and_recency_breaks_ties() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let a = m
+        .add_fact(
+            Table::User,
+            fact("Likes the sea.", Kind::Stated, "c1", Origin::ModelClean),
+        )
+        .unwrap();
+    let b = m
+        .add_fact(
+            Table::User,
+            fact("Owns a boat.", Kind::Stated, "c1", Origin::ModelClean),
+        )
+        .unwrap();
+    m.store_vectors(&[
+        (a.uid.clone(), vec![1.0, 0.0]),
+        (b.uid.clone(), vec![0.0, 1.0]),
+    ])
+    .unwrap();
+    let kinds = [Recallable::Facts(Table::User)];
+    // Near `a` only: `b` is orthogonal, under the floor.
+    let (found, meaning) = m
+        .recall_search("zzz", Some(&[1.0, 0.1]), &kinds, &|_| false, 5)
+        .unwrap();
+    assert!(meaning);
+    assert_eq!(
+        found.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+        ["Likes the sea."]
+    );
+    // Equal by meaning: the newer comes first.
+    let (found, _) = m
+        .recall_search("zzz", Some(&[1.0, 1.0]), &kinds, &|_| false, 5)
+        .unwrap();
+    assert_eq!(found[0].text, "Owns a boat.", "{found:?}");
+    // A vector of another model's length is never compared.
+    let (found, meaning) = m
+        .recall_search("zzz", Some(&[1.0, 0.0, 0.0]), &kinds, &|_| false, 5)
+        .unwrap();
+    assert!(!meaning && found.is_empty());
+}
+
+#[test]
+fn forgetting_takes_a_record_out_of_the_index_and_its_vector_with_it() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let f = m
+        .add_fact(
+            Table::User,
+            fact(
+                "Grows zqxjkvbw orchids.",
+                Kind::Stated,
+                "c1",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    m.store_vectors(&[(f.uid.clone(), vec![1.0, 0.0])]).unwrap();
+    for i in 0..20 {
+        m.add_fact(
+            Table::User,
+            fact(
+                &format!("filler {i}"),
+                Kind::Stated,
+                "c2",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    }
+    forget(&dir, "mara", &f.uid).unwrap();
+    assert!(recall_words(&m, "zqxjkvbw orchids").is_empty());
+    let left: i64 = m
+        .conn
+        .query_row("SELECT count(*) FROM vectors", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0);
+    for name in [MEMORY_DB, "memory.db-wal"] {
+        if let Ok(bytes) = std::fs::read(dir.join("mara").join(name)) {
+            assert!(
+                !bytes.windows(8).any(|w| w == b"zqxjkvbw"),
+                "the term survives in {name}"
+            );
+        }
+    }
+    // And forgetting a chat does the same.
+    m.add_fact(
+        Table::User,
+        fact("Keeps bees.", Kind::Stated, "c9", Origin::ModelClean),
+    )
+    .unwrap();
+    forget_chat(&dir, "mara", "c9").unwrap();
+    assert!(recall_words(&m, "bees").is_empty());
+}

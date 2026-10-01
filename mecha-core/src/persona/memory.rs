@@ -40,6 +40,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::{validate_name, validate_persona_name, Origin};
@@ -55,8 +56,9 @@ pub const MAX_FACT_CHARS: usize = 500;
 pub const MAX_SUMMARY_CHARS: usize = 4000;
 
 /// `PRAGMA user_version` this binary writes. Migrations are additive:
-/// 1 is the records, 2 the writer's ledger (`written`).
-const SCHEMA: i64 = 2;
+/// 1 is the records, 2 the writer's ledger (`written`), 3 the recall index
+/// (`recall_fts`, `vectors`).
+const SCHEMA: i64 = 3;
 
 /// Which table of `memory.db` a fact lives in. A closed set mapped to fixed
 /// names, so no caller's string ever reaches SQL as an identifier.
@@ -417,7 +419,31 @@ fn migrate_memory(conn: &Connection) -> Result<()> {
              PRAGMA user_version = 2;
              COMMIT;",
         )?;
-        debug_assert_eq!(SCHEMA, 2, "a new step goes above, and this moves with it");
+    }
+    if version < 3 {
+        // The recall index (§9.7): words by FTS5, meaning by vectors kept
+        // as blobs (D19). FTS5 keeps its own copy of the text and its index
+        // can hold a deleted term until a merge, so `secure-delete` is on:
+        // forgetting a record forgets it from the index too (§9.9). Built
+        // from every record already there, so a store from before it is
+        // searchable at once.
+        let mut sql = String::from(
+            "BEGIN;
+             CREATE VIRTUAL TABLE IF NOT EXISTS recall_fts USING fts5 (uid UNINDEXED, text);
+             INSERT INTO recall_fts (recall_fts, rank) VALUES ('secure-delete', 1);
+             CREATE TABLE IF NOT EXISTS vectors (uid TEXT PRIMARY KEY, vec BLOB NOT NULL);
+             INSERT INTO recall_fts (uid, text) SELECT uid, summary || ' ' || topics || ' ' ||
+                 decisions || ' ' || open_threads FROM episodes;",
+        );
+        for t in Table::ALL {
+            sql.push_str(&format!(
+                "INSERT INTO recall_fts (uid, text) SELECT uid, text FROM {};",
+                t.sql()
+            ));
+        }
+        sql.push_str("PRAGMA user_version = 3; COMMIT;");
+        conn.execute_batch(&sql)?;
+        debug_assert_eq!(SCHEMA, 3, "a new step goes above, and this moves with it");
     }
     Ok(())
 }
@@ -580,6 +606,42 @@ fn episode_of(r: &Row) -> rusqlite::Result<Episode> {
     })
 }
 
+/// Reciprocal-rank fusion's constant, as `persona::search` uses it.
+const RRF_K: f32 = 60.0;
+
+/// The least cosine a meaning-only hit needs to be recalled. A guess until
+/// measured on real persona memory: below it, the nearest record to "ok
+/// sounds good" is noise, and a fold on every turn would carry it in.
+pub const MIN_COSINE: f32 = 0.5;
+
+/// What a search may return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recallable {
+    Episodes,
+    Facts(Table),
+}
+
+/// One record a search found, as a line for the model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Recollection {
+    pub uid: String,
+    pub kind: Recallable,
+    pub text: String,
+    pub date: String,
+    pub origin: Origin,
+}
+
+/// An episode's words, as the index holds them.
+fn episode_words(e: &Episode) -> String {
+    format!(
+        "{} {} {} {}",
+        e.summary,
+        e.topics.join(" "),
+        e.decisions.join(" "),
+        e.open_threads.join(" ")
+    )
+}
+
 /// Which records a listing returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Filter {
@@ -740,6 +802,27 @@ impl Memory {
                 f.replaces,
             ],
         )?;
+        self.index(&f.uid, &f.text)
+    }
+
+    /// Put a record's words in the recall index.
+    fn index(&self, uid: &str, text: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO recall_fts (uid, text) VALUES (?1, ?2)",
+            params![uid, text],
+        )?;
+        Ok(())
+    }
+
+    /// Take records out of the recall index and their vectors with them —
+    /// what deleting a record owes the index.
+    fn unindex(&self, uids: &[String]) -> Result<()> {
+        for uid in uids {
+            self.conn
+                .execute("DELETE FROM recall_fts WHERE uid = ?1", [uid])?;
+            self.conn
+                .execute("DELETE FROM vectors WHERE uid = ?1", [uid])?;
+        }
         Ok(())
     }
 
@@ -795,6 +878,7 @@ impl Memory {
                 ep.pinned,
             ],
         )?;
+        self.index(&ep.uid, &episode_words(&ep))?;
         Ok(ep)
     }
 
@@ -1022,6 +1106,7 @@ impl Memory {
     fn delete(&self, uid: &str) -> Result<()> {
         self.writable()?;
         let table = self.locate(uid)?;
+        self.unindex(&[uid.to_owned()])?;
         self.conn
             .execute(&format!("DELETE FROM {table} WHERE uid = ?1"), [uid])?;
         Ok(())
@@ -1037,6 +1122,14 @@ impl Memory {
     fn forget_chat(&self, chat: &str) -> Result<(usize, usize)> {
         self.writable()?;
         let tx = self.conn.unchecked_transaction()?;
+        // Out of the index first, while the rows still say which they are.
+        let mut uids: Vec<String> = Vec::new();
+        for t in std::iter::once("episodes").chain(Table::ALL.map(Table::sql)) {
+            let mut stmt = tx.prepare(&format!("SELECT uid FROM {t} WHERE source_chat = ?1"))?;
+            let rows = stmt.query_map([chat], |r| r.get::<_, String>(0))?;
+            uids.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        self.unindex(&uids)?;
         let episodes = tx.execute("DELETE FROM episodes WHERE source_chat = ?1", [chat])?;
         let mut facts = 0;
         for t in Table::ALL {
@@ -1135,6 +1228,206 @@ impl Memory {
             replaces: Some(old.uid.clone()),
             ..replacement
         })
+    }
+
+    /// Active records with no vector yet, oldest first, at most `limit` —
+    /// what the writer embeds after writing.
+    pub fn unembedded(&self, limit: usize) -> Result<Vec<(String, String)>> {
+        let mut out = Vec::new();
+        for t in std::iter::once("episodes").chain(Table::ALL.map(Table::sql)) {
+            let text = if t == "episodes" {
+                "summary || ' ' || topics || ' ' || decisions || ' ' || open_threads"
+            } else {
+                "text"
+            };
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT uid, {text} FROM {t} WHERE status = ?1
+                 AND uid NOT IN (SELECT uid FROM vectors) ORDER BY ingested_at"
+            ))?;
+            let rows = stmt.query_map([wire(&Status::Active)], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            out.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    /// Store vectors made by the embeddings server, by record.
+    pub fn store_vectors(&self, vectors: &[(String, Vec<f32>)]) -> Result<()> {
+        self.writable()?;
+        let tx = self.conn.unchecked_transaction()?;
+        for (uid, v) in vectors {
+            tx.execute(
+                "INSERT INTO vectors (uid, vec) VALUES (?1, ?2)
+                 ON CONFLICT (uid) DO UPDATE SET vec = excluded.vec",
+                params![uid, crate::embed::to_blob(v)],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The records of `kinds` that best answer `query` (§9.7): words by FTS5
+    /// and, given `qvec`, meaning by cosine, fused by reciprocal rank with
+    /// recency as a third ranking — "weighted toward recent". Active records
+    /// only; `skip` names records the caller already has.
+    ///
+    /// A meaning hit needs `MIN_COSINE`: a vector search ranks *something*
+    /// first whatever is asked, and a fold on every turn would otherwise
+    /// carry the nearest noise into the chat. Only vectors of the query's
+    /// length count, and only when at least half the candidates have one —
+    /// d7's rule in `persona::search`, for d7's reason. `bool` is whether
+    /// meaning took part.
+    pub fn recall_search(
+        &self,
+        query: &str,
+        qvec: Option<&[f32]>,
+        kinds: &[Recallable],
+        skip: &dyn Fn(&str) -> bool,
+        k: usize,
+    ) -> Result<(Vec<Recollection>, bool)> {
+        if !self.has_index()? {
+            return Ok((Vec::new(), false));
+        }
+        let mut pool: HashMap<String, Recollection> = HashMap::new();
+        for kind in kinds {
+            match kind {
+                Recallable::Episodes => {
+                    for e in self.episodes(Filter::Recallable)? {
+                        let date = e
+                            .ended_at
+                            .clone()
+                            .or(e.started_at.clone())
+                            .unwrap_or(e.ingested_at.clone());
+                        let mut text = e.summary.clone();
+                        if !e.open_threads.is_empty() {
+                            text.push_str(&format!(" (Left open: {}.)", e.open_threads.join("; ")));
+                        }
+                        pool.insert(
+                            e.uid.clone(),
+                            Recollection {
+                                uid: e.uid,
+                                kind: *kind,
+                                text,
+                                date,
+                                origin: e.origin,
+                            },
+                        );
+                    }
+                }
+                Recallable::Facts(t) => {
+                    for f in self.facts(*t, Filter::Recallable)? {
+                        pool.insert(
+                            f.uid.clone(),
+                            Recollection {
+                                uid: f.uid,
+                                kind: *kind,
+                                text: f.text,
+                                date: f.ingested_at,
+                                origin: f.origin,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        pool.retain(|_, r| !skip(&r.text));
+        if pool.is_empty() {
+            return Ok((Vec::new(), false));
+        }
+
+        let mut scores: HashMap<String, f32> = HashMap::new();
+        let mut candidates: Vec<String> = Vec::new();
+        let rrf = |rank: usize| 1.0 / (RRF_K + rank as f32 + 1.0);
+
+        if let Some(fts) = crate::persona::search::fts_query(query) {
+            let mut stmt = self.conn.prepare(
+                "SELECT uid FROM recall_fts WHERE recall_fts MATCH ?1
+                 ORDER BY bm25(recall_fts) LIMIT 200",
+            )?;
+            let uids = stmt.query_map([fts], |r| r.get::<_, String>(0))?;
+            let mut rank = 0;
+            for uid in uids {
+                let uid = uid?;
+                if pool.contains_key(&uid) {
+                    *scores.entry(uid.clone()).or_default() += rrf(rank);
+                    candidates.push(uid);
+                    rank += 1;
+                }
+            }
+        }
+
+        let mut by_meaning = false;
+        if let Some(q) = qvec {
+            let mut stmt = self.conn.prepare("SELECT uid, vec FROM vectors")?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?;
+            let mut embedded = 0usize;
+            let mut ranked: Vec<(String, f32)> = Vec::new();
+            for row in rows {
+                let (uid, blob) = row?;
+                if !pool.contains_key(&uid) {
+                    continue;
+                }
+                let Some(v) = crate::embed::from_blob(&blob).filter(|v| v.len() == q.len()) else {
+                    continue;
+                };
+                embedded += 1;
+                let c = crate::embed::cosine(q, &v);
+                if c >= MIN_COSINE {
+                    ranked.push((uid, c));
+                }
+            }
+            by_meaning = embedded * 2 >= pool.len() && embedded > 0;
+            if by_meaning {
+                // Equal by meaning, the newer first: otherwise row order would
+                // rank the older higher here and cancel the recency ranking
+                // below, leaving the tie to the uid.
+                ranked.sort_by(|a, b| {
+                    b.1.total_cmp(&a.1)
+                        .then_with(|| pool[&b.0].date.cmp(&pool[&a.0].date))
+                });
+                for (rank, (uid, _)) in ranked.into_iter().enumerate() {
+                    *scores.entry(uid.clone()).or_default() += rrf(rank);
+                    candidates.push(uid);
+                }
+            }
+        }
+
+        // Recency reorders what words or meaning found; it never adds one.
+        candidates.sort();
+        candidates.dedup();
+        let mut by_date: Vec<&String> = candidates.iter().collect();
+        by_date.sort_by(|a, b| pool[*b].date.cmp(&pool[*a].date));
+        for (rank, uid) in by_date.into_iter().enumerate() {
+            *scores.entry(uid.clone()).or_default() += rrf(rank);
+        }
+
+        let mut best: Vec<(String, f32)> = scores.into_iter().collect();
+        best.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        Ok((
+            best.into_iter()
+                .take(k)
+                .filter_map(|(uid, _)| pool.remove(&uid))
+                .collect(),
+            by_meaning,
+        ))
+    }
+
+    /// Whether this store has the recall index — a read-only handle to a
+    /// store from before it does not build one.
+    fn has_index(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE name = 'recall_fts'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
     }
 
     /// Everything, as JSON lines in a fixed order — what `cat` was for the
@@ -1249,6 +1542,14 @@ impl Shared {
         if !self.writable {
             bail!("shared.db was opened read-only");
         }
+        Ok(())
+    }
+
+    /// Whether the file is a database this can read at all —
+    /// [`Memory::readable`]'s question, for the same lazily-opened reason.
+    pub fn readable(&self) -> Result<()> {
+        self.conn
+            .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;
         Ok(())
     }
 

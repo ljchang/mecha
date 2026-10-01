@@ -243,6 +243,35 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     run(&dir, &lib_dir, args.cmd)
 }
 
+/// Embed whatever of one persona's memory has no vector yet, in batches.
+async fn embed_memory(
+    dir: &Path,
+    persona: &str,
+    embedder: &mecha_core::embed::Embedder,
+) -> Result<usize> {
+    use mecha_core::persona::memory::Memory;
+    let m = Memory::open_to_edit(dir, persona)?;
+    let mut done = 0usize;
+    loop {
+        let todo = m.unembedded(32)?;
+        if todo.is_empty() {
+            return Ok(done);
+        }
+        let texts: Vec<String> = todo.iter().map(|(_, t)| t.clone()).collect();
+        let vectors = embedder
+            .embed(&texts, mecha_core::embed::Task::Passage)
+            .await?;
+        // Position ties a vector to its record; a short reply is refused.
+        if vectors.len() != todo.len() {
+            anyhow::bail!("asked for {} embeddings, got {}", todo.len(), vectors.len());
+        }
+        let pairs: Vec<(String, Vec<f32>)> =
+            todo.into_iter().map(|(uid, _)| uid).zip(vectors).collect();
+        m.store_vectors(&pairs)?;
+        done += pairs.len();
+    }
+}
+
 /// `mecha persona memory write`: the writer over every persona's chats, or
 /// one persona's, or one chat (§9.6).
 async fn write_memory(
@@ -451,8 +480,29 @@ async fn write_memory(
             }
         }
     }
+
+    // Vectors for what is remembered and not yet embedded (§9.7): new
+    // records, and on a store's first night every record it already had.
+    // Best-effort — without the embeddings server, recall is by words, and
+    // the next night tries again.
+    let mut embedded = 0usize;
+    if let Some(embedder) = crate::setup::file_embedder(&cfg) {
+        for p in store.all() {
+            if !store
+                .persona_dir(&p.name)
+                .join(mecha_core::persona::memory::MEMORY_DB)
+                .is_file()
+            {
+                continue;
+            }
+            match embed_memory(dir, &p.name, &embedder).await {
+                Ok(n) => embedded += n,
+                Err(e) => eprintln!("{}: memory left searchable by words only ({e:#})", p.name),
+            }
+        }
+    }
     println!(
-        "{chats} chat(s) read, {waiting} waiting for their model, {marked} test or \
+        "{chats} chat(s) read, {embedded} memories embedded, {waiting} waiting for their model, {marked} test or \
          experiment chat(s) left out, {failed} left for a later run"
     );
     if failed > 0 {

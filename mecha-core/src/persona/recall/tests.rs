@@ -496,3 +496,151 @@ fn a_memory_that_will_not_open_still_lets_the_about_me_notes_ride() {
     assert_eq!(r.problems.len(), 1, "{:?}", r.problems);
     assert!(r.problems[0].starts_with("its memory"), "{:?}", r.problems);
 }
+
+#[test]
+fn a_message_recalls_what_it_names_and_not_what_the_chat_already_holds() {
+    let w = World::new(&["mara"]);
+    let m = w.memory("mara");
+    m.add_fact(
+        Table::Persona,
+        fact(
+            "We call the kelp project Holdfast.",
+            Kind::Observed,
+            Origin::ModelClean,
+        ),
+    )
+    .unwrap();
+    m.add_fact(
+        Table::User,
+        fact("Has a cat.", Kind::Stated, Origin::ModelClean),
+    )
+    .unwrap();
+    let p = w.persona("mara");
+    let b = per_turn(&w.dir, &p, "How is the Holdfast work going?", None, "")
+        .unwrap()
+        .unwrap();
+    assert!(b.text.starts_with(MEMORY_STEM), "{}", b.text);
+    assert!(b
+        .text
+        .contains("between you: We call the kelp project Holdfast."));
+    assert!(!b.text.contains("cat"), "{}", b.text);
+    assert!(crate::agent::is_harness_voice(&b.text));
+    // Already in the conversation: not folded again.
+    assert!(per_turn(
+        &w.dir,
+        &p,
+        "How is the Holdfast work going?",
+        None,
+        "We call the kelp project Holdfast."
+    )
+    .unwrap()
+    .is_none());
+    // "ok" calls nothing up, and neither does a word too short to be a
+    // message, even one that names something remembered.
+    assert!(per_turn(&w.dir, &p, "ok", None, "").unwrap().is_none());
+    assert!(per_turn(&w.dir, &p, "Holdfast?", None, "")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn a_recalled_record_from_outside_arms_its_turn_and_off_is_off() {
+    let w = World::new(&["mara"]);
+    let m = w.memory("mara");
+    let f = m
+        .add_fact(
+            Table::Persona,
+            fact(
+                "A page said Holdfast sings.",
+                Kind::Observed,
+                Origin::ModelUntrusted,
+            ),
+        )
+        .unwrap();
+    let p = w.persona("mara");
+    assert!(per_turn(&w.dir, &p, "Tell me about Holdfast", None, "")
+        .unwrap()
+        .is_none());
+    m.approve(&f.uid).unwrap();
+    let b = per_turn(&w.dir, &p, "Tell me about Holdfast", None, "")
+        .unwrap()
+        .unwrap();
+    assert!(b.untrusted && b.text.starts_with(UNTRUSTED_MEMORY_STEM));
+
+    let mut off = p.clone();
+    off.settings.memory.semantic = false;
+    assert!(per_turn(&w.dir, &off, "Tell me about Holdfast", None, "")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn a_persona_with_no_memory_recalls_nothing_per_turn_and_creates_nothing() {
+    let w = World::new(&["mara"]);
+    assert!(per_turn(
+        &w.dir,
+        &w.persona("mara"),
+        "Tell me about Holdfast",
+        None,
+        ""
+    )
+    .unwrap()
+    .is_none());
+    assert!(!w.dir.join("mara").join("memory.db").exists());
+}
+
+#[test]
+fn a_shared_fact_is_ordered_by_its_date_not_cut_first_for_being_shared() {
+    let w = World::new(&["mara", "otto"]);
+    let m = w.memory("mara");
+    m.add_fact(
+        Table::User,
+        fact("Has a cat.", Kind::Stated, Origin::ModelClean),
+    )
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let otto = w.memory("otto");
+    let f = otto
+        .add_fact(
+            Table::User,
+            fact("Runs at dawn.", Kind::Stated, Origin::ModelClean),
+        )
+        .unwrap();
+    // Shared a day later than mara learned hers, as dates go.
+    let shared = Shared::open(&w.dir).unwrap();
+    shared.share(&f, Audience::Everyone, &[]).unwrap();
+    drop(shared);
+    let conn = rusqlite::Connection::open(w.dir.join("shared.db")).unwrap();
+    conn.execute(
+        "UPDATE shared_facts SET shared_at = '2999-01-01T00:00:00Z'",
+        [],
+    )
+    .unwrap();
+    let t = block(&w, &w.persona("mara")).unwrap().text;
+    let (dawn, cat) = (
+        t.find("Runs at dawn.").unwrap(),
+        t.find("Has a cat.").unwrap(),
+    );
+    assert!(dawn < cat, "newer first, shared or not: {t}");
+}
+
+#[test]
+fn a_shared_store_that_will_not_read_costs_only_its_own_facts() {
+    let w = World::new(&["mara"]);
+    std::fs::write(w.dir.join("about-me.md"), "I study kelp.\n").unwrap();
+    w.memory("mara")
+        .add_fact(
+            Table::User,
+            fact("Has a cat.", Kind::Stated, Origin::ModelClean),
+        )
+        .unwrap();
+    std::fs::write(w.dir.join("shared.db"), "not a database").unwrap();
+    let r = chat_start(&w.store(), &w.persona("mara")).unwrap();
+    let t = r.block.unwrap().text;
+    assert!(
+        t.contains("I study kelp.") && t.contains("Has a cat."),
+        "{t}"
+    );
+    assert_eq!(r.problems.len(), 1, "{:?}", r.problems);
+    assert!(r.problems[0].starts_with("what the owner shared"));
+}

@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Personas recall during a chat, not only at its start.** Each message
+  you send after the first reply is searched against what the persona
+  remembers — by your words and by meaning, recent first — and the few
+  things it calls up that the chat has not already seen ride along with it:
+  an older conversation, a fact that did not fit at the start. The nightly
+  memory pass now also prepares memories for searching by meaning; without
+  the embeddings server, recall works by words. Forgetting a memory removes
+  it from the search index too.
 - **Personas remember you in the next chat.** A new chat with a persona
   starts with what it remembers: your about-me notes, what it knows about you
   (and what you shared with it), its own facts, and its last few
