@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Settings → Lock** or with `mecha imagelib set-autolock <minutes>` (1 to
   240). Leaving either tab also ends its unlock.
 
+- **A persona searches its files.** When a persona's files are too long to
+  read whole, it finds the passages that answer a question with a new
+  `file_search` tool, by meaning (through the `:8081` embeddings server,
+  `[documents] embed_url`) and by words, and reads around them with
+  `file_read`. Files are indexed in the background once they are read; a
+  quote taken from a search result is checked like any other.
+
 - **A persona's citations are checked.** When a persona quotes one of its
   files as `[file, p. N: "…"]`, mecha looks the quote up in what that chat
   actually read and tags it: *quoted*, *on p. N* (the quote is real but on

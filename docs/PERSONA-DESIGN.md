@@ -1065,8 +1065,7 @@ persona's session file holds the text of the files it carried: resuming
 has to replay it, and the replay is what keeps the chat armed. The first turn never runs
 OCR: a document whose text is not in the cache yet is listed as being read
 and read in the background, one at a time, for `file_read` or the next
-chat. Search over large collections (3c) and saving study material (3d)
-come next.
+chat. Saving study material (3d) comes next.
 
 *Building, 2026-10-01 (step 3b):* checked citations, as above —
 `persona::cite` checks each one after the run against what the chat
@@ -1077,6 +1076,19 @@ found one opens the page it is on with the passage marked. One departure: the pa
 not the PDF with a box drawn on it — the PDF would have to be served
 renderable from this origin, which nothing but an image is, for the reason
 the assistant's downloads give.
+
+*Building, 2026-10-01 (step 3c):* search. Every file a persona can read is
+cut into passages page by page and kept in one index for the store
+(`<store>/.search.db`, `persona::search`), keyed by the file's content hash,
+so the same paper in two folders is indexed once. `file_search` ranks a
+persona's own files' passages by meaning (`:8081` vectors as blobs, cosine in
+Rust, D19) fused with words (SQLite FTS5) — words alone when the embeddings
+server is down or no `[documents]` table names it, and the result says so. A
+passage comes back under `file_read`'s header and page marker, so a quote
+from it is checked like any other. The background queue that reads a file
+indexes it; files added before this are indexed when a chat first lists
+them. The D15 threshold is the quarter of the window it was; measuring it is
+still owed.
 
 R14 asks for NotebookLM's usefulness — upload a paper or other material, ask
 questions of it, get summaries, study from it — and R18 asks that nothing be

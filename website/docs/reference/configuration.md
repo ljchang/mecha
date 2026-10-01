@@ -761,6 +761,7 @@ ignored with a warning. The design, and what was measured, is
 |---|---|---|---|
 | `ocr` | bool | `true` | Transcribe pages with the OCR model. Off, extraction is the text layer only, and a page with no text layer says so. |
 | `ocr_url` | string | `http://127.0.0.1:8085` | The OCR llama-server. Must be on this machine; anything else is refused at startup. `scripts/llama/install.sh` installs an on-demand one here. |
+| `embed_url` | string | `http://127.0.0.1:8081` | The embeddings server a persona's file search uses to find passages by meaning. Must be on this machine. Without it, or with no `[documents]` table, search finds passages by their words alone. |
 | `ocr_model` | string | `paddleocr-vl-1.6` | The model name sent with each page, and part of the cache key. |
 | `ocr_ready_secs` | integer | `120` | How long the first page may wait for the server to start and answer `/health`. |
 | `page_timeout_secs` | integer | `180` | One page's rendering or OCR running longer is abandoned, and the page says so. |

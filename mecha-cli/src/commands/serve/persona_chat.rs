@@ -318,6 +318,44 @@ fn carries_files_now(messages: &[Message]) -> bool {
         && !mecha_core::persona::files::carries(messages)
 }
 
+/// Whether a file goes to the background queue: still being read, or ready
+/// and not yet indexed for `file_search`. Not one read on request — the
+/// owner turned the extraction cache off, and a document is then read when
+/// a chat asks for it, never ahead (so with the cache off, only text files
+/// are searchable) — nor one that will be refused.
+///
+/// `indexed` is asked only of a ready file: hashing one that is refused or
+/// over the cap is the unbounded read `readiness` exists not to do (review
+/// of #467).
+fn to_process(state: &Readiness, indexed: impl FnOnce() -> bool) -> bool {
+    match state {
+        Readiness::Reading => true,
+        Readiness::Ready => !indexed(),
+        Readiness::OnRequest | Readiness::Refused(_) => false,
+    }
+}
+
+/// Whether the search index holds `src` as fully as it can: with an
+/// embeddings server configured, every passage embedded — a file indexed
+/// while `:8081` was down, or whose vectors a new model dropped, is taken
+/// round again until it is (review of #467: `has` alone left it words-only
+/// for good). Without one, its passages in. Unknown reads as not.
+fn indexed(
+    index: Option<&mecha_core::persona::search::Index>,
+    src: &mecha_core::persona::files::Source,
+    embedded: bool,
+) -> bool {
+    index.is_some_and(|i| {
+        mecha_core::persona::files::sha_of(src).is_some_and(|sha| {
+            if embedded {
+                i.complete(&sha).unwrap_or(false)
+            } else {
+                i.has(&sha).unwrap_or(false)
+            }
+        })
+    })
+}
+
 /// The extraction cache, where the reader keeps one.
 fn reader_cache(cached: bool) -> Option<mecha_core::document::Cache> {
     cached
@@ -1104,7 +1142,10 @@ impl PersonaChats {
                             Readiness::Refused(why) => Some(why.as_str()),
                             _ => None,
                         },
-                        "processing": processing.contains(&s.path),
+                        // Being read, not merely being indexed: a ready file
+                        // reads as ready (review of #467).
+                        "processing": processing.contains(&s.path)
+                            && !matches!(state, Readiness::Ready),
                     })
                 })
                 .collect::<Vec<_>>()
@@ -1133,6 +1174,7 @@ impl PersonaChats {
         let file_name = file_name.to_string();
         let config = chat.follower.current().config.clone();
         let (max_bytes, cached) = reader_shape(&config);
+        let embedded = crate::setup::file_embedder(&config).is_some();
         let (saved, src) = tokio::task::spawn_blocking(move || {
             let store = Store::load(&store_dir);
             let saved = mecha_core::persona::files::add(&store, &p, &file_name, &body)?;
@@ -1147,14 +1189,23 @@ impl PersonaChats {
             // `files_block` does: not with the cache off, not a file that
             // will be refused (review of #459, pass 9).
             let cache = reader_cache(cached);
-            let src = src.filter(|s| readiness(s, cache.as_ref(), max_bytes) == Readiness::Reading);
+            let index = mecha_core::persona::search::Index::open(&store_dir).ok();
+            let src = src.filter(|s| {
+                to_process(&readiness(s, cache.as_ref(), max_bytes), || {
+                    indexed(index.as_ref(), s, embedded)
+                })
+            });
             Ok::<_, String>((saved, src))
         })
         .await
         .map_err(|e| Refusal::Failed(format!("saving the file: {e}")))?
         .map_err(Refusal::Bad)?;
-        if let (Some(src), Some(extractor)) = (src, crate::setup::document_extractor(&config)) {
-            self.read_in_background(src, Arc::new(extractor));
+        if let Some(src) = src {
+            self.read_in_background(
+                src,
+                crate::setup::document_extractor(&config).map(Arc::new),
+                crate::setup::file_embedder(&config),
+            );
         }
         Ok(serde_json::json!({ "name": saved }))
     }
@@ -1194,9 +1245,11 @@ impl PersonaChats {
             // on one (review of #459, pass 8).
             None => (0, false),
         };
+        let embedder = crate::setup::file_embedder(config);
+        let embedded = embedder.is_some();
         // The store, the walk and the readiness hashes are file I/O: off the
         // runtime.
-        let (sources, omitted, states) = tokio::task::spawn_blocking(move || {
+        let (sources, omitted, states, unindexed) = tokio::task::spawn_blocking(move || {
             let store = Store::load(&store_dir);
             let p = store.get(&name)?;
             let (sources, omitted) =
@@ -1206,7 +1259,17 @@ impl PersonaChats {
                 .iter()
                 .map(|s| (s.path.clone(), readiness(s, cache.as_ref(), max_bytes)))
                 .collect();
-            Some((sources, omitted, states))
+            let index = mecha_core::persona::search::Index::open(&store_dir).ok();
+            // Asked of ready files only (`to_process`).
+            let unindexed: std::collections::HashSet<PathBuf> = sources
+                .iter()
+                .filter(|s| {
+                    states.get(&s.path) == Some(&Readiness::Ready)
+                        && !indexed(index.as_ref(), s, embedded)
+                })
+                .map(|s| s.path.clone())
+                .collect();
+            Some((sources, omitted, states, unindexed))
         })
         .await
         .map_err(|e| tracing::warn!("a persona's files were not listed: {e}"))
@@ -1216,16 +1279,16 @@ impl PersonaChats {
             return None;
         }
         // What the first turn cannot include yet is read in the background,
-        // so a later `file_read` — or the next chat — finds it ready. Only
-        // what a read would leave in the cache: a refused file never will
-        // be, and with the cache off the read would be thrown away.
-        if let Some(extractor) = &extractor {
-            for src in sources
-                .iter()
-                .filter(|s| states.get(&s.path) == Some(&Readiness::Reading))
-            {
-                self.read_in_background(src.clone(), Arc::clone(extractor));
-            }
+        // so a later `file_read` — or the next chat — finds it ready; and
+        // what the index does not hold is indexed, so `file_search` finds
+        // it. Only what a read would keep: a refused file never will be,
+        // and with the cache off a read would be thrown away.
+        for src in sources.iter().filter(|s| {
+            states
+                .get(&s.path)
+                .is_some_and(|st| to_process(st, || !unindexed.contains(&s.path)))
+        }) {
+            self.read_in_background(src.clone(), extractor.clone(), embedder.clone());
         }
         // A quarter of the window in tokens, at about four characters a
         // token, is about the window's size in characters.
@@ -1246,15 +1309,17 @@ impl PersonaChats {
         .await
     }
 
-    /// Read a document once in the background (§10.3), so a chat that wants
-    /// it later does not wait — after an upload, and for whatever a first
-    /// turn could not include yet. Marked processing while it waits and
+    /// Read a file once in the background (§10.3) and index it for
+    /// `file_search` (§10.4), so a chat that wants it later does not wait —
+    /// after an upload, and for whatever a first turn could not include yet
+    /// or the index does not hold. Marked processing while it waits and
     /// while it runs; a file already queued or being read is left to that
     /// read.
     fn read_in_background(
         &self,
         src: mecha_core::persona::files::Source,
-        extractor: Arc<mecha_core::document::Extractor>,
+        extractor: Option<Arc<mecha_core::document::Extractor>>,
+        embedder: Option<mecha_core::embed::Embedder>,
     ) {
         let processing = Arc::clone(&self.processing);
         match processing.lock() {
@@ -1267,6 +1332,7 @@ impl PersonaChats {
             Err(_) => return,
         }
         let reading = Arc::clone(&self.reading);
+        let store = self.store.clone();
         tokio::spawn(async move {
             // Its turn: one read at a time, timed from when it starts.
             let Ok(_turn) = reading.acquire_owned().await else {
@@ -1275,10 +1341,23 @@ impl PersonaChats {
             if let Ok(mut set) = processing.lock() {
                 set.insert(src.path.clone(), Some(std::time::Instant::now()));
             }
-            if let Err(e) =
-                mecha_core::persona::files::read(&src, Some(&extractor), "all", None).await
-            {
-                tracing::warn!("a persona file was not read: {}", e.why);
+            match mecha_core::persona::files::read(&src, extractor.as_deref(), "all", None).await {
+                // Indexed from the text just read: a cached document costs
+                // no second extraction, and an embeddings server that does
+                // not answer leaves it searchable by words.
+                Ok(text) => {
+                    if let Err(e) = mecha_core::persona::search::index_file(
+                        store,
+                        &src,
+                        text,
+                        embedder.as_ref(),
+                    )
+                    .await
+                    {
+                        tracing::warn!("a persona file was not indexed: {e:#}");
+                    }
+                }
+                Err(e) => tracing::warn!("a persona file was not read: {}", e.why),
             }
             if let Ok(mut set) = processing.lock() {
                 set.remove(&src.path);
@@ -3174,7 +3253,7 @@ mod tests {
         );
         let tools: Vec<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
         // `file_read` is every persona's (§10), whatever `[tools] allow` says.
-        assert_eq!(tools, vec!["file_read", "image_view"]);
+        assert_eq!(tools, vec!["file_read", "file_search", "image_view"]);
         // The goal rode in the first turn, not the system prompt.
         let first = req.messages[0].text();
         assert!(first.starts_with("(What I want from this conversation: Plan the kelp survey)"));
@@ -5292,6 +5371,89 @@ mod tests {
         }
     }
 
+    /// Review of #467: with an embeddings server configured, a file whose
+    /// passages are in but not embedded is not "indexed" — it goes round
+    /// again — and a refused file is never asked about (never hashed).
+    #[test]
+    fn a_file_without_its_vectors_is_taken_round_again() {
+        let dir = std::env::temp_dir().join(format!("mecha-indexed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("files")).unwrap();
+        std::fs::write(
+            dir.join("files/a.md"),
+            "Urchins graze kelp holdfasts at night.",
+        )
+        .unwrap();
+        let src = mecha_core::persona::files::list(&[(String::new(), dir.join("files"))])
+            .pop()
+            .unwrap();
+        let sha = mecha_core::persona::files::sha_of(&src).unwrap();
+        let mut index = mecha_core::persona::search::Index::open(&dir).unwrap();
+        index
+            .put(
+                &sha,
+                "document: a.md \u{b7} text\n\nUrchins graze kelp holdfasts at night.",
+            )
+            .unwrap();
+        assert!(
+            indexed(Some(&index), &src, false),
+            "words: its passages are in"
+        );
+        assert!(
+            !indexed(Some(&index), &src, true),
+            "meaning: its vectors are not"
+        );
+        assert!(to_process(&Readiness::Ready, || indexed(
+            Some(&index),
+            &src,
+            true
+        )));
+        assert!(!to_process(
+            &Readiness::Refused("too big".into()),
+            || panic!("asked of a refused file")
+        ));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// §10.4: an uploaded file is indexed in the background, so
+    /// `file_search` finds it — with no embeddings server configured, by
+    /// words.
+    #[tokio::test]
+    async fn an_upload_is_indexed_for_search() {
+        let w = world();
+        w.personas()
+            .add_source(
+                &w.chat,
+                &w.library,
+                "mara",
+                "urchins.md",
+                None,
+                axum::body::Bytes::from_static(b"Sea urchins graze kelp holdfasts at night."),
+            )
+            .await
+            .unwrap();
+        let store = w.store();
+        let src = mecha_core::persona::files::list(&[(String::new(), store.join("mara/files"))])
+            .into_iter()
+            .find(|s| s.name == "urchins.md")
+            .unwrap();
+        let sha = mecha_core::persona::files::sha_of(&src).unwrap();
+        for _ in 0..200 {
+            if mecha_core::persona::search::Index::open(&store)
+                .and_then(|i| i.has(&sha))
+                .unwrap_or(false)
+            {
+                let (hits, _) = mecha_core::persona::search::Index::open(&store)
+                    .unwrap()
+                    .search(std::slice::from_ref(&sha), "holdfasts", None, 3)
+                    .unwrap();
+                assert_eq!(hits.len(), 1);
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("the upload was never indexed");
+    }
+
     /// Pass 7 of #459: one background read at a time. Each takes a layout
     /// child and a share of the one OCR model, so a collection opened in
     /// one chat is a queue — every file marked processing, none started
@@ -5318,7 +5480,8 @@ mod tests {
                     bytes: 10,
                     kind: mecha_core::persona::files::Kind::Document,
                 },
-                Arc::clone(&extractor),
+                Some(Arc::clone(&extractor)),
+                None,
             );
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
