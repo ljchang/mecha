@@ -10,8 +10,22 @@
 // is shown again, before anything locked is on screen for a second look.
 
 // What counts as someone using the page. Not the page's own traffic: a
-// streamed reply arriving is the persona talking, not the owner.
-export const ACTIVITY = ['pointerdown', 'keydown', 'wheel', 'touchstart', 'scroll', 'mousemove'];
+// streamed reply arriving is the persona talking, not the owner. Not
+// `scroll` either: the chat pins itself to the bottom with `scrollTop =` on
+// every streamed event, and a scroll listener hears that as a touch — a
+// reply streaming kept the unlock open (review of #469). A person's scroll
+// arrives as a touch, a wheel or a key, which are all here.
+export const ACTIVITY = ['pointerdown', 'keydown', 'wheel', 'touchstart', 'mousemove'];
+
+// The span when an unlock answer names none: the server's default. Never
+// "no autolock" — a guard whose point is that it cannot be skipped must not
+// be skipped by a missing field (review of #469).
+export const DEFAULT_IDLE_SECS = 15 * 60;
+
+// The span to arm with, from an unlock answer's `idle_secs`.
+export function idleSpan(secs) {
+  return Number.isFinite(secs) && secs > 0 ? secs : DEFAULT_IDLE_SECS;
+}
 
 // Whether an unlock last used at `last` has lapsed by `now`.
 export function lapsed(last, now, idleMs) {

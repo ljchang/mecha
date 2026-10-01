@@ -1,7 +1,7 @@
 // The autolock's page clock, imported from the shipped module, driven by a
 // fake clock and a fake document: no timers, no browser.
 import assert from 'node:assert/strict';
-import { lapsed, watchIdle, autolockLine, ACTIVITY } from '../src/lib/autolock.js';
+import { lapsed, watchIdle, autolockLine, ACTIVITY, idleSpan, DEFAULT_IDLE_SECS } from '../src/lib/autolock.js';
 
 const MIN = 60_000;
 
@@ -77,6 +77,28 @@ function world() {
   w.show();
   assert.equal(idle, 0);
 }
+
+// The page's own scrolling is not someone using it: the chat pins itself
+// to the bottom on every streamed event (review of #469).
+assert.ok(!ACTIVITY.includes('scroll'));
+{
+  const w = world();
+  let idle = 0;
+  watchIdle({ idleMs: 15 * MIN, onIdle: () => idle++, target: w.target, doc: w.doc, now: w.now, every: 0 });
+  for (let i = 0; i < 4; i++) {
+    w.advance(5 * MIN);
+    w.target.dispatchEvent(new Event('scroll'));
+  }
+  w.hide();
+  w.show();
+  assert.equal(idle, 1, 'a streaming reply does not hold the unlock open');
+}
+
+// An answer without a span arms the default, never nothing.
+assert.equal(idleSpan(300), 300);
+assert.equal(idleSpan(undefined), DEFAULT_IDLE_SECS);
+assert.equal(idleSpan(0), DEFAULT_IDLE_SECS);
+assert.equal(idleSpan('900'), DEFAULT_IDLE_SECS);
 
 assert.equal(autolockLine(1), '1 minute');
 assert.equal(autolockLine(15), '15 minutes');

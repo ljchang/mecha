@@ -8,7 +8,7 @@
   import { composeEditMessage, maskName } from './image-edit.js';
   import { pictureOf, repeatedPictures, turnsWithoutPicture } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
-  import { watchIdle } from './autolock.js';
+  import { watchIdle, idleSpan } from './autolock.js';
   import { repairComments, changesOf } from './tomlform.js';
   import { isDirty as mdDirty } from './mdform.js';
   import {
@@ -326,7 +326,7 @@
   let stopIdle = null;
   function armIdle(secs) {
     stopIdle?.();
-    stopIdle = secs > 0 ? watchIdle({ idleMs: secs * 1000, onIdle: relock, onReturn: load }) : null;
+    stopIdle = watchIdle({ idleMs: idleSpan(secs) * 1000, onIdle: relock, onReturn: load });
   }
 
   function dropToken() {
