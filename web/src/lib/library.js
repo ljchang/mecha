@@ -1,7 +1,7 @@
 // The image library page's pure logic, kept out of the component so the
 // tests exercise the shipped code (web/test/library.mjs).
 
-export const PANES = ['characters', 'styles', 'candidates'];
+export const PANES = ['characters', 'styles', 'voices', 'candidates'];
 
 // Which pane a hash sub names; anything else is the characters pane.
 export function paneOf(sub) {
@@ -14,6 +14,8 @@ export function paneOf(sub) {
 export function entriesFor(pane, entries) {
   const list = entries ?? [];
   if (pane === 'candidates') return list.filter((e) => e.status === 'candidate');
+  // Voices are not library entries: their pane reads its own list.
+  if (pane === 'voices') return [];
   const kind = pane === 'styles' ? 'style' : 'character';
   return list.filter((e) => e.status === 'approved' && e.kind === kind);
 }
@@ -45,6 +47,42 @@ export function originLabel(origin) {
 // A token lives in the page's memory and nowhere else (no-storage.mjs).
 export function listUrl(token) {
   return token ? `/api/library?unlock=${encodeURIComponent(token)}` : '/api/library';
+}
+
+// The voice library (Library → Voices), with the unlock when there is one:
+// "used by" names a locked persona only for an unlock.
+export function voicesUrl(token) {
+  return token ? `/api/library/voices?unlock=${encodeURIComponent(token)}` : '/api/library/voices';
+}
+
+// A voice's line under its name: a clone or the server's own, how long its
+// reference is, who speaks in it, and whether the server can speak it yet.
+// `listed` is null when the server's list could not be read — unknown, not
+// "no", so it says nothing then.
+export function voiceLine(v, partial = null, clonesUnread = false) {
+  const parts = [];
+  if (v.cloned) {
+    const secs = v.cloned.seconds ? ` · ${Math.round(v.cloned.seconds)}s reference` : '';
+    parts.push(`cloned here${secs}`);
+    if (v.listed === false) parts.push('not on the voice server yet');
+  } else if (v.listed === false && !clonesUnread) {
+    // Named by a persona, and neither the server's nor a clone here: a typo,
+    // or a voice removed — a call to it is refused.
+    parts.push('on neither the voice server nor this box — a call in it is refused');
+  } else if (v.listed === true && !clonesUnread) {
+    parts.push("the voice server's own");
+  }
+  // The clone folder could not be read: no row can say it is not a clone,
+  // as an unasked server says nothing about being listed (review of #490).
+  // listed null and no clone: the server could not be asked, so this says
+  // nothing about where the voice comes from (review of #490).
+  if (v.used_by?.length) parts.push(`${v.used_by.join(', ')} speak${v.used_by.length === 1 ? 's' : ''} in it`);
+  // A clone can be deleted, so on its row "nobody listed" must not read as
+  // "nobody": say why the list may be short (review of #490). Generic on
+  // purpose — never whether a locked persona exists.
+  if (v.cloned && partial === 'locked') parts.push('unlock to see every persona that speaks in it');
+  if (v.cloned && partial === 'unreadable') parts.push('who speaks in it could not be fully read');
+  return parts.join(' · ');
 }
 
 // What the save dialog calls a picture's library name: its file stem is no
