@@ -1646,7 +1646,18 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
         locked: p.locked,
         origin: p.origin,
     };
+    // The starters first, as `create` lays them out: a store a proposal is
+    // the first thing to touch still knows `friend`.
+    ensure_layout(dir)?;
     let store = Store::load(dir);
+    // Named here, without the store's path: the refusal goes back to a
+    // model, which has no business reading where the owner's home is
+    // (review of #493). `create_with`'s own check stays for the owner's doors.
+    for r in &p.relationships {
+        if !store.relationships.contains_key(r) {
+            bail!("there is no relationship template `{r}`");
+        }
+    }
     let Some(existing) = store.get(&p.name).cloned() else {
         let waiting = store
             .personas
@@ -1662,10 +1673,18 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
         let made = create_with(dir, lib, new, Some((&p.identity, &p.motivation)))?;
         return Ok((made, Proposed::New));
     };
-    if existing.state.status != Status::Candidate || existing.state.proposed.is_none() {
+    // A proposal is revised only from the kind of chat that staged it: a
+    // locked one (an incognito room's) from a locked run, a visible one from
+    // a visible run. Otherwise an ordinary chat could rewrite — and be told
+    // the name of — a persona an incognito room staged, and an incognito
+    // room could hide a visible one (review of #493). The refusal is the
+    // same words as any taken name, so it says nothing about the lock.
+    if existing.state.status != Status::Candidate
+        || existing.state.proposed.is_none()
+        || existing.state.locked != p.locked
+    {
         bail!(
-            "`{}` is already a persona the owner has approved or made; a chat cannot change \
-             it — the owner edits it on the Personas page. Propose under another name.",
+            "`{}` is already a persona, and a chat cannot change it. Propose under another name.",
             p.name
         );
     }
@@ -2964,25 +2983,64 @@ mod tests {
             "nothing half-made"
         );
 
-        // Revised: new text, a new version, still a candidate. A locked,
-        // untrusted revision leaves it locked and untrusted, and a later
-        // clean, unlocked one cannot take either back.
+        // Revised: new text, a new version, still a candidate. An untrusted
+        // revision leaves it untrusted, and a later clean one cannot take
+        // that back.
         let before = Store::load(&store).get("wren").unwrap().state.clone();
         let mut r = proposal("## Core\nA field botanist, sharper now.\n");
-        r.locked = true;
         r.origin = Origin::ModelUntrusted;
         let (revised, how) = propose(&store, &lib, r).unwrap();
         assert_eq!(how, Proposed::Revised);
         assert!(revised.identity.contains("sharper"));
         assert_eq!(revised.state.status, Status::Candidate);
         assert!(revised.state.version > before.version);
-        assert!(revised.state.locked && revised.state.origin == Origin::ModelUntrusted);
+        assert_eq!(revised.state.origin, Origin::ModelUntrusted);
         let (again, _) = propose(&store, &lib, proposal(core)).unwrap();
-        assert!(again.state.locked, "a proposal never unhides");
         assert_eq!(
             again.state.origin,
             Origin::ModelUntrusted,
             "taint only rises"
+        );
+
+        // Only from the kind of chat that staged it: a locked (incognito)
+        // run cannot hide a visible proposal, and a visible run cannot
+        // touch, or be told about, a locked one. Both read as a taken name.
+        let mut hide = proposal(core);
+        hide.locked = true;
+        let refused = format!("{:#}", propose(&store, &lib, hide).unwrap_err());
+        assert!(refused.contains("already a persona"), "{refused}");
+        assert!(!Store::load(&store).get("wren").unwrap().state.locked);
+        let mut secret = proposal("## Core\nA night-shift nurse.\n");
+        secret.name = "noor".into();
+        secret.character = None;
+        secret.display = "Noor Haddad".into();
+        secret.locked = true;
+        propose(&store, &lib, secret.clone()).unwrap();
+        let mut probe = secret.clone();
+        probe.locked = false;
+        let refused = format!("{:#}", propose(&store, &lib, probe).unwrap_err());
+        assert!(
+            refused.contains("already a persona")
+                && !refused.contains("Noor Haddad")
+                && !refused.contains("lock"),
+            "{refused}"
+        );
+        let mut mine = secret;
+        mine.identity = "## Core\nA night-shift nurse, tired.\n".into();
+        let (revised, _) = propose(&store, &lib, mine).unwrap();
+        assert!(
+            revised.state.locked && revised.identity.contains("tired"),
+            "a locked run revises its own"
+        );
+
+        // An unknown template is named without the store's path.
+        let mut bad = proposal(core);
+        bad.name = "other".into();
+        bad.relationships = vec!["nemesis".into()];
+        let refused = format!("{:#}", propose(&store, &lib, bad).unwrap_err());
+        assert!(
+            refused.contains("nemesis") && !refused.contains(&*store.to_string_lossy()),
+            "{refused}"
         );
 
         // Edited by the owner while it waits: theirs, and a revision would

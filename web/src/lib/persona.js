@@ -242,8 +242,15 @@ export function keptEdits(files, saved) {
 export function splitWaiting(personas) {
   const waiting = [];
   const rest = [];
-  for (const p of personas ?? []) (p.waiting && p.origin !== 'owner' ? waiting : rest).push(p);
+  for (const p of personas ?? []) (isProposal(p) ? waiting : rest).push(p);
   return { waiting, rest };
+}
+
+// One rule for the list, the review card and the hidden start box: a
+// persona a chat proposed, still waiting (the server sends `waiting` only
+// for those; the owner check is the page's second guard).
+export function isProposal(p) {
+  return !!p?.waiting && p.origin !== 'owner';
 }
 
 // Where a proposal came from, as the library says it of a candidate: one
