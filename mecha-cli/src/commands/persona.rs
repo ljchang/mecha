@@ -102,6 +102,76 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: GroupCmd,
     },
+    /// What a persona remembers, and the owner's edits to it (§9.8).
+    Memory {
+        #[command(subcommand)]
+        cmd: MemoryCmd,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum MemoryCmd {
+    /// Its episodes, its own facts, and what it learned about you —
+    /// candidates included, marked.
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Everything it remembers, as JSON lines in a fixed order.
+    Export {
+        name: String,
+    },
+    /// Let a candidate be recalled. It keeps its origin, so a recalled
+    /// untrusted record still marks the chat untrusted.
+    Approve {
+        name: String,
+        id: String,
+    },
+    /// Replace a fact with your wording; the old one is kept, invalidated.
+    Correct {
+        name: String,
+        id: String,
+        text: String,
+    },
+    /// Recall it first.
+    Pin {
+        name: String,
+        id: String,
+    },
+    Unpin {
+        name: String,
+        id: String,
+    },
+    /// Delete one record — and any shared copy of it — or, with --chat,
+    /// everything remembered from one chat.
+    Forget {
+        name: String,
+        #[arg(required_unless_present = "chat", conflicts_with = "chat")]
+        id: Option<String>,
+        #[arg(long)]
+        chat: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Share a fact about you with every persona, or with one group.
+    Share {
+        name: String,
+        id: String,
+        #[arg(long, conflicts_with = "group", required_unless_present = "group")]
+        everyone: bool,
+        #[arg(long)]
+        group: Option<String>,
+    },
+    /// What you have shared, and with whom.
+    Shared {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop sharing one copy; the persona that learned it keeps its own.
+    Unshare {
+        id: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -137,6 +207,9 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
             | Cmd::Show { .. }
             | Cmd::Group {
                 cmd: GroupCmd::List
+            }
+            | Cmd::Memory {
+                cmd: MemoryCmd::Show { .. } | MemoryCmd::Export { .. } | MemoryCmd::Shared { .. }
             }
     ) {
         super::features::require(mecha_core::feature::Feature::Personas)?;
@@ -515,6 +588,7 @@ fn run_with(
             let to = persona::remove(dir, &p.name)?;
             println!("Removed `{}` — kept at {}.", p.name, to.display());
         }
+        Cmd::Memory { cmd } => memory_cmd(dir, cmd)?,
         Cmd::Relationship { cmd } => {
             persona::seed_starters(dir)?;
             let store = load(dir);
@@ -616,6 +690,216 @@ fn run_with(
                 );
             }
         },
+    }
+    Ok(())
+}
+
+/// `mecha persona memory …`: the owner's curation of what a persona
+/// remembers (§9.8). Every id printed is the first eight characters of the
+/// record's; any unambiguous prefix is accepted back.
+fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
+    use mecha_core::persona::memory::{self, Audience, Filter, Memory, Shared, Table};
+
+    let store = load(dir);
+    let named = |name: &str| -> Result<String> { Ok(find(&store, name)?.name.clone()) };
+    match cmd {
+        MemoryCmd::Show { name, json } => {
+            let name = named(&name)?;
+            let Some(m) = Memory::open_existing(dir, &name)? else {
+                if json {
+                    println!("{}", serde_json::json!({"episodes": [], "facts": []}));
+                } else {
+                    println!("{name} remembers nothing yet.");
+                }
+                return Ok(());
+            };
+            let episodes = m.episodes(Filter::All)?;
+            let mut facts = Vec::new();
+            for t in [Table::Persona, Table::User, Table::Inferred] {
+                facts.extend(m.facts(t, Filter::All)?);
+            }
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({"episodes": episodes, "facts": facts})
+                    )?
+                );
+                return Ok(());
+            }
+            let mark = |status: memory::Status, origin: Origin, pinned: bool| {
+                let mut tags = Vec::new();
+                if pinned {
+                    tags.push("pinned");
+                }
+                match status {
+                    memory::Status::Candidate => tags.push("waiting on you"),
+                    memory::Status::Invalidated => tags.push("invalidated"),
+                    memory::Status::Active => {}
+                }
+                match origin {
+                    Origin::Owner => tags.push("yours"),
+                    Origin::ModelUntrusted => tags.push("untrusted"),
+                    Origin::ModelClean => {}
+                }
+                if tags.is_empty() {
+                    String::new()
+                } else {
+                    format!("  [{}]", tags.join(", "))
+                }
+            };
+            println!("Episodes ({})", episodes.len());
+            for e in &episodes {
+                println!(
+                    "  {}  {} turns {}–{}{}",
+                    &e.uid[..8],
+                    e.source.chat,
+                    e.source.from,
+                    e.source.to,
+                    mark(e.status, e.origin, e.pinned)
+                );
+                println!("            {}", e.summary);
+                if !e.open_threads.is_empty() {
+                    println!("            open: {}", e.open_threads.join("; "));
+                }
+            }
+            for (t, heading) in [
+                (Table::Persona, "Its own facts"),
+                (Table::User, "What it learned about you"),
+                (Table::Inferred, "What it inferred about you"),
+            ] {
+                let rows: Vec<_> = facts.iter().filter(|f| f.table == t).collect();
+                println!("{heading} ({})", rows.len());
+                for f in rows {
+                    println!(
+                        "  {}  {}{}",
+                        &f.uid[..8],
+                        f.text,
+                        mark(f.status, f.origin, f.pinned)
+                    );
+                }
+            }
+        }
+        MemoryCmd::Export { name } => {
+            let name = named(&name)?;
+            if let Some(m) = Memory::open_existing(dir, &name)? {
+                print!("{}", m.export()?);
+            }
+        }
+        MemoryCmd::Approve { name, id } => {
+            let m = Memory::open(dir, &named(&name)?)?;
+            m.approve(&m.resolve(&id)?)?;
+            println!("Approved — it can be recalled now.");
+        }
+        MemoryCmd::Correct { name, id, text } => {
+            let m = Memory::open(dir, &named(&name)?)?;
+            let new = m.correct(&m.resolve(&id)?, &text)?;
+            println!("Corrected — now {}.", &new.uid[..8]);
+        }
+        MemoryCmd::Pin { name, id } => {
+            let m = Memory::open(dir, &named(&name)?)?;
+            m.pin(&m.resolve(&id)?, true)?;
+            println!("Pinned — recalled first.");
+        }
+        MemoryCmd::Unpin { name, id } => {
+            let m = Memory::open(dir, &named(&name)?)?;
+            m.pin(&m.resolve(&id)?, false)?;
+            println!("Unpinned.");
+        }
+        MemoryCmd::Forget {
+            name,
+            id,
+            chat,
+            yes,
+        } => {
+            let name = named(&name)?;
+            if let Some(chat) = chat {
+                let question = format!(
+                    "Delete everything {name} remembers from chat {chat}? This cannot be undone."
+                );
+                if !yes && !confirm(&question)? {
+                    println!("Kept.");
+                    return Ok(());
+                }
+                let out = memory::forget_chat(dir, &name, &chat)?;
+                println!(
+                    "Forgotten: {} episodes, {} facts, {} shared copies.",
+                    out.episodes, out.facts, out.shared
+                );
+            } else {
+                let id = id.expect("clap requires an id or --chat");
+                let full = Memory::open(dir, &name)?.resolve(&id)?;
+                if !yes && !confirm(&format!("Delete {} for good?", &full[..8]))? {
+                    println!("Kept.");
+                    return Ok(());
+                }
+                let copies = memory::forget(dir, &name, &full)?;
+                println!("Forgotten, with {copies} shared copies.");
+            }
+        }
+        MemoryCmd::Share {
+            name,
+            id,
+            everyone,
+            group,
+        } => {
+            let m = Memory::open(dir, &named(&name)?)?;
+            let full = m.resolve(&id)?;
+            let fact = m
+                .fact(&full)?
+                .ok_or_else(|| anyhow::anyhow!("`{id}` is an episode; only facts are shared"))?;
+            let audience = match (everyone, group) {
+                (true, _) => Audience::Everyone,
+                (false, Some(g)) => Audience::Group(g.trim().to_lowercase()),
+                (false, None) => unreachable!("clap requires --everyone or --group"),
+            };
+            let declared: Vec<String> = store.groups().keys().cloned().collect();
+            let copy = Shared::open(dir)?.share(&fact, audience, &declared)?;
+            println!("Shared — {}.", &copy.uid[..8]);
+        }
+        MemoryCmd::Shared { json } => {
+            let rows = match Shared::open_existing(dir)? {
+                Some(s) => s.all()?,
+                None => Vec::new(),
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(());
+            }
+            if rows.is_empty() {
+                println!("Nothing shared.");
+            }
+            for r in rows {
+                let with = match &r.audience {
+                    Audience::Everyone => "everyone".to_string(),
+                    Audience::Group(g) => format!("group {g}"),
+                };
+                println!(
+                    "  {}  {}  [{with}; learned by {}]",
+                    &r.uid[..8],
+                    r.text,
+                    r.learned_by
+                );
+            }
+        }
+        MemoryCmd::Unshare { id } => {
+            let shared = Shared::open(dir)?;
+            let full = shared
+                .all()?
+                .into_iter()
+                .map(|r| r.uid)
+                .filter(|u| u.starts_with(&id.trim().to_ascii_lowercase()))
+                .collect::<Vec<_>>();
+            match full.as_slice() {
+                [one] => shared.unshare(one)?,
+                [] => bail!("nothing shared with id `{id}`"),
+                _ => bail!(
+                    "`{id}` matches {} shared facts; give more of the id",
+                    full.len()
+                ),
+            }
+            println!("No longer shared.");
+        }
     }
     Ok(())
 }
