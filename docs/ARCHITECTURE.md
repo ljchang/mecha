@@ -827,8 +827,9 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   on return to the foreground because a phone freezes a hidden tab's timers.
   The page's clock is the one that matters — a token-carrying poll keeps
   the server's alive with nobody there. A damaged autolock grants no unlock
-  at all, never a longer one. A restart forgets every token, so a page that
-  gets a 404 while holding one re-reads the list to learn it lapsed, rather
+  at all, never a longer one. A restart forgets every token, so a page whose
+  read fails while it holds one re-reads the list to learn whether it
+  lapsed, rather
   than drawing an empty list (the "earlier chats don't load" report of
   2026-10-01). The password is
   optional (the owner's ruling): with no `lock.toml` the token is granted for

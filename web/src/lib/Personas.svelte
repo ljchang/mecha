@@ -546,7 +546,10 @@
       const res = await fetch(personaUrl(name, '/chats', token));
       if (gen !== historyGen) return;
       if (res.ok) {
-        history = (await res.json()).chats;
+        // The body is a second wait: a newer read may have started in it.
+        const { chats } = await res.json();
+        if (gen !== historyGen) return;
+        history = chats;
       } else {
         why = (await res.text()).trim() || `HTTP ${res.status}`;
         if (token) await load();
@@ -992,7 +995,6 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       framing = null;
       await load();
-      if (!chosen) toList();
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {
