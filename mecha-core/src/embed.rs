@@ -28,6 +28,10 @@ pub enum Task {
     Passage,
     /// A search for passages.
     Query,
+    /// A message in a conversation, finding the memories it calls up — a
+    /// persona's recall (PERSONA-DESIGN §9.7). Its own instruction, because
+    /// the instruction is part of what the vector means.
+    Recall,
 }
 
 /// The query-side instruction, in the Qwen3/Harrier form. Part of an
@@ -35,6 +39,11 @@ pub enum Task {
 /// different question.
 pub const QUERY_INSTRUCTION: &str =
     "Given a question about a document, retrieve the passages of it that answer the question";
+
+/// The recall-side instruction: a message, and the memories of earlier
+/// conversations it should bring to mind.
+pub const RECALL_INSTRUCTION: &str =
+    "Given a message in a conversation, retrieve the memories of earlier conversations that are relevant to it";
 
 /// Characters kept per input — far under the server's window, and a passage
 /// here is a chunk, not a document.
@@ -92,6 +101,14 @@ impl Embedder {
         Ok(out.into_iter().flatten().collect())
     }
 
+    /// The vector for recalling memories from a message (`Task::Recall`).
+    pub async fn recall_query(&self, text: &str) -> Result<Vec<f32>> {
+        self.embed(&[text.to_string()], Task::Recall)
+            .await?
+            .pop()
+            .ok_or_else(|| anyhow!("the embeddings server returned nothing"))
+    }
+
     /// The vector for a search.
     pub async fn query(&self, text: &str) -> Result<Vec<f32>> {
         self.embed(&[text.to_string()], Task::Query)
@@ -111,6 +128,7 @@ impl Embedder {
                 match task {
                     Task::Passage => t,
                     Task::Query => format!("Instruct: {QUERY_INSTRUCTION}\nQuery: {t}"),
+                    Task::Recall => format!("Instruct: {RECALL_INSTRUCTION}\nQuery: {t}"),
                 }
             })
             .collect();
