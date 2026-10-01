@@ -7550,7 +7550,8 @@ matters is the general shape.
 The persona autolock first counted `scroll` as use. The chat pins itself to
 the bottom with `scrollTop =` on every streamed event, so a long reply kept
 the unlock open with nobody there (#469, pass 1). Activity is input events
-(pointer, key, wheel, touch). An effect the page itself can cause is never
+(`pointerdown`, `keydown`, `wheel`, `touchstart`, and `mousemove`, which is
+what keeps a desktop open). An effect the page itself can cause is never
 evidence of a person.
 
 **A pinned session runs the version it was opened with, so "deployed"
