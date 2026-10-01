@@ -2040,19 +2040,19 @@ impl Arm {
 /// disagree — and exhaustive, so a new lever fails the build until it is
 /// classified. Defaulting to "not forced" is the defect `resolve_forced_on`
 /// exists for, recurring.
-fn config_switch(lever: Lever) -> Option<fn(&mut crate::config::Config) -> &mut bool> {
+fn config_switch(lever: Lever) -> Option<fn(&mut crate::config::Config, bool)> {
     match lever {
-        Lever::StepChecks => Some(|c| &mut c.agent.step_checks),
-        Lever::GoalGuidance => Some(|c| &mut c.agent.goal_guidance),
-        Lever::StepEscalation => Some(|c| &mut c.agent.step_escalation),
-        Lever::Boredom => Some(|c| &mut c.agent.boredom),
-        Lever::CompactValidate => Some(|c| &mut c.agent.compact_validate),
-        Lever::PredictiveCompaction => Some(|c| &mut c.agent.predictive_compaction),
-        Lever::CarriedState => Some(|c| &mut c.agent.carried_state),
-        Lever::SituationBrief => Some(|c| &mut c.agent.situation_brief),
-        Lever::PastAppraisals => Some(|c| &mut c.agent.past_appraisals),
-        Lever::SuccessExamples => Some(|c| &mut c.agent.success_examples),
-        Lever::Messages => Some(|c| &mut c.messages.enabled),
+        Lever::StepChecks => Some(|c, on| c.agent.step_checks = on),
+        Lever::GoalGuidance => Some(|c, on| c.agent.goal_guidance = on),
+        Lever::StepEscalation => Some(|c, on| c.agent.step_escalation = on),
+        Lever::Boredom => Some(|c, on| c.agent.boredom = on),
+        Lever::CompactValidate => Some(|c, on| c.agent.compact_validate = on),
+        Lever::PredictiveCompaction => Some(|c, on| c.agent.predictive_compaction = on),
+        Lever::CarriedState => Some(|c, on| c.agent.carried_state = on),
+        Lever::SituationBrief => Some(|c, on| c.agent.situation_brief = on),
+        Lever::PastAppraisals => Some(|c, on| c.agent.past_appraisals = on),
+        Lever::SuccessExamples => Some(|c, on| c.agent.success_examples = on),
+        Lever::Messages => Some(|c, on| c.messages.enabled = Some(on)),
         Lever::Mcp
         | Lever::LearnedRules
         | Lever::Hooks
@@ -3135,7 +3135,7 @@ pub fn child_invocation(
     // `step_escalation` named on once ran as the control.
     for lever in arm.resolve_forced_on()? {
         if let Some(field) = config_switch(lever) {
-            *field(&mut config) = true;
+            field(&mut config, true);
         }
     }
     let mut flags = Vec::new();
@@ -3152,7 +3152,7 @@ pub fn child_invocation(
             Lever::PastAppraisals => config.agent.past_appraisals = false,
             Lever::SuccessExamples => config.agent.success_examples = false,
             Lever::Messages => {
-                config.messages.enabled = false;
+                config.messages.enabled = Some(false);
                 flags.push("--no-messages".into());
             }
             Lever::Mcp => flags.push("--no-mcp".into()),
@@ -3835,7 +3835,7 @@ rationale = "no notice, fewer turns"
         assert!(!bare.config.agent.predictive_compaction);
         assert!(!bare.config.agent.carried_state);
         assert!(!bare.config.agent.situation_brief);
-        assert!(!bare.config.messages.enabled);
+        assert_eq!(bare.config.messages.enabled, Some(false));
         assert_eq!(
             bare.config.providers["local"].seed, None,
             "unseeded stays unseeded"
@@ -4042,7 +4042,7 @@ rationale = "no notice, fewer turns"
         real.agent.situation_brief = false;
         real.agent.past_appraisals = false;
         real.agent.success_examples = false;
-        real.messages.enabled = false;
+        real.messages.enabled = Some(false);
         let names = [
             "step_escalation",
             "goal_guidance",
@@ -4072,7 +4072,7 @@ rationale = "no notice, fewer turns"
         assert!(c.agent.situation_brief);
         assert!(c.agent.past_appraisals);
         assert!(c.agent.success_examples);
-        assert!(c.messages.enabled);
+        assert_eq!(c.messages.enabled, Some(true));
 
         // Unnamed switches still inherit the operator's value.
         let plain = child_invocation(&real, &Arm::default(), None)

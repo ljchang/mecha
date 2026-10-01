@@ -493,6 +493,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`messages = false` is an answer now.** Switching messages off left
+  `mecha setup` listing it as outstanding, with a failing exit, every time
+  it ran, because the setting it is stored in could not tell "off" from
+  "never asked". `mecha setup` and `mecha features` now show it declined,
+  with `mecha features enable messages` as the way back, like every other
+  feature. It is still off until you switch it on.
 - **The persona file editor works on a phone.** Tapping a field no longer
   zooms the page and leaves it zoomed: every editable field is at least 16px
   on a touch screen, the size below which iOS Safari zooms (text mode too).

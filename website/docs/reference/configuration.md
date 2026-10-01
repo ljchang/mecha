@@ -497,7 +497,7 @@ file only**: a project layer naming this table is stripped, loudly.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `false` | Register `message_send` and deliver inbound messages into runs. |
+| `enabled` | bool | unset | Register `message_send` and deliver inbound messages into runs. Unset is off and unanswered, so `mecha setup` offers it; `false` is a no, shown as declined, like `messages = false` under `[features]`. |
 | `dir` | path | `~/.mecha/messages` | Where messages live. Overridden by `$MECHA_MESSAGES_DIR`. |
 | `inbound` | string | unset | `accept` folds messages in at turn boundaries; `hold` leaves them for `mecha msg`. |
 | `pending_cap` | integer | `50` | Pending messages one recipient may hold before senders are refused. |

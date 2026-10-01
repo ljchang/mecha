@@ -144,7 +144,9 @@ pub struct SkillsConfig {
 /// `messages` is not kept here: `apply` writes it into
 /// `[messages] enabled`, the field `Lever::Messages` and every experiment arm
 /// already read and write, so there is one runtime answer, not two that a
-/// serialised-and-reloaded arm config could set against each other.
+/// serialised-and-reloaded arm config could set against each other. That
+/// field is an `Option` for this reason: unset is unanswered, like an absent
+/// key here, and `false` is the owner's no.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct FeaturesConfig(pub BTreeMap<String, bool>);
@@ -166,7 +168,11 @@ impl FeaturesConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct MessagesConfig {
     /// Off by default, like outbox routing: a mailbox is a policy decision.
-    pub enabled: bool,
+    /// `None` is unanswered — off at runtime, and offered by `mecha setup` —
+    /// and `Some(false)` is the owner's no, read as the `messages` switch
+    /// written `false` ([`FeaturesConfig`]). Ask [`MessagesConfig::on`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     /// Where messages live. Defaults to `~/.mecha/messages`
     /// (or `$MECHA_MESSAGES_DIR`).
     pub dir: Option<PathBuf>,
@@ -187,13 +193,20 @@ pub struct MessagesConfig {
 impl Default for MessagesConfig {
     fn default() -> Self {
         MessagesConfig {
-            enabled: false,
+            enabled: None,
             dir: None,
             inbound: None,
             pending_cap: crate::mailbox::DEFAULT_PENDING_CAP,
             max_body_bytes: crate::mailbox::DEFAULT_MAX_BODY_BYTES,
             keep: crate::mailbox::DEFAULT_KEEP_RESOLVED,
         }
+    }
+}
+
+impl MessagesConfig {
+    /// Whether messaging is on: only an explicit yes, so unanswered is off.
+    pub fn on(&self) -> bool {
+        self.enabled == Some(true)
     }
 }
 
@@ -2194,8 +2207,8 @@ impl ConfigLayer {
         // section from a project file before applying, with a warning.
         if let Some(x) = self.messages {
             let t = &mut cfg.messages;
-            if let Some(v) = x.enabled {
-                t.enabled = v;
+            if x.enabled.is_some() {
+                t.enabled = x.enabled;
             }
             if x.dir.is_some() {
                 t.dir = x.dir;
@@ -2227,7 +2240,7 @@ impl ConfigLayer {
         if let Some(x) = self.features {
             for (key, on) in x {
                 if key == "messages" {
-                    cfg.messages.enabled = on;
+                    cfg.messages.enabled = Some(on);
                 } else {
                     cfg.features.0.insert(key, on);
                 }
@@ -2748,7 +2761,7 @@ mod tests {
         let mut project = Config::default();
         project.merge_file(&first, LayerTrust::Project).unwrap();
         assert!(project.features.0.is_empty());
-        assert!(!project.messages.enabled);
+        assert_eq!(project.messages.enabled, None);
 
         // Globally: per key, a later layer answering only what it names; an
         // unknown key parses rather than failing the load.
@@ -2760,12 +2773,16 @@ mod tests {
         assert_eq!(global.features.get("from_a_newer_build"), Some(true));
 
         // `messages` lands in `[messages] enabled` and is not kept twice, so a
-        // serialised config cannot re-enable what a lever turned off.
-        assert!(global.messages.enabled);
+        // serialised config cannot re-enable what a lever turned off — and the
+        // lever's `false` comes back a no, not an unanswered question.
+        assert_eq!(global.messages.enabled, Some(true));
         assert_eq!(global.features.get("messages"), None);
-        global.messages.enabled = false;
+        global.messages.enabled = Some(false);
         let reloaded: Config = toml::from_str(&toml::to_string(&global).unwrap()).unwrap();
-        assert!(!reloaded.messages.enabled);
+        assert_eq!(reloaded.messages.enabled, Some(false));
+        // Unanswered survives the round trip unanswered.
+        let unset: Config = toml::from_str(&toml::to_string(&Config::default()).unwrap()).unwrap();
+        assert_eq!(unset.messages.enabled, None);
 
         // And `[features] messages` answers a `[messages] enabled` in the
         // same file.
@@ -2777,7 +2794,7 @@ mod tests {
         .unwrap();
         let mut cfg = Config::default();
         cfg.merge_file(&both, LayerTrust::Global).unwrap();
-        assert!(!cfg.messages.enabled);
+        assert_eq!(cfg.messages.enabled, Some(false));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2797,7 +2814,7 @@ mod tests {
         let mut from_project = Config::default();
         from_project.merge_file(&path, LayerTrust::Project).unwrap();
         assert!(
-            !from_project.messages.enabled,
+            !from_project.messages.on(),
             "a project file must not enable messaging"
         );
         assert!(
@@ -2808,7 +2825,7 @@ mod tests {
         let mut from_global = Config::default();
         from_global.merge_file(&path, LayerTrust::Global).unwrap();
         assert!(
-            from_global.messages.enabled,
+            from_global.messages.on(),
             "the global file is authoritative"
         );
         assert_eq!(

@@ -191,7 +191,11 @@ impl Environment {
     /// disk: a term of every row's condition hash, so it must be computable
     /// wherever a plan is — `status` and `report` included. The config is
     /// the one `prepare` builds, from the same text, so the set is the one
-    /// the trial's session records.
+    /// the trial's session records **before its arm's levers are applied**:
+    /// a lever that is also a switch (`Lever::Messages` writes
+    /// `[messages] enabled`) moves the recorded set per arm, and is carried
+    /// in the hash by its own `levers_off` / `forced_on` term (review of
+    /// #472).
     pub fn features_on(&self, real: &Config, base: &Path) -> Result<Vec<crate::feature::Feature>> {
         let files = self.resolve(base)?;
         let dir = self.dir(base);
