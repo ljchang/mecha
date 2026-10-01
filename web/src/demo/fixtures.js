@@ -1058,6 +1058,7 @@ export const voices = {
   list_error: null,
   cloning: true,
   cloned_error: null,
+  used_by_partial: null,
 };
 
 // --- chat ----------------------------------------------------------------

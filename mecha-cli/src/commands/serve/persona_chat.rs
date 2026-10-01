@@ -115,6 +115,15 @@ pub(super) struct Spoken {
     cancel: mecha_core::agent::CancelHandle,
 }
 
+/// Which personas speak in each library voice, and why that list may be
+/// short: `partial` is `Some("locked")` while the library is locked, and
+/// `Some("unreadable")` when a persona file did not load.
+#[derive(Debug, Default)]
+pub struct VoicesInUse {
+    pub by_voice: std::collections::BTreeMap<String, Vec<String>>,
+    pub partial: Option<&'static str>,
+}
+
 /// A persona's voice as a call binds it: what the offer carries to the
 /// worker as `persona_voice`, applied before the call's first word.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -2012,21 +2021,30 @@ impl PersonaChats {
     /// Which personas speak in each library voice, by display name — for the
     /// voice library's "used by" (Library → Voices). Behind the lock as the
     /// persona list is: a locked persona is named only for an unlock.
-    pub fn voices_in_use(
-        &self,
-        library: &LibraryState,
-        token: Option<&str>,
-    ) -> std::collections::BTreeMap<String, Vec<String>> {
+    pub fn voices_in_use(&self, library: &LibraryState, token: Option<&str>) -> VoicesInUse {
         let store = Store::load(&self.store);
-        let mut out: std::collections::BTreeMap<String, Vec<String>> = Default::default();
-        for p in store.visible(library.unlocked(token)) {
+        let unlocked = library.unlocked(token);
+        let mut by_voice: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for p in store.visible(unlocked) {
             if let Some(v) = &p.settings.voice {
-                out.entry(v.clone())
+                by_voice
+                    .entry(v.clone())
                     .or_default()
                     .push(p.display().to_string());
             }
         }
-        out
+        // Why the list may be short, said rather than shown as nobody: the
+        // row carrying it has Delete (review of #490). "locked" is said
+        // whenever the library is locked, never only when a locked persona
+        // exists — that would be a count (the lock hides without one).
+        let partial = if !store.errors().is_empty() {
+            Some("unreadable")
+        } else if !unlocked {
+            Some("locked")
+        } else {
+            None
+        };
+        VoicesInUse { by_voice, partial }
     }
 
     /// The voice a call to `name` speaks in (§11): the library voice its
@@ -7551,12 +7569,18 @@ mod tests {
         assert_eq!(by_name(&got, "solo")["listed"], false);
         assert!(got["list_error"].is_null(), "{got}");
 
-        // Locked, Mara is named only for an unlock.
+        // Read without an unlock, the list may be short — said whenever the
+        // library is locked, never only when a locked persona exists.
+        assert_eq!(got["used_by_partial"], "locked", "{got}");
+        // Locked, Mara is named only for an unlock — and the answer says the
+        // list may be short, so an empty one does not read as nobody.
         store::set_locked(&w.store(), "mara", true).unwrap();
         let Json(got) = list(None).await;
         assert_eq!(by_name(&got, "ada")["used_by"], serde_json::json!([]));
+        assert_eq!(got["used_by_partial"], "locked");
         let Json(got) = list(Some(library.grant_for_tests())).await;
         assert_eq!(by_name(&got, "ada")["used_by"], serde_json::json!(["Mara"]));
+        assert!(got["used_by_partial"].is_null(), "{got}");
 
         let sample = super::super::settings::library_voice_sample(
             State(state.clone()),

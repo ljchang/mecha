@@ -59,7 +59,7 @@ export function voicesUrl(token) {
 // reference is, who speaks in it, and whether the server can speak it yet.
 // `listed` is null when the server's list could not be read — unknown, not
 // "no", so it says nothing then.
-export function voiceLine(v) {
+export function voiceLine(v, partial = null) {
   const parts = [];
   if (v.cloned) {
     const secs = v.cloned.seconds ? ` · ${Math.round(v.cloned.seconds)}s reference` : '';
@@ -75,6 +75,11 @@ export function voiceLine(v) {
   // listed null and no clone: the server could not be asked, so this says
   // nothing about where the voice comes from (review of #490).
   if (v.used_by?.length) parts.push(`${v.used_by.join(', ')} speak${v.used_by.length === 1 ? 's' : ''} in it`);
+  // A clone can be deleted, so on its row "nobody listed" must not read as
+  // "nobody": say why the list may be short (review of #490). Generic on
+  // purpose — never whether a locked persona exists.
+  if (v.cloned && partial === 'locked') parts.push('unlock to see every persona that speaks in it');
+  if (v.cloned && partial === 'unreadable') parts.push('who speaks in it could not be fully read');
   return parts.join(' · ');
 }
 

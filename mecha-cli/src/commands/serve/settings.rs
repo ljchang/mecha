@@ -677,6 +677,7 @@ pub async fn library_voices(
             Err(e) => (Some(Vec::new()), Some(e)),
         },
     };
+    // No chat state: no persona store to read, which is not "nobody".
     let used = state
         .chat
         .as_ref()
@@ -684,7 +685,10 @@ pub async fn library_voices(
             c.personas
                 .voices_in_use(&state.library, q.unlock.as_deref())
         })
-        .unwrap_or_default();
+        .unwrap_or(super::persona_chat::VoicesInUse {
+            by_voice: Default::default(),
+            partial: Some("unreadable"),
+        });
     let mut names: std::collections::BTreeSet<String> = Default::default();
     if let Ok(list) = &listed {
         names.extend(list.iter().cloned());
@@ -698,7 +702,7 @@ pub async fn library_voices(
     // exactly what this page is placed to say, rather than leaving the first
     // sign of a typo to a refused call (review of #490). Behind the lock, as
     // `used` is.
-    names.extend(used.keys().cloned());
+    names.extend(used.by_voice.keys().cloned());
     let voices: Vec<serde_json::Value> = names
         .into_iter()
         .map(|name| {
@@ -714,7 +718,7 @@ pub async fn library_voices(
                     "seconds": c["seconds"],
                     "created": c["created"],
                 })),
-                "used_by": used.get(&name).cloned().unwrap_or_default(),
+                "used_by": used.by_voice.get(&name).cloned().unwrap_or_default(),
                 "name": name,
             })
         })
@@ -725,6 +729,9 @@ pub async fn library_voices(
         // None = cloning unconfigured; a store that could not be read is
         // its own answer, as on the settings pane.
         "cloning": state.voices_dir.is_some(),
+        // Why `used_by` may be short — "locked" or "unreadable" — or null when
+        // every persona was read: an empty list then means nobody.
+        "used_by_partial": used.partial,
         "cloned_error": cloned_error,
     }))
 }
