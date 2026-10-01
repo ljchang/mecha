@@ -6,7 +6,7 @@
   import ChatProse from './ChatProse.svelte';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, maskName } from './image-edit.js';
-  import { pictureOf, repeatedPictures } from './picture.js';
+  import { pictureOf, repeatedPictures, downloadPicture } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   import { features } from './features.svelte.js';
@@ -702,6 +702,7 @@
     // mask into this chat's jail and name the other chat's picture in this
     // transcript (review of #429).
     editing = null;
+    pictureNote = null; // a path in the chat being left, as the modal's is
     incognito = false;
     gone = null;
     goneNote = null;
@@ -720,6 +721,7 @@
     draft = '';
     attachments = [];
     editing = null; // the modal carries this chat's draft and paths too
+    pictureNote = null; // and a download's note names one of its pictures
     todo = [];
     usage = null;
     taint = null;
@@ -1264,6 +1266,21 @@
   const repeats = $derived(repeatedPictures(entries));
 
   const workspaceFile = (path) => `/api/chat/${key}/file?path=${encodeURIComponent(path)}`;
+
+  // Download a generated picture: read and saved from a blob, so even an
+  // incognito chat's picture leaves no address in the browser's history
+  // (the reason its picture is not a link). Why one failed shows under it.
+  let pictureNote = $state(null); // { path, why }
+  async function savePicture(path) {
+    const k = key;
+    const why = await downloadPicture(fetch, workspaceFile(path), path);
+    // A chat left while the download ran keeps no note of it (review of #494).
+    if (key !== k) return;
+    // Only this picture's note: another's failure is not cleared by this one
+    // succeeding (review of #494).
+    if (why) pictureNote = { path, why };
+    else if (pictureNote?.path === path) pictureNote = null;
+  }
 
   // Seed the input with the file to edit and leave the cursor after it.
   // Anything already typed is kept after the prefix, never replaced.
@@ -1927,6 +1944,8 @@
                say what to change. The path is what lets the model pass the
                right file as the reference. -->
           <button class="genedit" onclick={() => editImage(picture)}>Edit</button>
+          <button class="genedit" onclick={() => savePicture(picture)}>Download</button>
+          {#if pictureNote?.path === picture}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
           {#if !incognito}
             <!-- Not in an incognito chat: saving writes outside the room. -->
             <button class="genedit" onclick={() => (saving?.path === picture ? (saving = null) : startSave(picture))}>Save to library</button>
@@ -2884,6 +2903,7 @@
   .libsave-lock { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); flex-wrap: wrap; }
   .libsave-why { color: var(--hazard); font-family: var(--mono); font-size: 11px; }
   .libsave-msg { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
+  .genfail { font-size: 12px; color: var(--hazard); }
   .genedit {
     align-self: flex-start;
     margin: -4px 0 10px 18px;

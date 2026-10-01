@@ -34,6 +34,7 @@ function page(start) {
      let { key, draft, attachments, incognito, gone } = start;
      let todo = ['[~] plan the thing'];
      let editing = { path: 'images/a.png', initial: 'KUMQUAT' };
+     let pictureNote = { path: 'images/a.png', why: 'no such file' };
      let goneNote = 'incognito is unavailable: no local model';
      let entries = ['x'], streaming = 'y', usage = 1, taint = 1;
      let affect = 1, valence = 1, sawAffectThisRun = true;
@@ -46,7 +47,7 @@ function page(start) {
      let hungUp = 0;
      const endVoice = () => hungUp++;
      ${switchToSrc}
-     return { switchTo, dropped, call: () => ({ hungUp, vEntries }), now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom, editing }) };`,
+     return { switchTo, dropped, call: () => ({ hungUp, vEntries }), now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom, editing, pictureNote }) };`,
   )(start);
 }
 
@@ -71,6 +72,7 @@ function is(actual, expected, what) {
   is([s.key, s.draft, s.attachments, s.incognito], ['main', '', [], false], 'leaving incognito clears the composer');
   is(s.todo, [], "and the incognito chat's plan");
   is(s.editing, null, 'and an open edit modal, with its draft and paths');
+  is(s.pictureNote, null, "and a download's note naming one of its pictures");
   is([s.gone, s.goneNote], [null, null], 'and the gone screen with its note');
   is(p.dropped, ['incognito-ab'], "and the audio its call buffered, by the chat's own key");
   is(p.call(), { hungUp: 1, vEntries: [] }, 'and a call still speaking into it, with its words');
@@ -117,6 +119,7 @@ function is(actual, expected, what) {
      let key = 'incognito-ab';
      let entries = ['x'], streaming = 'y', draft = 'z', attachments = ['a'], todo = ['t'];
      let editing = { path: 'images/a.png' };
+     let pictureNote = { path: 'images/a.png', why: 'no such file' };
      let usage = 1, taint = 1, affect = 1, valence = 1;
      let vEntries = [{ who: 'user', text: 'KUMQUAT' }];
      let ended = 0;
@@ -125,12 +128,13 @@ function is(actual, expected, what) {
      const dropRing = (k) => dropped.push(k);
      ${forgetSrc}
      forget();
-     return { ended, vEntries, dropped, entries, editing };`,
+     return { ended, vEntries, dropped, entries, editing, pictureNote };`,
   )();
   is(s.ended, 1, 'ending an incognito chat hangs up its call');
   is(s.vEntries, [], "and clears the call's words from the overlay");
   is(s.dropped, ['incognito-ab'], 'and drops the audio it buffered');
   is(s.editing, null, 'and closes an open edit modal');
+  is(s.pictureNote, null, "and forgets a download's note, which names one of its pictures");
 }
 
 // The overlay's promise describes the call, not the page: a call is bound to
