@@ -13817,10 +13817,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// D1: a block rendered past a skipped learned file is not a measurement
-    /// of the rule set. The record says unknown (`rules_hash: None`, no ids),
-    /// never the hash of what was left. Fails on the old `RunConfig::of`,
-    /// which recorded any `RulesCarried` it was handed.
     /// A run records which features it had switched on — the switches,
     /// never the effects, in `Feature::ALL` order — so a light trial is
     /// recorded as light (FEATURES-DESIGN.md §5.1). Nothing switched on is an
@@ -13845,6 +13841,10 @@ mod tests {
         );
     }
 
+    /// D1: a block rendered past a skipped learned file is not a measurement
+    /// of the rule set. The record says unknown (`rules_hash: None`, no ids),
+    /// never the hash of what was left. Fails on the old `RunConfig::of`,
+    /// which recorded any `RulesCarried` it was handed.
     #[tokio::test]
     async fn a_run_that_skipped_a_learned_file_records_its_rules_as_unknown() {
         let (agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
