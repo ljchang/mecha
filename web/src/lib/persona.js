@@ -29,7 +29,7 @@ export function withUnlock(path, token) {
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
 const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/sources', '/sources/remove'];
-const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload'];
+const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited'];
 
 export const ENDPOINTS = [
   '/api/personas',
@@ -88,6 +88,109 @@ export function chatUrl(key, suffix = '', token = null) {
 // own workspace-relative path, the chat's own door (`persona_chat::download`).
 export function fileUrl(key, path, token = null) {
   return withUnlock(`${chatUrl(key, '/file')}?path=${encodeURIComponent(path)}`, token);
+}
+
+// A cited page as the chat read it, the quote marked (`persona_chat::cited`):
+// the page the persona says it cited, or — where the quote was found on
+// another — that one.
+export function citedUrl(key, check, token = null) {
+  const page = check.found ?? check.cited;
+  const q = new URLSearchParams({ file: check.file, quote: check.quote ?? '' });
+  if (page != null) q.set('page', String(page));
+  return withUnlock(`${chatUrl(key, '/cited')}?${q}`, token);
+}
+
+// A reply cut at its citations: plain text, and each citation with its
+// check (§10.4). `checks` is a list of [raw, check] pairs already matched
+// to this reply's citations, in order (`citeEntries`).
+export function citeSegments(text, matched) {
+  const out = [];
+  let pos = 0;
+  for (const [raw, check] of matched ?? []) {
+    const at = text.indexOf(raw, pos);
+    if (at === -1) continue;
+    if (at > pos) out.push({ text: text.slice(pos, at) });
+    out.push({ text: raw, check });
+    pos = at + raw.length;
+  }
+  if (pos < text.length || out.length === 0) out.push({ text: text.slice(pos) });
+  return out;
+}
+
+// Each answer's citations paired with the check the server made of *that*
+// citation (review of #465). The server checks each reply against what the
+// chat had read by then, so one quote can be "no such file" before its page
+// was read and "quoted" after: keyed by text alone, the last would answer
+// for both. Paired from the end, occurrence by occurrence, because the
+// server's checks run over everything the chat ever held while a compacted
+// chat's page shows only its later answers. Returns, per entry index, the
+// [raw, check] pairs `citeSegments` takes.
+export function citeEntries(entries, checks) {
+  const byRaw = new Map();
+  for (const c of checks ?? []) {
+    if (!c?.raw) continue;
+    if (!byRaw.has(c.raw)) byRaw.set(c.raw, []);
+    byRaw.get(c.raw).push(c);
+  }
+  const out = new Map();
+  if (byRaw.size === 0) return out;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e?.kind !== 'assistant' || !e.text) continue;
+    const found = [];
+    for (const raw of byRaw.keys()) {
+      for (let at = e.text.indexOf(raw); at !== -1; at = e.text.indexOf(raw, at + raw.length)) {
+        found.push({ at, raw });
+      }
+    }
+    found.sort((a, b) => a.at - b.at);
+    // Overlapping finds keep the first.
+    const kept = [];
+    let end = 0;
+    for (const f of found) {
+      if (f.at < end) continue;
+      kept.push(f);
+      end = f.at + f.raw.length;
+    }
+    const pairs = [];
+    for (let k = kept.length - 1; k >= 0; k--) {
+      const list = byRaw.get(kept[k].raw);
+      // More on the page than were checked: the earliest check stands in.
+      const check = list.length > 1 ? list.pop() : list[0];
+      pairs.unshift([kept[k].raw, check]);
+    }
+    out.set(i, pairs);
+  }
+  return out;
+}
+
+// What a citation's check says, in a word and in full. A quote that is
+// there is quoted — never "verified": a real quote can support the wrong
+// claim, and that is not checked (§10.4).
+export function citeNote(check) {
+  switch (check?.status) {
+    case 'quoted':
+      return { tone: 'ok', label: 'quoted', title: 'The quote is in the file. Quoted, not checked for support.' };
+    case 'other_page':
+      return { tone: 'warn', label: `on p. ${check.found}`, title: `The quote is in the file, on page ${check.found}, not the page cited. Quoted, not checked for support.` };
+    case 'not_found':
+      return { tone: 'bad', label: 'not in the file', title: 'This quote is not in what the chat read of the file.' };
+    case 'no_such_file':
+      return { tone: 'bad', label: 'no such file', title: 'Not one of the files this chat read.' };
+    case 'not_read':
+      return { tone: 'muted', label: 'file not read', title: 'One of its files, but this chat had not read it when it quoted it.' };
+    case 'cannot_check':
+      return { tone: 'muted', label: "can't check", title: 'This file is in a script without spaces between words, which the check cannot compare.' };
+    case 'too_short':
+      return { tone: 'muted', label: 'too short to check', title: 'Too short to tell a quote from a coincidence.' };
+    default:
+      return { tone: 'muted', label: 'unchecked', title: 'Not checked.' };
+  }
+}
+
+// Whether a citation opens a page: only where the quote was found.
+export function citeOpens(check) {
+  return check?.status === 'quoted' || check?.status === 'other_page';
 }
 
 // Where the edit modal's mask goes up: this chat's `inbox/`, never the
@@ -178,11 +281,11 @@ export function withWorking(entries, working, now = Date.now()) {
   return [...entries, { kind: 'tool', id: working.id, name: working.name, is_error: null, started }];
 }
 
-export function emptyRun(entries = [], taint = null) {
+export function emptyRun(entries = [], taint = null, citations = []) {
   // `crisisSeq` carries on past the entries it numbered, so ids never repeat
   // within a page's life of the chat.
   const seq = entries.filter((e) => e.kind === 'crisis').length;
-  return { entries, streaming: null, running: false, taint, crisisSeq: seq };
+  return { entries, streaming: null, running: false, taint, crisisSeq: seq, citations };
 }
 
 // Move text still streaming into the transcript as the answer it became.
@@ -274,6 +377,10 @@ export function applyEvent(state, ev) {
     }
     case 'notice':
       return { ...state, entries: [...state.entries, { kind: 'notice', text: ev.text }] };
+    // Every citation in the chat, checked: the server sends them all, so
+    // they replace what the page had (§10.4).
+    case 'citations':
+      return { ...state, citations: ev.checks ?? [] };
     case 'done': {
       const s = flush(state);
       const entries = ev.ok ? s.entries : [...s.entries, { kind: 'notice', text: ev.error || 'the turn failed' }];

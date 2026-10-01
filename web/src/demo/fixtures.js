@@ -1696,8 +1696,19 @@ export const personaTranscript = {
 export const personaScript = [
   [140, { type: 'delta', text: 'Fair. Then let\'s say what would change your mind: ' }],
   [260, { type: 'delta', text: 'if the autumn counts come in below last year\'s, we keep the winter transects.' }],
+  [200, { type: 'delta', text: ' The die-back shows first in the holdfasts [kelp-forest-survey-2025.pdf, p. 4: "die-back begins in the holdfasts before the canopy thins"].' }],
+  [80, { type: 'citations', checks: [{ raw: '[kelp-forest-survey-2025.pdf, p. 4: "die-back begins in the holdfasts before the canopy thins"]', file: '@kelp/kelp-forest-survey-2025.pdf', cited: 4, quote: 'die-back begins in the holdfasts before the canopy thins', status: 'quoted', found: 4 }] }],
   [120, { type: 'done', ok: true, stop: 'EndTurn', taint_private: false, taint_untrusted: false, error: null }],
 ];
+
+// A cited page as the chat read it, the quote marked.
+export const personaCited = {
+  file: '@kelp/kelp-forest-survey-2025.pdf',
+  page: 4,
+  before: 'Winter transects, 2019-2025. Across all six sites, ',
+  marked: 'die-back begins in the holdfasts before the canopy thins',
+  after: ', and the first sign is visible only on the January dives.',
+};
 
 // Authoring: what a new persona is made from, and one persona's own files.
 export const personaAuthoring = {

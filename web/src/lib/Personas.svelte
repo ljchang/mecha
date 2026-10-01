@@ -14,6 +14,7 @@
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
     taintLabel, safetyLine, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
     toolStatus, waitingLine, withWorking, fileUrl, uploadUrl, sourceLine,
+    citeSegments, citeEntries, citeNote, citeOpens, citedUrl,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -107,11 +108,34 @@
   // needs neither, so its URL is safe to open full size.
   const repeats = $derived(repeatedPictures(run.entries));
   const noPicture = $derived(turnsWithoutPicture(run.entries, run.running));
+  // Each answer's citations with the check made of each (§10.4).
+  const cites = $derived(citeEntries(run.entries, run.citations));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
 
   // The Edit modal (EditModal.svelte): anything already typed becomes its
   // instruction. Not `editing`, which is the persona-file editor's.
   let imageEdit = $state(null);
+  // A cited page open beside the chat (§10.4): the page as the chat read
+  // it, the quote marked. Text drawn as text — never the file itself.
+  let citedPage = $state(null);
+  // Which open answers: a slow first tap must not land under a later one's
+  // header (review of #465), as `reread` counts with `readGen`.
+  let citedGen = 0;
+
+  async function openCited(check) {
+    if (!key || !citeOpens(check)) return;
+    const k = key;
+    const gen = ++citedGen;
+    citedPage = { file: check.file, page: check.found ?? check.cited, loading: true };
+    try {
+      const res = await fetch(citedUrl(k, check, chosen?.locked ? token : null));
+      if (!res.ok) throw new Error((await res.text()).trim() || 'not found');
+      const page = await res.json();
+      if (key === k && citedPage && gen === citedGen) citedPage = { ...page, page: page.page ?? citedPage.page };
+    } catch (e) {
+      if (key === k && citedPage && gen === citedGen) citedPage = { ...citedPage, loading: false, error: String(e?.message ?? e) };
+    }
+  }
   function editImage(path) {
     imageEdit = { path, src: pictureUrl(path), initial: input.trim(), busy: false, error: null };
   }
@@ -461,7 +485,7 @@
     const t = await res.json();
     if (key !== k || gen !== readGen) return;
     const entries = t.running ? withWorking(settle(t.entries, run), t.working) : settle(t.entries, run);
-    run = { ...emptyRun(entries, t.taint ?? null), running: !!t.running };
+    run = { ...emptyRun(entries, t.taint ?? null, t.citations ?? []), running: !!t.running };
     safety = t.safety ?? null;
     chatModel = t.model ?? '';
     crisisShown = !!t.crisis_shown;
@@ -1268,7 +1292,10 @@
               {entry.text}{#if entry.queued}<span class="queued-tag">{entry.delivery === 'discarded' ? 'not delivered — send again' : entry.delivery === 'delivered' ? 'steered' : 'queued'}</span>{/if}
             </div>
           {:else if entry.kind === 'assistant'}
-            <div class="answer">{entry.text}</div>
+            <!-- Each citation as the harness checked it (§10.4): "quoted" is
+                 all a check can say — a real quote may support the wrong claim.
+                 One that was found opens its page. -->
+            <div class="answer">{#each citeSegments(entry.text, cites.get(i)) as seg, j (j)}{#if seg.check}{@const n = citeNote(seg.check)}{#if citeOpens(seg.check)}<span class="cite {n.tone}" role="button" tabindex="0" title={n.title} onclick={() => openCited(seg.check)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openCited(seg.check))}>{seg.text}<span class="citetag">{n.label}</span></span>{:else}<span class="cite {n.tone}" title={n.title}>{seg.text}<span class="citetag">{n.label}</span></span>{/if}{:else}{seg.text}{/if}{/each}</div>
           {:else if entry.kind === 'tool'}
             {@const status = toolStatus(run.entries, i)}
             {@const picture = pictureOf(entry)}
@@ -1376,6 +1403,23 @@
     {/if}
   {/if}
 
+  {#if citedPage}
+    <button class="scrim" aria-label="close" onclick={() => (citedPage = null)}></button>
+    <div class="sheet citedsheet" role="dialog" aria-label="cited page">
+      <div class="sheet-grip"></div>
+      <div class="sheet-text">{citedPage.file}{citedPage.page != null ? ` · p. ${citedPage.page}${citedPage.through != null && citedPage.through !== citedPage.page ? `–${citedPage.through}` : ''}` : ''}</div>
+      {#if citedPage.loading}
+        <div class="barnote">Reading…</div>
+      {:else if citedPage.error}
+        <div class="barnote">{citedPage.error}</div>
+      {:else}
+        <div class="citedtext">{citedPage.before}<mark>{citedPage.marked}</mark>{citedPage.after}</div>
+        <div class="barnote">{citedPage.marked ? 'The page as this chat read it. The marked words are quoted; whether they support what was said is not checked.' : 'The page as this chat read it. The quote could not be placed on it.'}</div>
+      {/if}
+      <button class="abtn" onclick={() => (citedPage = null)}>Close</button>
+    </div>
+  {/if}
+
   {#if sheet}
     <button class="scrim" aria-label="close" onclick={() => (sheet = false)}></button>
     <div class="sheet">
@@ -1464,6 +1508,21 @@
   .bubble.queued { border: 1px solid var(--accent-700); background: var(--bg); }
   .queued-tag { display: block; margin-top: 4px; font-family: var(--mono); font-size: 9px; color: var(--text-muted); }
   .answer { max-width: 92%; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+  /* A checked citation: the persona's words, then what the check found. */
+  /* Spans, not buttons: a button is laid out as one atomic box, and the
+     words after a long citation would wrap below it. */
+  .cite { text-decoration: underline dotted var(--accent-500); text-underline-offset: 3px; }
+  .cite[role='button'] { cursor: pointer; }
+  .cite.bad { text-decoration: underline wavy var(--hazard); }
+  .citetag { margin-left: 4px; padding: 0 5px; border-radius: 6px; font-size: 11px; vertical-align: 1px; white-space: nowrap; background: var(--surface); color: var(--text-muted); }
+  .cite.ok .citetag { color: var(--accent-300); }
+  .cite.warn .citetag { color: var(--text); }
+  .cite.bad .citetag { color: var(--hazard); }
+  /* Not checked, or too short to: no underline that reads as affirmed. */
+  .cite.muted { text-decoration: none; }
+  .citedsheet { max-height: 75%; }
+  .citedtext { overflow-y: auto; white-space: pre-wrap; font-size: 14px; line-height: 1.5; padding: 10px 12px; border: 1px solid var(--accent-900); border-radius: 10px; }
+  .citedtext mark { background: var(--accent-700); color: var(--text); border-radius: 3px; }
   .tool { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
   .tool.err { color: var(--hazard); }
   /* As the assistant's chat draws a picture and its Edit button. */
