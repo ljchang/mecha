@@ -141,7 +141,7 @@ impl Tool for DocumentRead {
 /// Read a regular file of at most `max` bytes — refusing a FIFO without
 /// waiting on it and a file over the cap without reading it (`image_view`'s
 /// guards, for the same reasons).
-async fn read_bounded(path: &std::path::Path, max: u64) -> Result<Vec<u8>, String> {
+pub(crate) async fn read_bounded(path: &std::path::Path, max: u64) -> Result<Vec<u8>, String> {
     use tokio::io::AsyncReadExt;
     let mut options = tokio::fs::OpenOptions::new();
     options.read(true);

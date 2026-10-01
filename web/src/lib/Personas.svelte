@@ -13,7 +13,7 @@
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
     taintLabel, safetyLine, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
-    toolStatus, waitingLine, withWorking, fileUrl, uploadUrl,
+    toolStatus, waitingLine, withWorking, fileUrl, uploadUrl, sourceLine,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -37,6 +37,10 @@
   // The persona being looked at, its earlier chats, and the open chat.
   let chosen = $state(null);
   let history = $state([]);
+  // The persona's files (§10): what it can read, and whether each is read yet.
+  let sources = $state([]);
+  let sourcesNote = $state('');
+  let sourcesTimer = null;
   let key = $state(null);
   let run = $state(emptyRun());
   // The open chat's safety switches, as its transcript reports them (§12).
@@ -362,12 +366,66 @@
 
   async function loadHistory() {
     if (!chosen) return;
+    loadSources();
     try {
       const res = await fetch(personaUrl(chosen.name, '/chats', token));
       history = res.ok ? (await res.json()).chats : [];
     } catch {
       history = [];
     }
+  }
+
+  // Read again while anything is still being read, so "reading…" turns to
+  // "ready" without a reload.
+  async function loadSources() {
+    clearTimeout(sourcesTimer);
+    if (!chosen) return;
+    const name = chosen.name;
+    try {
+      const res = await fetch(personaUrl(name, '/sources', token));
+      if (chosen?.name !== name) return;
+      sources = res.ok ? (await res.json()).sources : [];
+    } catch {
+      sources = [];
+    }
+    if (sources.some((s) => s.processing)) sourcesTimer = setTimeout(loadSources, 3000);
+  }
+
+  async function addSources(files) {
+    if (!chosen || !files?.length) return;
+    sourcesNote = '';
+    busy = true;
+    try {
+      for (const f of files) {
+        const url = personaUrl(chosen.name, '/sources', token);
+        const res = await fetch(`${url}${url.includes('?') ? '&' : '?'}name=${encodeURIComponent(f.name)}`, {
+          method: 'POST',
+          body: f,
+        });
+        if (!res.ok) sourcesNote = `${f.name}: ${(await res.text()).trim()}`;
+      }
+    } catch (e) {
+      sourcesNote = String(e?.message ?? e);
+    } finally {
+      busy = false;
+      await loadSources();
+    }
+  }
+
+  async function removeSource(file) {
+    if (!chosen) return;
+    sourcesNote = '';
+    try {
+      const res = await fetch(personaUrl(chosen.name, '/sources/remove', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ file, unlock: token ?? undefined }),
+      });
+      if (!res.ok) sourcesNote = (await res.text()).trim();
+    } catch (e) {
+      sourcesNote = String(e?.message ?? e);
+    }
+    await loadSources();
   }
 
   async function scrollDown() {
@@ -1138,6 +1196,30 @@
             </span>
           {/if}
         </div>
+        <!-- Its files (§10): what every chat with it can read and cite.
+             Added here or dropped into its folder; shared ones come from a
+             group's folder or everyone's. -->
+        <div class="earlier">Files</div>
+        <div class="plist">
+          {#each sources as s (s.name)}
+            <div class="hrow srow">
+              <span class="htitle">{s.name}</span>
+              <span class="when">{sourceLine(s)}</span>
+              {#if !s.shared}
+                <button class="iconbtn srm" aria-label="Remove {s.name}" title="Remove" disabled={busy} onclick={() => removeSource(s.name)}>
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                </button>
+              {/if}
+            </div>
+          {/each}
+          <label class="hrow addsrc" class:off={busy}>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            <span class="htitle">{sources.length ? 'Add files' : 'Add a paper or notes for it to read'}</span>
+            <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.md,.markdown,.txt" disabled={busy}
+              onchange={(e) => { addSources([...e.currentTarget.files]); e.currentTarget.value = ''; }} />
+          </label>
+        </div>
+        {#if sourcesNote}<div class="warnline">{sourcesNote}</div>{/if}
         {#if history.length}
           <div class="earlier">Earlier chats</div>
           <div class="plist">
@@ -1425,6 +1507,13 @@
   .stat svg { color: var(--accent-500); flex-shrink: 0; }
   .htitle { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hrow { min-height: 56px; }
+  .srow { flex-wrap: wrap; row-gap: 2px; }
+  .srow .htitle { flex-basis: 100%; }
+  .srow .when { margin: 0; font-family: var(--mono); font-size: 11px; color: var(--text-muted); flex: 1; }
+  .srm { width: 36px; height: 36px; margin: -6px -8px -6px 0; }
+  .addsrc { position: relative; cursor: pointer; color: var(--accent-400); }
+  .addsrc.off { opacity: 0.55; cursor: default; }
+  .addsrc input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
   .hrow .when { margin: 0; font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
   .composer .cfield { flex: 1; display: flex; align-items: flex-end; gap: 6px; padding: 6px 6px 6px 14px; background: var(--surface); border: 1px solid var(--accent-700); border-radius: 22px; }
   .composer .cfield:focus-within { border-color: var(--accent-500); }

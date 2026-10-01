@@ -28,7 +28,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/sources', '/sources/remove'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload'];
 
 export const ENDPOINTS = [
@@ -319,4 +319,14 @@ export function doseLine(dose) {
   if (dose.late_night_7d) parts.push(`${dose.late_night_7d} late at night`);
   if (dose.skipped) parts.push(`${dose.skipped} unreadable record${dose.skipped === 1 ? '' : 's'} not counted`);
   return parts.join(' · ');
+}
+
+// A file in a persona's reach, as its row says it (§10): whether a chat can
+// read it without waiting, and how big it is. Shared files say where from —
+// `@kelp/…` is a group's, `@all/…` everyone's.
+export function sourceLine(s) {
+  const size = s.bytes >= 1048576 ? `${(s.bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(s.bytes / 1024))} KB`;
+  const state = s.processing ? 'reading…' : s.ready ? 'ready' : 'not read yet';
+  const from = !s.shared ? '' : s.name.startsWith('@all/') ? ' · every persona' : ` · group ${s.name.slice(1, s.name.indexOf('/'))}`;
+  return `${size} · ${state}${from}`;
 }

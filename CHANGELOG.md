@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A persona reads its files.** Each persona has a Files list on its page:
+  add a paper, notes or an image there (or drop them into its `files/`
+  folder), and every new chat with it carries them. If the whole collection
+  fits in about a quarter of the context window, it rides in full in the
+  chat's first turn; otherwise the chat gets the list and reads pages with a
+  new `file_read` tool. A persona also reads its groups' and everyone's
+  `files/`, named `@group/…` and `@all/…`. Files are processed once on upload,
+  and the list says which are ready. A file's words are treated as outside
+  content, so a chat that carried them is marked untrusted. `answers =
+  "files"` keeps `file_read`, since that is what reading the files means.
+
 - **Slack, personas, voice, incognito, the front door and messages follow
   their switches too**, the same way the rest do: off, their web pages answer
   `feature_off` and `mecha slack`, `persona`, `msg`, `frontdoor`, `polls` and

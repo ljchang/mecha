@@ -458,6 +458,23 @@ fn api() -> gate::Owned {
             Owner::Of(Feature::Personas),
             get(persona_chat::files).post(persona_chat::save),
         )
+        // The persona's files (§10): read, added to, taken out of reach.
+        .at(
+            "/api/personas/{name}/sources",
+            Owner::Of(Feature::Personas),
+            get(persona_chat::sources)
+                .post(persona_chat::add_source)
+                .layer(
+                    // A paper is larger than a JSON body: 50 MB, the default
+                    // `[documents] max_file_mb`.
+                    axum::extract::DefaultBodyLimit::max(52_428_800),
+                ),
+        )
+        .at(
+            "/api/personas/{name}/sources/remove",
+            Owner::Of(Feature::Personas),
+            axum::routing::post(persona_chat::remove_source),
+        )
         .at(
             "/api/personas/{name}/lock",
             Owner::Of(Feature::Personas),
