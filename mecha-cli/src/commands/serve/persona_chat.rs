@@ -2795,7 +2795,7 @@ pub struct LockBody {
 
 #[derive(serde::Deserialize)]
 pub struct FrameBody {
-    /// Absent or null centres the portrait again.
+    /// Absent or null returns the portrait to the page's default framing.
     #[serde(default)]
     frame: Option<mecha_core::persona::Frame>,
     #[serde(default)]
