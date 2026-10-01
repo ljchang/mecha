@@ -200,7 +200,9 @@ fn received(messages: &[Message]) -> Vec<Page> {
         }
         for block in &m.content {
             match block {
-                Block::Text { text } if text.starts_with(super::files::FILES_STEM) => {
+                // The same predicate as `files::carries` and
+                // `Taint::arm_for_content` (review of #465).
+                Block::Text { text } if text.trim_start().starts_with(super::files::FILES_STEM) => {
                     pages.extend(documents(text));
                 }
                 Block::ToolResult { tool_use_id, .. } => {
@@ -212,7 +214,25 @@ fn received(messages: &[Message]) -> Vec<Page> {
             }
         }
     }
-    pages
+    // A page received twice — the files block and a later `file_read` of
+    // it, or text layer and OCR — is one page, whatever came between, so a
+    // file is named once and a citation without its `@group/` resolves
+    // (review of #465: a consecutive-only dedup listed it twice, and the
+    // tail match then refused as ambiguous).
+    let mut merged: Vec<Page> = Vec::new();
+    for p in pages {
+        match merged
+            .iter_mut()
+            .find(|m| m.file == p.file && m.page == p.page)
+        {
+            Some(m) => {
+                m.text.push('\n');
+                m.text.push_str(&p.text);
+            }
+            None => merged.push(p),
+        }
+    }
+    merged
 }
 
 /// The documents a rendered text holds, split at each `document: <name> ·`
@@ -243,21 +263,7 @@ fn documents(text: &str) -> Vec<Page> {
         }
     }
     flush(current, &mut out);
-    // A page read twice (text layer and OCR, or two reads) is one page.
-    let mut merged: Vec<Page> = Vec::new();
-    for p in out {
-        match merged
-            .iter_mut()
-            .find(|m| m.file == p.file && m.page == p.page)
-        {
-            Some(m) => {
-                m.text.push('\n');
-                m.text.push_str(&p.text);
-            }
-            None => merged.push(p),
-        }
-    }
-    merged
+    out
 }
 
 /// `document: paper.pdf · pdf · 12 page(s) · …` → `paper.pdf`.
@@ -392,6 +398,7 @@ fn claim<'a>(statement: &'a str, id: &'a str, quote: &'a str) -> Claim<'a> {
 
 fn check(c: &Citation, pages: &[Page]) -> Checked {
     let mut files: Vec<&str> = pages.iter().map(|p| p.file.as_str()).collect();
+    files.sort_unstable();
     files.dedup();
     let Some(file) = resolve(&c.file, &files) else {
         return Checked {
@@ -470,6 +477,7 @@ fn check(c: &Citation, pages: &[Page]) -> Checked {
 pub fn page_text(messages: &[Message], file: &str, page: Option<u32>) -> Option<String> {
     let pages = received(messages);
     let mut files: Vec<&str> = pages.iter().map(|p| p.file.as_str()).collect();
+    files.sort_unstable();
     files.dedup();
     let file = resolve(file, &files)?;
     let mut of_file = pages.iter().filter(|p| p.file == file);
@@ -734,5 +742,31 @@ mod tests {
             "never received"
         );
         assert_eq!(page_text(&msgs, "other.pdf", Some(1)), None);
+    }
+
+    /// Review of #465: a file received twice, with another between, is one
+    /// file — so `survey.pdf` still names `@kelp/survey.pdf` and its quote
+    /// is quoted, not "no such file".
+    #[test]
+    fn a_file_received_twice_with_another_between_still_resolves() {
+        let survey = "document: @kelp/survey.pdf \u{b7} pdf \u{b7} 9 page(s) \u{b7} sha256 x\n\
+                      \n=== page 4 of 9 \u{b7} text layer (the file's own words) ===\n\
+                      The transects were run monthly from May.\n";
+        let mut user = Message::user("Read them.");
+        user.content.push(Block::Text {
+            text: files_block(&format!("{survey}\n{PAPER}")),
+        });
+        let ask = calls("t1", json!({"file": "@kelp/survey.pdf", "pages": "4"}));
+        let answer = result("t1", false, survey);
+        let reply = said("[survey.pdf, p. 4: \"transects were run monthly\"]");
+        let msgs = [user, ask, answer, reply];
+        let got = check_conversation(&msgs);
+        assert_eq!(
+            got[0].verdict,
+            Verdict::Quoted { found: Some(4) },
+            "{got:?}"
+        );
+        assert_eq!(got[0].file, "@kelp/survey.pdf");
+        assert!(page_text(&msgs, "survey.pdf", Some(4)).is_some());
     }
 }

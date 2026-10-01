@@ -291,24 +291,36 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   assert.equal(sourceLine({ name: 'scan.heic', bytes: 2048, shared: false, ready: false, processing: false, unreadable: 'scan.heic: a HEIC/HEIF photo' }), '2 KB · not readable');
 }
 
-// A reply cut at its checked citations (§10.4): each found by its own
-// text, a later check of the same text winning, and the words around them
-// kept whole. A quote that is there reads "quoted", never "verified".
+// A reply cut at its checked citations (§10.4). Each citation gets the
+// check made of it: the same quote cited before its page was read and
+// after reads "no such file" then "quoted" — never "quoted" twice (review
+// of #465). Paired from the end, so a compacted chat whose first answer is
+// gone still pairs its later ones right. "quoted", never "verified".
 {
-  const { citeSegments, citeNote, citeOpens, citedUrl, applyEvent, emptyRun } = await import('../src/lib/persona.js');
+  const { citeSegments, citeEntries, citeNote, citeOpens, citedUrl, applyEvent, emptyRun } = await import('../src/lib/persona.js');
   const a = '[kelp.pdf, p. 1: "urchins graze kelp"]';
   const b = '[kelp.pdf, p. 2: "otters eat forty a day"]';
-  const text = `They graze ${a} and ${b}, and again ${a}.`;
-  const checks = [
-    { raw: a, file: 'kelp.pdf', cited: 1, quote: 'urchins graze kelp', status: 'not_found' },
-    { raw: b, file: 'kelp.pdf', cited: 2, quote: 'otters eat forty a day', status: 'not_found' },
-    { raw: a, file: 'kelp.pdf', cited: 1, quote: 'urchins graze kelp', status: 'quoted', found: 1 },
+  const before = { raw: a, file: 'kelp.pdf', cited: 1, quote: 'urchins graze kelp', status: 'no_such_file' };
+  const made = { raw: b, file: 'kelp.pdf', cited: 2, quote: 'otters eat forty a day', status: 'not_found' };
+  const after = { raw: a, file: 'kelp.pdf', cited: 1, quote: 'urchins graze kelp', status: 'quoted', found: 1 };
+  const entries = [
+    { kind: 'user', text: 'go' },
+    { kind: 'assistant', text: `Before reading: ${a}.` },
+    { kind: 'tool', name: 'file_read' },
+    { kind: 'assistant', text: `They graze ${a} and ${b}.` },
   ];
-  const segs = citeSegments(text, checks);
-  assert.equal(segs.map((s) => s.text).join(''), text, 'nothing lost or doubled');
-  assert.deepEqual(segs.filter((s) => s.check).map((s) => s.check.status), ['quoted', 'not_found', 'quoted']);
+  const paired = citeEntries(entries, [before, after, made]);
+  assert.deepEqual(paired.get(1).map(([, c]) => c.status), ['no_such_file']);
+  assert.deepEqual(paired.get(3).map(([, c]) => c.status), ['quoted', 'not_found']);
+  const segs = citeSegments(entries[3].text, paired.get(3));
+  assert.equal(segs.map((s) => s.text).join(''), entries[3].text, 'nothing lost or doubled');
+  assert.deepEqual(segs.filter((s) => s.check).map((s) => s.check.status), ['quoted', 'not_found']);
+  // Compacted: the first answer is off the page, its check is not.
+  const later = citeEntries(entries.slice(2), [before, after, made]);
+  assert.deepEqual(later.get(1).map(([, c]) => c.status), ['quoted', 'not_found']);
   assert.deepEqual(citeSegments('plain words', []), [{ text: 'plain words' }]);
   assert.deepEqual(citeSegments('', null), [{ text: '' }]);
+  assert.equal(citeEntries(entries, []).size, 0);
   assert.equal(citeNote({ status: 'quoted' }).label, 'quoted');
   assert.match(citeNote({ status: 'quoted' }).title, /not checked for support/);
   assert.equal(citeNote({ status: 'other_page', found: 4 }).label, 'on p. 4');
@@ -320,8 +332,8 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   const q = new URLSearchParams(url.split('?')[1]);
   assert.deepEqual([q.get('file'), q.get('page'), q.get('quote')], ['@kelp/s.pdf', '4', 'a b']);
   // The stream's checks replace the page's.
-  const run = applyEvent({ ...emptyRun([], null, checks) }, { type: 'citations', checks: [checks[1]] });
-  assert.deepEqual(run.citations, [checks[1]]);
+  const run = applyEvent({ ...emptyRun([], null, [before]) }, { type: 'citations', checks: [made] });
+  assert.deepEqual(run.citations, [made]);
 }
 
 console.log('persona: ok');
