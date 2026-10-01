@@ -77,7 +77,7 @@ silently-degrading guard in another costume:
 |---|---|
 | **R1** | Strictly invisible: no transcript, **no content-free counts**, no replay, no learning. Invisibility to `reflect`, `distill`, `runlog`, `harness ruminate` and the rest is the point, not a gap |
 | **R2** | No "save this conversation" escape hatch. Live-only affordances (retry, branch) are fine; they die with the session. *Refined 2026-10-01 (owner): a reply's Download is allowed — "there just won't be a trace on the server". The file is made in the browser from the reply on the page, never fetched, so it is the owner's act on the device (§1), not a server-side save* |
-| **R3** | **Local + read my data:** mail, calendar and graph reads are allowed; writes of any kind outside the chat's own folder are refused |
+| **R3** | **Local + read my data:** mail, calendar and graph reads are allowed; writes of any kind outside the chat's own folder are refused. *One exception, ruled 2026-10-01 (owner): `persona_propose` may stage a persona — "these will likely be locked profiles". It is staged behind the library lock (`ToolCtx::stage_locked`) and reaches no prompt until the owner approves it on the Personas page, so it is a write the owner keeps on purpose, not a trace of the chat. A canary scan of the whole mecha home after an incognito run (§8) has this one legitimate path out of the room* |
 | **R4** | **Web search allowed, with a notice** shown before the first search |
 | **R5** | **Idle timeout: 30 minutes** |
 | **R6** | Images are deleted from disk when the session closes — including the image server's copies and the browser's cache |
@@ -105,6 +105,7 @@ yet on `main` when this was written, so §3.4's ComfyUI row, §5.1's
 | "Earlier" drawer | `chat::history` scans the transcript directory | Nothing to scan; the live list marks incognito and drops it on close |
 | Browser cache | `/api/*` sends no `Cache-Control` — deliberately (`serve/mod.rs::cache_headers`: a blanket header would be the middleware deciding policy for every handler) | `no-store` on every incognito response and file (§4.4) |
 | Browser storage | None: `web/src` uses no localStorage, sessionStorage, IndexedDB or service worker | Nothing to do — kept that way by a test |
+| A picture's Download | The owner's device, and one GET of the picture through the chat's own file route — the route its `<img>` already reads, so no new server trace. `picture.js::downloadPicture` saves the bytes from a blob, never by pointing the browser at the URL, so no address lands in the history | Offered, on R2's refinement: the owner's act on the device (§1) |
 | A reply's Download | The owner's device only: `reply-export.js::downloadText` makes a blob in the browser from the reply on the page; nothing is fetched, sent or logged on the server | Offered, since the owner's refinement of R2 on 2026-10-01: a file the owner saves is the owner's act (§1). `web/test/reply-export.mjs` pins that the download path reaches no server |
 
 ### 3.2 Derived later from session files
@@ -132,6 +133,7 @@ mark, not in this design.
 | Mail and calendar reads | `mecha-mail` keeps nothing on reads; the provider's API sees the request | Allowed (R3; §1 limit) |
 | `web_search`, `web_open` | The query reaches SearXNG (which forwards upstream), Exa or Tavily | Allowed with notice (R4) |
 | `http_fetch` | The request reaches whatever host the model named | Allowed, and refused by the interlock once the chat holds private and untrusted content (§5.1) |
+| `persona_propose` | A candidate persona under `~/.mecha/personas/<name>/`: the model's `identity.md`, `motivation.md` and `persona.toml`, and its `state.toml` | Allowed, staged locked (R3's exception, 2026-10-01): nothing reaches a prompt before the owner approves it as shown |
 | Hooks | `pre_tool`/`post_tool` receive tool input and output; `session_end` runs `distill` | Not run — and a configured `pre_tool` hook refuses the chat, since skipping a deny gate would widen it |
 
 ### 3.4 Other processes

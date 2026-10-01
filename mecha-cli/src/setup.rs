@@ -1503,6 +1503,33 @@ async fn prepare_tools_carrying(
             Err(e) => eprintln!("mecha: image library tools not registered — {e:#}"),
         }
     }
+    // `persona_propose` rides with the Personas switch: it stages a candidate
+    // persona for the owner to approve on the Personas page (§4.4, the
+    // owner's rulings of 2026-10-01). Both stores are global only, as the
+    // library's are — a cloned repository must not choose where a persona is
+    // written. `[tools]` narrows it like any builtin: it writes into the
+    // mecha home with no approver, so its off switch must work.
+    if feature_on(Feature::Personas) {
+        let asked = (opts.tools.is_empty() || asked_for("persona_propose"))
+            && cfg.tools.registers("persona_propose");
+        if asked {
+            match (
+                mecha_core::persona::Store::default_dir(),
+                mecha_core::imagelib::Library::default_dir(),
+            ) {
+                (Ok(dir), Ok(library)) => {
+                    registry.insert(Arc::new(
+                        mecha_core::tool::persona_propose::PersonaPropose::new(dir, library),
+                    ));
+                }
+                (Err(e), _) | (_, Err(e)) => {
+                    eprintln!("mecha: persona_propose not registered — {e:#}")
+                }
+            }
+        }
+    } else {
+        switched_off(Feature::Personas, "persona_propose");
+    }
     // `image_view` reaches no server, so it is not `[image]`'s: it is how any
     // model with eyes looks at a workspace picture — a result, or an
     // attachment it was not shown (found on review of #365). Only for such a

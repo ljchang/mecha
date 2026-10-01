@@ -457,7 +457,15 @@ rule:
 - **A model can only stage a candidate** — "help me write a persona" in a
   chat produces a candidate with an `Origin` classified from that
   conversation's taint (`Origin::of_proposal`, as the image library does),
-  and nothing reaches a prompt until the owner approves it.
+  and nothing reaches a prompt until the owner approves it. *Built
+  2026-10-01 as `persona_propose` (`persona::propose`), on the owner's
+  rulings of that day: approval on the Personas page's Waiting section, as
+  shown (a server-signed digest, `persona::approve_as_shown`), never in the
+  proposing chat; the chat sets name, display, relationships, identity,
+  motivation, character and voice and nothing else; it may revise its own
+  candidate until approved; a still-waiting linked character is approved in
+  the same tap; and an incognito chat may propose, staged locked
+  (`ToolCtx::stage_locked`).*
 - **An imported character card is untrusted text.** The V2/V3 specs put a
   card's `system_prompt`, `post_history_instructions` and `@@decorators` into
   the most privileged slots *by design*; an importer keeps the descriptive
