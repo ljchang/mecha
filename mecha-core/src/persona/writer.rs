@@ -101,8 +101,16 @@ pub fn read_chat(text: &str) -> Chat {
                     .map(str::to_owned);
             }
             Some("message") => {
-                let message = match serde_json::from_value(value) {
-                    Ok(crate::session::Record::Message(m)) => Some(m),
+                // Strict first, then the session store's own fallback, which
+                // keeps the blocks this build knows: read strictly, one new
+                // block kind would make the turn unreadable, cut the clean
+                // stretch there, and leave every later turn of the chat a
+                // candidate for good (review of #468).
+                let message = match serde_json::from_value::<crate::session::Record>(value)
+                    .ok()
+                    .or_else(|| crate::session::lenient_record(line))
+                {
+                    Some(crate::session::Record::Message(m)) => Some(m),
                     _ => None,
                 };
                 pending.push(chat.turns.len());
@@ -268,9 +276,25 @@ Reply with one JSON object and nothing else:
             {\"op\": \"update\", \"id\": \"...\", \"text\": \"...\"},
             {\"op\": \"invalidate\", \"id\": \"...\"}]}";
 
-/// The id a known fact is shown under: its first eight characters.
+/// The id a known fact is shown under: its first eight characters. Its
+/// input is a generated hex uid; an id the *model* names goes through
+/// [`named_id`] first.
 fn short(uid: &str) -> &str {
-    &uid[..uid.len().min(8)]
+    uid.get(..8).unwrap_or(uid)
+}
+
+/// An id the model named, if it is one the writer could have shown: hex, at
+/// least four digits, at most a whole uid. Anything else is turned away
+/// rather than sliced — a model-written string reaches here from an
+/// untrusted stretch too, and slicing it by bytes could panic the writer
+/// (review of #468).
+fn named_id(id: &str) -> Option<String> {
+    let id = id.trim().to_ascii_lowercase();
+    if !(4..=32).contains(&id.len()) || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    // All ASCII now, so a byte slice is a character slice.
+    Some(id[..id.len().min(8)].to_owned())
 }
 
 /// The user turn: who the character is, what it knows, and the stretch.
@@ -448,16 +472,26 @@ pub fn apply(
         }
     }
 
-    let by_short: HashMap<&str, &Fact> = known.iter().map(|f| (short(&f.uid), f)).collect();
+    // A prefix two shown facts share names neither: an edit to the wrong
+    // fact would be silent.
+    let mut by_short: HashMap<&str, Option<&Fact>> = HashMap::new();
+    for f in known {
+        by_short
+            .entry(short(&f.uid))
+            .and_modify(|e| *e = None)
+            .or_insert(Some(f));
+    }
     // `known` was read before any op ran, so a fact this proposal already
     // updated or withdrew still reads active in it. Each is consumed once:
     // two updates of one id would otherwise leave two live replacements of
     // one fact — the pair `correct` refuses (review of #468).
     let mut consumed: HashSet<String> = HashSet::new();
     let target = |id: &str, consumed: &HashSet<String>| -> Option<&Fact> {
+        let id = named_id(id)?;
         by_short
-            .get(short(id.trim()))
+            .get(id.as_str())
             .copied()
+            .flatten()
             .filter(|f| changeable(f) && !consumed.contains(&f.uid))
     };
     let allowed = |table: Table| match table {
@@ -579,6 +613,17 @@ pub fn nothing_to_keep(persona: &Persona) -> bool {
     !s.episodic && !s.semantic && s.user_facts == UserFacts::Off
 }
 
+/// What the model server is, as far as the writer can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Server<'a> {
+    /// One model, whatever a request names — or one the owner pinned.
+    One,
+    /// A router, with what it has loaded (`None`: nothing).
+    Router(Option<&'a str>),
+    /// A router that did not say what it has loaded.
+    Unanswered,
+}
+
 /// Which model writes a chat, or that it waits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelPick {
@@ -597,19 +642,15 @@ pub enum ModelPick {
 /// - another model is resident: the chat **waits** for a run when its model
 ///   is loaded again — which the next chat with that persona does;
 /// - the chat recorded no model: the resident one writes;
-/// - not a router: one model is served, whatever a request names.
-///
-/// `resident` is what the router has loaded (`None`: nothing); `router` is
-/// whether the provider is one at all.
-pub fn pick_model(
-    chat: Option<&str>,
-    resident: Option<&str>,
-    router: bool,
-    fallback: &str,
-) -> ModelPick {
-    if !router {
-        return ModelPick::Use(fallback.to_owned());
-    }
+/// - not a router (or a model the owner pinned): that model writes;
+/// - a router that would not say what is loaded: every chat waits — naming
+///   any model to it could be the swap (review of #468).
+pub fn pick_model(chat: Option<&str>, server: Server<'_>, fallback: &str) -> ModelPick {
+    let resident = match server {
+        Server::One => return ModelPick::Use(fallback.to_owned()),
+        Server::Unanswered => return ModelPick::Wait(chat.unwrap_or(fallback).to_owned()),
+        Server::Router(resident) => resident,
+    };
     match (chat, resident) {
         (Some(c), Some(r)) if c == r => ModelPick::Use(c.to_owned()),
         (Some(c), Some(_)) => ModelPick::Wait(c.to_owned()),
@@ -702,7 +743,17 @@ pub async fn write_chat(
     let from = m.written_upto(chat_id)?;
     for s in stretches(chat, from) {
         let known = known(m)?;
-        let proposal = if nothing_to_keep(persona) || !has_reply(chat, s) {
+        let nothing = nothing_to_keep(persona);
+        // Nothing to remember *yet*: the persona has not answered (a run that
+        // failed, a crisis pause), so the ledger stays where it is and a
+        // later run reads these turns with the reply. `break`, not
+        // `continue`: a later stretch cannot be written past a hole in the
+        // ledger. Memory switched off is different — there it moves on
+        // (review of #468).
+        if !nothing && !has_reply(chat, s) {
+            break;
+        }
+        let proposal = if nothing {
             Proposal::default()
         } else {
             let conversation = render(chat, s, persona.display());
