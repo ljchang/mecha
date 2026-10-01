@@ -547,6 +547,11 @@ export function toolRun(entries, i, plain = () => true, failed = () => false) {
 // The placeholders are private-use characters a reply does not contain.
 const MARK_OPEN = '\uE000';
 const MARK_CLOSE = '\uE001';
+//
+// One check per citation text in a reply: `citeEntries` pairs occurrence by
+// occurrence across replies, but two occurrences inside one reply were
+// checked against the same received state, so they cannot differ — the
+// collapse here is known and safe (review of #479).
 export function citeMark(text, cites) {
   const byRaw = new Map((cites ?? []).map(([r, c]) => [r, c]).reverse());
   const marks = [];

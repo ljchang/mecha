@@ -1063,7 +1063,7 @@ already know, or make the single next tool call. Keep your reasoning short this 
 /// since each interpolates something (a tool name and a count; a message id
 /// and a sender; a step's own text); the two turn-level nudges are constants
 /// and are matched whole.
-pub fn is_harness_voice(text: &str) -> bool {
+pub(crate) fn is_harness_voice(text: &str) -> bool {
     let text = text.trim();
     text == FINAL_ANSWER_NUDGE
         || text == EMPTY_TURN_NUDGE

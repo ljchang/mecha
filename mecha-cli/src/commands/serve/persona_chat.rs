@@ -311,21 +311,21 @@ fn opener(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     for line in std::io::BufReader::new(file).lines().take(200) {
         let line = line.ok()?;
-        let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) else {
+        // The owner's words as every other reader takes them
+        // (`agent::owner_text`): nothing from a harness-made message, and
+        // every block that is not the harness's voice (review of #479).
+        let Ok(Record::Message(message)) = serde_json::from_str::<Record>(&line) else {
             continue;
         };
-        if record["record"] != "message" || record["role"] != "user" {
+        if message.role != mecha_core::message::Role::User {
             continue;
         }
-        let Some(text) = record["content"].as_array().and_then(|blocks| {
-            blocks.iter().find_map(|b| {
-                let t = b["text"].as_str()?;
-                (!mecha_core::agent::is_harness_voice(t)).then_some(t)
-            })
-        }) else {
+        let owned = mecha_core::agent::owner_text(&message);
+        if owned.trim().is_empty() {
             // Not the owner's words: the next user record may be.
             continue;
-        };
+        }
+        let text = owned.as_str();
         let text = match text.strip_prefix("(What I want from this conversation: ") {
             Some(rest) => rest.split_once(")\n\n").map(|(_, t)| t).unwrap_or(rest),
             None => text,
