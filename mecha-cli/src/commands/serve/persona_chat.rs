@@ -1942,6 +1942,15 @@ impl PersonaChats {
         }))
     }
 
+    /// Let a call's unlock go: the offer that bound it did not become a
+    /// call, or the call has ended.
+    pub fn release_call(&self, key: &str) {
+        self.calls
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(key);
+    }
+
     /// A spoken turn on `key`, barging in on any run in flight — the
     /// assistant's contract (`chat::VoiceHost`). Never `Hosted::Unknown`:
     /// that sends the words to the facade's own slot, where the assistant
@@ -2648,6 +2657,11 @@ impl PersonaChats {
                 // A failed turn was rolled back with the call note in it: the
                 // next spoken turn still owes it (review of #483).
                 if noted && !run_ok {
+                    ps.last_turn_spoken = false;
+                }
+                // And a compaction may have summarised the note away, as it
+                // may the Core: the next spoken turn carries it again.
+                if compacted {
                     ps.last_turn_spoken = false;
                 }
                 // A crisis message typed while this run was live: recorded
@@ -6987,6 +7001,16 @@ mod tests {
             .unwrap();
         assert!(String::from_utf8_lossy(&why).contains("`nobody`"));
         assert!(bodies.lock().unwrap().is_empty());
+
+        // That refused offer bound nothing: the chat takes no spoken words.
+        match w
+            .personas()
+            .speak(&w.chat, &w.library, &key, "hello?")
+            .await
+        {
+            crate::voice::Hosted::Failed(why) => assert!(why.contains("no call"), "{why}"),
+            _ => panic!("a refused offer left its binding"),
+        }
 
         // An ordinary call's page-named voice goes nowhere.
         let ordinary = axum::body::Bytes::from(
