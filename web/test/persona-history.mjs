@@ -147,4 +147,38 @@ const notFound = { ok: false, status: 404, json: async () => ({}), text: async (
   assert.deepEqual(p.get().history, [], "mara's chats are not rook's");
 }
 
+// A newer read can start while the last one's body is still arriving: the
+// generation is checked after the body too (review of #469, pass 3).
+{
+  let release;
+  const slowBody = new Promise((r) => (release = r));
+  const p = page({
+    answer: async (url) =>
+      url.includes('/mara/')
+        ? { ok: true, status: 200, json: async () => { await slowBody; return { chats: CHATS }; }, text: async () => '' }
+        : ok({ chats: [] }),
+  });
+  const first = p.loadHistory();
+  await new Promise((r) => setImmediate(r));
+  p.choose('rook');
+  await p.loadHistory();
+  release();
+  await first;
+  assert.deepEqual(p.get().history, [], "mara's chats, slow in the body, are not rook's");
+}
+
+// Any failure while holding a token asks the list, not only a 404: a 500
+// from a server that just restarted is as likely a lapse as anything.
+{
+  const p = page({
+    token: 'dead',
+    unlocked: () => false,
+    listed: () => [],
+    answer: () => ({ ok: false, status: 500, text: async () => 'restarting' }),
+  });
+  await p.loadHistory();
+  assert.equal(p.get().token, null);
+  assert.equal(p.calls.toList, 1);
+}
+
 console.log('persona-history: ok');
