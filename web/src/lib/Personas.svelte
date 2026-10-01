@@ -121,7 +121,6 @@
   // `attach`'s first read is noticed (`Chat.svelte`'s `doneSeq`).
   let doneSeq = 0;
   let refused = $state([]);
-  let menuOpen = $state(false);
   let goal = $state('');
   let input = $state('');
   let source = null;
@@ -500,7 +499,6 @@
   }
 
   function toList() {
-    menuOpen = false;
     close();
     safety = null;
     making = null;
@@ -857,6 +855,8 @@
       if (made) {
         await choose(made);
         await openEditor('identity');
+        // A persona made with a portrait is framed first (owner, 2026-10-01).
+        if (chosen?.portrait) openFraming();
       }
     } catch (e) {
       error = String(e?.message ?? e);
@@ -946,7 +946,11 @@
       // What was typed in the other files — as text or in a form — survives
       // this save (reviews of #420 and #430).
       const kept = keptEdits(editing.files, file);
+      const portrait = chosen?.portrait;
       await load();
+      // A new portrait — a character named in the settings — is framed
+      // straight away (owner, 2026-10-01).
+      if (chosen?.portrait && chosen.portrait !== portrait) openFraming();
       await openEditor(file);
       for (const [f, v] of Object.entries(kept)) Object.assign(editing.files[f], v);
       editing.saved = `saved — now v${saved.version}; new chats use it`;
@@ -970,7 +974,6 @@
   const FRAME_SIZE = 220;
 
   function openFraming() {
-    menuOpen = false;
     framing = { frame: frameOf(chosen.frame), aspect: 1, from: null };
   }
 
@@ -1143,8 +1146,6 @@
   ondragover={onDragOver}
   ondragleave={onDragLeave}
   ondrop={onDrop}
-  onclick={(e) => menuOpen && !e.target.closest?.('.menuwrap') && (menuOpen = false)}
-  onkeydown={(e) => e.key === 'Escape' && (menuOpen = false)}
 />
 
 <div class="page">
@@ -1336,6 +1337,18 @@
             >Edit as form</button>
           {/if}
         </div>
+        {#if editing.file === 'settings'}
+          <!-- The lock is a setting of the persona's, not an action of the
+               page's (owner, 2026-10-01). It lives in state.toml, written by
+               the server, so it is a switch here rather than a form field. -->
+          <label class="lockrow">
+            <span class="locktext">
+              Hide behind the library lock
+              <span class="hint">{chosen.locked ? 'shown only while the library is unlocked' : 'locking hides it until the library is unlocked'}</span>
+            </span>
+            <input type="checkbox" role="switch" class="switch" checked={chosen.locked} disabled={busy} onchange={(e) => setLocked(e.currentTarget.checked)} />
+          </label>
+        {/if}
         {#if asForm && current.form.form}
           {#key current.digest}
             <TomlForm
@@ -1391,7 +1404,15 @@
         <!-- A profile: the persona first, one primary action, and the rest
              quieter (design critique: Edit and Lock outranked starting a chat). -->
         <section class="hero">
-          {@render avatar(chosen, 72)}
+          {#if chosen.portrait}
+            <!-- The picture is its own control (owner, 2026-10-01): tap it to
+                 frame it, rather than hunting in a menu. -->
+            <button class="avatarbtn" disabled={busy} aria-label={`Adjust ${chosen.display}'s picture`} title="Adjust the picture" onclick={openFraming}>
+              {@render avatar(chosen, 72)}
+            </button>
+          {:else}
+            {@render avatar(chosen, 72)}
+          {/if}
           <div class="herotext">
             <div class="heroname">{chosen.display}</div>
             <div class="herochips">
@@ -1407,25 +1428,6 @@
             <button class="iconbtn" aria-label="Edit {chosen.display}" title="Edit" onclick={() => openEditor('identity')}>
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4" /></svg>
             </button>
-            <div class="menuwrap">
-              <button class="iconbtn" aria-label="More" aria-haspopup="menu" aria-expanded={menuOpen} onclick={() => (menuOpen = !menuOpen)}>
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg>
-              </button>
-              {#if menuOpen}
-                <div class="menu" role="menu">
-                  {#if chosen.portrait}
-                    <button role="menuitem" class="mitem" disabled={busy} onclick={openFraming}>
-                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 8v8M8 12h8" /></svg>
-                      Adjust picture
-                    </button>
-                  {/if}
-                  <button role="menuitem" class="mitem" disabled={busy} onclick={() => { menuOpen = false; setLocked(!chosen.locked); }}>
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>
-                    {chosen.locked ? 'Stop hiding behind the library lock' : 'Hide behind the library lock'}
-                  </button>
-                </div>
-              {/if}
-            </div>
           </div>
         </section>
         {#if !chosen.approved}
@@ -1933,12 +1935,20 @@
   .ver { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
   .herotools { display: flex; align-self: flex-start; gap: 2px; }
   .iconbtn { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; background: transparent; border: none; border-radius: 10px; color: var(--text-muted); cursor: pointer; }
-  .iconbtn:hover, .iconbtn[aria-expanded='true'] { background: var(--surface); color: var(--text); }
-  .menuwrap { position: relative; }
-  .menu { position: absolute; top: 46px; right: 0; z-index: 4; min-width: 250px; padding: 6px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: 12px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); }
-  .mitem { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 0 12px; background: transparent; border: none; border-radius: 8px; color: var(--text); font-size: 14px; text-align: left; cursor: pointer; }
-  .mitem svg { color: var(--text-muted); flex-shrink: 0; }
-  .mitem:hover { background: var(--accent-900); }
+  .iconbtn:hover { background: var(--surface); color: var(--text); }
+  /* The picture as its own control: a ring on hover and focus says it can be
+     tapped, and nothing else changes how it looks. */
+  .avatarbtn { flex-shrink: 0; padding: 0; background: none; border: none; border-radius: 50%; cursor: pointer; line-height: 0; }
+  .avatarbtn:hover :global(.avatar), .avatarbtn:focus-visible :global(.avatar) { box-shadow: 0 0 0 2px var(--accent-400); }
+  .lockrow { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: 10px; font-size: 14px; cursor: pointer; }
+  .locktext { flex: 1; min-width: 0; }
+  .lockrow .hint { display: block; margin-top: 2px; }
+  /* A switch, as the settings form's own toggles are. */
+  .switch { appearance: none; flex-shrink: 0; position: relative; width: 52px; height: 30px; margin: 0; border-radius: 15px; background: var(--surface); border: 1px solid var(--accent-700); cursor: pointer; transition: background 120ms linear; }
+  .switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--text-muted); transition: transform 120ms linear, background 120ms linear; }
+  .switch:checked { background: var(--accent-400); border-color: var(--accent-400); }
+  .switch:checked::after { transform: translateX(22px); background: var(--void); }
+  .switch:disabled { opacity: 0.5; cursor: default; }
   .abtn.wide { width: 100%; }
   .status { display: flex; flex-wrap: wrap; gap: 6px 16px; }
   .stat { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
