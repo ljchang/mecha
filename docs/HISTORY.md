@@ -17,10 +17,10 @@ still worth knowing about, because the next person will otherwise re-derive it.
 **2026-10-01 — modular installs, step 4: setup reads the registry, and a
 trial carries its switches (#460, #461, #464, #466, #470, #472, #474).**
 Each was merged on a clean review pass — by the mecha-d7 lane, and #474
-by mecha-5d's under the owner's "merge everything" — and the first six went
-live in mecha-d7's deploys of `9f306d8f` (#460, #461), `85ca4dfe` (#464,
-#466) and `6565cfd8` (#470, #472); HANDOFF's dated machine-state log has
-each. #474 was merged and not yet deployed when this was written.
+by mecha-5d's under the owner's "merge everything" — and all went live in
+mecha-d7's deploys of `9f306d8f` (#460, #461), `85ca4dfe` (#464, #466),
+`6565cfd8` (#470, #472) and `997a2894` (#474); HANDOFF's dated
+machine-state log has each.
 #470, #472 and #474 carry the owner's five rulings of the same day on the
 questions #464 and #466 left open; ruling 3 needed no code, and ruling 5's
 wording rode in #470.
@@ -68,8 +68,8 @@ wording rode in #470.
   Its pass 3 found the refusal calling `messages` "never on in a trial",
   though an arm's `levers_on` switches it on: follow-up #476
   (`experiment::lever_that_switches_on`, derived by applying each lever)
-  names `levers_on` there instead. #476's review loop ended clean and it was
-  handed to mecha-d7 to merge as this was written.
+  names `levers_on` there instead. mecha-d7 merged it as `d19995fa` after
+  two passes; it was not yet deployed when this was written.
 
 Fifteen review passes across the seven PRs (#460: 2, #461: 1, #464: 3,
 #466: 3, #470: 1, #472: 2, #474: 3, counted from each PR's record). Ruling 1 was put to the owner on a wrong premise — that an arm naming
