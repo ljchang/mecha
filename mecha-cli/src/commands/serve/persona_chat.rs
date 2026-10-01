@@ -122,10 +122,6 @@ pub struct CallVoice {
     pub voice: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exaggeration: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cfg_weight: Option<f64>,
 }
 
 /// How long a spoken turn waits for a run in flight to yield, in 100 ms
@@ -1946,39 +1942,50 @@ impl PersonaChats {
         }
     }
 
-    /// The voice a call to `name` speaks in (§11): `None` for a persona with
-    /// no profile, which speaks in the worker's own voice. A profile that
-    /// cannot be bound is refused by name — never a fallback to the default,
-    /// which is a persona silently speaking in someone else's voice.
+    /// Which personas speak in each library voice, by display name — for the
+    /// voice library's "used by" (Library → Voices). Behind the lock as the
+    /// persona list is: a locked persona is named only for an unlock.
+    pub fn voices_in_use(
+        &self,
+        library: &LibraryState,
+        token: Option<&str>,
+    ) -> std::collections::BTreeMap<String, Vec<String>> {
+        let store = Store::load(&self.store);
+        let mut out: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for p in store.visible(library.unlocked(token)) {
+            if let Some(v) = &p.settings.voice {
+                out.entry(v.clone())
+                    .or_default()
+                    .push(p.display().to_string());
+            }
+        }
+        out
+    }
+
+    /// The voice a call to `name` speaks in (§11): the library voice its
+    /// `voice` names, at its `voice_speed` if set; `None` for a persona with
+    /// no voice, which speaks in the worker's own. Whether the TTS server
+    /// lists the voice is the offer's to ask (`runner_voices`); a speed out of
+    /// range is refused here by name — never a fallback, which is a persona
+    /// silently speaking unlike itself.
     pub fn call_voice(&self, name: &str) -> Result<Option<CallVoice>, String> {
         let store = Store::load(&self.store);
-        let Some(wanted) = store.get(name).and_then(|p| p.settings.voice.clone()) else {
+        let Some(settings) = store.get(name).map(|p| p.settings.clone()) else {
             return Ok(None);
         };
-        let Some(profile) = store.voices().get(&wanted) else {
-            return Err(format!(
-                "`{name}` names voice profile `{wanted}`, which is not in the store's voices/"
-            ));
+        let Some(voice) = settings.voice else {
+            return Ok(None);
         };
-        let Some(voice) = profile.voice.clone() else {
-            return Err(format!(
-                "voice profile `{wanted}` is a reference clip, and a call binds only a voice \
-                 the voice server lists so far — set `voice` in its profile.toml"
-            ));
-        };
-        // The ranges the worker and Chatterbox take, checked here so a bad
-        // value is refused before the call rather than mid-sentence.
-        let within = |what: &str, v: Option<f64>, lo: f64, hi: f64| match v {
-            Some(x) if !(lo..=hi).contains(&x) => Err(format!(
-                "voice profile `{wanted}`: {what} {x} is outside {lo}–{hi}"
-            )),
-            _ => Ok(v),
-        };
+        // The range the worker takes, checked here so a bad value is
+        // refused before the call rather than mid-sentence.
+        if let Some(x) = settings.voice_speed {
+            if !(0.5..=2.0).contains(&x) {
+                return Err(format!("`{name}`: voice_speed {x} is outside 0.5–2.0"));
+            }
+        }
         Ok(Some(CallVoice {
             voice,
-            speed: within("speed", profile.speed, 0.5, 2.0)?,
-            exaggeration: within("exaggeration", profile.exaggeration, 0.0, 2.0)?,
-            cfg_weight: within("cfg_weight", profile.cfg_weight, 0.0, 1.0)?,
+            speed: settings.voice_speed,
         }))
     }
 
@@ -6970,49 +6977,53 @@ mod tests {
         }
     }
 
-    /// The voice a call binds (§11): none without a profile; a listed voice
-    /// with its settings; a reference clip, a missing profile or a value out
-    /// of range refused by name — never the default voice instead.
+    /// The voice a call binds (§11): none unless the persona names one; a
+    /// library voice with its speed; a speed out of range refused by name —
+    /// never the default instead.
     #[test]
-    fn a_calls_voice_is_the_profiles_or_refused_by_name() {
+    fn a_calls_voice_is_the_library_voice_it_names() {
         let w = world();
         assert_eq!(w.personas().call_voice("mara"), Ok(None));
-        let profile = give_voice(&w, "voice = \"en-f-2\"\nspeed = 0.9\n");
-        let set = |body: &str| std::fs::write(profile.join("profile.toml"), body).unwrap();
+        give_voice(&w, "en-f-2", Some(0.9));
         assert_eq!(
             w.personas().call_voice("mara"),
             Ok(Some(CallVoice {
                 voice: "en-f-2".into(),
                 speed: Some(0.9),
-                exaggeration: None,
-                cfg_weight: None,
             }))
         );
-        set("voice = \"en-f-2\"\ncfg_weight = 1.5\n");
+        give_voice(&w, "en-f-2", None);
+        assert_eq!(
+            w.personas().call_voice("mara"),
+            Ok(Some(CallVoice {
+                voice: "en-f-2".into(),
+                speed: None,
+            }))
+        );
+        give_voice(&w, "en-f-2", Some(3.0));
         let refused = w.personas().call_voice("mara").unwrap_err();
-        assert!(refused.contains("cfg_weight 1.5"), "{refused}");
-        std::fs::write(profile.join("me.wav"), b"RIFF").unwrap();
-        set("reference = \"me.wav\"\n");
-        let refused = w.personas().call_voice("mara").unwrap_err();
-        assert!(refused.contains("reference clip"), "{refused}");
-        std::fs::remove_dir_all(&profile).unwrap();
-        let refused = w.personas().call_voice("mara").unwrap_err();
-        assert!(refused.contains("mara-low"), "{refused}");
+        assert!(refused.contains("voice_speed 3"), "{refused}");
     }
 
-    /// Mara's voice profile `mara-low`, with `profile` as its file; the
-    /// profile's directory.
-    fn give_voice(w: &World, profile: &str) -> PathBuf {
-        let dir = w.store().join("voices/mara-low");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("profile.toml"), profile).unwrap();
+    /// Mara speaks in library voice `voice`, at `speed` if given.
+    fn give_voice(w: &World, voice: &str, speed: Option<f64>) {
         let toml = w.store().join("mara/persona.toml");
         let text = std::fs::read_to_string(&toml).unwrap();
-        if let Some(line) = text.lines().find(|l| l.trim_start().starts_with("# voice")) {
-            let line = line.to_string();
-            std::fs::write(&toml, text.replace(&line, "voice = \"mara-low\"")).unwrap();
+        let mut out: Vec<String> = Vec::new();
+        for line in text.lines() {
+            let t = line.trim_start().trim_start_matches("# ").trim_start();
+            if t.starts_with("voice") {
+                continue;
+            }
+            out.push(line.to_string());
+            if line.starts_with("display") {
+                out.push(format!("voice = \"{voice}\""));
+                if let Some(s) = speed {
+                    out.push(format!("voice_speed = {s:?}"));
+                }
+            }
         }
-        dir
+        std::fs::write(&toml, out.join("\n") + "\n").unwrap();
     }
 
     /// A stand-in voice runner that keeps every offer body it is handed and
@@ -7038,6 +7049,17 @@ mod tests {
                 axum::routing::get(
                     move || async move { Json(serde_json::json!({ "voices": voices })) },
                 ),
+            )
+            .route(
+                "/mecha/sample",
+                axum::routing::get(
+                    |axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>| async move {
+                        (
+                            [("content-type", "audio/wav")],
+                            format!("RIFF:{}", q.get("voice").cloned().unwrap_or_default()),
+                        )
+                    },
+                ),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -7052,7 +7074,7 @@ mod tests {
     async fn a_persona_offer_carries_its_voice_and_never_its_token() {
         let w = world();
         let key = open_chat(&w).await;
-        give_voice(&w, "voice = \"en-f-2\"\nspeed = 0.9\n");
+        give_voice(&w, "en-f-2", Some(0.9));
         store::set_locked(&w.store(), "mara", true).unwrap();
         let (target, bodies) = voice_runner(&["default", "en-f-2"]).await;
         let library = Arc::new(LibraryState::new(w.root.join("imagelib")));
@@ -7115,7 +7137,7 @@ mod tests {
         assert!(!sent.to_string().contains(&token));
 
         // A voice the worker does not list refuses the call, by name.
-        give_voice(&w, "voice = \"nobody\"\n");
+        give_voice(&w, "nobody", None);
         let refused = call(offer(Some(&token))).await;
         assert_eq!(refused.status(), StatusCode::CONFLICT);
         let why = axum::body::to_bytes(refused.into_body(), usize::MAX)
@@ -7226,5 +7248,77 @@ mod tests {
             !w.personas().calls.lock().unwrap().contains_key(&key),
             "a relock stranded the call's binding"
         );
+    }
+
+    /// The voice library (Library → Voices): every voice the worker lists
+    /// and every clone on disk, each with who speaks in it — a locked
+    /// persona named only for an unlock — and a sample spoken through the
+    /// worker.
+    #[tokio::test]
+    async fn the_voice_library_lists_clones_listings_and_who_speaks() {
+        let w = world();
+        give_voice(&w, "ada", None);
+        let clones = w.root.join("voices");
+        std::fs::create_dir_all(&clones).unwrap();
+        std::fs::write(clones.join("ada.wav"), b"RIFF").unwrap();
+        std::fs::write(clones.join("solo.wav"), b"RIFF").unwrap();
+        let (target, _) = voice_runner(&["ada", "default"]).await;
+        let library = Arc::new(LibraryState::new(w.root.join("imagelib")));
+        let state = super::super::WebState {
+            owner_login: Arc::new("owner@example.com".into()),
+            chat: Some(Arc::clone(&w.chat)),
+            offer_target: Some(Arc::new(target)),
+            voices_dir: Some(Arc::new(clones)),
+            library: Arc::clone(&library),
+            features_at_start: Arc::default(),
+            gate: Arc::default(),
+            review: Arc::new(super::super::review::ReviewState {
+                outbox_root: w.root.join("outbox"),
+                sessions_dir: None,
+            }),
+        };
+        let list = |unlock: Option<String>| {
+            super::super::settings::library_voices(
+                State(state.clone()),
+                Query(super::super::settings::VoicesQuery { unlock }),
+            )
+        };
+        let by_name = |v: &serde_json::Value, n: &str| {
+            v["voices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|x| x["name"] == n)
+                .cloned()
+                .unwrap_or_else(|| panic!("no {n} in {v}"))
+        };
+        let Json(got) = list(None).await;
+        let ada = by_name(&got, "ada");
+        assert_eq!(ada["listed"], true);
+        assert!(ada["cloned"].is_object(), "{ada}");
+        assert_eq!(ada["used_by"], serde_json::json!(["Mara"]));
+        assert!(by_name(&got, "default")["cloned"].is_null());
+        // A clone the worker does not list yet: on the list, and said so.
+        assert_eq!(by_name(&got, "solo")["listed"], false);
+        assert!(got["list_error"].is_null(), "{got}");
+
+        // Locked, Mara is named only for an unlock.
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        let Json(got) = list(None).await;
+        assert_eq!(by_name(&got, "ada")["used_by"], serde_json::json!([]));
+        let Json(got) = list(Some(library.grant_for_tests())).await;
+        assert_eq!(by_name(&got, "ada")["used_by"], serde_json::json!(["Mara"]));
+
+        let sample = super::super::settings::library_voice_sample(
+            State(state.clone()),
+            Query(super::super::settings::SampleQuery { name: "ada".into() }),
+        )
+        .await;
+        assert_eq!(sample.status(), StatusCode::OK);
+        assert_eq!(sample.headers()["content-type"], "audio/wav");
+        let body = axum::body::to_bytes(sample.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"RIFF:ada");
     }
 }

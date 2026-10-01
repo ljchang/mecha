@@ -1,7 +1,7 @@
 // The image library page's pure logic, kept out of the component so the
 // tests exercise the shipped code (web/test/library.mjs).
 
-export const PANES = ['characters', 'styles', 'candidates'];
+export const PANES = ['characters', 'styles', 'voices', 'candidates'];
 
 // Which pane a hash sub names; anything else is the characters pane.
 export function paneOf(sub) {
@@ -14,6 +14,8 @@ export function paneOf(sub) {
 export function entriesFor(pane, entries) {
   const list = entries ?? [];
   if (pane === 'candidates') return list.filter((e) => e.status === 'candidate');
+  // Voices are not library entries: their pane reads its own list.
+  if (pane === 'voices') return [];
   const kind = pane === 'styles' ? 'style' : 'character';
   return list.filter((e) => e.status === 'approved' && e.kind === kind);
 }
@@ -45,6 +47,29 @@ export function originLabel(origin) {
 // A token lives in the page's memory and nowhere else (no-storage.mjs).
 export function listUrl(token) {
   return token ? `/api/library?unlock=${encodeURIComponent(token)}` : '/api/library';
+}
+
+// The voice library (Library → Voices), with the unlock when there is one:
+// "used by" names a locked persona only for an unlock.
+export function voicesUrl(token) {
+  return token ? `/api/library/voices?unlock=${encodeURIComponent(token)}` : '/api/library/voices';
+}
+
+// A voice's line under its name: a clone or the server's own, how long its
+// reference is, who speaks in it, and whether the server can speak it yet.
+// `listed` is null when the server's list could not be read — unknown, not
+// "no", so it says nothing then.
+export function voiceLine(v) {
+  const parts = [];
+  if (v.cloned) {
+    const secs = v.cloned.seconds ? ` · ${Math.round(v.cloned.seconds)}s reference` : '';
+    parts.push(`cloned here${secs}`);
+  } else {
+    parts.push("the voice server's own");
+  }
+  if (v.listed === false) parts.push('not on the voice server yet');
+  if (v.used_by?.length) parts.push(`${v.used_by.join(', ')} speak${v.used_by.length === 1 ? 's' : ''} in it`);
+  return parts.join(' · ');
 }
 
 // What the save dialog calls a picture's library name: its file stem is no

@@ -8,6 +8,7 @@
     TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody,
   } from './library.js';
   import { watchIdle, idleSpan } from './autolock.js';
+  import VoicesPane from './VoicesPane.svelte';
   // The image library: the characters and styles `image_generate` compiles a
   // scene against (docs/IMAGE-COMPILER-DESIGN.md §7).
   //
@@ -34,7 +35,10 @@
   let { initial = '', navigate = () => {} } = $props();
 
   const pane = $derived(paneOf(initial));
-  const label = { characters: 'Characters', styles: 'Styles', candidates: 'Waiting' };
+  const label = { characters: 'Characters', styles: 'Styles', voices: 'Voices', candidates: 'Waiting' };
+  // How many voices the Voices pane last read: its own list, not an entry
+  // count; a dash until that pane has been opened.
+  let voiceCount = $state(null);
 
   let data = $state(null);
   let error = $state(null);
@@ -265,7 +269,7 @@
            pane opens for what waits in it (OPENS_ANYWAY), and no other. -->
       {#each PANES.filter((p) => opens(features.rows, 'library', p)) as p}
         <button class="chipbtn" class:active={pane === p} onclick={() => { open = null; closeForm(); navigate(`library/${p}`); }}>
-          {label[p]}<span class="chipcount">{data ? tally[p] : '—'}</span>
+          {label[p]}<span class="chipcount">{p === 'voices' ? (voiceCount ?? '—') : data ? tally[p] : '—'}</span>
         </button>
       {/each}
     </div>
@@ -286,6 +290,9 @@
   </header>
 
   <div class="scroll">
+    {#if pane === 'voices'}
+      <VoicesPane {token} oncount={(n) => (voiceCount = n)} />
+    {:else}
     {#if error}
       <div class="warnline">{error}</div>
     {/if}
@@ -419,6 +426,7 @@
     {/if}
     {#if data?.unreadable}
       <div class="warnline">{data.unreadable} {data.unreadable === 1 ? 'entry' : 'entries'} could not be read — <code>mecha imagelib list</code></div>
+    {/if}
     {/if}
   </div>
 

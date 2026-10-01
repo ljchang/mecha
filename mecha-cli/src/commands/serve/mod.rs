@@ -834,6 +834,16 @@ fn api() -> gate::Owned {
             get(settings::voice),
         )
         .at(
+            "/api/library/voices",
+            Owner::Of(Feature::Voice),
+            get(settings::library_voices),
+        )
+        .at(
+            "/api/library/voices/sample",
+            Owner::Of(Feature::Voice),
+            get(settings::library_voice_sample),
+        )
+        .at(
             "/api/library",
             Owner::Of(Feature::Library),
             get(library::list),
@@ -2229,6 +2239,8 @@ mod tests {
             ("GET", "/api/settings/voice"),
             ("POST", "/api/settings/voice/clone?name=x"),
             ("POST", "/api/settings/voice/clone/delete"),
+            ("GET", "/api/library/voices"),
+            ("GET", "/api/library/voices/sample?name=x"),
             // Every feature, its state and the command that turns it on:
             // an inventory of the install, which a probe without the
             // header must not learn (FEATURES-DESIGN.md §4.2 item 4).
