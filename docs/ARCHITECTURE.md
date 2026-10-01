@@ -1349,7 +1349,11 @@ module.
       `AgentEvent::TextDelta` on the tap; `HostedAnswer.text` is never
       spoken there. So the persona door sends `SAFE_MESSAGE` as a delta: in
       place of a reply on a crisis pause, and after the reply on a run the
-      judge stopped, since what was already spoken cannot be unsaid.
+      judge stopped, since what was already spoken cannot be unsaid. A
+      verdict that lands after the reply has finished is not heard: the
+      call's turn has closed, so it reaches only the page. Whether a call
+      should wait for it (up to `JUDGE_WAIT`) is open for the owner, together
+      with the pause's voice.
     - The lock and approval are checked before the barge-in (the
       assistant's #376 order), so a refused call never stops the reply in
       flight. A spoken turn that fails is rolled back with its call note,
