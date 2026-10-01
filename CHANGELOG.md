@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The library and personas lock themselves again.** After 15 minutes with
+  no one touching the page, the Library and Personas tabs relock on their
+  own, and the unlock ends on the server too. Change the span under
+  **Settings → Lock** or with `mecha imagelib set-autolock <minutes>` (1 to
+  240). Leaving either tab also ends its unlock.
+
 - **A persona searches its files.** When a persona's files are too long to
   read whole, it finds the passages that answer a question with a new
   `file_search` tool, by meaning (through the `:8081` embeddings server,
@@ -411,6 +417,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A persona's page is quieter.** It no longer states its crisis-detection
+  setting, and its files are small tiles with a compact add tile, instead of
+  full-width rows that read like a second "Start a chat".
+
 - **An experiment's condition hash now includes the features a trial runs
   with.** Turning `search` on or off between two runs of an experiment used
   to leave every trial's hash the same, so the two runs could be paired as
@@ -493,12 +503,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A persona's earlier chats no longer vanish after a restart.** An unlock
+  lives in `mecha serve`'s memory, so a restart ended it while the page still
+  showed the persona, and its earlier chats came back as an empty list. The
+  page now notices the lapsed unlock and locks, says when the list could not
+  be read, and shows that it is loading.
+
 - **`messages = false` is an answer now.** Switching messages off left
   `mecha setup` listing it as outstanding, with a failing exit, every time
   it ran, because the setting it is stored in could not tell "off" from
   "never asked". `mecha setup` and `mecha features` now show it declined,
   with `mecha features enable messages` as the way back, like every other
   feature. It is still off until you switch it on.
+
 - **The persona file editor works on a phone.** Tapping a field no longer
   zooms the page and leaves it zoomed: every editable field is at least 16px
   on a touch screen, the size below which iOS Safari zooms (text mode too).
