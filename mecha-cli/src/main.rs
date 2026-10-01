@@ -596,6 +596,15 @@ impl Command {
                 a,
                 sessions::Args::Appraise { probe: true, .. } | sessions::Args::Compare { .. }
             ),
+            // `persona memory write` runs the memory writer on the local
+            // model, so it holds and follows like `distill`; every other
+            // `persona` verb reads or edits the store and runs no model.
+            Command::Persona(a) => matches!(
+                a.cmd,
+                commands::persona::Cmd::Memory {
+                    cmd: commands::persona::MemoryCmd::Write { .. }
+                }
+            ),
             // `workflow resume` starts `mecha tasks work` as a child, which
             // holds for itself; held here too, `--now` signalled the parent
             // and left the child running unheld (review of D13).
@@ -627,7 +636,6 @@ impl Command {
             | Command::Skills(_)
             | Command::Imagelib(_)
             | Command::Document(_)
-            | Command::Persona(_)
             | Command::Charter(_)
             | Command::Config(_)
             | Command::Model(_) => false,
@@ -700,6 +708,15 @@ impl Command {
             // `rules propose-retirements` counts the ledger rows of the model
             // in use, so it resolves the default provider as `validate` does.
             | Command::Rules(_) => true,
+            // `persona memory write` runs the memory writer on the local
+            // model, so it holds and follows like `distill`; every other
+            // `persona` verb reads or edits the store and runs no model.
+            Command::Persona(a) => matches!(
+                a.cmd,
+                commands::persona::Cmd::Memory {
+                    cmd: commands::persona::MemoryCmd::Write { .. }
+                }
+            ),
             // Readers of stores, and `mecha model`, which asks the router
             // directly rather than through a snapshot.
             Command::Reflections(_)
@@ -714,7 +731,6 @@ impl Command {
             | Command::Skills(_)
             | Command::Imagelib(_)
             | Command::Document(_)
-            | Command::Persona(_)
             | Command::Charter(_)
             | Command::Config(_)
             | Command::Model(_) => false,
