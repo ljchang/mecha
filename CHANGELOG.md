@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Save a persona's reply to its files.** Under each of a persona's replies
+  there is a *Save to files* link: a study guide, quiz or glossary it wrote
+  when you asked is saved as a Markdown file in its own folder, there next
+  time (and searchable), and movable to a group's folder to share. Only the
+  persona's own reply is saved, never text it did not write. The `teacher`
+  starter now asks before revealing quiz answers (new installs; an installed
+  copy is yours and is not changed).
+
 - **A persona searches its files.** When a persona's files are too long to
   read whole, it finds the passages that answer a question with a new
   `file_search` tool, by meaning (through the `:8081` embeddings server,

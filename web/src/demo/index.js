@@ -212,6 +212,7 @@ export const ROUTES = [
   // The demo's persona draws nothing, so there is no picture to show or edit.
   ['GET', /^\/api\/persona-chat\/[^/]+\/file$/, () => new Response('no such file', { status: 404 })],
   ['GET', /^\/api\/persona-chat\/[^/]+\/cited$/, () => fx.personaCited],
+  ['POST', /^\/api\/persona-chat\/[^/]+\/save$/, () => ({ name: 'study-guide.md' })],
   ['POST', /^\/api\/persona-chat\/[^/]+\/upload$/, () => new Response('the demo does not keep uploads', { status: 501 })],
 
   ['GET', /^\/api\/sessions$/, () => fx.sessions],
