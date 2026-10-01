@@ -113,6 +113,16 @@ pub async fn delete(State(state): Web, Path(id): Path<String>) -> axum::response
     let outbox = chat_state(&state)
         .ok()
         .map(|c| c.outbox_root().to_path_buf());
+    // The home this door's workspaces sit under (`<home>/work/web`):
+    // `forget` purges a workspace only under `home/work`, so a door rooted
+    // elsewhere would keep its files (review of #471). In `serve` it is
+    // `~/.mecha`, as before.
+    let door_home = chat_state(&state).ok().and_then(|c| {
+        c.work_dir()
+            .parent()
+            .and_then(|work| work.parent())
+            .map(std::path::Path::to_path_buf)
+    });
     let forget_dir = dir.clone();
     // Files and a child process: off the async workers.
     let forgot = tokio::task::spawn_blocking(move || {
@@ -123,6 +133,9 @@ pub async fn delete(State(state): Web, Path(id): Path<String>) -> axum::response
         }
         // The transcripts it forgets are the ones this door lists.
         roots.sessions = forget_dir;
+        if let Some(home) = door_home {
+            roots.home = home;
+        }
         mecha_core::forget::forget(&roots, &id, &crate::commands::sessions::GraphCli)
     })
     .await;

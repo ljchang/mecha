@@ -4144,7 +4144,8 @@ mod boundary_tests {
     #[tokio::test]
     async fn mutations_require_a_non_simple_header_before_any_handler_runs() {
         let _home = crate::testenv::HomeGuard::new("web-csrf");
-        let app = app(chat::test_chat());
+        let chat = chat::test_chat();
+        let app = app(Arc::clone(&chat));
         for uri in [
             "/api/chat/main/upload?name=x.txt",
             "/api/outbox/known-id/approve",
@@ -4167,6 +4168,9 @@ mod boundary_tests {
                 "{uri}"
             );
         }
+        // The evidence no handler ran: no workspace where this door would
+        // have made one (review of #471), nor under the moved home.
+        assert!(!chat.work_dir().join("main").exists());
         assert!(!mecha_core::work::producer_dir("web")
             .unwrap()
             .join("main")
@@ -4554,6 +4558,11 @@ mod boundary_tests {
         assert!(transcript.exists());
 
         assert!(!traces(CANARY).is_empty(), "the canary was never recorded");
+        // A file the chat wrote, so the delete's workspace purge is measured
+        // rather than passing on an empty directory (review of #471).
+        let ws = chat.work_dir().join("chat-arch");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("notes.txt"), CANARY).unwrap();
         let del = Request::builder()
             .method("DELETE")
             .uri(format!("/api/sessions/{id}"))
@@ -4565,6 +4574,17 @@ mod boundary_tests {
         assert_eq!(r.status(), StatusCode::OK);
         let report = body(r).await;
         assert_eq!(report["complete"], true, "{report}");
+        let purged = report["removed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r[0] == "workspace")
+            .and_then(|r| r[1].as_u64());
+        assert!(
+            purged.is_some_and(|n| n > 0),
+            "the workspace was kept: {report}"
+        );
+        assert!(!ws.exists());
         assert_eq!(traces(CANARY), Vec::<PathBuf>::new());
         assert_eq!(traces(&id), Vec::<PathBuf>::new());
         assert!(!listed(
