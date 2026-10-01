@@ -172,6 +172,19 @@ pub enum MemoryCmd {
     Unshare {
         id: String,
     },
+    /// Write what is new in persona chats into memory (§9.6) — what the
+    /// nightly runs. Every persona, or one; on the local model only, since
+    /// the writer reads whole transcripts.
+    Write {
+        name: Option<String>,
+        /// One chat of that persona, by id; written even if it is recent.
+        #[arg(long, requires = "name")]
+        chat: Option<String>,
+        /// Leave a chat alone if it changed within this many minutes — it
+        /// may still be going.
+        #[arg(long, default_value_t = 15)]
+        idle_minutes: u64,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -196,7 +209,7 @@ pub enum GroupCmd {
     },
 }
 
-pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
+pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Reading the owner's own writing stays open with personas off; every
     // change to the store is refused — `remove` too, which moves a persona
     // aside rather than deleting data, as `imagelib remove` does, and
@@ -215,8 +228,154 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
         super::features::require(mecha_core::feature::Feature::Personas)?;
     }
     let dir = Store::default_dir()?;
+    if let Cmd::Memory {
+        cmd:
+            MemoryCmd::Write {
+                name,
+                chat,
+                idle_minutes,
+            },
+    } = args.cmd
+    {
+        return write_memory(global, &dir, name, chat, idle_minutes).await;
+    }
     let lib_dir = Library::default_dir()?;
     run(&dir, &lib_dir, args.cmd)
+}
+
+/// `mecha persona memory write`: the writer over every persona's chats, or
+/// one persona's, or one chat (§9.6).
+async fn write_memory(
+    global: &GlobalOpts,
+    dir: &Path,
+    name: Option<String>,
+    chat: Option<String>,
+    idle_minutes: u64,
+) -> Result<()> {
+    use mecha_core::persona::memory::Memory;
+    use mecha_core::persona::writer::{self, Writer};
+
+    let store = load(dir);
+    let personas: Vec<&Persona> = match &name {
+        Some(n) => vec![find(&store, n)?],
+        None => store.all().iter().collect(),
+    };
+    let cwd = std::env::current_dir()?;
+    let cfg = mecha_core::config::Config::load(&cwd)?;
+    let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
+    // The writer reads whole transcripts of private conversations, so it
+    // runs where the appraisal does: on the local model, never a cloud one
+    // (R29's rule for reading transcripts).
+    if provider_cfg.kind != "local" {
+        bail!(
+            "{provider_name} is not a local provider — the memory writer reads whole \
+             persona chats, which stay on the local model"
+        );
+    }
+    let provider = mecha_core::provider::build(provider_cfg)?;
+    let model = global.model.clone().or_else(|| provider_cfg.model.clone());
+    let writer = Writer::new(provider, model);
+    eprintln!(
+        "writing persona memory with {} ({provider_name})",
+        writer.model()
+    );
+
+    let idle = std::time::Duration::from_secs(idle_minutes * 60);
+    let (mut chats, mut failed) = (0usize, 0usize);
+    for p in personas {
+        let sessions = store.sessions_dir(&p.name);
+        let mut todo: Vec<(String, std::path::PathBuf)> = Vec::new();
+        for entry in std::fs::read_dir(&sessions).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let Some(id) = path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .and_then(|f| f.strip_suffix(".jsonl"))
+            else {
+                continue;
+            };
+            if chat.as_deref().is_some_and(|c| c != id) {
+                continue;
+            }
+            // A chat still going is left for a later run; one named
+            // explicitly is the caller's call.
+            let recent = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_none_or(|age| age < idle);
+            if recent && chat.is_none() {
+                continue;
+            }
+            todo.push((id.to_owned(), path));
+        }
+        if let Some(c) = &chat {
+            if todo.is_empty() {
+                bail!("{} has no chat `{c}`", p.name);
+            }
+        }
+        todo.sort();
+        if todo.is_empty() {
+            continue;
+        }
+        let m = Memory::open(dir, &p.name)?;
+        for (id, path) in todo {
+            let text = match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!(
+                        "{}: {id} could not be read ({e}); left for a later run",
+                        p.name
+                    );
+                    failed += 1;
+                    continue;
+                }
+            };
+            // Only wait for a model seat when there is something to ask.
+            if m.written_upto(&id)? as usize >= writer::read_chat(&text).turns.len() {
+                continue;
+            }
+            let seat = super::distill::take_seat(&format!("persona memory {} {id}", p.name)).await;
+            let report = writer::write_chat(&writer, &m, p, &id, &text).await;
+            drop(seat);
+            chats += 1;
+            match report {
+                Ok(r) => {
+                    for (from, to, origin, a) in &r.stretches {
+                        println!(
+                            "{} {id} turns {from}–{}{}: {} episode(s), {} added, {} updated, \
+                             {} withdrawn, {} turned away",
+                            p.name,
+                            to.saturating_sub(1),
+                            if *origin == Origin::ModelUntrusted {
+                                " (untrusted — waiting on you)"
+                            } else {
+                                ""
+                            },
+                            a.episodes,
+                            a.added,
+                            a.updated,
+                            a.invalidated,
+                            a.refused
+                        );
+                    }
+                    if r.raced > 0 {
+                        println!("{} {id}: another writer got there first", p.name);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{} {id}: {e:#}; left for a later run", p.name);
+                    failed += 1;
+                }
+            }
+        }
+    }
+    println!("{chats} chat(s) read, {failed} left for a later run");
+    if failed > 0 {
+        bail!("{failed} chat(s) could not be written");
+    }
+    Ok(())
 }
 
 fn origin_label(o: Origin) -> &'static str {
@@ -888,6 +1047,8 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                 );
             }
         }
+        // Async — `execute` runs it before this synchronous dispatch.
+        MemoryCmd::Write { .. } => bail!("`persona memory write` is dispatched by `execute`"),
         MemoryCmd::Unshare { id } => {
             if !Shared::path(dir).is_file() {
                 bail!("nothing is shared");

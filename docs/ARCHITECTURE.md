@@ -1204,6 +1204,35 @@ module.
     an unknown status is a candidate.
   - Read paths (`open_existing`) never create a file — what recall and an
     incognito chat will use.
+  - **The writer** (`persona::writer`, §9.6) runs from `mecha persona memory
+    write`, which `scripts/ruminate.sh` calls nightly; nothing writes after a
+    chat yet. It never runs during a chat, and only on a local provider,
+    because it reads whole transcripts (R29's rule).
+    - A turn is the n-th `message` record in the file, not a position in the
+      loaded list: a compaction's `rewrite` moves list positions, while the
+      append-only file never moves an ordinal. `source` and the ledger
+      (`written`, schema v2) both count this way. A `message` line this build
+      cannot parse still counts (`Turn::message` is `None`) and cuts the
+      clean stretch, so no address after it shifts.
+    - A turn's taint is the merged taint of the first checkpoint after it. An
+      `extend` that lands on an already-covered turn uncovers it again, and
+      an uncovered turn is unknown, which classifies untrusted.
+    - `stretches` cuts at the first turn that is not clean. The clean
+      stretch's request is built without the untrusted one;
+      `a_chat_is_written_once_in_two_stretches_and_the_clean_one_never_sees_the_web`
+      reads the captured request to check it.
+    - `apply` holds the rules. Untrusted stretches only add, as candidates.
+      Only model-origin, active, unpinned facts can be updated or withdrawn.
+      A kind switched off in `[memory]` is turned away, and so is a duplicate.
+      If memory is entirely off, nothing is asked and the ledger still
+      advances.
+    - `Memory::write_stretch` commits the records and the ledger advance in
+      one IMMEDIATE transaction, after checking the ledger still stands where
+      the run started. The model call happens before that, holding no lock.
+      A second writer on the same stretch writes nothing.
+    - `connect` reads `secure_delete` and `journal_mode` back. Without WAL,
+      `wal_checkpoint` is a no-op that reports success, so a store that
+      cannot forget safely refuses to open for writing.
 
 ## Security model
 
