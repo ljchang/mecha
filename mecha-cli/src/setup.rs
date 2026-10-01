@@ -1938,6 +1938,21 @@ pub fn document_extractor(cfg: &Config) -> Option<mecha_core::document::Extracto
         .ok()
 }
 
+/// The embeddings client `file_search` and the persona file index use:
+/// `[documents] embed_url` (default `:8081`), where a `[documents]` table
+/// is configured. Without one, or with a URL refused, search works by words
+/// alone — said in every result, never an error, and not printed here: this
+/// is asked on every upload and first turn, and a refused URL is already
+/// refused by `DocumentsConfig::validate` where `[documents]` is checked.
+pub fn file_embedder(cfg: &Config) -> Option<mecha_core::embed::Embedder> {
+    // The switch, as every other connection asks it (`feature::switched_on`):
+    // documents switched off reach no server (review of #467).
+    let docs = cfg.documents.as_ref().filter(|_| {
+        mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::Documents)
+    })?;
+    mecha_core::embed::Embedder::new(&docs.embed_url).ok()
+}
+
 pub fn persona_agent(
     bound: &crate::follow::Bound,
     pinned: &mecha_core::persona::agent::Pinned,
@@ -1951,10 +1966,18 @@ pub fn persona_agent(
     // what reads beyond them, keeps the one tool that reads them — and never
     // in the assistant's registry, which has no persona to read for. Over
     // the store the caller's chats live in, never a second guess at it.
+    let extractor = document_extractor(&bound.config).map(Arc::new);
+    // The reader's cap, read off the reader the config builds — 0 without
+    // one, or with its cache off, where no document is indexed ahead.
+    let max_doc_bytes = extractor
+        .as_ref()
+        .filter(|e| e.config().cache)
+        .map(|e| e.config().max_file_bytes())
+        .unwrap_or(0);
     let reader = mecha_core::persona::files::FileRead::new(
         store.to_path_buf(),
         pinned.name.clone(),
-        document_extractor(&bound.config).map(Arc::new),
+        extractor,
     );
     // It skips `registry_as`'s refusal of anything that can aim: so it
     // must never be able to, and is left out — in a release build too —
@@ -1963,6 +1986,18 @@ pub fn persona_agent(
         tools.registry.insert(Arc::new(reader));
     } else {
         eprintln!("mecha: file_read can send, so this persona chat goes without it");
+    }
+    // Its search beside it, on the same terms (§10.4).
+    let search = mecha_core::persona::search::FileSearch::new(
+        store.to_path_buf(),
+        pinned.name.clone(),
+        file_embedder(&bound.config),
+        max_doc_bytes,
+    );
+    if mecha_core::tool::Tool::capabilities(&search).egress == mecha_core::tool::Egress::None {
+        tools.registry.insert(Arc::new(search));
+    } else {
+        eprintln!("mecha: file_search can send, so this persona chat goes without it");
     }
     let system = persona::system_prompt(pinned)?;
     let ctx = bound.agent.ctx();
@@ -2354,6 +2389,25 @@ mod refusal_tests {
         let (_, rules) = scripted_refusals_from(inner(), Some(String::new()), None).unwrap();
         assert!(rules.is_empty(), "an empty name is no file");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod file_embedder_tests {
+    use super::*;
+
+    /// Review of #467: persona file search reaches the embeddings server
+    /// only where documents are configured *and* switched on — the switch,
+    /// as every connection asks it.
+    #[test]
+    fn the_documents_switch_gates_the_embeddings_server() {
+        let mut cfg = Config::default();
+        assert!(file_embedder(&cfg).is_none(), "no [documents] table");
+        cfg.documents = Some(mecha_core::document::DocumentsConfig::default());
+        cfg.features.0.insert("documents".into(), true);
+        assert!(file_embedder(&cfg).is_some());
+        cfg.features.0.insert("documents".into(), false);
+        assert!(file_embedder(&cfg).is_none(), "switched off");
     }
 }
 
