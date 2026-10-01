@@ -1993,13 +1993,16 @@ impl PersonaChats {
         seconds: u32,
         call: Option<u64>,
     ) -> Result<(), Refusal> {
-        let name = self.persona_of(library, key, token).await?;
         // Only the binding this call's offer made: another tab's call, or a
         // redial that bound before this hang-up landed, keeps its own
         // (review of #483). A hang-up that names none releases nothing.
+        // Ahead of the lock: letting a binding go only ever stops a call, so
+        // a relock mid-call strands no binding — only the minutes, which
+        // are behind the lock like every other door here.
         if let Some(id) = call {
             self.release_offer(key, id);
         }
+        let name = self.persona_of(library, key, token).await?;
         let chat = {
             let sessions = self.sessions.lock().await;
             sessions
@@ -7209,12 +7212,19 @@ mod tests {
         let dose = &listed["personas"][0]["dose"];
         assert_eq!(dose["call_secs_7d"], 95, "{dose}");
         assert_eq!(dose["turns_7d"], 1, "{dose}");
+        // A relock mid-call: the minutes are behind the lock, the binding
+        // is let go anyway.
+        let relocked = w.personas().bind(&key, None);
         store::set_locked(&w.store(), "mara", true).unwrap();
         assert!(matches!(
             w.personas()
-                .call_ended(&w.library, &key, None, 10, Some(later))
+                .call_ended(&w.library, &key, None, 10, Some(relocked))
                 .await,
             Err(Refusal::NotFound)
         ));
+        assert!(
+            !w.personas().calls.lock().unwrap().contains_key(&key),
+            "a relock stranded the call's binding"
+        );
     }
 }
