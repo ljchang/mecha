@@ -111,17 +111,13 @@ impl Step {
 /// eventually get one wrong in a way that reads as a working install.
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
-    /// Which helper binaries are on `PATH`. A crates.io install gets each
-    /// from its own `cargo install`, so "is it in the workspace" is the
-    /// wrong question — presence on `PATH` is the one that matters.
-    pub has_mail_binary: bool,
-    pub has_docs_binary: bool,
-    pub has_graph_binary: bool,
-    /// Whether any account/credential store has something in it. `None`
-    /// where the directory could not be read — see [`Status::Unknown`].
-    pub mail_accounts: Option<usize>,
-    pub docs_accounts: Option<usize>,
-    pub slack_linked: Option<bool>,
+    /// The registry's readout, one row per feature and part
+    /// (`feature::all`), read against the **global** configuration as
+    /// `mecha features` reads it. The optional features' steps are built from
+    /// it (FEATURES-DESIGN.md §9 step 4), so setup asks what registration
+    /// asks — an enabled `[[mcp]]` entry, never a binary on `PATH`, which is
+    /// what the four hand-written steps this replaced checked (§1.1).
+    pub features: Vec<crate::feature::Row>,
     /// What the default provider's server said about itself, when it is
     /// local and answered.
     pub props: Option<crate::provider::preflight::Props>,
@@ -146,10 +142,6 @@ pub struct Facts {
     pub trigger_count: usize,
     /// What the owner's charter is doing, read through the ordinary loader.
     pub charter: CharterState,
-    /// Features this install set up whose `[features]` switch is unanswered
-    /// (`feature::announcements`) — F6's offer, from the same function as the
-    /// upgrade notice so the two cannot disagree (FEATURES-DESIGN.md §7).
-    pub feature_offers: Vec<crate::feature::Announcement>,
     /// Step ids the owner has said they do not want, from
     /// [`read_declined`].
     ///
@@ -359,7 +351,6 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
         }
     }
 
-    steps.extend(integration_steps(facts));
     steps.extend(feature_steps(facts));
     steps.extend(timezone_step(cfg));
     steps.push(charter_step(&facts.charter));
@@ -412,10 +403,11 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
     // file, and a decline that only the prompt refused to record would be
     // one anybody could add with a text editor.
     for step in &mut steps {
-        if step.optional
-            && matches!(step.status, Status::Missing)
-            && facts.declined.contains(&step.id)
-        {
+        // A feature step's id is the feature's; step 1a offered the same
+        // switch as `feature-<id>`, and an answer given there still counts.
+        let declined = facts.declined.contains(&step.id)
+            || facts.declined.contains(&format!("feature-{}", step.id));
+        if step.optional && matches!(step.status, Status::Missing) && declined {
             step.status = Status::Declined;
             step.remedy = None;
         }
@@ -704,192 +696,191 @@ Every run is starting un-chartered until this parses."
     }
 }
 
-/// The integrations, each detected the same way: is the binary there, and has
-/// anything been authorised through it.
+/// One step per optional feature — every feature with a switch — in
+/// `Feature::ALL` order, which lists what a feature needs before it, so a
+/// dependency is offered first (FEATURES-DESIGN.md §4.2 item 2, §9 step 4).
 ///
-/// **mecha's own integrations are offered as commands to run; the graph's are
-/// only ever named.** mecha reaches the knowledge graph through the MCP tool
-/// surface and nothing else — no dependency, no second reader of its store —
-/// and a setup flow that drove `mecha-graph source add` would be exactly the
-/// coupling that rule exists to prevent. So a graph source is a sentence
-/// pointing at that project's own CLI, never a command this one spawns.
-fn integration_steps(facts: &Facts) -> Vec<Step> {
-    let mut steps = Vec::new();
-
-    steps.push(match (facts.has_mail_binary, facts.mail_accounts) {
-        (false, _) => Step::new(
-            "mail",
-            "Mail and calendar",
-            Status::Missing,
-            "`mecha-mail` is not on PATH. It is a separate crate, and optional — nothing else \
-             needs it.",
-        )
-        .with(
-            "Install the mail and calendar MCP servers.",
-            &["cargo", "install", "mecha-mail", "--locked"],
-            false,
-        )
-        .optional(),
-        (true, Some(0)) => Step::new(
-            "mail",
-            "Mail and calendar",
-            Status::Missing,
-            "`mecha-mail` is installed with no accounts authorised. The model names an \
-             *account*, never a provider, so add one per mailbox.",
-        )
-        .with(
-            "Authorise a mailbox. Needs a browser, or `--paste` over SSH.",
-            &["mecha-mail", "auth", "personal", "--provider", "google"],
-            true,
-        )
-        .optional(),
-        (true, Some(n)) => Step::new(
-            "mail",
-            "Mail and calendar",
-            Status::Done,
-            format!("{n} account(s) authorised"),
-        ),
-        (true, None) => Step::new(
-            "mail",
-            "Mail and calendar",
-            Status::Unknown,
-            "`mecha-mail` is installed; its credential store could not be read from here.",
-        ),
-    });
-
-    steps.push(match (facts.has_docs_binary, facts.docs_accounts) {
-        (false, _) => Step::new(
-            "docs",
-            "Google Docs, Sheets and Slides",
-            Status::Missing,
-            "`mecha-docs` ships with the mail crate. Under `drive.file` it reaches only files \
-             it created or you handed it in Google's own picker — which is the reason to want \
-             it, and no instruction inside a run can widen that.",
-        )
-        .with(
-            "Install the documents server (same crate as mail).",
-            &["cargo", "install", "mecha-mail", "--locked"],
-            false,
-        )
-        .optional(),
-        (true, Some(0)) => Step::new(
-            "docs",
-            "Google Docs, Sheets and Slides",
-            Status::Missing,
-            "`mecha-docs` is installed with no account authorised.",
-        )
-        .with(
-            // `mecha-docs auth` takes the account as `--account` (default
-            // `personal`), unlike `mecha-mail auth <NAME>` above; the
-            // positional form this used to offer failed with "unexpected
-            // argument 'personal'".
-            "Authorise Drive access. Use `--paste` if there is no browser here.",
-            &["mecha-docs", "auth"],
-            true,
-        )
-        .optional(),
-        (true, Some(n)) => Step::new(
-            "docs",
-            "Google Docs, Sheets and Slides",
-            Status::Done,
-            format!("{n} account(s) authorised"),
-        ),
-        (true, None) => Step::new(
-            "docs",
-            "Google Docs, Sheets and Slides",
-            Status::Unknown,
-            "installed; the credential store could not be read from here.",
-        ),
-    });
-
-    steps.push(match facts.slack_linked {
-        Some(true) => Step::new(
-            "slack",
-            "Slack as a remote control",
-            Status::Done,
-            "linked to a workspace",
-        ),
-        Some(false) => Step::new(
-            "slack",
-            "Slack as a remote control",
-            Status::Missing,
-            "Watch a run from a phone, approve what it wants to send, and hand files in and \
-             out. The owner is bound by a nonce printed on this machine, so proving shell \
-             access here is what claims it.",
-        )
-        .with(
-            "Start the Slack setup, which prints the binding nonce.",
-            &["mecha", "slack", "auth"],
-            true,
-        )
-        .optional(),
-        None => Step::new(
-            "slack",
-            "Slack as a remote control",
-            Status::Unknown,
-            "the binding store could not be read from here.",
-        ),
-    });
-
-    steps.push(if facts.has_graph_binary {
-        Step::new(
-            "graph",
-            "The personal knowledge graph",
-            Status::Done,
-            "`mecha-graph-mcp` is on PATH. Its own sources — ambient conversations, a \
-             calendar ICS feed, Slack, messages, mail — are configured with `mecha-graph \
-             source`, in that project. mecha reaches the graph only through its MCP tools \
-             and deliberately knows nothing else about it.",
-        )
-    } else {
-        Step::new(
-            "graph",
-            "The personal knowledge graph",
-            Status::Missing,
-            "Memory: who people are, what happened when. A separate project, wired in as an \
-             MCP server whose reads are marked untrusted — a graph fed by mail and messages \
-             holds third-party text by construction.",
-        )
-        .with(
-            "Install the graph's MCP server.",
-            &["cargo", "install", "mecha-graph-mcp", "--locked"],
-            false,
-        )
-        .optional()
-    });
-
-    steps
-}
-
-/// One declinable step per feature this install set up whose switch is
-/// still unanswered — an install that predates `[features]` has them all.
-/// Accepting runs `mecha features enable …`, which writes the bool in place;
-/// "never" records a decline under `feature-<id>`, so a later start's notice
-/// is the only place it is still named.
+/// Built from the registry's own readout, so a step asks exactly what
+/// `mecha features`, registration and the guards ask. The four hand-written
+/// steps this replaced (`mail`, `docs`, `slack`, `graph`) looked for a binary
+/// on `PATH` and read an installed binary with no `[[mcp]]` entry as done
+/// (§1.1); their ids are the features' ids, so a decline recorded against
+/// them still holds.
+///
+/// | readout | step |
+/// |---|---|
+/// | on | done, with its parts |
+/// | switch written `false` | declined: an answer, already given |
+/// | switch unanswered, or blocked on one | missing and declinable, the remedy the enable command |
+/// | switched on, not ready | wrong: a yes that does not work is not a preference |
+/// | unknown | unknown, offering nothing |
 fn feature_steps(facts: &Facts) -> Vec<Step> {
+    use crate::feature::{State, Switch};
     facts
-        .feature_offers
+        .features
         .iter()
-        .map(|a| {
-            let argv: Vec<&str> = a.fix.split_whitespace().collect();
-            Step::new(
-                &format!("feature-{}", a.id.id()),
-                &format!("Switch on {}", a.id.label().to_lowercase()),
-                Status::Missing,
-                match &a.caveat {
-                    Some(why) => format!(
-                        "Set up here but not switched on in `[features]` ({why}). Every \
-                         optional feature has a switch now, and one left unanswered is off."
+        .filter(|row| row.part_of.is_none())
+        .map(|row| {
+            let f = row.id;
+            let (id, title) = (f.id(), f.label());
+            match &row.state {
+                State::On { detail } => {
+                    let parts: Vec<String> = facts
+                        .features
+                        .iter()
+                        // Every part the switch owns, nested ones too
+                        // (`layout` is `ocr`'s, and `ocr` is `documents'`).
+                        .filter(|p| p.id != f && p.id.switch_owner() == f)
+                        .map(|p| format!("{} {}", p.id.id(), p.state.word()))
+                        .collect();
+                    let detail = if parts.is_empty() {
+                        detail.clone()
+                    } else {
+                        format!("{detail} ({})", parts.join(", "))
+                    };
+                    Step::new(id, title, Status::Done, detail)
+                }
+                // `false` is the owner's answer, written down. Not outstanding,
+                // and not a decline `--undecline` can take back: the switch is
+                // in the config, and the way back is the command that sets it.
+                State::Off { .. } if row.switch == Some(Switch::Off) => Step::new(
+                    id,
+                    title,
+                    Status::Declined,
+                    format!(
+                        "turned off in `[features]`; `{}` turns it on",
+                        row.next.as_deref().unwrap_or("mecha features enable")
                     ),
-                    None => "Set up here but not switched on in `[features]`. Every optional \
-                             feature has a switch now, and one left unanswered is off."
-                        .to_string(),
-                },
-            )
-            .with(&format!("Write `{}`.", a.fix), &argv, false)
-            .optional()
+                ),
+                State::Off { .. } => with_next(
+                    Step::new(
+                        id,
+                        title,
+                        Status::Missing,
+                        if row.in_use {
+                            "Set up here but not switched on in `[features]`, so it is off. \
+                             Every optional feature has a switch, and one left unanswered is off."
+                                .to_string()
+                        } else {
+                            format!("{} Off until it is switched on.", blurb(f))
+                        },
+                    ),
+                    row.next.as_deref(),
+                )
+                .optional(),
+                State::Blocked { on } => with_next(
+                    Step::new(
+                        id,
+                        title,
+                        Status::Missing,
+                        format!("{} It needs {} first.", blurb(f), on.label().to_lowercase()),
+                    ),
+                    row.next.as_deref(),
+                )
+                .optional(),
+                State::Unready { reason, .. } => with_next(
+                    Step::new(
+                        id,
+                        title,
+                        Status::Wrong,
+                        format!("Switched on, but not ready: {reason}."),
+                    ),
+                    row.next.as_deref(),
+                ),
+                State::Unknown { reason } => Step::new(id, title, Status::Unknown, reason.clone()),
+            }
         })
         .collect()
+}
+
+/// A step's remedy from the row's next command — when it is one. Setup only
+/// ever *runs* a command; a config edit (`add an [image] table`, `set
+/// [documents] ocr = true`) or an instruction (`install factory-publish from
+/// …`) is said in the detail and never run, because the edit is the owner's
+/// to make (the module rule: setup never writes down what it was not told).
+fn with_next(mut step: Step, next: Option<&str>) -> Step {
+    let Some(next) = next else { return step };
+    match runnable(next) {
+        Some((argv, needs_terminal)) => {
+            let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+            step.with(&format!("Run `{}`.", argv.join(" ")), &argv, needs_terminal)
+        }
+        None => {
+            step.detail = format!("{} Next: {next}.", step.detail);
+            step
+        }
+    }
+}
+
+/// `next` as an argv, if it is a command of ours to run: one of the binaries
+/// this project ships, with nothing in it a person has to fill in. A
+/// `<name>` the mail server needs is filled with `personal`, as the step this
+/// replaced offered. An `auth` needs a terminal — a browser or a pasted code.
+fn runnable(next: &str) -> Option<(Vec<String>, bool)> {
+    let argv: Vec<String> = next
+        .split_whitespace()
+        .map(|w| {
+            if w == "<name>" {
+                "personal".to_string()
+            } else {
+                w.to_string()
+            }
+        })
+        .collect();
+    let program = argv.first()?.as_str();
+    if !matches!(program, "mecha" | "mecha-mail" | "mecha-docs" | "cargo") {
+        return None;
+    }
+    if argv
+        .iter()
+        .any(|w| w.contains(['<', '>', '[', ']', '`', '"', '=']))
+    {
+        return None;
+    }
+    let needs_terminal = argv.iter().any(|w| w == "auth");
+    Some((argv, needs_terminal))
+}
+
+/// What a feature is for, in one line — what a step says when it is off.
+/// Exhaustive, so a new feature says what it is before setup can offer it.
+fn blurb(f: crate::feature::Feature) -> &'static str {
+    use crate::feature::Feature;
+    match f {
+        Feature::Web => {
+            "The web app on your tailnet: chat, mail, the graph and the review queues from a phone."
+        }
+        Feature::Slack => {
+            "Watch a run from Slack, approve what it wants to send, and hand files in and out."
+        }
+        Feature::Mail => {
+            "Mail and calendar, behind one server that names an account, never a provider."
+        }
+        Feature::Docs => {
+            "Google Docs, Sheets and Slides — only files it made or you hand it in Google's picker."
+        }
+        Feature::Graph => "Memory: who people are and what happened when, read as untrusted.",
+        Feature::Search => "Searching and opening the web, through the backends you list.",
+        Feature::Documents => "Reading PDFs, with optional OCR and page layout.",
+        Feature::Image => {
+            "Making pictures on a local image server, with a character and style library."
+        }
+        Feature::Personas => "Characters you write and talk to, apart from the assistant.",
+        Feature::Voice => "Talking to mecha: dictation, voice calls and voice cloning.",
+        Feature::Incognito => "A web chat that leaves no trace, on a local model.",
+        Feature::Frontdoor => {
+            "Inbound requests from strangers, polls and publishing, behind a quarantine."
+        }
+        Feature::Messages => "Messages between this machine's own sessions.",
+        // Parts are summarised under their parent and never stepped alone.
+        Feature::Tasks
+        | Feature::Ocr
+        | Feature::Layout
+        | Feature::Library
+        | Feature::Dictate
+        | Feature::Calls
+        | Feature::Cloning
+        | Feature::Publishing => "",
+    }
 }
 
 /// The values a local server reports about itself, ready to be written down.
@@ -1203,12 +1194,9 @@ mod tests {
         Facts {
             provider_credential: true,
             props,
-            mail_accounts: Some(1),
-            docs_accounts: Some(1),
-            slack_linked: Some(true),
-            has_mail_binary: true,
-            has_docs_binary: true,
-            has_graph_binary: true,
+            // A complete install has answered every switch it uses; the
+            // feature steps' own tests build rows with `rows`.
+            features: Vec::new(),
             scheduler_installed: true,
             trigger_count: 0,
             // A complete install has a charter and a config file, so
@@ -1217,8 +1205,35 @@ mod tests {
             config_file: true,
             local_probe: LocalProbe::NotAttempted,
             declined: Default::default(),
-            // A complete install has answered every switch it uses.
-            feature_offers: Vec::new(),
+        }
+    }
+
+    /// The registry's readout for a machine where every store was read and
+    /// held nothing, adjusted by `tweak` — real rows from `feature::all`, so
+    /// a step is tested against what `mecha features` would say.
+    fn rows(tweak: impl FnOnce(&mut crate::feature::Facts)) -> Vec<crate::feature::Row> {
+        let mut ff = crate::feature::Facts {
+            slack_linked: Some(false),
+            mail_accounts: Some(0),
+            docs_accounts: Some(0),
+            personas_stored: Some(false),
+            ..Default::default()
+        };
+        tweak(&mut ff);
+        crate::feature::all(&ff)
+    }
+
+    fn switch_on(ff: &mut crate::feature::Facts, ids: &[&str]) {
+        for id in ids {
+            ff.config.features.0.insert(id.to_string(), true);
+        }
+    }
+
+    fn mcp_entry(name: &str, command: &str) -> crate::config::McpServerConfig {
+        crate::config::McpServerConfig {
+            name: name.into(),
+            command: command.into(),
+            ..Default::default()
         }
     }
 
@@ -1278,37 +1293,100 @@ mod tests {
     }
 
     /// F6: a feature this install set up with its switch unanswered is a
-    /// declinable step whose remedy writes the bool — the same announcement
-    /// the upgrade notice prints, carried with its caveat.
+    /// declinable step whose remedy writes the bool — the row's `in_use`, from
+    /// the same `announcement` the upgrade notice prints.
     #[test]
     fn a_feature_set_up_but_unanswered_is_offered_and_declinable() {
-        use crate::feature::{Announcement, Feature};
         let cfg = cfg_with_local(262144, Some(true));
         let mut f = facts(Some(props(262144, 4, true)));
-        f.feature_offers = vec![Announcement {
-            id: Feature::Mail,
-            caveat: Some("no account is authorised".into()),
-            fix: "mecha features enable mail".into(),
-        }];
+        f.features = rows(|ff| {
+            ff.has_mail_binary = true;
+            ff.mail_accounts = Some(2);
+            ff.config.mcp.push(mcp_entry("mail", "mecha-mail"));
+        });
         let steps = plan(&cfg, "local", &f);
-        let step = steps
-            .iter()
-            .find(|s| s.id == "feature-mail")
-            .expect("offered");
-        assert_eq!(step.status, Status::Missing);
-        assert!(step.optional, "declinable, as every offer is");
-        assert!(
-            step.detail.contains("no account is authorised"),
-            "{}",
-            step.detail
+        let mail = step(&steps, "mail");
+        assert_eq!(mail.status, Status::Missing);
+        assert!(mail.optional, "declinable, as every unanswered switch is");
+        assert!(mail.detail.contains("Set up here"), "{}", mail.detail);
+        assert_eq!(
+            mail.remedy.as_ref().unwrap().argv,
+            ["mecha", "features", "enable", "mail"]
         );
-        let remedy = step.remedy.as_ref().expect("a remedy");
-        assert_eq!(remedy.argv, vec!["mecha", "features", "enable", "mail"]);
-
+        // An answer given to step 1a's offer, under its old id, still holds.
         f.declined.insert("feature-mail".into());
+        assert_eq!(
+            step(&plan(&cfg, "local", &f), "mail").status,
+            Status::Declined
+        );
+    }
+
+    /// The registry decides, so setup asks what registration asks (§1.1): an
+    /// installed `mecha-mail` with no `[[mcp]]` entry is not mail. Switched
+    /// on, it is a yes that does not work — `Wrong`, never declinable — and
+    /// the fix is an edit, said rather than run. With the entry and no
+    /// account, the remedy is the auth, which needs a terminal.
+    #[test]
+    fn a_feature_step_asks_what_registration_asks() {
+        let cfg = cfg_with_local(262144, Some(true));
+        let mut f = facts(Some(props(262144, 4, true)));
+        f.features = rows(|ff| {
+            switch_on(ff, &["mail"]);
+            ff.has_mail_binary = true;
+        });
         let steps = plan(&cfg, "local", &f);
-        let step = steps.iter().find(|s| s.id == "feature-mail").unwrap();
-        assert_eq!(step.status, Status::Declined);
+        let mail = step(&steps, "mail");
+        assert_eq!(mail.status, Status::Wrong);
+        assert!(!mail.optional);
+        assert!(mail.remedy.is_none(), "an edit is never run");
+        assert!(mail.detail.contains("[[mcp]]"), "{}", mail.detail);
+
+        f.features = rows(|ff| {
+            switch_on(ff, &["mail"]);
+            ff.has_mail_binary = true;
+            ff.config.mcp.push(mcp_entry("mail", "mecha-mail"));
+        });
+        let steps = plan(&cfg, "local", &f);
+        let remedy = step(&steps, "mail")
+            .remedy
+            .clone()
+            .expect("the auth is runnable");
+        assert_eq!(
+            remedy.argv,
+            ["mecha-mail", "auth", "personal", "--provider", "google"]
+        );
+        assert!(remedy.needs_terminal);
+    }
+
+    /// `false` is an answer written down: declined, not outstanding, and the
+    /// way back is the enable command rather than `--undecline`. A feature
+    /// blocked on an unanswered dependency is offered with the chained
+    /// command, dependency first.
+    #[test]
+    fn an_explicit_false_is_an_answer_and_a_dependency_comes_first() {
+        let cfg = cfg_with_local(262144, Some(true));
+        let mut f = facts(Some(props(262144, 4, true)));
+        f.features = rows(|ff| {
+            ff.config.features.0.insert("slack".into(), false);
+            switch_on(ff, &["incognito"]);
+        });
+        let steps = plan(&cfg, "local", &f);
+        let slack = step(&steps, "slack");
+        assert_eq!(slack.status, Status::Declined);
+        assert!(
+            slack.detail.contains("mecha features enable slack"),
+            "{}",
+            slack.detail
+        );
+        let incognito = step(&steps, "incognito");
+        assert_eq!(incognito.status, Status::Missing);
+        assert_eq!(
+            incognito.remedy.as_ref().unwrap().argv,
+            ["mecha", "features", "enable", "web", "incognito"]
+        );
+        // The dependency's own step comes before it.
+        let at = |id: &str| steps.iter().position(|s| s.id == id).unwrap();
+        assert!(at("web") < at("incognito"));
     }
 
     /// A fresh install is *offered* a charter, and the offer never composes
@@ -1389,7 +1467,7 @@ mod tests {
     fn a_declined_step_reports_the_decision_rather_than_the_absence() {
         let cfg = cfg_with_local(262144, Some(true));
         let mut f = facts(Some(props(262144, 4, true)));
-        f.slack_linked = Some(false);
+        f.features = rows(|_| {});
 
         // Without the decline it is ordinary outstanding work, with a remedy.
         let before = step(&plan(&cfg, "local", &f), "slack").clone();
@@ -1653,7 +1731,7 @@ mod tests {
         p.api_key_env = Some("MECHA_TEST_NO_SUCH_KEY".into());
         let mut f = facts(None);
         f.provider_credential = false;
-        f.slack_linked = Some(false);
+        f.features = rows(|_| {});
 
         for id in [
             "provider-credential",
@@ -1686,10 +1764,8 @@ mod tests {
         let cfg = Config::default();
         let mut f = facts(None);
         f.provider_credential = false;
-        f.mail_accounts = Some(0);
-        f.docs_accounts = Some(0);
-        f.slack_linked = Some(false);
-        f.has_graph_binary = false;
+        // Every feature unanswered: each is a coherent "I don't want this".
+        f.features = rows(|_| {});
         f.charter = CharterState::Absent;
         f.trigger_count = 1;
         f.scheduler_installed = false;
@@ -1700,7 +1776,25 @@ mod tests {
             .filter(|s| s.optional)
             .map(|s| s.id.as_str())
             .collect();
-        assert_eq!(optional, ["mail", "docs", "slack", "graph", "charter"]);
+        assert_eq!(
+            optional,
+            [
+                "web",
+                "slack",
+                "mail",
+                "docs",
+                "graph",
+                "search",
+                "documents",
+                "image",
+                "personas",
+                "voice",
+                "incognito",
+                "frontdoor",
+                "messages",
+                "charter"
+            ]
+        );
     }
 
     /// The offer text is one paragraph, not a wrapped source literal.
@@ -1735,7 +1829,10 @@ mod tests {
     fn a_decline_never_overwrites_a_step_that_is_actually_done() {
         let cfg = cfg_with_local(262144, Some(true));
         let mut f = facts(Some(props(262144, 4, true)));
-        f.slack_linked = Some(true);
+        f.features = rows(|ff| {
+            switch_on(ff, &["slack"]);
+            ff.slack_linked = Some(true);
+        });
         f.declined.insert("slack".into());
         assert_eq!(step(&plan(&cfg, "local", &f), "slack").status, Status::Done);
     }
@@ -1762,7 +1859,11 @@ mod tests {
     fn a_decline_does_not_apply_to_an_unknown_step() {
         let cfg = cfg_with_local(262144, Some(true));
         let mut f = facts(Some(props(262144, 4, true)));
-        f.mail_accounts = None;
+        f.features = rows(|ff| {
+            switch_on(ff, &["mail"]);
+            ff.config.mcp.push(mcp_entry("mail", "mecha-mail"));
+            ff.mail_accounts = None;
+        });
         f.declined.insert("mail".into());
         assert_eq!(
             step(&plan(&cfg, "local", &f), "mail").status,
@@ -2029,7 +2130,11 @@ mod tests {
     #[test]
     fn an_unreadable_store_is_unknown_and_offers_nothing() {
         let mut f = facts(Some(props(262144, 4, true)));
-        f.mail_accounts = None;
+        f.features = rows(|ff| {
+            switch_on(ff, &["mail"]);
+            ff.config.mcp.push(mcp_entry("mail", "mecha-mail"));
+            ff.mail_accounts = None;
+        });
         let steps = plan(&cfg_with_local(262144, Some(true)), "local", &f);
         let s = step(&steps, "mail");
         assert_eq!(s.status, Status::Unknown);
@@ -2041,11 +2146,19 @@ mod tests {
     /// never spawn them.
     #[test]
     fn a_graph_step_never_offers_to_run_a_graph_source_command() {
-        let steps = plan(
-            &cfg_with_local(262144, Some(true)),
-            "local",
-            &facts(Some(props(262144, 4, true))),
-        );
+        let mut f = facts(Some(props(262144, 4, true)));
+        // Every shape a graph step can take: unanswered, switched on with
+        // nothing installed, and switched on with the binary but no entry.
+        let mut steps = Vec::new();
+        for tweak in [(false, false), (true, false), (true, true)] {
+            f.features = rows(|ff| {
+                if tweak.0 {
+                    switch_on(ff, &["graph"]);
+                }
+                ff.has_graph_binary = tweak.1;
+            });
+            steps.extend(plan(&cfg_with_local(262144, Some(true)), "local", &f));
+        }
         for s in &steps {
             if let Some(r) = &s.remedy {
                 assert!(
