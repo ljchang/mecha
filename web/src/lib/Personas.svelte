@@ -1407,14 +1407,14 @@
     <button class="scrim" aria-label="close" onclick={() => (citedPage = null)}></button>
     <div class="sheet citedsheet" role="dialog" aria-label="cited page">
       <div class="sheet-grip"></div>
-      <div class="sheet-text">{citedPage.file}{citedPage.page != null ? ` · p. ${citedPage.page}` : ''}</div>
+      <div class="sheet-text">{citedPage.file}{citedPage.page != null ? ` · p. ${citedPage.page}${citedPage.through != null && citedPage.through !== citedPage.page ? `–${citedPage.through}` : ''}` : ''}</div>
       {#if citedPage.loading}
         <div class="barnote">Reading…</div>
       {:else if citedPage.error}
         <div class="barnote">{citedPage.error}</div>
       {:else}
         <div class="citedtext">{citedPage.before}<mark>{citedPage.marked}</mark>{citedPage.after}</div>
-        <div class="barnote">The page as this chat read it. The marked words are quoted; whether they support what was said is not checked.</div>
+        <div class="barnote">{citedPage.marked ? 'The page as this chat read it. The marked words are quoted; whether they support what was said is not checked.' : 'The page as this chat read it. The quote could not be placed on it.'}</div>
       {/if}
       <button class="abtn" onclick={() => (citedPage = null)}>Close</button>
     </div>

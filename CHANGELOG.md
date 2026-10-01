@@ -28,7 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A persona's citations are checked.** When a persona quotes one of its
   files as `[file, p. N: "…"]`, mecha looks the quote up in what that chat
   actually read and tags it: *quoted*, *on p. N* (the quote is real but on
-  another page), *not in the file*, *no such file*, or *too short to check*.
+  another page), *not in the file*, *no such file*, *file not read* (one of
+  its files it had not read yet), *can't check* (a script without spaces),
+  or *too short to check*.
   Tap a found citation to see the page as the chat read it, with the passage
   marked. "Quoted" means the words are there, not that they support what
   was said.
