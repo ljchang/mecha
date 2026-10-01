@@ -347,6 +347,11 @@ console.log('persona: ok');
 {
   const { DEFAULT_FRAME, frameOf, frameStyle, dragFrame } = await import('../src/lib/persona.js');
   assert.deepEqual(frameOf(null), DEFAULT_FRAME);
+  // A copy the editor can write its zoom into, never the frozen default.
+  const fresh = frameOf(null);
+  assert.ok(fresh !== DEFAULT_FRAME && !Object.isFrozen(fresh));
+  fresh.zoom = 2;
+  assert.equal(DEFAULT_FRAME.zoom, 1);
   assert.deepEqual(frameOf({ x: 0.5, y: 'top', zoom: 1 }), DEFAULT_FRAME, 'not a frame: the default');
   assert.deepEqual(frameOf({ x: 2, y: -1, zoom: 9 }), { x: 1, y: 0, zoom: 4 });
   // Unplaced leans to the top, where a portrait's face is.

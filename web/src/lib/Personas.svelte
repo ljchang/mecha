@@ -1482,16 +1482,16 @@
       <div
         class="framer"
         style="width:{FRAME_SIZE}px;height:{FRAME_SIZE}px"
-        role="slider"
+        role="group"
         tabindex="0"
-        aria-label="drag to move the picture in its circle"
-        aria-valuetext="{Math.round(framing.frame.x * 100)}% across, {Math.round(framing.frame.y * 100)}% down"
+        aria-label="the picture in its circle: drag, or use the arrow keys, to move it"
         onpointerdown={frameDown}
         onpointermove={frameMove}
         onpointerup={frameUp}
         onpointercancel={frameUp}
         onkeydown={(e) => {
-          const step = { ArrowLeft: [8, 0], ArrowRight: [-8, 0], ArrowUp: [0, 8], ArrowDown: [0, -8] }[e.key];
+          // An arrow moves the picture as a drag that way would.
+          const step = { ArrowLeft: [-8, 0], ArrowRight: [8, 0], ArrowUp: [0, -8], ArrowDown: [0, 8] }[e.key];
           if (step) {
             e.preventDefault();
             framing.frame = dragFrame(framing.frame, step[0], step[1], FRAME_SIZE);
