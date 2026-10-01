@@ -1253,11 +1253,22 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
     let Some(target) = &state.offer_target else {
         return (StatusCode::NOT_FOUND, "voice offers are disabled\n").into_response();
     };
-    let body = match persona_offer(&state, target, body).await {
-        Ok(body) => body,
-        Err(refused) => return *refused,
+    let key = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|o| offer_session(&o))
+        .filter(|k| persona_chat::is_persona_key(k));
+    let answered = match persona_offer(&state, target, body).await {
+        Ok(body) => forward_offer(target, body).await,
+        Err(refused) => *refused,
     };
-    forward_offer(target, body).await
+    // An offer that did not become a call — refused here, or not taken by
+    // the worker — leaves no binding, so "no call was placed" stays true.
+    if let (Some(key), Some(chat)) = (key, &state.chat) {
+        if !answered.status().is_success() {
+            chat.personas.release_call(&key);
+        }
+    }
+    answered
 }
 
 /// An offer, as the worker may see it, when it names a persona chat
@@ -1339,10 +1350,18 @@ async fn persona_offer(
             .get_mut("request_data")
             .and_then(|r| r.as_object_mut())
         {
-            request.insert(
-                "persona_voice".into(),
-                serde_json::to_value(voice).unwrap_or_default(),
-            );
+            // Refused rather than defaulted: a null here reads on the worker
+            // as "no persona voice", which is the default voice.
+            let bound = serde_json::to_value(voice).map_err(|e| {
+                Box::new(
+                    (
+                        StatusCode::CONFLICT,
+                        format!("the persona's voice would not encode: {e}\n"),
+                    )
+                        .into_response(),
+                )
+            })?;
+            request.insert("persona_voice".into(), bound);
         }
     }
     Ok(reencode(&offer, body))
@@ -1370,7 +1389,9 @@ async fn runner_voices(target: &str) -> Result<Vec<String>, &'static str> {
         .map_err(|_| UNREACHABLE)?;
     let resp = reqwest::Client::new()
         .get(url)
-        .timeout(std::time::Duration::from_secs(5))
+        // The worker asks its TTS in turn; a server still loading its model
+        // must not read as one that has no voices.
+        .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
         .map_err(|_| UNREACHABLE)?;
