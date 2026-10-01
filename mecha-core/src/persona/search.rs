@@ -95,7 +95,8 @@ impl Index {
              CREATE TABLE IF NOT EXISTS docs (
                  sha TEXT PRIMARY KEY,
                  pages INTEGER,
-                 passages INTEGER NOT NULL
+                 passages INTEGER NOT NULL,
+                 rendered TEXT
              );
              CREATE TABLE IF NOT EXISTS passages (
                  id INTEGER PRIMARY KEY,
@@ -134,20 +135,38 @@ impl Index {
             .is_some())
     }
 
+    /// The hash of the rendering `sha` was last cut from.
+    fn rendered(&self, sha: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT rendered FROM docs WHERE sha = ?1", [sha], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .flatten())
+    }
+
     /// Keep `sha`'s passages, cut from its rendered text, replacing any
     /// before. Vectors are filled by [`Index::embed_missing`].
     pub fn put(&mut self, sha: &str, rendered: &str) -> Result<usize> {
         let pages = super::cite::pages_of(rendered);
         let total = pages.iter().filter_map(|p| p.0).max();
         let tx = self.conn.transaction()?;
-        let old: Vec<i64> = {
-            let mut q = tx.prepare("SELECT id FROM passages WHERE sha = ?1")?;
-            let ids = q
-                .query_map([sha], |r| r.get(0))?
+        // A passage cut the same way again keeps its vector: re-putting a
+        // scan whose later pages have since been read embeds only what is
+        // new.
+        let old: Vec<(i64, String, Option<Vec<u8>>)> = {
+            let mut q = tx.prepare("SELECT id, text, vec FROM passages WHERE sha = ?1")?;
+            let rows = q
+                .query_map([sha], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
                 .collect::<Result<_, _>>()?;
-            ids
+            rows
         };
-        for id in old {
+        let kept: HashMap<String, Vec<u8>> = old
+            .iter()
+            .filter_map(|(_, text, vec)| Some((text.clone(), vec.clone()?)))
+            .collect();
+        for (id, _, _) in &old {
             tx.execute("DELETE FROM passages_fts WHERE rowid = ?1", [id])?;
         }
         tx.execute("DELETE FROM passages WHERE sha = ?1", [sha])?;
@@ -155,8 +174,8 @@ impl Index {
         for (page, text) in &pages {
             for passage in passages_of(text) {
                 tx.execute(
-                    "INSERT INTO passages (sha, page, text) VALUES (?1, ?2, ?3)",
-                    params![sha, page, passage],
+                    "INSERT INTO passages (sha, page, text, vec) VALUES (?1, ?2, ?3, ?4)",
+                    params![sha, page, passage, kept.get(&passage)],
                 )?;
                 let id = tx.last_insert_rowid();
                 tx.execute(
@@ -167,8 +186,13 @@ impl Index {
             }
         }
         tx.execute(
-            "INSERT OR REPLACE INTO docs (sha, pages, passages) VALUES (?1, ?2, ?3)",
-            params![sha, total, n as i64],
+            "INSERT OR REPLACE INTO docs (sha, pages, passages, rendered) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                sha,
+                total,
+                n as i64,
+                crate::document::sha256_hex(rendered.as_bytes())
+            ],
         )?;
         tx.commit()?;
         Ok(n)
@@ -188,7 +212,7 @@ impl Index {
     /// Record the vectors' identity; a different one drops every vector
     /// stored, so nothing compares a query with a passage embedded another
     /// way. Returns whether it dropped any.
-    fn claim_identity(&mut self, dims: usize) -> Result<bool> {
+    pub fn claim_identity(&mut self, dims: usize) -> Result<bool> {
         let identity = format!("{dims}|{}", embed::QUERY_INSTRUCTION);
         let had: Option<String> = self
             .conn
@@ -260,10 +284,19 @@ impl Index {
         }
         if let Some(fts) = fts_query(query) {
             let wanted: std::collections::HashSet<i64> = corpus.iter().map(|c| c.0).collect();
-            let mut q = self.conn.prepare(
-                "SELECT rowid FROM passages_fts WHERE passages_fts MATCH ?1 ORDER BY bm25(passages_fts) LIMIT 500",
-            )?;
-            let ids = q.query_map([&fts], |r| r.get::<_, i64>(0))?;
+            // Within the asked files in the query itself: a store's other
+            // files must not crowd these out of the limit (review of #467).
+            // `wanted` stays as the belt.
+            let marks = vec!["?"; shas.len()].join(", ");
+            let mut q = self.conn.prepare(&format!(
+                "SELECT rowid FROM passages_fts WHERE passages_fts MATCH ?1 \
+                 AND rowid IN (SELECT id FROM passages WHERE sha IN ({marks})) \
+                 ORDER BY bm25(passages_fts) LIMIT 500"
+            ))?;
+            let args: Vec<&dyn rusqlite::ToSql> = std::iter::once(&fts as &dyn rusqlite::ToSql)
+                .chain(shas.iter().map(|s| s as &dyn rusqlite::ToSql))
+                .collect();
+            let ids = q.query_map(args.as_slice(), |r| r.get::<_, i64>(0))?;
             let mut rank = 0usize;
             for id in ids {
                 let id = id?;
@@ -367,8 +400,12 @@ pub async fn index_file(
     let sha = tokio::task::spawn_blocking(move || -> Result<String> {
         let sha = sha_of(&src).with_context(|| format!("hashing {}", src.name))?;
         let mut index = Index::open(&s)?;
-        // Same bytes, same passages: put once.
-        if !index.has(&sha)? {
+        // Cut again when the rendering changed, not only the bytes: a scan
+        // past `max_ocr_pages` renders its later pages as placeholders until
+        // they are read, and an index kept from that first pass would never
+        // learn them (review of #467). Same rendering, nothing to do.
+        let now = crate::document::sha256_hex(rendered.as_bytes());
+        if index.rendered(&sha)?.as_deref() != Some(now.as_str()) {
             index.put(&sha, &rendered)?;
         }
         Ok(sha)
@@ -491,6 +528,16 @@ impl Tool for FileSearch {
             Some(e) => e.query(query).await.ok(),
             None => None,
         };
+        // The query is the one embedding every search makes, so it is where
+        // the index learns the model changed — even one with nothing left
+        // to embed (review of #467). A changed identity drops the stored
+        // vectors: this search is by words, and the files are embedded
+        // again as they come round.
+        if let Some(q) = &qvec {
+            let (store, dims) = (self.store.clone(), q.len());
+            let _ = tokio::task::spawn_blocking(move || Index::open(&store)?.claim_identity(dims))
+                .await;
+        }
         let shas: Vec<String> = named.keys().cloned().collect();
         let (store, q) = (self.store.clone(), query.to_string());
         let found = tokio::task::spawn_blocking(move || {
@@ -505,7 +552,26 @@ impl Tool for FileSearch {
                 ))
             }
         };
+        // The harness's own notes first: before any `document:` header,
+        // where `persona::cite` reads nothing as a file's words — after the
+        // last hit they read as that page's text (review of #467).
         let mut out = String::new();
+        if how == Found::WordsOnly && !hits.is_empty() {
+            out.push_str("(Found by words only: the search by meaning is unavailable just now.)\n");
+        }
+        if !unindexed.is_empty() {
+            out.push_str(&format!(
+                "(Not searchable yet — read with `file_read`: {}.)\n",
+                unindexed
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
         if hits.is_empty() {
             out.push_str(
                 "No passage of your files matches that. Try other words, or read with `file_read`.",
@@ -524,19 +590,6 @@ impl Tool for FileSearch {
             }
             out.push_str(hit.text.trim_end());
             out.push_str("\n\n");
-        }
-        if how == Found::WordsOnly && !hits.is_empty() {
-            out.push_str("(Found by words only: the search by meaning is unavailable just now.)\n");
-        }
-        if !unindexed.is_empty() {
-            out.push_str(&format!(
-                "(Not searchable yet — read with `file_read`: {}.)\n",
-                unindexed
-                    .iter()
-                    .map(|n| format!("`{n}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
         }
         Ok(ToolOutput::ok(out.trim_end().to_string()).from_outside())
     }
@@ -794,7 +847,9 @@ mod tests {
             ..crate::message::Message::user("")
         };
         let reply = crate::message::Message::assistant(vec![crate::message::Block::Text {
-            text: "[urchins.md: \"urchins graze kelp holdfasts\"]".into(),
+            text: "[urchins.md: \"urchins graze kelp holdfasts\"] \
+                   [urchins.md: \"Found by words only: the search by meaning\"]"
+                .into(),
         }]);
         let got = super::super::cite::check_conversation(&[
             crate::message::Message::user("go"),
@@ -806,6 +861,8 @@ mod tests {
             got[0].verdict,
             super::super::cite::Verdict::Quoted { found: None }
         );
+        // The harness's note is not the file's words (review of #467).
+        assert_eq!(got[1].verdict, super::super::cite::Verdict::NotFound);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -835,5 +892,73 @@ mod tests {
         assert_eq!(hits[0].page, Some(2));
         assert_eq!(fts_query("table 3").unwrap(), "\"table\" OR \"3\"");
         std::fs::remove_dir_all(store).ok();
+    }
+
+    /// Review of #467, pass 2: a rendering that grows — a scan's later
+    /// pages read since — is cut again, keeping the vectors of passages cut
+    /// the same; and the word search is within the asked files, however
+    /// many better matches the store holds elsewhere.
+    #[tokio::test]
+    async fn a_grown_rendering_is_recut_and_others_cannot_crowd_the_words_out() {
+        use super::super::tests_support::*;
+        use crate::persona::ensure_layout;
+        let dir = scratch();
+        ensure_layout(&dir).unwrap();
+        std::fs::write(dir.join("files/scan.md"), "bytes that do not change").unwrap();
+        let src = list(&[(String::new(), dir.join("files"))]).pop().unwrap();
+        let sha = sha_of(&src).unwrap();
+        let first = "document: scan.pdf \u{b7} pdf \u{b7} 2 page(s) \u{b7} sha256 x\n\
+            \n=== page 1 of 2 \u{b7} text layer (the file's own words) ===\nUrchins graze kelp.\n\
+            \n=== page 2 of 2 \u{b7} text layer (the file's own words) ===\n(no text layer on this page)\n";
+        index_file(dir.clone(), &src, first.into(), None)
+            .await
+            .unwrap();
+        {
+            let mut index = Index::open(&dir).unwrap();
+            index.claim_identity(2).unwrap();
+            let rows = index.unembedded(&sha).unwrap();
+            for (id, _) in rows {
+                index
+                    .conn
+                    .execute(
+                        "UPDATE passages SET vec = ?1 WHERE id = ?2",
+                        params![embed::to_blob(&[1.0, 0.0]), id],
+                    )
+                    .unwrap();
+            }
+        }
+        let grown = first.replace(
+            "(no text layer on this page)",
+            "Otters keep the barrens in check.",
+        );
+        index_file(dir.clone(), &src, grown, None).await.unwrap();
+        let index = Index::open(&dir).unwrap();
+        let (hits, _) = index
+            .search(std::slice::from_ref(&sha), "otters", None, 3)
+            .unwrap();
+        assert_eq!(hits.len(), 1, "the page read since is searchable: {hits:?}");
+        let left = index.unembedded(&sha).unwrap();
+        assert_eq!(
+            left.len(),
+            1,
+            "only the new passage needs a vector: {left:?}"
+        );
+        assert!(left[0].1.contains("Otters"));
+
+        // Six hundred better word matches elsewhere in the store.
+        let mut index = Index::open(&dir).unwrap();
+        for n in 0..600 {
+            index
+                .put(
+                    &format!("other{n}"),
+                    "document: o.md \u{b7} text\n\nOtters otters otters otters.",
+                )
+                .unwrap();
+        }
+        let (hits, _) = index
+            .search(std::slice::from_ref(&sha), "otters", None, 3)
+            .unwrap();
+        assert_eq!(hits.len(), 1, "not crowded out: {hits:?}");
+        std::fs::remove_dir_all(dir).ok();
     }
 }
