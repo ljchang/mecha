@@ -1820,7 +1820,7 @@
           {#if entry.spoken}<span class="queued-tag">spoken</span>{/if}
         </div>
       {:else if entry.kind === 'assistant'}
-        <div class="answer"><ChatProse text={entry.text} /></div>
+        <div class="answer"><ChatProse text={entry.text} actions="mecha" /></div>
       {:else if entry.kind === 'tool'}
         <!-- The chip names the call and says which one it was; the tap opens
              the whole of it — what it was called with, then what came back,
