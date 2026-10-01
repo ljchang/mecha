@@ -15,8 +15,8 @@ still worth knowing about, because the next person will otherwise re-derive it.
 ## What shipped, and when
 
 **2026-10-01 — personas remember: a store, a nightly writer, and recall at
-chat start (#462, #463, #468, #477).** PERSONA-DESIGN §9 / §17 step 5, each
-through its own review loop.
+chat start and on every turn (#462, #463, #468, #477, #481).**
+PERSONA-DESIGN §9 / §17 step 5, each through its own review loop.
 - **#462 (D25):** break reminders and the farewell check were dropped
   before either was built.
   - The dose meters already show time spent. The farewell evidence (HBS
@@ -55,9 +55,23 @@ through its own review loop.
     untrusted.
   - The budget is split so no section starves another out of sight, and
     every cut is said.
+- **#481, recall on every turn:** past the first reply, the owner's message
+  keys `Memory::recall_search`, and up to three records the chat does not
+  already hold ride with that turn under the same two stems
+  (`recall::per_turn`).
+  - Words (FTS5), meaning (vectors, `embed::Task::Recall`) and recency are
+    fused by reciprocal rank; ties go to the newer record.
+  - `STOPWORDS` stops a common word from being the only match. That
+    matters because recalling an approved record from outside arms the
+    chat for good.
+  - `recall::would_search` decides before any embed, so a turn that won't
+    search waits on nothing.
+  - Schema v3 builds the index under the write lock, idempotently.
+  - FTS5 is created with `secure-delete`: without it, a forgotten term
+    survived in `memory.db` (mutation-checked against the file's bytes).
 
-The review loops (1, 3, 6 and 4 workflow review passes, counted from each PR's
-comments) kept finding one shape: a path that
+The review loops (1, 3, 6, 4 and 5 workflow review passes, counted from each
+PR's comments) kept finding one shape: a path that
 lost or kept something without saying so. A blocked log truncation passed
 as done; a shared copy outlived its correction; an unanswered turn was
 skipped for good; a section was cut to nothing with its heading gone. Each
@@ -90,7 +104,9 @@ owner's asks from a phone, each through its own review loop.
   for a finished reply. Copy writes the reply as written; Download saves a
   `.md` from a Blob made in the page. Each code block gets its own Copy.
   `download` defaults off and each call site opts in, and an incognito chat
-  never does: a file on the device outlives the room (INCOGNITO-DESIGN R2).
+  never does: a file on the device outlives the room (INCOGNITO-DESIGN R2)
+  — reversed the same day by the owner (#489): the file is made in the
+  browser, so the server keeps no trace.
   `reply-export.mjs` pins the call sites by counting them first.
 
 **2026-10-01 — personas read their files: folders, checked citations,

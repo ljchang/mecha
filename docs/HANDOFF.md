@@ -23,20 +23,22 @@ maps which document holds what.
 ## Where the work is
 
 **2026-10-01 — persona memory: written nightly and recalled at chat start,
-live; recall on every turn in review (mecha-5d).** #462, #463, #468 and #477
-are in HISTORY under 2026-10-01. All four are live: #462/#463/#468 in
-mecha-d7's `85ca4dfe`/`997a2894`, #477 in mecha-d7's `1238cb5e`. The
-installed binary carries both `persona memory write` and `MEMORY_STEM`
-(`strings ~/.cargo/bin/mecha`, 2026-10-01). The `mecha-ruminate` timer runs
-the writer from 03:30 UTC on 2026-10-02, its first real night. What is open,
-verified against `8c563538`:
+live; recall on every turn merged, not yet installed (mecha-5d).** #462,
+#463, #468, #477 and #481 are in HISTORY under 2026-10-01. The first four are
+live: #462/#463/#468 in mecha-d7's `85ca4dfe`/`997a2894`, #477 in mecha-d7's
+`1238cb5e`. The installed binary carries both `persona memory write` and
+`MEMORY_STEM` (`strings ~/.cargo/bin/mecha`, 2026-10-01). The
+`mecha-ruminate` timer runs the writer from 03:30 UTC on 2026-10-02, its
+first real night. What is open, verified against `4bbed7ca`:
 
-- **#481 (recall on every turn) is in its review loop.** It adds:
-  - `recall::per_turn` and `Memory::recall_search` (words by FTS5, meaning
-    by vectors, and recency, fused);
-  - `memory.db` schema v3 with `secure-delete`;
-  - `embed::Task::Recall`;
-  - the writer embedding new records each night.
+- **#481 (recall on every turn) is merged as `b6d15059` and not installed**
+  (`strings ~/.cargo/bin/mecha | grep -cF "what this message brought to mind"`
+  → 0 at 2026-10-01 ~19:40Z). It is binary-only, handed to mecha-d7.
+  - Its first writable open builds `memory.db` schema v3 (read-only
+    handles never migrate).
+  - Once installed, the nightly also embeds records, which needs
+    `[documents]` switched on: meaning-based recall reuses that feature's
+    embedder, and with Documents off recall is by words alone.
 - **Still unbuilt in §9:**
   - the `recall` and `recall_open` tools;
   - the owner's curation page (§9.8);
@@ -57,9 +59,12 @@ verified against `8c563538`:
 - **Unmeasured constants** (in #481): `MIN_COSINE` (0.5) and
   `MIN_QUERY_CHARS` (12).
 - **Design choices for the owner:**
-  - Recalling an approved record from outside arms the rest of the chat
-    untrusted on one content-word match. #481's review suggested a stricter
-    bar for such records.
+  - **An approved record from outside arms a chat untrusted wherever it
+    rides.** At chat start (#477, live) this happens unconditionally
+    whenever the record fits the budget; no match is involved, because
+    approval leaves `origin = ModelUntrusted`. #481 adds a second route: one
+    content-word match mid-chat (`STOPWORDS` keeps out the common ones).
+    #481's review suggested a stricter bar for such records.
   - `forget` removes one row, so a superseded wording stays in `memory.db`
     while shared copies of the whole chain go.
   - `correct` on an inferred fact keeps `kind = Inferred` with
@@ -69,6 +74,18 @@ verified against `8c563538`:
     `--chat` on a chat with no checkpoint exits without saying so.
   - #477: the section headings sit outside `BUDGET_CHARS` (about 6300 in
     practice); the page-notice path of `memory_block` has no test.
+  - #481, all three still true on `4bbed7ca`:
+    - `per_turn`'s "already in the chat" check matches a record's first 60
+      characters, but `chat_start` can clip an episode to ~24 characters
+      of summary, so on a tight budget the same episode re-folds on every
+      turn that names it. That costs duplicated tokens, not taint.
+    - `recall_search`'s "did meaning take part" bool is unused by
+      `per_turn`, so nothing in the chat path can tell a words-only recall
+      apart.
+    - `Memory::unembedded` rescans every record per batch, so
+      `embed_memory` is quadratic in batches. That shows exactly on a first
+      night over a large store; read a slow embed stage that way before
+      blaming the writer.
 
 **2026-10-01 — persona autolock and avatar framing are live; persona
 creation from the main chat is next (mecha-69).** #469, #473 and #480 are in
@@ -93,9 +110,8 @@ on every chat reply) in `d352536b`. What is open, verified against
   - `loadHistory`'s failure branch does not check the generation after
     `res.text()` (benign: its note is discarded).
   - #484: a reply's "Copied" and a refused copy are visual only (no live
-    region, as `ModelChip` has); INCOGNITO-DESIGN §3.1's table of what the
-    page leaves on the device has no row for the reply download its R2 now
-    refuses.
+    region, as `ModelChip` has). (INCOGNITO-DESIGN §3.1's missing row for
+    the reply download was added by #489.)
 
 **2026-10-01 — persona files (§10) done and live, and reading a chat is
 easier; what is open.** Steps 3a–3d (#459, #465, #467, #475) and the
@@ -120,10 +136,11 @@ the owner's ask) is mecha-d7's, in progress. What is open, verified against
 - **Save to files:** a reply saved again after a page reload writes a
   byte-identical second file (answer the existing name instead); a reply
   opening with a `---` rule saves as `---.md`.
-- **Unmeasured joins:** that the page's streamed entry text equals the
-  stored `Block::Text` (Save to files and citations both rely on it), and
-  that a memory episode's `source.chat` equals the session id (the
-  earlier-chats headline relies on it).
+- **Unmeasured join:** that the page's streamed entry text equals the
+  stored `Block::Text` (Save to files and citations both rely on it). (The
+  other join, a memory episode's `source.chat` equalling the session id, is
+  now pinned by `a_test_chat_never_becomes_a_memory_and_an_unreadable_one_is_said`
+  in #481.)
 - **#479's minors:** ARCHITECTURE's `ChatProse` bullet still describes
   matching citations by their characters (the code swaps them for
   placeholders first); double-clicking a citation also toggles the raw
