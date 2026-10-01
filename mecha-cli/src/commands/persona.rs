@@ -274,14 +274,37 @@ async fn write_memory(
     }
     let provider = mecha_core::provider::build(provider_cfg)?;
     let model = global.model.clone().or_else(|| provider_cfg.model.clone());
-    let writer = Writer::new(provider, model);
-    eprintln!(
-        "writing persona memory with {} ({provider_name})",
-        writer.model()
-    );
+    let mut writer = Writer::new(provider, model);
+    let fallback = writer.model().to_owned();
+
+    // Each chat is written by the model it ran on, and only while that model
+    // is the router's resident one (`writer::pick_model`): the owner's two
+    // rulings together. A `--model` or `--provider` is the owner choosing,
+    // and stands for every chat.
+    use mecha_core::provider::router;
+    let pinned = global.provider.is_some() || global.model.is_some();
+    let base = provider_cfg.base_url.as_deref().map(router::base);
+    let (_, seen) = router::observe_seen(&cfg, !pinned).await;
+    let on_router = !pinned
+        && base
+            .as_ref()
+            .is_some_and(|b| seen.iter().any(|s| &s.base_url == b));
+    let mut resident: Option<String> = base
+        .as_ref()
+        .and_then(|b| seen.iter().find(|s| &s.base_url == b))
+        .and_then(|s| s.resident.clone());
+    if on_router {
+        eprintln!(
+            "writing persona memory with each chat's own model, while it is loaded ({provider_name}; \
+             loaded now: {})",
+            resident.as_deref().unwrap_or("nothing")
+        );
+    } else {
+        eprintln!("writing persona memory with {fallback} ({provider_name})");
+    }
 
     let idle = std::time::Duration::from_secs(idle_minutes * 60);
-    let (mut chats, mut failed) = (0usize, 0usize);
+    let (mut chats, mut failed, mut waiting) = (0usize, 0usize, 0usize);
     for p in personas {
         let sessions = store.sessions_dir(&p.name);
         let mut todo: Vec<(String, std::path::PathBuf)> = Vec::new();
@@ -333,8 +356,34 @@ async fn write_memory(
                 }
             };
             // Only wait for a model seat when there is something to ask.
-            if m.written_upto(&id)? as usize >= writer::read_chat(&text).turns.len() {
+            let parsed = writer::read_chat(&text);
+            if m.written_upto(&id)? as usize >= parsed.turns.len() {
                 continue;
+            }
+            match writer::pick_model(
+                parsed.model.as_deref(),
+                resident.as_deref(),
+                on_router,
+                &fallback,
+            ) {
+                writer::ModelPick::Wait(model) => {
+                    println!(
+                        "{} {id}: waits until {model} is loaded — writing it now would swap \
+                         out the model in use",
+                        p.name
+                    );
+                    waiting += 1;
+                    continue;
+                }
+                writer::ModelPick::Use(model) => {
+                    // Loading into an empty router makes it the resident one
+                    // for the rest of this run, so one night never swaps
+                    // between two models.
+                    if on_router && resident.is_none() {
+                        resident = Some(model.clone());
+                    }
+                    writer.set_model(model);
+                }
             }
             let seat = super::distill::take_seat(&format!("persona memory {} {id}", p.name)).await;
             let report = writer::write_chat(&writer, &m, p, &id, &text).await;
@@ -371,7 +420,9 @@ async fn write_memory(
             }
         }
     }
-    println!("{chats} chat(s) read, {failed} left for a later run");
+    println!(
+        "{chats} chat(s) read, {waiting} waiting for their model, {failed} left for a later run"
+    );
     if failed > 0 {
         bail!("{failed} chat(s) could not be written");
     }
