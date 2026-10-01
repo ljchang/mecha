@@ -793,7 +793,8 @@ impl PersonaChats {
         Ok(serde_json::json!({ "locked": state.locked }))
     }
 
-    /// Place the portrait in a persona's avatar, or centre it again. The lock
+    /// Place the portrait in a persona's avatar, or return it to the
+    /// default. The lock
     /// holds as for every write: a hidden persona answers as a missing one.
     pub fn frame(
         &self,
@@ -857,7 +858,8 @@ impl PersonaChats {
                     "relationship": p.settings.relationship.0,
                     "character": character,
                     "portrait": portrait,
-                    // Where the owner placed it in the circle; null is centred.
+                    // Where the owner placed it in the circle; null is the
+                    // page's default framing.
                     "frame": p.state.frame,
                     "version": p.state.version,
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
@@ -4008,7 +4010,7 @@ mod tests {
         let row = |token: Option<&str>| {
             w.personas().list(&w.library, token, Some(chrono_tz::UTC))["personas"][0].clone()
         };
-        assert!(row(None)["frame"].is_null(), "centred until placed");
+        assert!(row(None)["frame"].is_null(), "the default until placed");
         let frame = Frame {
             x: 0.5,
             y: 0.25,
@@ -4040,7 +4042,7 @@ mod tests {
         w.personas()
             .frame(&w.library, "mara", None, Some(&token))
             .unwrap();
-        assert!(row(Some(&token))["frame"].is_null(), "centred again");
+        assert!(row(Some(&token))["frame"].is_null(), "the default again");
     }
 
     #[tokio::test]
