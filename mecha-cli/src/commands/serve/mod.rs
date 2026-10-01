@@ -1250,7 +1250,7 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
     };
     let body = match persona_offer(&state, target, body).await {
         Ok(body) => body,
-        Err(refused) => return refused,
+        Err(refused) => return *refused,
     };
     forward_offer(target, body).await
 }
@@ -1273,7 +1273,7 @@ async fn persona_offer(
     state: &WebState,
     target: &str,
     body: axum::body::Bytes,
-) -> Result<axum::body::Bytes, Response> {
+) -> Result<axum::body::Bytes, Box<Response>> {
     let Ok(serde_json::Value::Object(mut offer)) = serde_json::from_slice(&body) else {
         // `forward_offer` refuses what it cannot read.
         return Ok(body);
@@ -1295,38 +1295,44 @@ async fn persona_offer(
         });
     };
     let Some(chat) = &state.chat else {
-        return Err((StatusCode::NOT_FOUND, "no such persona chat\n").into_response());
+        return Err(Box::new(
+            (StatusCode::NOT_FOUND, "no such persona chat\n").into_response(),
+        ));
     };
     let token = unlock.and_then(|t| t.as_str().map(str::to_string));
     let name = chat
         .personas
         .bind_call(&state.library, &key, token)
         .await
-        .map_err(IntoResponse::into_response)?;
+        .map_err(|r| Box::new(r.into_response()))?;
     let voice = chat
         .personas
         .call_voice(&name)
-        .map_err(|why| (StatusCode::CONFLICT, format!("{why}\n")).into_response())?;
+        .map_err(|why| Box::new((StatusCode::CONFLICT, format!("{why}\n")).into_response()))?;
     if let Some(voice) = &voice {
         match runner_voices(target).await {
             Some(known) if known.iter().any(|v| v == &voice.voice) => {}
             Some(_) => {
-                return Err((
-                    StatusCode::CONFLICT,
-                    format!(
+                return Err(Box::new(
+                    (
+                        StatusCode::CONFLICT,
+                        format!(
                         "voice `{}` is not one the voice server lists — record or add it first\n",
                         voice.voice
                     ),
-                )
-                    .into_response())
+                    )
+                        .into_response(),
+                ))
             }
             None => {
-                return Err((
-                    StatusCode::CONFLICT,
-                    "the voice worker could not say which voices it has — \
+                return Err(Box::new(
+                    (
+                        StatusCode::CONFLICT,
+                        "the voice worker could not say which voices it has — \
                      a worker that predates persona voices needs a restart on a current checkout\n",
-                )
-                    .into_response())
+                    )
+                        .into_response(),
+                ))
             }
         }
         if let Some(request) = offer
