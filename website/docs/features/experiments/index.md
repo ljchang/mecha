@@ -366,7 +366,9 @@ and so is one that can never be on in a trial: only `graph` (and its
 mail, documents, web and the rest stay out of every trial home by design,
 so a task that needs mail gets it from a fixture server (`[fixtures]` in
 the experiment's manifest, not in `environment.toml`), not from the `mail`
-feature.
+feature. Messages are the one exception an arm can switch on, with
+`levers_on = ["messages"]`; ask for them there, since `requires` is checked
+before an arm's levers apply.
 
 `requires` checks the switches only. It does not check that a switched-on
 feature is set up — `search` with no backend configured passes — and it is
