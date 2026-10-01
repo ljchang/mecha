@@ -36,6 +36,7 @@ export const PANE_FEATURE = {
   'review/entities': 'graph',
   'review/frontdoor': 'frontdoor',
   'settings/voice': 'voice',
+  'library/voices': 'voice',
 };
 
 /** The feature `view/sub` belongs to: its pane's, else its view's, else none. */
