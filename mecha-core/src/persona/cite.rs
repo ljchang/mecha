@@ -271,26 +271,31 @@ impl<'m> Received<'m> {
     /// file is named once and a citation without its `@group/` resolves
     /// (review of #465). The same text twice is kept once, so the page
     /// shows it once.
+    ///
+    /// Two different pieces of one page stay **two pieces**, never joined:
+    /// joined, a quote straddling two disjoint search passages the chat
+    /// never saw side by side would read as quoted (review of #467). A
+    /// piece already held, or held within another, is kept once; one that
+    /// holds an earlier piece replaces it.
     fn add(&mut self, p: Page) {
-        let Some(m) = self
+        let new = p.text.trim();
+        let mut same = self
             .pages
             .iter_mut()
-            .find(|m| m.file == p.file && m.page == p.page)
-        else {
-            self.pages.push(p);
-            return;
-        };
-        let (have, new) = (m.text.trim(), p.text.trim());
-        if have.contains(new) {
+            .filter(|m| m.file == p.file && m.page == p.page);
+        if same.any(|m| m.text.trim().contains(new)) {
             return;
         }
-        if new.contains(have) {
+        if let Some(m) = self
+            .pages
+            .iter_mut()
+            .find(|m| m.file == p.file && m.page == p.page && new.contains(m.text.trim()))
+        {
             m.text = p.text;
-        } else {
-            m.text.push('\n');
-            m.text.push_str(&p.text);
+            m.norm = None;
+            return;
         }
-        m.norm = None;
+        self.pages.push(p);
     }
 
     /// Every file received, each once.
@@ -636,14 +641,19 @@ fn check(c: &Citation, received: &mut Received<'_>) -> Checked {
     // Last, a quote that runs over a page break: each page with the next,
     // found on the first of the two (review of #465, pass 4: it was "not
     // in the file", the harshest verdict, for a sentence that is).
-    let mut paged: Vec<(u32, &str)> = views
+    // A page may be several pieces: each of one page with each of the next.
+    let paged: Vec<(u32, &str)> = views
         .iter()
         .filter_map(|v| Some((v.id.parse().ok()?, v.text)))
         .collect();
-    paged.sort_by_key(|p| p.0);
-    for pair in paged.windows(2) {
-        let ((a, first), (b, second)) = (pair[0], pair[1]);
-        if b != a + 1 || !format!(" {first} {second} ").contains(&padded) {
+    let pairs = paged.iter().flat_map(|&(a, first)| {
+        paged
+            .iter()
+            .filter(move |&&(b, _)| b == a + 1)
+            .map(move |&(_, second)| (a, first, a + 1, second))
+    });
+    for (a, first, b, second) in pairs {
+        if !format!(" {first} {second} ").contains(&padded) {
             continue;
         }
         let cited_here = c
@@ -662,20 +672,23 @@ fn check(c: &Citation, received: &mut Received<'_>) -> Checked {
 }
 
 /// One page of `file` as the chat received it — the files block and every
-/// reader result, a page read twice joined — for the page to show beside a
-/// citation. `None` for a page it never received. A text file's one body
-/// answers any page.
+/// reader result, each piece once, joined for reading (the check keeps them
+/// apart) — for the page to show beside a citation. `None` for a page it
+/// never received. A text file's pieces answer any page.
 pub fn page_text(messages: &[Message], file: &str, page: Option<u32>) -> Option<String> {
     let pages = received(messages);
     let mut files: Vec<&str> = pages.iter().map(|p| p.file.as_str()).collect();
     files.sort_unstable();
     files.dedup();
     let file = resolve(file, &files)?;
-    let mut of_file = pages.iter().filter(|p| p.file == file);
-    let unpaged = of_file.clone().all(|p| p.page.is_none());
-    of_file
-        .find(|p| unpaged || p.page == page)
-        .map(|p| p.text.trim().to_string())
+    let of_file: Vec<&Page> = pages.iter().filter(|p| p.file == file).collect();
+    let unpaged = of_file.iter().all(|p| p.page.is_none());
+    let pieces: Vec<&str> = of_file
+        .iter()
+        .filter(|p| unpaged || p.page == page)
+        .map(|p| p.text.trim())
+        .collect();
+    (!pieces.is_empty()).then(|| pieces.join("\n\n"))
 }
 
 /// What a citation opens: `page` of `file` as the chat received it, with
@@ -1149,5 +1162,38 @@ mod tests {
             check_conversation(&msgs)[0].verdict,
             Verdict::Quoted { found: Some(1) }
         );
+    }
+
+    /// Review of #467: two passages of one page that came back from two
+    /// searches are two pieces — a quote stitched across them is not in
+    /// what the chat read, and reads "not in the file".
+    #[test]
+    fn a_quote_stitched_across_two_passages_is_not_quoted() {
+        let hit = |id: &str, body: &str| {
+            result(
+                id,
+                false,
+                &format!("document: notes.md \u{b7} search result\n\n{body}\n"),
+            )
+        };
+        let msgs = [
+            Message::user("go"),
+            calls("s1", json!({"query": "a"})),
+            hit("s1", "Urchins graze kelp holdfasts at night."),
+            calls("s2", json!({"query": "b"})),
+            hit("s2", "Otters keep the barrens in check."),
+            said(
+                "[notes.md: \"graze kelp holdfasts at night\"] \
+                 [notes.md: \"at night. Otters keep the barrens\"]",
+            ),
+        ];
+        let got: Vec<Verdict> = check_conversation(&msgs)
+            .into_iter()
+            .map(|c| c.verdict)
+            .collect();
+        assert_eq!(got, [Verdict::Quoted { found: None }, Verdict::NotFound]);
+        // Shown together, kept apart.
+        let page = page_text(&msgs, "notes.md", None).unwrap();
+        assert!(page.contains("at night.") && page.contains("Otters keep"));
     }
 }
