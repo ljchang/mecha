@@ -15,7 +15,8 @@ still worth knowing about, because the next person will otherwise re-derive it.
 ## What shipped, and when
 
 **2026-10-01 — modular installs, step 4: setup reads the registry, and a
-trial carries its switches (#460, #461, #464, #466, #470, #472, #474).**
+trial carries its switches (#460, #461, #464, #466, #470, #472, #474,
+#476).**
 Each was merged on a clean review pass — by the mecha-d7 lane, and #474
 by mecha-5d's under the owner's "merge everything" — and all went live in
 mecha-d7's deploys of `9f306d8f` (#460, #461), `85ca4dfe` (#464, #466),
@@ -71,11 +72,12 @@ wording rode in #470.
   names `levers_on` there instead. mecha-d7 merged it as `d19995fa` after
   two passes, and it went live in mecha-69's deploy of `36ff7573`.
 
-Fifteen review passes across the seven PRs (#460: 2, #461: 1, #464: 3,
-#466: 3, #470: 1, #472: 2, #474: 3, counted from each PR's record). Ruling 1 was put to the owner on a wrong premise — that an arm naming
-no environment runs on the operator's config — and put again when the code
-showed every arm runs in one (the traps section has the lesson); the owner
-chose the whole set both times.
+Seventeen review passes across the eight PRs (#460: 2, #461: 1, #464: 3,
+#466: 3, #470: 1, #472: 2, #474: 3, #476: 2, counted from each PR's
+record). Ruling 1 was put to the owner on a wrong premise — that an arm
+naming no environment runs on the operator's config — and put again when
+the code showed every arm runs in one (the traps section has the lesson);
+the owner chose the whole set both times.
 
 **2026-09-30/10-01 — files and pictures in chats, and a measured "no" to
 OCR for images (#438, #447, #450, #453).** The owner asked for the persona
