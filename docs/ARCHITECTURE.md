@@ -8318,7 +8318,14 @@ in five different ways. The design and its open steps are
   (`experiment::config_switch`) read and write `messages.enabled`, and a
   serialised arm config reloaded with a `messages = true` left in the map
   would switch messaging back on after a lever turned it off. A test
-  round-trips that case.
+  round-trips that case. **The field is an `Option<bool>`**, so `switch`
+  reads it as it reads every other key — unset `Absent`, `false` `Off` —
+  and `MessagesConfig::on` is the runtime question (only a yes opens a
+  mailbox). As a plain bool its `false` read as unanswered, and `mecha
+  setup` offered messaging forever over an owner's no (found on review of
+  #464; the owner asked for messages "exposed like all others in
+  configuration and setup"). `feature::set_switch` writes either home of a
+  switch, so nothing else needs to know which one messages has.
 - **The upgrade notice is evidence plus `state`.** An install from before
   `[features]` has every switch absent, so every feature is off, and
   `announcements` names the ones it had set up. That is `evidence` —
@@ -8465,10 +8472,11 @@ in five different ways. The design and its open steps are
   step carries its own way back (`Step::undo`): `--undecline <id>` for an
   answer given in setup, `mecha features enable <id>` for a switch written
   `false`. `mecha setup <feature>` runs one step and reopens it if declined
-  — in memory only, so a skip writes nothing, and only where there is an
-  offer: under `--json` a recorded answer stays recorded (review of #461),
-  as does every declined step's way back; `--minimal` declines every
-  optional one and writes no config.
+  — in memory only, so a skip writes nothing, and never under `--json`,
+  where a recorded answer stays recorded (review of #461), as does every
+  declined step's way back. The rule is the flag, not the terminal: a plain
+  run with no terminal attached still reopens (the owner's ruling,
+  2026-10-01). `--minimal` declines every optional one and writes no config.
 - **An environment may only narrow.** `trial_env::config_at` refuses an
   environment's `[features]` key set `true` unless
   `Feature::switchable_from_environment` — an exhaustive match, today only

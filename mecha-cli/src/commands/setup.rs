@@ -151,10 +151,12 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     // Naming a feature is a stronger statement than a stored "never": its
     // step is offered again for this run (review of #460). Nothing is written
     // unless the answer is: a skip keeps the old decline, a fresh "never"
-    // records it once more. **Only where there is an offer**: under `--json`
-    // nothing is offered, so reopening could only turn a recorded answer into
-    // a non-zero exit — the "red over a choice already made" `Declined`
-    // exists to retire (review of #461). The gate goes first: the closure
+    // records it once more. **Never under `--json`**: nothing is offered
+    // there, so reopening could only turn a recorded answer into a non-zero
+    // exit — the "red over a choice already made" `Declined` exists to retire
+    // (review of #461). A plain run reopens whether or not a terminal is
+    // attached: the rule is the flag, not the terminal (the owner's ruling,
+    // 2026-10-01), so one argv always plans the same. The gate goes first: the closure
     // removes from `honoured`, so `&&` must short-circuit before it runs.
     let mut honoured = declined.clone().unwrap_or_default();
     let reopened = !args.json
