@@ -109,7 +109,8 @@ assert.equal(safetyLine({ crisis: 'degraded', disclosure: true, reanchor: true, 
 // A state this page does not know reads as the cautious one, never as "on".
 assert.ok(safetyLine({ crisis: 'judged-v2' }).includes('keywords only'));
 assert.equal(safetyLine({ crisis: 'off', disclosure: false, reanchor: true, dose: false }), 'crisis detection off · off: disclosure, dose');
-assert.equal(safetyLine({ crisis: 'on', disclosure: true, reanchor: true, dose: true, farewell: 'off' }), 'crisis detection on · off: farewell');
+// The farewell check was dropped (2026-10-01): an older server's state for it is not a switch.
+assert.equal(safetyLine({ crisis: 'on', disclosure: true, reanchor: true, dose: true, farewell: 'off' }), 'crisis detection on');
 // Two crisis cards get two ids, and a re-read keeps each card's own.
 {
   let r = emptyRun();

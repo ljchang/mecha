@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the PDF parser unconfined. `mecha exp` now refuses such a file, as it does
   `[image]`, `[messages]`, `[slack]`, `[web]` and `[harness]`.
 
+### Removed
+
+- **Break reminders and the farewell check are gone from personas.** Both
+  were switches on the settings page that did nothing yet; they were dropped
+  rather than built. A `persona.toml` that still has `breaks` or `farewell`
+  under `[safety]` loads as before, and the persona's notes say those lines
+  are read by nothing and can be deleted.
+
 ### Added
 
 - **An experiment environment can say which features its tasks need.**
