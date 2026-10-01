@@ -12,11 +12,34 @@
   // `cites`: a persona reply's checked citations as [raw, check] pairs
   // (`citeEntries`). Each is drawn where its text falls, tagged with what the
   // check found; `onCite` opens a found one.
+  //
+  // `actions`: who said it (`mecha`, a persona's name), for a finished reply
+  // — Copy and Download act on the reply as written, and every code block
+  // gets its own Copy (owner request, 2026-10-01). Left out while a reply
+  // streams: half an answer is not one to save. `download` is opted into by
+  // each call site, never assumed: a file on the device outlives the room,
+  // so an incognito chat keeps Copy and has no Download (INCOGNITO-DESIGN
+  // R2), and a surface that forgets to say fails closed (review of #484).
+  import { onDestroy } from 'svelte';
   import { parseBlocks, hiddenTarget } from './mail-markdown.js';
   import { citeNote, citeOpens, citeMark, citeUnmark } from './persona.js';
+  import { replyFilename, copyText, downloadText } from './reply-export.js';
 
-  let { text = '', cites = null, onCite = null } = $props();
+  let { text = '', cites = null, onCite = null, actions = null, download = false } = $props();
   let raw = $state(false);
+  // Which control just copied — 'reply' or the code block itself — for a
+  // moment's "copied", or 'failed' when the phone refused. Raw, so a block
+  // is held as itself: a proxied copy is never `===` the block the snippet
+  // draws, and its button never said "copied" (review of #484).
+  let copied = $state.raw(null);
+  let copiedTimer = null;
+  onDestroy(() => clearTimeout(copiedTimer));
+  async function copy(what, value) {
+    const ok = await copyText(value);
+    copied = ok ? what : 'failed';
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => (copied = null), 1500);
+  }
   // Citations are swapped for placeholders before the Markdown is parsed
   // and drawn back from them, so the parser cannot split one (`citeMark`).
   const prepared = $derived(citeMark(text, cites));
@@ -46,7 +69,17 @@
     {:else if b.type === 'hr'}
       <hr />
     {:else if b.type === 'code'}
-      <pre>{plain(b.text)}</pre>
+      {#if actions}
+        <div class="codewrap">
+          <pre>{plain(b.text)}</pre>
+          <!-- A double tap is a press, not the reply's raw toggle. -->
+          <button class="codecopy" type="button" aria-label="Copy this code" onclick={() => copy(b, plain(b.text))} ondblclick={(e) => e.stopPropagation()}>
+            {copied === b ? 'copied' : 'copy'}
+          </button>
+        </div>
+      {:else}
+        <pre>{plain(b.text)}</pre>
+      {/if}
     {/if}
   {/each}
 {/snippet}
@@ -55,6 +88,21 @@
 <div class="prose" class:raw ondblclick={() => (raw = !raw)} title={raw ? 'as written — double-click to render' : undefined}>
   {#if raw}{text}{:else}{@render block(blocks)}{/if}
 </div>
+{#if actions && text.trim()}
+  <div class="replyacts">
+    <button type="button" class="ract" aria-label="Copy this reply" onclick={() => copy('reply', text)}>
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2" /></svg>
+      {copied === 'reply' ? 'Copied' : 'Copy'}
+    </button>
+    {#if download}
+      <button type="button" class="ract" aria-label="Download this reply as Markdown" onclick={() => downloadText(replyFilename(actions), text)}>
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
+        Download
+      </button>
+    {/if}
+    {#if copied === 'failed'}<span class="copyfail">this browser would not copy — select the text and copy it by hand</span>{/if}
+  </div>
+{/if}
 
 <style>
   .prose { display: flex; flex-direction: column; gap: 10px; white-space: normal; overflow-wrap: anywhere; }
@@ -73,6 +121,14 @@
   ul, ol { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 4px; }
   blockquote { margin: 0; padding: 2px 0 2px 12px; border-left: 2px solid var(--accent-900); color: var(--text-muted); display: flex; flex-direction: column; gap: 8px; }
   hr { width: 100%; border: 0; border-top: 1px solid var(--accent-900); margin: 2px 0; }
+  .replyacts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
+  .ract { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 9px; background: transparent; border: 1px solid transparent; border-radius: 8px; color: var(--text-muted); font-size: 12px; cursor: pointer; }
+  .ract:hover { background: var(--surface); border-color: var(--accent-900); color: var(--text); }
+  .copyfail { font-size: 11px; color: var(--hazard); }
+  .codewrap { position: relative; }
+  .codewrap pre { padding-right: 56px; }
+  .codecopy { position: absolute; top: 4px; right: 4px; min-height: 26px; padding: 0 8px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: 6px; color: var(--text-muted); font-family: var(--mono); font-size: 10.5px; cursor: pointer; }
+  .codecopy:hover { color: var(--text); }
   pre { margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; padding: 8px 10px; border-radius: 8px; background: var(--void); }
   .img { font-family: var(--mono); font-size: 11px; padding: 0 5px; border: 1px dashed var(--accent-900); border-radius: 4px; color: var(--text-muted); }
   /* Citations, as the persona page draws them (§10.4). */
