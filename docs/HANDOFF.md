@@ -22,6 +22,58 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-30 — personas: #446 and #448 shipped and live; what the lane
+still owes.** What shipped, and the measurement behind #448's threshold, are
+in HISTORY under 2026-09-30. Both were installed in mecha-d7's `346bb8a2`,
+and both were still in `9253038b` (`strings ~/.cargo/bin/mecha | grep -c 'one
+call refused identically, turn after turn'` → 4, checked after the 01:44Z
+install on 2026-10-01). Self-portraits (#444, #454) are mecha-d7's, live in
+`9253038b`, and theirs to record. Persona files (§10) are mecha-d7's build, in progress. What is
+open, verified against `612075c8`:
+
+- **The farewell check (§12.4) is unbuilt.** `safety_json` reports it as
+  `"unbuilt"`. Two owner decisions come first:
+  - what replaces a blocked reply (retry once and then a plain line, a
+    plain line only, or show it flagged);
+  - how a goodbye is recognised (a keyword list on the owner's message, or
+    a model on every message).
+
+  A persona's reply streams, so blocking one means holding the stream on
+  goodbye turns.
+- **Read by nothing yet:**
+  - the model pin (§12.6): the form's `model` field says "Not built yet";
+  - break reminders: `safety.breaks` reaches only the status JSON;
+  - the whole Memory section (§9): `Section::unbuilt`.
+- **A chat opened before a persona gained its `character` never gets a
+  "self".** Chats pin a version, and `PersonaSelf` comes from the pinned
+  `persona.toml`. The owner's Stella chat (pinned v4) refused every picture
+  after #444 shipped; a new chat drew. Two fixes, the owner's choice:
+  - read `character` live, as #426 did for the safety switches;
+  - offer to move a chat that is behind to the latest version.
+- **Image speed, measured 2026-09-30 12:50Z** on one cold persona picture
+  (151 s turn):
+  - ComfyUI took 121 s: about 37 s loading after the 10-minute idle unload,
+    and 83 s for 40 steps;
+  - warm runs that day took 75–80 s.
+
+  Levers, both unmeasured and both the owner's: `[image] steps` (compare
+  40 vs 20 on the same seeds before changing it) and
+  `[image] unload_after_secs` (600; holding the models costs ~12–15 GB of
+  the unified memory the chat model shares).
+- **#448's minors left at merge:**
+  - "seven" is hardcoded in four prose sites (`config.rs`'s `loop_guard`
+    doc, both website pages, CHANGELOG) while the constant is derived;
+  - one more `input.to_string()` per tool turn;
+  - `loop_guard` is not a `harness::Lever`, so `mecha eval` cannot switch
+    it off;
+  - both triggers record the same `StopCause::Loop`, so re-measuring the 7
+    means re-scanning transcripts;
+  - an outbox staging failure records `denied: false` (so it counts) while
+    incrementing `denied_this_turn`.
+- **HISTORY has no paragraph for the persona arc itself** (#403–#434, #438,
+  #444, #454): only #446/#448 are there. Owed by this lane; each PR body
+  holds its own record.
+
 **2026-09-30/10-01 — files and pictures in chats (#438, #447, #450, #453):
 all merged and installed.** #438, #447 and #450 were installed in mecha-d7's
 `346bb8a2`. #453
@@ -181,9 +233,9 @@ dated*. What is open:
   merged, and were deployed at 23:47Z by mecha-69 — `mecha` from `97ebae9c`
   and a rebuilt dist (`index-BvMDEpUF.js`); that install is its to record.
   Checked here: `strings ~/.cargo/bin/mecha | grep -c 'Suicide & Crisis
-  Lifeline'` → 1, and `document_read` still registers. Next: 2c-2 (the
-  farewell check and the crisis judge), then 2d (self-portraits, file
-  download).
+  Lifeline'` → 1, and `document_read` still registers. Since then the
+  crisis judge (#426) and self-portraits (#444, #454) shipped; the lane's
+  current state is the 2026-09-30 persona entry at the top of this section.
 
 **2026-09-29 — image edits that came back unchanged: the cause was the
 prompt (#408), merged and installed.** What shipped, and the measurement,
