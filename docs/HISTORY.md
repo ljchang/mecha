@@ -14,9 +14,73 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
-**2026-10-01 — the persona page locks itself, and a portrait can be framed
-(#469, #473, #480).** The owner's asks from a phone, each through its own
-review loop.
+**2026-10-01 — personas remember: a store, a nightly writer, and recall at
+chat start and on every turn (#462, #463, #468, #477, #481).**
+PERSONA-DESIGN §9 / §17 step 5, each through its own review loop.
+- **#462 (D25):** break reminders and the farewell check were dropped
+  before either was built.
+  - The dose meters already show time spent. The farewell evidence (HBS
+    WP 26-005) is about engagement-tuned apps, and the one goodbye in the
+    owner's persona chats got a clean reply.
+  - `Safety` still accepts `breaks` and `farewell`, so old files load.
+    `retired_keys` names them in the persona's notes.
+- **#463, the store:** `persona::memory`, one `memory.db` per persona plus
+  `shared.db`.
+  - `source` is mandatory: it is the deletion key, enforced by a schema
+    `CHECK`, and `forget_chat` clears both files.
+  - Forget means it: `secure_delete`, then `scrub` reads `busy` from the WAL
+    checkpoint. A blocked checkpoint is reported, never passed.
+  - `Status::initial` keeps an untrusted record a candidate until the owner
+    approves it.
+  - `mecha persona memory show|…|unshare` is the owner's door.
+- **#468, the writer:** `mecha persona memory write`, nightly from
+  `scripts/ruminate.sh`.
+  - A turn is the n-th `message` record in the file, so a compaction moves
+    no address.
+  - Provenance splits where taint first rose, and the clean stretch's
+    request never sees the untrusted one.
+  - An untrusted stretch only adds, as candidates.
+  - `Memory::write_stretch` commits the records and the ledger together.
+  - Test chats are left out (`pending_chats`), and the provider must pass
+    `provider_is_local`.
+  - Owner ruling 2026-10-01: a chat is written by the model it ran on, and
+    only while that model is resident (`pick_model`), so the 2026-09-27
+    no-swap rule holds.
+- **#477, recall at chat start:** `persona::recall::chat_start` folds about-me,
+  facts and recent episodes into the first turn beside the files block.
+  - It opens with one of **two stems** (`MEMORY_STEM`,
+    `UNTRUSTED_MEMORY_STEM`). This deviates from §9.7's single stem:
+    `arm_for_content` re-reads the conversation at every run start, so one
+    stem arming both would have made every chat that remembered anything
+    untrusted.
+  - The budget is split so no section starves another out of sight, and
+    every cut is said.
+- **#481, recall on every turn:** past the first reply, the owner's message
+  keys `Memory::recall_search`, and up to three records the chat does not
+  already hold ride with that turn under the same two stems
+  (`recall::per_turn`).
+  - Words (FTS5), meaning (vectors, `embed::Task::Recall`) and recency are
+    fused by reciprocal rank; ties go to the newer record.
+  - `STOPWORDS` stops a common word from being the only match. That
+    matters because recalling an approved record from outside arms the
+    chat for good.
+  - `recall::would_search` decides before any embed, so a turn that won't
+    search waits on nothing.
+  - Schema v3 builds the index under the write lock, idempotently.
+  - FTS5 is created with `secure-delete`: without it, a forgotten term
+    survived in `memory.db` (mutation-checked against the file's bytes).
+
+The review loops (1, 3, 6, 4 and 5 workflow review passes, counted from each
+PR's comments) kept finding one shape: a path that
+lost or kept something without saying so. A blocked log truncation passed
+as done; a shared copy outlived its correction; an unanswered turn was
+skipped for good; a section was cut to nothing with its heading gone. Each
+was fixed with a test that fails on the old code, and the key ones were
+mutation-checked.
+
+**2026-10-01 — the persona page locks itself, a portrait can be framed,
+and every reply can be copied or saved (#469, #473, #480, #484).** The
+owner's asks from a phone, each through its own review loop.
 - **Autolock (#469):** `imagelib::autolock_minutes` reads `autolock.toml`,
   beside `lock.toml` (15 minutes unless set, 1 to 240; a damaged file grants
   no unlock). It is set from Settings → Lock or `mecha imagelib
@@ -36,6 +100,14 @@ review loop.
   so no setting leaves a gap. Unplaced, a portrait leans to the top.
   `dragFrame` inverts `X = z·u + p·(S − z·R)`, so the picture follows the
   finger and an axis with nothing hidden does not move.
+- **Copy and Download on every reply (#484):** `ChatProse` takes `actions`
+  for a finished reply. Copy writes the reply as written; Download saves a
+  `.md` from a Blob made in the page. Each code block gets its own Copy.
+  `download` defaults off and each call site opts in, and an incognito chat
+  never does: a file on the device outlives the room (INCOGNITO-DESIGN R2)
+  — reversed the same day by the owner (#489): the file is made in the
+  browser, so the server keeps no trace.
+  `reply-export.mjs` pins the call sites by counting them first.
 
 **2026-10-01 — personas read their files: folders, checked citations,
 search, saving (#459, #465, #467, #475), and a page that reads well (#479).**
@@ -9456,6 +9528,14 @@ and is what finally exercised the path.)
 
 ### Review process
 
+**Read every review posted since your push, not since a time you guessed.**
+On #468 a cut-off of "comments after 13:40" dropped the 13:39 pass outright,
+and the 14:07 pass was not yet posted when the check ran — so a merge was one
+step from a head whose last two reviews had not been read. Two habits, not
+one: take the cut-off from the recorded push time rather than a guess, and
+re-poll after the last read, because a pass can land while you answer the
+previous one (2026-10-01).
+
 **A reviewer's mechanism is a claim to measure, in either direction.** On
 #473 a pass warned that `frame`, a TOML table, must stay `State`'s last
 field, or a later scalar would fail to serialise with `ValueAfterTable`. A
@@ -9854,6 +9934,16 @@ check the timestamp before re-running anything.**
   skips, which is how they were caught rather than written into the docs.
 
 ### Environment
+
+**A shared `CARGO_TARGET_DIR` keeps test binaries that point into removed
+worktrees.** Building several worktrees into one target directory reuses a
+crate's test binary when its sources match, and `env!("CARGO_MANIFEST_DIR")`
+is baked in at compile time. After the worktree that compiled it was
+removed, `mecha-mail`'s `docs_server` fixture tests failed only in
+`--workspace` runs ("can't open file '…/mecha-drop-farewell/…'"), which read
+as flaky. When a test passes alone but fails in the full run, read its
+stderr for another worktree's path before calling it flaky; `cargo clean -p
+<crate>` clears it (2026-10-01).
 
 **A new authored data file can be silently ignored.** `.gitignore`'s
 `*.jsonl` (with re-includes only for `eval/*.jsonl`, `eval/envs/**`,
