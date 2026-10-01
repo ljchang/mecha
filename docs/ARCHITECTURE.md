@@ -1345,9 +1345,15 @@ module.
       first spoken turn of a stretch. It is not a prefix on the owner's
       words, as the assistant's `VOICE_BLOCK` is, so no reader has to strip
       it.
-    - A pause is heard. On a crisis pause, or a run the judge stopped, the
-      facade's answer is `SAFE_MESSAGE`, never the half-reply that was cut
-      off.
+    - A pause is heard. A streaming call speaks only what arrives as
+      `AgentEvent::TextDelta` on the tap; `HostedAnswer.text` is never
+      spoken there. So the persona door sends `SAFE_MESSAGE` as a delta: in
+      place of a reply on a crisis pause, and after the reply on a run the
+      judge stopped, since what was already spoken cannot be unsaid.
+    - The lock and approval are checked before the barge-in (the
+      assistant's #376 order), so a refused call never stops the reply in
+      flight. A spoken turn that fails is rolled back with its call note,
+      and the next spoken turn carries the note again.
 - **Serve vouches for a persona call at the offer** (`persona_offer`).
   The worker names a chat by key alone, so the page offers with its unlock
   token. Serve checks it, keeps it (`bind_call`) and strips it, so the worker
