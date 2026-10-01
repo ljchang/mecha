@@ -28,7 +28,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/sources', '/sources/remove'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/sources', '/sources/remove', '/sources/file', '/sources/text'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save'];
 
 export const ENDPOINTS = [
@@ -70,6 +70,24 @@ export const OWNER_FILES = [
   ['motivation', 'What they want'],
   ['settings', 'Settings'],
 ];
+
+// One of a persona's files, by its listed name: to download (`file`) or to
+// read as text (`text`). The server finds it in the persona's own listing.
+export function sourceFileUrl(name, file, what, token = null) {
+  const base = personaUrl(name, what === 'text' ? '/sources/text' : '/sources/file', token);
+  return `${base}${base.includes('?') ? '&' : '?'}file=${encodeURIComponent(file)}`;
+}
+
+// An earlier chat's line in the list: what it was about, as the memory
+// writer summed it up, else the goal it was opened with, else how the owner
+// opened it — and `null` when none, for the page to show the day.
+export function chatHeadline(h) {
+  for (const v of [h?.summary, h?.goal, h?.opener]) {
+    const t = (v ?? '').trim();
+    if (t) return t;
+  }
+  return null;
+}
 
 export function personaUrl(name, suffix, token) {
   if (!PERSONA_SUFFIXES.includes(suffix)) throw new Error(`not a persona endpoint: ${suffix}`);
@@ -494,4 +512,30 @@ export function dragFrame(frame, dx, dy, size, aspect = 1) {
     return room > 0.5 ? clamp(p - d / room, 0, 1) : p;
   };
   return { ...f, x: pan(f.x, dx, S * Math.max(1, a)), y: pan(f.y, dy, S * Math.max(1, 1 / a)) };
+}
+
+// The owner's words in their own bubble: a chat opened with a goal sends it
+// ahead of the first message, as "(What I want from this conversation: …)",
+// so the model reads it — but it is the harness's framing, not something
+// the owner typed (the owner's ask, 2026-10-01).
+const GOAL_PREAMBLE = /^\(What I want from this conversation: [^\n]*\)\n\n/;
+export function ownWords(text) {
+  return (text ?? '').replace(GOAL_PREAMBLE, '');
+}
+
+// Consecutive calls to the same tool, drawn as one row ("file_read ×6"):
+// `first` says whether entry `i` starts a run (the rest are not drawn), and
+// `count` how long it is. A call `plain` says no to — one that drew a
+// picture, which is the answer and not a detail — stands alone, as does a
+// failed one, which the row reports.
+export function toolRun(entries, i, plain = () => true, failed = () => false) {
+  const e = entries[i];
+  const joins = (x) => x?.kind === 'tool' && x.name === e.name && plain(x) && !failed(x);
+  if (!joins(e)) return { first: true, count: 1 };
+  if (i > 0 && joins(entries[i - 1]) && failed(entries[i - 1]) === failed(e)) {
+    return { first: false, count: 0 };
+  }
+  let count = 1;
+  while (joins(entries[i + count])) count++;
+  return { first: true, count };
 }

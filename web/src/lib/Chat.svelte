@@ -3,6 +3,7 @@
   import { apiFetch as fetch } from './api.js';
   import { tameName, validName } from './library.js';
   import ModelChip from './ModelChip.svelte';
+  import ChatProse from './ChatProse.svelte';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, maskName } from './image-edit.js';
   import { pictureOf, repeatedPictures } from './picture.js';
@@ -1819,7 +1820,7 @@
           {#if entry.spoken}<span class="queued-tag">spoken</span>{/if}
         </div>
       {:else if entry.kind === 'assistant'}
-        <div class="answer">{entry.text}</div>
+        <div class="answer"><ChatProse text={entry.text} /></div>
       {:else if entry.kind === 'tool'}
         <!-- The chip names the call and says which one it was; the tap opens
              the whole of it — what it was called with, then what came back,
@@ -2114,7 +2115,7 @@
       {/if}
     {/each}
     {#if streaming}
-      <div class="answer">{streaming}</div>
+      <div class="answer"><ChatProse text={streaming} /></div>
     {/if}
     {#if running && !streaming}
       <div class="thinking">

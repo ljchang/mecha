@@ -5,6 +5,7 @@
   import MdForm from './MdForm.svelte';
   import ModelChip from './ModelChip.svelte';
   import EditModal from './EditModal.svelte';
+  import ChatProse from './ChatProse.svelte';
   import { composeEditMessage, maskName } from './image-edit.js';
   import { pictureOf, repeatedPictures, turnsWithoutPicture } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
@@ -15,7 +16,7 @@
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
     taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
     toolStatus, waitingLine, withWorking, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
-    citeSegments, citeEntries, citeNote, citeOpens, citedUrl,
+    citeEntries, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
     frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
@@ -50,6 +51,16 @@
   let sources = $state([]);
   let sourcesNote = $state('');
   let sourcesTimer = null;
+  // Files on their way up, shown at once so a drop is answered before the
+  // server is (the owner's ask, 2026-10-01).
+  let uploading = $state([]);
+  // A file dragged over the tiles.
+  let dropping = $state(false);
+  // A file opened from its tile: its line, a download, and its text once
+  // read.
+  let fileSheet = $state(null);
+  // The goal field, behind a link: optional, and a distraction left open.
+  let showGoal = $state(false);
   // The poll stops with the page, not with the last read (review of #459) —
   // and a load still in flight when it closes does not start it again.
   let gone = false;
@@ -138,6 +149,28 @@
     key;
     untrack(() => (savedReplies = {}));
   });
+
+  // A file opened from its tile: a sheet with its line, a download, and —
+  // once it has been read — its text. Never the PDF itself: a paper is
+  // third-party content, and nothing but an image is served renderable.
+  async function openFile(s) {
+    if (!chosen) return;
+    fileSheet = { source: s, text: null, note: '', loading: false };
+  }
+
+  async function readFileText() {
+    if (!chosen || !fileSheet) return;
+    const want = fileSheet.source.name;
+    fileSheet = { ...fileSheet, loading: true, note: '' };
+    try {
+      const res = await fetch(sourceFileUrl(chosen.name, want, 'text', token));
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const { text } = await res.json();
+      if (fileSheet?.source.name === want) fileSheet = { ...fileSheet, loading: false, text };
+    } catch (e) {
+      if (fileSheet?.source.name === want) fileSheet = { ...fileSheet, loading: false, note: String(e?.message ?? e) };
+    }
+  }
 
   // Save a reply into the persona's own files, on the owner's word: the
   // server takes only text this chat's persona wrote (`save_reply`).
@@ -529,6 +562,7 @@
     sourcesNote = '';
     busy = true;
     const failed = [];
+    uploading = files.map((f) => f.name);
     try {
       for (const f of files) {
         const url = personaUrl(chosen.name, '/sources', token);
@@ -538,11 +572,13 @@
         });
         // Every failure, not the last: three of five refused says three.
         if (!res.ok) failed.push(`${f.name}: ${(await res.text()).trim()}`);
+        uploading = uploading.filter((n) => n !== f.name);
       }
       sourcesNote = failed.join(' · ');
     } catch (e) {
       sourcesNote = [...failed, String(e?.message ?? e)].join(' · ');
     } finally {
+      uploading = [];
       busy = false;
       await loadSources();
     }
@@ -1370,13 +1406,18 @@
           <div class="warnline">{problem}</div>
         {/each}
         <div class="startbox">
-          <input
-            class="editbox"
-            placeholder="A goal for this chat (optional)"
-            maxlength="2000"
-            bind:value={goal}
-          />
+          {#if showGoal || goal}
+            <input
+              class="editbox"
+              placeholder="What you want from this chat (optional)"
+              maxlength="2000"
+              bind:value={goal}
+            />
+          {/if}
           <button class="abtn primary wide" disabled={busy || !chosen.approved} onclick={start}>Start a chat</button>
+          {#if !showGoal && !goal}
+            <button class="linkbtn quiet goalink" onclick={() => (showGoal = true)}>Set a goal for this chat</button>
+          {/if}
         </div>
         <!-- The safety switches are not stated here (owner ruling,
              2026-10-01): they are the persona's settings, read and changed
@@ -1394,10 +1435,19 @@
              group's folder or everyone's. Small tiles, so the add control
              never reads as a second "Start a chat". -->
         <div class="earlier">Files</div>
-        <div class="tiles">
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="tiles"
+          class:dropping
+          ondragover={(e) => { if (busy) return; e.preventDefault(); e.stopPropagation(); dropping = true; }}
+          ondragleave={() => (dropping = false)}
+          ondrop={(e) => { e.preventDefault(); e.stopPropagation(); dropping = false; if (!busy) addSources([...(e.dataTransfer?.files ?? [])]); }}
+        >
           {#each sources as s (s.name)}
             {@const kind = fileKind(s.name)}
-            <div class="tile" class:bad={!!s.unreadable} title={`${s.name} — ${sourceLine(s)}${s.unreadable ? `\n${s.unreadable}` : ''}`}>
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <div class="tile openable" class:bad={!!s.unreadable} role="button" tabindex="0" title={`${s.name} — ${sourceLine(s)}${s.unreadable ? `\n${s.unreadable}` : ''}`}
+              onclick={() => openFile(s)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openFile(s))}>
               <span class="tkind">{kind}</span>
               <span class="tname">{s.name.replace(/^@[^/]+\//, '')}</span>
               <span class="tstate" class:busy={s.processing}>{sourceState(s)}</span>
@@ -1405,13 +1455,20 @@
                 <!-- A group's or everyone's: removed from its own folder, not here. -->
                 <svg class="tshared" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="shared"><circle cx="9" cy="8" r="3" /><circle cx="17" cy="9" r="2.5" /><path d="M3.5 19c.6-3 2.8-4.5 5.5-4.5s4.9 1.5 5.5 4.5M15 14.6c2.6-.3 4.8 1 5.5 3.9" /></svg>
               {:else}
-                <button class="trm" aria-label="Remove {s.name}" title="Remove" disabled={busy} onclick={() => removeSource(s.name)}>
+                <button class="trm" aria-label="Remove {s.name}" title="Remove" disabled={busy} onclick={(e) => { e.stopPropagation(); removeSource(s.name); }}>
                   <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
                 </button>
               {/if}
             </div>
           {/each}
-          <label class="tile addtile" class:off={busy} title="Add a paper, notes or a picture for it to read">
+          {#each uploading as u (u)}
+            <div class="tile uploading" title={u}>
+              <span class="tkind">{fileKind(u)}</span>
+              <span class="tname">{u}</span>
+              <span class="tstate busy">uploading…</span>
+            </div>
+          {/each}
+          <label class="tile addtile" class:off={busy} title="Add a paper, notes or a picture for it to read — or drop it here">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
             <span class="tname">{sources.length ? 'Add' : 'Add a file'}</span>
             <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.md,.markdown,.txt" disabled={busy}
@@ -1430,13 +1487,8 @@
           <div class="plist">
             {#each history as h (h.id)}
               <button class="hrow" disabled={busy} onclick={() => resume(h.id)}>
-                {#if chatGoal(h)}
-                  <span class="htitle">{chatGoal(h)}</span>
-                  <span class="when">{when(h.created)} · {clock(h.created)}</span>
-                {:else}
-                  <span class="htitle">{when(h.created)}</span>
-                  <span class="when">{clock(h.created)}</span>
-                {/if}
+                <span class="htitle">{chatHeadline(h) ?? 'A chat'}</span>
+                <span class="when">{when(h.created)} · {clock(h.created)}</span>
                 <svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
               </button>
             {/each}
@@ -1453,13 +1505,13 @@
         {#each run.entries as entry, i (i)}
           {#if entry.kind === 'user'}
             <div class="bubble" class:queued={entry.queued}>
-              {entry.text}{#if entry.queued}<span class="queued-tag">{entry.delivery === 'discarded' ? 'not delivered — send again' : entry.delivery === 'delivered' ? 'steered' : 'queued'}</span>{/if}
+              {ownWords(entry.text)}{#if entry.queued}<span class="queued-tag">{entry.delivery === 'discarded' ? 'not delivered — send again' : entry.delivery === 'delivered' ? 'steered' : 'queued'}</span>{/if}
             </div>
           {:else if entry.kind === 'assistant'}
             <!-- Each citation as the harness checked it (§10.4): "quoted" is
                  all a check can say — a real quote may support the wrong claim.
                  One that was found opens its page. -->
-            <div class="answer">{#each citeSegments(entry.text, cites.get(i)) as seg, j (j)}{#if seg.check}{@const n = citeNote(seg.check)}{#if citeOpens(seg.check)}<span class="cite {n.tone}" role="button" tabindex="0" title={n.title} onclick={() => openCited(seg.check)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openCited(seg.check))}>{seg.text}<span class="citetag">{n.label}</span></span>{:else}<span class="cite {n.tone}" title={n.title}>{seg.text}<span class="citetag">{n.label}</span></span>{/if}{:else}{seg.text}{/if}{/each}</div>
+            <div class="answer"><ChatProse text={entry.text} cites={cites.get(i)} onCite={openCited} /></div>
             {#if !run.running && entry.text?.trim()}
               {#if savedReplies[entry.text]}
                 <span class="savednote">saved to files as {savedReplies[entry.text]}</span>
@@ -1470,9 +1522,12 @@
           {:else if entry.kind === 'tool'}
             {@const status = toolStatus(run.entries, i)}
             {@const picture = pictureOf(entry)}
-            <div class="tool" class:err={status === 'failed'}>
-              {entry.name}{status === 'failed' ? ' — failed' : status === 'retried' ? ' — retried' : ''}
-            </div>
+            {@const tr = toolRun(run.entries, i, (e) => !pictureOf(e), (e) => e.is_error === true)}
+            {#if tr.first}
+              <div class="tool" class:err={status === 'failed'}>
+                {entry.name}{tr.count > 1 ? ` ×${tr.count}` : ''}{status === 'failed' ? ' — failed' : status === 'retried' ? ' — retried' : ''}
+              </div>
+            {/if}
             <!-- The picture is the answer, not a detail of the call: drawn
                  once, from this chat's own workspace (`persona_chat::download`). -->
             {#if picture && !repeats.has(i)}
@@ -1508,7 +1563,7 @@
           {/if}
         {/each}
         {#if run.streaming}
-          <div class="answer">{run.streaming}</div>
+          <div class="answer"><ChatProse text={run.streaming} /></div>
         {/if}
         {#if waitingLine(run, chosen.display, now)}
           <!-- A slow local model must never look broken (owner, 2026-09-30). -->
@@ -1572,6 +1627,27 @@
         {/if}
       </div>
     {/if}
+  {/if}
+
+  {#if fileSheet}
+    <button class="scrim" aria-label="close" onclick={() => (fileSheet = null)}></button>
+    <div class="sheet citedsheet" role="dialog" aria-label="file">
+      <div class="sheet-grip"></div>
+      <div class="sheet-text">{fileSheet.source.name}</div>
+      <div class="barnote">{sourceLine(fileSheet.source)}{fileSheet.source.unreadable ? ` — ${fileSheet.source.unreadable}` : ''}</div>
+      {#if fileSheet.text != null}
+        <div class="citedtext">{fileSheet.text}</div>
+      {:else if fileSheet.note}
+        <div class="barnote">{fileSheet.note}</div>
+      {/if}
+      <div class="sheetacts">
+        <a class="abtn" href={sourceFileUrl(chosen.name, fileSheet.source.name, 'file', token)} download>Download</a>
+        {#if fileSheet.text == null && fileSheet.source.ready}
+          <button class="abtn" disabled={fileSheet.loading} onclick={readFileText}>{fileSheet.loading ? 'Reading…' : 'Show its text'}</button>
+        {/if}
+        <button class="abtn" onclick={() => (fileSheet = null)}>Close</button>
+      </div>
+    </div>
   {/if}
 
   {#if citedPage}
@@ -1726,19 +1802,13 @@
   .bubble.queued { border: 1px solid var(--accent-700); background: var(--bg); }
   .queued-tag { display: block; margin-top: 4px; font-family: var(--mono); font-size: 9px; color: var(--text-muted); }
   .answer { max-width: 92%; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
-  /* A checked citation: the persona's words, then what the check found. */
-  /* Spans, not buttons: a button is laid out as one atomic box, and the
-     words after a long citation would wrap below it. */
-  .cite { text-decoration: underline dotted var(--accent-500); text-underline-offset: 3px; }
-  .cite[role='button'] { cursor: pointer; }
-  .cite.bad { text-decoration: underline wavy var(--hazard); }
-  .citetag { margin-left: 4px; padding: 0 5px; border-radius: 6px; font-size: 11px; vertical-align: 1px; white-space: nowrap; background: var(--surface); color: var(--text-muted); }
-  .cite.ok .citetag { color: var(--accent-300); }
-  .cite.warn .citetag { color: var(--text); }
-  .cite.bad .citetag { color: var(--hazard); }
-  /* Not checked, or too short to: no underline that reads as affirmed. */
-  .cite.muted { text-decoration: none; }
   .citedsheet { max-height: 75%; }
+  .sheetacts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .sheetacts a.abtn { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+  .tiles.dropping { outline: 1px dashed var(--accent-400); outline-offset: 4px; border-radius: 12px; }
+  .tile.openable { cursor: pointer; }
+  .tile.uploading { opacity: 0.75; }
+  .goalink { align-self: center; }
   .saveline { margin-top: -4px; }
   .savednote { margin-top: -4px; font-size: 11px; color: var(--text-muted); }
   .citedtext { overflow-y: auto; white-space: pre-wrap; font-size: 14px; line-height: 1.5; padding: 10px 12px; border: 1px solid var(--accent-900); border-radius: 10px; }
