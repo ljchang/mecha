@@ -29,7 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an installed binary alone used to read as done. `mecha setup <feature>`
   sets up one, and `mecha setup --minimal` declines every optional step in
   one pass without touching your config. A step you declined before keeps
-  its answer.
+  its answer, and naming it — `mecha setup mail` — offers it again; the closing
+  note says how to take back each kind of "no" (`--undecline` for one given in
+  setup, `mecha features enable` for a switch you set to `false`).
 
 - **Slack, personas, voice, incognito, the front door and messages follow
   their switches too**, the same way the rest do: off, their web pages answer
