@@ -125,11 +125,12 @@ impl Environment {
     /// and read its config there. What every trial of an arm runs in: the
     /// digest is over the *resolved* files, so it names exactly what ran.
     pub fn prepare(&self, real: &Config, base: &Path, cache: &Path) -> Result<World> {
-        let files = self.resolve(base)?;
+        let (files, requires) = self.resolve_with_requires(base)?;
         let digest = self.digest_of(&files);
         let dir = cache.join(&digest).join("tree");
         materialize(&files, &dir)?;
         let config = self.config_at(&dir, real, base)?;
+        refuse_missing_requires(&requires, &config, &self.dir(base))?;
         Ok(World {
             digest,
             dir,
@@ -143,8 +144,15 @@ impl Environment {
     /// merge key by key (a scalar or an array replaces; a table recurses).
     /// `environment.toml` itself is consumed, never a file of the result.
     pub fn resolve(&self, base: &Path) -> Result<std::collections::BTreeMap<String, Vec<u8>>> {
+        Ok(self.resolve_with_requires(base)?.0)
+    }
+
+    /// [`Environment::resolve`], and the features the chain `requires`.
+    fn resolve_with_requires(&self, base: &Path) -> Result<(Files, Vec<crate::feature::Feature>)> {
         let home = crate::work::mecha_home()?;
-        resolve_dir(&self.dir(base), base, &home, &mut Vec::new())
+        let mut requires = Vec::new();
+        let files = resolve_dir(&self.dir(base), base, &home, &mut Vec::new(), &mut requires)?;
+        Ok((files, requires))
     }
 
     fn digest_of(&self, files: &std::collections::BTreeMap<String, Vec<u8>>) -> String {
@@ -419,6 +427,50 @@ fn resolve_existing_prefix(p: &Path) -> Result<PathBuf> {
     }
 }
 
+/// Refuse a trial home that lacks a feature its environment `requires`
+/// (FEATURES-DESIGN.md §5.1): off or blocked there, a task needing it could
+/// not be attempted, and running anyway would record that as a result.
+/// Asked of the registry over the trial's own config alone — off and blocked
+/// are the switches' and the settings' answer, needing no fact from disk —
+/// so it cannot fail open on a store it could not read. Refused before any
+/// trial starts, as `prepare_worlds` runs ahead of the dry run.
+fn refuse_missing_requires(
+    requires: &[crate::feature::Feature],
+    config: &Config,
+    env: &Path,
+) -> Result<()> {
+    let facts = crate::feature::Facts {
+        config: config.clone(),
+        ..Default::default()
+    };
+    let missing: Vec<String> = requires
+        .iter()
+        .filter_map(|&f| {
+            let state = crate::feature::state(&facts, f);
+            (!state.shown()).then(|| {
+                let why = match &state {
+                    crate::feature::State::Blocked { on } => format!("needs `{}`", on.id()),
+                    crate::feature::State::Off { reason, .. } => reason.clone(),
+                    other => other.word().to_string(),
+                };
+                format!("`{}` ({why})", f.id())
+            })
+        })
+        .collect();
+    anyhow::ensure!(
+        missing.is_empty(),
+        "experiment environment {} requires {}, off in its trial home — a trial would be \
+         scored on tasks it could not attempt. An environment may switch on only `frontdoor`; \
+         `graph` follows the servers it carries, and `search` the operator's own switch",
+        env.display(),
+        missing.join(", ")
+    );
+    Ok(())
+}
+
+/// A resolved environment: each file's path inside it, and its bytes.
+type Files = std::collections::BTreeMap<String, Vec<u8>>;
+
 /// An environment directory's own manifest: what it extends.
 pub const ENV_MANIFEST: &str = "environment.toml";
 
@@ -431,6 +483,12 @@ struct EnvManifest {
     /// The environment this one overlays, relative to the checkout.
     #[serde(default)]
     extends: Option<PathBuf>,
+    /// The features its tasks need, by id (FEATURES-DESIGN.md §5.1). A trial
+    /// whose home has one off or blocked would be scored on a task it could
+    /// not attempt, so the run refuses to start and says which. Inherited
+    /// down an `extends` chain — a variant needs what its base needs.
+    #[serde(default)]
+    requires: Vec<String>,
 }
 
 /// What an arm's trials run in: the resolved environment, built on disk,
@@ -447,6 +505,7 @@ fn resolve_dir(
     base: &Path,
     home: &Path,
     chain: &mut Vec<PathBuf>,
+    requires: &mut Vec<crate::feature::Feature>,
 ) -> Result<std::collections::BTreeMap<String, Vec<u8>>> {
     refuse_operator_home(dir, home)?;
     let canonical = dir.canonicalize()?;
@@ -479,8 +538,21 @@ fn resolve_dir(
             .with_context(|| format!("{}", dir.join(ENV_MANIFEST).display()))?,
         None => EnvManifest::default(),
     };
+    // A typo refuses at load: an id this build does not know would otherwise
+    // require nothing, and the run would score tasks it could not attempt.
+    for id in &manifest.requires {
+        let f = crate::feature::Feature::parse(id).with_context(|| {
+            format!(
+                "{}: `requires` names `{id}`, which is not a feature (`mecha features` lists them)",
+                dir.join(ENV_MANIFEST).display()
+            )
+        })?;
+        if !requires.contains(&f) {
+            requires.push(f);
+        }
+    }
     let mut out = match manifest.extends {
-        Some(parent) => resolve_dir(&base.join(parent), base, home, chain)?,
+        Some(parent) => resolve_dir(&base.join(parent), base, home, chain, requires)?,
         None => std::collections::BTreeMap::new(),
     };
     for (rel, bytes) in own {
@@ -1026,6 +1098,71 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
             ),
             Some(Switch::On)
         );
+    }
+
+    /// `requires` (FEATURES-DESIGN.md §5.1): a trial home with a required
+    /// feature off is refused before any trial runs, naming the feature; one
+    /// the trial carries passes; a variant needs what its base needs; and an
+    /// id this build does not know is refused rather than requiring nothing.
+    #[test]
+    fn a_trial_home_without_a_required_feature_is_refused_by_name() {
+        let prepare = |manifest: &str, config: &str, live: &[&str]| {
+            let tmp = Scratch::new();
+            let mut env = env_at(tmp.path(), config);
+            env.live_servers = live.iter().map(|s| s.to_string()).collect();
+            std::fs::write(tmp.path().join("env").join(ENV_MANIFEST), manifest).unwrap();
+            let cache = tmp.path().join("cache");
+            env.prepare(&operator(), tmp.path(), &cache).map(|_| ())
+        };
+        let err = prepare(
+            "requires = [\"graph\"]",
+            "[features]\ngraph = false",
+            &["graph"],
+        )
+        .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("requires `graph`"), "{text}");
+        // Not carried at all reads the same: off in the trial home.
+        assert!(prepare("requires = [\"graph\"]", "", &[]).is_err());
+        // Carried in from the operator, or declared by the environment: on.
+        prepare("requires = [\"graph\"]", "", &["graph"]).unwrap();
+        prepare(
+            "requires = [\"frontdoor\"]",
+            "[[mcp]]\nname = \"f\"\ncommand = \"factory-publish\"",
+            &[],
+        )
+        .unwrap();
+        // No `requires` asks for nothing, whatever is off.
+        prepare("", "[features]\ngraph = false", &[]).unwrap();
+        // A typo would otherwise require nothing.
+        let err = prepare("requires = [\"grpah\"]", "", &["graph"]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("`grpah`, which is not a feature"),
+            "{err:#}"
+        );
+
+        // Inherited down `extends`: the variant switches off what its base needs.
+        let tmp = Scratch::new();
+        let base = tmp.path().join("envs/base");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join(ENV_MANIFEST), "requires = [\"graph\"]\n").unwrap();
+        std::fs::write(base.join("config.toml"), "").unwrap();
+        let variant = tmp.path().join("envs/variant");
+        std::fs::create_dir_all(&variant).unwrap();
+        std::fs::write(variant.join(ENV_MANIFEST), "extends = \"envs/base\"\n").unwrap();
+        std::fs::write(variant.join("config.toml"), "[features]\ngraph = false\n").unwrap();
+        let env = |dir: &str| Environment {
+            dir: Some(dir.into()),
+            live_servers: vec!["graph".into()],
+        };
+        let cache = tmp.path().join("cache");
+        env("envs/base")
+            .prepare(&operator(), tmp.path(), &cache)
+            .unwrap();
+        let err = env("envs/variant")
+            .prepare(&operator(), tmp.path(), &cache)
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("requires `graph`"), "{err:#}");
     }
 
     /// An environment that is, contains or sits inside the real home is

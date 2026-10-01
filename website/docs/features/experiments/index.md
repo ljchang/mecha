@@ -348,6 +348,23 @@ How a variant combines with its base:
   A loop, a link anywhere in the chain, or a chain that reaches your mecha
   home is refused.
 
+An environment can also name the [features](/docs/reference/cli#features) its
+tasks need, in its `environment.toml`:
+
+```toml
+# eval/envs/research/environment.toml
+extends = "eval/envs/default"
+requires = ["graph", "search"]
+```
+
+When a trial home has one of them switched off, or waiting on a feature
+that is, `mecha exp run` refuses to start and names it, rather than scoring
+the model on tasks it could not attempt. A variant needs what its base
+needs, and a name that is not a feature is refused. An environment can
+switch on only the front door itself; `graph` is on when the trial carries
+a graph server, and `search` follows your own switch. Each run's session
+record notes which features were on.
+
 Some variations, and where each goes:
 
 | To vary | In the variant |
