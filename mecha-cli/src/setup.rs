@@ -1945,7 +1945,12 @@ pub fn document_extractor(cfg: &Config) -> Option<mecha_core::document::Extracto
 /// is asked on every upload and first turn, and a refused URL is already
 /// refused by `DocumentsConfig::validate` where `[documents]` is checked.
 pub fn file_embedder(cfg: &Config) -> Option<mecha_core::embed::Embedder> {
-    mecha_core::embed::Embedder::new(&cfg.documents.as_ref()?.embed_url).ok()
+    // The switch, as every other connection asks it (`feature::switched_on`):
+    // documents switched off reach no server (review of #467).
+    let docs = cfg.documents.as_ref().filter(|_| {
+        mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::Documents)
+    })?;
+    mecha_core::embed::Embedder::new(&docs.embed_url).ok()
 }
 
 pub fn persona_agent(
@@ -1962,9 +1967,11 @@ pub fn persona_agent(
     // in the assistant's registry, which has no persona to read for. Over
     // the store the caller's chats live in, never a second guess at it.
     let extractor = document_extractor(&bound.config).map(Arc::new);
-    // The reader's cap, read off the reader the config builds: 0 without one.
+    // The reader's cap, read off the reader the config builds — 0 without
+    // one, or with its cache off, where no document is indexed ahead.
     let max_doc_bytes = extractor
         .as_ref()
+        .filter(|e| e.config().cache)
         .map(|e| e.config().max_file_bytes())
         .unwrap_or(0);
     let reader = mecha_core::persona::files::FileRead::new(
@@ -2382,6 +2389,25 @@ mod refusal_tests {
         let (_, rules) = scripted_refusals_from(inner(), Some(String::new()), None).unwrap();
         assert!(rules.is_empty(), "an empty name is no file");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod file_embedder_tests {
+    use super::*;
+
+    /// Review of #467: persona file search reaches the embeddings server
+    /// only where documents are configured *and* switched on — the switch,
+    /// as every connection asks it.
+    #[test]
+    fn the_documents_switch_gates_the_embeddings_server() {
+        let mut cfg = Config::default();
+        assert!(file_embedder(&cfg).is_none(), "no [documents] table");
+        cfg.documents = Some(mecha_core::document::DocumentsConfig::default());
+        cfg.features.0.insert("documents".into(), true);
+        assert!(file_embedder(&cfg).is_some());
+        cfg.features.0.insert("documents".into(), false);
+        assert!(file_embedder(&cfg).is_none(), "switched off");
     }
 }
 

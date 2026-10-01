@@ -88,9 +88,11 @@ impl Index {
         let path = store.join(INDEX_FILE);
         let conn = Connection::open(&path)
             .with_context(|| format!("opening the search index at {}", path.display()))?;
+        // The timeout first, so the journal switch itself waits out a
+        // concurrent opener rather than failing (as `persona::memory` does).
         conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA busy_timeout = 5000;
+            "PRAGMA busy_timeout = 5000;
+             PRAGMA journal_mode = WAL;
              CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS docs (
                  sha TEXT PRIMARY KEY,
@@ -446,14 +448,19 @@ impl FileSearch {
     }
 }
 
-/// Whether `src` could be in the index at all: within its reader's cap.
-/// Asked before hashing it, because the hash is a whole read — the
-/// unbounded read `files::readiness` exists not to do, on a path the model
-/// can call as often as it likes (review of #467).
+/// Whether `src` could be in the index at all, asked as `files::readiness`
+/// asks before it hashes: within its reader's cap, and — for a document —
+/// a format the reader takes, from its first kilobyte. Asked before hashing
+/// because the hash is a whole read, on a path the model can call as often
+/// as it likes (review of #467). `max_doc_bytes` is `0` where no document
+/// is ever indexed: reading off, or the extraction cache off.
 pub fn may_be_indexed(src: &Source, max_doc_bytes: u64) -> bool {
     match src.kind {
         super::files::Kind::Text => src.bytes <= super::files::MAX_TEXT_BYTES,
-        super::files::Kind::Document => src.bytes <= max_doc_bytes,
+        super::files::Kind::Document => {
+            src.bytes <= max_doc_bytes
+                && super::files::head(&src.path).is_ok_and(|h| crate::document::kind_of(&h).is_ok())
+        }
     }
 }
 
@@ -583,7 +590,11 @@ impl Tool for FileSearch {
         // last hit they read as that page's text (review of #467).
         let mut out = String::new();
         if how == Found::WordsOnly && !hits.is_empty() {
-            out.push_str("(Found by words only: the search by meaning is unavailable just now.)\n");
+            out.push_str(if self.embedder.is_some() {
+                "(Found by words only: the search by meaning is unavailable just now.)\n"
+            } else {
+                "(Found by words only: no search by meaning is set up.)\n"
+            });
         }
         if !unindexed.is_empty() {
             out.push_str(&format!(
@@ -1002,8 +1013,23 @@ mod tests {
         use super::super::files::{Kind, MAX_TEXT_BYTES};
         assert!(may_be_indexed(&at(Kind::Text, MAX_TEXT_BYTES), 0));
         assert!(!may_be_indexed(&at(Kind::Text, MAX_TEXT_BYTES + 1), 0));
-        assert!(may_be_indexed(&at(Kind::Document, 10), 100));
-        assert!(!may_be_indexed(&at(Kind::Document, 101), 100));
+        // A document within the cap must also be a format the reader takes.
+        let dir = scratch();
+        std::fs::write(dir.join("p.pdf"), b"%PDF-1.4 a paper").unwrap();
+        std::fs::write(dir.join("q.pdf"), b"plain words, not a pdf").unwrap();
+        let doc = |name: &str, bytes| Source {
+            name: name.into(),
+            path: dir.join(name),
+            bytes,
+            kind: Kind::Document,
+        };
+        assert!(may_be_indexed(&doc("p.pdf", 16), 100));
+        assert!(!may_be_indexed(&doc("p.pdf", 101), 100), "over the cap");
+        assert!(
+            !may_be_indexed(&doc("q.pdf", 22), 100),
+            "no format the reader takes"
+        );
+        std::fs::remove_dir_all(dir).ok();
         assert!(
             !may_be_indexed(&at(Kind::Document, 1), 0),
             "reading switched off"
