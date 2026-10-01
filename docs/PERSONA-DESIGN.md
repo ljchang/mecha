@@ -1048,9 +1048,13 @@ chat's first turn, and a Files list with upload and remove on the persona's
 page. `file_read` is every persona's, outside `[tools] allow` and `answers` —
 deliberately: reading its own files is what a persona with files is for, and
 the tool reaches nothing but them. The files block is a chat's, from its
-first turn: a file added while a chat is open reaches the next chat, and
-one removed stays quoted in the chats that read it — unlike the situation
-brief, it is not re-folded after a compaction. The first turn never runs
+first turn: a file added while a chat is open reaches the next chat (this
+one can still read it with `file_read`), and one removed stays quoted in the
+chats that read it. It rides before the first reply or not at all, so it is
+in the first message, which compaction keeps — unlike the situation brief,
+it is never re-folded. The block is recorded with that message, so a
+persona's session file holds the text of the files it carried: resuming
+has to replay it, and the replay is what keeps the chat armed. The first turn never runs
 OCR: a document whose text is not in the cache yet is listed as being read
 and read in the background, one at a time, for `file_read` or the next
 chat. Checked citations (3b), search over large collections (3c) and saving
