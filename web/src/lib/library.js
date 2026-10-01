@@ -69,9 +69,11 @@ export function voiceLine(v) {
     // Named by a persona, and neither the server's nor a clone here: a typo,
     // or a voice removed — a call to it is refused.
     parts.push('on neither the voice server nor this box — a call in it is refused');
-  } else {
+  } else if (v.listed === true) {
     parts.push("the voice server's own");
   }
+  // listed null and no clone: the server could not be asked, so this says
+  // nothing about where the voice comes from (review of #490).
   if (v.used_by?.length) parts.push(`${v.used_by.join(', ')} speak${v.used_by.length === 1 ? 's' : ''} in it`);
   return parts.join(' · ');
 }

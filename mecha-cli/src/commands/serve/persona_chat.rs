@@ -7606,41 +7606,48 @@ mod tests {
         );
     }
 
-    /// An offer the worker refuses is no call: the binding the offer made is
-    /// released, so the chat takes no spoken words on it (review of #483).
+    /// An offer that does not become a nameable call releases the binding
+    /// it made, so the chat takes no spoken words on it: one the worker
+    /// refuses (review of #483), and one it takes with an answer the call id
+    /// cannot ride on (review of #490).
     #[tokio::test]
-    async fn an_offer_the_worker_refuses_releases_its_binding() {
-        let w = world();
-        let key = open_chat(&w).await;
-        let app = axum::Router::new().route(
-            "/api/offer",
-            axum::routing::post(|| async { (StatusCode::SERVICE_UNAVAILABLE, "busy") }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
-        let state = super::super::WebState {
-            owner_login: Arc::new("owner@example.com".into()),
-            chat: Some(Arc::clone(&w.chat)),
-            offer_target: Some(Arc::new(format!("http://{addr}/api/offer"))),
-            voices_dir: None,
-            library: Arc::new(LibraryState::new(w.root.join("imagelib"))),
-            features_at_start: Arc::default(),
-            gate: Arc::default(),
-            review: Arc::new(super::super::review::ReviewState {
-                outbox_root: w.root.join("outbox"),
-                sessions_dir: None,
-            }),
-        };
-        let offer = axum::body::Bytes::from(
-            serde_json::json!({"sdp": "x", "type": "offer", "request_data": {"session": key}})
-                .to_string(),
-        );
-        let answered = super::super::offer_proxy(State(state), offer).await;
-        assert_eq!(answered.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert!(
-            !w.personas().calls.lock().unwrap().contains_key(&key),
-            "a refused offer left its binding"
-        );
+    async fn an_offer_that_is_no_nameable_call_releases_its_binding() {
+        for (status, body) in [
+            (StatusCode::SERVICE_UNAVAILABLE, "busy"),
+            (StatusCode::OK, "an answer that is not JSON"),
+        ] {
+            let w = world();
+            let key = open_chat(&w).await;
+            let app = axum::Router::new().route(
+                "/api/offer",
+                axum::routing::post(move || async move { (status, body) }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+            let state = super::super::WebState {
+                owner_login: Arc::new("owner@example.com".into()),
+                chat: Some(Arc::clone(&w.chat)),
+                offer_target: Some(Arc::new(format!("http://{addr}/api/offer"))),
+                voices_dir: None,
+                library: Arc::new(LibraryState::new(w.root.join("imagelib"))),
+                features_at_start: Arc::default(),
+                gate: Arc::default(),
+                review: Arc::new(super::super::review::ReviewState {
+                    outbox_root: w.root.join("outbox"),
+                    sessions_dir: None,
+                }),
+            };
+            let offer = axum::body::Bytes::from(
+                serde_json::json!({"sdp": "x", "type": "offer", "request_data": {"session": key}})
+                    .to_string(),
+            );
+            let answered = super::super::offer_proxy(State(state), offer).await;
+            assert_eq!(answered.status(), status, "{body}");
+            assert!(
+                !w.personas().calls.lock().unwrap().contains_key(&key),
+                "an offer answered {status} ({body}) left its binding"
+            );
+        }
     }
 }

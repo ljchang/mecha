@@ -32,6 +32,9 @@ assert.equal(
 assert.equal(voiceLine({ name: 'default', listed: true, cloned: null, used_by: [] }), "the voice server's own");
 assert.equal(voiceLine({ name: 'solo', listed: false, cloned: {}, used_by: ['Mara', 'Ada'] }), 'cloned here · not on the voice server yet · Mara, Ada speak in it');
 assert.equal(voiceLine({ name: 'x', listed: null, cloned: {}, used_by: [] }), 'cloned here');
+// The server not asked: nothing claimed about where the voice comes from.
+assert.equal(voiceLine({ name: 'adaa', listed: null, cloned: null, used_by: ['Mara'] }), 'Mara speaks in it');
+assert.equal(voiceLine({ name: 'adaa', listed: null, cloned: null, used_by: [] }), '');
 // Named by a persona and nowhere else: said, so a typo shows before a call.
 assert.equal(
   voiceLine({ name: 'adaa', listed: false, cloned: null, used_by: ['Mara'] }),

@@ -919,8 +919,9 @@ def available_voices(refresh=False):
     renders no choices and a picker that could not ask are opposite
     findings and only one of them should hide the control.
 
-    `refresh` drops the cache first. The one caller that passes it is the
-    voice-config handler on a *miss*: a voice can be cloned onto the box
+    `refresh` drops the cache first. The voice-config handler passes it on a
+    *miss*, and the library's routes (`/mecha/voices`, `/mecha/sample`)
+    always do, since they answer what the box has now: a voice can be cloned onto the box
     while this process runs (the settings page writes a WAV into the same
     directory the TTS lists), and a forever-cache would refuse the new name
     until a worker restart nobody was told to do. Refetching only on a miss
