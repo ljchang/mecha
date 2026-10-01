@@ -598,6 +598,23 @@ impl Taint {
             self.private = true;
             self.untrusted = true;
         }
+        // **And a persona's memory, folded into a chat's first turn** (§9.7):
+        // memory of the owner, so private; untrusted only when the harness
+        // folded a record written from a stretch that read something from
+        // outside, which it says by the stem it chose
+        // (`persona::recall::stem_of`). Two stems, because this runs at every
+        // run start: one stem arming both would have made every chat that
+        // remembered anything untrusted.
+        for m in messages.iter().filter(|m| m.role == Role::User) {
+            for b in &m.content {
+                if let Block::Text { text } = b {
+                    if let Some((private, untrusted)) = crate::persona::recall::stem_of(text) {
+                        self.private |= private;
+                        self.untrusted |= untrusted;
+                    }
+                }
+            }
+        }
     }
 
     pub fn merge(&mut self, other: Taint) {
@@ -1078,6 +1095,9 @@ pub fn is_harness_voice(text: &str) -> bool {
         // harness's block, never the owner's words — unregistered, a paper
         // would draw in the owner's bubble and mine as their correction.
         || text.starts_with(crate::persona::files::FILES_STEM)
+        // A persona's memory, folded into a chat's first turn (§9.7): the
+        // harness's notes, never the owner's words.
+        || crate::persona::recall::stem_of(text).is_some()
         // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
         // recorded before it carry the same fully-templated nudge bodies
         // bare, and one such nudge was already mined as a steer and probed as
