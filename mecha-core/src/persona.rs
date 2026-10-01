@@ -2169,6 +2169,15 @@ pub fn write_owner_file(
     } else {
         None
     };
+    // The portrait the stored frame was measured against: a settings save
+    // that changes it leaves that frame describing a picture that is gone.
+    let portrait_before = (file == OwnerFile::Settings)
+        .then(|| {
+            Store::load(dir)
+                .get(name)
+                .map(|p| p.settings.character.clone())
+        })
+        .flatten();
     if let Some(base) = base {
         if text_digest(old.as_deref().unwrap_or("")) != base {
             return Err(StaleEdit(file).into());
@@ -2199,7 +2208,19 @@ pub fn write_owner_file(
             .unwrap_or_else(|| "it did not load".into());
         return Err(restore(anyhow!("not saved: {why}")));
     }
-    snapshot(dir, name).map_err(|e| restore(e.context("not saved")))
+    let state = snapshot(dir, name).map_err(|e| restore(e.context("not saved")))?;
+    // A new portrait starts unframed: the old picture's crop would draw the
+    // new one off-centre, and Cancel on the page's framing sheet would leave
+    // it so (review of #491). Saved first, so a failure here costs only the
+    // framing, never the owner's edit. A hand edit outside mecha does not
+    // pass through here.
+    let after = store.get(name).map(|p| p.settings.character.clone());
+    if let Some(before) = portrait_before {
+        if after.is_some_and(|a| a != before) && state.frame.is_some() {
+            return set_frame(dir, name, None);
+        }
+    }
+    Ok(state)
 }
 
 /// Remove a persona — its whole folder, chats and memory included, moved
@@ -2649,6 +2670,44 @@ mod tests {
         };
         assert_eq!(names(false), vec!["priya".to_string()]);
         assert_eq!(names(true), vec!["mara".to_string(), "priya".to_string()]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A frame belongs to the picture it was measured against: a settings
+    /// save that changes the character clears it, and one that does not
+    /// keeps it (review of #491).
+    #[test]
+    fn a_new_portrait_starts_unframed() {
+        let dir = scratch();
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        let frame = Frame {
+            x: 0.8,
+            y: 0.1,
+            zoom: 3.0,
+        };
+        set_frame(&dir, "mara", Some(frame)).unwrap();
+        let path = dir.join("mara/persona.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let line = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("# character"))
+            .expect("the template's character line")
+            .to_string();
+        // An edit that leaves the character alone keeps the frame.
+        let kept = text.replace("display      = \"mara\"", "display      = \"Mara\"");
+        let state = write_owner_file(&dir, "mara", OwnerFile::Settings, &kept, None).unwrap();
+        assert_eq!(state.frame, Some(frame));
+        // A new character clears it.
+        let changed = kept.replace(&line, "character = \"maya\"");
+        let state = write_owner_file(&dir, "mara", OwnerFile::Settings, &changed, None).unwrap();
+        assert_eq!(state.frame, None);
+        assert_eq!(Store::load(&dir).get("mara").unwrap().state.frame, None);
+        // And an identity save never touches it.
+        set_frame(&dir, "mara", Some(frame)).unwrap();
+        let id = std::fs::read_to_string(dir.join("mara/identity.md")).unwrap();
+        let state =
+            write_owner_file(&dir, "mara", OwnerFile::Identity, &format!("{id}\n"), None).unwrap();
+        assert_eq!(state.frame, Some(frame));
         std::fs::remove_dir_all(dir).ok();
     }
 

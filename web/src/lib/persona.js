@@ -7,6 +7,9 @@
 // the assistant's `/api/chat/{key}` — a page that mixed them up would be
 // reading one conversation's words into the other.
 
+import { changesOf } from './tomlform.js';
+import { isDirty as mdDirty } from './mdform.js';
+
 // A persona chat key, exactly as the server mints one: `p-` and twelve hex.
 const KEY = /^p-[0-9a-f]{12}$/;
 
@@ -222,6 +225,33 @@ export function uploadUrl(key, name, token = null) {
 // draft and its unsaved form draft. The reload replaces every file's entry,
 // so anything not named here is dropped — which is how form drafts went
 // missing on the first cut (review of #430), as text drafts had (#420).
+// Whether one editor tab holds unsaved changes: its text (the open tab's
+// is `text`, another tab's its kept `draft`) or its form draft. The one
+// definition of "dirty" for the page's guards (review of #491).
+export function fileUnsaved(v, text = v?.draft) {
+  if (!v) return false;
+  if (text != null && text !== v.text) return true;
+  if (!v.formDraft || !v.form) return false;
+  if (v.form.form) return Object.keys(changesOf(v.form.form, v.form.values, v.formDraft)).length > 0;
+  return v.form.doc ? mdDirty(v.form.doc, v.formDraft) : false;
+}
+
+// The tabs of an open editor with unsaved changes, in the editor's order.
+export function unsavedFiles(editing) {
+  if (!editing?.files) return [];
+  return OWNER_FILES.map(([f]) => f).filter((f) =>
+    fileUnsaved(editing.files[f], f === editing.file ? editing.text : editing.files[f]?.draft),
+  );
+}
+
+// Whether locking must wait: without the library's unlock, locking hides
+// the persona at once and the page goes back to the list — the editor and
+// its drafts with it. Unlocking, or locking with the unlock in hand, hides
+// nothing (review of #491).
+export function lockWaits({ chosen, token, editing }) {
+  return Boolean(chosen && !chosen.locked && !token && unsavedFiles(editing).length);
+}
+
 export function keptEdits(files, saved) {
   const out = {};
   for (const [f, v] of Object.entries(files ?? {})) {
