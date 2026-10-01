@@ -32,6 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from something read from outside — a search, a file — marks the chat as
   having outside content, as reading it again would; ordinary memory does
   not. Searching memory during a chat comes next.
+
+- **Save a persona's reply to its files.** Under each of a persona's replies
+  there is a *Save to files* link: a study guide, quiz or glossary it wrote
+  when you asked is saved as a Markdown file in its own folder, there next
+  time (and searchable), and movable to a group's folder to share. Only the
+  persona's own reply is saved, never text it did not write. The `teacher`
+  starter now asks before revealing quiz answers (new installs; an installed
+  copy is yours and is not changed).
+
 - **Personas start remembering.** `mecha persona memory write` reads each
   persona's chats and records an episode and facts per stretch of
   conversation, in the persona's own memory. The nightly runs it. Each chat
@@ -71,8 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any environment that `extends` it) makes `mecha exp run` refuse to start
   when a trial home has one of them switched off, naming it, rather than
   scoring the model on tasks it could not attempt. It checks the switches,
-  not that a feature switched on is set up. Each run's session record now also
-  notes which features were switched on.
+  not that a feature switched on is set up. A name that can never be on in a
+  trial, such as `mail`, is refused as soon as the experiment loads, with a
+  pointer to fixture servers. Each run's session record now also notes which
+  features were switched on.
 - **A persona reads its files.** Each persona has a Files list on its page:
   add a paper, notes or an image there (or drop them into its `files/`
   folder), and every new chat with it carries them. If the whole collection

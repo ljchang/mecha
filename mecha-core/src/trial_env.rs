@@ -369,13 +369,15 @@ impl Environment {
             // it" is not "may the harness default it", and a future feature
             // with both would otherwise be defaulted on silently (review of
             // #452).
-            .filter(|f| matches!(f, Feature::Graph | Feature::Frontdoor))
+            .filter(|f| DEFAULTED_FROM_SERVERS.contains(f))
             .collect();
         for f in carried {
             cfg.features.0.entry(f.id().to_string()).or_insert(true);
         }
-        if feature::switch(real, Feature::Search) == Some(feature::Switch::On) {
-            cfg.features.0.entry("search".to_string()).or_insert(true);
+        for f in FOLLOW_THE_OPERATOR {
+            if feature::switch(real, f) == Some(feature::Switch::On) {
+                cfg.features.0.entry(f.id().to_string()).or_insert(true);
+            }
         }
         // After the live servers: a copied one carries the operator's zone
         // and must answer in the environment's.
@@ -504,15 +506,14 @@ fn refuse_missing_requires(
                     crate::feature::State::Off { reason, .. } => reason.clone(),
                     other => other.word().to_string(),
                 };
-                format!("`{}` ({why})", f.id())
+                format!("`{}` ({why}; {})", f.id(), how_a_trial_gets(f))
             })
         })
         .collect();
     anyhow::ensure!(
         missing.is_empty(),
         "experiment environment {} requires {}, off in its trial home — a trial would be \
-         scored on tasks it could not attempt. An environment may switch on only `frontdoor`; \
-         `graph` follows the servers it carries, and `search` the operator's own switch",
+         scored on tasks it could not attempt",
         env.display(),
         missing.join(", ")
     );
@@ -521,6 +522,70 @@ fn refuse_missing_requires(
 
 /// A resolved environment: each file's path inside it, and its bytes.
 type Files = std::collections::BTreeMap<String, Vec<u8>>;
+
+/// The switches `config_at` turns on, where the environment left them
+/// unanswered, for a server the trial carries (`feature::server_feature`).
+/// Two named rulings, not a predicate — see `config_at`.
+const DEFAULTED_FROM_SERVERS: [crate::feature::Feature; 2] = [
+    crate::feature::Feature::Graph,
+    crate::feature::Feature::Frontdoor,
+];
+
+/// The switches a trial copies from the operator's own, as it does the
+/// backends behind them.
+const FOLLOW_THE_OPERATOR: [crate::feature::Feature; 1] = [crate::feature::Feature::Search];
+
+/// Whether a trial home can ever have `f` on: its switch is one an
+/// environment may set, or one `config_at` defaults — from the
+/// [`DEFAULTED_FROM_SERVERS`] lists or [`FOLLOW_THE_OPERATOR`] — and so is
+/// every switch it `requires`. Everything else is the operator's alone
+/// (FEATURES-DESIGN.md §5.1), so a `requires` naming it can never be met.
+pub fn can_be_on_in_a_trial(f: crate::feature::Feature) -> bool {
+    // A part is on only if its parent is, link by link with each link's
+    // own needs — the walk `feature::switched_on` takes through `needs()`
+    // (review of #474).
+    if let Some(parent) = f.part_of() {
+        return can_be_on_in_a_trial(parent)
+            && f.requires().iter().all(|&g| can_be_on_in_a_trial(g));
+    }
+    (f.switchable_from_environment()
+        || DEFAULTED_FROM_SERVERS.contains(&f)
+        || FOLLOW_THE_OPERATOR.contains(&f))
+        && f.requires().iter().all(|&g| can_be_on_in_a_trial(g))
+}
+
+/// The ids [`can_be_on_in_a_trial`] allows, as a message lists them — from
+/// the predicate, so the sentence moves with the rule.
+fn trial_reachable_ids() -> String {
+    crate::feature::Feature::ALL
+        .iter()
+        .filter(|f| can_be_on_in_a_trial(**f))
+        .map(|f| format!("`{}`", f.id()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// How a trial home gets `f` on, from the same lists `config_at` reads: what
+/// a refusal says beside the feature it names, so the reader is told which
+/// mechanism to look at rather than which features exist.
+fn how_a_trial_gets(f: crate::feature::Feature) -> String {
+    let top = f.switch_owner();
+    let mut ways = Vec::new();
+    if DEFAULTED_FROM_SERVERS.contains(&top) {
+        ways.push("the environment carries its server".to_string());
+    }
+    if top.switchable_from_environment() {
+        ways.push(format!("the environment sets `{} = true`", top.id()));
+    }
+    if FOLLOW_THE_OPERATOR.contains(&top) {
+        ways.push(format!("your own `{}` switch is on", top.id()));
+    }
+    format!(
+        "on in a trial when {}, unless the environment's `[features]` sets `{} = false`",
+        ways.join(" or "),
+        top.id()
+    )
+}
 
 /// An environment directory's own manifest: what it extends.
 pub const ENV_MANIFEST: &str = "environment.toml";
@@ -598,6 +663,24 @@ fn resolve_dir(
                 dir.join(ENV_MANIFEST).display()
             )
         })?;
+        // One that no trial home can ever have would refuse every run, and
+        // blame the trial home rather than this line (the owner's ruling,
+        // 2026-10-01: say so here, at load).
+        anyhow::ensure!(
+            can_be_on_in_a_trial(f),
+            "{}: `requires` names `{id}`, which can never be on in a trial; only {} can be. {}",
+            dir.join(ENV_MANIFEST).display(),
+            trial_reachable_ids(),
+            match f.switch_owner() {
+                // The two the fixture servers stand in for
+                // (`eval/fixtures/mail_server.py`, `docs_server.py`).
+                crate::feature::Feature::Mail | crate::feature::Feature::Docs => {
+                    "A task that needs it gets it from a fixture server — `[fixtures]` in the \
+                     experiment's own manifest, not this file — not from the feature"
+                }
+                _ => "It is yours alone, and stays out of every trial home",
+            }
+        );
         if !requires.contains(&f) {
             requires.push(f);
         }
@@ -1173,6 +1256,14 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         .unwrap_err();
         let text = format!("{err:#}");
         assert!(text.contains("requires `graph`"), "{text}");
+        // It says how a trial gets `graph`, not which features exist: every
+        // id that reaches this refusal is one a trial can have (review of
+        // #474).
+        assert!(
+            text.contains("on in a trial when the environment carries its server"),
+            "{text}"
+        );
+        assert!(!text.contains("can ever be on"), "{text}");
         // Not carried at all reads the same: off in the trial home.
         assert!(prepare("requires = [\"graph\"]", "", &[]).is_err());
         // Carried in from the operator, or declared by the environment: on.
@@ -1248,6 +1339,95 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
             hashed.contains(&crate::feature::Feature::Graph),
             "{hashed:?}"
         );
+    }
+
+    /// `can_be_on_in_a_trial` is what `config_at` does, not a list beside
+    /// it: the most a trial can have — every operator switch on, a graph
+    /// server and `factory-publish` carried — switches on exactly the
+    /// features it names, and five of the registry's ids in all (graph and
+    /// its tasks, the front door and its publishing, search). A feature
+    /// defaulted in one place and not the other fails here.
+    #[test]
+    fn what_a_trial_can_have_on_is_what_its_config_turns_on() {
+        use crate::feature::{set_switch, switches_on, Feature};
+        let tmp = Scratch::new();
+        let env = env_at(
+            tmp.path(),
+            "[[mcp]]\nname = \"g\"\ncommand = \"mecha-graph-mcp\"\nargs = [\"--db\", \"${STORE}/g.db\"]\n\
+             [[mcp]]\nname = \"f\"\ncommand = \"factory-publish\"\n",
+        );
+        let mut real = operator();
+        for f in Feature::ALL {
+            set_switch(&mut real, *f, true);
+        }
+        let world = env
+            .prepare(&real, tmp.path(), &tmp.path().join("cache"))
+            .unwrap();
+        let reachable: Vec<Feature> = Feature::ALL
+            .iter()
+            .copied()
+            .filter(|f| f.has_switch() && can_be_on_in_a_trial(*f))
+            .collect();
+        assert_eq!(switches_on(&world.config), reachable);
+        let all: Vec<&str> = Feature::ALL
+            .iter()
+            .filter(|f| can_be_on_in_a_trial(**f))
+            .map(|f| f.id())
+            .collect();
+        assert_eq!(all, ["graph", "tasks", "search", "frontdoor", "publishing"]);
+    }
+
+    /// A `requires` naming a feature no trial home can have is refused when
+    /// the manifest loads, saying why and where such tasks get their tools —
+    /// not at every run, blaming the trial home (the owner's ruling,
+    /// 2026-10-01). A part of a reachable feature is fine.
+    #[test]
+    fn a_requirement_no_trial_can_meet_is_refused_at_load() {
+        for (id, fixture) in [
+            ("mail", true),
+            ("docs", true),
+            ("documents", false),
+            ("ocr", false),
+            ("web", false),
+            ("messages", false),
+            ("dictate", false),
+        ] {
+            let tmp = Scratch::new();
+            let env = env_at(tmp.path(), "");
+            std::fs::write(
+                tmp.path().join("env").join(ENV_MANIFEST),
+                format!("requires = [\"{id}\"]\n"),
+            )
+            .unwrap();
+            let err = env.resolve(tmp.path()).unwrap_err();
+            let text = format!("{err:#}");
+            assert!(
+                text.contains(&format!("`{id}`, which can never be on in a trial")),
+                "{text}"
+            );
+            // Fixture advice only where a fixture server stands in.
+            assert_eq!(text.contains("fixture server"), fixture, "{text}");
+            // The list comes from the predicate, parts included, and the
+            // pointer names the file `[fixtures]` lives in (review of #474).
+            assert!(
+                text.contains("only `graph`, `tasks`, `search`, `frontdoor`, `publishing` can be"),
+                "{text}"
+            );
+            if fixture {
+                assert!(
+                    text.contains("the experiment's own manifest, not this file"),
+                    "{text}"
+                );
+            }
+        }
+        let tmp = Scratch::new();
+        let env = env_at(tmp.path(), "");
+        std::fs::write(
+            tmp.path().join("env").join(ENV_MANIFEST),
+            "requires = [\"tasks\", \"publishing\", \"search\"]\n",
+        )
+        .unwrap();
+        env.resolve(tmp.path()).unwrap();
     }
 
     /// An environment that is, contains or sits inside the real home is
