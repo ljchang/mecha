@@ -86,6 +86,56 @@ out of the commands.
 probes were checked here: `strings ~/.cargo/bin/mecha` holds "neither a PDF
 nor a PNG" and "attaches pictures", and serve runs that binary.
 
+**2026-09-30 — a persona's refused call no longer loops for minutes, and a
+crisis pause keeps the taint chip honest (#446, #448).** Two fixes from the
+persona lane, both installed by mecha-d7 in `346bb8a2` and still live in
+`9253038b`.
+
+#446 (`a768852e`) closed #438's last review minor. A crisis pause starts no
+run, and only a run's start called `Taint::arm_for_content`. So a picture on
+the paused turn left the pause's `Done`, the transcript chip and the session
+file reading clean. `resume` takes taint from the file's `Taint` records and
+never re-scans, so a restart kept the chat clean too. `PersonaChats::send_with`'s
+pause branch now arms the conversation and checkpoints a `Record::Taint` when
+that changed it. It is reachable only through a crisis hit in the session goal,
+because a hit in the message pauses before any pixels are read. Test:
+`a_picture_on_a_paused_turn_arms_the_chat`. Mutation checks: without the
+arming it fails at the `Done`, and without the checkpoint it fails at the
+reloaded file. One review pass.
+
+#448 (`b8f27e7f`) answers the owner's "Let's fix 1". The owner's Stella chat
+resent one refused `image_generate` forty times a run, twice, to `max_turns`.
+The second loop held the model and the GPU while a new chat drew. The loop
+guard was dormant until a compaction, which a chat never reaches, and persona
+agents forced boredom off. The guard's dormancy had asked for a measurement
+before watching ordinary work. The scan covered 1,031 transcripts
+(`~/.mecha/sessions` and `~/.mecha/personas/*/sessions`, 3,187 tool turns,
+2026-09-30), counting one call with one identical `is_error` result in N
+consecutive turns:
+- N=3: 4 fires. Two were mail runs that recovered on the very next turn,
+  after boredom's notice named the repeat (the model added `account`).
+- N=4 to N=7: only the Stella loop.
+
+So `LoopGuard::observe_refusals` stops at `REFUSED_REPEATS` =
+`boredom::STILL_STUCK + 1` (7), after both of boredom's rungs have spoken.
+It takes the usual tool-less final turn as `StopCause::Loop`, compaction or
+not. Neither trigger counts a call this turn's trace marks `denied` (approver,
+hook, policy, interlock), because appraisal scores `Loop` against the run
+(`appraisal.rs`'s counter arm). `persona::agent::agent_config` now carries
+`boredom` from the base config. The scan's count included denials; the
+shipped rule excludes them, and every fire at N ≥ 4 was a tool error anyway.
+
+Four review passes moved it:
+- the threshold went from 5 to 7, which made the Delegate rung reachable;
+- the denial exclusion was added, then extended to the post-compaction
+  trigger;
+- the "after compacting" wording was fixed in `StopCause::describe`,
+  `RunEnd::words`, `render.rs`'s remedy, and two website pages.
+
+Installed: `strings ~/.cargo/bin/mecha | grep -c 'one call refused
+identically, turn after turn'` → 4 (one literal, several monomorphised
+copies).
+
 **2026-09-30 — modular installs: the design, and `mecha features` (#427,
 #428, #432, #433).** The owner asked how a new user installs only the parts
 they want: Slack, the web app, image generation, personas, OCR and voice
@@ -122,7 +172,60 @@ was stripped from project layers but missing from
 `trial_env::OPERATOR_ONLY_TABLES`, so an experiment environment could point
 OCR at a remote server or run the PDF parser unconfined. `config_at` now
 refuses it like the other five.
-On this machine `mecha features` reads 20 of 21 rows on; `messages` is off.
+On 2026-09-30 `mecha features` read 20 of 21 rows on here; `messages` was off.
+
+**2026-09-30/10-01 — modular installs, steps 1–3: every feature follows its
+switch (#443, #445, #449, #451, #452).** Each sub-step below was one PR,
+merged by the mecha-d7 lane on a clean review pass. Steps 2 and 3a went live
+in mecha-d7's deploy of `346bb8a2` on the evening of 2026-09-30, and 3b in
+mecha-ce's deploy of `e856ce36` at 00:34Z on 2026-10-01 (HANDOFF's dated
+machine-state log has both).
+
+- **1a, #443:** the `[features]` table (`Config`, `ConfigLayer`, `apply`, the
+  project strip), `mecha features enable|disable` written in place by
+  `feature::write_switches` (`toml_edit`, so comments and a newer build's keys
+  survive), the upgrade notice (`feature::announcements`, printed by
+  `commands::features::print_notices`), and the environment refusal. It gated
+  nothing. This machine's table was written in the same deploy, 12 switches
+  true and `messages` absent.
+- **1b, #445:** registration and connections ask `feature::switched_on`,
+  never the readout; `feature::server_refusal` covers the four verbs that
+  spawn the graph server themselves; `mecha serve` refuses without `web`.
+- **2, #449:** `GET /api/features` (`serve/features.rs`) returns the same rows
+  as `mecha features --json` plus `pending`, re-reading the global file per
+  request and opening no socket. The web app reads each row's `shown`
+  (`web/src/lib/features.js`), so it never restates which states hide.
+  Settings → Features lists every feature with its command. Building it
+  found that `state` answered `Off` for a switched-on feature missing its
+  settings, which §5 calls `Unready`; `state` now converts a switched
+  feature's own `off`, and anything standing on an `Unready` need reads
+  `Unready`, never `On`.
+- **3a, #451:** `feature::refusal` is the one predicate behind a route's
+  404 `feature_off` and a verb's one sentence. Every route is added through
+  `serve::api()`'s `.at(path, owner, …)` (`serve/gate.rs`), and the guard sits
+  inside `owner_guard` and reads the file per request (`Gate::Live`). Verbs
+  call `commands::features::require`, which refuses when the config does not
+  load. It found that the graph's review queue, `mecha review accept`, the
+  web's entity create and merge, and the TUI's `/queues` and entity panel
+  ran `mecha-graph` directly and wrote the owner's graph with `graph = false`.
+  The owner's ruling L1: the library follows `image`, and `[tools]`
+  withholds only the model's library tools.
+- **3b, #452:** `Feature::gated` is true for every feature, so Slack,
+  personas, voice, incognito, the front door (with `factory-publish` now in
+  `server_feature`) and messages refuse whole. The owner's ruling M1:
+  `mecha msg` refuses when messages is off, reads included. Reading a store
+  and deleting cached data stay open; changing an entry is refused.
+  `mecha serve` mounts its voice facade only with calls on at start, and the
+  TUI registers `show_file` only with Slack on. `trial_env::config_at`
+  defaults `frontdoor` for a carried `factory-publish`, as it does `graph`.
+
+Twenty review passes across the five PRs (#443: 1, #445: 4, #449: 4, #451: 5,
+#452: 6, counted from each PR's record) found the same gap four times, all in
+#451 and #452:
+something reached a feature without going through its verb (the traps
+section has the rule). On 2026-09-30 the owner had `messages` switched on, and on
+2026-10-01 `mecha features` read 21 of 21 on, so nothing refused on this
+machine.
 
 **2026-09-30 — paint the part of a picture to change (#424, #429).** The
 owner asked for the web chat's Edit button to become a modal where areas can
@@ -7303,6 +7406,15 @@ matters is the general shape.
 
 ### Measuring
 
+**A pinned session runs the version it was opened with, so "deployed"
+is not "reaching the owner".** After #444 shipped self-portraits, the owner
+still saw refused pictures. Their Stella chat was pinned to persona version 4
+(`sessions/<id>.persona.json`), and v4 had no `character` line, which arrived
+in v5. The fix was live and could never apply in that chat; a new chat drew
+first time. When a fix depends on per-object state, check the object the
+owner is actually using (its pin, its version, its cached config) before
+reading the code for a bug.
+
 **Re-deriving a seeded fixture's truth means replaying every draw, or not
 re-deriving it at all.** Scoring a transcription against text a seeded
 generator wrote, the scoring script stubbed out the photo step, which also
@@ -8617,6 +8729,25 @@ before retrying it.
 
 ### Containment and state
 
+**Guard the driver, not only the verb.** Features step 3 put a guard at the
+top of each feature's CLI verb, and review found four places that reached
+the same feature without the verb: the TUI's `/queues` and entity panel ran
+`mecha-graph` directly (#451); the TUI's `/send` and `/remote-control` called
+Slack's `send_file` and `attach`; the TUI's `/frontdoor` opened and
+reconciled the request store in-process, and its child's refusal went to a
+nulled stderr; and `/polls` called `pick_next` directly (all #452). Each
+wrote or posted with the switch off. **Anything that opens a feature's store
+or talks to its server asks for itself; the verb is one caller among
+several.**
+
+**A guard and what it guards must read the switch at the same time.**
+#451's route gate was a start-time snapshot while the nav re-read the file
+per page load. Enabling a feature while `serve` ran showed its tab and then
+404'd every request on it, naming the command just run, and disabling one
+kept its routes writing until a restart. Reading the file per request fixed
+both directions. **When two surfaces show one fact, give them one read of
+it.**
+
 **A vouch checked after the untrusted side already holds the data is not a
 gate.** #376 first refused an unvouched spoken turn at the voice facade, but
 a worker that predated the log silence had already written the chat's key
@@ -9175,6 +9306,15 @@ and is what finally exercised the path.)
   (2026-08-25.)
 
 ### Review process
+
+**Every check failing at once, with zero steps, is the runners, not the
+code.** #446's first CI run showed 13 jobs failed, rustfmt included,
+which had passed locally. Each job's annotation read "The job was not
+started because it repeatedly failed to be acquired (5 attempts)". The steps
+list was empty, and `--log-failed` held no error lines. `gh run rerun
+<id> --failed` passed everything. Read a failed job's steps and annotations
+before its diff (`gh api repos/<o>/<r>/check-runs/<job>/annotations`). A
+check that never started is not a check that failed.
 
 - **`--delete-branch` on someone else's PR can close a third PR stacked on
   it.** Merging #416 with the flag deleted `docs/handoff-408`, which was
