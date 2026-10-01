@@ -125,7 +125,9 @@ is open:
   `81b74494`): 3,917 passed, 0 failed. Clippy with `RUSTFLAGS=-D warnings
   --all-features` and `fmt --check` were clean.
 
-**2026-10-01 — modular installs: steps 0–4 shipped and live, 5–8 open.**
+**2026-10-01 — modular installs: steps 0–4 shipped, 5–8 open.** Live
+through #474 (`997a2894`); #476, the wording follow-up to #474, is merged
+(`d19995fa`) and not yet deployed.
 `FEATURES-DESIGN.md` is the authority (§7 the owner's rulings, plus L1 and
 M1 in its status header; §9 the build order); `ARCHITECTURE.md` §Features
 holds the invariants and the "Adding a feature" checklist; what shipped is in
@@ -133,10 +135,10 @@ HISTORY under 2026-09-30, 2026-09-30/10-01 and 2026-10-01 (step 4, with the
 owner's five rulings of that day). Every feature now follows its
 switch on every surface — tools, servers, web routes (404 `feature_off`),
 CLI verbs and the TUI's own drivers. This machine reads 21 of 21 on
-(`mecha features --json` from the installed `6565cfd8` build, 2026-10-01), so
-nothing refuses here. Workspace at
-`6565cfd8` (`cargo test --workspace --no-fail-fast`, summed over every
-`test result` line): 4,022 passed, 0 failed, 5 ignored. Open, cheapest first:
+(`mecha features --json` from the installed build, 2026-10-01 — it carries
+#474's refusal text and not #476's, checked with `strings`), so nothing
+refuses here. Workspace at `d19995fa` (`cargo test --workspace
+--no-fail-fast`, summed over every `test result` line): 4,053 passed, 0 failed, 5 ignored. Open, cheapest first:
 
 - **Step 5: `[voice]` and `[personas]` settings tables**, each four places
   plus a decision on `trial_env`'s lists (§9 says both go on
@@ -164,7 +166,7 @@ nothing refuses here. Workspace at
     `persona group list`).
   - `App.svelte`'s pane redirect for `settings/voice` is untested; the
     helpers it uses (`featureOf`, `refuses`) are.
-- **Minor, left for the owner by the step-4 reviews (#460–#474):**
+- **Minor, left for the owner by the step-4 reviews (#460–#476):**
   - Two test-only loops still write `features.0` directly rather than
     through `feature::set_switch` — `commands/features.rs`'s every-switch-on
     loop and onboarding's `switch_on` helper — so `messages` is never

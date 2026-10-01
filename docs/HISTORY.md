@@ -19,8 +19,8 @@ trial carries its switches (#460, #461, #464, #466, #470, #472, #474).**
 Each was merged on a clean review pass — by the mecha-d7 lane, and #474
 by mecha-5d's under the owner's "merge everything" — and all went live in
 mecha-d7's deploys of `9f306d8f` (#460, #461), `85ca4dfe` (#464, #466),
-`6565cfd8` (#470, #472) and `997a2894` (#474); HANDOFF's dated
-machine-state log has each.
+`6565cfd8` (#470, #472) and `997a2894` (#474). The deploys themselves are
+mecha-d7's rows, written after this one.
 #470, #472 and #474 carry the owner's five rulings of the same day on the
 questions #464 and #466 left open; ruling 3 needed no code, and ruling 5's
 wording rode in #470.
