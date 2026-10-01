@@ -547,7 +547,7 @@ type ShaKey = (PathBuf, u64, Option<std::time::SystemTime>);
 static SHAS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<ShaKey, String>>> =
     std::sync::OnceLock::new();
 
-fn sha_of(src: &Source) -> Option<String> {
+pub fn sha_of(src: &Source) -> Option<String> {
     let modified = std::fs::metadata(&src.path).ok()?.modified().ok();
     let key = (src.path.clone(), src.bytes, modified);
     let memo = SHAS.get_or_init(Default::default);
@@ -651,8 +651,9 @@ pub async fn first_turn(
     );
     if over {
         out.push_str(
-            "Your files are too long to include whole. Read what you need with \
-             `file_read` (a file name below, and the pages).\n\n",
+            "Your files are too long to include whole. Find the passages that answer a \
+             question with `file_search`, and read pages with `file_read` (a file name \
+             below, and the pages).\n\n",
         );
         out.push_str(&names);
     } else {

@@ -39,7 +39,8 @@ use std::collections::HashMap;
 
 /// The tools whose results are a file's rendered text, as `files::read` and
 /// `document_read` render it: a `document: <name> · …` header, then pages.
-const READERS: [&str; 2] = ["file_read", "document_read"];
+/// `file_search` renders its passages the same way (`persona::search`).
+const READERS: [&str; 3] = ["file_read", "document_read", "file_search"];
 
 /// Below this a quote matches by accident ("the", "in 2025").
 const MIN_QUOTE_CHARS: usize = 12;
@@ -354,6 +355,17 @@ fn documents(text: &str) -> Vec<Page> {
         .collect();
     out.retain(|p| p.page.is_some() || !paged.contains(&p.file));
     out
+}
+
+/// The pages of one rendered document — `files::read`'s or a reader's
+/// output — as (page, text), the page `None` for a text file: the same
+/// split the check reads with, so a search passage carries the page a
+/// citation of it will be checked against (`persona::search`).
+pub(crate) fn pages_of(text: &str) -> Vec<(Option<u32>, String)> {
+    documents(text)
+        .into_iter()
+        .map(|p| (p.page, p.text))
+        .collect()
 }
 
 /// `document: paper.pdf · pdf · 12 page(s) · …` → `paper.pdf`.
