@@ -43,6 +43,8 @@ assert.equal(
   'cloned here · who speaks in it could not be fully read',
 );
 assert.equal(voiceLine({ name: 'default', listed: true, cloned: null, used_by: [] }, 'locked'), "the voice server's own");
+// The clone folder unread: a listed voice is not claimed as the server's own.
+assert.equal(voiceLine({ name: 'ada', listed: true, cloned: null, used_by: [] }, null, true), '');
 // The server not asked: nothing claimed about where the voice comes from.
 assert.equal(voiceLine({ name: 'adaa', listed: null, cloned: null, used_by: ['Mara'] }), 'Mara speaks in it');
 assert.equal(voiceLine({ name: 'adaa', listed: null, cloned: null, used_by: [] }), '');

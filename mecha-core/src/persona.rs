@@ -1115,7 +1115,10 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 /// starters. Never overwrites anything.
 pub fn ensure_layout(dir: &Path) -> Result<()> {
     private_dir(dir)?;
-    for sub in ["files", "groups", "relationships", "voices", "scenarios"] {
+    // No `voices/` since 2026-10-01: a persona names a library voice (§11).
+    // The name stays reserved, so a folder left by an older build is never
+    // read as a persona.
+    for sub in ["files", "groups", "relationships", "scenarios"] {
         private_dir(&dir.join(sub))?;
     }
     write_new(&dir.join("about-me.md"), ABOUT_ME)?;
@@ -2472,9 +2475,11 @@ mod tests {
         for sub in ["files", "sessions", "candidates", "versions"] {
             assert!(dir.join("mara").join(sub).is_dir(), "{sub}");
         }
-        for sub in ["files", "groups", "relationships", "voices", "scenarios"] {
+        for sub in ["files", "groups", "relationships", "scenarios"] {
             assert!(dir.join(sub).is_dir(), "{sub}");
         }
+        // Not `voices/` since 2026-10-01: a persona names a library voice.
+        assert!(!dir.join("voices").exists());
         assert!(dir.join("about-me.md").is_file());
         assert_eq!(p.state.status, Status::Approved);
         assert_eq!(p.state.origin, Origin::Owner);
@@ -3364,9 +3369,16 @@ mod tests {
     fn a_load_error_is_blamed_on_its_own_file() {
         let dir = scratch();
         ensure_layout(&dir).unwrap();
-        // A voice profile named like a persona that does not exist.
-        std::fs::create_dir_all(dir.join("voices/mara")).unwrap();
-        std::fs::write(dir.join("voices/mara/profile.toml"), "").unwrap();
+        // A relationship template named like a persona that does not exist,
+        // and broken: its error is its own file's, never the persona's.
+        std::fs::write(dir.join("relationships/mara.md"), "+++\nbad = [\n+++\nx\n").unwrap();
+        assert!(
+            Store::load(&dir)
+                .errors()
+                .iter()
+                .any(|e| e.path.ends_with("relationships/mara.md")),
+            "the broken template must be a load error, or this test proves nothing"
+        );
         let e = approve(&dir, "mara").unwrap_err();
         assert_eq!(format!("{e}"), "no persona named `mara`");
         std::fs::remove_dir_all(dir).ok();
