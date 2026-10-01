@@ -2521,6 +2521,9 @@ fn begin_turn(
         shell_registry: ws.session.room().map(|room| room.shells.clone()),
         // And its image jobs are recorded there, for a sweep to take back.
         image_trail: ws.session.room().map(|room| room.image_trail.clone()),
+        // And what it proposes is staged locked (the owner's ruling,
+        // 2026-10-01: incognito proposals will mostly be locked profiles).
+        stage_locked: ws.session.room().is_some(),
         ..match ws.session.room() {
             Some(room) => bound
                 .agent
@@ -3799,6 +3802,14 @@ mod tests {
         assert!(
             code.contains("image_trail: ws.session.room().map(|room| room.image_trail.clone()),"),
             "a served turn no longer records an incognito chat's image jobs in its room"
+        );
+        // The third field in front of that base, and the only production
+        // assignment of it: lose it and an incognito chat's persona proposals
+        // land visible, with every test that sets the flag directly still
+        // green (review of #493).
+        assert!(
+            code.contains("stage_locked: ws.session.room().is_some(),"),
+            "a served turn no longer stages an incognito chat's proposals locked"
         );
     }
 

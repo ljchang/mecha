@@ -800,6 +800,10 @@ doing; this code writes how they look. Decisions, each a bug if undone:
 - **The lock is a browse filter** (the owner's ruling, 2026-09-28): generation
   ignores it. Incognito chats may call `image_library` and generate with a
   cast; `image_library_propose` writes outside the room and is withheld.
+  `persona_propose` is the one deliberate exception (the owner's ruling,
+  2026-10-01): it writes outside the room, staged locked
+  (`ToolCtx::stage_locked`), and nothing it writes reaches a prompt before
+  the owner approves it.
 - **The same-seed rule, narrowed.** An edit still always samples fresh; a
   cast generation keeps the model's seed — that is how a scene is revised with
   its composition — except a cast member's `source_seed`, which is replaced
@@ -943,7 +947,14 @@ module.
   `SessionKind::Persona` could be recorded but can exclude nothing.
 - **The owner's files are never rewritten by code.** `persona.toml`, the
   Markdown, relationship templates, `groups.toml` and `about-me.md` are the
-  owner's; a starter is copied in once and a group is appended. Approval,
+  owner's; a starter is copied in once and a group is appended. **One
+  narrowing, since 2026-10-01 (`persona::propose`):** a model's proposal
+  writes a candidate's `persona.toml`, `identity.md` and `motivation.md`,
+  and may rewrite them while `State::proposed` still equals their content
+  digest. One owner edit — to those files or a template they name — and the
+  digests differ: the persona is the owner's from then on, and a revision is
+  refused. Nothing a proposal writes reaches a prompt before the owner
+  approves it as shown (`persona::approve_as_shown`). Approval,
   provenance, the browse lock and the version live in a machine-written
   `state.toml` beside `persona.toml`, because the `toml` crate cannot edit a
   file in place and `lock` would otherwise erase the owner's comments.
@@ -957,7 +968,10 @@ module.
 - **Links are by name, resolved on load, broken ones named**
   (`Store::problems`): relationship templates, groups, voice profiles, and the
   image-library character, which must be approved. `create` refuses a
-  broken link, while a later hand edit is reported. A missing or empty
+  broken link, while a later hand edit is reported. A proposal
+  (`create_with` through `propose`) may link a character that is still a
+  candidate — the owner approves both in one tap (the ruling of
+  2026-10-01) — and is refused only a character that does not exist. A missing or empty
   `## Core` is also reported, since the re-anchor needs it.
 - **A version covers what a chat renders**, including the text of the relationship templates it
   names. `snapshot` copies those files to `versions/<digest>/` and appends
