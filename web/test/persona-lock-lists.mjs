@@ -86,6 +86,8 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
      let authoringGen = 0;
      let adding = null;
      let stopIdle = null;
+     // The framing sheet, which a relock closes (review of #491).
+     let framing = { frame: null };
      const TEMPLATE = (name) => '# ' + name;
      const back = () => {};
      // The grid's read takes a turn, as a real round trip does, so a list
@@ -97,7 +99,7 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
        startMaking, unlock, relock, addNew,
        add: (a) => { adding = a; },
        close: () => { making = null; },
-       get: () => ({ token, authoring, making, error, loads }),
+       get: () => ({ token, authoring, making, error, loads, framing }),
      };`,
   )(fetch, authoringUrl, keptCharacter, personaName, watchIdle, idleSpan, {
     unlocked, character, formOpen, lists: formOpen ? LISTS(unlocked) : null,
@@ -126,6 +128,8 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
   await p.relock();
   assert.equal(watched[0].stopped, true);
   assert.equal(p.get().token, null);
+  // A framing sheet open over the persona goes with the lock (review of #491).
+  assert.equal(p.get().framing, null);
 }
 
 // Relocking takes it back out, and drops it if it was the chosen portrait.
