@@ -463,7 +463,10 @@ pub fn per_turn(
         return Ok(None);
     }
     let m = Memory::open_to_edit(store_dir, &p.name)?;
-    let (found, _) = m.recall_search(message, qvec, &kinds, &|t| already.contains(t), PER_TURN)?;
+    // Already in the chat by its opening words: chat start may have shown a
+    // long episode cut short, and the whole text would not match it.
+    let seen = |t: &str| already.contains(t.chars().take(60).collect::<String>().as_str());
+    let (found, _) = m.recall_search(message, qvec, &kinds, &seen, PER_TURN)?;
     if found.is_empty() {
         return Ok(None);
     }

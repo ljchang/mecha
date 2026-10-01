@@ -1297,6 +1297,15 @@ module.
       only when half the candidates carry a vector of the query's length;
       equal by meaning, the newer ranks first so recency is not cancelled. A
       message under `MIN_QUERY_CHARS` searches nothing.
+    - Words have a floor too: `recall_words` keeps content words only (three
+      letters or more, not in `STOPWORDS`). Without it, "thanks, that is all
+      for the day" recalled a record on "the" — and recalling an approved
+      record from outside arms the chat untrusted for good, so an incidental
+      match is a chat-wide state change, not noise (review of #481).
+    - The v3 upgrade is the first step that is not idempotent, and per-turn
+      recall opens `memory.db` writable on every turn: the step takes the
+      write lock, reads the version again under it, and skips records
+      already indexed — `an_upgrade_run_twice_indexes_each_record_once`.
     - The index is schema v3 of `memory.db`, backfilled on upgrade. FTS5 is
       created with `secure-delete`, and every delete takes the record out of
       `recall_fts` and `vectors` first; without `secure-delete` a forgotten
