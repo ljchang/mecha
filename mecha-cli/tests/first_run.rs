@@ -1127,33 +1127,95 @@ fn setup_offers_every_feature_and_minimal_declines_them_without_touching_config(
         assert_eq!(step(&after, id)["status"], "declined", "{id}");
     }
 
-    // Naming a declined feature offers it again, for this run only: the
-    // decline is still on disk afterwards (review of #460).
+    // Naming a declined feature offers it again — where there is an offer.
+    // Under `--json` nothing is offered, so it stays a recorded answer, exit
+    // 0 (review of #461); a plain run shows it outstanding with its command,
+    // and the decline is still on disk afterwards.
     let named = mecha(&home, &["setup", "mail", "--json"]);
-    let one = steps(&named);
-    assert_eq!(one[0]["status"], "missing", "{one:?}");
-    assert_eq!(
-        one[0]["remedy"]["argv"],
-        serde_json::json!(["mecha", "features", "enable", "mail"])
-    );
+    assert!(named.status.success(), "a recorded answer is not a failure");
+    assert_eq!(steps(&named)[0]["status"], "declined");
+    let named = mecha(&home, &["setup", "mail"]);
+    let out = String::from_utf8_lossy(&named.stdout);
+    assert!(out.contains("[not set up]"), "{out}");
+    assert!(out.contains("→ mecha features enable mail"), "{out}");
     assert!(String::from_utf8_lossy(&named.stderr).contains("offered again"));
     assert_eq!(
         step(&steps(&mecha(&home, &["setup", "--json"])), "mail")["status"],
         "declined"
     );
 
-    // A switch written `false` is offered back on by name, and the plain
-    // plan names its way back as the switch, not `--undecline`.
+    // A switch written `false`: the plan names its way back as the switch,
+    // not `--undecline`, and naming it offers that command.
     std::fs::write(&config, "[features]\nslack = false\n").unwrap();
     let plan = steps(&mecha(&home, &["setup", "--json"]));
     assert_eq!(
         step(&plan, "slack")["undo"],
         serde_json::json!(["mecha", "features", "enable", "slack"])
     );
-    let one = steps(&mecha(&home, &["setup", "slack", "--json"]));
-    assert_eq!(one[0]["status"], "missing");
-    assert_eq!(
-        one[0]["remedy"]["argv"],
-        serde_json::json!(["mecha", "features", "enable", "slack"])
+    let out = mecha(&home, &["setup", "slack"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("→ mecha features enable slack"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// The closing note names each kind of "no" with its own way back, as its
+/// own group set apart from `Next:`. The defect was a **switch-only** decline
+/// printing `mecha features enable <id>` flush against `mecha doctor`, so
+/// that is the state staged: every feature switched off in `[features]`, a
+/// charter written rather than declined, a credential so nothing blocks — and
+/// no decline file at all, so the `--undecline` line (whose own leading
+/// newline hid the defect in the first version of this test) never prints
+/// (review of #464).
+#[test]
+fn the_closing_note_names_each_way_back() {
+    let home = Home::new("closing-undo");
+    let switches: String = [
+        "web",
+        "slack",
+        "mail",
+        "docs",
+        "graph",
+        "search",
+        "documents",
+        "image",
+        "personas",
+        "voice",
+        "incognito",
+        "frontdoor",
+    ]
+    .iter()
+    .map(|id| format!("{id} = false\n"))
+    .collect();
+    // `messages = false` is applied into `[messages] enabled` and reads as
+    // unanswered, not switched off, so it would stay outstanding; on, with
+    // nothing to set up, it is simply done.
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!("[features]\n{switches}messages = true\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        home.path().join("charter.toml"),
+        "[[line]]\nid = \"first\"\ntext = \"tell the truth early\"\n",
+    )
+    .unwrap();
+    let out = mecha_with_key(&home, &["setup"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "nothing outstanding:\n{text}");
+    assert!(!home.path().join("setup-declined.json").exists());
+    assert!(
+        !text.contains("--undecline"),
+        "no answer given in setup:\n{text}"
+    );
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.contains("mecha features enable <id>"))
+        .unwrap_or_else(|| panic!("the switch's way back is named:\n{text}"));
+    assert!(
+        lines[at - 1].trim().is_empty(),
+        "set apart from `Next:`, not a fourth item of it:\n{text}"
     );
 }

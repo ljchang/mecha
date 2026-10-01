@@ -8369,7 +8369,9 @@ in five different ways. The design and its open steps are
   step carries its own way back (`Step::undo`): `--undecline <id>` for an
   answer given in setup, `mecha features enable <id>` for a switch written
   `false`. `mecha setup <feature>` runs one step and reopens it if declined
-  — in memory only, so a skip writes nothing; `--minimal` declines every
+  — in memory only, so a skip writes nothing, and only where there is an
+  offer: under `--json` a recorded answer stays recorded (review of #461),
+  as does every declined step's way back; `--minimal` declines every
   optional one and writes no config.
 - **An environment may only narrow.** `trial_env::config_at` refuses an
   environment's `[features]` key set `true` unless
