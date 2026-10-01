@@ -49,7 +49,7 @@ codebase, and what the thirteen features listed after it need.
 | Does it have goals? | Motivations, as character — not a charter. A scenario can carry checkable objectives, which an evaluator grades | §6, §7 |
 | Can a student interview a simulated patient? | Yes, as a scenario with hidden information and a separate evaluator — the persona never holds the answer key | §7.3 |
 | Can it teach from a paper? | Yes — drop files into its folder (or a group's, to share): answers cite the page, and the harness checks every quote. Study guides and quizzes are just requests, saved back into its files | §10 |
-| Can I hear it? | Yes: each persona carries a voice profile (voice, speed, exaggeration, pacing) applied when a call binds to it | §11 |
+| Can I hear it? | Yes: each persona names a voice from Library → Voices, with an optional speed, applied when a call starts | §11 |
 | Can others talk to it? | Not yet — deferred by the owner. §14 records why it needs its own design: it collides with a settled rule, no model on the public box | §14 |
 | What keeps it safe? | A safety layer in the harness, not in the persona: disclosure, a crisis sensor, dose meters, re-anchoring — all on by default, each switchable per persona by the owner | §12 |
 | Where can I talk to it? | The web chat and voice calls. Not the TUI or Slack, for now | §8.5 |
@@ -342,7 +342,7 @@ ruling already names what kind: a mecha-owned SQLite, never `graph.db`
   shared.db                      facts about you the owner shared — with everyone
                                  or with a group (§9.5)
   relationships/<name>.md        relationship templates: starters and the owner's own (§5)
-  voices/<name>/                 voice profiles: a reference clip and settings (§11)
+  voices/<name>/                 (dropped 2026-10-01: a persona names a library voice, §11)
   <persona>/
     persona.toml                 the owner's fields — never rewritten by code (§4.3)
     state.toml                   machine-written: status, origin, locked, frame, version, digest (§4.3)
@@ -421,7 +421,7 @@ one unlock shows locked characters and locked personas together (§8.3).
 display   = "Mara"
 relationship = "colleague"       # a template in relationships/ (§5), or none
 character = "mara"               # an imagelib Character: her portrait
-voice     = "mara-low"           # voices/mara-low.toml (§11)
+voice     = "ada"                # a voice in Library → Voices (§11)
 groups    = ["work"]             # §4.5
 model     = "local"              # §12.6: pinned; a change is shown, never silent
 
@@ -1362,15 +1362,14 @@ the template too.
 
 *Built 2026-10-01 (step 7, calls):* a call into a persona chat is answered
 by the persona (`PersonaChats::speak`). It goes behind the lock, through the
-crisis layer, and the pause is spoken as the plain words. A profile with a
-`voice` the worker lists is bound when the call starts. A reference clip, a
-missing profile, an out-of-range value, or a voice the worker does not list
-refuses the call by name. The page's call button sits beside send
+crisis layer, and the pause is spoken as the plain words. The library voice
+the persona names is bound when the call starts, at its `voice_speed` if set.
+A voice the worker does not list, or a speed out of range, refuses the call
+by name. The page's call button sits beside send
 (`PersonaCall.svelte`). The meters count call minutes in their own
-`calls.jsonl`, by the day each call ended. Still unbuilt:
-
-- binding a reference clip (writing it into `VOICES_DIR`);
-- recording a voice on the page.
+`calls.jsonl`, by the day each call ended. Recording a voice and binding
+it (writing the clip into `VOICES_DIR`) came with the voice library on
+2026-10-01 (below).
 
 Two known edges:
 
@@ -1398,21 +1397,33 @@ exaggeration and cfg_weight are start values, and the page can already change
 them per session. Chatterbox clones from a reference clip in `VOICES_DIR`, and
 `GET /v1/voices` lists the voices it can speak.
 
-- **The profile** is a folder in `voices/` — a reference clip, and voice,
-  speed, exaggeration and cfg_weight — named by the persona's `voice` field
-  (§4.3), so one profile can serve several personas. It is applied when a
-  call binds to the persona.
+- **A persona names a library voice** (owner ruling, 2026-10-01, which
+  replaced the `voices/<name>/profile.toml` profiles this bullet first
+  described): `voice = "ada"` in `persona.toml` is a voice in Library →
+  Voices, with an optional `voice_speed` (0.5–2.0). It is checked against
+  the worker's list and bound when a call starts. Expressiveness stays the
+  worker's.
+- **The voice library** (Library → Voices, ruled 2026-10-01) lists every voice
+  the TTS can speak. Each one has a spoken sample (a fixed sentence, through
+  the worker's `/mecha/sample`), shows whether it's a clone on this box, and
+  names the personas that speak in it. Recording, uploading and deleting
+  clones moved there from Settings → Voice, which keeps the assistant's own
+  voice and rate and the worker's health.
 - **Voices come from anywhere** (R13, ruled): a clip the owner **records
   live** on the page — the voice page already captures the microphone — or a
   **prerecorded sample** uploaded in any common audio format, converted to
   the reference Chatterbox wants (a few seconds to half a minute of clean
   speech); or one of the existing library voices (`make-voices.py`,
   `add-vctk-voices.py`). The page plays a preview before a profile is saved,
-  because a clone from a noisy clip is the usual failure.
+  because a clone from a noisy clip is the usual failure. *As built
+  (2026-10-01):* Library → Voices records live or takes an uploaded WAV;
+  converting other formats is not built. The take plays back before it is
+  saved.
 - **The TTS server has to see it.** Chatterbox reads references from
-  `VOICES_DIR`; saving a profile either writes its clip there or points
-  `VOICES_DIR` at the persona store — a build choice, recorded when made.
-- **An unknown voice refuses the call by name.** A profile naming a voice the
+  `VOICES_DIR`. *Chosen (2026-10-01):* a clone is written there (`[web]
+  voices_dir`, the directory the TTS mounts), so the library and the server
+  read one store and a persona names a voice the server already has.
+- **An unknown voice refuses the call by name.** A persona naming a voice the
   server does not list must not fall back to `default` — that is a persona
   silently speaking in someone else's voice.
 - **Cloning a real person** is the owner's call for the owner's own use.

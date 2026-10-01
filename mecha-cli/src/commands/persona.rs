@@ -50,7 +50,8 @@ pub enum Cmd {
         /// An image-library character: the persona's portrait.
         #[arg(long)]
         character: Option<String>,
-        /// A voice profile in the store's voices/ folder.
+        /// A voice from the voice library (Library → Voices): a name the
+        /// voice server lists. Its speed is `voice_speed` in persona.toml.
         #[arg(long)]
         voice: Option<String>,
         /// A group declared with `mecha persona group add` (repeatable).
