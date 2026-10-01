@@ -23,7 +23,8 @@ maps which document holds what.
 ## Where the work is
 
 **2026-09-30/10-01 — files and pictures in chats (#438, #447, #450, #453):
-all merged and installed.** #438, #447 and #450 came in `346bb8a2`. #453
+all merged and installed.** #438, #447 and #450 were installed in mecha-d7's
+`346bb8a2`. #453
 came in mecha-ce's `e856ce36` install at 00:34Z on 2026-10-01, verified
 here at 00:35Z: the installed `mecha eval` exited 1 on a failing case and
 left no hold, where the previous binary left one. What
