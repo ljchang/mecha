@@ -1340,6 +1340,38 @@ the template too.
 
 ## 11. Voice profiles (R13)
 
+*Built 2026-10-01 (step 7, calls):* a call into a persona chat is answered
+by the persona (`PersonaChats::speak`). It goes behind the lock, through the
+crisis layer, and the pause is spoken as the plain words. A profile with a
+`voice` the worker lists is bound when the call starts. A reference clip, a
+missing profile, an out-of-range value, or a voice the worker does not list
+refuses the call by name. The page's call button sits beside send
+(`PersonaCall.svelte`). The meters count call minutes in their own
+`calls.jsonl`, by the day each call ended. Still unbuilt:
+
+- binding a reference clip (writing it into `VOICES_DIR`);
+- recording a voice on the page.
+
+Two known edges:
+
+- **A relock mid-call loses that call's minutes.** The hang-up is checked
+  against the lock like every door here, so a call to a persona that was
+  locked during it records no seconds. The turns spoken before the relock are
+  counted.
+- **Speed is fixed only when the profile sets it.** A profile's `voice` is
+  always the persona's, but its rate stays the listener's unless the profile
+  sets one. Nothing on the page changes it today.
+
+**Ruled (owner, 2026-10-01): on a call, the crisis pause is spoken in the
+persona's own voice**, to keep it simple. §12.2's "a plain voice" governs the
+words: the safe message, never the persona's. It does not govern the TTS
+voice, so the worker needs no per-utterance voice switch.
+
+Open for the owner (ARCHITECTURE §Personas): a judge verdict that lands
+after a spoken reply has finished reaches only the page. The call's turn
+has already closed, and waiting for the verdict would hold every turn open
+for up to 90 s.
+
 The voice stack already takes everything a profile needs. The worker's TTS
 leg is Chatterbox Turbo (`scripts/voice/worker.py`): voice name, speed,
 exaggeration and cfg_weight are start values, and the page can already change
