@@ -65,7 +65,7 @@ silently-degrading guard in another costume:
 - **The kernel can page memory to disk.** tmpfs and process memory are both
   swappable. §10 names the fix; software alone cannot promise it.
 - **The owner's own acts are theirs.** A picture downloaded to the phone, text
-  copied out, a screenshot.
+  copied out, a reply downloaded as a file, a screenshot.
 - **llama-server's cache holds the conversation in RAM** until its slot is
   reused or the server restarts — a process, not a file (§6.2).
 
@@ -76,7 +76,7 @@ silently-degrading guard in another costume:
 | | Ruling |
 |---|---|
 | **R1** | Strictly invisible: no transcript, **no content-free counts**, no replay, no learning. Invisibility to `reflect`, `distill`, `runlog`, `harness ruminate` and the rest is the point, not a gap |
-| **R2** | No "save this conversation" escape hatch. Live-only affordances (retry, branch) are fine; they die with the session |
+| **R2** | No "save this conversation" escape hatch. Live-only affordances (retry, branch) are fine; they die with the session. *Refined 2026-10-01 (owner): a reply's Download is allowed — "there just won't be a trace on the server". The file is made in the browser from the reply on the page, never fetched, so it is the owner's act on the device (§1), not a server-side save* |
 | **R3** | **Local + read my data:** mail, calendar and graph reads are allowed; writes of any kind outside the chat's own folder are refused |
 | **R4** | **Web search allowed, with a notice** shown before the first search |
 | **R5** | **Idle timeout: 30 minutes** |
@@ -105,6 +105,7 @@ yet on `main` when this was written, so §3.4's ComfyUI row, §5.1's
 | "Earlier" drawer | `chat::history` scans the transcript directory | Nothing to scan; the live list marks incognito and drops it on close |
 | Browser cache | `/api/*` sends no `Cache-Control` — deliberately (`serve/mod.rs::cache_headers`: a blanket header would be the middleware deciding policy for every handler) | `no-store` on every incognito response and file (§4.4) |
 | Browser storage | None: `web/src` uses no localStorage, sessionStorage, IndexedDB or service worker | Nothing to do — kept that way by a test |
+| A reply's Download | The owner's device only: `reply-export.js::downloadText` makes a blob in the browser from the reply on the page; nothing is fetched, sent or logged on the server | Offered, since the owner's refinement of R2 on 2026-10-01: a file the owner saves is the owner's act (§1). `web/test/reply-export.mjs` pins that the download path reaches no server |
 
 ### 3.2 Derived later from session files
 
