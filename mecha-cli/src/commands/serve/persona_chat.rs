@@ -231,8 +231,7 @@ fn failed(e: anyhow::Error) -> Refusal {
 /// What the safety layer can do for a persona, as every surface shows it
 /// (§12): each switch, with the crisis sensor said as it is — `on` only once
 /// its judge has answered, `degraded` (keywords only) before then and while
-/// it cannot — and the farewell check as
-/// unbuilt, so neither can pass for "checked".
+/// it cannot, so it can never pass for "checked".
 /// `judge` is a chat's judge state (`Some(answered)`), or `None` for the
 /// persona itself, where no judge has been asked: that reads `enabled` —
 /// what is configured — never `on`, which a chat earns (review of #426).
@@ -247,8 +246,6 @@ fn safety_json(s: &mecha_core::persona::Safety, judge: Option<bool>) -> serde_js
         "crisis": crisis,
         "reanchor": s.reanchor,
         "dose": s.dose,
-        "breaks": s.breaks,
-        "farewell": if s.farewell { "unbuilt" } else { "off" },
         // The plain voice's words, so the page can keep them one tap away
         // after a reload has dropped the card that carried them.
         "resources": s.crisis.then_some(safety::SAFE_MESSAGE),

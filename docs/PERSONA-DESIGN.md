@@ -44,7 +44,7 @@ codebase, and what the thirteen features listed after it need.
 | Can it teach from a paper? | Yes — drop files into its folder (or a group's, to share): answers cite the page, and the harness checks every quote. Study guides and quizzes are just requests, saved back into its files | §10 |
 | Can I hear it? | Yes: each persona carries a voice profile (voice, speed, exaggeration, pacing) applied when a call binds to it | §11 |
 | Can others talk to it? | Not yet — deferred by the owner. §14 records why it needs its own design: it collides with a settled rule, no model on the public box | §14 |
-| What keeps it safe? | A safety layer in the harness, not in the persona: disclosure, a crisis sensor, dose meters, a farewell check, re-anchoring — all on by default, each switchable per persona by the owner | §12 |
+| What keeps it safe? | A safety layer in the harness, not in the persona: disclosure, a crisis sensor, dose meters, re-anchoring — all on by default, each switchable per persona by the owner | §12 |
 | Where can I talk to it? | The web chat and voice calls. Not the TUI or Slack, for now | §8.5 |
 | Can it send me a picture of itself? | Yes — a persona linked to a library character draws itself, with its own portrait as the reference | §8.6 |
 | Can it be measured? | Persona and scenario become experiment dimensions; the principal simulator can use a persona as the simulated user | §13 |
@@ -415,8 +415,6 @@ allow = ["web_search", "image_generate"]
 disclosure = true
 crisis     = true
 dose       = true
-breaks     = false              # break reminders: a dose-meter option
-farewell   = true
 reanchor   = true
 
 [files]                          # §10
@@ -1341,8 +1339,6 @@ owner only, never by a template or a model:
 | `disclosure` | §12.1 | no "AI" tag beside the name, no spoken line, and the persona is not told the page marks it |
 | `crisis` | §12.2 | no detector over this persona's chats |
 | `dose` | §12.3 | no session or call-minute sensors for it |
-| `breaks` | §12.3 | no break reminders (off unless turned on) |
-| `farewell` | §12.4 | no check on its reply to a goodbye |
 | `reanchor` | §12.5 | no re-insertion of its Core |
 
 Two consequences, stated so they are chosen rather than discovered. A switch
@@ -1352,7 +1348,7 @@ knows which conditions a chat ran under (§13). And when serving is designed
 `crisis` off — those are the two duties every companion law shares (§15).
 
 **A check that cannot run is never silent** (found on review). The crisis
-judge, the farewell check and §9.12's Core judge each need a model, and a
+judge and §9.12's Core judge each need a model, and a
 model can be absent — no seat on the server (`permit.rs`), a router preset
 not loaded, an HTTP 200 with empty `content`. Each then fails in a stated
 direction, and the record distinguishes *couldn't check* from *switched
@@ -1361,8 +1357,6 @@ off*, so neither can pass for the other:
 - **Crisis:** its first tier is keywords and needs no model, so it always
   runs; when the model tiers cannot, the page shows that crisis detection is
   degraded, and the dose record says so for that chat.
-- **Farewell:** the reply is shown, marked *unchecked* in the record, and
-  the persona's page counts unchecked goodbyes.
 - **Core judge:** fails closed — a self-update that cannot be judged is not
   applied, and is recorded as refused for that reason (§9.12).
 - **Envelope first:** an empty or refused judge response is *couldn't
@@ -1402,15 +1396,27 @@ assume.
 ### 12.3 Dose meters
 
 Session length, turns per day, late-night use and call minutes, per persona
-and in total — sensors always, surfaced to the owner. Break reminders on a
-clock are a per-persona setting the owner turns on or off.
+and in total — sensors always, surfaced to the owner.
 
-### 12.4 The farewell check
+**Break reminders on a clock were dropped (D25, 2026-10-01)** before they
+were built. The meters already show the owner the time spent, and the owner
+is the only user; a timer interrupting the chat added nothing the meter does
+not say.
+
+### 12.4 The farewell check — dropped
 
 37% of 1,200 real companion-app farewells got a manipulative reply (guilt,
 pressure, "don't go"), and those raised engagement up to 14× (HBS WP 26-005).
-An output check on the persona's reply to a goodbye blocks it. A check, not a
-prompt instruction.
+The design was an output check that blocked such a reply.
+
+**Dropped by the owner (D25, 2026-10-01) before it was built.** The evidence
+is about commercial apps tuned for engagement; these personas are the
+owner's, on a local model nobody tuned for it. Across the four persona chats
+then on the machine there was one goodbye, and the reply was warm with no
+guilt or pressure. Against that, the check needed two decisions (what
+replaces a blocked reply; how a goodbye is recognised), a model call per
+goodbye, and the streamed reply held on every goodbye turn. Reopen on
+evidence: a manipulative goodbye in a real chat.
 
 ### 12.5 Re-anchoring
 
@@ -1565,6 +1571,7 @@ Every row is ruled; the ruling is the owner's, in §1 where it was said in words
 | D22 | Surfaces | **Ruled (R22):** web chat and voice only for now; not the TUI or Slack (§8.5) |
 | D23 | Self-portraits | **Ruled (R23):** yes — `image_generate` in a persona chat knows "self" as its linked character (§8.6) |
 | D24 | Documents in a persona chat | **Ruled 2026-09-30:** `document_read` is persona-eligible, jailed to the chat's workspace, so a file dropped into the chat can be read before the §10 file tools exist. Given only when the owner lists it in `[tools] allow`; withheld by `answers = "files"` with the web tools, since its results are third-party content. Beside `web_search` it is §10.6's three legs, and the owner's per-persona switch closes it |
+| D25 | Break reminders and the farewell check | **Ruled 2026-10-01:** both dropped before either was built. The dose meters already show the time spent; the farewell evidence is about engagement-tuned apps, and the one goodbye in the owner's chats got a clean reply. `breaks` and `farewell` in an older `persona.toml` still load, are read by nothing, and are named in the persona's notes (§12.3, §12.4) |
 
 ---
 
@@ -1581,7 +1588,7 @@ Each phase is usable on its own, and each unlocks the next.
    the eligibility rule (§3.3); one agent per persona (§3.4); chats pinned to
    a persona version; session goals (§6); locked chats hidden (§8.3); and
    the safety layer's first cut, since it runs in every persona chat —
-   disclosure, re-anchoring, the crisis sensor, the farewell check, dose
+   disclosure, re-anchoring, the crisis sensor, dose
    sensors (§12), each with its per-persona switch; self-portraits (§8.6);
    in the web chat only (§8.5). Every starter, `romantic` included.
 3. **Files.** Document extraction as `DOCUMENT-EXTRACTION-DESIGN.md`
@@ -1590,7 +1597,7 @@ Each phase is usable on its own, and each unlocks the next.
    saving requested study material (§10). Early on purpose: it is the
    teaching use.
 4. **The safety layer, measured.** The crisis judge's accuracy on the models
-   actually in use; break reminders; model pinning (§12).
+   actually in use; model pinning (§12).
 5. **Memory.** `memory.db` per persona and `shared.db`, with the §9.4 row;
    groups (§4.5); the nightly writer and its provenance split; per-turn
    recall and `recall_open`; the owner's curation page and sharing; `forget`
