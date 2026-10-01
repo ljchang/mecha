@@ -1035,6 +1035,12 @@ not as a precedent.
 
 ## 10. Files: what a persona can read (R14)
 
+*Building, 2026-10-01 (step 3a):* the three folders listed and read by name
+(`persona::files`), `file_read`, the whole collection — or its list — in a
+chat's first turn, and a Files list with upload and remove on the persona's
+page. Checked citations (3b), search over large collections (3c) and saving
+study material (3d) come next.
+
 R14 asks for NotebookLM's usefulness — upload a paper or other material, ask
 questions of it, get summaries, study from it — and R18 asks that nothing be
 added that the owner has to remember. So there is no separate "notebook"

@@ -583,6 +583,21 @@ impl Taint {
         }) {
             self.private = true;
         }
+        // **And a persona's files, folded into a chat's first turn** (§10.6):
+        // the owner's material in words a third party wrote — private and
+        // untrusted, as `file_read` and `document_read` declare their
+        // results. Read off the transcript, so a chat resumed with them in it
+        // stays armed.
+        if messages.iter().any(|m| {
+            m.role == Role::User
+                && m.content.iter().any(|b| {
+                    matches!(b, Block::Text { text }
+                        if text.trim_start().starts_with(crate::persona::files::FILES_STEM))
+                })
+        }) {
+            self.private = true;
+            self.untrusted = true;
+        }
     }
 
     pub fn merge(&mut self, other: Taint) {
@@ -1059,6 +1074,10 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // newest turn (`persona::safety::reanchor_text`, PERSONA-DESIGN.md
         // §12.5). The owner's words about the persona, not to it.
         || text.starts_with(crate::persona::safety::REANCHOR_STEM)
+        // A persona's files, folded into a chat's first turn (§10.4): the
+        // harness's block, never the owner's words — unregistered, a paper
+        // would draw in the owner's bubble and mine as their correction.
+        || text.starts_with(crate::persona::files::FILES_STEM)
         // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
         // recorded before it carry the same fully-templated nudge bodies
         // bare, and one such nudge was already mined as a steer and probed as

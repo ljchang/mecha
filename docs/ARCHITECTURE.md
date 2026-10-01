@@ -1104,7 +1104,27 @@ module.
     A relock from any page, or the idle expiry, ends it at the next event.
   - `a_persona_turn_runs_on_its_own_prompt_and_tools_and_is_recorded_apart`
     checks the captured request. It must carry the persona's prompt, not the
-    assistant's, and only the tools that passed `registry_for`.
+    assistant's, and only the tools that passed `registry_for` — plus
+    `file_read`, which every persona gets (below).
+- **A persona's files are named, never pathed** (`persona::files`, §10).
+  `file_read` takes a name `list` produced and opens only a listed file; there
+  is no model-supplied path to resolve, so nothing to escape the three
+  `files/` folders with. `list` follows no symlink, lists no hidden entry,
+  and proves every file inside its folder after canonicalising.
+  - `file_read` is inserted *after* `registry_as`, in `setup::persona_agent`,
+    over the chat store's own path. Inside `registry_as`, `answers = "files"`
+    would withhold it: it declares `untrusted_input`, like `document_read`.
+    It is never in the assistant's registry.
+  - The whole collection rides in the first turn that runs the model and
+    does not carry it yet, when it fits about a quarter of the window (D15);
+    otherwise the list of files does. It is read outside the sessions lock,
+    because a first read of a scanned paper is a model call.
+  - The block opens with `FILES_STEM`, which does two jobs:
+    `Taint::arm_for_content` reads it as untrusted **and** private, and
+    `is_harness_voice` keeps it out of the owner's bubble and out of
+    correction mining. Without the first, a paper's words would enter a chat
+    unmarked; without the second, they would draw as the owner's message.
+    `the_personas_files_ride_in_the_first_turn_once` checks both.
 
 ## Security model
 

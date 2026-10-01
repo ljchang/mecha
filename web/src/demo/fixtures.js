@@ -1658,6 +1658,14 @@ export const personas = {
   has_password: false,
 };
 
+export const personaSources = {
+  sources: [
+    { name: '@all/field-guide.md', bytes: 18400, kind: 'text', shared: true, ready: true, processing: false },
+    { name: '@kelp/kelp-forest-survey-2025.pdf', bytes: 2410000, kind: 'document', shared: true, ready: true, processing: false },
+    { name: 'urchin-barrens.pdf', bytes: 3870000, kind: 'document', shared: false, ready: false, processing: true },
+  ],
+};
+
 export const personaHistory = {
   persona: 'mara',
   chats: [
