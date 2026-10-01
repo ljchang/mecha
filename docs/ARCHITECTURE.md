@@ -1159,6 +1159,26 @@ module.
     (`PersonaChats::cited`), never the file: a paper is third-party content,
     and nothing but an image is served renderable (`serve::files`). A
     CSP-sandboxed PDF would be safe and Chrome will not render one.
+- **A persona's search is scoped by its listing, not by a filter**
+  (`persona::search`, §10.4). One index for the store (`.search.db`), keyed
+  by content hash and never by persona; `FileSearch` lists the persona's
+  folders, hashes what it finds, and asks for those hashes only — so a
+  passage of a file outside its folders cannot come back, and there is no
+  `WHERE persona = …` to forget. FTS5 hits outside the asked hashes are
+  dropped before ranking.
+  - A passage is rendered under `file_read`'s `document:` header and
+    `=== page N of M ·` marker, and `file_search` is one of
+    `cite::READERS`: a quote from a search result is checked, not "no such
+    file".
+  - Vectors carry an identity (length + query instruction, `meta`); a
+    change drops every stored vector rather than compare across models.
+    Passages stay, and words still find them.
+  - The embedder exists only where `[documents]` is configured **and**
+    switched on (`setup::file_embedder` asks `feature::switched_on`, as every
+    connection does), which also keeps the test worlds off the live `:8081`.
+  - A page received in two pieces (two searches, or a search and a read)
+    is checked as two pieces: joined, a quote stitched across disjoint
+    passages would read as quoted.
 - **Memory** (`persona::memory`, `PERSONA-DESIGN.md` §9; the store only so
   far — no writer, no recall, nothing reaches a prompt yet):
   - One `memory.db` per persona, in its folder, and one `shared.db` at the top

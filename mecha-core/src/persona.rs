@@ -39,6 +39,7 @@ pub mod files;
 pub mod judge;
 pub mod memory;
 pub mod safety;
+pub mod search;
 pub mod writer;
 
 /// A name — persona, relationship, group or voice: `[a-z0-9][a-z0-9_-]*`.
