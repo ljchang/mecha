@@ -775,8 +775,8 @@ pub fn autolock_minutes(dir: &Path) -> Result<u32> {
     if !path.is_file() {
         return Ok(DEFAULT_AUTOLOCK_MINUTES);
     }
-    let file: AutolockFile =
-        toml::from_str(&std::fs::read_to_string(&path)?).context("reading the autolock setting")?;
+    let text = std::fs::read_to_string(&path).context("reading the autolock setting")?;
+    let file: AutolockFile = toml::from_str(&text).context("reading the autolock setting")?;
     check_autolock(file.idle_minutes)?;
     Ok(file.idle_minutes)
 }

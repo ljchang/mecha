@@ -7,7 +7,7 @@
     PANES, paneOf, entriesFor, counts, originLabel, listUrl, tameName,
     TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody,
   } from './library.js';
-  import { watchIdle } from './autolock.js';
+  import { watchIdle, idleSpan } from './autolock.js';
   // The image library: the characters and styles `image_generate` compiles a
   // scene against (docs/IMAGE-COMPILER-DESIGN.md §7).
   //
@@ -116,7 +116,7 @@
   let stopIdle = null;
   function armIdle(secs) {
     stopIdle?.();
-    stopIdle = secs > 0 ? watchIdle({ idleMs: secs * 1000, onIdle: relock, onReturn: load }) : null;
+    stopIdle = watchIdle({ idleMs: idleSpan(secs) * 1000, onIdle: relock, onReturn: load });
   }
 
   function dropToken() {

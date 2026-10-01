@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { authoringUrl, keptCharacter, personaName } from '../src/lib/persona.js';
+import { idleSpan } from '../src/lib/autolock.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(here, '..', 'src', 'lib', 'Personas.svelte'), 'utf8');
@@ -74,7 +75,7 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
     throw new Error(`unexpected fetch ${url} ${init?.method ?? 'GET'}`);
   };
   return new Function(
-    'fetch', 'authoringUrl', 'keptCharacter', 'personaName', 'watchIdle', 'start',
+    'fetch', 'authoringUrl', 'keptCharacter', 'personaName', 'watchIdle', 'idleSpan', 'start',
     `'use strict';
      let token = start.unlocked ? 't0' : null;
      let authoring = start.lists;
@@ -98,7 +99,7 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
        close: () => { making = null; },
        get: () => ({ token, authoring, making, error, loads }),
      };`,
-  )(fetch, authoringUrl, keptCharacter, personaName, watchIdle, {
+  )(fetch, authoringUrl, keptCharacter, personaName, watchIdle, idleSpan, {
     unlocked, character, formOpen, lists: formOpen ? LISTS(unlocked) : null,
   });
 }

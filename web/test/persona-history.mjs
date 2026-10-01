@@ -12,40 +12,61 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { personaUrl } from '../src/lib/persona.js';
+import { personaUrl, listUrl } from '../src/lib/persona.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(here, '..', 'src', 'lib', 'Personas.svelte'), 'utf8');
-const marker = '  async function loadHistory() {';
-const start = src.indexOf(marker);
-if (start < 0) throw new Error('Personas.svelte no longer defines loadHistory');
-const fn = src.slice(start, src.indexOf('\n  }\n', start) + 4);
+function readOut(marker) {
+  const start = src.indexOf(marker);
+  if (start < 0) throw new Error(`Personas.svelte no longer defines ${marker.trim()}`);
+  return src.slice(start, src.indexOf('\n  }\n', start) + 4);
+}
+// The shipped `loadHistory`, and the shipped `load` and `dropToken` it
+// leans on when a read fails — so a lapsed unlock is caught by the page's
+// own code, not by a stub that does what the test hopes. `personas` is
+// `$derived(data?.personas ?? [])` in the component; spelled out here.
+const fns = [
+  readOut('  async function loadHistory() {'),
+  readOut('  async function load() {'),
+  readOut('  function dropToken() {'),
+].join('\n').replaceAll('personas.find(', '(data?.personas ?? []).find(');
 
 const CHATS = [{ id: 'a', created: '2026-09-28T16:12:00Z' }];
 
-function page({ token = null, answer }) {
-  const calls = { load: 0 };
-  const fetch = async (url) => answer(url);
+// `listed` is what the persona list holds for this request's token, and
+// `unlocked` whether the server still honours it.
+function page({ token = null, answer, listed = () => [{ name: 'mara' }], unlocked = () => !!token }) {
+  const calls = { toList: 0, stopped: 0 };
+  const fetch = async (url) => {
+    if (url.startsWith('/api/personas?') || url === '/api/personas') {
+      const t = url.includes('unlock=');
+      return ok({ personas: listed(t), unlocked: t && unlocked() });
+    }
+    return answer(url);
+  };
   return new Function(
-    'fetch', 'personaUrl', 'calls', 'start',
+    'fetch', 'personaUrl', 'listUrl', 'calls', 'start',
     `'use strict';
-     let chosen = { name: 'mara' };
+     let chosen = { name: 'mara', locked: !!start.token };
      let token = start.token;
+     let data = null, error = '';
      let history = [], historyLoading = false, historyNote = '';
      let historyGen = 0;
+     let usedInitial = true;
+     const initial = null;
+     let stopIdle = start.token ? () => calls.stopped++ : null;
      const loadSources = () => {};
-     // The list's re-read: a lapsed token is dropped, and a persona it hid
-     // closes.
-     const load = async () => { calls.load++; token = null; chosen = null; };
-     ${fn}
+     const startMaking = async () => {};
+     const toList = () => { calls.toList++; chosen = null; };
+     ${fns}
      return {
        loadHistory,
        choose: (name) => { chosen = { name }; },
-       get: () => ({ history, historyLoading, historyNote, token, chosen }),
+       get: () => ({ history, historyLoading, historyNote, token, chosen, error }),
+       calls,
      };`,
-  )(fetch, personaUrl, calls, { token });
+  )(fetch, personaUrl, listUrl, calls, { token });
 }
-
 const ok = (body) => ({ ok: true, status: 200, json: async () => body, text: async () => '' });
 const notFound = { ok: false, status: 404, json: async () => ({}), text: async () => 'no such persona\n' };
 
@@ -59,14 +80,31 @@ const notFound = { ok: false, status: 404, json: async () => ({}), text: async (
 }
 
 // A 404 while holding a token re-reads the list, which learns the unlock
-// lapsed — never an empty list standing in for one.
+// lapsed (a restart forgets every token): the token is dropped, its
+// autolock stopped, and the persona it hid closed whole — never an empty
+// list standing in for its chats.
 {
-  const p = page({ token: 'dead', answer: () => notFound });
-  const before = p.get().history;
+  const p = page({
+    token: 'dead',
+    unlocked: () => false,
+    listed: () => [],
+    answer: () => notFound,
+  });
   await p.loadHistory();
-  assert.equal(p.get().token, null, 'the list re-read dropped the dead token');
-  assert.equal(p.get().chosen, null, 'and closed the persona it hid');
-  assert.equal(p.get().history, before);
+  const { token, chosen, historyNote } = p.get();
+  assert.equal(token, null, 'the dead token is dropped');
+  assert.equal(chosen, null, 'and the persona it hid is closed');
+  assert.equal(p.calls.toList, 1, 'through toList, stream and all');
+  assert.equal(p.calls.stopped, 1, 'its autolock stops with it');
+  assert.equal(historyNote, '', 'a closed persona has no list to explain');
+}
+
+// A 404 for a persona still listed (a live token) is said, not hidden.
+{
+  const p = page({ token: 'live', unlocked: () => true, listed: () => [{ name: 'mara' }], answer: () => notFound });
+  await p.loadHistory();
+  assert.equal(p.get().token, 'live');
+  assert.match(p.get().historyNote, /could not be read: no such persona/);
 }
 
 // A failure on a visible persona is said, and what was listed stays.
