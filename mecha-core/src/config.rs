@@ -1358,15 +1358,23 @@ impl Config {
     /// Fold an experiment environment's `config.toml` onto these defaults,
     /// through the same parser and table rules as the global file — the
     /// one door `trial_env` needs, rather than the layer machinery itself.
-    pub(crate) fn merge_environment_file(&mut self, path: &Path) -> Result<()> {
-        self.merge_file(path, LayerTrust::Environment)
+    /// An experiment environment's resolved `config.toml`, as text: the
+    /// resolved text, never a file re-read from the environment's own
+    /// directory, which for an `extends` variant holds only its own half.
+    /// `path` names it in messages.
+    pub(crate) fn merge_environment_text(&mut self, text: &str, path: &Path) -> Result<()> {
+        self.merge_text(text, path, LayerTrust::Environment)
     }
 
     fn merge_file(&mut self, path: &Path, trust: LayerTrust) -> Result<()> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        self.merge_text(&text, path, trust)
+    }
+
+    fn merge_text(&mut self, text: &str, path: &Path, trust: LayerTrust) -> Result<()> {
         let mut layer: ConfigLayer =
-            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+            toml::from_str(text).with_context(|| format!("parsing {}", path.display()))?;
         layer.expand_home();
         // `trust_result_claims` believes a server's word about what it did —
         // the one `[[mcp]]` switch that trusts more rather than less (R-P2).
@@ -2570,7 +2578,9 @@ mod tests {
         // everything else, and arrives with a checkout all the same: it may
         // not vouch either (review of #290).
         let mut from_environment = Config::default();
-        from_environment.merge_environment_file(&path).unwrap();
+        from_environment
+            .merge_environment_text(&std::fs::read_to_string(&path).unwrap(), &path)
+            .unwrap();
         assert_eq!(from_environment.mcp.len(), 1);
         assert!(
             !from_environment.mcp[0].trust_result_claims,
