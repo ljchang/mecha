@@ -478,6 +478,16 @@ fn api() -> gate::Owned {
             axum::routing::post(persona_chat::remove_source),
         )
         .at(
+            "/api/personas/{name}/sources/file",
+            Owner::Of(Feature::Personas),
+            get(persona_chat::source_file),
+        )
+        .at(
+            "/api/personas/{name}/sources/text",
+            Owner::Of(Feature::Personas),
+            get(persona_chat::source_text),
+        )
+        .at(
             "/api/personas/{name}/lock",
             Owner::Of(Feature::Personas),
             axum::routing::post(persona_chat::lock),

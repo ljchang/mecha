@@ -25,6 +25,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Replies read as formatted text.** In the assistant's chat and in persona
+  chats, a reply's Markdown (headings, bold, lists, code) is rendered rather
+  than shown as `##` and `**`. Double-click a reply to see it as written, and
+  again to go back. Rendering is safe for words a third party wrote: no raw
+  HTML, links only to web and mail addresses, no images fetched.
+- **A persona's page is easier to work with.** Drop files onto its Files
+  tiles; a file you add shows as *uploading…* at once. Click a file to
+  download it, or to read its text once it has been read. Earlier chats are
+  listed by what they were about (the persona's memory summary, the goal, or
+  how you opened it) with the day and time together. The goal box is now a
+  *Set a goal for this chat* link. In a chat, your message no longer shows
+  the goal framing sent ahead of it, and repeated calls to one tool show as
+  one row (`file_read ×6`).
+
 - **Personas remember you in the next chat.** A new chat with a persona
   starts with what it remembers: your about-me notes, what it knows about you
   (and what you shared with it), its own facts, and its last few
