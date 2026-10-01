@@ -960,6 +960,23 @@ impl PersonaChats {
         }
         let lib = Library::load(&library.dir).0;
         let unlocked = library.unlocked(token);
+        // A linked character still waiting, and shown to this page, is
+        // approved with the persona or not at all: the server keeps the
+        // rule, not only the page (review of #493).
+        let waiting_character = match hidden_character(&p, &lib, unlocked) {
+            Some(_) => None,
+            None => p
+                .settings
+                .character
+                .as_deref()
+                .and_then(|c| lib.get(Kind::Character, c))
+                .filter(|e| e.status == Status::Candidate),
+        };
+        if waiting_character.is_some() && character_shown.is_none() {
+            return Err(Refusal::Conflict(
+                "its portrait is waiting too — approve both together".into(),
+            ));
+        }
         let character = match character_shown {
             None => None,
             Some(sig) => {
@@ -5059,8 +5076,19 @@ mod tests {
             "a refused persona approves no character"
         );
 
-        // Read again, approved as shown: the character with it.
+        // Read again. Not the persona alone while its portrait waits.
         let read = w.personas().review(&w.library, "wren", None).unwrap();
+        assert!(matches!(
+            w.personas().approve(
+                &w.library,
+                "wren",
+                read["shown"].as_str().unwrap(),
+                None,
+                None
+            ),
+            Err(Refusal::Conflict(_))
+        ));
+        // Approved as shown: the character with it.
         let approved = w
             .personas()
             .approve(
