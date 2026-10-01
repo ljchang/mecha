@@ -49,6 +49,8 @@
   async function play(name) {
     if (playing?.name === name) return stop();
     stop();
+    // A new try clears what the last one said (review of #490).
+    error = null;
     playing = { name, state: 'loading' };
     try {
       const res = await fetch(`/api/library/voices/sample?name=${encodeURIComponent(name)}`);
@@ -60,7 +62,8 @@
       playing = { name, state: 'playing' };
       await audio.play();
     } catch (e) {
-      if (playing?.name === name) playing = null;
+      // A refused autoplay leaves the clip loaded: let it go with the try.
+      if (playing?.name === name) stop();
       error = `${name}: ${e?.message ?? e}`;
     }
   }
@@ -71,6 +74,7 @@
       return;
     }
     deleteArmed = null;
+    error = null;
     try {
       const res = await fetch('/api/settings/voice/clone/delete', {
         method: 'POST',

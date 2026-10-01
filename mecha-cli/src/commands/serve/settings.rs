@@ -694,6 +694,11 @@ pub async fn library_voices(
             names.insert(n.to_string());
         }
     }
+    // And every voice a persona names: one that is in neither list is
+    // exactly what this page is placed to say, rather than leaving the first
+    // sign of a typo to a refused call (review of #490). Behind the lock, as
+    // `used` is.
+    names.extend(used.keys().cloned());
     let voices: Vec<serde_json::Value> = names
         .into_iter()
         .map(|name| {
@@ -764,25 +769,28 @@ pub async fn library_voice_sample(
         }
     };
     let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    if status == StatusCode::NOT_FOUND && resp.headers().get("content-type").is_none() {
-        return (
-            StatusCode::CONFLICT,
-            "the voice worker predates previews — restart it on a current checkout\n",
-        )
-            .into_response();
-    }
     let Ok(bytes) = resp.bytes().await else {
         return (StatusCode::BAD_GATEWAY, "reading the sample\n").into_response();
     };
     if status.is_success() {
         return ([("content-type", "audio/wav")], bytes.to_vec()).into_response();
     }
-    // The worker's own reason, as text.
+    // The worker's own refusal carries its reason in `error`; a 404 without
+    // one is the route missing — a worker older than previews (review of
+    // #490: both 404s carry a content-type, so the body is what tells them
+    // apart).
     let why = serde_json::from_slice::<serde_json::Value>(&bytes)
         .ok()
-        .and_then(|v| v["error"].as_str().map(str::to_string))
-        .unwrap_or_else(|| format!("the voice worker answered {status}"));
-    (status, format!("{why}\n")).into_response()
+        .and_then(|v| v["error"].as_str().map(str::to_string));
+    match why {
+        Some(why) => (status, format!("{why}\n")).into_response(),
+        None if status == StatusCode::NOT_FOUND => (
+            StatusCode::CONFLICT,
+            "the voice worker predates previews — restart it on a current checkout\n",
+        )
+            .into_response(),
+        None => (status, format!("the voice worker answered {status}\n")).into_response(),
+    }
 }
 
 /// A voice name is a bare filename stem, and the alphabet is closed rather
