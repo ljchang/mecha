@@ -28,7 +28,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/sources', '/sources/remove'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/sources', '/sources/remove'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save'];
 
 export const ENDPOINTS = [
@@ -443,4 +443,55 @@ export function fileKind(name) {
   if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) return 'IMG';
   if (['md', 'markdown'].includes(ext)) return 'MD';
   return ext ? ext.slice(0, 4).toUpperCase() : 'FILE';
+}
+
+// ─── The avatar's framing ────────────────────────────────────────────────
+// A portrait drawn into the round avatar with `object-fit: cover`. The frame
+// (`State::frame`, set by the owner) is `object-position` — `x` and `y` say
+// how far across what is hidden the picture has slid, 0 its left or top
+// edge, 1 its right or bottom, so it never leaves a gap — and how far in,
+// scaled about that same point, which stays put as it zooms.
+// Unplaced, it leans to the top: portraits are people, and a tall one
+// cropped at its middle shows a chest (owner report, 2026-10-01).
+export const DEFAULT_FRAME = Object.freeze({ x: 0.5, y: 0.2, zoom: 1 });
+export const MAX_FRAME_ZOOM = 4; // `persona::MAX_FRAME_ZOOM`
+
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+// A frame the server sent, held to what it accepts; anything else is the
+// default rather than a broken picture. Always a fresh object: the editor
+// binds its zoom slider into what this returns, and a write into the frozen
+// default threw (review of #473).
+export function frameOf(frame) {
+  const ok = (v) => typeof v === 'number' && Number.isFinite(v);
+  if (!frame || !ok(frame.x) || !ok(frame.y) || !ok(frame.zoom)) return { ...DEFAULT_FRAME };
+  return { x: clamp(frame.x, 0, 1), y: clamp(frame.y, 0, 1), zoom: clamp(frame.zoom, 1, MAX_FRAME_ZOOM) };
+}
+
+// The `<img>`'s style for a frame.
+export function frameStyle(frame) {
+  const f = frameOf(frame);
+  const at = `${+(f.x * 100).toFixed(2)}% ${+(f.y * 100).toFixed(2)}%`;
+  return `object-position:${at};transform-origin:${at};transform:scale(${+f.zoom.toFixed(3)})`;
+}
+
+// A drag of `dx`, `dy` pixels across an avatar `size` pixels wide, over a
+// picture `aspect` (width / height) wide. The picture follows the finger.
+//
+// Along one axis, with the picture `cover`-fitted to `R` pixels in a box of
+// `S` and scaled by `z` about the same point `object-position` picks, the
+// picture's point `u` lands at `X = z·u + p·(S − z·R)` — so a drag of `dX`
+// moves `p` by `−dX / (z·R − S)`, and an axis with nothing hidden to pan to
+// (`z·R = S`: a square at zoom 1, or a tall picture's width) does not move
+// at all, rather than changing a frame the circle cannot show (review of
+// #473).
+export function dragFrame(frame, dx, dy, size, aspect = 1) {
+  const f = frameOf(frame);
+  const S = Math.max(1, size);
+  const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
+  const pan = (p, d, R) => {
+    const room = f.zoom * R - S;
+    return room > 0.5 ? clamp(p - d / room, 0, 1) : p;
+  };
+  return { ...f, x: pan(f.x, dx, S * Math.max(1, a)), y: pan(f.y, dy, S * Math.max(1, 1 / a)) };
 }

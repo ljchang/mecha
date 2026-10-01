@@ -8583,13 +8583,17 @@ in five different ways. The design and its open steps are
 - **An environment says what its tasks need.** `environment.toml`'s
   `requires` names feature ids, inherited down `extends`, and an unknown id
   refuses at load — it would otherwise require nothing. So does an id no
-  trial home can ever have on (`can_be_on_in_a_trial`: five of the
+  environment can switch on (`can_be_on_in_a_trial`: five of the
   registry's, the switch an environment may set and the ones `config_at`
   defaults, from the named `DEFAULTED_FROM_SERVERS` and
   `FOLLOW_THE_OPERATOR` lists it reads too), since it would refuse every run
   and blame the trial home rather than the line (the owner's ruling,
   2026-10-01); `what_a_trial_can_have_on_is_what_its_config_turns_on` holds
-  the predicate to what a trial actually switches on.
+  the predicate to what a trial actually switches on. An arm's lever can
+  switch on one more — `experiment::lever_that_switches_on`, derived by
+  applying each lever, finds only `messages` today — and since `requires` is
+  checked before an arm's levers apply, that refusal names `levers_on`
+  instead (review of #474).
   `Environment::prepare` asks the registry of the trial home's own config
   and refuses a required feature that is `Off` or `Blocked`, by name, before
   any trial starts; `Unready` passes, since a trial home's stores are built
