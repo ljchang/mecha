@@ -42,6 +42,9 @@ pub const BUDGET_CHARS: usize = 6000;
 /// Recent episodes recalled at chat start.
 pub const EPISODES: usize = 5;
 
+/// One remembered line: its day, its text, and where it came from.
+type Row = (String, String, Origin);
+
 /// The block, and whether it arms `untrusted`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryBlock {
@@ -224,34 +227,19 @@ pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
 
     // What the other two left, so an unused share is not wasted.
     let used = |section: &Option<String>| section.as_ref().map_or(0, |t| t.chars().count() + 2);
-    let mut budget = BUDGET_CHARS.saturating_sub(used(&about) + used(&episode_section));
-    let mut fact_section =
-        |heading: &str, facts: Vec<(String, String, Origin)>, budget: &mut usize| {
-            let total = facts.len();
-            let mut lines = Vec::new();
-            for (date, text, origin) in facts {
-                if take(&mut lines, budget, format!("- {date} · {text}")) {
-                    untrusted |= origin == Origin::ModelUntrusted;
-                }
-            }
-            if lines.is_empty() {
-                return;
-            }
-            let left = total - lines.len();
-            let more = if left > 0 {
-                format!("\n(And {left} more, older, not shown here.)")
-            } else {
-                String::new()
-            };
-            facts_sections.push(format!("{heading}\n{}{more}", lines.join("\n")));
-        };
-    let rows = |facts: Vec<Fact>| -> Vec<(String, String, Origin)> {
+    let budget = BUDGET_CHARS.saturating_sub(used(&about) + used(&episode_section));
+    let rows = |facts: Vec<Fact>| -> Vec<Row> {
         facts
             .into_iter()
             .map(|f| (day(&f.ingested_at).to_owned(), f.text, f.origin))
             .collect()
     };
 
+    // Gathered first, then shared fairly: each section gets an equal part of
+    // what is left, and what it does not use passes to the next, so many
+    // facts about the owner can never price the persona's own canon out of
+    // sight (review of #477).
+    let mut pending: Vec<(&str, Vec<Row>)> = Vec::new();
     if s.user_facts != UserFacts::Off {
         let shared = match s.user_facts {
             UserFacts::Shared => match Shared::open_existing(store.dir())? {
@@ -267,7 +255,7 @@ pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
             },
             UserFacts::Own | UserFacts::Off => Vec::new(),
         };
-        let mine = |table: Table| -> Result<Vec<(String, String, Origin)>> {
+        let mine = |table: Table| -> Result<Vec<Row>> {
             let mut out = memory
                 .as_ref()
                 .map(|m| m.facts(table, Filter::Recallable))
@@ -282,14 +270,11 @@ pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
             );
             Ok(out)
         };
-        let told = mine(Table::User)?;
-        let read = mine(Table::Inferred)?;
-        fact_section("What you know about the owner:", told, &mut budget);
-        fact_section(
+        pending.push(("What you know about the owner:", mine(Table::User)?));
+        pending.push((
             "Your own readings of the owner — guesses, not things they said:",
-            read,
-            &mut budget,
-        );
+            mine(Table::Inferred)?,
+        ));
     }
     if s.semantic {
         let own = memory
@@ -298,11 +283,32 @@ pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
             .transpose()?
             .map(rows)
             .unwrap_or_default();
-        fact_section(
-            "What is true between you, and about yourself:",
-            own,
-            &mut budget,
-        );
+        pending.push(("What is true between you, and about yourself:", own));
+    }
+    pending.retain(|(_, facts)| !facts.is_empty());
+
+    let mut left_over = budget;
+    let n = pending.len();
+    for (i, (heading, facts)) in pending.into_iter().enumerate() {
+        let mut share = left_over / (n - i);
+        let given = share;
+        let total = facts.len();
+        let mut lines = Vec::new();
+        for (date, text, origin) in facts {
+            if take(&mut lines, &mut share, format!("- {date} · {text}")) {
+                untrusted |= origin == Origin::ModelUntrusted;
+            }
+        }
+        left_over -= given - share;
+        // A section cut — even to nothing — says so: shown nothing and had
+        // nothing to show are opposite findings.
+        let cut = total - lines.len();
+        let more = match (lines.is_empty(), cut) {
+            (_, 0) => String::new(),
+            (true, n) => format!("({n} remembered, none shown here.)"),
+            (false, n) => format!("\n(And {n} more not shown here.)"),
+        };
+        facts_sections.push(format!("{heading}\n{}{more}", lines.join("\n")));
     }
 
     let sections: Vec<String> = about

@@ -344,7 +344,7 @@ fn recent_conversations_survive_however_many_facts_there_are() {
         t.contains("Talked through the reviewer's second comment."),
         "{t}"
     );
-    assert!(t.contains("more, older, not shown here"), "a cut is said");
+    assert!(t.contains("more not shown here"), "a cut is said");
 }
 
 #[test]
@@ -393,4 +393,49 @@ fn a_fact_this_persona_learned_and_the_owner_shared_is_said_once() {
         .unwrap();
     let t = block(&w, &w.persona("mara")).unwrap().text;
     assert_eq!(t.matches("Has a cat.").count(), 1, "{t}");
+}
+
+#[test]
+fn many_facts_about_the_owner_never_crowd_out_the_personas_own_canon() {
+    let w = World::new(&["mara"]);
+    std::fs::write(w.dir.join("about-me.md"), "I study kelp. ".repeat(300)).unwrap();
+    let m = w.memory("mara");
+    for i in 0..5 {
+        episode(&m, &format!("A conversation, number {i}."));
+    }
+    for i in 0..300 {
+        m.add_fact(
+            Table::User,
+            fact(
+                &format!("A fairly ordinary fact about the owner, number {i}."),
+                Kind::Stated,
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+        m.add_fact(
+            Table::Inferred,
+            fact(
+                &format!("A modest guess about the owner, number {i}."),
+                Kind::Inferred,
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    }
+    m.add_fact(
+        Table::Persona,
+        fact("We call it Holdfast.", Kind::Observed, Origin::ModelClean),
+    )
+    .unwrap();
+    let t = block(&w, &w.persona("mara")).unwrap().text;
+    assert!(
+        t.contains("We call it Holdfast."),
+        "the canon is not priced out: {t}"
+    );
+    assert!(t.contains("A conversation, number 4."), "{t}");
+    assert!(t.contains("guesses, not things they said"), "{t}");
+    // Every section that was cut says so.
+    assert_eq!(t.matches("not shown here").count(), 2, "{t}");
+    assert!(t.chars().count() < BUDGET_CHARS + 600);
 }
