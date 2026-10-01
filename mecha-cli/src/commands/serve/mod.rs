@@ -531,6 +531,11 @@ fn api() -> gate::Owned {
             axum::routing::post(persona_chat::cancel),
         )
         .at(
+            "/api/persona-chat/{key}/call",
+            Owner::Of(Feature::Personas),
+            axum::routing::post(persona_chat::call_ended),
+        )
+        .at(
             "/api/persona-chat/{key}/file",
             Owner::Of(Feature::Personas),
             get(persona_chat::download),

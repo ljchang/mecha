@@ -1361,6 +1361,12 @@ module.
   first word, re-checks the voice, and refuses `voice-config` voice changes
   for the rest of the call. A page-supplied `persona_voice` is stripped from
   every offer.
+- **Call minutes have their own file** (`safety::CallRecord`,
+  `calls.jsonl`). A call record in `dose.jsonl` would read as one more turn to
+  an older binary, because `DoseRecord` takes unknown fields. The page reports
+  the length when a call ends (`/call`, sent with `keepalive`, so a tab that
+  closes still sends it), and serve clamps it to `MAX_CALL_SECS`. The same
+  request releases the call's unlock.
 
 ## Security model
 

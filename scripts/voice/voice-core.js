@@ -23,6 +23,14 @@
  *                          // offer because that is the only message sent
  *                          // before the bot exists, and the bot is what
  *                          // has to know — the data channel opens too late
+ *     offerExtra,          // optional: more `request_data` for the host to
+ *                          // read off the offer — a persona chat's unlock
+ *                          // token, which serve checks and strips before
+ *                          // the worker sees it (PERSONA-DESIGN §11)
+ *     rememberVoice,       // default true; false for a call whose voice is
+ *                          // not the listener's to choose (a persona's):
+ *                          // the remembered voice is neither sent nor
+ *                          // overwritten by the call's
  *     requireUnlogged,     // optional: go on only if the answer says nothing
  *                          // of the call is logged (`refusesAnswer`) — set
  *                          // for a call into an incognito chat
@@ -405,6 +413,8 @@ export function createVoiceSession(opts = {}) {
     offerUrl: "/api/offer",
     offerHeaders: {},
     sessionKey: null,
+    offerExtra: null,
+    rememberVoice: true,
     requireUnlogged: false,
     onState: () => {},
     onTranscript: () => {},
@@ -755,7 +765,7 @@ export function createVoiceSession(opts = {}) {
         if (msg.data?.t === "voice-config") {
           // Written before the UI renders it, and written from the
           // server's state rather than from whatever was asked for.
-          writePrefs(msg.data);
+          if (cfg.rememberVoice) writePrefs(msg.data);
           cfg.onVoiceConfig(msg.data);
         }
         // The worker's own watch over its microphone audio: it saw the gap
@@ -856,7 +866,7 @@ export function createVoiceSession(opts = {}) {
       // same message carries it, so the preference is applied before the
       // first word rather than after one spoken in the wrong voice - and
       // with nothing remembered this is the empty read it always was.
-      voiceConfig(readPrefs());
+      voiceConfig(cfg.rememberVoice ? readPrefs() : {});
     };
     dc.onmessage = (e) => { try { onRtvi(JSON.parse(e.data)); } catch { /* not rtvi */ } };
 
@@ -926,7 +936,7 @@ export function createVoiceSession(opts = {}) {
        session to name, so a caller that does not use D3 sends exactly the
        bytes it always did. */
     const offerBody = { sdp: pc.localDescription.sdp, type: pc.localDescription.type };
-    if (cfg.sessionKey) offerBody.request_data = { session: cfg.sessionKey };
+    if (cfg.sessionKey) offerBody.request_data = { ...(cfg.offerExtra || {}), session: cfg.sessionKey };
     // Declared in the offer so the worker picks its audio source before a
     // single RTP frame is read — a switch mid-call would double the first
     // words. A page without the tap says nothing and gets the RTP path.
