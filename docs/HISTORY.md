@@ -104,7 +104,9 @@ owner's asks from a phone, each through its own review loop.
   for a finished reply. Copy writes the reply as written; Download saves a
   `.md` from a Blob made in the page. Each code block gets its own Copy.
   `download` defaults off and each call site opts in, and an incognito chat
-  never does: a file on the device outlives the room (INCOGNITO-DESIGN R2).
+  never does: a file on the device outlives the room (INCOGNITO-DESIGN R2)
+  — reversed the same day by the owner (#489): the file is made in the
+  browser, so the server keeps no trace.
   `reply-export.mjs` pins the call sites by counting them first.
 
 **2026-10-01 — personas read their files: folders, checked citations,
