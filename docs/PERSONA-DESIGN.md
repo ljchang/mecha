@@ -1047,7 +1047,10 @@ not as a precedent.
 chat's first turn, and a Files list with upload and remove on the persona's
 page. `file_read` is every persona's, outside `[tools] allow` and `answers` —
 deliberately: reading its own files is what a persona with files is for, and
-the tool reaches nothing but them. Checked citations (3b), search over large collections (3c) and saving
+the tool reaches nothing but them. The files block is a chat's, from its
+first turn: a file added while a chat is open reaches the next chat, and
+one removed stays quoted in the chats that read it — unlike the situation
+brief, it is not re-folded after a compaction. Checked citations (3b), search over large collections (3c) and saving
 study material (3d) come next.
 
 R14 asks for NotebookLM's usefulness — upload a paper or other material, ask
