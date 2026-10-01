@@ -262,7 +262,13 @@ fn forgetting_a_chat_clears_both_files_and_nothing_else() {
     );
     assert!(mara.episodes(Filter::All).unwrap().is_empty());
     assert_eq!(otto.facts(Table::User, Filter::All).unwrap().len(), 1);
-    let left: Vec<_> = shared.all().unwrap().into_iter().map(|s| s.text).collect();
+    let left: Vec<_> = shared
+        .all()
+        .unwrap()
+        .facts
+        .into_iter()
+        .map(|s| s.text)
+        .collect();
     assert_eq!(left.len(), 2);
     assert!(left.contains(&"Has a cat.".to_string()));
     assert!(left.contains(&"Likes chess.".to_string()));
@@ -340,6 +346,7 @@ fn a_persona_outside_a_group_sees_none_of_its_shared_facts() {
         let mut t: Vec<String> = shared
             .visible_to(&groups)
             .unwrap()
+            .facts
             .into_iter()
             .map(|s| s.text)
             .collect();
@@ -412,7 +419,7 @@ fn only_an_approved_fact_about_the_owner_can_be_shared_and_only_into_a_real_grou
 
     // Forgetting the original takes its copies with it.
     assert_eq!(forget(&dir, "mara", &ok.uid).unwrap(), 1);
-    assert!(shared.all().unwrap().is_empty());
+    assert!(shared.all().unwrap().facts.is_empty());
 }
 
 #[test]
@@ -550,4 +557,153 @@ fn a_short_id_resolves_only_when_it_names_one_record() {
     let err = m.resolve("abcd").unwrap_err();
     assert!(err.to_string().contains("matches 2"), "{err}");
     assert_eq!(m.resolve("abcd0002").unwrap(), "abcd0002");
+}
+
+/// Mara, a user fact she learned, and that fact shared with everyone.
+fn shared_fact(dir: &Path, text: &str) -> (Memory, Shared, Fact) {
+    let m = Memory::open(dir, "mara").unwrap();
+    let f = m
+        .add_fact(
+            Table::User,
+            fact(text, Kind::Stated, "c1", Origin::ModelClean),
+        )
+        .unwrap();
+    let shared = Shared::open(dir).unwrap();
+    shared.share(&f, Audience::Everyone, &[]).unwrap();
+    (m, shared, f)
+}
+
+fn shared_texts(shared: &Shared) -> Vec<String> {
+    let l = shared.visible_to(&[]).unwrap();
+    assert_eq!(l.unreadable, 0);
+    l.facts.into_iter().map(|s| s.text).collect()
+}
+
+#[test]
+fn a_correction_reaches_the_shared_copy_and_forgetting_it_takes_the_copy() {
+    let dir = store(&["mara"]);
+    let (m, shared, old) = shared_fact(&dir, "Teaches on Tuesdays.");
+    let new = m.correct(&old.uid, "Teaches on Thursdays.").unwrap();
+
+    // Other personas read the owner's wording, never the one replaced.
+    assert_eq!(shared_texts(&shared), ["Teaches on Thursdays."]);
+    let copy = &shared.all().unwrap().facts[0];
+    assert_eq!(copy.from_uid, new.uid);
+    assert_eq!(copy.origin, Origin::Owner);
+
+    // Forgetting the row the owner can see forgets the copy with it.
+    assert_eq!(forget(&dir, "mara", &new.uid).unwrap(), 1);
+    assert!(shared_texts(&shared).is_empty());
+}
+
+#[test]
+fn a_copy_left_behind_by_a_correction_still_goes_when_the_fact_is_forgotten() {
+    let dir = store(&["mara"]);
+    let (m, shared, old) = shared_fact(&dir, "Teaches on Tuesdays.");
+    let new = m.correct(&old.uid, "Teaches on Thursdays.").unwrap();
+    // As if the second file's write had failed after the first committed.
+    shared
+        .conn
+        .execute("UPDATE shared_facts SET from_uid = ?1", [&old.uid])
+        .unwrap();
+    let newer = m
+        .correct(&new.uid, "Teaches on Thursday afternoons.")
+        .unwrap();
+    assert_eq!(
+        forget(&dir, "mara", &newer.uid).unwrap(),
+        1,
+        "found through `replaces`, two corrections back"
+    );
+    assert!(shared.all().unwrap().facts.is_empty());
+}
+
+#[test]
+fn a_withdrawn_fact_is_no_longer_shared_and_cannot_be_approved_back() {
+    let dir = store(&["mara"]);
+    let (m, shared, f) = shared_fact(&dir, "Runs at dawn.");
+    assert_eq!(m.invalidate(&f.uid).unwrap(), 1);
+    assert!(shared_texts(&shared).is_empty());
+    let first = m.fact(&f.uid).unwrap().unwrap().invalidated_at.unwrap();
+    // A second withdrawal keeps the first's time.
+    m.invalidate(&f.uid).unwrap();
+    assert_eq!(
+        m.fact(&f.uid).unwrap().unwrap().invalidated_at.unwrap(),
+        first
+    );
+
+    let err = m.approve(&f.uid).unwrap_err();
+    assert!(err.to_string().contains("withdrawn"), "{err}");
+    let after = m.fact(&f.uid).unwrap().unwrap();
+    assert_eq!(after.status, Status::Invalidated);
+    assert_eq!(after.invalidated_at.as_deref(), Some(first.as_str()));
+
+    // A corrected fact's old row is withdrawn too: never both recallable.
+    let old = m
+        .add_fact(
+            Table::User,
+            fact("Has a cat.", Kind::Stated, "c1", Origin::ModelClean),
+        )
+        .unwrap();
+    let fixed = m.correct(&old.uid, "Has two cats.").unwrap();
+    assert!(m.approve(&old.uid).is_err());
+    assert_eq!(
+        texts(&m.facts(Table::User, Filter::Recallable).unwrap()),
+        ["Has two cats."]
+    );
+    // And an active record has nothing to approve.
+    let err = m.approve(&fixed.uid).unwrap_err();
+    assert!(err.to_string().contains("already"), "{err}");
+}
+
+#[test]
+fn an_unreadable_shared_row_is_counted_never_shown_and_can_still_be_unshared() {
+    let dir = store(&["mara"]);
+    let (_m, shared, _f) = shared_fact(&dir, "Runs at dawn.");
+    for (uid, audience, table) in [
+        ("feed0001", "persona:otto", "user"),
+        ("feed0002", "everyone", "a_fourth_table"),
+    ] {
+        shared
+            .conn
+            .execute(
+                "INSERT INTO shared_facts (uid, text, kind, source_chat, source_from, source_to,
+                 learned_by, origin, model, ingested_at, audience, from_uid, from_table, shared_at)
+                 VALUES (?1, 'From the future.', 'stated', 'c9', 0, 0, 'mara', 'owner', 'm',
+                 'now', ?2, ?1, ?3, 'now')",
+                params![uid, audience, table],
+            )
+            .unwrap();
+    }
+    let all = shared.all().unwrap();
+    assert_eq!(all.facts.len(), 1);
+    assert_eq!(all.unreadable, 2);
+    let seen = shared.visible_to(&["otto".to_string()]).unwrap();
+    assert_eq!(
+        seen.facts.len(),
+        1,
+        "an audience it cannot read reaches no one"
+    );
+
+    // The owner can still name and remove what this binary cannot read.
+    assert!(shared
+        .resolve("feed")
+        .unwrap_err()
+        .to_string()
+        .contains("matches"));
+    shared
+        .unshare(&shared.resolve("feed0001").unwrap())
+        .unwrap();
+    assert_eq!(shared.all().unwrap().unreadable, 1);
+    for bad in ["", "0", "fee", "zzzz"] {
+        assert!(shared.resolve(bad).is_err(), "`{bad}` resolved");
+    }
+}
+
+#[test]
+fn an_edit_never_creates_a_memory_just_to_find_the_id_missing() {
+    let dir = store(&["mara"]);
+    let err = Memory::open_to_edit(&dir, "mara").err().unwrap();
+    assert!(err.to_string().contains("remembers nothing yet"), "{err}");
+    assert!(forget(&dir, "mara", "abcd1234").is_err());
+    assert!(!dir.join("mara").join(MEMORY_DB).exists());
 }
