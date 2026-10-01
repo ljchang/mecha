@@ -1352,8 +1352,9 @@ module.
       judge stopped, since what was already spoken cannot be unsaid. A
       verdict that lands after the reply has finished is not heard: the
       call's turn has closed, so it reaches only the page. Whether a call
-      should wait for it (up to `JUDGE_WAIT`) is open for the owner, together
-      with the pause's voice.
+      should wait for it (up to `JUDGE_WAIT`) is open for the owner. The
+      pause is spoken in the persona's own voice, by the owner's ruling of
+      2026-10-01.
     - The lock and approval are checked before the barge-in (the
       assistant's #376 order), so a refused call never stops the reply in
       flight. A spoken turn that fails is rolled back with its call note,
