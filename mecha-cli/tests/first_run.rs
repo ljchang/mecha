@@ -1161,31 +1161,61 @@ fn setup_offers_every_feature_and_minimal_declines_them_without_touching_config(
 }
 
 /// The closing note names each kind of "no" with its own way back, as its
-/// own group: an answer given in setup is taken back with `--undecline`, a
-/// switch written `false` with `mecha features enable` (review of #461 —
-/// untested, the second line could vanish with the suite green). Reached the
-/// way a person reaches it: a credential so nothing blocks, `--minimal` for
-/// the rest, then a plain `mecha setup` with nothing outstanding.
+/// own group set apart from `Next:`. The defect was a **switch-only** decline
+/// printing `mecha features enable <id>` flush against `mecha doctor`, so
+/// that is the state staged: every feature switched off in `[features]`, a
+/// charter written rather than declined, a credential so nothing blocks — and
+/// no decline file at all, so the `--undecline` line (whose own leading
+/// newline hid the defect in the first version of this test) never prints
+/// (review of #464).
 #[test]
 fn the_closing_note_names_each_way_back() {
     let home = Home::new("closing-undo");
+    let switches: String = [
+        "web",
+        "slack",
+        "mail",
+        "docs",
+        "graph",
+        "search",
+        "documents",
+        "image",
+        "personas",
+        "voice",
+        "incognito",
+        "frontdoor",
+    ]
+    .iter()
+    .map(|id| format!("{id} = false\n"))
+    .collect();
+    // `messages = false` is applied into `[messages] enabled` and reads as
+    // unanswered, not switched off, so it would stay outstanding; on, with
+    // nothing to set up, it is simply done.
     std::fs::write(
         home.path().join("config.toml"),
-        "[features]\nslack = false\n",
+        format!("[features]\n{switches}messages = true\n"),
     )
     .unwrap();
-    let _ = mecha_with_key(&home, &["setup", "--minimal"]);
+    std::fs::write(
+        home.path().join("charter.toml"),
+        "[[line]]\nid = \"first\"\ntext = \"tell the truth early\"\n",
+    )
+    .unwrap();
     let out = mecha_with_key(&home, &["setup"]);
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "nothing outstanding:\n{text}");
-    assert!(text.contains("mecha setup --undecline <id>"), "{text}");
-    // Column-aligned with the line above on purpose, so not a prose check.
-    line_containing(&text, "mecha features enable <id>");
-    // Set apart from `Next:`: the group opens with a blank line.
+    assert!(!home.path().join("setup-declined.json").exists());
+    assert!(
+        !text.contains("--undecline"),
+        "no answer given in setup:\n{text}"
+    );
     let lines: Vec<&str> = text.lines().collect();
-    let first = lines
+    let at = lines
         .iter()
-        .position(|l| l.contains("mecha setup --undecline <id>"))
-        .unwrap();
-    assert!(lines[first - 1].trim().is_empty(), "{text}");
+        .position(|l| l.contains("mecha features enable <id>"))
+        .unwrap_or_else(|| panic!("the switch's way back is named:\n{text}"));
+    assert!(
+        lines[at - 1].trim().is_empty(),
+        "set apart from `Next:`, not a fourth item of it:\n{text}"
+    );
 }
