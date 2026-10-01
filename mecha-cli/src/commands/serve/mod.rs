@@ -483,6 +483,11 @@ fn api() -> gate::Owned {
             axum::routing::post(persona_chat::lock),
         )
         .at(
+            "/api/personas/{name}/frame",
+            Owner::Of(Feature::Personas),
+            axum::routing::post(persona_chat::frame),
+        )
+        .at(
             "/api/personas/{name}/chats",
             Owner::Of(Feature::Personas),
             get(persona_chat::history).post(persona_chat::open),

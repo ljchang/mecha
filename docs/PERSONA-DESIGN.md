@@ -338,7 +338,7 @@ ruling already names what kind: a mecha-owned SQLite, never `graph.db`
   voices/<name>/                 voice profiles: a reference clip and settings (§11)
   <persona>/
     persona.toml                 the owner's fields — never rewritten by code (§4.3)
-    state.toml                   machine-written: status, origin, locked, version, digest (§4.3)
+    state.toml                   machine-written: status, origin, locked, frame, version, digest (§4.3)
     identity.md                  owner prose: who they are, how they speak;
                                  its `## Core` section is the re-anchor (§12.5)
     motivation.md                owner prose: wants and values (§6)
@@ -384,6 +384,12 @@ one unlock shows locked characters and locked personas together (§8.3).
   beside it holds what the machine keeps — `status`, `origin`, `locked`,
   `version`, `digest`, `created`, `updated` — so `mecha persona lock` is a
   machine-state write, which is what it is. (Settled in building phase 1.)
+  `frame` joined them on 2026-10-01 (owner request): where the portrait sits
+  in the round avatar, `{x, y, zoom}`, set from the persona page's "Adjust
+  picture". It is display only — no new version, nothing in a prompt — and
+  a value out of range loads as none rather than costing the persona. With
+  none, the avatar leans to the top of the picture, where a portrait's face
+  is.
 - **Memory is SQLite, one database per persona** (§9.10). It is the part
   that grows without bound — many personas, long conversations, months of
   them — and the part searched on every turn and written by more than one
