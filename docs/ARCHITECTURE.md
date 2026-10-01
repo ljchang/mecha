@@ -1360,8 +1360,12 @@ module.
       and the next spoken turn carries the note again.
 - **Serve vouches for a persona call at the offer** (`persona_offer`).
   The worker names a chat by key alone, so the page offers with its unlock
-  token. Serve checks it, keeps it (`bind_call`) and strips it, so the worker
-  never holds it. Every spoken turn is checked against the lock again with
+  token. Serve checks it (`check_call`) and strips it, so the worker never
+  holds it. It binds the token for the call only once nothing else can refuse
+  the offer (`bind`, which returns an id). A refused offer therefore binds
+  nothing and never touches a call already placed. An offer the worker does
+  not take releases only the binding it made (`release_offer`), and the
+  page's hang-up (`/call`) releases the call's. Every spoken turn is checked against the lock again with
   that token, so a relock mid-call refuses the next word. The voice is
   serve's to say, never the page's: `call_voice` reads the persona's
   profile and refuses by name a reference clip, a missing profile or an
