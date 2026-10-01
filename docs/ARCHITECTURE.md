@@ -1235,6 +1235,25 @@ module.
     an unknown status is a candidate.
   - Read paths (`open_existing`) never create a file — what recall and an
     incognito chat will use.
+  - **Recall at chat start** (`persona::recall`, §9.7): one block, folded into
+    the first turn beside the files block and only before the first reply
+    (`carries_now`), so it lands in `messages[0]`, which compaction keeps
+    whole. It holds about-me, the user facts the persona may see (its own,
+    plus `Shared::visible_to` its groups under `user_facts = "shared"`),
+    its own facts and recent episodes, within `BUDGET_CHARS`, honouring each
+    `[memory]` switch read **live**. Candidates are never recalled.
+    - **Two stems, chosen by the harness.** `MEMORY_STEM` arms `private`;
+      `UNTRUSTED_MEMORY_STEM` (any record of untrusted origin folded) arms
+      `private` and `untrusted`. `Taint::arm_for_content` re-reads the
+      conversation at every run start, so §9.7's single stem arming both
+      would have made every chat that remembered anything untrusted — and
+      the writer would then have turned all its later memories into
+      candidates. `stem_of` is the one predicate for the taint, the harness
+      voice and `carries`; typing a stem only arms more.
+    - An unreadable store is a notice on the page and a log line, and the
+      turn goes ahead without memory — never "remembers nothing".
+    - `what_a_persona_remembers_rides_in_the_first_turn_with_its_taint`
+      drives the real doors and reads the chat's taint back.
   - **The writer** (`persona::writer`, §9.6) runs from `mecha persona memory
     write`, which `scripts/ruminate.sh` calls nightly; nothing writes after a
     chat yet. It never runs during a chat, and only on a provider that

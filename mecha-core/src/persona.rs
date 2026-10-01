@@ -38,6 +38,7 @@ pub mod cite;
 pub mod files;
 pub mod judge;
 pub mod memory;
+pub mod recall;
 pub mod safety;
 pub mod search;
 pub mod writer;
@@ -1807,9 +1808,10 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
                     Field::toggle("safety.dose", "Time spent")
                         .help("Counts turns per day and late at night, shown on the persona."),
                 ),
+            // Written nightly and recalled at a chat's start (§9.6, §9.7);
+            // self-update is not built yet, and is marked so on its own.
             Section::new("Memory")
-                .help(UNBUILT)
-                .unbuilt()
+                .help("Remembered from its chats each night, and brought into the next chat.")
                 .field(Field::toggle("memory.episodic", "Past conversations"))
                 .field(Field::toggle("memory.semantic", "Facts it learns"))
                 .field(Field::new(
@@ -1827,16 +1829,21 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
                 .field(Field::toggle("memory.about_me", "About-me notes"))
                 .field(
                     Field::toggle("memory.self_update", "Self-update")
-                        .help("Sections of its identity evolve; never Core or a fixed one."),
+                        .help(UNBUILT)
+                        .unbuilt(),
                 )
-                .field(Field::new(
-                    "memory.fixed",
-                    "Fixed sections",
-                    Kind::Chips {
-                        options: Vec::new(),
-                        free: true,
-                    },
-                )),
+                .field(
+                    Field::new(
+                        "memory.fixed",
+                        "Fixed sections",
+                        Kind::Chips {
+                            options: Vec::new(),
+                            free: true,
+                        },
+                    )
+                    .help(UNBUILT)
+                    .unbuilt(),
+                ),
         ],
     }
 }
