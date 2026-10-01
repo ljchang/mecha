@@ -1,5 +1,8 @@
 // The Personas tab's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
   taintLabel, doseLine, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
@@ -354,6 +357,12 @@ console.log('persona: ok');
   const { DEFAULT_FRAME, frameOf, frameStyle, dragFrame } = await import('../src/lib/persona.js');
   assert.deepEqual(frameOf(null), DEFAULT_FRAME);
   // A copy the editor can write its zoom into, never the frozen default.
+  // The page's zoom ceiling is the server's (`persona::MAX_FRAME_ZOOM`): a
+  // drift is a slider that offers what the save refuses.
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const rust = fs.readFileSync(path.join(here, '..', '..', 'mecha-core', 'src', 'persona.rs'), 'utf8');
+  const { MAX_FRAME_ZOOM } = await import('../src/lib/persona.js');
+  assert.equal(Number(/pub const MAX_FRAME_ZOOM: f32 = ([\d.]+);/.exec(rust)?.[1]), MAX_FRAME_ZOOM);
   const fresh = frameOf(null);
   assert.ok(fresh !== DEFAULT_FRAME && !Object.isFrozen(fresh));
   fresh.zoom = 2;
@@ -363,10 +372,31 @@ console.log('persona: ok');
   // Unplaced leans to the top, where a portrait's face is.
   assert.equal(frameStyle(null), 'object-position:50% 20%;transform-origin:50% 20%;transform:scale(1)');
   assert.equal(frameStyle({ x: 0.25, y: 0.1, zoom: 1.5 }), 'object-position:25% 10%;transform-origin:25% 10%;transform:scale(1.5)');
-  // Dragging right and down shows more of the left and top.
-  const moved = dragFrame({ x: 0.5, y: 0.5, zoom: 1 }, 20, 10, 200);
-  assert.ok(Math.abs(moved.x - 0.4) < 1e-9 && Math.abs(moved.y - 0.45) < 1e-9, JSON.stringify(moved));
-  // Zoomed in, the same drag moves less; and it stops at the edge.
-  assert.ok(dragFrame({ x: 0.5, y: 0.5, zoom: 2 }, 20, 0, 200).x > moved.x);
-  assert.equal(dragFrame({ x: 0.05, y: 0.5, zoom: 1 }, 100, 0, 200).x, 0);
+  // Nothing hidden, nothing to pan: a square at zoom 1 does not move, and a
+  // tall picture does not move sideways — the frame stays as the circle
+  // shows it, rather than saving a change that jumps on the next zoom.
+  const TALL = 768 / 1344;
+  assert.deepEqual(dragFrame({ x: 0.5, y: 0.5, zoom: 1 }, 20, 10, 200, 1), { x: 0.5, y: 0.5, zoom: 1 });
+  assert.equal(dragFrame({ x: 0.5, y: 0.2, zoom: 1 }, 40, 0, 200, TALL).x, 0.5);
+  // The picture follows the finger: the point under it before the drag is
+  // under it after. X(u) = z·u + p·(S − z·R) along each axis.
+  const S = 200;
+  const at = (p, z, R, u) => z * u + p * (S - z * R);
+  for (const [f, dx, dy, aspect] of [
+    [{ x: 0.5, y: 0.2, zoom: 1 }, 0, 30, TALL],
+    [{ x: 0.3, y: 0.6, zoom: 2.5 }, -25, 12, TALL],
+    [{ x: 0.5, y: 0.5, zoom: 1.8 }, 17, -9, 1],
+    [{ x: 0.4, y: 0.5, zoom: 1.2 }, 11, 0, 1.6],
+  ]) {
+    const Rx = S * Math.max(1, aspect);
+    const Ry = S * Math.max(1, 1 / aspect);
+    const g = dragFrame(f, dx, dy, S, aspect);
+    // The picture point at the circle's centre before the drag.
+    const ux = (S / 2 - f.x * (S - f.zoom * Rx)) / f.zoom;
+    const uy = (S / 2 - f.y * (S - f.zoom * Ry)) / f.zoom;
+    assert.ok(Math.abs(at(g.x, g.zoom, Rx, ux) - (S / 2 + dx)) < 1e-6, `x ${JSON.stringify([f, dx, aspect])}`);
+    assert.ok(Math.abs(at(g.y, g.zoom, Ry, uy) - (S / 2 + dy)) < 1e-6, `y ${JSON.stringify([f, dy, aspect])}`);
+  }
+  // It stops at the picture's edge.
+  assert.equal(dragFrame({ x: 0.05, y: 0.5, zoom: 2 }, 400, 0, 200).x, 0);
 }
