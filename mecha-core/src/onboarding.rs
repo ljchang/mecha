@@ -1410,6 +1410,31 @@ mod tests {
         assert!(remedy.needs_terminal);
     }
 
+    /// `messages` is a switch like the rest: written `false` it is declined,
+    /// its way back `mecha features enable messages`; unanswered it is offered
+    /// and declinable. It lives in `[messages] enabled`, a bool whose `false`
+    /// once read as unanswered, so setup offered it forever over an answer
+    /// given (found on review of #464).
+    #[test]
+    fn messages_is_declined_by_its_false_and_offered_when_unanswered() {
+        let cfg = cfg_with_local(262144, Some(true));
+        let mut f = facts(Some(props(262144, 4, true)));
+        f.features = rows(|ff| ff.config.messages.enabled = Some(false));
+        let steps = plan(&cfg, "local", &f);
+        let messages = step(&steps, "messages");
+        assert_eq!(messages.status, Status::Declined);
+        assert_eq!(
+            messages.undo.as_deref(),
+            Some(&["mecha", "features", "enable", "messages"].map(String::from)[..])
+        );
+
+        f.features = rows(|_| {});
+        let steps = plan(&cfg, "local", &f);
+        let messages = step(&steps, "messages");
+        assert_eq!(messages.status, Status::Missing);
+        assert!(messages.optional, "an unanswered switch can be declined");
+    }
+
     /// `false` is an answer written down: declined, not outstanding, and the
     /// way back is the enable command rather than `--undecline`. A feature
     /// switched on but blocked on an unanswered dependency is a yes that does

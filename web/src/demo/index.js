@@ -125,7 +125,7 @@ export const ROUTES = [
   ['GET', /^\/api\/library$/, () => fx.library],
   ['GET', /^\/api\/library\/source$/, () => ({ seed: 4002, suggest_locked: false, has_password: true })],
   // The demo sets no password, so the lock is the plain toggle.
-  ['POST', /^\/api\/library\/unlock$/, () => ({ token: 'demo', idle_secs: 1800 })],
+  ['POST', /^\/api\/library\/unlock$/, () => ({ token: 'demo', idle_secs: 900 })],
   ['POST', /^\/api\/library\/(relock|save|add|edit)$/, () => ({ ok: true, output: '' })],
   // `{kind}/{name}/{action}`: approve, reject, lock, unlock, remove.
   ['POST', /^\/api\/library\/[^/]+\/[^/]+\/[^/]+$/, () => ({ ok: true, output: '' })],
@@ -174,6 +174,7 @@ export const ROUTES = [
       fx.reflectionDetail['20260826T143000-7f21a9c4'],
   ],
   ['GET', /^\/api\/settings\/voice$/, () => fx.voice],
+  ['GET', /^\/api\/settings\/lock$/, () => fx.lockSettings],
 
   // Personas: their own door, as on the server (`persona_chat.rs`).
   ['GET', /^\/api\/personas$/, () => fx.personas],
@@ -325,6 +326,7 @@ export const ROUTES = [
           'settings/reflections/(edit|drop|restore)',
           'settings/rules/(retire|restore)',
           'settings/voice/clone(/delete)?',
+          'settings/lock',
           'model/(use|cancel)',
           'resume',
           'sessions/[^/]+(/(archive|unarchive))?',

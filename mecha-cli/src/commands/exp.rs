@@ -415,7 +415,7 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Resu
     // The manifest's paths resolve against the checkout `exp run` starts
     // from, and the fixture charter's text is a term of every row's hash.
     let base = std::env::current_dir().context("cannot determine the working directory")?;
-    let (planned, skipped) = store.plan(&manifest, &task_ids, &provider, &model, &base)?;
+    let (planned, skipped) = store.plan(&manifest, &task_ids, &provider, &model, &base, &loaded)?;
     if skipped > 0 {
         eprintln!(
             "mecha exp: {skipped} trial file(s) could not be read and are counted, not rerun"
@@ -426,8 +426,8 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Resu
         .filter(|t| matches!(t.status, TrialStatus::Pending | TrialStatus::Running))
         .collect();
     let done = planned.len() - todo.len();
-    let env_digests = manifest.env_digests(&base)?;
-    for group in manifest.identical_arms(&provider, &model, Some(&env_digests)) {
+    let envs = manifest.env_conditions(&base, &loaded)?;
+    for group in manifest.identical_arms(&provider, &model, Some(&envs)) {
         eprintln!(
             "mecha exp: arms {} run under one condition (the same hash on every row) — every difference between them is noise; fine for an A/A design, a mistake otherwise",
             group
@@ -2216,7 +2216,7 @@ async fn status(name: &str, json: bool) -> Result<()> {
         let (provider, model) = provider_and_model(&real)?;
         let ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
         let base = std::env::current_dir().context("cannot determine the working directory")?;
-        store.plan(&manifest, &ids, &provider, &model, &base)
+        store.plan(&manifest, &ids, &provider, &model, &base, &real)
     }
     .await;
     let (trials, skipped) = match planned {
@@ -2479,7 +2479,7 @@ async fn report_cmd(name: &str, json: bool) -> Result<()> {
         let (provider, model) = provider_and_model(&real)?;
         let ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
         let base = std::env::current_dir().context("cannot determine the working directory")?;
-        store.plan(&manifest, &ids, &provider, &model, &base)
+        store.plan(&manifest, &ids, &provider, &model, &base, &real)
     }
     .await;
     let (stored, stored_skipped) = store.trials()?;

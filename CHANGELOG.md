@@ -27,13 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Personas start remembering.** `mecha persona memory write` reads each
   persona's chats and records an episode and facts per stretch of
-  conversation, in the persona's own memory. The nightly runs it. It uses
-  your local model only, leaves alone chats changed in the last 15 minutes,
-  and reads each turn once. A stretch after the chat read anything from
+  conversation, in the persona's own memory. The nightly runs it. Each chat
+  is written on this machine by the model it ran on, and only while that model
+  is loaded — it never swaps out the one in use. Chats changed in the last 15
+  minutes, and test chats, are left alone, and each turn is read once. A stretch after the chat read anything from
   outside — a search, a file — is kept apart: what it produced waits for
   your approval (`mecha persona memory approve`), and it can never change or
   withdraw what the persona already knew. Nothing yet brings memories back
   into a chat; that is the next step.
+
+- **The library and personas lock themselves again.** After 15 minutes with
+  no one touching the page, the Library and Personas tabs relock on their
+  own, and the unlock ends on the server too. Change the span under
+  **Settings → Lock** or with `mecha imagelib set-autolock <minutes>` (1 to
+  240). Leaving either tab also ends its unlock.
 
 - **A persona searches its files.** When a persona's files are too long to
   read whole, it finds the passages that answer a question with a new
@@ -421,6 +428,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A persona's page is quieter.** It no longer states its crisis-detection
+  setting, and its files are small tiles with a compact add tile, instead of
+  full-width rows that read like a second "Start a chat".
+
+- **An experiment's condition hash now includes the features a trial runs
+  with.** Turning `search` on or off between two runs of an experiment used
+  to leave every trial's hash the same, so the two runs could be paired as
+  one condition. Every new trial's hash changes once with this release, so
+  trials planned from now on do not pair with ones planned before it; a
+  resumed experiment keeps the hashes of the trials it already finished.
+
 - **The character library follows image generation.** It is on whenever
   `image` is — its page, its routes, `mecha imagelib` — and `[tools]`
   disabling `image_library` or `image_library_propose` now only keeps those
@@ -495,6 +513,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The owner's amendment to `INCOGNITO-DESIGN.md` §6.1 (2026-09-28).
 
 ### Fixed
+
+- **A persona's earlier chats no longer vanish after a restart.** An unlock
+  lives in `mecha serve`'s memory, so a restart ended it while the page still
+  showed the persona, and its earlier chats came back as an empty list. The
+  page now notices the lapsed unlock and locks, says when the list could not
+  be read, and shows that it is loading.
+
+- **`messages = false` is an answer now.** Switching messages off left
+  `mecha setup` listing it as outstanding, with a failing exit, every time
+  it ran, because the setting it is stored in could not tell "off" from
+  "never asked". `mecha setup` and `mecha features` now show it declined,
+  with `mecha features enable messages` as the way back, like every other
+  feature. It is still off until you switch it on.
 
 - **The persona file editor works on a phone.** Tapping a field no longer
   zooms the page and leaves it zoomed: every editable field is at least 16px

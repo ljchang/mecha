@@ -819,7 +819,18 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   are absent from `GET /api/library` and their portraits 404 unless the
   request carries a live unlock token; a blurred thumbnail would still ship
   its bytes. The token lives in process memory and the page's — never a
-  cookie or storage — and lapses after 30 idle minutes. The password is
+  cookie or storage — and lapses after the owner's autolock
+  (`imagelib::autolock_minutes`: `autolock.toml` beside `lock.toml`, 15
+  minutes unless set, 1–240) without use. **Two clocks, one span**: the
+  server's token is the backstop for a closed page, and the page relocks
+  itself after the same span untouched (`web/src/lib/autolock.js`), checked
+  on return to the foreground because a phone freezes a hidden tab's timers.
+  The page's clock is the one that matters — a token-carrying poll keeps
+  the server's alive with nobody there. A damaged autolock grants no unlock
+  at all, never a longer one. A restart forgets every token, so a page that
+  gets a 404 while holding one re-reads the list to learn it lapsed, rather
+  than drawing an empty list (the "earlier chats don't load" report of
+  2026-10-01). The password is
   optional (the owner's ruling): with no `lock.toml` the token is granted for
   the asking and the lock is a plain toggle; with one, the argon2id hash
   (0600, set only from the CLI) is checked, five wrong passwords in five
@@ -8352,7 +8363,14 @@ in five different ways. The design and its open steps are
   (`experiment::config_switch`) read and write `messages.enabled`, and a
   serialised arm config reloaded with a `messages = true` left in the map
   would switch messaging back on after a lever turned it off. A test
-  round-trips that case.
+  round-trips that case. **The field is an `Option<bool>`**, so `switch`
+  reads it as it reads every other key — unset `Absent`, `false` `Off` —
+  and `MessagesConfig::on` is the runtime question (only a yes opens a
+  mailbox). As a plain bool its `false` read as unanswered, and `mecha
+  setup` offered messaging forever over an owner's no (found on review of
+  #464; the owner asked for messages "exposed like all others in
+  configuration and setup"). `feature::set_switch` writes either home of a
+  switch, so nothing else needs to know which one messages has.
 - **The upgrade notice is evidence plus `state`.** An install from before
   `[features]` has every switch absent, so every feature is off, and
   `announcements` names the ones it had set up. That is `evidence` —
@@ -8499,10 +8517,11 @@ in five different ways. The design and its open steps are
   step carries its own way back (`Step::undo`): `--undecline <id>` for an
   answer given in setup, `mecha features enable <id>` for a switch written
   `false`. `mecha setup <feature>` runs one step and reopens it if declined
-  — in memory only, so a skip writes nothing, and only where there is an
-  offer: under `--json` a recorded answer stays recorded (review of #461),
-  as does every declined step's way back; `--minimal` declines every
-  optional one and writes no config.
+  — in memory only, so a skip writes nothing, and never under `--json`,
+  where a recorded answer stays recorded (review of #461), as does every
+  declined step's way back. The rule is the flag, not the terminal: a plain
+  run with no terminal attached still reopens (the owner's ruling,
+  2026-10-01). `--minimal` declines every optional one and writes no config.
 - **An environment may only narrow.** `trial_env::config_at` refuses an
   environment's `[features]` key set `true` unless
   `Feature::switchable_from_environment` — an exhaustive match, today only
@@ -8517,11 +8536,18 @@ in five different ways. The design and its open steps are
   `levers_off`, and `lenient_features` loads it all-or-nothing like
   `lenient_levers`: one id a later build does not know reads the set as
   `None`, because a dropped entry would read as *off* and two different
-  trials as identical. The session record is where it lives because it is
-  the one place every trial's switches show: `condition_hash` sees an
-  environment's own `[features]` through its digest, but not `search`, which
-  follows the operator's switch, nor any switch of an arm that runs on the
-  operator's config.
+  trials as identical. **And the same set is a term of every experiment
+  row's condition hash** (the owner's ruling, 2026-10-01):
+  `Manifest::env_conditions` computes it per environment, from the resolved
+  files with nothing built (`Environment::features_on`, over the config
+  `prepare` builds), and `condition_hash_world` appends `|features=`. The
+  environment's digest already held most of a trial's switches — its own
+  `[features]` and the servers `graph` and `frontdoor` follow — but not
+  `search`, which follows the operator's switch, so two experiments
+  differing only there shared every hash. The whole set rather than `search`
+  alone, so a switch a later build takes from the operator is covered
+  without anyone remembering it. Both readers take it from
+  `feature::switches_on`, so the hashed set is the recorded one.
 - **An environment says what its tasks need.** `environment.toml`'s
   `requires` names feature ids, inherited down `extends`, and an unknown id
   refuses at load — it would otherwise require nothing.
