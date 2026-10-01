@@ -546,7 +546,10 @@
       const res = await fetch(personaUrl(name, '/chats', token));
       if (gen !== historyGen) return;
       if (res.ok) {
-        history = (await res.json()).chats;
+        // The body is a second wait: a newer read may have started in it.
+        const { chats } = await res.json();
+        if (gen !== historyGen) return;
+        history = chats;
       } else {
         why = (await res.text()).trim() || `HTTP ${res.status}`;
         if (token) await load();
@@ -980,7 +983,7 @@
     if (framing) framing.from = null;
   }
 
-  // `null` centres it again: the default, never a stored copy of it.
+  // `null` returns it to the page's default framing, never a stored copy of it.
   async function saveFrame(frame) {
     busy = true;
     try {
@@ -992,7 +995,6 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       framing = null;
       await load();
-      if (!chosen) toList();
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {
@@ -1009,9 +1011,9 @@
         body: JSON.stringify({ locked, unlock: token ?? undefined }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
+      // Locked with no unlock in hand, it is hidden now: `load` takes the
+      // page back to the list itself.
       await load();
-      // Locked with no unlock in hand, it is hidden now: back to the list.
-      if (!chosen) toList();
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {
