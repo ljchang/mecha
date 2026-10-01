@@ -3,7 +3,10 @@
 > **Addendum (2026-09-29):** built, merged (#404, #406) and installed the same
 > evening; §7's embeddings switch was applied at 20:43Z, after mecha-graph #26.
 > What shipped is in HISTORY under 2026-09-29; the minors left are mecha
-> #410–#413.
+> #410–#413. **2026-09-30:** #447 added images as one-page documents (§10).
+> #438 made `document_read` persona-eligible (PERSONA-DESIGN D24). #450
+> measured that an attached image is read from pixels, not routed here.
+> All three are in HISTORY under 2026-09-30/10-01.
 
 2026-09-29. One extraction capability — a PDF's own text layer and a local
 OCR model's transcript, per page, side by side — that every part of mecha can
