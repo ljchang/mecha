@@ -1184,16 +1184,15 @@ fn the_closing_note_names_each_way_back() {
         "voice",
         "incognito",
         "frontdoor",
+        // Once a `false` here read as unanswered and stayed outstanding.
+        "messages",
     ]
     .iter()
     .map(|id| format!("{id} = false\n"))
     .collect();
-    // `messages = false` is applied into `[messages] enabled` and reads as
-    // unanswered, not switched off, so it would stay outstanding; on, with
-    // nothing to set up, it is simply done.
     std::fs::write(
         home.path().join("config.toml"),
-        format!("[features]\n{switches}messages = true\n"),
+        format!("[features]\n{switches}"),
     )
     .unwrap();
     std::fs::write(
