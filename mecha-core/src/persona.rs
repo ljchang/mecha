@@ -921,11 +921,6 @@ impl Store {
         &self.errors
     }
 
-    /// The relationship templates there are, by name, sorted.
-    pub fn relationship_names(&self) -> Vec<&str> {
-        self.relationships.keys().map(String::as_str).collect()
-    }
-
     /// The persona's folder — for the owner's doors (the CLI, the page).
     /// **Never a jail root:** `sessions/`, `state.toml` and, later,
     /// `memory.db` sit in it beside `files/`. A tool reading a persona's
@@ -1491,7 +1486,9 @@ fn create_with(
         identity: prose
             .map_or("## Core\nx\n", |(identity, _)| identity)
             .into(),
-        motivation: String::new(),
+        // A proposal's motivation is checked as the owner's would be: an
+        // unclosed `<!--` would silently cut the prompt (review of #493).
+        motivation: prose.map_or("", |(_, motivation)| motivation).into(),
         notes: Vec::new(),
     };
     if let Some(broken) = store.problems(&probe, lib).into_iter().next() {
@@ -1593,8 +1590,8 @@ pub struct Proposal {
 /// Model-proposed personas waiting on the owner. A model that proposes in a
 /// loop fills a list nobody reads; past this a new *name* is refused, as the
 /// image library's `MAX_PENDING` refuses a candidate. It bounds names, not
-/// writes: each revision of a waiting one takes a version, as an owner's
-/// edit does.
+/// writes: each revision that changes a waiting one takes a version, as an
+/// owner's edit does.
 pub const MAX_PENDING_PROPOSALS: usize = 20;
 
 /// Whether [`propose`] made a candidate or rewrote one already waiting.
@@ -1716,6 +1713,7 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
     probe.settings.voice = new.voice.clone();
     probe.state.status = Status::Approved;
     probe.identity = p.identity.clone();
+    probe.motivation = p.motivation.clone();
     if let Some(broken) = store.problems(&probe, lib).into_iter().next() {
         bail!("`{}` {broken}", p.name);
     }

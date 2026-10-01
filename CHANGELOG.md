@@ -34,9 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   revises its proposal until you approve; after that only you edit it. If
   it links a portrait that is also still waiting, **Approve both** takes
   them together. A persona proposed in an incognito chat starts hidden
-  behind the library lock. The chat can set the name, relationships,
-  identity, motivation, portrait and voice; tools, files, memory, safety
-  switches and the lock stay yours.
+  behind the library lock. The chat can set the name, display name,
+  relationships, identity, motivation, portrait and voice; tools, files,
+  memory, safety switches and the lock stay yours. Once you edit a waiting
+  proposal yourself, it is yours, and the chat can no longer change it.
+
+- **Download a generated picture.** Every picture a chat draws — in the
+  assistant's chat or a persona's — has a Download button beside Edit,
+  which saves the file under its own name. It works in incognito and locked
+  persona chats too, and leaves no picture address in the browser's history.
 
 - **Personas recall during a chat, not only at its start.** Each message
   you send after the first reply is searched against what the persona
