@@ -319,9 +319,10 @@ fn carries_files_now(messages: &[Message]) -> bool {
 }
 
 /// Whether a file goes to the background queue: still being read, or ready
-/// and not yet indexed for `file_search`. Not one read on request (the
-/// cache is off, so nothing would keep the read) or one that will be
-/// refused.
+/// and not yet indexed for `file_search`. Not one read on request — the
+/// owner turned the extraction cache off, and a document is then read when
+/// a chat asks for it, never ahead (so with the cache off, only text files
+/// are searchable) — nor one that will be refused.
 ///
 /// `indexed` is asked only of a ready file: hashing one that is refused or
 /// over the cap is the unbounded read `readiness` exists not to do (review
