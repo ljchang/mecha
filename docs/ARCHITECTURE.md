@@ -8316,6 +8316,24 @@ in five different ways. The design and its open steps are
   deliberately left open is a count of what waits (`review queues`), which
   never degrades — and reads through `open_existing_default`, so counting
   never creates the store it counts.
+- **`mecha setup` is a reader of the registry too** (step 4a).
+  `onboarding::plan`'s feature steps come from `feature::all` (`Facts::
+  features`), one per switched feature in `Feature::ALL` order, so a
+  dependency is offered first and a step asks what registration asks — the
+  four hand-written steps it replaced read an installed binary with no
+  `[[mcp]]` entry as done (FEATURES-DESIGN.md §1.1). A switch written
+  `false` is `Declined` (an answer, not a gap); an unanswered one is
+  outstanding and declinable, its remedy the enable command; a switched-on
+  `Blocked` or `Unready` is `Wrong` and not declinable — `Blocked` is
+  reachable only with the switch written `true`, so declining it recorded a
+  "no thanks" against a yes (review of #460). `undecline` removes every key
+  `plan` reads as a decline (`decline_keys`), 1a's `feature-<id>` included. Setup runs only our
+  own commands (`onboarding::runnable`) — an edit is named, never made —
+  and after one works it re-reads the row and says what is next
+  (`setup::after_feature`). Step ids are the feature ids, so a decline
+  recorded against `mail` or 1a's `feature-mail` still holds. `mecha setup
+  <feature>` runs one step; `--minimal` declines every optional one and
+  writes no config.
 - **An environment may only narrow.** `trial_env::config_at` refuses an
   environment's `[features]` key set `true` unless
   `Feature::switchable_from_environment` — an exhaustive match, today only
@@ -8340,8 +8358,9 @@ the full checklist this grows into as each build step lands.
 4. If it has a switch: a line in `FEATURES_STARTER` (`commands/config.rs`,
    where `the_global_starter_lists_every_switch_off` fails until it is
    there), an `evidence` arm saying what an owner who set it up would lose,
-   and a `switchable_from_environment` arm — both exhaustive, so the build
-   asks. Whether an environment may switch it on is decided by where its
+   a `switchable_from_environment` arm, and an `onboarding::blurb` line —
+   what `mecha setup` says it is for when it is off — all exhaustive, so the
+   build asks. Its setup step then follows from the registry. Whether an environment may switch it on is decided by where its
    settings and credentials live, never by who supplies them.
 5. A row in `mecha features`' docs (`reference/cli.md`) if its off state has a
    fix worth naming, and its key in `reference/configuration.md` §`[features]`.
