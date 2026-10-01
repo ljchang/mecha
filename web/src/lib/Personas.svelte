@@ -413,8 +413,9 @@
   }
 
   async function removeSource(file) {
-    if (!chosen) return;
+    if (!chosen || busy) return;
     sourcesNote = '';
+    busy = true;
     try {
       const res = await fetch(personaUrl(chosen.name, '/sources/remove', null), {
         method: 'POST',
@@ -424,6 +425,8 @@
       if (!res.ok) sourcesNote = (await res.text()).trim();
     } catch (e) {
       sourcesNote = String(e?.message ?? e);
+    } finally {
+      busy = false;
     }
     await loadSources();
   }

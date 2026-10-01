@@ -285,6 +285,7 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   assert.equal(sourceLine({ name: 'notes.md', bytes: 300, shared: false, ready: true, processing: false }), '1 KB · ready');
   assert.equal(sourceLine({ name: '@kelp/s.pdf', bytes: 2048, shared: true, ready: false, processing: false }), '2 KB · not read yet · group kelp');
   assert.equal(sourceLine({ name: '@all/g.md', bytes: 2048, shared: true, ready: true, processing: false }), '2 KB · ready · every persona');
+  assert.equal(sourceLine({ name: '@group:all/g.md', bytes: 2048, shared: true, ready: true, processing: false }), '2 KB · ready · group all');
 }
 
 console.log('persona: ok');

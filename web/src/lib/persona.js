@@ -327,6 +327,8 @@ export function doseLine(dose) {
 export function sourceLine(s) {
   const size = s.bytes >= 1048576 ? `${(s.bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(s.bytes / 1024))} KB`;
   const state = s.processing ? 'reading…' : s.ready ? 'ready' : 'not read yet';
-  const from = !s.shared ? '' : s.name.startsWith('@all/') ? ' · every persona' : ` · group ${s.name.slice(1, s.name.indexOf('/'))}`;
+  // `@group:all/` is a group literally called `all` (files.rs `roots`).
+  const group = s.name.slice(1, s.name.indexOf('/')).replace(/^group:/, '');
+  const from = !s.shared ? '' : s.name.startsWith('@all/') ? ' · every persona' : ` · group ${group}`;
   return `${size} · ${state}${from}`;
 }

@@ -1951,13 +1951,18 @@ pub fn persona_agent(
     // what reads beyond them, keeps the one tool that reads them — and never
     // in the assistant's registry, which has no persona to read for. Over
     // the store the caller's chats live in, never a second guess at it.
-    tools
-        .registry
-        .insert(Arc::new(mecha_core::persona::files::FileRead::new(
-            store.to_path_buf(),
-            pinned.name.clone(),
-            document_extractor(&bound.config).map(Arc::new),
-        )));
+    let reader = mecha_core::persona::files::FileRead::new(
+        store.to_path_buf(),
+        pinned.name.clone(),
+        document_extractor(&bound.config).map(Arc::new),
+    );
+    // It skips `registry_as`'s refusal of anything that can aim: so it
+    // must never be able to (review of #459).
+    debug_assert_eq!(
+        mecha_core::tool::Tool::capabilities(&reader).egress,
+        mecha_core::tool::Egress::None
+    );
+    tools.registry.insert(Arc::new(reader));
     let system = persona::system_prompt(pinned)?;
     let ctx = bound.agent.ctx();
     let agent = Agent::new(

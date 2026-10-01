@@ -341,7 +341,23 @@ pub fn remove(store: &Store, p: &Persona, name: &str) -> Result<(), String> {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("file");
-    std::fs::rename(&src.path, gone.join(format!("{stamp}-{leaf}"))).map_err(|e| e.to_string())
+    // Never over a file already set aside: two files of one name removed in
+    // the same second would otherwise leave one (review of #459), and
+    // `rename` replaces without a word. A hard link refuses an existing
+    // target; the original goes only once the link stands.
+    for n in 1..1000 {
+        let kept = if n == 1 {
+            format!("{stamp}-{leaf}")
+        } else {
+            format!("{stamp}-{n}-{leaf}")
+        };
+        match std::fs::hard_link(&src.path, gone.join(&kept)) {
+            Ok(()) => return std::fs::remove_file(&src.path).map_err(|e| e.to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err(format!("too many removed files named like `{leaf}`"))
 }
 
 /// Whether a document's text is already in the extraction cache, so a chat
@@ -538,17 +554,23 @@ impl Tool for FileRead {
             .and_then(Value::as_str)
             .filter(|p| !p.trim().is_empty())
             .unwrap_or("1-5");
-        // `Store::load` and the walk are file I/O: off the runtime.
+        // `Store::load` and the walk are file I/O: off the runtime. A listing
+        // that could not be made is said as such — never as "no files",
+        // which the persona would pass on to the owner (review of #459).
         let (store, persona) = (self.store.clone(), self.persona.clone());
-        let sources = tokio::task::spawn_blocking(move || {
+        let listed = tokio::task::spawn_blocking(move || {
             let store = Store::load(&store);
-            store
-                .get(&persona)
-                .map(|p| list(&roots(&store, p)))
-                .unwrap_or_default()
+            store.get(&persona).map(|p| list(&roots(&store, p)))
         })
-        .await
-        .unwrap_or_default();
+        .await;
+        let sources = match listed {
+            Ok(Some(sources)) => sources,
+            _ => {
+                return Ok(ToolOutput::err(
+                    "Your files could not be listed just now; try again, or tell the owner.",
+                ))
+            }
+        };
         let src = match find(&sources, file) {
             Ok(src) => src,
             Err(why) => return Ok(ToolOutput::err(why)),
@@ -802,6 +824,27 @@ mod tests {
         assert!(!ready(big, Some(&cache), 1024));
         assert!(!ready(big, Some(&cache), 1 << 20), "not extracted yet");
         assert!(ready(find(&sources, "notes.md").unwrap(), None, 0));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Two files of one name, from two subfolders, removed in the same
+    /// second: both are kept aside, neither over the other (review of #459).
+    #[test]
+    fn removing_never_overwrites_a_file_set_aside() {
+        let (dir, store, p) = world();
+        for sub in ["x", "y"] {
+            std::fs::create_dir_all(dir.join(format!("mara/files/{sub}"))).unwrap();
+            std::fs::write(dir.join(format!("mara/files/{sub}/same.md")), sub).unwrap();
+        }
+        remove(&store, &p, "x/same.md").unwrap();
+        remove(&store, &p, "y/same.md").unwrap();
+        let mut kept: Vec<String> = std::fs::read_dir(dir.join("mara/files/.removed"))
+            .unwrap()
+            .flatten()
+            .map(|e| std::fs::read_to_string(e.path()).unwrap())
+            .collect();
+        kept.sort();
+        assert_eq!(kept, ["x", "y"]);
         std::fs::remove_dir_all(dir).ok();
     }
 }
