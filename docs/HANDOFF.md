@@ -110,9 +110,8 @@ on every chat reply) in `d352536b`. What is open, verified against
   - `loadHistory`'s failure branch does not check the generation after
     `res.text()` (benign: its note is discarded).
   - #484: a reply's "Copied" and a refused copy are visual only (no live
-    region, as `ModelChip` has); INCOGNITO-DESIGN §3.1's table of what the
-    page leaves on the device has no row for the reply download its R2 now
-    refuses.
+    region, as `ModelChip` has). (INCOGNITO-DESIGN §3.1's missing row for
+    the reply download was added by #489.)
 
 **2026-10-01 — persona files (§10) done and live, and reading a chat is
 easier; what is open.** Steps 3a–3d (#459, #465, #467, #475) and the
