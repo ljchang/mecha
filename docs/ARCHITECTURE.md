@@ -829,9 +829,8 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   the server's alive with nobody there. A damaged autolock grants no unlock
   at all, never a longer one. A restart forgets every token, so a page whose
   read fails while it holds one re-reads the list to learn whether it
-  lapsed, rather
-  than drawing an empty list (the "earlier chats don't load" report of
-  2026-10-01). The password is
+  lapsed, rather than drawing an empty list (the "earlier chats don't load"
+  report of 2026-10-01). The password is
   optional (the owner's ruling): with no `lock.toml` the token is granted for
   the asking and the lock is a plain toggle; with one, the argon2id hash
   (0600, set only from the CLI) is checked, five wrong passwords in five

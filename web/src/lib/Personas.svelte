@@ -983,7 +983,7 @@
     if (framing) framing.from = null;
   }
 
-  // `null` centres it again: the default, never a stored copy of it.
+  // `null` returns it to the page's default framing, never a stored copy of it.
   async function saveFrame(frame) {
     busy = true;
     try {
@@ -1011,9 +1011,9 @@
         body: JSON.stringify({ locked, unlock: token ?? undefined }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
+      // Locked with no unlock in hand, it is hidden now: `load` takes the
+      // page back to the list itself.
       await load();
-      // Locked with no unlock in hand, it is hidden now: back to the list.
-      if (!chosen) toList();
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {
