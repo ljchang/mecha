@@ -14,7 +14,7 @@
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
     taintLabel, safetyLine, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
     toolStatus, waitingLine, withWorking, fileUrl, uploadUrl, sourceLine,
-    citeSegments, citeNote, citeOpens, citedUrl,
+    citeSegments, citeEntries, citeNote, citeOpens, citedUrl,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -108,6 +108,8 @@
   // needs neither, so its URL is safe to open full size.
   const repeats = $derived(repeatedPictures(run.entries));
   const noPicture = $derived(turnsWithoutPicture(run.entries, run.running));
+  // Each answer's citations with the check made of each (§10.4).
+  const cites = $derived(citeEntries(run.entries, run.citations));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
 
   // The Edit modal (EditModal.svelte): anything already typed becomes its
@@ -1289,7 +1291,7 @@
             <!-- Each citation as the harness checked it (§10.4): "quoted" is
                  all a check can say — a real quote may support the wrong claim.
                  One that was found opens its page. -->
-            <div class="answer">{#each citeSegments(entry.text, run.citations) as seg, j (j)}{#if seg.check}{@const n = citeNote(seg.check)}{#if citeOpens(seg.check)}<span class="cite {n.tone}" role="button" tabindex="0" title={n.title} onclick={() => openCited(seg.check)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openCited(seg.check))}>{seg.text}<span class="citetag">{n.label}</span></span>{:else}<span class="cite {n.tone}" title={n.title}>{seg.text}<span class="citetag">{n.label}</span></span>{/if}{:else}{seg.text}{/if}{/each}</div>
+            <div class="answer">{#each citeSegments(entry.text, cites.get(i)) as seg, j (j)}{#if seg.check}{@const n = citeNote(seg.check)}{#if citeOpens(seg.check)}<span class="cite {n.tone}" role="button" tabindex="0" title={n.title} onclick={() => openCited(seg.check)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openCited(seg.check))}>{seg.text}<span class="citetag">{n.label}</span></span>{:else}<span class="cite {n.tone}" title={n.title}>{seg.text}<span class="citetag">{n.label}</span></span>{/if}{:else}{seg.text}{/if}{/each}</div>
           {:else if entry.kind === 'tool'}
             {@const status = toolStatus(run.entries, i)}
             {@const picture = pictureOf(entry)}

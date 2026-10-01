@@ -100,28 +100,67 @@ export function citedUrl(key, check, token = null) {
   return withUnlock(`${chatUrl(key, '/cited')}?${q}`, token);
 }
 
-// A reply cut at its citations: plain text, and each citation the server
-// checked (§10.4) with its check. Found by the citation's own text, as the
-// persona wrote it; a later check of the same text wins.
-export function citeSegments(text, checks) {
-  const byRaw = new Map((checks ?? []).map((c) => [c.raw, c]));
-  const found = [];
-  for (const [raw, check] of byRaw) {
-    if (!raw) continue;
-    for (let at = text.indexOf(raw); at !== -1; at = text.indexOf(raw, at + raw.length)) {
-      found.push({ at, end: at + raw.length, check });
-    }
-  }
-  found.sort((a, b) => a.at - b.at);
+// A reply cut at its citations: plain text, and each citation with its
+// check (§10.4). `checks` is a list of [raw, check] pairs already matched
+// to this reply's citations, in order (`citeEntries`).
+export function citeSegments(text, matched) {
   const out = [];
   let pos = 0;
-  for (const f of found) {
-    if (f.at < pos) continue;
-    if (f.at > pos) out.push({ text: text.slice(pos, f.at) });
-    out.push({ text: text.slice(f.at, f.end), check: f.check });
-    pos = f.end;
+  for (const [raw, check] of matched ?? []) {
+    const at = text.indexOf(raw, pos);
+    if (at === -1) continue;
+    if (at > pos) out.push({ text: text.slice(pos, at) });
+    out.push({ text: raw, check });
+    pos = at + raw.length;
   }
   if (pos < text.length || out.length === 0) out.push({ text: text.slice(pos) });
+  return out;
+}
+
+// Each answer's citations paired with the check the server made of *that*
+// citation (review of #465). The server checks each reply against what the
+// chat had read by then, so one quote can be "no such file" before its page
+// was read and "quoted" after: keyed by text alone, the last would answer
+// for both. Paired from the end, occurrence by occurrence, because the
+// server's checks run over everything the chat ever held while a compacted
+// chat's page shows only its later answers. Returns, per entry index, the
+// [raw, check] pairs `citeSegments` takes.
+export function citeEntries(entries, checks) {
+  const byRaw = new Map();
+  for (const c of checks ?? []) {
+    if (!c?.raw) continue;
+    if (!byRaw.has(c.raw)) byRaw.set(c.raw, []);
+    byRaw.get(c.raw).push(c);
+  }
+  const out = new Map();
+  if (byRaw.size === 0) return out;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e?.kind !== 'assistant' || !e.text) continue;
+    const found = [];
+    for (const raw of byRaw.keys()) {
+      for (let at = e.text.indexOf(raw); at !== -1; at = e.text.indexOf(raw, at + raw.length)) {
+        found.push({ at, raw });
+      }
+    }
+    found.sort((a, b) => a.at - b.at);
+    // Overlapping finds keep the first.
+    const kept = [];
+    let end = 0;
+    for (const f of found) {
+      if (f.at < end) continue;
+      kept.push(f);
+      end = f.at + f.raw.length;
+    }
+    const pairs = [];
+    for (let k = kept.length - 1; k >= 0; k--) {
+      const list = byRaw.get(kept[k].raw);
+      // More on the page than were checked: the earliest check stands in.
+      const check = list.length > 1 ? list.pop() : list[0];
+      pairs.unshift([kept[k].raw, check]);
+    }
+    out.set(i, pairs);
+  }
   return out;
 }
 
