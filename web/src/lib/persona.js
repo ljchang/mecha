@@ -220,11 +220,6 @@ export function uploadUrl(key, name, token = null) {
   return withUnlock(`${chatUrl(key, '/upload')}?name=${encodeURIComponent(name)}`, token);
 }
 
-// What an editor save must carry across its reload, per file: the mode each
-// tab was in, and for every file but the one just saved, its unsaved text
-// draft and its unsaved form draft. The reload replaces every file's entry,
-// so anything not named here is dropped — which is how form drafts went
-// missing on the first cut (review of #430), as text drafts had (#420).
 // Whether one editor tab holds unsaved changes: its text (the open tab's
 // is `text`, another tab's its kept `draft`) or its form draft — what the
 // lock switch waits on (review of #491). The open tab's own Save and
@@ -254,6 +249,11 @@ export function lockWaits({ chosen, token, editing }) {
   return Boolean(chosen && !chosen.locked && !token && unsavedFiles(editing).length);
 }
 
+// What an editor save must carry across its reload, per file: the mode each
+// tab was in, and for every file but the one just saved, its unsaved text
+// draft and its unsaved form draft. The reload replaces every file's entry,
+// so anything not named here is dropped — which is how form drafts went
+// missing on the first cut (review of #430), as text drafts had (#420).
 export function keptEdits(files, saved) {
   const out = {};
   for (const [f, v] of Object.entries(files ?? {})) {
