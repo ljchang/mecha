@@ -644,3 +644,59 @@ fn a_shared_store_that_will_not_read_costs_only_its_own_facts() {
     assert_eq!(r.problems.len(), 1, "{:?}", r.problems);
     assert!(r.problems[0].starts_with("what the owner shared"));
 }
+
+#[test]
+fn a_common_word_never_arms_a_turn_untrusted() {
+    let w = World::new(&["mara"]);
+    let m = w.memory("mara");
+    let f = m
+        .add_fact(
+            Table::Persona,
+            fact(
+                "A page said the kelp sings.",
+                Kind::Observed,
+                Origin::ModelUntrusted,
+            ),
+        )
+        .unwrap();
+    m.approve(&f.uid).unwrap();
+    let p = w.persona("mara");
+    assert!(
+        per_turn(&w.dir, &p, "Thanks, that is all for the day", None, "")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn an_episode_shown_cut_short_at_chat_start_is_not_folded_again() {
+    let w = World::new(&["mara"]);
+    let m = w.memory("mara");
+    let summary = format!(
+        "Talked about the Holdfast grant at length. {}",
+        "More detail. ".repeat(40)
+    );
+    m.add_episode(NewEpisode {
+        source: Some(Source {
+            chat: "c1".into(),
+            from: 0,
+            to: 1,
+        }),
+        summary: summary.clone(),
+        origin: Origin::ModelClean,
+        model: "m".into(),
+        ..NewEpisode::default()
+    })
+    .unwrap();
+    // What a clipped chat-start line leaves in the conversation.
+    let already: String = summary.chars().take(80).collect();
+    assert!(per_turn(
+        &w.dir,
+        &w.persona("mara"),
+        "How is the Holdfast grant?",
+        None,
+        &already
+    )
+    .unwrap()
+    .is_none());
+}

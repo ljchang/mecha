@@ -427,22 +427,35 @@ fn migrate_memory(conn: &Connection) -> Result<()> {
         // forgetting a record forgets it from the index too (§9.9). Built
         // from every record already there, so a store from before it is
         // searchable at once.
-        let mut sql = String::from(
-            "BEGIN;
-             CREATE VIRTUAL TABLE IF NOT EXISTS recall_fts USING fts5 (uid UNINDEXED, text);
-             INSERT INTO recall_fts (recall_fts, rank) VALUES ('secure-delete', 1);
-             CREATE TABLE IF NOT EXISTS vectors (uid TEXT PRIMARY KEY, vec BLOB NOT NULL);
-             INSERT INTO recall_fts (uid, text) SELECT uid, summary || ' ' || topics || ' ' ||
-                 decisions || ' ' || open_threads FROM episodes;",
-        );
-        for t in Table::ALL {
-            sql.push_str(&format!(
-                "INSERT INTO recall_fts (uid, text) SELECT uid, text FROM {};",
-                t.sql()
-            ));
+        //
+        // The first step that is not idempotent, and per-turn recall makes
+        // concurrent writable opens routine: so the write lock is taken
+        // first and the version read again under it, and the backfill skips
+        // a record already indexed. Run twice, every record would be indexed
+        // twice and outrank the one that answered (review of #481).
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+        let now: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if now < 3 {
+            let mut sql = String::from(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS recall_fts USING fts5 (uid UNINDEXED, text);
+                 INSERT INTO recall_fts (recall_fts, rank) VALUES ('secure-delete', 1);
+                 CREATE TABLE IF NOT EXISTS vectors (uid TEXT PRIMARY KEY, vec BLOB NOT NULL);
+                 INSERT INTO recall_fts (uid, text) SELECT uid, summary || ' ' || topics || ' ' ||
+                     decisions || ' ' || open_threads FROM episodes
+                     WHERE uid NOT IN (SELECT uid FROM recall_fts);",
+            );
+            for t in Table::ALL {
+                sql.push_str(&format!(
+                    "INSERT INTO recall_fts (uid, text) SELECT uid, text FROM {}
+                     WHERE uid NOT IN (SELECT uid FROM recall_fts);",
+                    t.sql()
+                ));
+            }
+            sql.push_str("PRAGMA user_version = 3;");
+            tx.execute_batch(&sql)?;
         }
-        sql.push_str("PRAGMA user_version = 3; COMMIT;");
-        conn.execute_batch(&sql)?;
+        tx.commit()?;
         debug_assert_eq!(SCHEMA, 3, "a new step goes above, and this moves with it");
     }
     Ok(())
@@ -629,6 +642,40 @@ pub struct Recollection {
     pub text: String,
     pub date: String,
     pub origin: Origin,
+}
+
+/// Words that say nothing about what a message is about. With them in, a
+/// message would match any record on "the" — and an incidental match is
+/// not only noise: recalling an approved record from outside arms the
+/// whole chat untrusted for good (review of #481). A short list on purpose:
+/// what matters is that no common word can be the only thing two texts
+/// share.
+const STOPWORDS: &[&str] = &[
+    "the", "and", "for", "are", "but", "not", "you", "your", "yours", "all", "any", "can", "had",
+    "has", "have", "her", "hers", "him", "his", "how", "its", "may", "our", "ours", "out", "she",
+    "they", "them", "their", "theirs", "this", "that", "these", "those", "was", "were", "what",
+    "when", "where", "which", "who", "whom", "why", "will", "with", "would", "could", "should",
+    "about", "after", "again", "also", "been", "before", "being", "did", "does", "doing", "done",
+    "from", "into", "just", "more", "most", "much", "only", "over", "same", "some", "such", "than",
+    "then", "there", "here", "very", "well", "yes", "yeah", "okay", "thanks", "thank", "please",
+    "really", "today", "tonight", "now", "still", "too", "one", "get", "got", "going", "know",
+    "think", "like", "want", "let", "say", "said",
+];
+
+/// A message as the recall index reads it: its content words — three
+/// letters or more, not a stopword — each quoted so nothing in them is FTS
+/// syntax, any of them. `None` when it has none, and then nothing is
+/// recalled by words.
+fn recall_words(query: &str) -> Option<String> {
+    let mut words: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| w.chars().count() >= 3 && !STOPWORDS.contains(&w.as_str()))
+        .map(|w| format!("\"{w}\""))
+        .collect();
+    words.sort();
+    words.dedup();
+    (!words.is_empty()).then(|| words.join(" OR "))
 }
 
 /// An episode's words, as the index holds them.
@@ -1341,7 +1388,7 @@ impl Memory {
         let mut candidates: Vec<String> = Vec::new();
         let rrf = |rank: usize| 1.0 / (RRF_K + rank as f32 + 1.0);
 
-        if let Some(fts) = crate::persona::search::fts_query(query) {
+        if let Some(fts) = recall_words(query) {
             let mut stmt = self.conn.prepare(
                 "SELECT uid FROM recall_fts WHERE recall_fts MATCH ?1
                  ORDER BY bm25(recall_fts) LIMIT 200",

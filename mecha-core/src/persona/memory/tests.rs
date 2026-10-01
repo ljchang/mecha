@@ -1003,3 +1003,52 @@ fn forgetting_takes_a_record_out_of_the_index_and_its_vector_with_it() {
     forget_chat(&dir, "mara", "c9").unwrap();
     assert!(recall_words(&m, "bees").is_empty());
 }
+
+#[test]
+fn a_common_word_alone_recalls_nothing() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    m.add_fact(
+        Table::Persona,
+        fact(
+            "Named the kelp project Holdfast.",
+            Kind::Observed,
+            "c1",
+            Origin::ModelClean,
+        ),
+    )
+    .unwrap();
+    assert!(recall_words(&m, "Thanks, that is all for the day").is_empty());
+    assert_eq!(
+        recall_words(&m, "the kelp?"),
+        ["Named the kelp project Holdfast."]
+    );
+}
+
+#[test]
+fn an_upgrade_run_twice_indexes_each_record_once() {
+    let dir = store(&["mara"]);
+    let f = {
+        let m = Memory::open(&dir, "mara").unwrap();
+        let f = m
+            .add_fact(
+                Table::User,
+                fact("Keeps bees.", Kind::Stated, "c1", Origin::ModelClean),
+            )
+            .unwrap();
+        // As a second opener sees it: it read version 2 before the first
+        // one's upgrade committed.
+        m.conn.pragma_update(None, "user_version", 2).unwrap();
+        f
+    };
+    let m = Memory::open(&dir, "mara").unwrap();
+    let n: i64 = m
+        .conn
+        .query_row(
+            "SELECT count(*) FROM recall_fts WHERE uid = ?1",
+            [&f.uid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+}

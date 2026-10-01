@@ -356,7 +356,7 @@ async fn write_memory(
 
     let idle = std::time::Duration::from_secs(idle_minutes.saturating_mul(60));
     let (mut chats, mut failed, mut waiting, mut marked) = (0usize, 0usize, 0usize, 0usize);
-    for p in personas {
+    for &p in &personas {
         let pending = writer::pending_chats(&store.sessions_dir(&p.name), chat.as_deref(), idle);
         for problem in &pending.problems {
             eprintln!("{}: {problem}", p.name);
@@ -487,7 +487,9 @@ async fn write_memory(
     // the next night tries again.
     let mut embedded = 0usize;
     if let Some(embedder) = crate::setup::file_embedder(&cfg) {
-        for p in store.all() {
+        // The personas this run was asked about, as above — `--name` narrows
+        // this too (review of #481).
+        for &p in &personas {
             if !store
                 .persona_dir(&p.name)
                 .join(mecha_core::persona::memory::MEMORY_DB)
