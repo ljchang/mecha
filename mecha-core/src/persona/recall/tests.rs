@@ -700,3 +700,27 @@ fn an_episode_shown_cut_short_at_chat_start_is_not_folded_again() {
     .unwrap()
     .is_none());
 }
+
+#[test]
+fn a_turn_that_will_not_search_is_known_before_anything_is_embedded() {
+    let w = World::new(&["mara"]);
+    let p = w.persona("mara");
+    // No store yet.
+    assert!(!would_search(&w.dir, &p, "How is the Holdfast work going?"));
+    w.memory("mara")
+        .add_fact(
+            Table::User,
+            fact("Has a cat.", Kind::Stated, Origin::ModelClean),
+        )
+        .unwrap();
+    assert!(would_search(&w.dir, &p, "How is the Holdfast work going?"));
+    assert!(!would_search(&w.dir, &p, "ok thanks"), "too short");
+    let mut off = p.clone();
+    off.settings.memory.episodic = false;
+    off.settings.memory.semantic = false;
+    off.settings.memory.user_facts = UserFacts::Off;
+    assert!(
+        !would_search(&w.dir, &off, "How is the Holdfast work going?"),
+        "all off"
+    );
+}
