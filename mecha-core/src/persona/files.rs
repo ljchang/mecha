@@ -511,7 +511,8 @@ fn text_too_long(src: &Source) -> String {
 fn reading_off(src: &Source) -> String {
     format!(
         "{} cannot be read here: document reading is switched off \
-         (`mecha features enable documents`).",
+         (`mecha features enable documents`), or its `[documents]` settings \
+         did not build a reader (the server's log says why).",
         src.name
     )
 }

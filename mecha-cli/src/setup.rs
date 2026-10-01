@@ -1957,12 +1957,13 @@ pub fn persona_agent(
         document_extractor(&bound.config).map(Arc::new),
     );
     // It skips `registry_as`'s refusal of anything that can aim: so it
-    // must never be able to (review of #459).
-    debug_assert_eq!(
-        mecha_core::tool::Tool::capabilities(&reader).egress,
-        mecha_core::tool::Egress::None
-    );
-    tools.registry.insert(Arc::new(reader));
+    // must never be able to, and is left out — in a release build too —
+    // if it ever could (review of #459).
+    if mecha_core::tool::Tool::capabilities(&reader).egress == mecha_core::tool::Egress::None {
+        tools.registry.insert(Arc::new(reader));
+    } else {
+        eprintln!("mecha: file_read can send, so this persona chat goes without it");
+    }
     let system = persona::system_prompt(pinned)?;
     let ctx = bound.agent.ctx();
     let agent = Agent::new(

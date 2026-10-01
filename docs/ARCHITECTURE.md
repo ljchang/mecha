@@ -1115,9 +1115,12 @@ module.
     over the chat store's own path. Inside `registry_as`, `answers = "files"`
     would withhold it: it declares `untrusted_input`, like `document_read`.
     It is never in the assistant's registry.
-  - The whole collection rides in the first turn that runs the model and
-    does not carry it yet, when it fits about a quarter of the window (D15);
-    otherwise the list of files does. **The first turn never extracts.** It
+  - The whole collection rides before the chat's first reply, when it fits
+    about a quarter of the window (D15); otherwise the list of files does.
+    **Only before the first reply** (`carries_files_now`), so it is always in
+    `messages[0]`, which compaction keeps whole. Anywhere later, a cut would
+    summarise it away and the next turn would fold the collection back in
+    just after context ran short. **The first turn never extracts.** It
     runs before the chat can be stopped and while the router is held, so it
     includes only files whose text is to hand (`files::readiness`), and says
     of the rest which they are: being read, read when asked (with

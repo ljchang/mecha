@@ -278,8 +278,28 @@ fn reader_shape(config: &mecha_core::config::Config) -> (u64, bool) {
         .filter(|_| {
             mecha_core::feature::switched_on(config, mecha_core::feature::Feature::Documents)
         })
+        // A `[documents]` that will not build a reader is no reader: refused,
+        // not promised (review of #459, pass 8). `files_block` builds the
+        // real one and asks it; this is the poll's cheap check.
+        .filter(|d| d.validate().is_ok())
         .map(|d| (d.max_file_bytes(), d.cache))
         .unwrap_or((0, false))
+}
+
+/// Whether a turn should carry the persona's files: only before the chat's
+/// first reply, so they land in `messages[0]` — the one message compaction
+/// keeps whole. Any later, they would sit mid-conversation, a compaction
+/// would summarise them away, and the next turn would fold the whole
+/// collection back in just after context ran short (review of #459, pass
+/// 8). A file added while a chat is open reaches the next chat; this one
+/// can still read it with `file_read`, which lists the folders live. The
+/// owner's turns only, as `Taint::arm_for_content` reads the stem: the two
+/// must agree on what "carried" means.
+fn carries_files_now(messages: &[Message]) -> bool {
+    !messages
+        .iter()
+        .any(|m| m.role == mecha_core::message::Role::Assistant)
+        && !mecha_core::persona::files::carries(messages)
 }
 
 /// The extraction cache, where the reader keeps one.
@@ -1145,7 +1165,13 @@ impl PersonaChats {
     async fn files_block(&self, name: &str, bound: &crate::follow::Bound) -> Option<String> {
         let (store_dir, name) = (self.store.clone(), name.to_string());
         let config = &bound.config;
-        let (max_bytes, cached) = reader_shape(config);
+        let extractor = crate::setup::document_extractor(config).map(Arc::new);
+        let (max_bytes, cached) = match extractor {
+            Some(_) => reader_shape(config),
+            // No reader was built, whatever the config says: nothing waits
+            // on one (review of #459, pass 8).
+            None => (0, false),
+        };
         // The store, the walk and the readiness hashes are file I/O: off the
         // runtime.
         let (sources, omitted, states) = tokio::task::spawn_blocking(move || {
@@ -1167,7 +1193,6 @@ impl PersonaChats {
         if sources.is_empty() {
             return None;
         }
-        let extractor = crate::setup::document_extractor(config).map(Arc::new);
         // What the first turn cannot include yet is read in the background,
         // so a later `file_read` — or the next chat — finds it ready. Only
         // what a read would leave in the cache: a refused file never will
@@ -1426,15 +1451,12 @@ impl PersonaChats {
                 && !ps
                     .crisis_paused_at
                     .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
-            // The persona's files ride in the first turn that runs the model
-            // and does not carry them yet (§10.4) — read here, outside the
-            // lock, since a first read of a scanned paper is a model call.
-            // The owner's turns only, as `Taint::arm_for_content` reads the
-            // stem: the two must agree on what "carried" means.
+            // The persona's files ride before the chat's first reply (§10.4),
+            // listed here and read outside the lock.
             let wants_files = ps
                 .conversation
                 .as_ref()
-                .is_some_and(|c| !mecha_core::persona::files::carries(&c.messages));
+                .is_some_and(|c| carries_files_now(&c.messages));
             (
                 Arc::clone(&ps.pinned),
                 ps.events.clone(),
@@ -1518,8 +1540,7 @@ impl PersonaChats {
         // Asked again with the conversation in hand: `wants_files` was read
         // under the first lock, two awaits ago, and a turn that finished in
         // between may have carried the files already (review of #459).
-        let files_block =
-            files_block.filter(|_| !mecha_core::persona::files::carries(&conversation.messages));
+        let files_block = files_block.filter(|_| carries_files_now(&conversation.messages));
         // The session goal rides in the first turn, never the system prompt,
         // so setting one costs the persona's cached prefix nothing (§6).
         let goal = ps.goal.take();
@@ -3097,6 +3118,38 @@ mod tests {
             .collect();
         assert_eq!(bubbles, ["What do urchins do?", "And then?"], "{t}");
         assert_eq!(t["taint"]["untrusted"], true, "{t}");
+    }
+
+    /// Pass 8 of #459: the files ride before the first reply or not at all.
+    /// Mid-conversation a compaction would summarise them away and the next
+    /// turn would fold the whole collection back in; so a file added to an
+    /// open chat reaches the next chat, and this one reads it on request.
+    #[tokio::test]
+    async fn a_file_added_after_the_first_reply_waits_for_the_next_chat() {
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        turn(&w, &key, "Hello").await;
+        std::fs::write(
+            w.store().join("mara/files/urchins.md"),
+            "Sea urchins graze kelp holdfasts.",
+        )
+        .unwrap();
+        turn(&w, &key, "Anything new?").await;
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2);
+        assert!(
+            seen[1]
+                .messages
+                .iter()
+                .all(|m| !m.text().contains(mecha_core::persona::files::FILES_STEM)),
+            "{:?}",
+            seen[1].messages
+        );
     }
 
     /// A first turn that folds into the owner's tail — the state a turn
