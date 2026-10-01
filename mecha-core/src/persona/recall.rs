@@ -421,6 +421,21 @@ pub const PER_TURN: usize = 3;
 /// The most one turn's block carries, in characters.
 pub const PER_TURN_CHARS: usize = 1500;
 
+/// Whether [`per_turn`] would search at all: a message long enough to name
+/// something, a memory switch on, a store to search. Cheap and local, so a
+/// caller asks it **before** embedding the message — with memory off, no
+/// store yet, or "ok thanks", nothing leaves the process and the turn waits
+/// on nothing (review of #481).
+pub fn would_search(store_dir: &std::path::Path, p: &Persona, message: &str) -> bool {
+    let s = &p.settings.memory;
+    message.trim().chars().count() >= MIN_QUERY_CHARS
+        && (s.episodic || s.semantic || s.user_facts != UserFacts::Off)
+        && store_dir
+            .join(&p.name)
+            .join(super::memory::MEMORY_DB)
+            .is_file()
+}
+
 /// What one owner message brings to mind (§9.7, "on every turn"): the
 /// persona's records that best answer it — words and meaning fused, weighted
 /// toward recent, `Memory::recall_search` — skipping any whose text the
@@ -439,7 +454,7 @@ pub fn per_turn(
     qvec: Option<&[f32]>,
     already: &str,
 ) -> Result<Option<MemoryBlock>> {
-    if message.trim().chars().count() < MIN_QUERY_CHARS {
+    if !would_search(store_dir, p, message) {
         return Ok(None);
     }
     let s = &p.settings.memory;
@@ -453,14 +468,6 @@ pub fn per_turn(
     if s.user_facts != UserFacts::Off {
         kinds.push(Recallable::Facts(Table::User));
         kinds.push(Recallable::Facts(Table::Inferred));
-    }
-    if kinds.is_empty()
-        || !store_dir
-            .join(&p.name)
-            .join(super::memory::MEMORY_DB)
-            .is_file()
-    {
-        return Ok(None);
     }
     let m = Memory::open_to_edit(store_dir, &p.name)?;
     // Already in the chat by its opening words: chat start may have shown a
