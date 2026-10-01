@@ -34,7 +34,8 @@ first real night. What is open, verified against `4bbed7ca`:
 - **#481 (recall on every turn) is merged as `b6d15059` and not installed**
   (`strings ~/.cargo/bin/mecha | grep -cF "what this message brought to mind"`
   → 0 at 2026-10-01 ~19:40Z). It is binary-only, handed to mecha-d7.
-  - Its first open builds `memory.db` schema v3.
+  - Its first writable open builds `memory.db` schema v3 (read-only
+    handles never migrate).
   - Once installed, the nightly also embeds records, which needs
     `[documents]` switched on: meaning-based recall reuses that feature's
     embedder, and with Documents off recall is by words alone.
@@ -73,6 +74,18 @@ first real night. What is open, verified against `4bbed7ca`:
     `--chat` on a chat with no checkpoint exits without saying so.
   - #477: the section headings sit outside `BUDGET_CHARS` (about 6300 in
     practice); the page-notice path of `memory_block` has no test.
+  - #481, all three still true on `4bbed7ca`:
+    - `per_turn`'s "already in the chat" check matches a record's first 60
+      characters, but `chat_start` can clip an episode to ~24 characters
+      of summary, so on a tight budget the same episode re-folds on every
+      turn that names it. That costs duplicated tokens, not taint.
+    - `recall_search`'s "did meaning take part" bool is unused by
+      `per_turn`, so nothing in the chat path can tell a words-only recall
+      apart.
+    - `Memory::unembedded` rescans every record per batch, so
+      `embed_memory` is quadratic in batches. That shows exactly on a first
+      night over a large store; read a slow embed stage that way before
+      blaming the writer.
 
 **2026-10-01 — persona autolock and avatar framing are live; persona
 creation from the main chat is next (mecha-69).** #469, #473 and #480 are in
