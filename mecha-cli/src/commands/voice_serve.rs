@@ -19,5 +19,6 @@ pub struct Args {
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
+    super::features::require(mecha_core::feature::Feature::Voice)?;
     crate::voice::run(global, args).await
 }

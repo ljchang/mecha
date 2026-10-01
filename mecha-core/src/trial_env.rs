@@ -306,15 +306,22 @@ impl Environment {
             .filter(|s| !s.disabled)
             .filter_map(feature::server_feature)
             .map(Feature::switch_owner)
-            // §5.1 rules on `graph` alone. The only other features a server
-            // can name, mail and docs, run on credentials that are the
-            // operator's wherever the entry was declared (the mail crate's
-            // stores sit under the real home whatever `$MECHA_HOME` says),
-            // which is exactly what `switchable_from_environment` refuses;
-            // defaulting them here would assert on the environment's behalf
-            // what it may not (found on review of #445). `factory-publish`
-            // names no feature until the front door is gated whole.
-            .filter(|f| *f == Feature::Graph)
+            // `graph` (§5.1) and, since the front door is gated whole
+            // (step 3b), `frontdoor` for a carried `factory-publish` — the one
+            // feature `switchable_from_environment` allows, so the default
+            // asserts nothing the environment could not (review of #452:
+            // gating the publishing server otherwise dropped it from a trial
+            // that declared it). Mail and docs run on credentials that are
+            // the operator's wherever the entry was declared (the mail
+            // crate's stores sit under the real home whatever `$MECHA_HOME`
+            // says), which is exactly what `switchable_from_environment`
+            // refuses; defaulting them here would assert on the environment's
+            // behalf what it may not (found on review of #445).
+            // Two named rulings, not a predicate: "may the environment set
+            // it" is not "may the harness default it", and a future feature
+            // with both would otherwise be defaulted on silently (review of
+            // #452).
+            .filter(|f| matches!(f, Feature::Graph | Feature::Frontdoor))
             .collect();
         for f in carried {
             cfg.features.0.entry(f.id().to_string()).or_insert(true);
@@ -989,6 +996,16 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         // an existing `live_servers` experiment keeps its graph.
         let cfg = config("", &["graph"]);
         assert_eq!(switch(&cfg, Feature::Graph), Some(Switch::On));
+        // The environment declares a publishing server: the front door is on,
+        // so step 3b's gate does not drop it (review of #452) — and an
+        // environment's own `false` still stands.
+        let cfg = config("[[mcp]]\nname = \"f\"\ncommand = \"factory-publish\"", &[]);
+        assert_eq!(switch(&cfg, Feature::Frontdoor), Some(Switch::On));
+        let cfg = config(
+            "[features]\nfrontdoor = false\n[[mcp]]\nname = \"f\"\ncommand = \"factory-publish\"",
+            &[],
+        );
+        assert_eq!(switch(&cfg, Feature::Frontdoor), Some(Switch::Off));
 
         // `search` follows the operator's own switch, as its backends do.
         let tmp = Scratch::new();

@@ -253,6 +253,11 @@ impl FrontdoorModal {
 /// is an ordinary machine, and a list that refuses to draw over a store it
 /// only wanted to cross-check would be worse than a slightly stale one.
 pub fn load() -> anyhow::Result<Vec<RequestRow>> {
+    // The driver asks, as the verb does: this opens, reconciles and settles
+    // the store in-process, and the modal's `x`/`t` spawn a child whose
+    // refusal would land in a nulled stderr — "the result will be reported
+    // here", then "still drained after 30m" (review of #452).
+    crate::commands::features::require(mecha_core::feature::Feature::Frontdoor)?;
     let store = mecha_core::frontdoor::Frontdoor::open_default()?;
     // Reconcile drafts and settle bookings before reading, in that order and
     // for the reason `commands::frontdoor::settle` gives: a booking triaged
@@ -489,6 +494,25 @@ fn detail_lines(record: &Record) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The TUI's `/frontdoor` asks the switch before it opens the store: off,
+    /// it says the one sentence and creates nothing — no `requests/`, no
+    /// reconcile, no settled booking (review of #452).
+    #[test]
+    fn the_modal_refuses_and_creates_nothing_when_the_front_door_is_off() {
+        let home = crate::testenv::HomeGuard::new("tui-frontdoor-off");
+        std::fs::write(
+            home.dir.join("config.toml"),
+            "[features]\nfrontdoor = false\n",
+        )
+        .unwrap();
+        let err = load().err().expect("the modal refuses");
+        assert!(
+            format!("{err:#}").contains("`mecha features enable frontdoor`"),
+            "{err:#}"
+        );
+        assert!(!home.dir.join("requests").exists(), "the store was created");
+    }
     use serde_json::json;
 
     fn text(lines: &[Line]) -> String {

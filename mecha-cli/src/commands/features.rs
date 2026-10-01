@@ -310,15 +310,12 @@ mod tests {
             },
         ])
         .unwrap();
-        // Mail is gated today; incognito is not yet, and is not called off.
+        // Every feature is guarded since step 3b, so both are called off.
         assert!(
-            line.contains("off until switched on: mail (no account is authorised)"),
+            line.contains("off until switched on: mail (no account is authorised), incognito"),
             "{line}"
         );
-        assert!(
-            line.contains("will be off once their surfaces follow the switch: incognito"),
-            "{line}"
-        );
+        assert!(!line.contains("still working"), "{line}");
         assert!(
             line.contains("`mecha features enable mail web incognito`"),
             "{line}"

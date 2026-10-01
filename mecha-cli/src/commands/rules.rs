@@ -149,7 +149,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
                     // parse. Closing the editor on it unfixed is not "done".
                     if let Err(e) = store.user_rules(&domain) {
                         eprintln!("unchanged, and still not loading: {e:#}");
-                        std::process::exit(1);
+                        crate::exit_with(1);
                     }
                     println!("unchanged")
                 }
@@ -158,7 +158,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
                 }
                 UserEdit::Discarded(e) => {
                     eprintln!("not saved, the file is as it was: {e:#}");
-                    std::process::exit(1);
+                    crate::exit_with(1);
                 }
             }
             Ok(())

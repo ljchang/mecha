@@ -127,6 +127,20 @@ pub enum GroupCmd {
 }
 
 pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
+    // Reading the owner's own writing stays open with personas off; every
+    // change to the store is refused — `remove` too, which moves a persona
+    // aside rather than deleting data, as `imagelib remove` does, and
+    // `relationship list`, which seeds the starter templates as it reads.
+    if !matches!(
+        args.cmd,
+        Cmd::List { .. }
+            | Cmd::Show { .. }
+            | Cmd::Group {
+                cmd: GroupCmd::List
+            }
+    ) {
+        super::features::require(mecha_core::feature::Feature::Personas)?;
+    }
     let dir = Store::default_dir()?;
     let lib_dir = Library::default_dir()?;
     run(&dir, &lib_dir, args.cmd)

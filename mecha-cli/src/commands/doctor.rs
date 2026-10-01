@@ -76,7 +76,7 @@ pub async fn execute(args: Args) -> Result<()> {
     } else {
         // Findings are the diagnosis, not a malfunction of doctor itself, so
         // the exit code carries them without an error message on stderr.
-        std::process::exit(1);
+        crate::exit_with(1);
     }
 }
 

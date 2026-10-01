@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Slack, personas, voice, incognito, the front door and messages follow
+  their switches too**, the same way the rest do: off, their web pages answer
+  `feature_off` and `mecha slack`, `persona`, `msg`, `frontdoor`, `polls` and
+  `voice-serve` refuse with one sentence and the command that turns the
+  feature on. The front door's publishing server is no longer started with
+  `frontdoor` off, and `mecha serve` does not mount its voice facade with
+  voice calls off. Reading what is there stays open (`slack status`,
+  `threads`, `persona list`, `show`), and so do `slack auth` and `slack
+  unlink`. **`mecha msg` now refuses when messages is off**, reads included —
+  it used to work either way.
+
 - **A feature that is off refuses the same way everywhere.** With mail, the
   knowledge graph (and its task board), PDF extraction or image generation
   switched off in `[features]`, the web app's routes for them answer `404`
@@ -410,6 +421,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   persona in passing is refused before drawing, saying how to fix it; `self`
   beside the character's name drops only the duplicate it made; and the
   library is read once for the self-cast and the guard instead of once each.
+
+- **A command that ends non-zero no longer leaves a model hold behind.**
+  `mecha eval` with a failed case, `mecha batch` with a failed item, and a
+  refused `mecha run` exited without removing their file in
+  `~/.mecha/holds/`. A dead process's hold never blocked a model switch, so
+  the files only piled up. Every such exit now releases the hold first.
 
 - **A chat no longer resends a refused call for minutes.** If a tool
   refuses the same call the same way, turn after turn, the run now stops
