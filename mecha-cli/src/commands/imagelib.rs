@@ -448,8 +448,25 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
         } => {
             let e = resolve(&lib, &name, kind)?;
             let portrait = portrait.as_ref().map(read_picture).transpose()?;
+            let replaced = portrait.is_some();
             let updated = imagelib::update(dir, e.kind, &e.name, text, portrait, seed)?;
             println!("`{}` is now v{}.", updated.name, updated.version);
+            // A new picture under the same name: a persona framed against the
+            // old one starts unframed (review of #491). After the update has
+            // landed, so a failure costs only the framing, and is said.
+            if replaced {
+                if let Ok(personas) = mecha_core::persona::Store::default_dir() {
+                    match mecha_core::persona::clear_frames_for(&personas, &updated.name) {
+                        Ok(cleared) if !cleared.is_empty() => {
+                            println!("Its new picture is unframed in {}.", cleared.join(", "))
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            eprintln!("mecha: a persona's old framing was not cleared: {e:#}")
+                        }
+                    }
+                }
+            }
         }
     }
     Ok(())

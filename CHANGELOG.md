@@ -92,10 +92,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   having outside content, as reading it again would; ordinary memory does
   not. Searching memory during a chat comes next.
 
-- **A persona's picture can be framed.** "Adjust picture" in a persona's ⋯
-  menu opens its portrait in the circle: drag it into place and zoom, then
-  Save; Reset puts it back. Until you do, a tall portrait now shows its
-  top — the face — rather than its middle.
+- **A persona's picture can be framed.** Tap the picture on a persona's page
+  to open it in the circle: drag it into place and zoom, then Save; Reset puts
+  it back. A persona that gets a new portrait — made with one, or given one in
+  its settings — opens it there straight away. Until you frame it, a tall
+  portrait shows its top — the face — rather than its middle.
+
+- **Hiding a persona behind the library lock is a switch in its settings**,
+  at the top of the Settings tab, rather than an item in a ⋯ menu. The menu
+  is gone.
 
 - **Save a persona's reply to its files.** Under each of a persona's replies
   there is a *Save to files* link: a study guide, quiz or glossary it wrote
