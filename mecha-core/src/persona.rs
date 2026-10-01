@@ -2214,10 +2214,16 @@ pub fn write_owner_file(
     // it so (review of #491). Saved first, so a failure here costs only the
     // framing, never the owner's edit. A hand edit outside mecha does not
     // pass through here.
+    // A failure here is the framing's alone: the edit has landed, and
+    // reporting it as failed would leave the page holding a stale base, so
+    // the owner's next save would read as a conflict (review of #491).
     let after = store.get(name).map(|p| p.settings.character.clone());
     if let Some(before) = portrait_before {
         if after.is_some_and(|a| a != before) && state.frame.is_some() {
-            return set_frame(dir, name, None);
+            match set_frame(dir, name, None) {
+                Ok(cleared) => return Ok(cleared),
+                Err(e) => tracing::warn!("`{name}`'s old framing was not cleared: {e:#}"),
+            }
         }
     }
     Ok(state)

@@ -226,8 +226,10 @@ export function uploadUrl(key, name, token = null) {
 // so anything not named here is dropped — which is how form drafts went
 // missing on the first cut (review of #430), as text drafts had (#420).
 // Whether one editor tab holds unsaved changes: its text (the open tab's
-// is `text`, another tab's its kept `draft`) or its form draft. The one
-// definition of "dirty" for the page's guards (review of #491).
+// is `text`, another tab's its kept `draft`) or its form draft — what the
+// lock switch waits on (review of #491). The open tab's own Save and
+// form/text switch read the same two checks split, as `textDirty` and
+// `formDirty`.
 export function fileUnsaved(v, text = v?.draft) {
   if (!v) return false;
   if (text != null && text !== v.text) return true;
