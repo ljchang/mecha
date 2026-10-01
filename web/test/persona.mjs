@@ -32,7 +32,9 @@ assert.equal(withUnlock('/x?a=1', 'z'), '/x?a=1&unlock=z');
 assert.throws(() => personaUrl('mara', '/delete', null));
 assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 22);
+assert.equal(ENDPOINTS.length, 25);
+// A proposal is read, approved and turned away through the persona door.
+for (const s of ['review', 'approve', 'reject']) assert.ok(ENDPOINTS.includes(`/api/personas/X/${s}`), s);
 assert.ok(ENDPOINTS.includes('/api/personas/X/frame'));
 assert.ok(ENDPOINTS.includes('/api/personas/X/sources') && ENDPOINTS.includes('/api/personas/X/sources/remove'));
 assert.ok(ENDPOINTS.includes('/api/personas/authoring') && ENDPOINTS.includes('/api/personas/X/files'));
@@ -463,4 +465,23 @@ console.log('persona: ok');
   }
   // It stops at the picture's edge.
   assert.equal(dragFrame({ x: 0.05, y: 0.5, zoom: 2 }, 400, 0, 200).x, 0);
+}
+
+// The Waiting section (ruled 2026-10-01): proposals a chat made, apart from
+// the rest; an owner's own unapproved persona is not one.
+{
+  const { splitWaiting, proposalOrigin } = await import('../src/lib/persona.js');
+  const { waiting, rest } = splitWaiting([
+    { name: 'mara', waiting: false, origin: 'owner' },
+    { name: 'wren', waiting: true, origin: 'model_clean' },
+    { name: 'mine', waiting: true, origin: 'owner' },
+    { name: 'noor', waiting: true, origin: 'model_untrusted' },
+  ]);
+  assert.deepEqual(waiting.map((p) => p.name), ['wren', 'noor']);
+  assert.deepEqual(rest.map((p) => p.name), ['mara', 'mine']);
+  assert.deepEqual(splitWaiting(null), { waiting: [], rest: [] });
+  assert.equal(proposalOrigin('model_clean'), 'proposed in a chat');
+  assert.match(proposalOrigin('model_untrusted'), /outside content/);
+  // An origin this page does not know reads as the cautious one.
+  assert.match(proposalOrigin('something_new'), /outside content/);
 }

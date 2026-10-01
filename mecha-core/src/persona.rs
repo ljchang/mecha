@@ -402,6 +402,12 @@ pub struct State {
         skip_serializing_if = "Option::is_none"
     )]
     pub frame: Option<Frame>,
+    /// The content digest a model's proposal last wrote (`propose`), or
+    /// `None` for a persona no model wrote. A revision goes ahead only while
+    /// the files still hash to it: once the owner has edited a proposal it
+    /// is theirs, and a chat cannot write over their edits (review of #493).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed: Option<String>,
 }
 
 /// Where a portrait sits in its circle, as the page draws it: `x` and `y`
@@ -453,6 +459,7 @@ impl Default for State {
             created: String::new(),
             updated: String::new(),
             frame: None,
+            proposed: None,
         }
     }
 }
@@ -1412,6 +1419,19 @@ fn motivation_template(display: &str) -> String {
 /// both succeed, and every link it names must resolve — a persona is never
 /// *created* broken, though a later hand edit can break it (and is told so).
 pub fn create(dir: &Path, lib: &imagelib::Library, new: NewPersona) -> Result<Persona> {
+    create_with(dir, lib, new, None)
+}
+
+/// [`create`], with the identity and motivation a proposal wrote in place of
+/// the templates. A proposal may link a character the owner has not yet
+/// approved (ruled 2026-10-01: the approve view offers both at once), so its
+/// character is checked by [`propose`], and only for existing.
+fn create_with(
+    dir: &Path,
+    lib: &imagelib::Library,
+    new: NewPersona,
+    prose: Option<(&str, &str)>,
+) -> Result<Persona> {
     validate_persona_name(&new.name)?;
     let mut new = new;
     if new.display.trim().is_empty() {
@@ -1446,7 +1466,11 @@ pub fn create(dir: &Path, lib: &imagelib::Library, new: NewPersona) -> Result<Pe
         settings: Settings {
             display: new.display.clone(),
             relationship: Names(new.relationships.clone()),
-            character: new.character.clone(),
+            character: if prose.is_some() {
+                None
+            } else {
+                new.character.clone()
+            },
             voice: new.voice.clone(),
             groups: new.groups.clone(),
             model: None,
@@ -1459,8 +1483,12 @@ pub fn create(dir: &Path, lib: &imagelib::Library, new: NewPersona) -> Result<Pe
             status: Status::Approved,
             ..State::default()
         },
-        identity: "## Core\nx\n".into(),
-        motivation: String::new(),
+        identity: prose
+            .map_or("## Core\nx\n", |(identity, _)| identity)
+            .into(),
+        // A proposal's motivation is checked as the owner's would be: an
+        // unclosed `<!--` would silently cut the prompt (review of #493).
+        motivation: prose.map_or("", |(_, motivation)| motivation).into(),
         notes: Vec::new(),
     };
     if let Some(broken) = store.problems(&probe, lib).into_iter().next() {
@@ -1482,14 +1510,22 @@ pub fn create(dir: &Path, lib: &imagelib::Library, new: NewPersona) -> Result<Pe
         &pdir.join("persona.toml"),
         render_settings(&new, &tools, answers).as_bytes(),
     )?;
-    write_private(
-        &pdir.join("identity.md"),
-        identity_template(&new.display).as_bytes(),
-    )?;
-    write_private(
-        &pdir.join("motivation.md"),
-        motivation_template(&new.display).as_bytes(),
-    )?;
+    match prose {
+        Some((identity, motivation)) => {
+            write_private(&pdir.join("identity.md"), identity.as_bytes())?;
+            write_private(&pdir.join("motivation.md"), motivation.as_bytes())?;
+        }
+        None => {
+            write_private(
+                &pdir.join("identity.md"),
+                identity_template(&new.display).as_bytes(),
+            )?;
+            write_private(
+                &pdir.join("motivation.md"),
+                motivation_template(&new.display).as_bytes(),
+            )?;
+        }
+    }
     let at = now();
     let origin = new.origin;
     write_state(
@@ -1507,13 +1543,219 @@ pub fn create(dir: &Path, lib: &imagelib::Library, new: NewPersona) -> Result<Pe
             created: at.clone(),
             updated: at,
             frame: None,
+            proposed: None,
         },
     )?;
-    snapshot(dir, &new.name)?;
+    let state = snapshot(dir, &new.name)?;
+    if prose.is_some() {
+        mark_proposed(dir, &new.name, state)?;
+    }
     Store::load(dir)
         .get(&new.name)
         .cloned()
         .ok_or_else(|| anyhow!("`{}` was written but does not load", new.name))
+}
+
+/// Record that the files as they stand are a model's proposal, so a later
+/// revision can tell whether the owner has edited them since.
+fn mark_proposed(dir: &Path, name: &str, mut state: State) -> Result<()> {
+    state.proposed = Some(state.digest.clone());
+    write_state(&dir.join(name), &state)
+}
+
+/// What a model may stage as a persona (§4.4; the owner's rulings of
+/// 2026-10-01): who it is and how it is named, linked and voiced. Never its
+/// tools, files, memory, safety switches or lock — those are the owner's,
+/// set after approval; there is no field here to carry them.
+#[derive(Debug, Clone)]
+pub struct Proposal {
+    pub name: String,
+    pub display: String,
+    pub relationships: Vec<String>,
+    /// An image-library character, approved or still a candidate.
+    pub character: Option<String>,
+    pub voice: Option<String>,
+    /// `identity.md` as the model wrote it; needs a non-empty `## Core`.
+    pub identity: String,
+    pub motivation: String,
+    /// From the proposing conversation's taint (`Origin::of_proposal`).
+    /// Never `Owner`: a model's text is not the owner's.
+    pub origin: Origin,
+    /// Staged hidden behind the library lock. The harness sets it from the
+    /// chat's mode — an incognito chat's proposals are locked (ruled
+    /// 2026-10-01) — never from anything the model said.
+    pub locked: bool,
+}
+
+/// Model-proposed personas waiting on the owner. A model that proposes in a
+/// loop fills a list nobody reads; past this a new *name* is refused, as the
+/// image library's `MAX_PENDING` refuses a candidate. It bounds names, not
+/// writes: each revision that changes a waiting one takes a version, as an
+/// owner's edit does.
+pub const MAX_PENDING_PROPOSALS: usize = 20;
+
+/// Whether [`propose`] made a candidate or rewrote one already waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Proposed {
+    New,
+    Revised,
+}
+
+/// Stage a model's persona as a candidate, or rewrite a candidate a model
+/// already staged — revision until approval (ruled 2026-10-01). An approved
+/// persona, or one the owner made, is never changed from here: the owner
+/// edits those. Nothing staged reaches a chat until `approve`.
+///
+/// A revision keeps the browse lock if either the candidate or this
+/// proposal is locked, and its origin is the less trusted of the two —
+/// taint only rises, and a proposal never unhides what was hidden.
+pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Persona, Proposed)> {
+    if p.origin == Origin::Owner {
+        bail!("a proposal is a model's, never the owner's own");
+    }
+    validate_persona_name(&p.name)?;
+    for (what, text, required) in [
+        ("identity", &p.identity, true),
+        ("motivation", &p.motivation, false),
+    ] {
+        if required && text.trim().is_empty() {
+            bail!("a persona needs an identity: who they are, with a `## Core` section");
+        }
+        if text.len() as u64 > MAX_PROSE_BYTES {
+            bail!("the {what} is capped at {} KB", MAX_PROSE_BYTES / 1024);
+        }
+        if let Some(c) = forbidden_control(text) {
+            bail!("the {what} holds a control character ({c:?})");
+        }
+    }
+    if let Some(c) = &p.character {
+        if lib.get(imagelib::Kind::Character, c).is_none() {
+            bail!(
+                "there is no character `{c}` in the image library — propose one with \
+                 image_library_propose first, or leave the character out"
+            );
+        }
+    }
+    let new = NewPersona {
+        name: p.name.clone(),
+        display: p.display.clone(),
+        relationships: p.relationships.clone(),
+        character: p.character.clone(),
+        voice: p.voice.clone(),
+        groups: Vec::new(),
+        locked: p.locked,
+        origin: p.origin,
+    };
+    // The starters first, as `create` lays them out: a store a proposal is
+    // the first thing to touch still knows `friend`.
+    ensure_layout(dir)?;
+    let store = Store::load(dir);
+    // Named here, without the store's path: the refusal goes back to a
+    // model, which has no business reading where the owner's home is
+    // (review of #493). `create_with`'s own check stays for the owner's doors.
+    for r in &p.relationships {
+        if !store.relationships.contains_key(r) {
+            bail!("there is no relationship template `{r}`");
+        }
+    }
+    let Some(existing) = store.get(&p.name).cloned() else {
+        let waiting = store
+            .personas
+            .iter()
+            .filter(|q| q.state.status == Status::Candidate && q.state.proposed.is_some())
+            .count();
+        if waiting >= MAX_PENDING_PROPOSALS {
+            bail!(
+                "{waiting} proposed personas are already waiting for the owner; nothing new \
+                 until some are approved or rejected"
+            );
+        }
+        let made = create_with(dir, lib, new, Some((&p.identity, &p.motivation)))?;
+        return Ok((made, Proposed::New));
+    };
+    // From either kind of chat (the owner's ruling, 2026-10-01): an
+    // ordinary chat may revise what an incognito room staged and the other
+    // way round. The lock only rises — below — so a revision never unhides.
+    if existing.state.status != Status::Candidate || existing.state.proposed.is_none() {
+        bail!(
+            "`{}` is already a persona, and a chat cannot change it. Propose under another name.",
+            p.name
+        );
+    }
+    // Edited by the owner since a model last wrote it: theirs now. A
+    // revision rewrites persona.toml whole, which would undo their settings.
+    let current = store.content_digest(&existing)?;
+    if existing.state.proposed.as_deref() != Some(current.as_str()) {
+        bail!(
+            "`{}` has changed since it was proposed — the owner edited it, or a relationship \
+             template it names — so it is the owner's now and a chat cannot change it; \
+             propose under another name, or ask the owner",
+            p.name
+        );
+    }
+    // The same checks a new one gets, against the revised text.
+    let mut new = new;
+    if new.display.trim().is_empty() {
+        new.display = new.name.clone();
+    }
+    if new.display.chars().count() > MAX_DISPLAY || new.display.chars().any(char::is_control) {
+        bail!("a display name is one line of at most {MAX_DISPLAY} characters");
+    }
+    let mut tools: Vec<String> = Vec::new();
+    let mut answers = Answers::Open;
+    for r in &new.relationships {
+        let t = store.relationships.get(r).ok_or_else(|| {
+            anyhow!(
+                "no relationship template `{r}` in {}",
+                dir.join("relationships").display()
+            )
+        })?;
+        for tool in &t.suggest.tools {
+            if !tools.contains(tool) {
+                tools.push(tool.clone());
+            }
+        }
+        if t.suggest.answers == Some(Answers::Files) {
+            answers = Answers::Files;
+        }
+    }
+    let mut probe = existing.clone();
+    probe.settings.display = new.display.clone();
+    probe.settings.relationship = Names(new.relationships.clone());
+    probe.settings.character = None;
+    probe.settings.voice = new.voice.clone();
+    probe.state.status = Status::Approved;
+    probe.identity = p.identity.clone();
+    probe.motivation = p.motivation.clone();
+    if let Some(broken) = store.problems(&probe, lib).into_iter().next() {
+        bail!("`{}` {broken}", p.name);
+    }
+    let pdir = dir.join(&p.name);
+    new.locked = p.locked || existing.state.locked;
+    new.origin =
+        if p.origin == Origin::ModelUntrusted || existing.state.origin == Origin::ModelUntrusted {
+            Origin::ModelUntrusted
+        } else {
+            Origin::ModelClean
+        };
+    write_private(
+        &pdir.join("persona.toml"),
+        render_settings(&new, &tools, answers).as_bytes(),
+    )?;
+    write_private(&pdir.join("identity.md"), p.identity.as_bytes())?;
+    write_private(&pdir.join("motivation.md"), p.motivation.as_bytes())?;
+    let mut state = existing.state.clone();
+    state.origin = new.origin;
+    state.locked = new.locked;
+    state.updated = now();
+    write_state(&pdir, &state)?;
+    let state = snapshot(dir, &p.name)?;
+    mark_proposed(dir, &p.name, state)?;
+    let revised = Store::load(dir)
+        .get(&p.name)
+        .cloned()
+        .ok_or_else(|| anyhow!("`{}` was rewritten but does not load", p.name))?;
+    Ok((revised, Proposed::Revised))
 }
 
 fn write_state(pdir: &Path, state: &State) -> Result<()> {
@@ -1637,6 +1879,21 @@ pub fn approve(dir: &Path, name: &str) -> Result<State> {
     state.updated = now();
     write_state(&dir.join(name), &state)?;
     snapshot(dir, name)
+}
+
+/// [`approve`], only if the persona's files still hash to `digest` — what
+/// the owner was shown. Checked here, at the write, so a revision landing
+/// between the page's read and the tap is refused rather than approved
+/// unread (the library's `approve_as_shown`, for the same reason).
+pub fn approve_as_shown(dir: &Path, name: &str, digest: &str) -> Result<State> {
+    let (store, p) = current(dir, name)?;
+    let now = store
+        .content_digest(&p)
+        .with_context(|| format!("`{name}` cannot be approved yet"))?;
+    if now != digest {
+        bail!("`{name}` changed since it was shown — read it again before approving");
+    }
+    approve(dir, name)
 }
 
 /// Place the portrait in the persona's avatar, or `None` for the default.
@@ -2649,6 +2906,170 @@ mod tests {
         };
         assert_eq!(names(false), vec!["priya".to_string()]);
         assert_eq!(names(true), vec!["mara".to_string(), "priya".to_string()]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A model's persona (§4.4, rulings of 2026-10-01): staged as a
+    /// candidate with its own prose, revisable until approved, never an
+    /// owner's or an approved persona, and its lock and taint only rise.
+    #[test]
+    fn a_proposal_is_a_candidate_revised_until_approved_and_never_more() {
+        let dir = scratch();
+        let lib_dir = dir.join("imagelib");
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 4)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        imagelib::create(
+            &lib_dir,
+            imagelib::NewEntry {
+                kind: imagelib::Kind::Character,
+                name: "wren".into(),
+                text: "short, freckled, a wool cap".into(),
+                portrait: Some(png),
+                source_seed: None,
+                origin: Origin::ModelClean,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let lib = imagelib::Library::load(&lib_dir).0;
+        let store = dir.join("p");
+        let proposal = |identity: &str| Proposal {
+            name: "wren".into(),
+            display: "Wren".into(),
+            relationships: Vec::new(),
+            character: Some("wren".into()),
+            voice: None,
+            identity: identity.into(),
+            motivation: "Wants the survey finished before the storms.\n".into(),
+            origin: Origin::ModelClean,
+            locked: false,
+        };
+        let core = "## Core\nA field botanist, dry and exact.\n";
+
+        // New: a candidate, the model's prose verbatim, linked to a library
+        // character the owner has not approved yet.
+        let (made, how) = propose(&store, &lib, proposal(core)).unwrap();
+        assert_eq!(how, Proposed::New);
+        assert_eq!(made.state.status, Status::Candidate);
+        assert_eq!(made.state.origin, Origin::ModelClean);
+        assert!(!made.state.locked);
+        assert_eq!(made.identity, core);
+        assert_eq!(made.settings.character.as_deref(), Some("wren"));
+        assert!(made.motivation.contains("storms"));
+
+        // No `## Core`, a missing character, an owner's origin: refused.
+        let mut bad = proposal("Just vibes.\n");
+        bad.name = "other".into();
+        assert!(format!("{:#}", propose(&store, &lib, bad).unwrap_err()).contains("Core"));
+        let mut bad = proposal(core);
+        bad.name = "other".into();
+        bad.character = Some("nobody".into());
+        assert!(format!("{:#}", propose(&store, &lib, bad).unwrap_err())
+            .contains("image_library_propose"));
+        let mut bad = proposal(core);
+        bad.name = "other".into();
+        bad.origin = Origin::Owner;
+        assert!(propose(&store, &lib, bad).is_err());
+        assert!(
+            Store::load(&store).get("other").is_none(),
+            "nothing half-made"
+        );
+
+        // Revised: new text, a new version, still a candidate. An untrusted
+        // revision leaves it untrusted, and a later clean one cannot take
+        // that back.
+        let before = Store::load(&store).get("wren").unwrap().state.clone();
+        let mut r = proposal("## Core\nA field botanist, sharper now.\n");
+        r.origin = Origin::ModelUntrusted;
+        let (revised, how) = propose(&store, &lib, r).unwrap();
+        assert_eq!(how, Proposed::Revised);
+        assert!(revised.identity.contains("sharper"));
+        assert_eq!(revised.state.status, Status::Candidate);
+        assert!(revised.state.version > before.version);
+        assert_eq!(revised.state.origin, Origin::ModelUntrusted);
+        let (again, _) = propose(&store, &lib, proposal(core)).unwrap();
+        assert_eq!(
+            again.state.origin,
+            Origin::ModelUntrusted,
+            "taint only rises"
+        );
+
+        // From either kind of chat (the owner's ruling): an incognito run
+        // may revise a visible proposal, which it then hides, and a visible
+        // run may revise a locked one, which stays hidden — never unhidden.
+        let mut hide = proposal("## Core\nA field botanist, from the room.\n");
+        hide.locked = true;
+        let (hidden, how) = propose(&store, &lib, hide).unwrap();
+        assert_eq!(how, Proposed::Revised);
+        assert!(hidden.state.locked && hidden.identity.contains("room"));
+        let (still, _) = propose(&store, &lib, proposal(core)).unwrap();
+        assert!(still.state.locked, "a revision never unhides");
+        assert_eq!(still.identity, core);
+
+        // An unknown template is named without the store's path.
+        let mut bad = proposal(core);
+        bad.name = "other".into();
+        bad.relationships = vec!["nemesis".into()];
+        let refused = format!("{:#}", propose(&store, &lib, bad).unwrap_err());
+        assert!(
+            refused.contains("nemesis") && !refused.contains(&*store.to_string_lossy()),
+            "{refused}"
+        );
+
+        // Edited by the owner while it waits: theirs, and a revision would
+        // undo their edit, so it is refused and the edit stands.
+        let path = store.join("wren/persona.toml");
+        let toml_text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("{toml_text}\n# the owner's note\n")).unwrap();
+        let refused = propose(&store, &lib, proposal("## Core\nOverwritten.\n")).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("the owner's now"),
+            "{refused:#}"
+        );
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("the owner's note"));
+        std::fs::write(&path, &toml_text).unwrap();
+
+        // Approved as shown, and only as shown: a digest from before the
+        // last revision is refused and leaves it waiting.
+        let shown = Store::load(&store)
+            .content_digest(Store::load(&store).get("wren").unwrap())
+            .unwrap();
+        // The "sharper" revision's digest: shown once, since rewritten.
+        let stale = revised.state.digest.clone();
+        assert_ne!(stale, shown);
+        assert!(approve_as_shown(&store, "wren", &stale).is_err());
+        assert_eq!(
+            Store::load(&store).get("wren").unwrap().state.status,
+            Status::Candidate
+        );
+
+        // Approved: never touched from a chat again.
+        imagelib::approve(&lib_dir, imagelib::Kind::Character, "wren").unwrap();
+        approve_as_shown(&store, "wren", &shown).unwrap();
+        let after = Store::load(&store).get("wren").unwrap().clone();
+        let refused = propose(&store, &lib, proposal("## Core\nRewritten.\n")).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("cannot change"),
+            "{refused:#}"
+        );
+        let unchanged = Store::load(&store).get("wren").unwrap().clone();
+        assert_eq!(
+            (unchanged.identity, unchanged.state),
+            (after.identity, after.state)
+        );
+
+        // An owner's persona, even unapproved, is not a model's to revise.
+        let mut n = new("ivy");
+        n.origin = Origin::Owner;
+        create(&store, &lib, n).unwrap();
+        let mut r = proposal(core);
+        r.name = "ivy".into();
+        r.character = None;
+        assert!(propose(&store, &lib, r).is_err());
         std::fs::remove_dir_all(dir).ok();
     }
 
