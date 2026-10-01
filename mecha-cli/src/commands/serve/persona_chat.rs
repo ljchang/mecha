@@ -7569,6 +7569,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(&body[..], b"RIFF:ada");
+
+        // A voice only a persona names — a typo — is listed, and says so,
+        // rather than surfacing first as a refused call (review of #490).
+        give_voice(&w, "adaa", None);
+        let Json(got) = list(Some(library.grant_for_tests())).await;
+        let ghost = by_name(&got, "adaa");
+        assert_eq!(ghost["listed"], false, "{ghost}");
+        assert!(ghost["cloned"].is_null(), "{ghost}");
+        assert_eq!(ghost["used_by"], serde_json::json!(["Mara"]));
+
+        // A worker without the preview route: told apart from an unlisted
+        // voice by the body, since both 404s carry a content-type.
+        let old = axum::Router::new().route(
+            "/mecha/voices",
+            axum::routing::get(|| async { Json(serde_json::json!({ "voices": ["ada"] })) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, old).await.ok() });
+        let mut stale = state.clone();
+        stale.offer_target = Some(Arc::new(format!("http://{addr}/api/offer")));
+        let refused = super::super::settings::library_voice_sample(
+            State(stale),
+            Query(super::super::settings::SampleQuery { name: "ada".into() }),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        let why = axum::body::to_bytes(refused.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&why).contains("predates previews"),
+            "{}",
+            String::from_utf8_lossy(&why)
+        );
     }
 
     /// An offer the worker refuses is no call: the binding the offer made is

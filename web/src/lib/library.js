@@ -64,10 +64,14 @@ export function voiceLine(v) {
   if (v.cloned) {
     const secs = v.cloned.seconds ? ` · ${Math.round(v.cloned.seconds)}s reference` : '';
     parts.push(`cloned here${secs}`);
+    if (v.listed === false) parts.push('not on the voice server yet');
+  } else if (v.listed === false) {
+    // Named by a persona, and neither the server's nor a clone here: a typo,
+    // or a voice removed — a call to it is refused.
+    parts.push('on neither the voice server nor this box — a call in it is refused');
   } else {
     parts.push("the voice server's own");
   }
-  if (v.listed === false) parts.push('not on the voice server yet');
   if (v.used_by?.length) parts.push(`${v.used_by.join(', ')} speak${v.used_by.length === 1 ? 's' : ''} in it`);
   return parts.join(' · ');
 }
