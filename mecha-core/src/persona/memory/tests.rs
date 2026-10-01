@@ -780,3 +780,33 @@ fn a_withdrawn_fact_cannot_be_corrected_into_a_second_live_branch() {
         ["Teaches on Thursdays."]
     );
 }
+
+#[test]
+fn a_store_from_before_the_ledger_upgrades_and_reads_as_never_written() {
+    let dir = store(&["mara"]);
+    {
+        let m = Memory::open(&dir, "mara").unwrap();
+        m.add_fact(
+            Table::User,
+            fact("Has a cat.", Kind::Stated, "c1", Origin::ModelClean),
+        )
+        .unwrap();
+        // As every install from before the writer has it.
+        m.conn
+            .execute_batch("DROP TABLE written; PRAGMA user_version = 1;")
+            .unwrap();
+    }
+    // A read-only handle does not upgrade, and the ledger reads as empty.
+    let ro = Memory::open_existing(&dir, "mara").unwrap().unwrap();
+    assert_eq!(ro.written_upto("c1").unwrap(), 0);
+    drop(ro);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let v: i64 = m
+        .conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA);
+    assert_eq!(m.facts(Table::User, Filter::All).unwrap().len(), 1, "kept");
+    m.write_stretch("c1", 0, 3, |_| Ok(())).unwrap().unwrap();
+    assert_eq!(m.written_upto("c1").unwrap(), 3);
+}
