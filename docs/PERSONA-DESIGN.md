@@ -1,5 +1,12 @@
 # Personas — design
 
+> **Addendum (2026-10-01):** since the status below, these shipped: the
+> crisis judge (#426); web authoring and file forms (#420, #430); the tab
+> redesign (#431); pictures and attachments in chats (#438); self-portraits
+> (#444, #454); and the pause-taint and refused-call-loop fixes (#446,
+> #448). The 2026-09-30 persona entry in HANDOFF's *Where the work is*
+> lists what is still open, and HISTORY has what shipped.
+>
 > **Status (2026-09-29):** designed, and **the build has started** — §17
 > steps 1–2b and 2c-1 are merged (#405, #407, #409, #415, #418); HANDOFF
 > tracks what is deployed. **Every decision in §16 is
