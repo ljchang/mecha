@@ -1082,6 +1082,8 @@ impl PersonaChats {
                         // Ready, or why it never will be; "processing"
                         // says a read is queued or running.
                         "ready": matches!(state, Readiness::Ready),
+                        // Read when a chat asks: nothing keeps a read ahead.
+                        "on_request": matches!(state, Readiness::OnRequest),
                         "unreadable": match &state {
                             Readiness::Refused(why) => Some(why.as_str()),
                             _ => None,
@@ -1113,6 +1115,8 @@ impl PersonaChats {
             .ok_or(Refusal::NotFound)?;
         let store_dir = self.store.clone();
         let file_name = file_name.to_string();
+        let config = chat.follower.current().config.clone();
+        let (max_bytes, cached) = reader_shape(&config);
         let (saved, src) = tokio::task::spawn_blocking(move || {
             let store = Store::load(&store_dir);
             let saved = mecha_core::persona::files::add(&store, &p, &file_name, &body)?;
@@ -1123,15 +1127,17 @@ impl PersonaChats {
                     .ok()
                     .cloned()
             });
+            // Read only what a read would leave in the cache, as
+            // `files_block` does: not with the cache off, not a file that
+            // will be refused (review of #459, pass 9).
+            let cache = reader_cache(cached);
+            let src = src.filter(|s| readiness(s, cache.as_ref(), max_bytes) == Readiness::Reading);
             Ok::<_, String>((saved, src))
         })
         .await
         .map_err(|e| Refusal::Failed(format!("saving the file: {e}")))?
         .map_err(Refusal::Bad)?;
-        if let (Some(src), Some(extractor)) = (
-            src.filter(|s| s.kind == mecha_core::persona::files::Kind::Document),
-            crate::setup::document_extractor(&chat.follower.current().config),
-        ) {
+        if let (Some(src), Some(extractor)) = (src, crate::setup::document_extractor(&config)) {
             self.read_in_background(src, Arc::new(extractor));
         }
         Ok(serde_json::json!({ "name": saved }))
@@ -1597,9 +1603,10 @@ impl PersonaChats {
             if let Some(last) = conversation.messages.last_mut() {
                 last.content.extend(images);
             }
-            // Folded too: a turn cancelled after a tool ran leaves the tail
-            // the owner's, and dropping the files here threw away a read
-            // that may have been an OCR call (review of #459).
+            // Folded too: a first turn that died before any reply leaves the
+            // owner's message as the tail, and the files must still ride in
+            // `messages[0]` (review of #459). Past a reply they never ride
+            // (`carries_files_now`).
             if let Some(files) = &files_block {
                 mecha_core::agent::append_user_text(&mut conversation.messages, files.clone());
             }
@@ -3152,9 +3159,9 @@ mod tests {
         );
     }
 
-    /// A first turn that folds into the owner's tail — the state a turn
-    /// cancelled after a tool ran leaves — still carries the files (review of
-    /// #459: the fold path dropped them).
+    /// A first turn that folds into the owner's tail — the state a first
+    /// turn that died before any reply leaves — still carries the files
+    /// (review of #459: the fold path dropped them).
     #[tokio::test]
     async fn the_files_ride_a_folded_first_turn_too() {
         let w = world();
