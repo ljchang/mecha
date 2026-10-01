@@ -56,7 +56,8 @@ through its own review loop.
   - The budget is split so no section starves another out of sight, and
     every cut is said.
 
-The review loops (5, 3, 5 and 4 passes) kept finding one shape: a path that
+The review loops (1, 3, 6 and 4 workflow review passes, counted from each PR's
+comments) kept finding one shape: a path that
 lost or kept something without saying so. A blocked log truncation passed
 as done; a shared copy outlived its correction; an unanswered turn was
 skipped for good; a section was cut to nothing with its heading gone. Each
@@ -9505,10 +9506,12 @@ and is what finally exercised the path.)
 ### Review process
 
 **Read every review posted since your push, not since a time you guessed.**
-On #468 a filter on "comments after 13:40" missed two full passes — one
-posted at 13:39 and one at 14:07, before the cut-off picked later — and a
-merge was one step from a head whose last review had not been read. Record
-the push time and read everything after it (2026-10-01).
+On #468 a cut-off of "comments after 13:40" dropped the 13:39 pass outright,
+and the 14:07 pass was not yet posted when the check ran — so a merge was one
+step from a head whose last two reviews had not been read. Two habits, not
+one: take the cut-off from the recorded push time rather than a guess, and
+re-poll after the last read, because a pass can land while you answer the
+previous one (2026-10-01).
 
 **A reviewer's mechanism is a claim to measure, in either direction.** On
 #473 a pass warned that `frame`, a TOML table, must stay `State`'s last
