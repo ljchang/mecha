@@ -1471,7 +1471,16 @@ fn create_with(
             } else {
                 new.character.clone()
             },
-            voice: new.voice.clone(),
+            // A proposal's voice is a name the owner reads in the Waiting
+            // card, not checked here: voices live on the voice server
+            // (#490), and `Store::problems`' message would hand the model
+            // the store's path (review of #493, pass 5). A call to the
+            // persona refuses an unknown voice by name.
+            voice: if prose.is_some() {
+                None
+            } else {
+                new.voice.clone()
+            },
             groups: new.groups.clone(),
             model: None,
             tools: Tools::default(),
@@ -1658,13 +1667,6 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
             bail!("there is no relationship template `{r}`");
         }
     }
-    // The voice likewise: `Store::problems` names the voices folder, and a
-    // refusal reaches the model (review of #493, pass 5).
-    if let Some(v) = &p.voice {
-        if !store.voices.contains_key(v) {
-            bail!("there is no voice `{v}`; leave the voice out, and the owner can choose one");
-        }
-    }
     let Some(existing) = store.get(&p.name).cloned() else {
         let waiting = store
             .personas
@@ -1730,7 +1732,7 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
     probe.settings.display = new.display.clone();
     probe.settings.relationship = Names(new.relationships.clone());
     probe.settings.character = None;
-    probe.settings.voice = new.voice.clone();
+    probe.settings.voice = None; // as `create_with`'s probe: a name, not checked here
     probe.state.status = Status::Approved;
     probe.identity = p.identity.clone();
     probe.motivation = p.motivation.clone();
@@ -3015,7 +3017,7 @@ mod tests {
         assert!(still.state.locked, "a revision never unhides");
         assert_eq!(still.identity, core);
 
-        // An unknown template, or voice, is named without the store's path.
+        // An unknown template is named without the store's path.
         let mut bad = proposal(core);
         bad.name = "other".into();
         bad.relationships = vec!["nemesis".into()];
@@ -3024,14 +3026,14 @@ mod tests {
             refused.contains("nemesis") && !refused.contains(&*store.to_string_lossy()),
             "{refused}"
         );
-        let mut bad = proposal(core);
-        bad.name = "other".into();
-        bad.voice = Some("gravel".into());
-        let refused = format!("{:#}", propose(&store, &lib, bad).unwrap_err());
-        assert!(
-            refused.contains("gravel") && !refused.contains(&*store.to_string_lossy()),
-            "{refused}"
-        );
+        // A voice is a name the owner reads before approving, not checked
+        // against a store the model could learn the path of: proposed as
+        // given, and nothing refused carries the path.
+        let mut voiced = proposal(core);
+        voiced.name = "other".into();
+        voiced.voice = Some("gravel".into());
+        let (p, _) = propose(&store, &lib, voiced).unwrap();
+        assert_eq!(p.settings.voice.as_deref(), Some("gravel"));
 
         // Edited by the owner while it waits: theirs, and a revision would
         // undo their edit, so it is refused and the edit stands.
