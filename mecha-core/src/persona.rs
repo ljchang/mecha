@@ -1908,6 +1908,22 @@ pub fn set_frame(dir: &Path, name: &str, frame: Option<Frame>) -> Result<State> 
     Ok(state)
 }
 
+/// Clear the frame of every persona drawn from `character`: its picture was
+/// replaced, and a frame measured against the old one would crop the new one
+/// wrong (review of #491 — a portrait changes under a stable name through
+/// `imagelib update`, which a settings save never sees). The names cleared.
+pub fn clear_frames_for(dir: &Path, character: &str) -> Result<Vec<String>> {
+    let store = Store::load(dir);
+    let mut cleared = Vec::new();
+    for p in store.all() {
+        if p.settings.character.as_deref() == Some(character) && p.state.frame.is_some() {
+            set_frame(dir, &p.name, None)?;
+            cleared.push(p.name.clone());
+        }
+    }
+    Ok(cleared)
+}
+
 /// The browse filter, per persona.
 pub fn set_locked(dir: &Path, name: &str, locked: bool) -> Result<State> {
     let (_, p) = current(dir, name)?;
@@ -2428,6 +2444,7 @@ pub fn write_owner_file(
     };
     // The portrait the stored frame was measured against: a settings save
     // that changes it leaves that frame describing a picture that is gone.
+    // (A picture replaced under the same name is `clear_frames_for`'s.)
     let portrait_before = (file == OwnerFile::Settings)
         .then(|| {
             Store::load(dir)
@@ -2468,12 +2485,10 @@ pub fn write_owner_file(
     let state = snapshot(dir, name).map_err(|e| restore(e.context("not saved")))?;
     // A new portrait starts unframed: the old picture's crop would draw the
     // new one off-centre, and Cancel on the page's framing sheet would leave
-    // it so (review of #491). Saved first, so a failure here costs only the
-    // framing, never the owner's edit. A hand edit outside mecha does not
-    // pass through here.
-    // A failure here is the framing's alone: the edit has landed, and
-    // reporting it as failed would leave the page holding a stale base, so
-    // the owner's next save would read as a conflict (review of #491).
+    // it so (review of #491). The edit has landed by now, so a failure here
+    // is the framing's alone — reported as a failed save, the page would
+    // hold a stale base and the owner's next save would read as a conflict.
+    // A hand edit outside mecha does not pass through here.
     let after = store.get(name).map(|p| p.settings.character.clone());
     if let Some(before) = portrait_before {
         if after.is_some_and(|a| a != before) && state.frame.is_some() {
@@ -3135,6 +3150,46 @@ mod tests {
         r.name = "ivy".into();
         r.character = None;
         assert!(propose(&store, &lib, r).is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A character's picture replaced under its name: the personas drawn
+    /// from it start unframed, and nobody else's frame moves.
+    #[test]
+    fn a_replaced_picture_unframes_the_personas_drawn_from_it() {
+        let dir = scratch();
+        let frame = Frame {
+            x: 0.2,
+            y: 0.4,
+            zoom: 2.0,
+        };
+        for (name, character) in [("mara", "maya"), ("ada", "john")] {
+            create(&dir, &no_lib(), new(name)).unwrap();
+            let path = dir.join(name).join("persona.toml");
+            let text = std::fs::read_to_string(&path).unwrap();
+            let line = text
+                .lines()
+                .find(|l| l.trim_start().starts_with("# character"))
+                .unwrap()
+                .to_string();
+            std::fs::write(
+                &path,
+                text.replace(&line, &format!("character = \"{character}\"")),
+            )
+            .unwrap();
+            set_frame(&dir, name, Some(frame)).unwrap();
+        }
+        assert_eq!(
+            clear_frames_for(&dir, "maya").unwrap(),
+            vec!["mara".to_string()]
+        );
+        let store = Store::load(&dir);
+        assert_eq!(store.get("mara").unwrap().state.frame, None);
+        assert_eq!(store.get("ada").unwrap().state.frame, Some(frame));
+        assert!(
+            clear_frames_for(&dir, "maya").unwrap().is_empty(),
+            "nothing left to clear"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 

@@ -1567,7 +1567,7 @@
           {#if chosen.portrait}
             <!-- The picture is its own control (owner, 2026-10-01): tap it to
                  frame it, rather than hunting in a menu. -->
-            <button class="avatarbtn" disabled={busy} aria-label={`Adjust ${chosen.display}'s picture`} title="Adjust the picture" onclick={() => openFraming()}>
+            <button type="button" class="avatarbtn" disabled={busy} aria-label={`Adjust ${chosen.display}'s picture`} title="Adjust the picture" onclick={() => openFraming()}>
               {@render avatar(chosen, 72)}
             </button>
           {:else}
