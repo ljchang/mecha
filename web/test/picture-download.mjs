@@ -69,8 +69,13 @@ const PNG = new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })
   const here = path.dirname(fileURLToPath(import.meta.url));
   for (const file of ['Chat.svelte', 'Personas.svelte']) {
     const src = fs.readFileSync(path.join(here, '..', 'src', 'lib', file), 'utf8');
-    assert.match(src, /onclick=\{\(\) => editImage\(picture\)\}>Edit<\/button>\s*<button class="genedit" onclick=\{\(\) => savePicture\(picture\)\}>Download<\/button>/, file);
+    // Download follows Edit, whatever sits between them.
+    const edit = src.indexOf('>Edit</button>');
+    const download = src.indexOf('onclick={() => savePicture(picture)}>Download</button>');
+    assert.ok(edit > 0 && download > edit, file);
     assert.match(src, /downloadPicture\(fetch, /, file);
+    // `fetch` there is the same-origin, /api/-checked wrapper, not the global.
+    assert.match(src, /import \{ apiFetch as fetch \} from '\.\/api\.js';/, file);
   }
 }
 
