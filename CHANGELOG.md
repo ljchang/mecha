@@ -64,8 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any environment that `extends` it) makes `mecha exp run` refuse to start
   when a trial home has one of them switched off, naming it, rather than
   scoring the model on tasks it could not attempt. It checks the switches,
-  not that a feature switched on is set up. Each run's session record now also
-  notes which features were switched on.
+  not that a feature switched on is set up. A name that can never be on in a
+  trial, such as `mail`, is refused as soon as the experiment loads, with a
+  pointer to fixture servers. Each run's session record now also notes which
+  features were switched on.
 - **A persona reads its files.** Each persona has a Files list on its page:
   add a paper, notes or an image there (or drop them into its `files/`
   folder), and every new chat with it carries them. If the whole collection
