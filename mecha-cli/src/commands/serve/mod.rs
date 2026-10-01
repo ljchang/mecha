@@ -831,6 +831,11 @@ fn api() -> gate::Owned {
             axum::routing::post(library::relock),
         )
         .at(
+            "/api/settings/lock",
+            Owner::Core,
+            get(library::lock_settings).post(library::set_lock_settings),
+        )
+        .at(
             "/api/library/source",
             Owner::Of(Feature::Library),
             get(library::source),
@@ -1522,6 +1527,7 @@ mod tests {
         for (path, owner) in [
             ("/api/library/unlock", Owner::Core),
             ("/api/library/relock", Owner::Core),
+            ("/api/settings/lock", Owner::Core),
             ("/api/library/portrait/{blob}", Owner::Core),
             ("/api/library", Owner::Of(Feature::Library)),
             ("/api/queue", Owner::Of(Feature::Graph)),

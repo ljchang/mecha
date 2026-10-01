@@ -399,22 +399,6 @@ export function taintLabel(taint) {
   return [taint.private && 'private', taint.untrusted && 'untrusted'].filter(Boolean).join(' + ');
 }
 
-// What the safety layer can do for a persona, in a line (§12): said as it
-// is, so "keywords only" never reads as a check that passed.
-export function safetyLine(safety) {
-  if (!safety) return '';
-  // Three states, each said as it is: both tiers answering, keywords only
-  // because the model check could not answer, or switched off.
-  const crisis = {
-    off: 'crisis detection off',
-    on: 'crisis detection on',
-    // A persona's own setting, before any chat has asked the judge.
-    enabled: 'crisis detection: keywords + a model check on each message',
-  }[safety.crisis] ?? 'crisis detection: keywords only (the model check could not answer)';
-  const off = ['disclosure', 'reanchor', 'dose'].filter((k) => safety[k] === false);
-  return off.length ? `${crisis} · off: ${off.join(', ')}` : crisis;
-}
-
 // The dose meters, in a line; '' when they are off.
 export function doseLine(dose) {
   if (!dose) return '';
@@ -431,9 +415,17 @@ export function doseLine(dose) {
 // `@kelp/…` is a group's, `@all/…` everyone's.
 export function sourceLine(s) {
   const size = s.bytes >= 1048576 ? `${(s.bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(s.bytes / 1024))} KB`;
-  // `unreadable` is why it never will be read (the reader's own words,
-  // shown whole in the row's title); it outranks a queued read.
-  const state = s.unreadable
+  // `@group:all/` is a group literally called `all` (files.rs `roots`).
+  const group = s.name.slice(1, s.name.indexOf('/')).replace(/^group:/, '');
+  const from = !s.shared ? '' : s.name.startsWith('@all/') ? ' · every persona' : ` · group ${group}`;
+  return `${size} · ${sourceState(s)}${from}`;
+}
+
+// The read state alone, for a file's tile; the tile's title carries the
+// whole `sourceLine`. `unreadable` is why it never will be read (the
+// reader's own words); it outranks a queued read.
+export function sourceState(s) {
+  return s.unreadable
     ? 'not readable'
     : s.processing
       ? 'reading…'
@@ -442,8 +434,13 @@ export function sourceLine(s) {
         : s.on_request
           ? 'read when asked'
           : 'not read yet';
-  // `@group:all/` is a group literally called `all` (files.rs `roots`).
-  const group = s.name.slice(1, s.name.indexOf('/')).replace(/^group:/, '');
-  const from = !s.shared ? '' : s.name.startsWith('@all/') ? ' · every persona' : ` · group ${group}`;
-  return `${size} · ${state}${from}`;
+}
+
+// A file's kind as its tile badges it, from the name's extension — the
+// same set the add control accepts. Anything else says its own extension.
+export function fileKind(name) {
+  const ext = /\.([^./]+)$/.exec(name)?.[1]?.toLowerCase() ?? '';
+  if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) return 'IMG';
+  if (['md', 'markdown'].includes(ext)) return 'MD';
+  return ext ? ext.slice(0, 4).toUpperCase() : 'FILE';
 }
