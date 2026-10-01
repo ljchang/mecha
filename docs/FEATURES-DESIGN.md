@@ -24,7 +24,8 @@
 > L1 (2026-09-30): the library follows `image` — `[tools]` withholds only the
 > model's library tools, never the page; the library's lock and portrait
 > routes are core, because Personas uses them. One deliberate departure from §5: `[features] messages` is
-> applied *into* `[messages] enabled` rather than or-ed with it, so experiment
+> applied *into* `[messages] enabled` (three-state since 2026-10-01, so its
+> `false` is a no like any switch's) rather than or-ed with it, so experiment
 > levers keep one field (ARCHITECTURE §Features says why). **Step 4 is split
 > too: 4a — `mecha setup` iterates the registry, `mecha setup <feature>` and
 > `--minimal` — is built, and so is 4b** (a run records the feature set
