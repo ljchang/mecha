@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and deleting moved here from Settings → Voice, which keeps the assistant's
   own voice and rate.
 
+- **Download a generated picture.** Every picture a chat draws — in the
+  assistant's chat or a persona's — has a Download button beside Edit,
+  which saves the file under its own name. It works in incognito and locked
+  persona chats too, and leaves no picture address in the browser's history.
+
 - **Personas recall during a chat, not only at its start.** Each message
   you send after the first reply is searched against what the persona
   remembers — by your words and by meaning, recent first — and the few
