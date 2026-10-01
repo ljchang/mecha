@@ -141,6 +141,9 @@ impl ConnectorLock {
 }
 
 pub async fn run(global: &GlobalOpts) -> Result<()> {
+    // Asked here as well as by the verb, so any caller of the connector is
+    // behind the switch (review of #452).
+    crate::commands::features::require(mecha_core::feature::Feature::Slack)?;
     let store = SlackStore::open(mecha_core::work::mecha_home()?.join("slack"))?;
     // Taken before anything else opens a socket or touches the store.
     let _lock = ConnectorLock::take(&store.root().join("connector.lock"))?;
@@ -2401,6 +2404,12 @@ async fn review_here_drafts(
 /// surface, so the stranger's prose stays at the terminal. Capped, with the
 /// cut visible.
 async fn review_here_requests(slack: &Slack, channel: &str, thread_ts: &str) {
+    // With the front door off its cards' buttons would shell out to a verb
+    // that refuses: say the one sentence instead (review of #452).
+    if let Err(e) = crate::commands::features::require(mecha_core::feature::Feature::Frontdoor) {
+        let _ = chat::post_message(slack, channel, Some(thread_ts), &format!("{e:#}"), None).await;
+        return;
+    }
     let records = mecha_core::frontdoor::Frontdoor::open_default()
         .and_then(|f| f.records())
         .unwrap_or_default();

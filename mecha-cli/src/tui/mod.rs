@@ -1116,14 +1116,15 @@ fn install_frontend_tools(
         .insert(Arc::new(mecha_core::tool::ask::AskUserTool::new(
             Arc::clone(asker),
         )));
-    agent
-        .registry_mut()
-        // The cap is passed in rather than read inside the tool: see the
-        // field's own comment for the two hours-later parse errors that
-        // argued for it.
-        .insert(Arc::new(crate::slack::show::ShowFileTool::new(
-            max_upload_mb,
-        )));
+    // Slack's one model-facing tool, registered only with Slack on — as every
+    // other gated feature's tools are (review of #452). Read when the session
+    // starts, never per turn: the tool list is the front of the cached
+    // prefix. So a switch flipped mid-session — and a mirror attached before
+    // it — follow the next session, as `serve`'s tools and its voice facade
+    // do; `detach` stays open to end a mirror now.
+    if let Some(show) = show_file_tool(max_upload_mb) {
+        agent.registry_mut().insert(show);
+    }
     if let Some(s) = session {
         setup::register_recall(agent, s);
     }
@@ -4704,6 +4705,9 @@ fn fetch_selected_poll(modal: &mut polls::PollsModal) {
 /// PATH, because it is another crate's binary — and its absence is named,
 /// not mumbled.
 fn factory_cli(args: &[&str]) -> Result<String> {
+    // Every caller is `/polls` (close, status, fetch), which reaches the
+    // gate over the network: the front door's (review of #452).
+    crate::commands::features::require(mecha_core::feature::Feature::Frontdoor)?;
     let out = std::process::Command::new("factory-publish")
         .args(args)
         .stdin(std::process::Stdio::null())
@@ -9687,6 +9691,16 @@ mod drop_tests {
     }
 }
 
+/// `show_file`, when Slack is switched on — else `None`, and the tool is not on
+/// the model's surface (review of #452). The cap is passed in rather than read
+/// inside the tool: see the field's own comment for the two hours-later parse
+/// errors that argued for it.
+fn show_file_tool(max_upload_mb: u64) -> Option<Arc<crate::slack::show::ShowFileTool>> {
+    crate::commands::features::require(mecha_core::feature::Feature::Slack)
+        .ok()
+        .map(|()| Arc::new(crate::slack::show::ShowFileTool::new(max_upload_mb)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::input_layout;
@@ -9713,6 +9727,18 @@ mod tests {
     /// anything: with `graph = false`, `/queues`' accept keys and the entity
     /// modal's edits wrote the owner's graph (review of #451). With it on, a
     /// missing binary is still reported as missing, not as the switch.
+    /// Slack's model-facing tool follows the switch at session start, as
+    /// every gated feature's tools do: off, `show_file` is not registered;
+    /// on, it is (review of #452).
+    #[test]
+    fn show_file_is_on_the_surface_only_with_slack_on() {
+        let home = crate::testenv::HomeGuard::new("tui-show-file");
+        std::fs::write(home.dir.join("config.toml"), "[features]\nslack = false\n").unwrap();
+        assert!(show_file_tool(25).is_none());
+        std::fs::write(home.dir.join("config.toml"), "[features]\nslack = true\n").unwrap();
+        assert!(show_file_tool(25).is_some());
+    }
+
     #[test]
     fn the_tui_s_graph_drivers_refuse_when_the_graph_is_off() {
         let home = crate::testenv::HomeGuard::new("tui-graph-gate");

@@ -103,7 +103,7 @@ fn edit() -> Result<()> {
                 "saved, but it will NOT load: {e}\n\
                  every run starts un-chartered until this parses — `mecha charter edit` to fix it"
             );
-            std::process::exit(1);
+            crate::exit_with(1);
         }
         CharterEdit::EditorFailedButChanged { error, loads } => match loads {
             None => {
@@ -116,12 +116,12 @@ fn edit() -> Result<()> {
             }
             Some(e) => {
                 eprintln!("the editor exited with an error ({error}); the file changed and will NOT load: {e}");
-                std::process::exit(1);
+                crate::exit_with(1);
             }
         },
         CharterEdit::EditorFailed(e) => {
             eprintln!("charter unchanged: {e}");
-            std::process::exit(1);
+            crate::exit_with(1);
         }
     }
     Ok(())
@@ -198,7 +198,7 @@ fn show(json: bool) -> Result<()> {
             } else {
                 eprintln!("mecha: charter at {} did not load — {e:#}", path.display());
             }
-            std::process::exit(1);
+            crate::exit_with(1);
         }
     };
 

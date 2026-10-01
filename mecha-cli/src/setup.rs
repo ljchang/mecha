@@ -2284,6 +2284,9 @@ pub fn surface_only_registry() -> Registry {
     r.insert(Arc::new(mecha_core::tool::recall::Recall::new(
         std::path::PathBuf::from("(no transcript — a replay never calls this)"),
     )));
+    // Kept whatever `slack` says: this reproduces what recorded sessions
+    // were shown, and is never executed (see above). The live registration
+    // — the TUI's — asks the switch.
     r.insert(Arc::new(crate::slack::show::ShowFileTool::new(0)));
     r
 }

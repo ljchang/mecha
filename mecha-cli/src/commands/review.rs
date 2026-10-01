@@ -903,7 +903,14 @@ fn collect_queues() -> Vec<Queue> {
         oldest,
     });
 
-    let (depth, detail, oldest) = match Frontdoor::open_default().and_then(|s| s.records()) {
+    // `open_existing_default`, as the questions row: a count must not create
+    // the store it counts — with the front door off it would make
+    // `~/.mecha/requests` (review of #452). Never created is genuinely empty.
+    let read = match Frontdoor::open_existing_default() {
+        Some(store) => store.records(),
+        None => Ok(Vec::new()),
+    };
+    let (depth, detail, oldest) = match read {
         Ok(records) => {
             // Anything not finished (answered, closed or booked — see
             // `counts_as_open`) is still somebody's problem; extraction

@@ -146,8 +146,9 @@ unread. You need it because a full mailbox refuses new sends. Dismissed
 messages stay on file. `agents` reads a marker each live session writes, and a
 marker whose process is gone is cleaned up.
 
-`mecha msg` works whether or not `[messages] enabled` is set, because reading
-what an overnight run left you should not depend on a feature flag. Every flag
+`mecha msg` follows the same switch: with messages off it refuses, reads
+included, and says `mecha features enable messages`. Nothing new arrives while
+it is off, and what is already in the store stays for when it is on. Every flag
 is in the [CLI reference](/docs/reference/cli#msg).
 
 ## Why `[messages]` is global-only

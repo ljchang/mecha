@@ -2138,6 +2138,17 @@ impl ImageGenerate {
         if in_prompt.is_none() && from_extra.is_none() {
             return Ok(());
         }
+        // A prompt that opens with the persona and an extra that is the
+        // persona: two descriptions of one face, refused as the other two
+        // duplicates are (review of #454).
+        if from_extra.is_some() && matches!(in_prompt, Some((0, _))) {
+            return Err(
+                "The prompt opens with you and an entry in `extras` describes you too. You \
+                 are one person: say what you are wearing and doing once, in the prompt or in \
+                 that extra."
+                    .to_string(),
+            );
+        }
         // The compiler needs what they wear and do, or the portrait's own
         // outfit and pose come along. An extra that is the persona says both;
         // so does a prompt that opens with it — the common selfie, "Maya
@@ -5092,6 +5103,19 @@ mod tests {
             .unwrap();
         assert!(
             out.is_error && out.content.contains("`john`"),
+            "{}",
+            out.content
+        );
+        // The prompt opens with the persona and an extra is the persona too.
+        let out = mara
+            .call(
+                json!({"prompt": "Mara reading on a bench", "extras": ["Mara in a robe"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("The prompt opens with you"),
             "{}",
             out.content
         );
