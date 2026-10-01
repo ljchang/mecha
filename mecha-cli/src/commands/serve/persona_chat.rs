@@ -898,6 +898,11 @@ impl PersonaChats {
         goal: Option<String>,
     ) -> Result<serde_json::Value, Refusal> {
         let goal = goal.map(|g| g.trim().to_string()).filter(|g| !g.is_empty());
+        // One line: the page strips the framing a goal rides in by its line
+        // (`ownWords`), and so does the earlier-chats opener (review of #479).
+        if goal.as_ref().is_some_and(|g| g.contains('\n')) {
+            return Err(Refusal::Bad("a goal is one line".into()));
+        }
         if goal.as_ref().is_some_and(|g| g.chars().count() > MAX_GOAL) {
             return Err(Refusal::Bad(format!(
                 "a session goal is at most {MAX_GOAL} characters"
@@ -991,7 +996,8 @@ impl PersonaChats {
         let listed = Session::list(&dir).map_err(failed)?;
         let archived = mecha_core::archive::archived(&dir).unwrap_or_default();
         // What each chat was about, as the memory writer summed it up
-        // (§9): the first episode of the chat. Read-only and never created;
+        // (§9): its pinned or most recent episode, which `episodes` lists
+        // first. Read-only and never created;
         // no memory yet is no summary, not a failed list.
         let summaries: HashMap<String, String> =
             mecha_core::persona::memory::Memory::open_existing(&self.store, &p.name)
@@ -3442,6 +3448,11 @@ mod tests {
     }
 
     fn world_with(mode: Mode) -> World {
+        world_tuned(mode, |_| {})
+    }
+
+    /// A world whose config the test adjusts — a document reader, say.
+    fn world_tuned(mode: Mode, tune: impl FnOnce(&mut mecha_core::config::Config)) -> World {
         let root = std::env::temp_dir().join(format!("mecha-pchat-{}", uuid::Uuid::new_v4()));
         let dir = root.join("personas");
         let lib = mecha_core::imagelib::Library::load(&root.join("imagelib")).0;
@@ -3495,6 +3506,7 @@ mod tests {
         pool.insert(Arc::new(mecha_core::tool::builtin::FsRead));
         pool.insert(Arc::new(mecha_core::tool::image_view::ImageView));
         let mut config = mecha_core::config::Config::default();
+        tune(&mut config);
         config.agent.system_prompt = Some("ASSISTANT-ONLY: the owner's charter".into());
         let chat = chat::test_chat_built(
             Box::new(Capture(
@@ -5881,13 +5893,42 @@ mod tests {
             t["text"].as_str().unwrap().contains("Urchins graze kelp."),
             "{t}"
         );
-        // No document reader in this world: the PDF is refused for that,
-        // and nothing tries to read it.
-        assert!(w
-            .personas()
-            .source_text(&w.chat, &w.library, "mara", "scan.pdf", None)
-            .await
-            .is_err());
+        // No document reader in this world: refused for that.
+        assert!(matches!(
+            w.personas()
+                .source_text(&w.chat, &w.library, "mara", "scan.pdf", None)
+                .await,
+            Err(Refusal::Bad(_))
+        ));
+        // A goal is one line.
+        assert!(matches!(
+            w.personas()
+                .open(&w.chat, &w.library, "mara", None, Some("one\ntwo".into()))
+                .await,
+            Err(Refusal::Bad(_))
+        ));
+    }
+
+    /// With a document reader configured, a document not read yet is said
+    /// — a click never starts the OCR pass (review of #479: measured
+    /// without a reader, the leg was refused for having none).
+    #[tokio::test]
+    async fn a_document_not_read_yet_is_said_not_read_on_a_click() {
+        let w = world_tuned(Mode::Answer, |c| {
+            c.documents = Some(mecha_core::document::DocumentsConfig::default());
+            c.features.0.insert("documents".into(), true);
+        });
+        std::fs::write(
+            w.store().join("mara/files/scan.pdf"),
+            b"%PDF-1.4 never read",
+        )
+        .unwrap();
+        assert!(matches!(
+            w.personas()
+                .source_text(&w.chat, &w.library, "mara", "scan.pdf", None)
+                .await,
+            Err(Refusal::Conflict(_))
+        ));
     }
 
     /// §10.5: the owner saves a reply into the persona's files — the reply
