@@ -427,6 +427,16 @@ export function callTime(secs) {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
+// What a call's hang-up reports (§11), or null when there is nothing to: its
+// seconds since the line first carried it, and the binding serve named. A
+// call the worker took that never got past connecting still reports, with
+// zero seconds, so serve lets its binding go (review of #483).
+export function hangUpReport({ since, callId, now }) {
+  if (since == null && callId == null) return null;
+  const seconds = since == null ? 0 : Math.max(0, Math.round((now - since) / 1000));
+  return { seconds, call: callId ?? undefined };
+}
+
 export function doseLine(dose) {
   if (!dose) return '';
   // A store that could not be read is not zero turns (review of #418).
