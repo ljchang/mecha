@@ -24,7 +24,13 @@ type Web = State<super::WebState>;
 // The Err arm carries a whole `Response`, built once per refused request —
 // `chat::chat_state`'s reasoning.
 #[allow(clippy::result_large_err)]
-fn sessions_dir() -> Result<std::path::PathBuf, axum::response::Response> {
+fn sessions_dir(state: &super::WebState) -> Result<std::path::PathBuf, axum::response::Response> {
+    // The chat door's own directory where there is one — the rail these
+    // routes act on lists it, and a test's door keeps its own (#471) — and
+    // the configured one where `serve` runs without a chat.
+    if let Ok(chat) = chat_state(state) {
+        return Ok(chat.sessions_dir().to_path_buf());
+    }
     Session::default_dir()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response())
 }
@@ -58,7 +64,7 @@ fn busy(why: &str) -> axum::response::Response {
 
 /// POST /api/sessions/{id}/archive — out of the list, still on the record.
 pub async fn archive(State(state): Web, Path(id): Path<String>) -> axum::response::Response {
-    let dir = match sessions_dir() {
+    let dir = match sessions_dir(&state) {
         Ok(d) => d,
         Err(r) => return r,
     };
@@ -75,8 +81,8 @@ pub async fn archive(State(state): Web, Path(id): Path<String>) -> axum::respons
 }
 
 /// POST /api/sessions/{id}/unarchive — back in the list.
-pub async fn unarchive(Path(id): Path<String>) -> axum::response::Response {
-    let dir = match sessions_dir() {
+pub async fn unarchive(State(state): Web, Path(id): Path<String>) -> axum::response::Response {
+    let dir = match sessions_dir(&state) {
         Ok(d) => d,
         Err(r) => return r,
     };
@@ -90,7 +96,7 @@ pub async fn unarchive(Path(id): Path<String>) -> axum::response::Response {
 /// the report: `complete: false` with the stores that failed, which the page
 /// shows rather than pretending — pressing delete again finishes it.
 pub async fn delete(State(state): Web, Path(id): Path<String>) -> axum::response::Response {
-    let dir = match sessions_dir() {
+    let dir = match sessions_dir(&state) {
         Ok(d) => d,
         Err(r) => return r,
     };
@@ -107,6 +113,7 @@ pub async fn delete(State(state): Web, Path(id): Path<String>) -> axum::response
     let outbox = chat_state(&state)
         .ok()
         .map(|c| c.outbox_root().to_path_buf());
+    let forget_dir = dir.clone();
     // Files and a child process: off the async workers.
     let forgot = tokio::task::spawn_blocking(move || {
         let mut roots =
@@ -114,6 +121,8 @@ pub async fn delete(State(state): Web, Path(id): Path<String>) -> axum::response
         if let Some(outbox) = outbox {
             roots.outbox = outbox;
         }
+        // The transcripts it forgets are the ones this door lists.
+        roots.sessions = forget_dir;
         mecha_core::forget::forget(&roots, &id, &crate::commands::sessions::GraphCli)
     })
     .await;

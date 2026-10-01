@@ -622,6 +622,12 @@ impl ChatState {
     pub(super) fn sessions_dir(&self) -> &std::path::Path {
         &self.sessions_dir
     }
+
+    /// Where this door's chats' workspaces are.
+    #[cfg(test)]
+    pub(super) fn work_dir(&self) -> &std::path::Path {
+        &self.work_dir
+    }
 }
 
 /// File routes must use the same session entry as tool calls. In particular,
@@ -5450,31 +5456,37 @@ mod workflow_recording_tests {
 }
 
 /// A test door's home: where its transcripts, workspaces and outbox go —
-/// never the owner's `~/.mecha`, which every lane's suite had been writing
-/// "web: srctest" sessions and test pictures into. A test that moved the
-/// home to a temporary directory (`testenv::HomeGuard`) gets that home, so
-/// it reads back what the door wrote; any other gets a fresh scratch one.
+/// always a fresh temporary directory of its own. Never the owner's
+/// `~/.mecha`, which every lane's suite had been writing "web: srctest"
+/// sessions and test pictures into; and never another test's moved home,
+/// which a door reading the process-global `MECHA_HOME` would adopt from a
+/// concurrent `HomeGuard` (review of #471). A test reads back what its door
+/// wrote through `ChatState::sessions_dir`.
 #[cfg(test)]
 pub(super) fn test_scratch_root() -> PathBuf {
-    std::env::var_os("MECHA_HOME")
-        .map(PathBuf::from)
-        .filter(|home| home.starts_with(std::env::temp_dir()))
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("mecha-chat-test-{}", uuid::Uuid::new_v4()))
-        })
+    std::env::temp_dir().join(format!("mecha-chat-test-{}", uuid::Uuid::new_v4()))
 }
 
-/// A test door never resolves to the owner's home: the suites of every lane
-/// had been writing chats and pictures into `~/.mecha` through it.
+/// A test door never resolves to the owner's home, and never to another
+/// test's: measured under a live `HomeGuard`, where a door reading
+/// `MECHA_HOME` would have adopted the guard's directory (review of #471).
 #[cfg(test)]
 #[test]
-fn a_test_door_writes_under_a_temporary_home() {
+fn a_test_door_writes_under_its_own_temporary_home() {
+    let guard = crate::testenv::HomeGuard::new("door-own-home");
     let chat = test_chat();
-    assert!(
-        chat.sessions_dir().starts_with(std::env::temp_dir()),
-        "{}",
-        chat.sessions_dir().display()
+    let other = test_chat();
+    for dir in [chat.sessions_dir(), &chat.work_dir, &chat.outbox_root] {
+        assert!(dir.starts_with(std::env::temp_dir()), "{}", dir.display());
+        assert!(
+            !dir.starts_with(&guard.dir),
+            "adopted the guard's home: {}",
+            dir.display()
+        );
+    }
+    assert_ne!(
+        chat.sessions_dir(),
+        other.sessions_dir(),
+        "each door its own"
     );
-    assert!(chat.work_dir.starts_with(std::env::temp_dir()));
-    assert!(chat.outbox_root.starts_with(std::env::temp_dir()));
 }
