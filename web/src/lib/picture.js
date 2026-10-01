@@ -1,4 +1,3 @@
-import { saveBlob } from './reply-export.js';
 // The picture under a tool row, in either chat — the assistant's
 // (`Chat.svelte`) and a persona's (`Personas.svelte`). One matcher for both:
 // the match is what turns a tool's text into a URL the page fetches, and two
@@ -12,6 +11,8 @@ import { saveBlob } from './reply-export.js';
 // `images/<name>.png`; `image_view` reports a workspace-relative path of
 // plain segments, none starting with a dot. A refusal or failure has no
 // picture.
+
+import { saveBlob } from './reply-export.js';
 const PICTURE = {
   image_generate: /^image: (images\/[A-Za-z0-9._-]+\.png)$/,
   image_view: /^image: ((?:[A-Za-z0-9_-][A-Za-z0-9._ -]*\/)*[A-Za-z0-9_-][A-Za-z0-9._ -]*\.(?:png|jpe?g|gif|webp))$/i,
