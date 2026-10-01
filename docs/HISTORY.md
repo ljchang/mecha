@@ -14,6 +14,29 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-10-01 — the persona page locks itself, and a portrait can be framed
+(#469, #473, #480).** The owner's asks from a phone, each through its own
+review loop.
+- **Autolock (#469):** `imagelib::autolock_minutes` reads `autolock.toml`,
+  beside `lock.toml` (15 minutes unless set, 1 to 240; a damaged file grants
+  no unlock). It is set from Settings → Lock or `mecha imagelib
+  set-autolock`. Each token keeps the span it was granted
+  (`LibraryState::unlocks`), and the page relocks after the same span
+  untouched (`web/src/lib/autolock.js`), checked again when the page comes
+  back to the foreground. Leaving the Library or Personas tab revokes its
+  unlock.
+- **The persona page (#469, #480):** no crisis-detection line (the owner's
+  ruling); files as tiles. "Earlier chats don't load" was a token lapsed by
+  a serve restart, drawn as an empty list. A failed read while the page
+  holds a token now re-reads the list, which drops the token and closes a
+  persona it hid; reads are numbered across the body's wait too.
+- **Avatar framing (#473):** `persona::State::frame` (`Frame`) lives in
+  `state.toml`: display only, no new version, and out of range loads as
+  none. It is drawn as `object-position` plus a scale about the same point,
+  so no setting leaves a gap. Unplaced, a portrait leans to the top.
+  `dragFrame` inverts `X = z·u + p·(S − z·R)`, so the picture follows the
+  finger and an axis with nothing hidden does not move.
+
 **2026-10-01 — personas read their files: folders, checked citations,
 search, saving (#459, #465, #467, #475), and a page that reads well (#479).**
 PERSONA-DESIGN §10's four build steps in one day, each through its own
@@ -7523,6 +7546,13 @@ matters is the general shape.
 
 ### Measuring
 
+**An activity sensor must listen to the person, not to what the page does.**
+The persona autolock first counted `scroll` as use. The chat pins itself to
+the bottom with `scrollTop =` on every streamed event, so a long reply kept
+the unlock open with nobody there (#469, pass 1). Activity is input events
+(pointer, key, wheel, touch). An effect the page itself can cause is never
+evidence of a person.
+
 **A pinned session runs the version it was opened with, so "deployed"
 is not "reaching the owner".** After #444 shipped self-portraits, the owner
 still saw refused pictures. Their persona chat was pinned to persona version 4
@@ -9423,6 +9453,15 @@ and is what finally exercised the path.)
   (2026-08-25.)
 
 ### Review process
+
+**A reviewer's mechanism is a claim to measure, in either direction.** On
+#473 a pass warned that `frame`, a TOML table, must stay `State`'s last
+field, or a later scalar would fail to serialise with `ValueAfterTable`. A
+ten-line probe showed `toml` 1.x writes keys before tables regardless of
+declaration order, and the comment was not added. The same PR's real
+defect, a drag that saved a frame the circle could not show, was confirmed
+by deriving the layout formula before fixing it. Grade the artifact both
+when a finding looks real and when it looks like a rule.
 
 **Read the code's own account of an invariant before putting a question
 about it to the owner.** On 2026-10-01 #466's open question — should an
