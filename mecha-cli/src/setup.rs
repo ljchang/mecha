@@ -1938,6 +1938,17 @@ pub fn document_extractor(cfg: &Config) -> Option<mecha_core::document::Extracto
         .ok()
 }
 
+/// The embeddings client `file_search` and the persona file index use:
+/// `[documents] embed_url` (default `:8081`), where a `[documents]` table
+/// is configured. Without one, or with a URL refused, search works by words
+/// alone — said in every result, never an error.
+pub fn file_embedder(cfg: &Config) -> Option<mecha_core::embed::Embedder> {
+    let url = cfg.documents.as_ref()?.embed_url.clone();
+    mecha_core::embed::Embedder::new(&url)
+        .map_err(|e| eprintln!("mecha: persona file search works by words alone — {e:#}"))
+        .ok()
+}
+
 pub fn persona_agent(
     bound: &crate::follow::Bound,
     pinned: &mecha_core::persona::agent::Pinned,
@@ -1963,6 +1974,17 @@ pub fn persona_agent(
         tools.registry.insert(Arc::new(reader));
     } else {
         eprintln!("mecha: file_read can send, so this persona chat goes without it");
+    }
+    // Its search beside it, on the same terms (§10.4).
+    let search = mecha_core::persona::search::FileSearch::new(
+        store.to_path_buf(),
+        pinned.name.clone(),
+        file_embedder(&bound.config),
+    );
+    if mecha_core::tool::Tool::capabilities(&search).egress == mecha_core::tool::Egress::None {
+        tools.registry.insert(Arc::new(search));
+    } else {
+        eprintln!("mecha: file_search can send, so this persona chat goes without it");
     }
     let system = persona::system_prompt(pinned)?;
     let ctx = bound.agent.ctx();
