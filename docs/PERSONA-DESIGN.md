@@ -417,7 +417,7 @@ one unlock shows locked characters and locked personas together (§8.3).
 display   = "Mara"
 relationship = "colleague"       # a template in relationships/ (§5), or none
 character = "mara"               # an imagelib Character: her portrait
-voice     = "mara-low"           # voices/mara-low.toml (§11)
+voice     = "ada"                # a voice in Library → Voices (§11)
 groups    = ["work"]             # §4.5
 model     = "local"              # §12.6: pinned; a change is shown, never silent
 

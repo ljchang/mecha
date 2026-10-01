@@ -2,7 +2,7 @@
   import { onDestroy, untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import { features } from './features.svelte.js';
-  import { opens } from './features.js';
+  import { opens, isShown } from './features.js';
   import {
     PANES, paneOf, entriesFor, counts, originLabel, listUrl, tameName,
     TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody,
@@ -274,7 +274,11 @@
       {/each}
     </div>
     <!-- Compact on purpose: on a phone a labelled pill pushed the first
-         pane chip off the row. The state is in its colour and its label. -->
+         pane chip off the row. The state is in its colour and its label.
+         Only once the library has answered: with the image library off its
+         read refuses, `has_password` is unknown, and a password-less unlock
+         would fail and spend a try against the limit (review of #490). -->
+    {#if data}
     <button
       class="lockbtn"
       class:on={!!token}
@@ -287,10 +291,16 @@
         {#if token}<path d="M7 11V7a5 5 0 019.9-1M5 11h14v10H5z" />{:else}<path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" />{/if}
       </svg>
     </button>
+    {/if}
   </header>
 
   <div class="scroll">
     {#if pane === 'voices'}
+      {#if !isShown(features.rows, 'library')}
+        <!-- Reached with image generation off (it opens anyway): say why the
+             other panes are not here. -->
+        <div class="barnote">The image library is off — characters and styles are hidden, and locked personas stay unnamed here.</div>
+      {/if}
       <VoicesPane {token} oncount={(n) => (voiceCount = n)} />
     {:else}
     {#if error}
