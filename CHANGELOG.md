@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the embeddings server, recall works by words. Forgetting a memory removes
   it from the search index too.
 
+- **Copy and Download on every chat reply.** Under each finished reply, in
+  the assistant's chat and a persona's, Copy puts the reply on the
+  clipboard as written — its Markdown, not the rendered page — and Download
+  saves it as a `.md` file named for who said it and when. Every code block
+  in a reply has its own Copy.
+
 - **Replies read as formatted text.** In the assistant's chat and in persona
   chats, a reply's Markdown (headings, bold, lists, code) is rendered rather
   than shown as `##` and `**`. Double-click a reply to see it as written, and
