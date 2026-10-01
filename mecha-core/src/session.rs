@@ -709,13 +709,7 @@ impl RunConfig {
             levers_off: Some(levers_off),
             // The switches the run was built with: `[features]` is the global
             // file's (stripped from project layers) or a trial home's own.
-            features_on: Some(
-                crate::feature::Feature::ALL
-                    .iter()
-                    .copied()
-                    .filter(|f| f.has_switch() && crate::feature::switched_on(config, *f))
-                    .collect(),
-            ),
+            features_on: Some(crate::feature::switches_on(config)),
             experiment: crate::experiment::ExperimentRef::from_env(),
             // A block rendered past a skipped file is not a measurement of
             // the rule set: unknown, never the hash of what was left.

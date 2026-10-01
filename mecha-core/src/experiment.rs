@@ -1775,11 +1775,11 @@ impl Manifest {
         &self,
         provider: &str,
         model: &str,
-        env_digests: Option<&BTreeMap<String, String>>,
+        envs: Option<&BTreeMap<String, EnvCondition>>,
     ) -> Vec<Vec<String>> {
         // The environment is per arm now, so it is a term that *can* tell
         // two arms apart and must be in the rows compared.
-        let rows = self.trials_with_world(&["probe".into()], provider, model, None, env_digests);
+        let rows = self.trials_with_world(&["probe".into()], provider, model, None, envs);
         let mut groups: Vec<(std::collections::BTreeSet<&str>, Vec<String>)> = Vec::new();
         for arm in self.arms.keys() {
             let hashes = arm_hashes(&rows, arm);
@@ -1817,24 +1817,34 @@ impl Manifest {
         }
     }
 
-    /// Each arm's environment digest, each distinct environment resolved
-    /// once.
-    pub fn env_digests(&self, base: &Path) -> Result<BTreeMap<String, String>> {
-        let mut seen: Vec<(crate::trial_env::Environment, String)> = Vec::new();
+    /// What each arm's environment adds to its rows' condition, each
+    /// distinct environment resolved once. `real` is the operator's global
+    /// config, which a trial's switches partly follow (`search`).
+    pub fn env_conditions(
+        &self,
+        base: &Path,
+        real: &crate::config::Config,
+    ) -> Result<BTreeMap<String, EnvCondition>> {
+        let mut seen: Vec<(crate::trial_env::Environment, EnvCondition)> = Vec::new();
         let mut out = BTreeMap::new();
         for name in self.arms.keys() {
             let env = self.environment_for(name);
-            let digest = match seen.iter().find(|(e, _)| *e == env) {
-                Some((_, d)) => d.clone(),
+            let condition = match seen.iter().find(|(e, _)| *e == env) {
+                Some((_, c)) => c.clone(),
                 None => {
-                    let d = env
-                        .digest(base)
-                        .with_context(|| format!("arm `{name}`'s environment"))?;
-                    seen.push((env, d.clone()));
-                    d
+                    let c = EnvCondition {
+                        digest: env
+                            .digest(base)
+                            .with_context(|| format!("arm `{name}`'s environment"))?,
+                        features_on: env
+                            .features_on(real, base)
+                            .with_context(|| format!("arm `{name}`'s environment"))?,
+                    };
+                    seen.push((env, c.clone()));
+                    c
                 }
             };
-            out.insert(name.clone(), digest);
+            out.insert(name.clone(), condition);
         }
         Ok(out)
     }
@@ -1856,7 +1866,7 @@ impl Manifest {
         provider: &str,
         model: &str,
         charter_digest: Option<&str>,
-        env_digests: Option<&BTreeMap<String, String>>,
+        envs: Option<&BTreeMap<String, EnvCondition>>,
     ) -> Vec<Trial> {
         let seeds: Vec<Option<u64>> = if self.seeds.is_empty() {
             vec![None]
@@ -1872,9 +1882,9 @@ impl Manifest {
             let stages = arm.resolve_stages().expect("validated at load");
             let provider = arm.provider.as_deref().unwrap_or(provider);
             let model = arm.model.as_deref().unwrap_or(model);
-            let env_digest = env_digests
-                .and_then(|m| m.get(arm_name))
-                .map(String::as_str);
+            let env = envs.and_then(|m| m.get(arm_name));
+            let env_digest = env.map(|c| c.digest.as_str());
+            let features_on = env.map(|c| c.features_on.as_slice());
             let row = |task: &String, seed: Option<u64>, rep: u32, position: Option<u32>| Trial {
                 owner_actions: None,
                 fixture_checked: None,
@@ -1895,6 +1905,7 @@ impl Manifest {
                     charter_digest,
                     &forced_on,
                     env_digest,
+                    features_on,
                 )),
                 status: TrialStatus::Pending,
                 session_id: None,
@@ -2029,19 +2040,19 @@ impl Arm {
 /// disagree — and exhaustive, so a new lever fails the build until it is
 /// classified. Defaulting to "not forced" is the defect `resolve_forced_on`
 /// exists for, recurring.
-fn config_switch(lever: Lever) -> Option<fn(&mut crate::config::Config) -> &mut bool> {
+fn config_switch(lever: Lever) -> Option<fn(&mut crate::config::Config, bool)> {
     match lever {
-        Lever::StepChecks => Some(|c| &mut c.agent.step_checks),
-        Lever::GoalGuidance => Some(|c| &mut c.agent.goal_guidance),
-        Lever::StepEscalation => Some(|c| &mut c.agent.step_escalation),
-        Lever::Boredom => Some(|c| &mut c.agent.boredom),
-        Lever::CompactValidate => Some(|c| &mut c.agent.compact_validate),
-        Lever::PredictiveCompaction => Some(|c| &mut c.agent.predictive_compaction),
-        Lever::CarriedState => Some(|c| &mut c.agent.carried_state),
-        Lever::SituationBrief => Some(|c| &mut c.agent.situation_brief),
-        Lever::PastAppraisals => Some(|c| &mut c.agent.past_appraisals),
-        Lever::SuccessExamples => Some(|c| &mut c.agent.success_examples),
-        Lever::Messages => Some(|c| &mut c.messages.enabled),
+        Lever::StepChecks => Some(|c, on| c.agent.step_checks = on),
+        Lever::GoalGuidance => Some(|c, on| c.agent.goal_guidance = on),
+        Lever::StepEscalation => Some(|c, on| c.agent.step_escalation = on),
+        Lever::Boredom => Some(|c, on| c.agent.boredom = on),
+        Lever::CompactValidate => Some(|c, on| c.agent.compact_validate = on),
+        Lever::PredictiveCompaction => Some(|c, on| c.agent.predictive_compaction = on),
+        Lever::CarriedState => Some(|c, on| c.agent.carried_state = on),
+        Lever::SituationBrief => Some(|c, on| c.agent.situation_brief = on),
+        Lever::PastAppraisals => Some(|c, on| c.agent.past_appraisals = on),
+        Lever::SuccessExamples => Some(|c, on| c.agent.success_examples = on),
+        Lever::Messages => Some(|c, on| c.messages.enabled = Some(on)),
         Lever::Mcp
         | Lever::LearnedRules
         | Lever::Hooks
@@ -2137,6 +2148,7 @@ pub fn condition_hash_of(
         None,
         &[],
         None,
+        None,
     )
 }
 
@@ -2161,6 +2173,7 @@ pub fn condition_hash_world(
     charter_digest: Option<&str>,
     forced_on: &[Lever],
     env_digest: Option<&str>,
+    features_on: Option<&[crate::feature::Feature]>,
 ) -> String {
     let mut overrides: Vec<&str> = overrides.iter().map(String::as_str).collect();
     overrides.sort_unstable();
@@ -2226,7 +2239,31 @@ pub fn condition_hash_world(
         canonical.push_str("|env=");
         canonical.push_str(d);
     }
+    // The switches a trial ran with (`feature::switches_on`). The env term
+    // above holds most of them — an environment's own `[features]`, and the
+    // servers `graph` and `frontdoor` follow — but not `search`, which
+    // follows the operator's switch, so two experiments differing only there
+    // shared a hash (the owner's ruling, 2026-10-01: the whole set, so a
+    // switch a later build takes from the operator is covered without
+    // anyone remembering it). Appended whenever a caller has the set, empty
+    // included — nothing on is a fact — so every planned row now carries it
+    // and rehashes once; a resumed experiment keys rows on trial id, so its
+    // finished rows keep their old value beside new ones.
+    if let Some(on) = features_on {
+        canonical.push_str("|features=");
+        canonical.push_str(&on.iter().map(|f| f.id()).collect::<Vec<_>>().join(","));
+    }
     fnv64(canonical.as_bytes())
+}
+
+/// What an arm's environment adds to its rows' condition hash: the digest
+/// of its resolved files and live servers, and the switches a trial of it
+/// runs with — which the digest cannot hold, since `search` follows the
+/// operator's own switch (`Manifest::env_conditions`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvCondition {
+    pub digest: String,
+    pub features_on: Vec<crate::feature::Feature>,
 }
 
 /// FNV-1a over bytes, as a hex string: an equality key, not a credential,
@@ -2451,10 +2488,11 @@ impl ExperimentStore {
         provider: &str,
         model: &str,
         base: &Path,
+        real: &crate::config::Config,
     ) -> Result<(Vec<Trial>, usize)> {
         let (on_disk, skipped) = self.trials()?;
         let digest = manifest.fixtures.charter_digest(base)?;
-        let envs = manifest.env_digests(base)?;
+        let envs = manifest.env_conditions(base, real)?;
         let planned = manifest
             .trials_with_world(task_ids, provider, model, digest.as_deref(), Some(&envs))
             .into_iter()
@@ -3097,7 +3135,7 @@ pub fn child_invocation(
     // `step_escalation` named on once ran as the control.
     for lever in arm.resolve_forced_on()? {
         if let Some(field) = config_switch(lever) {
-            *field(&mut config) = true;
+            field(&mut config, true);
         }
     }
     let mut flags = Vec::new();
@@ -3114,7 +3152,7 @@ pub fn child_invocation(
             Lever::PastAppraisals => config.agent.past_appraisals = false,
             Lever::SuccessExamples => config.agent.success_examples = false,
             Lever::Messages => {
-                config.messages.enabled = false;
+                config.messages.enabled = Some(false);
                 flags.push("--no-messages".into());
             }
             Lever::Mcp => flags.push("--no-mcp".into()),
@@ -3535,6 +3573,23 @@ fn episode_key(t: &Trial) -> String {
 mod tests {
     use super::*;
 
+    /// Each arm's environment condition from `(arm, digest)` pairs, nothing
+    /// switched on: the digest is the term these tests vary.
+    fn env_conditions(pairs: &[(&str, &str)]) -> BTreeMap<String, EnvCondition> {
+        pairs
+            .iter()
+            .map(|(arm, digest)| {
+                (
+                    arm.to_string(),
+                    EnvCondition {
+                        digest: digest.to_string(),
+                        features_on: Vec::new(),
+                    },
+                )
+            })
+            .collect()
+    }
+
     const MANIFEST: &str = r#"
 name = "levers"
 control = "full"
@@ -3780,7 +3835,7 @@ rationale = "no notice, fewer turns"
         assert!(!bare.config.agent.predictive_compaction);
         assert!(!bare.config.agent.carried_state);
         assert!(!bare.config.agent.situation_brief);
-        assert!(!bare.config.messages.enabled);
+        assert_eq!(bare.config.messages.enabled, Some(false));
         assert_eq!(
             bare.config.providers["local"].seed, None,
             "unseeded stays unseeded"
@@ -3987,7 +4042,7 @@ rationale = "no notice, fewer turns"
         real.agent.situation_brief = false;
         real.agent.past_appraisals = false;
         real.agent.success_examples = false;
-        real.messages.enabled = false;
+        real.messages.enabled = Some(false);
         let names = [
             "step_escalation",
             "goal_guidance",
@@ -4017,7 +4072,7 @@ rationale = "no notice, fewer turns"
         assert!(c.agent.situation_brief);
         assert!(c.agent.past_appraisals);
         assert!(c.agent.success_examples);
-        assert!(c.messages.enabled);
+        assert_eq!(c.messages.enabled, Some(true));
 
         // Unnamed switches still inherit the operator's value.
         let plain = child_invocation(&real, &Arm::default(), None)
@@ -4149,7 +4204,20 @@ rationale = "r"
         );
         assert_eq!(
             condition_hash(&[], &[], "p", "m", None),
-            condition_hash_world(&[], &[], "p", "m", None, &[], &[], &[], None, &[], None),
+            condition_hash_world(
+                &[],
+                &[],
+                "p",
+                "m",
+                None,
+                &[],
+                &[],
+                &[],
+                None,
+                &[],
+                None,
+                None
+            ),
             "no forced switch: every earlier hash keeps its value"
         );
     }
@@ -4766,10 +4834,10 @@ rationale = "r"
             m.environment_for("prompt-b").dir.as_deref(),
             Some(Path::new("eval/envs/prompt-b"))
         );
-        let digests = BTreeMap::from([
-            ("base".to_string(), "e-default".to_string()),
-            ("same".to_string(), "e-default".to_string()),
-            ("prompt-b".to_string(), "e-prompt-b".to_string()),
+        let digests = env_conditions(&[
+            ("base", "e-default"),
+            ("same", "e-default"),
+            ("prompt-b", "e-prompt-b"),
         ]);
         let rows = m.trials_with_world(&["t".into()], "p", "m", None, Some(&digests));
         let h = |arm: &str| {
@@ -5435,6 +5503,73 @@ rationale = "r"
         );
     }
 
+    /// The switches a trial ran with are a term of its row's hash (the
+    /// owner's ruling, 2026-10-01). `search` is the one a trial takes from
+    /// the operator, so two plans of one manifest in one checkout that
+    /// differ only in the operator's `search` switch are two conditions —
+    /// before, they shared every hash. And the set hashed is the one the
+    /// trial's session records: `switches_on` of the config `prepare` builds.
+    #[test]
+    fn a_trials_switches_are_part_of_its_condition() {
+        let root =
+            std::env::temp_dir().join(format!("mecha-exp-switches-{}", uuid::Uuid::new_v4()));
+        let store = ExperimentStore::open(&root, "switches").unwrap();
+        let m = store.create(MANIFEST).unwrap();
+        let tasks = vec!["a".to_string()];
+        let base = root.join("checkout");
+        let env = base.join(crate::trial_env::DEFAULT_DIR);
+        std::fs::create_dir_all(&env).unwrap();
+        std::fs::write(env.join("config.toml"), "").unwrap();
+        let plain = crate::config::Config::default();
+        let mut searching = crate::config::Config::default();
+        searching.features.0.insert("search".into(), true);
+        let hashes = |real: &crate::config::Config| -> Vec<String> {
+            let (planned, _) = store.plan(&m, &tasks, "local", "m", &base, real).unwrap();
+            planned.into_iter().map(|t| t.condition_hash).collect()
+        };
+        let (off, on) = (hashes(&plain), hashes(&searching));
+        assert_eq!(off, hashes(&plain), "stable");
+        for (a, b) in off.iter().zip(&on) {
+            assert_ne!(a, b, "search on and off are two conditions");
+        }
+
+        let world = m
+            .environment_for("control")
+            .prepare(&searching, &base, &root.join("cache"))
+            .unwrap();
+        let conditions = m.env_conditions(&base, &searching).unwrap();
+        assert_eq!(
+            conditions["full"].features_on,
+            crate::feature::switches_on(&world.config),
+            "the hashed set is the recorded set"
+        );
+        assert!(conditions["full"]
+            .features_on
+            .contains(&crate::feature::Feature::Search));
+
+        // The term itself: present when known, empty included, and a set
+        // that differs is a hash that differs.
+        let h = |on: Option<&[crate::feature::Feature]>| {
+            condition_hash_world(
+                &[],
+                &[],
+                "p",
+                "m",
+                None,
+                &[],
+                &[],
+                &[],
+                None,
+                &[],
+                Some("e"),
+                on,
+            )
+        };
+        assert_ne!(h(None), h(Some(&[])), "nothing on is a fact, not unknown");
+        assert_ne!(h(Some(&[])), h(Some(&[crate::feature::Feature::Search])));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn the_store_keeps_its_rows_over_the_design_and_reads_a_torn_row_as_a_finding() {
         let root = std::env::temp_dir().join(format!("mecha-exp-test-{}", std::process::id()));
@@ -5446,11 +5581,29 @@ rationale = "r"
         // The design's world: with no default environment under the
         // checkout, planning refuses rather than hashing nothing.
         let base = root.join("checkout");
-        assert!(store.plan(&m, &tasks, "local", "m", &base).is_err());
+        assert!(store
+            .plan(
+                &m,
+                &tasks,
+                "local",
+                "m",
+                &base,
+                &crate::config::Config::default()
+            )
+            .is_err());
         let env = base.join(crate::trial_env::DEFAULT_DIR);
         std::fs::create_dir_all(&env).unwrap();
         std::fs::write(env.join("config.toml"), "").unwrap();
-        let (planned, skipped) = store.plan(&m, &tasks, "local", "m", &base).unwrap();
+        let (planned, skipped) = store
+            .plan(
+                &m,
+                &tasks,
+                "local",
+                "m",
+                &base,
+                &crate::config::Config::default(),
+            )
+            .unwrap();
         assert_eq!(planned.len(), 6);
         assert_eq!(skipped, 0);
         let mut first = planned[0].clone();
@@ -5458,7 +5611,16 @@ rationale = "r"
         first.passed = Some(true);
         store.save_trial(&first).unwrap();
         std::fs::write(store.trial_path("torn"), b"{not json").unwrap();
-        let (planned, skipped) = store.plan(&m, &tasks, "local", "m", &base).unwrap();
+        let (planned, skipped) = store
+            .plan(
+                &m,
+                &tasks,
+                "local",
+                "m",
+                &base,
+                &crate::config::Config::default(),
+            )
+            .unwrap();
         assert_eq!(planned[0].status, TrialStatus::Done, "the store's row wins");
         assert_eq!(skipped, 1, "a torn row is counted, not read as pending");
         // An unknown status reads as unknown, never as a failed file.
@@ -6015,6 +6177,7 @@ seed = "seed"
                 None,
                 &[],
                 None,
+                None,
             )
         };
         assert_eq!(rows[0].condition_hash, world(&["mail__mail_send".into()]));
@@ -6049,6 +6212,7 @@ seed = "seed"
             Some("abc"),
             &[],
             None,
+            None,
         );
         assert_ne!(with_charter, world(&["mail__mail_send".into()]));
         let rows2 = m.trials_with_world(&["a".into()], "p", "m", Some("abc"), None);
@@ -6058,14 +6222,14 @@ seed = "seed"
             "p",
             "m",
             Some("abc"),
-            Some(&BTreeMap::from([("full".to_string(), "e1".to_string())])),
+            Some(&env_conditions(&[("full", "e1")])),
         );
         let other_env = m.trials_with_world(
             &["a".into()],
             "p",
             "m",
             Some("abc"),
-            Some(&BTreeMap::from([("full".to_string(), "e2".to_string())])),
+            Some(&env_conditions(&[("full", "e2")])),
         );
         assert_ne!(in_env[0].condition_hash, rows2[0].condition_hash);
         assert_ne!(in_env[0].condition_hash, other_env[0].condition_hash);

@@ -24,15 +24,16 @@
 > L1 (2026-09-30): the library follows `image` — `[tools]` withholds only the
 > model's library tools, never the page; the library's lock and portrait
 > routes are core, because Personas uses them. One deliberate departure from §5: `[features] messages` is
-> applied *into* `[messages] enabled` rather than or-ed with it, so experiment
+> applied *into* `[messages] enabled` (three-state since 2026-10-01, so its
+> `false` is a no like any switch's) rather than or-ed with it, so experiment
 > levers keep one field (ARCHITECTURE §Features says why). **Step 4 is split
 > too: 4a — `mecha setup` iterates the registry, `mecha setup <feature>` and
 > `--minimal` — is built, and so is 4b** (a run records the feature set
 > on its session record, and an environment's `requires`); steps 5–8 are
-> unbuilt. The feature set rides on the session record, not the experiment
-> manifest: `condition_hash` cannot see `search` or an arm on the
-> operator's config, and the session sees every trial's switches
-> (ARCHITECTURE §Features). The owner
+> unbuilt. The feature set rides on the session record and, since the
+> owner's ruling of 2026-10-01, in every experiment row's condition hash —
+> the environment's digest held every switch but `search`, which follows
+> the operator's (ARCHITECTURE §Features). The owner
 > ruled F1–F6 the same day (§7): the switch is a `[features]` table of
 > bools — not a table's presence, which this doc first recommended — and §5
 > is written to that ruling; F5 is `hardware.md`'s four tiers, in two

@@ -117,9 +117,12 @@ exactly the text you were shown.
 **Locking.** Locking a character hides the whole entry — card, portrait and
 description — while you browse the Library tab; it still works in any chat,
 and pictures already in your chats are untouched. The lock button at the top
-of the Library tab shows locked entries until you reload or leave it idle for
-half an hour. With no password it is a plain toggle; to require one, set it
-once with `mecha imagelib set-lock-password`. A character saved from a
+of the Library tab shows locked entries until you lock again, reload, leave
+the tab, or leave the page untouched for the autolock — 15 minutes unless
+you change it under **Settings → Lock** (or `mecha imagelib set-autolock
+<minutes>`). The Personas tab shares the same lock and the same autolock.
+With no password it is a plain toggle; to require one, set it once with
+`mecha imagelib set-lock-password`. A character saved from a
 picture made with a locked character starts locked; untick the box to save
 it unlocked. Locking hides a character from then on; a portrait your browser
 already showed may stay in its cache until you clear the site's data.
