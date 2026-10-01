@@ -1141,7 +1141,10 @@ impl PersonaChats {
                             Readiness::Refused(why) => Some(why.as_str()),
                             _ => None,
                         },
-                        "processing": processing.contains(&s.path),
+                        // Being read, not merely being indexed: a ready file
+                        // reads as ready (review of #467).
+                        "processing": processing.contains(&s.path)
+                            && !matches!(state, Readiness::Ready),
                     })
                 })
                 .collect::<Vec<_>>()

@@ -1941,12 +1941,11 @@ pub fn document_extractor(cfg: &Config) -> Option<mecha_core::document::Extracto
 /// The embeddings client `file_search` and the persona file index use:
 /// `[documents] embed_url` (default `:8081`), where a `[documents]` table
 /// is configured. Without one, or with a URL refused, search works by words
-/// alone — said in every result, never an error.
+/// alone — said in every result, never an error, and not printed here: this
+/// is asked on every upload and first turn, and a refused URL is already
+/// refused by `DocumentsConfig::validate` where `[documents]` is checked.
 pub fn file_embedder(cfg: &Config) -> Option<mecha_core::embed::Embedder> {
-    let url = cfg.documents.as_ref()?.embed_url.clone();
-    mecha_core::embed::Embedder::new(&url)
-        .map_err(|e| eprintln!("mecha: persona file search works by words alone — {e:#}"))
-        .ok()
+    mecha_core::embed::Embedder::new(&cfg.documents.as_ref()?.embed_url).ok()
 }
 
 pub fn persona_agent(
