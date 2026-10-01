@@ -1489,7 +1489,14 @@ impl Memory {
         }
 
         let mut best: Vec<(String, f32)> = scores.into_iter().collect();
-        best.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        // Equal scores are common — a word rank and a recency rank swapped
+        // tie exactly — so the newer wins before the uid, a coin flip, is
+        // asked (review of #481).
+        best.sort_by(|a, b| {
+            b.1.total_cmp(&a.1)
+                .then_with(|| pool[&b.0].date.cmp(&pool[&a.0].date))
+                .then(a.0.cmp(&b.0))
+        });
         Ok((
             best.into_iter()
                 .take(k)
