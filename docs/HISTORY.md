@@ -14,6 +14,78 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-30/10-01 — files and pictures in chats, and a measured "no" to
+OCR for images (#438, #447, #450, #453).** The owner asked for the persona
+chat to show pictures like the main chat does, then for files to be
+droppable there, then for `document_read` in persona chats and on images.
+Then they asked whether the model knows when to use it.
+
+#438 (`fff2675e`) built three things.
+- **Pictures.** A persona's pictures are drawn under its rows, and Edit
+  opens the main chat's modal. They come through the persona door's own
+  `GET /api/persona-chat/{key}/file` and `POST …/upload`, which reach the
+  workspace only through `PersonaChats::workspace_of`, behind the lock.
+  From there the routes share `files::serve` and `files::store` with the
+  assistant's chat. A locked persona's picture carries the token and no
+  open-in-tab link, so the token stays out of browser history.
+- **Drop and attach.** `PersonaChats::send_with` puts an attached picture
+  on the turn for a model that can see. The matcher (`picture.js`) and the
+  drop rules (`attach.js`) moved out of `Chat.svelte`, so both chats share
+  one copy.
+- **D24, ruled by the owner.** `DocumentRead::for_persona` answers `Some`.
+  The tool is off until a persona lists it in `[tools] allow`, and
+  `answers = "files"` withholds it.
+
+#447 (`91326fe6`) made `document_read` read images: PNG, JPEG, WebP and GIF.
+- **Detection.** `kind_of` decides by the bytes, image signature first.
+  HEIC and TIFF are refused by name, saying what to do instead.
+- **Decoding.** `decode_image` uses the same `image` crate and limits as a
+  rendered page. It applies EXIF orientation and lays transparency on white.
+- **One pipeline.** A `Source` feeds the PDF renderer or the decoded image
+  into the same layout and OCR stages.
+- **Measured live** on a generated page:
+  - upright and tagged, the page read exactly;
+  - sideways (90°), PaddleOCR-VL read it correctly with or without the tag;
+  - upside down with no tag, the heading came back last and a paragraph as
+    a table.
+
+#450 (`257b7a78`) answered the routing question. `attach` on eval cases puts
+pictures on the first turn as pixels, the way the web chat does.
+`image::attached_images` is now one implementation for the chat, the persona
+chat and eval. `eval/image-read/` holds 19 cases over 13 generated,
+fictional pictures, with ground truth in `truth/`.
+- **Routing.** On `qwen3.6-35b-a3b-uncensored`, at seed 42 with two runs a
+  case, the model chose `document_read` for **0 of 18** text-heavy direct
+  questions. On **extraction tasks** (spreadsheet, CSV, transcribe,
+  summarise) it chose it **0 of 12** times.
+- **Wording.** A description telling it to use OCR moved that to **1 of 12**,
+  so it was not shipped.
+- **Accuracy.** Every answer held its values. A 310-word transcription from
+  pixels scored 85% recall and 90% precision; OCR of the same file scored
+  79% and 91%, in 9.4 s.
+- **Ruling.** The owner kept images read from pixels, with no always-on OCR
+  and no verifier: OCR shares the one GPU with the chat model, and nothing
+  measured needed it.
+- **Fail-closed checks.** Five review passes added them:
+  - `validate`, `check_attachments` and `check_attached` (a blind model,
+    an unreadable picture);
+  - `exp`'s `cases_for` refuses an attaching task;
+  - `unoffered_tools` warns when a check names a tool the run lacks. On a
+    box without `[documents]`, "never chose OCR" is vacuous.
+
+#453 (`e856ce36`) fixed a hold leak those runs exposed. `dispatch` kept the
+router hold in a local, and `std::process::exit` skips destructors. So every
+non-zero exit (a failed eval case, a failed batch item, a refused run) left
+its file in `~/.mecha/holds/`. The hold now sits in `RUN_HOLD`, `exit_with`
+releases it first, and `no_command_exits_around_the_hold` keeps bare exits
+out of the commands.
+- **Live check:** a failing eval with the fix left no hold. The installed
+  binary, on the same case, left one.
+
+#438, #447 and #450 were deployed in mecha-d7's `346bb8a2` install. The
+probes were checked here: `strings ~/.cargo/bin/mecha` holds "neither a PDF
+nor a PNG" and "attaches pictures", and serve runs that binary.
+
 **2026-09-30 — modular installs: the design, and `mecha features` (#427,
 #428, #432, #433).** The owner asked how a new user installs only the parts
 they want: Slack, the web app, image generation, personas, OCR and voice
@@ -7231,6 +7303,22 @@ matters is the general shape.
 
 ### Measuring
 
+**Re-deriving a seeded fixture's truth means replaying every draw, or not
+re-deriving it at all.** Scoring a transcription against text a seeded
+generator wrote, the scoring script stubbed out the photo step, which also
+drew the tilt from the same RNG. The filler text came out different, and the
+model scored 61% recall where it had 85%. Have the generator write its own
+truth beside the fixture (`eval/image-read/truth/`). When reading a seeded
+generator's output any other way, reproduce every call that consumes the
+seed, not only the ones that look relevant (2026-09-30, #450).
+
+**A check on a tool the run does not offer passes on its absence.**
+`forbid_tools: ["document_read"]` passes on a box without `[documents]`,
+and "the model never chose OCR" then measures the configuration, not the
+model. A check is only evidence if what it names was available. Have the
+rig list what it could not offer before it runs (`eval::unoffered_tools`,
+2026-09-30, #450).
+
 **A gate whose input is already on disk should be checked before the step
 it gates is paid for.** The appraisal backfill chose its sessions by 2e-1's
 own exclusion, "no appraisal", and paid a model call per session to make one.
@@ -8397,6 +8485,15 @@ All found by pre-push review or by running it.
 
 ### Providers
 
+**An unset key is the provider's default, not "off".** To test that `mecha
+eval` refuses a blind model, a session aimed it at `-p anthropic`, reading
+the config's missing `vision` as false. `vision_enabled` defaults it to true
+for `kind = "anthropic"`, so the check passed, and two fixture prompts with
+their pictures went to the API. Billing refused them, and the content was
+fictional. Ask the resolved value (`vision_enabled`, the built provider's
+`vision()`), and never aim a local check at an external provider
+(2026-09-30).
+
 A locally generated refusal and a third-party result used to lose their distinction
 when a recording was replayed. Keep provenance with the recorded tool-use ID and
 preserve it through lenient readers; a current capability label cannot reconstruct
@@ -9448,6 +9545,21 @@ check the timestamp before re-running anything.**
   skips, which is how they were caught rather than written into the docs.
 
 ### Environment
+
+**A new authored data file can be silently ignored.** `.gitignore`'s
+`*.jsonl` (with re-includes only for `eval/*.jsonl`, `eval/envs/**`,
+`eval/suites/*`) swallowed `eval/image-read/cases.jsonl`. `git add -A` added
+the 13 pictures and skipped the cases, and a PR shipped fixtures that
+nothing used. Review caught it. After adding a data file in a new
+directory, run `git check-ignore -v <file>` or look at `git ls-files <dir>`
+(2026-09-30, #450).
+
+**`std::process::exit` skips destructors, so a guard in an outer frame
+does not survive an inner exit.** The router hold lived in `dispatch`'s
+frame, and every command that exited non-zero left its hold file behind.
+Five accumulated in an afternoon of evals. A resource released on drop needs
+one exit path that releases it (`exit_with`), and a test that keeps bare
+exits out (2026-09-30, #453).
 
 **A probe whose own request wakes the thing it probes must outwait the
 wake.** mecha-graph's `Embedder::available()` gave up on `/health` after
