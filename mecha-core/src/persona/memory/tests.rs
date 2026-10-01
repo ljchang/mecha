@@ -1120,3 +1120,54 @@ fn an_episode_is_indexed_and_embedded_as_prose_never_json() {
         assert!(!text.contains('[') && !text.contains('"'), "{text}");
     }
 }
+
+#[test]
+fn equal_by_words_and_recency_the_newer_wins() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    // A: the better word match, older. B: the weaker match, newer. Their
+    // word and recency ranks are swapped, so the fused scores tie exactly.
+    let a = m
+        .add_fact(
+            Table::User,
+            fact(
+                "Holdfast holdfast kelp.",
+                Kind::Stated,
+                "c1",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let b = m
+        .add_fact(
+            Table::User,
+            fact(
+                "Holdfast, among many other words here.",
+                Kind::Stated,
+                "c1",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    // The older gets the lower uid, so a tie broken by uid alone always picks
+    // it: the old rule fails here every time, not half the time.
+    for (uid, to) in [
+        (&a.uid, "00000000000000000000000000000001"),
+        (&b.uid, "ffffffffffffffffffffffffffffffff"),
+    ] {
+        for table in ["user_facts", "recall_fts"] {
+            m.conn
+                .execute(
+                    &format!("UPDATE {table} SET uid = ?2 WHERE uid = ?1"),
+                    [uid, to],
+                )
+                .unwrap();
+        }
+    }
+    let found = recall_words(&m, "holdfast kelp");
+    assert_eq!(
+        found[0], "Holdfast, among many other words here.",
+        "{found:?}"
+    );
+}

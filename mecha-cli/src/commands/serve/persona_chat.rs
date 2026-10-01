@@ -3969,9 +3969,10 @@ mod tests {
         turn(&w, &key, "Hello again, how was your week?").await;
         turn(&w, &key, "How is the Holdfast work going?").await;
         turn(&w, &key, "ok").await;
+        turn(&w, &key, "And the Holdfast project, again?").await;
 
         let seen = w.seen.lock().unwrap().clone();
-        assert_eq!(seen.len(), 3);
+        assert_eq!(seen.len(), 4);
         let second = seen[1].messages.last().unwrap().text();
         assert!(
             second.contains("How is the Holdfast work going?")
@@ -3984,6 +3985,14 @@ mod tests {
             mecha_core::persona::recall::stem_of(&third).is_none()
                 && !third.contains("brought to mind"),
             "{third}"
+        );
+        // Asked again: the chat already holds it, so it does not ride twice
+        // and re-pay the prefix every turn (review of #481).
+        let fourth = seen[3].messages.last().unwrap().text();
+        assert!(
+            fourth.contains("And the Holdfast project, again?")
+                && !fourth.contains("Named the kelp project Holdfast."),
+            "{fourth}"
         );
         let t = w
             .personas()
@@ -4002,7 +4011,8 @@ mod tests {
             [
                 "Hello again, how was your week?",
                 "How is the Holdfast work going?",
-                "ok"
+                "ok",
+                "And the Holdfast project, again?"
             ],
             "{t}"
         );
