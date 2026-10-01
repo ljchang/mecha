@@ -22,6 +22,54 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-10-01 — persona memory: written nightly and recalled at chat start,
+live; recall on every turn in review (mecha-5d).** #462, #463, #468 and #477
+are in HISTORY under 2026-10-01. All four are live: #462/#463/#468 in
+mecha-d7's `85ca4dfe`/`997a2894`, #477 in mecha-d7's `1238cb5e`. The
+installed binary carries both `persona memory write` and `MEMORY_STEM`
+(`strings ~/.cargo/bin/mecha`, 2026-10-01). The `mecha-ruminate` timer runs
+the writer from 03:30 UTC on 2026-10-02, its first real night. What is open,
+verified against `8c563538`:
+
+- **#481 (recall on every turn) is in its review loop.** It adds:
+  - `recall::per_turn` and `Memory::recall_search` (words by FTS5, meaning
+    by vectors, and recency, fused);
+  - `memory.db` schema v3 with `secure-delete`;
+  - `embed::Task::Recall`;
+  - the writer embedding new records each night.
+- **Still unbuilt in §9:**
+  - the `recall` and `recall_open` tools;
+  - the owner's curation page (§9.8);
+  - an after-chat writer (D3's "after a session"), which needs an idle
+    signal from serve;
+  - candidates in `/queues` and `backlog.rs`: today they appear only in
+    `mecha persona memory show`;
+  - consolidation and `self_update` (§9.12).
+- **Read the first night (2026-10-02).** Look at the `persona memory` stage
+  in `~/.mecha/learning/logs/2026-10-02.log`:
+  - chats written vs waiting for their model (`writer::pick_model` writes
+    only while the chat's model is resident);
+  - what was embedded.
+  Then `mecha persona memory show stella`. A live run on a copy of one
+  real chat (2026-10-01, the resident uncensored model, 24 turns, ~63 s)
+  wrote 2 transient facts out of 8. Fact quality is prompt work, to be
+  measured.
+- **Unmeasured constants** (in #481): `MIN_COSINE` (0.5) and
+  `MIN_QUERY_CHARS` (12).
+- **Design choices for the owner:**
+  - Recalling an approved record from outside arms the rest of the chat
+    untrusted on one content-word match. #481's review suggested a stricter
+    bar for such records.
+  - `forget` removes one row, so a superseded wording stays in `memory.db`
+    while shared copies of the whole chain go.
+  - `correct` on an inferred fact keeps `kind = Inferred` with
+    `origin = Owner`.
+- **Review minors carried:**
+  - #468: `Op::Invalidate` is not gated by the `[memory]` switches;
+    `--chat` on a chat with no checkpoint exits without saying so.
+  - #477: the section headings sit outside `BUDGET_CHARS` (about 6300 in
+    practice); the page-notice path of `memory_block` has no test.
+
 **2026-10-01 — persona autolock and avatar framing are live; persona
 creation from the main chat is next (mecha-69).** #469, #473 and #480 are in
 HISTORY under 2026-10-01 and live: #469 in mecha-d7's `997a2894`, #473 in
@@ -89,19 +137,11 @@ install on 2026-10-01). Self-portraits (#444, #454) are mecha-d7's, live in
 done (the 2026-10-01 entry above). What is
 open, verified against `612075c8`:
 
-- **The farewell check (§12.4) is unbuilt.** `safety_json` reports it as
-  `"unbuilt"`. Two owner decisions come first:
-  - what replaces a blocked reply (retry once and then a plain line, a
-    plain line only, or show it flagged);
-  - how a goodbye is recognised (a keyword list on the owner's message, or
-    a model on every message).
-
-  A persona's reply streams, so blocking one means holding the stream on
-  goodbye turns.
 - **Read by nothing yet:**
   - the model pin (§12.6): the form's `model` field says "Not built yet";
-  - break reminders: `safety.breaks` reaches only the status JSON;
-  - the whole Memory section (§9): `Section::unbuilt`.
+  - in the Memory section, only `self_update` and `fixed` (§9.12), which
+    are marked unbuilt field by field. The other four switches are read by
+    the writer and recall (the persona-memory entry above).
 - **A chat opened before a persona gained its `character` never gets a
   "self".** Chats pin a version, and `PersonaSelf` comes from the pinned
   `persona.toml`. The owner's Stella chat (pinned v4) refused every picture
