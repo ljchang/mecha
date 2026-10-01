@@ -159,12 +159,18 @@ sandbox = false
         ),
     )
     .unwrap();
-    let reserve = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = reserve.local_addr().unwrap().port();
-    drop(reserve);
-    let reserve = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let voice_port = reserve.local_addr().unwrap().port();
-    drop(reserve);
+    // Both held until both are read: a port dropped before the second is
+    // asked for can be handed straight back (macOS does), and serve then
+    // binds one address twice — `Address already in use` on 49287, twice.
+    let (a, b) = (
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+    );
+    let (port, voice_port) = (
+        a.local_addr().unwrap().port(),
+        b.local_addr().unwrap().port(),
+    );
+    drop((a, b));
     let log = std::fs::File::create(root.join("serve.log")).unwrap();
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mecha"))
         .args([
@@ -455,14 +461,18 @@ async fn serve_does_not_mount_the_voice_facade_with_calls_off() {
         ),
     )
     .unwrap();
-    let port = {
-        let r = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        r.local_addr().unwrap().port()
-    };
-    let voice_port = {
-        let r = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        r.local_addr().unwrap().port()
-    };
+    // Both held until both are read: a port dropped before the second is
+    // asked for can be handed straight back (macOS does), and serve then
+    // binds one address twice — `Address already in use` on 49287, twice.
+    let (a, b) = (
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+    );
+    let (port, voice_port) = (
+        a.local_addr().unwrap().port(),
+        b.local_addr().unwrap().port(),
+    );
+    drop((a, b));
     let log_path = root.join("serve.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mecha"))
