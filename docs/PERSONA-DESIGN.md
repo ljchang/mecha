@@ -1345,6 +1345,16 @@ refuses the call by name. The page's call button sits beside send
 - binding a reference clip (writing it into `VOICES_DIR`);
 - recording a voice on the page.
 
+Two known edges:
+
+- **A relock mid-call loses that call's minutes.** The hang-up is checked
+  against the lock like every door here, so a call to a persona that was
+  locked during it records no seconds. The turns spoken before the relock are
+  counted.
+- **Speed is fixed only when the profile sets it.** A profile's `voice` is
+  always the persona's, but its rate stays the listener's unless the profile
+  sets one. Nothing on the page changes it today.
+
 Two questions are open for the owner (ARCHITECTURE §Personas):
 
 - The crisis pause is spoken in the persona's bound voice, not a plain one.
