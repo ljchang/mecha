@@ -1535,7 +1535,7 @@
             <!-- Each citation as the harness checked it (§10.4): "quoted" is
                  all a check can say — a real quote may support the wrong claim.
                  One that was found opens its page. -->
-            <div class="answer"><ChatProse text={entry.text} cites={cites.get(i)} onCite={openCited} actions={chosen.name} /></div>
+            <div class="answer"><ChatProse text={entry.text} cites={cites.get(i)} onCite={openCited} actions={chosen.display} /></div>
             {#if !run.running && entry.text?.trim()}
               {#if savedReplies[entry.text]}
                 <span class="savednote">saved to files as {savedReplies[entry.text]}</span>

@@ -1,6 +1,9 @@
 // Copy and download for a chat reply, imported from the shipped module and
 // driven with fake navigator / document / URL objects: no browser.
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { replyFilename, copyText, downloadText } from '../src/lib/reply-export.js';
 
 // Who said it and when, in the page's clock; nothing a file system chokes on.
@@ -11,6 +14,9 @@ assert.equal(replyFilename('Zoë / “the” owner?', at), 'zoe-the-owner-2026-1
 assert.equal(replyFilename('', at), 'reply-2026-10-01-1612.md');
 assert.equal(replyFilename(null, at), 'reply-2026-10-01-1612.md');
 assert.match(replyFilename('x'.repeat(200), at), /^x{40}-2026/);
+// A cut that lands on a hyphen leaves none behind.
+assert.equal(replyFilename(`${'a'.repeat(39)} bb`, at), `${'a'.repeat(39)}-2026-10-01-1612.md`);
+assert.equal(replyFilename('Mara Okonkwo', at), 'mara-okonkwo-2026-10-01-1612.md');
 assert.match(replyFilename('mara', new Date('nonsense')), /^mara-\d{4}-\d{2}-\d{2}-\d{4}\.md$/);
 
 // A fake page: a body that keeps what is appended, and elements that record
@@ -91,6 +97,24 @@ const REPLY = '# Plan\n\n- **one** [p. 2: "a quote"]\n\n```\ncode\n```\n';
   assert.equal(await urls.made[0].text(), REPLY);
   await new Promise((r) => setTimeout(r, 5));
   assert.deepEqual(urls.revoked, ['blob:reply-1']);
+}
+
+// The call sites, read out of the components that ship: a finished reply
+// has its actions, a streaming one has none, and an incognito chat keeps
+// Copy but never Download — a file on the device outlives the room
+// (INCOGNITO-DESIGN R2; review of #484).
+{
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const read = (f) => fs.readFileSync(path.join(here, '..', 'src', 'lib', f), 'utf8');
+  const calls = (src) => [...src.matchAll(/<ChatProse\b[^>]*\/>/g)].map((m) => m[0]);
+  const chat = calls(read('Chat.svelte'));
+  const finished = chat.filter((c) => c.includes('text={entry.text}'));
+  assert.equal(finished.length, 1, chat.join('\n'));
+  assert.match(finished[0], /actions="mecha"/);
+  assert.match(finished[0], /download=\{!\(incognito \|\| key\.startsWith\(INCOGNITO_PREFIX\)\)\}/);
+  for (const c of [...chat, ...calls(read('Personas.svelte'))]) {
+    if (/text=\{(streaming|run\.streaming)\}/.test(c)) assert.ok(!c.includes('actions'), c);
+  }
 }
 
 console.log('reply-export: ok');

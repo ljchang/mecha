@@ -13,7 +13,8 @@ export function replyFilename(who, at = new Date()) {
       .trim()
       .replace(/[\s_]+/g, '-')
       .replace(/-+/g, '-')
-      .slice(0, 40) || 'reply';
+      .slice(0, 40)
+      .replace(/^-+|-+$/g, '') || 'reply';
   const p = (n) => String(n).padStart(2, '0');
   const d = at instanceof Date && !Number.isNaN(at.getTime()) ? at : new Date();
   return `${slug}-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.md`;
@@ -36,6 +37,8 @@ export async function copyText(text, nav = globalThis.navigator, doc = globalThi
   area.value = text;
   area.setAttribute('readonly', '');
   area.style.position = 'fixed';
+  area.style.top = '0';
+  area.style.left = '0';
   area.style.opacity = '0';
   doc.body.appendChild(area);
   area.select();
