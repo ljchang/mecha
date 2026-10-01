@@ -28,7 +28,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/sources', '/sources/remove'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/sources', '/sources/remove', '/sources/file', '/sources/text'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save'];
 
 export const ENDPOINTS = [
@@ -70,6 +70,24 @@ export const OWNER_FILES = [
   ['motivation', 'What they want'],
   ['settings', 'Settings'],
 ];
+
+// One of a persona's files, by its listed name: to download (`file`) or to
+// read as text (`text`). The server finds it in the persona's own listing.
+export function sourceFileUrl(name, file, what, token = null) {
+  const base = personaUrl(name, what === 'text' ? '/sources/text' : '/sources/file', token);
+  return `${base}${base.includes('?') ? '&' : '?'}file=${encodeURIComponent(file)}`;
+}
+
+// An earlier chat's line in the list: what it was about, as the memory
+// writer summed it up, else the goal it was opened with, else how the owner
+// opened it — and `null` when none, for the page to show the day.
+export function chatHeadline(h) {
+  for (const v of [h?.summary, h?.goal, h?.opener]) {
+    const t = (v ?? '').trim();
+    if (t) return t;
+  }
+  return null;
+}
 
 export function personaUrl(name, suffix, token) {
   if (!PERSONA_SUFFIXES.includes(suffix)) throw new Error(`not a persona endpoint: ${suffix}`);
@@ -494,4 +512,74 @@ export function dragFrame(frame, dx, dy, size, aspect = 1) {
     return room > 0.5 ? clamp(p - d / room, 0, 1) : p;
   };
   return { ...f, x: pan(f.x, dx, S * Math.max(1, a)), y: pan(f.y, dy, S * Math.max(1, 1 / a)) };
+}
+
+// The owner's words in their own bubble: a chat opened with a goal sends it
+// ahead of the first message, as "(What I want from this conversation: …)",
+// so the model reads it — but it is the harness's framing, not something
+// the owner typed (the owner's ask, 2026-10-01).
+const GOAL_PREAMBLE = /^\(What I want from this conversation: [^\n]*\)\n\n/;
+export function ownWords(text) {
+  return (text ?? '').replace(GOAL_PREAMBLE, '');
+}
+
+// Consecutive calls to the same tool, drawn as one row ("file_read ×6"):
+// `first` says whether entry `i` starts a run (the rest are not drawn), and
+// `count` how long it is. A call `plain` says no to — one that drew a
+// picture, which is the answer and not a detail — stands alone, as does a
+// failed one, which the row reports.
+export function toolRun(entries, i, plain = () => true, failed = () => false) {
+  const e = entries[i];
+  const joins = (x) => x?.kind === 'tool' && x.name === e.name && plain(x) && !failed(x);
+  if (!joins(e)) return { first: true, count: 1 };
+  if (i > 0 && joins(entries[i - 1])) {
+    return { first: false, count: 0 };
+  }
+  let count = 1;
+  while (joins(entries[i + count])) count++;
+  return { first: true, count };
+}
+
+// A reply's checked citations swapped for placeholders before its Markdown
+// is parsed, and drawn back from them after (`ChatProse`): a citation
+// holding a backtick, a `*` pair or a bare URL would otherwise be split
+// across the parser's nodes and lose its badge silently (review of #479).
+// The placeholders are private-use characters a reply does not contain.
+const MARK_OPEN = '\uE000';
+const MARK_CLOSE = '\uE001';
+//
+// One check per citation text in a reply: `citeEntries` pairs occurrence by
+// occurrence across replies, but two occurrences inside one reply were
+// checked against the same received state, so they cannot differ — the
+// collapse here is known and safe (review of #479).
+export function citeMark(text, cites) {
+  const byRaw = new Map((cites ?? []).map(([r, c]) => [r, c]).reverse());
+  const marks = [];
+  // The placeholder characters themselves are dropped from the reply first:
+  // a reply relaying a paper could hold them, and one would then show raw
+  // or replay another citation's badge (review of #479).
+  let out = (text ?? '').replace(/[\uE000\uE001]/g, '');
+  for (const [r, check] of byRaw) {
+    if (!r || !out.includes(r)) continue;
+    out = out.split(r).join(`${MARK_OPEN}${marks.length}${MARK_CLOSE}`);
+    marks.push({ text: r, check });
+  }
+  return { text: out, marks };
+}
+
+// A parsed text node cut at the placeholders it holds, each drawn back as
+// its citation.
+export function citeUnmark(v, marks) {
+  if (!marks?.length || !v.includes(MARK_OPEN)) return [{ text: v }];
+  const out = [];
+  const re = new RegExp(`${MARK_OPEN}(\\d+)${MARK_CLOSE}`, 'g');
+  let pos = 0;
+  for (const m of v.matchAll(re)) {
+    if (m.index > pos) out.push({ text: v.slice(pos, m.index) });
+    const mark = marks[Number(m[1])];
+    out.push(mark ? { text: mark.text, check: mark.check } : { text: m[0] });
+    pos = m.index + m[0].length;
+  }
+  if (pos < v.length) out.push({ text: v.slice(pos) });
+  return out;
 }

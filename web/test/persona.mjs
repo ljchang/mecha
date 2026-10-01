@@ -32,7 +32,7 @@ assert.equal(withUnlock('/x?a=1', 'z'), '/x?a=1&unlock=z');
 assert.throws(() => personaUrl('mara', '/delete', null));
 assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 19);
+assert.equal(ENDPOINTS.length, 21);
 assert.ok(ENDPOINTS.includes('/api/personas/X/frame'));
 assert.ok(ENDPOINTS.includes('/api/personas/X/sources') && ENDPOINTS.includes('/api/personas/X/sources/remove'));
 assert.ok(ENDPOINTS.includes('/api/personas/authoring') && ENDPOINTS.includes('/api/personas/X/files'));
@@ -347,6 +347,56 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   // The stream's checks replace the page's.
   const run = applyEvent({ ...emptyRun([], null, [before]) }, { type: 'citations', checks: [made] });
   assert.deepEqual(run.citations, [made]);
+}
+
+// The owner's bubble shows their words, not the goal framing the harness
+// sends ahead of them; and consecutive calls to one tool draw as one row,
+// except a call with a picture or one that failed (the owner's ask,
+// 2026-10-01).
+{
+  const { ownWords, toolRun } = await import('../src/lib/persona.js');
+  assert.equal(ownWords('(What I want from this conversation: Plan the trip)\n\nGive me a summary'), 'Give me a summary');
+  assert.equal(ownWords('No goal here'), 'No goal here');
+  assert.equal(ownWords('(What I want from this conversation: x) but on one line'), '(What I want from this conversation: x) but on one line');
+  const t = (name, extra = {}) => ({ kind: 'tool', name, is_error: false, ...extra });
+  const es = [t('file_search'), t('file_search'), t('file_search'), t('file_read'), t('file_read', { is_error: true }), t('file_read'), { kind: 'assistant', text: 'x' }, t('image_view', { pic: 1 }), t('image_view', { pic: 1 })];
+  const plain = (e) => !e.pic;
+  const failed = (e) => e.is_error === true;
+  const runs = es.map((_, i) => toolRun(es, i, plain, failed)).map((r, i) => (es[i].kind === 'tool' && r.first ? `${es[i].name}x${r.count}` : null)).filter(Boolean);
+  assert.deepEqual(runs, ['file_searchx3', 'file_readx1', 'file_readx1', 'file_readx1', 'image_viewx1', 'image_viewx1']);
+}
+
+// The earlier-chats line, and a file's two doors (the owner's asks).
+{
+  const { chatHeadline, sourceFileUrl } = await import('../src/lib/persona.js');
+  assert.equal(chatHeadline({ summary: 'Went over the winter transects', goal: 'g', opener: 'o' }), 'Went over the winter transects');
+  assert.equal(chatHeadline({ summary: ' ', goal: 'Plan the survey', opener: 'o' }), 'Plan the survey');
+  assert.equal(chatHeadline({ opener: 'What do urchins do?' }), 'What do urchins do?');
+  assert.equal(chatHeadline({}), null);
+  assert.equal(sourceFileUrl('mara', '@kelp/a b.pdf', 'file'), '/api/personas/mara/sources/file?file=%40kelp%2Fa%20b.pdf');
+  assert.equal(sourceFileUrl('mara', 'n.md', 'text', 'tok'), '/api/personas/mara/sources/text?unlock=tok&file=n.md');
+}
+
+// A citation keeps its badge through the Markdown parser, whatever it
+// holds (review of #479): a backtick, a `*` pair, a bare URL.
+{
+  const { citeMark, citeUnmark } = await import('../src/lib/persona.js');
+  const { parseBlocks } = await import('../src/lib/mail-markdown.js');
+  const raw = '[notes.md: "the `holdfast` is **not** at https://example.org/kelp"]';
+  const check = { raw, status: 'quoted' };
+  const reply = `## Point\n\nThey say ${raw} and more.`;
+  const { text, marks } = citeMark(reply, [[raw, check]]);
+  const blocks = parseBlocks(text);
+  const nodes = blocks[1].inline.filter((n) => n.t === 'text');
+  const drawn = nodes.flatMap((n) => citeUnmark(n.v, marks));
+  const cite = drawn.find((p) => p.check);
+  assert.equal(cite?.text, raw, JSON.stringify(drawn));
+  assert.equal(drawn.map((p) => p.text).join(''), `They say ${raw} and more.`);
+  assert.deepEqual(citeUnmark('plain', marks), [{ text: 'plain' }]);
+  assert.equal(citeMark('no cites', null).text, 'no cites');
+  // A reply that already holds the placeholder characters cannot forge one.
+  const forged = citeMark('a \uE0000\uE001 b', [[raw, check]]);
+  assert.deepEqual(citeUnmark(forged.text, forged.marks), [{ text: 'a 0 b' }]);
 }
 
 console.log('persona: ok');
