@@ -513,10 +513,11 @@ fn refuse_missing_requires(
     anyhow::ensure!(
         missing.is_empty(),
         "experiment environment {} requires {}, off in its trial home — a trial would be \
-         scored on tasks it could not attempt. An environment may switch on only `frontdoor`; \
-         `graph` follows the servers it carries, and `search` the operator's own switch",
+         scored on tasks it could not attempt. Only {} can ever be on in a trial; look at the \
+         environment's `[features]` and the servers it carries, and your own `search` switch",
         env.display(),
-        missing.join(", ")
+        missing.join(", "),
+        trial_reachable_ids()
     );
     Ok(())
 }
@@ -543,10 +544,26 @@ const FOLLOW_THE_OPERATOR: [crate::feature::Feature; 1] = [crate::feature::Featu
 /// (FEATURES-DESIGN.md §5.1), so a `requires` naming it can never be met.
 pub fn can_be_on_in_a_trial(f: crate::feature::Feature) -> bool {
     let top = f.switch_owner();
-    (top.switchable_from_environment()
-        || DEFAULTED_FROM_SERVERS.contains(&top)
-        || FOLLOW_THE_OPERATOR.contains(&top))
+    // A part is on only if its owner is, owner's needs included — the walk
+    // `feature::switched_on` takes through `needs()` (review of #474).
+    if top != f {
+        return can_be_on_in_a_trial(top) && f.requires().iter().all(|&g| can_be_on_in_a_trial(g));
+    }
+    (f.switchable_from_environment()
+        || DEFAULTED_FROM_SERVERS.contains(&f)
+        || FOLLOW_THE_OPERATOR.contains(&f))
         && f.requires().iter().all(|&g| can_be_on_in_a_trial(g))
+}
+
+/// The ids [`can_be_on_in_a_trial`] allows, as a message lists them — from
+/// the predicate, so the sentence moves with the rule.
+fn trial_reachable_ids() -> String {
+    crate::feature::Feature::ALL
+        .iter()
+        .filter(|f| can_be_on_in_a_trial(**f))
+        .map(|f| format!("`{}`", f.id()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// An environment directory's own manifest: what it extends.
@@ -630,12 +647,11 @@ fn resolve_dir(
         // 2026-10-01: say so here, at load).
         anyhow::ensure!(
             can_be_on_in_a_trial(f),
-            "{}: `requires` names `{id}`, which can never be on in a trial — an environment may \
-             switch on only `frontdoor`, `graph` is on when the environment carries a graph \
-             server, and `search` follows your own switch. Tasks that need mail, documents or \
-             calendar get them from fixture servers (`[fixtures]` in the manifest), not from the \
-             feature",
-            dir.join(ENV_MANIFEST).display()
+            "{}: `requires` names `{id}`, which can never be on in a trial; only {} can be. \
+             Tasks that need mail, documents or calendar get them from fixture servers — \
+             `[fixtures]` in the experiment's own manifest, not this file — not from the feature",
+            dir.join(ENV_MANIFEST).display(),
+            trial_reachable_ids()
         );
         if !requires.contains(&f) {
             requires.push(f);
@@ -1354,6 +1370,16 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
                 "{text}"
             );
             assert!(text.contains("fixture servers"), "{text}");
+            // The list comes from the predicate, parts included, and the
+            // pointer names the file `[fixtures]` lives in (review of #474).
+            assert!(
+                text.contains("only `graph`, `tasks`, `search`, `frontdoor`, `publishing` can be"),
+                "{text}"
+            );
+            assert!(
+                text.contains("the experiment's own manifest, not this file"),
+                "{text}"
+            );
         }
         let tmp = Scratch::new();
         let env = env_at(tmp.path(), "");
