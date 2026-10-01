@@ -881,12 +881,7 @@ impl PersonaChats {
         let p = self
             .visible(library, name, token)
             .ok_or(Refusal::NotFound)?;
-        if p.state.status != Status::Candidate {
-            return Err(Refusal::Conflict(format!(
-                "`{}` is not waiting for approval",
-                p.name
-            )));
-        }
+        waiting_proposal(&p)?;
         let store = Store::load(&self.store);
         let digest = store.content_digest(&p).map_err(failed)?;
         let lib = Library::load(&library.dir).0;
@@ -918,6 +913,10 @@ impl PersonaChats {
             "display": p.display(),
             "relationships": p.settings.relationship.0,
             "voice": p.settings.voice,
+            // The tools its relationship templates grant — the owner's own
+            // templates' suggestions, never the model's — shown so approval
+            // is not of a list nobody saw (review of #493).
+            "tools": p.settings.tools.allow,
             "identity": p.identity,
             "motivation": p.motivation,
             "origin": p.state.origin,
@@ -943,12 +942,7 @@ impl PersonaChats {
         let p = self
             .visible(library, name, token)
             .ok_or(Refusal::NotFound)?;
-        if p.state.status != Status::Candidate {
-            return Err(Refusal::Conflict(format!(
-                "`{}` is not waiting for approval",
-                p.name
-            )));
-        }
+        waiting_proposal(&p)?;
         let changed = || {
             Refusal::Conflict(format!(
                 "`{}` is not what was shown — read it again before approving",
@@ -1012,12 +1006,7 @@ impl PersonaChats {
         let p = self
             .visible(library, name, token)
             .ok_or(Refusal::NotFound)?;
-        if p.state.status != mecha_core::imagelib::Status::Candidate {
-            return Err(Refusal::Conflict(format!(
-                "`{}` is not waiting for approval",
-                p.name
-            )));
-        }
+        waiting_proposal(&p)?;
         mecha_core::persona::remove(&self.store, &p.name).map_err(failed)?;
         Ok(serde_json::json!({ "rejected": p.name }))
     }
@@ -3436,6 +3425,22 @@ pub struct LockBody {
     unlock: Option<String>,
 }
 
+/// A proposal still waiting: a model's candidate, as the page's Waiting
+/// section counts one. An owner's own unapproved persona is not reviewed,
+/// approved or turned away through these doors (review of #493) — it is
+/// approved with `mecha persona approve` and removed with `mecha persona
+/// remove`, as before.
+fn waiting_proposal(p: &Persona) -> Result<(), Refusal> {
+    use mecha_core::imagelib::{Origin, Status};
+    if p.state.status != Status::Candidate || p.state.origin == Origin::Owner {
+        return Err(Refusal::Conflict(format!(
+            "`{}` is not a proposal waiting for approval",
+            p.name
+        )));
+    }
+    Ok(())
+}
+
 /// GET /api/personas/{name}/review
 pub async fn review(
     State(state): Web,
@@ -5081,6 +5086,39 @@ mod tests {
             w.personas().reject(&w.library, "wren", None),
             Err(Refusal::Conflict(_))
         ));
+
+        // An owner's own unapproved persona is not a proposal: not reviewed
+        // or turned away here.
+        let mut mine = mecha_core::persona::NewPersona {
+            name: "mine".into(),
+            origin: Origin::Owner,
+            ..Default::default()
+        };
+        mine.display = "Mine".into();
+        store::create(&w.store(), &lib(), mine).unwrap();
+        // Unapproved, as a persona made by hand in its folder is.
+        let state_path = w.store().join("mine/state.toml");
+        let state_text = std::fs::read_to_string(&state_path).unwrap();
+        assert!(state_text.contains("status = \"approved\""), "{state_text}");
+        std::fs::write(
+            &state_path,
+            state_text.replace("status = \"approved\"", "status = \"candidate\""),
+        )
+        .unwrap();
+        let mine = Store::load(&w.store()).get("mine").unwrap().clone();
+        assert_eq!(
+            (mine.state.status, mine.state.origin),
+            (Status::Candidate, Origin::Owner)
+        );
+        assert!(matches!(
+            w.personas().review(&w.library, "mine", None),
+            Err(Refusal::Conflict(_))
+        ));
+        assert!(matches!(
+            w.personas().reject(&w.library, "mine", None),
+            Err(Refusal::Conflict(_))
+        ));
+        assert!(Store::load(&w.store()).get("mine").is_some());
 
         // A locked proposal (an incognito chat's) is hidden like any locked
         // persona until unlocked, then turned away.

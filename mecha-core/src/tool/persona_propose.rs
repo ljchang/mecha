@@ -20,9 +20,12 @@
 //!
 //! ## Revision until approval
 //!
-//! The same name again rewrites the candidate it staged — "make her drier" —
-//! until the owner approves it. An approved persona, or one the owner made,
-//! is refused: those are the owner's to edit.
+//! The same name again revises the candidate it staged — "make her drier" —
+//! until the owner approves it. A revision is a patch: a field the call
+//! leaves out keeps what the candidate has, so new identity text alone does
+//! not drop the portrait, the relationships or the motivation (review of
+//! #493). An approved persona, one the owner made, or a proposal the owner
+//! has since edited is refused: those are the owner's.
 //!
 //! ## Read-only, on `image_library_propose`'s footing
 //!
@@ -64,8 +67,9 @@ impl Tool for PersonaPropose {
          from you. Write who they are in `identity` as Markdown with a `## Core` section (the \
          part that never changes), and what they want in `motivation`. It waits for the owner's \
          approval on the Personas page and cannot be chatted with until then. Proposing the same \
-         name again revises a proposal that is still waiting; an approved persona cannot be \
-         changed from here. For a portrait, name an image-library character (propose one with \
+         name again revises a proposal that is still waiting: send only what changes, and \
+         everything you leave out stays as it was. An approved persona cannot be changed from \
+         here. For a portrait, name an image-library character (propose one with \
          image_library_propose first if needed)."
     }
 
@@ -75,13 +79,13 @@ impl Tool for PersonaPropose {
             "properties": {
                 "name": {"type": "string", "description": "Lowercase letters, digits, hyphens and underscores; the persona's id."},
                 "display": {"type": "string", "description": "The name shown on the page, e.g. \"Mara Okonkwo\"."},
-                "identity": {"type": "string", "description": "identity.md: Markdown, with a non-empty `## Core` section first."},
+                "identity": {"type": "string", "description": "identity.md: Markdown, with a non-empty `## Core` section first. Required for a new persona."},
                 "motivation": {"type": "string", "description": "motivation.md: what they want, in Markdown. Optional."},
                 "relationships": {"type": "array", "items": {"type": "string"}, "description": "Relationship templates by name, e.g. [\"friend\"]. Optional."},
                 "character": {"type": "string", "description": "An image-library character to use as the portrait. Optional."},
                 "voice": {"type": "string", "description": "A voice by name, for calls. Optional."}
             },
-            "required": ["name", "identity"]
+            "required": ["name"]
         })
     }
 
@@ -95,23 +99,8 @@ impl Tool for PersonaPropose {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let text = |k: &str| {
-            input
-                .get(k)
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string()
-        };
-        let optional = |k: &str| {
-            input
-                .get(k)
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        };
-        let relationships: Vec<String> = match input.get("relationships") {
-            None | Some(Value::Null) => Vec::new(),
+        let relationships: Option<Vec<String>> = match input.get("relationships") {
+            None | Some(Value::Null) => None,
             Some(Value::Array(items)) => {
                 let mut names = Vec::new();
                 for item in items {
@@ -120,38 +109,65 @@ impl Tool for PersonaPropose {
                         None => return Ok(ToolOutput::err("`relationships` is a list of names.")),
                     }
                 }
-                names
+                Some(names)
             }
             Some(_) => return Ok(ToolOutput::err("`relationships` is a list of names.")),
         };
-        let proposal = Proposal {
-            // Lowercased, as the page's `personaName` tames a typed name.
-            name: text("name").trim().to_lowercase(),
-            display: text("display").trim().to_string(),
-            relationships,
-            character: optional("character").map(|c| c.to_lowercase()),
-            voice: optional("voice"),
-            identity: text("identity"),
-            motivation: text("motivation"),
-            origin: Origin::of_proposal(ctx.taint.as_ref()),
-            locked: ctx.stage_locked,
-        };
+        // Lowercased, as the page's `personaName` tames a typed name.
+        let name = input
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        let (origin, locked) = (Origin::of_proposal(ctx.taint.as_ref()), ctx.stage_locked);
         let (dir, library) = (self.dir.clone(), self.library.clone());
         let made = tokio::task::spawn_blocking(move || {
+            // A key the call sent, as a string — `None` when it was left
+            // out, which on a revision means "keep what is there".
+            let sent = |k: &str| input.get(k).and_then(Value::as_str).map(str::to_string);
             let (lib, _) = Library::load(&library);
-            let result = persona::propose(&dir, &lib, proposal);
-            // A refusal naming a template that is not there lists the ones
-            // that are, so the model can correct it in one step.
-            let known = Store::load(&dir)
-                .relationship_names()
-                .into_iter()
-                .map(str::to_string)
-                .collect::<Vec<_>>();
-            (result, known)
+            // A revision is a patch over the candidate that is waiting: what
+            // the call left out, it keeps. `propose` decides whether this
+            // name may be revised at all.
+            let store = Store::load(&dir);
+            let waiting = store.get(&name).cloned();
+            let keep = |field: Option<String>, current: Option<&str>| match field {
+                Some(v) => v,
+                None => current.unwrap_or_default().to_string(),
+            };
+            let blank = |v: String| {
+                let v = v.trim().to_string();
+                (!v.is_empty()).then_some(v)
+            };
+            let w = waiting.as_ref();
+            let proposal = Proposal {
+                name: name.clone(),
+                display: keep(sent("display"), w.map(|p| p.settings.display.as_str()))
+                    .trim()
+                    .to_string(),
+                relationships: relationships.unwrap_or_else(|| {
+                    w.map(|p| p.settings.relationship.0.clone())
+                        .unwrap_or_default()
+                }),
+                character: match sent("character") {
+                    Some(c) => blank(c).map(|c| c.to_lowercase()),
+                    None => w.and_then(|p| p.settings.character.clone()),
+                },
+                voice: match sent("voice") {
+                    Some(v) => blank(v),
+                    None => w.and_then(|p| p.settings.voice.clone()),
+                },
+                identity: keep(sent("identity"), w.map(|p| p.identity.as_str())),
+                motivation: keep(sent("motivation"), w.map(|p| p.motivation.as_str())),
+                origin,
+                locked,
+            };
+            persona::propose(&dir, &lib, proposal)
         })
         .await?;
         match made {
-            (Ok((p, how)), _) => {
+            Ok((p, how)) => {
                 let verb = match how {
                     Proposed::New => "Proposed",
                     Proposed::Revised => "Revised the proposal for",
@@ -168,10 +184,18 @@ impl Tool for PersonaPropose {
                     p.display()
                 )))
             }
-            (Err(e), known) => {
+            Err(e) => {
                 let why = format!("{e:#}");
-                let hint = if why.contains("relationship template") && !known.is_empty() {
-                    format!(" Relationships there are: {}.", known.join(", "))
+                // An unknown template is answered with the starters — public
+                // text shipped with mecha — and never the names of the
+                // owner's own templates, which this tool would otherwise hand
+                // back undeclared (review of #493).
+                let hint = if why.contains("relationship template") {
+                    let starters: Vec<&str> = persona::STARTERS.iter().map(|(n, _)| *n).collect();
+                    format!(
+                        " The starter relationships are: {}; the owner may have made others.",
+                        starters.join(", ")
+                    )
                 } else {
                     String::new()
                 };
@@ -259,13 +283,31 @@ mod tests {
         assert!(out.is_error);
         assert!(out.content.contains("friend"), "{}", out.content);
 
-        // A revision says so.
+        // A revision says so, and is a patch: what it leaves out stays.
         let out = call(
             json!({"name": "ines", "identity": "## Core\nDrier now.\n"}),
             ctx(Some(Taint::default()), false),
         )
         .await;
         assert!(out.content.starts_with("Revised"), "{}", out.content);
+        let p = Store::load(&root.join("personas"))
+            .get("ines")
+            .unwrap()
+            .clone();
+        assert!(p.identity.contains("Drier"));
+        assert_eq!(
+            p.settings.relationship.0,
+            vec!["friend".to_string()],
+            "kept"
+        );
+        assert_eq!(p.settings.display, "Ines", "kept");
+        // A new persona still needs its identity.
+        let out = call(json!({"name": "ola"}), ctx(Some(Taint::default()), false)).await;
+        assert!(
+            out.is_error && out.content.contains("identity"),
+            "{}",
+            out.content
+        );
         std::fs::remove_dir_all(root).ok();
     }
 }
