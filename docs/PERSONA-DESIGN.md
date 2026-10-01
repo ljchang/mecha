@@ -3,7 +3,7 @@
 > **Addendum (2026-10-01, memory):** §9 / §17 step 5 is partly built and
 > live: the store (#463), the nightly writer (#468) and recall at chat start
 > (#477); break reminders and the farewell check were dropped (D25, #462).
-> Recall on every turn is #481. The persona-memory entry in HANDOFF's
+> Recall on every turn is merged (#481). The persona-memory entry in HANDOFF's
 > *Where the work is* lists what of §9 is still open; HISTORY has what
 > shipped, including the two-stem deviation from §9.7.
 >
