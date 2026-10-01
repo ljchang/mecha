@@ -15,8 +15,8 @@ still worth knowing about, because the next person will otherwise re-derive it.
 ## What shipped, and when
 
 **2026-10-01 — personas remember: a store, a nightly writer, and recall at
-chat start and on every turn (#462, #463, #468, #477, #481).** PERSONA-DESIGN §9 / §17 step 5, each
-through its own review loop.
+chat start and on every turn (#462, #463, #468, #477, #481).**
+PERSONA-DESIGN §9 / §17 step 5, each through its own review loop.
 - **#462 (D25):** break reminders and the farewell check were dropped
   before either was built.
   - The dose meters already show time spent. The farewell evidence (HBS
@@ -55,7 +55,6 @@ through its own review loop.
     untrusted.
   - The budget is split so no section starves another out of sight, and
     every cut is said.
-
 - **#481, recall on every turn:** past the first reply, the owner's message
   keys `Memory::recall_search`, and up to three records the chat does not
   already hold ride with that turn under the same two stems
