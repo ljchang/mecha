@@ -5,7 +5,7 @@
 // failed; an `unready` feature the owner switched on, hidden; a queue with
 // strangers' requests waiting, hidden because its switch is off; and a
 // banner that names the child when the parent is what is broken.
-import { OPENS_ANYWAY, opensAnyway, opens, featureOf, refuses, index, isShown, queueCardShown, banner, hiddenLine, summary, tree, detail, VIEW_FEATURE } from '../src/lib/features.js';
+import { OPENS_ANYWAY, opensAnyway, opens, bounceFor, featureOf, refuses, index, isShown, queueCardShown, banner, hiddenLine, summary, tree, detail, VIEW_FEATURE } from '../src/lib/features.js';
 
 let pass = 0;
 let fail = 0;
@@ -76,6 +76,31 @@ t('a feature\'s pane in a core view is the pane\'s', featureOf('review', 'graph'
 t('a core pane of a core view is nobody\'s', featureOf('review', 'outbox') === null);
 t('a feature\'s view is the view\'s', featureOf('library', 'candidates') === 'library' && featureOf('tasks', null) === 'tasks');
 t('every entry is view/sub', OPENS_ANYWAY.every((r) => /^[a-z]+\/[a-z]+$/.test(r)));
+
+console.log('where a link bounces');
+{
+  const noImages = new Map([
+    ['library', row('library', 'off', { gated: true })],
+    ['voice', row('voice', 'on', { gated: true })],
+  ]);
+  const noVoice = new Map([
+    ['library', row('library', 'on', { gated: true })],
+    ['voice', row('voice', 'off', { gated: true })],
+  ]);
+  // Library → Voices opens without the image library, as the settings pane
+  // it replaced did (review of #490) — and not without voice itself.
+  t('voices open with image generation off', bounceFor(noImages, 'library', 'voices') === null);
+  t('the image panes do not', bounceFor(noImages, 'library', 'characters') === 'library');
+  t('voices go home with voice off', bounceFor(noVoice, 'library', 'voices') === 'voice');
+  t('a pane that refuses beats one that opens anyway', bounceFor(new Map([...noImages, ['voice', row('voice', 'off', { gated: true })]]), 'library', 'voices') === 'voice');
+  t('a core view never bounces', bounceFor(noImages, 'chat', null) === null);
+  t('not answered is shown', bounceFor(null, 'library', 'characters') === null);
+  // The chip agrees with the bounce: offered with images off, never with
+  // voice off (review of #490).
+  t('the voices chip shows with images off', opens(noImages, 'library', 'voices') === true);
+  t('and not with voice off', opens(noVoice, 'library', 'voices') === false);
+  t('a core pane opening anyway still opens', opens(new Map([['tasks', row('tasks', 'off', { gated: true })]]), 'tasks', 'waiting') === true);
+}
 
 console.log('what refuses');
 const gatedRows = new Map([

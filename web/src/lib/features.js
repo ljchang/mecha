@@ -36,6 +36,7 @@ export const PANE_FEATURE = {
   'review/entities': 'graph',
   'review/frontdoor': 'frontdoor',
   'settings/voice': 'voice',
+  'library/voices': 'voice',
 };
 
 /** The feature `view/sub` belongs to: its pane's, else its view's, else none. */
@@ -69,7 +70,7 @@ export const QUEUE_FEATURE = {
  * sub-views that open (`opens`), or its own controls would bounce the same
  * way one level in.
  */
-export const OPENS_ANYWAY = ['tasks/waiting', 'tasks/workflows'];
+export const OPENS_ANYWAY = ['tasks/waiting', 'tasks/workflows', 'library/voices'];
 
 /** Whether `view/sub` opens even with its view's feature hidden. */
 export function opensAnyway(view, sub) {
@@ -82,7 +83,10 @@ export function opensAnyway(view, sub) {
  * ask before offering a way to another of its sub-views.
  */
 export function opens(rows, view, sub) {
-  return isShown(rows, featureOf(view, sub)) || opensAnyway(view, sub);
+  // Opening anyway answers only the *view's* switch: a pane with a feature of
+  // its own still needs that one (review of #490 — Voices with voice off).
+  const pane = PANE_FEATURE[`${view}/${sub}`];
+  return isShown(rows, featureOf(view, sub)) || (opensAnyway(view, sub) && isShown(rows, pane));
 }
 
 /** `/api/features`'s body as a map from id to row, or null when unanswered. */
@@ -103,6 +107,21 @@ export function refuses(rows, id) {
   if (!id || !rows) return false;
   const row = rows.get(id);
   return !!row && row.shown === false && row.gated === true;
+}
+
+/**
+ * The feature that sends `view/sub` back to Home, or null when it opens. A
+ * pane whose own feature refuses goes Home whatever its view says; a hidden
+ * view goes Home unless the pane opens anyway (`OPENS_ANYWAY`) — so Library
+ * → Voices opens with image generation off, as the voice pane it replaced
+ * did, and still goes Home when voice itself is off (review of #490).
+ */
+export function bounceFor(rows, view, sub) {
+  const viewF = VIEW_FEATURE[view];
+  const paneF = PANE_FEATURE[`${view}/${sub}`];
+  if (paneF && refuses(rows, paneF)) return paneF;
+  if (viewF && !isShown(rows, viewF) && !opensAnyway(view, sub)) return viewF;
+  return null;
 }
 
 /** Whether `id` is shown. `id` null is core, always shown. */
