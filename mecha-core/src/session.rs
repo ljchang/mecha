@@ -456,7 +456,10 @@ pub struct RunConfig {
     /// can tell two arms apart that differ only in a feature, and a light
     /// trial is recorded as light (FEATURES-DESIGN.md §5.1). `Some(vec![])` is
     /// a run with every feature off; `None` is unknown — recorded before the
-    /// field existed, or carrying an id this build does not know.
+    /// field existed, or carrying an id this build does not know. It records
+    /// the switch, so a lever can still have taken the feature away for this
+    /// run: `levers_off = ["mcp"]` beside `graph` here is a graph switched on
+    /// and not connected, and the two fields read together.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
