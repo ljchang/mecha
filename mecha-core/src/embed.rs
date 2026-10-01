@@ -138,12 +138,16 @@ impl Embedder {
         }
         data.iter()
             .map(|item| {
-                let v: Vec<f32> = item["embedding"]
+                let raw = item["embedding"]
                     .as_array()
-                    .ok_or_else(|| anyhow!("an embedding that is not a list"))?
+                    .ok_or_else(|| anyhow!("an embedding that is not a list"))?;
+                // A non-number is refused, not skipped: a vector short by
+                // one would be stored and silently never ranked.
+                let v: Vec<f32> = raw
                     .iter()
-                    .filter_map(|x| x.as_f64().map(|f| f as f32))
-                    .collect();
+                    .map(|x| x.as_f64().map(|f| f as f32))
+                    .collect::<Option<_>>()
+                    .ok_or_else(|| anyhow!("an embedding with a value that is not a number"))?;
                 if v.is_empty() {
                     bail!("an empty embedding");
                 }

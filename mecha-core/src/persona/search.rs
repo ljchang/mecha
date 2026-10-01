@@ -235,12 +235,16 @@ impl Index {
         Ok(dropped)
     }
 
-    /// Every passage, its vector, of `shas` — the corpus a search ranks.
-    fn corpus(&self, shas: &[String]) -> Result<Vec<(i64, Option<Vec<f32>>)>> {
+    /// Every passage of `shas` — the corpus a search ranks — with its
+    /// vector where `vectors`; ids alone otherwise, so a search by words
+    /// decodes no blob (review of #467).
+    fn corpus(&self, shas: &[String], vectors: bool) -> Result<Vec<(i64, Option<Vec<f32>>)>> {
         let mut out = Vec::new();
-        let mut q = self
-            .conn
-            .prepare("SELECT id, vec FROM passages WHERE sha = ?1")?;
+        let mut q = self.conn.prepare(if vectors {
+            "SELECT id, vec FROM passages WHERE sha = ?1"
+        } else {
+            "SELECT id, NULL FROM passages WHERE sha = ?1"
+        })?;
         for sha in shas {
             let rows = q.query_map([sha], |r| {
                 let blob: Option<Vec<u8>> = r.get(1)?;
@@ -263,7 +267,7 @@ impl Index {
         qvec: Option<&[f32]>,
         k: usize,
     ) -> Result<(Vec<Hit>, Found)> {
-        let corpus = self.corpus(shas)?;
+        let corpus = self.corpus(shas, qvec.is_some())?;
         let mut scores: HashMap<i64, f32> = HashMap::new();
         let mut by_meaning = false;
         if let Some(q) = qvec {
@@ -278,7 +282,13 @@ impl Index {
                     Some((*id, embed::cosine(q, v)))
                 })
                 .collect();
-            by_meaning = !ranked.is_empty();
+            // A ranking over a few embedded passages is not a ranking of the
+            // files: its best would tie the best word hit on no merit (review
+            // of #467). Under half embedded, words alone — and said.
+            by_meaning = ranked.len() * 2 >= corpus.len() && !ranked.is_empty();
+            if !by_meaning {
+                ranked.clear();
+            }
             ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
             for (rank, (id, _)) in ranked.iter().take(k * 8).enumerate() {
                 *scores.entry(*id).or_default() += 1.0 / (RRF_K + rank as f32 + 1.0);
@@ -1034,5 +1044,59 @@ mod tests {
             !may_be_indexed(&at(Kind::Document, 1), 0),
             "reading switched off"
         );
+    }
+
+    /// Review of #467: the vector leg is scoped by the asked hashes as the
+    /// words leg is — a passage of another file nearer the query is never
+    /// returned — and a ranking over a sliver of embedded passages is not
+    /// used.
+    #[test]
+    fn meaning_is_scoped_too_and_a_sliver_of_vectors_is_not_a_ranking() {
+        let store = scratch();
+        let mut index = Index::open(&store).unwrap();
+        index.put("aaa", PAPER).unwrap();
+        index
+            .put(
+                "bbb",
+                "document: o.md \u{b7} text\n\nSomething else entirely.",
+            )
+            .unwrap();
+        index.claim_identity(2).unwrap();
+        let set = |index: &Index, sha: &str, v: [f32; 2]| {
+            for (id, _) in index.unembedded(sha).unwrap() {
+                index
+                    .conn
+                    .execute(
+                        "UPDATE passages SET vec = ?1 WHERE id = ?2",
+                        params![embed::to_blob(&v), id],
+                    )
+                    .unwrap();
+            }
+        };
+        set(&index, "bbb", [0.0, 1.0]);
+        // Only one of aaa's two passages embedded: half, so meaning is used.
+        let first = index.unembedded("aaa").unwrap()[0].0;
+        index
+            .conn
+            .execute(
+                "UPDATE passages SET vec = ?1 WHERE id = ?2",
+                params![embed::to_blob(&[1.0, 0.0]), first],
+            )
+            .unwrap();
+        let (hits, found) = index
+            .search(&["aaa".into()], "zzz", Some(&[0.0, 1.0]), 5)
+            .unwrap();
+        assert_eq!(found, Found::Both);
+        assert!(
+            hits.iter().all(|h| h.sha == "aaa"),
+            "bbb is nearer and not asked: {hits:?}"
+        );
+        // Add a third passage-less file's worth: aaa's corpus is now a sliver.
+        index.put("aaa", &format!("{PAPER}\n=== page 3 of 3 \u{b7} text layer ===\nA.\n\n\n=== page 4 of 4 \u{b7} text layer ===\nB.\n")).unwrap();
+        let (_, found) = index
+            .search(&["aaa".into()], "zzz", Some(&[0.0, 1.0]), 5)
+            .unwrap();
+        assert_eq!(found, Found::WordsOnly, "under half embedded");
+        std::fs::remove_dir_all(store).ok();
     }
 }

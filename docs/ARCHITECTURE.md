@@ -1173,9 +1173,12 @@ module.
   - Vectors carry an identity (length + query instruction, `meta`); a
     change drops every stored vector rather than compare across models.
     Passages stay, and words still find them.
-  - The embedder exists only where `[documents]` is configured
-    (`setup::file_embedder`), which also keeps the test worlds off the live
-    `:8081`.
+  - The embedder exists only where `[documents]` is configured **and**
+    switched on (`setup::file_embedder` asks `feature::switched_on`, as every
+    connection does), which also keeps the test worlds off the live `:8081`.
+  - A page received in two pieces (two searches, or a search and a read)
+    is checked as two pieces: joined, a quote stitched across disjoint
+    passages would read as quoted.
 - **Memory** (`persona::memory`, `PERSONA-DESIGN.md` §9; the store only so
   far — no writer, no recall, nothing reaches a prompt yet):
   - One `memory.db` per persona, in its folder, and one `shared.db` at the top
