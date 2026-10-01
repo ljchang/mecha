@@ -787,22 +787,22 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
             }
         }
         MemoryCmd::Approve { name, id } => {
-            let m = Memory::open(dir, &named(&name)?)?;
+            let m = Memory::open_to_edit(dir, &named(&name)?)?;
             m.approve(&m.resolve(&id)?)?;
             println!("Approved — it can be recalled now.");
         }
         MemoryCmd::Correct { name, id, text } => {
-            let m = Memory::open(dir, &named(&name)?)?;
+            let m = Memory::open_to_edit(dir, &named(&name)?)?;
             let new = m.correct(&m.resolve(&id)?, &text)?;
             println!("Corrected — now {}.", &new.uid[..8]);
         }
         MemoryCmd::Pin { name, id } => {
-            let m = Memory::open(dir, &named(&name)?)?;
+            let m = Memory::open_to_edit(dir, &named(&name)?)?;
             m.pin(&m.resolve(&id)?, true)?;
             println!("Pinned — recalled first.");
         }
         MemoryCmd::Unpin { name, id } => {
-            let m = Memory::open(dir, &named(&name)?)?;
+            let m = Memory::open_to_edit(dir, &named(&name)?)?;
             m.pin(&m.resolve(&id)?, false)?;
             println!("Unpinned.");
         }
@@ -828,7 +828,7 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                 );
             } else {
                 let id = id.expect("clap requires an id or --chat");
-                let full = Memory::open(dir, &name)?.resolve(&id)?;
+                let full = Memory::open_to_edit(dir, &name)?.resolve(&id)?;
                 if !yes && !confirm(&format!("Delete {} for good?", &full[..8]))? {
                     println!("Kept.");
                     return Ok(());
@@ -843,7 +843,7 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
             everyone,
             group,
         } => {
-            let m = Memory::open(dir, &named(&name)?)?;
+            let m = Memory::open_to_edit(dir, &named(&name)?)?;
             let full = m.resolve(&id)?;
             let fact = m
                 .fact(&full)?
@@ -858,18 +858,24 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
             println!("Shared — {}.", &copy.uid[..8]);
         }
         MemoryCmd::Shared { json } => {
-            let rows = match Shared::open_existing(dir)? {
+            let listed = match Shared::open_existing(dir)? {
                 Some(s) => s.all()?,
-                None => Vec::new(),
+                None => memory::Listing::default(),
             };
             if json {
-                println!("{}", serde_json::to_string_pretty(&rows)?);
+                println!("{}", serde_json::to_string_pretty(&listed)?);
                 return Ok(());
             }
-            if rows.is_empty() {
+            if listed.facts.is_empty() && listed.unreadable == 0 {
                 println!("Nothing shared.");
             }
-            for r in rows {
+            if listed.unreadable > 0 {
+                println!(
+                    "  {} shared record(s) this mecha cannot read, never shown to a persona",
+                    listed.unreadable
+                );
+            }
+            for r in listed.facts {
                 let with = match &r.audience {
                     Audience::Everyone => "everyone".to_string(),
                     Audience::Group(g) => format!("group {g}"),
@@ -883,21 +889,11 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
             }
         }
         MemoryCmd::Unshare { id } => {
-            let shared = Shared::open(dir)?;
-            let full = shared
-                .all()?
-                .into_iter()
-                .map(|r| r.uid)
-                .filter(|u| u.starts_with(&id.trim().to_ascii_lowercase()))
-                .collect::<Vec<_>>();
-            match full.as_slice() {
-                [one] => shared.unshare(one)?,
-                [] => bail!("nothing shared with id `{id}`"),
-                _ => bail!(
-                    "`{id}` matches {} shared facts; give more of the id",
-                    full.len()
-                ),
+            if !Shared::path(dir).is_file() {
+                bail!("nothing is shared");
             }
+            let shared = Shared::open(dir)?;
+            shared.unshare(&shared.resolve(&id)?)?;
             println!("No longer shared.");
         }
     }

@@ -464,6 +464,9 @@ fn scrub(conn: &Connection) -> Result<()> {
 /// One persona's `memory.db`.
 pub struct Memory {
     conn: Connection,
+    /// The store it sits in: where `shared.db` is, which a correction or a
+    /// withdrawal must reach.
+    store_dir: PathBuf,
     persona: String,
     writable: bool,
 }
@@ -533,6 +536,27 @@ pub enum Filter {
     All,
 }
 
+impl Filter {
+    /// The `WHERE` clause and its binding — the status bound through its
+    /// serde name, so the compiler keeps the two in step.
+    fn sql(self) -> (&'static str, Vec<String>) {
+        match self {
+            Filter::Recallable => (" WHERE status = ?1", vec![wire(&Status::Active)]),
+            Filter::All => ("", Vec::new()),
+        }
+    }
+}
+
+/// A short id as the owner typed it, or refused: at least four hex digits,
+/// so nothing shorter matches a record by accident.
+fn short_id(short: &str) -> Result<String> {
+    let short = short.trim().to_ascii_lowercase();
+    if short.len() < 4 || !short.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("`{short}` is not a memory id (at least four hex digits)");
+    }
+    Ok(short)
+}
+
 impl Memory {
     /// The persona's memory, created (owner-only) if it is not there yet.
     /// For the writer and the owner's doors — never for an incognito chat,
@@ -547,9 +571,21 @@ impl Memory {
         migrate_memory(&conn)?;
         Ok(Memory {
             conn,
+            store_dir: store_dir.to_path_buf(),
             persona: persona.into(),
             writable: true,
         })
+    }
+
+    /// The persona's memory for an edit to a record that must already be
+    /// there — the owner's doors. Refuses rather than creating an empty
+    /// database just to report that the id is not in it.
+    pub fn open_to_edit(store_dir: &Path, persona: &str) -> Result<Memory> {
+        validate_persona_name(persona)?;
+        if !store_dir.join(persona).join(MEMORY_DB).is_file() {
+            bail!("{persona} remembers nothing yet");
+        }
+        Memory::open(store_dir, persona)
     }
 
     /// The persona's memory if it has any, read-only and never created —
@@ -562,6 +598,7 @@ impl Memory {
         };
         Ok(Some(Memory {
             conn,
+            store_dir: store_dir.to_path_buf(),
             persona: persona.into(),
             writable: false,
         }))
@@ -701,27 +738,25 @@ impl Memory {
 
     /// Facts in one table: pinned first, then newest first.
     pub fn facts(&self, table: Table, filter: Filter) -> Result<Vec<Fact>> {
-        let mut sql = format!("SELECT {FACT_SELECT} FROM {}", table.sql());
-        if filter == Filter::Recallable {
-            sql.push_str(" WHERE status = 'active'");
-        }
-        sql.push_str(" ORDER BY pinned DESC, ingested_at DESC, uid");
+        let (filter_sql, binds) = filter.sql();
+        let sql = format!(
+            "SELECT {FACT_SELECT} FROM {}{filter_sql} ORDER BY pinned DESC, ingested_at DESC, uid",
+            table.sql()
+        );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |r| fact_of(table, r))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(binds), |r| fact_of(table, r))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Episodes, pinned first, then the most recent chat first.
     pub fn episodes(&self, filter: Filter) -> Result<Vec<Episode>> {
-        let mut sql = format!("SELECT {EPISODE_SELECT} FROM episodes");
-        if filter == Filter::Recallable {
-            sql.push_str(" WHERE status = 'active'");
-        }
-        sql.push_str(
-            " ORDER BY pinned DESC, coalesce(ended_at, started_at, ingested_at) DESC, uid",
+        let (filter_sql, binds) = filter.sql();
+        let sql = format!(
+            "SELECT {EPISODE_SELECT} FROM episodes{filter_sql}
+             ORDER BY pinned DESC, coalesce(ended_at, started_at, ingested_at) DESC, uid"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], episode_of)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(binds), episode_of)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -747,10 +782,7 @@ impl Memory {
     /// `mecha persona memory show`. A prefix two records share is refused,
     /// never guessed.
     pub fn resolve(&self, short: &str) -> Result<String> {
-        let short = short.trim().to_ascii_lowercase();
-        if short.len() < 4 || !short.bytes().all(|b| b.is_ascii_hexdigit()) {
-            bail!("`{short}` is not a memory id (at least four hex digits)");
-        }
+        let short = short_id(short)?;
         let mut hits = Vec::new();
         let tables = std::iter::once("episodes").chain(Table::ALL.map(Table::sql));
         for t in tables {
@@ -784,26 +816,76 @@ impl Memory {
         bail!("{} remembers nothing with id `{uid}`", self.persona)
     }
 
-    fn set_status(&self, uid: &str, status: Status) -> Result<()> {
-        self.writable()?;
-        let table = self.locate(uid)?;
-        let invalidated = (status == Status::Invalidated).then(now);
-        self.conn.execute(
-            &format!("UPDATE {table} SET status = ?2, invalidated_at = ?3 WHERE uid = ?1"),
-            params![uid, wire(&status), invalidated],
+    fn status_in(&self, table: &str, uid: &str) -> Result<Status> {
+        let s: String = self.conn.query_row(
+            &format!("SELECT status FROM {table} WHERE uid = ?1"),
+            [uid],
+            |r| r.get(0),
         )?;
-        Ok(())
+        Ok(unwire(&s))
     }
 
     /// The owner approves a candidate: it may now be recalled. Its origin is
     /// kept, so recalling it re-arms the taint it was written under (§9.6).
+    /// Only a candidate: a withdrawn record stays withdrawn — approving it
+    /// would erase when it was withdrawn and, for a corrected fact, make the
+    /// old wording and its correction both recallable.
     pub fn approve(&self, uid: &str) -> Result<()> {
-        self.set_status(uid, Status::Active)
+        self.writable()?;
+        let table = self.locate(uid)?;
+        match self.status_in(table, uid)? {
+            Status::Candidate => {}
+            Status::Active => bail!("that record is already recalled"),
+            Status::Invalidated => bail!("that record was withdrawn, not waiting on you"),
+        }
+        self.conn.execute(
+            &format!("UPDATE {table} SET status = ?2 WHERE uid = ?1"),
+            params![uid, wire(&Status::Active)],
+        )?;
+        Ok(())
     }
 
-    /// Withdraw a record without deleting it.
-    pub fn invalidate(&self, uid: &str) -> Result<()> {
-        self.set_status(uid, Status::Invalidated)
+    /// Withdraw a record without deleting it, and stop sharing it: a fact
+    /// withdrawn here is not one other personas should still read. The first
+    /// withdrawal's time is kept. Returns the shared copies removed.
+    pub fn invalidate(&self, uid: &str) -> Result<usize> {
+        self.writable()?;
+        let table = self.locate(uid)?;
+        self.conn.execute(
+            &format!(
+                "UPDATE {table} SET status = ?2, invalidated_at = coalesce(invalidated_at, ?3)
+                 WHERE uid = ?1"
+            ),
+            params![uid, wire(&Status::Invalidated), now()],
+        )?;
+        match self.shared()? {
+            Some(shared) => shared.unshare_from(&self.persona, &[uid.to_owned()]),
+            None => Ok(0),
+        }
+    }
+
+    /// `shared.db` for writing, if anything was ever shared — never created
+    /// here, since nothing in this file adds to it.
+    fn shared(&self) -> Result<Option<Shared>> {
+        if Shared::path(&self.store_dir).is_file() {
+            Ok(Some(Shared::open(&self.store_dir)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// `uid` and every row it corrected, newest first — so a copy shared
+    /// before a correction is still found from the row the owner sees.
+    fn lineage(&self, uid: &str) -> Result<Vec<String>> {
+        let mut out = vec![uid.to_owned()];
+        while let Some(f) = self.fact(out.last().expect("never empty"))? {
+            match f.replaces {
+                // A cycle can only be hand-made; stop rather than spin.
+                Some(prev) if !out.contains(&prev) => out.push(prev),
+                _ => break,
+            }
+        }
+        Ok(out)
     }
 
     /// Pin or unpin: a pinned record is recalled first.
@@ -820,7 +902,9 @@ impl Memory {
     /// The owner's correction (§9.8): the old row is invalidated and a new,
     /// owner-origin one replaces it. The source is kept — it is still the
     /// chat the fact came from, so forgetting that chat forgets the
-    /// correction too.
+    /// correction too. A shared copy follows: it carries the new wording and
+    /// points at the new row, so other personas never read what the owner
+    /// replaced, and forgetting the new row finds it.
     pub fn correct(&self, uid: &str, text: &str) -> Result<Fact> {
         self.writable()?;
         check_text(text, MAX_FACT_CHARS, "a fact")?;
@@ -831,10 +915,10 @@ impl Memory {
         let stamp = now();
         tx.execute(
             &format!(
-                "UPDATE {} SET status = 'invalidated', invalidated_at = ?2 WHERE uid = ?1",
+                "UPDATE {} SET status = ?3, invalidated_at = ?2 WHERE uid = ?1",
                 old.table.sql()
             ),
-            params![uid, stamp],
+            params![uid, stamp, wire(&Status::Invalidated)],
         )?;
         let new = Fact {
             uid: self::uid(),
@@ -848,6 +932,17 @@ impl Memory {
         };
         self.insert_fact(&new)?;
         tx.commit()?;
+        // Two files cannot share one commit, so a failure here is said, not
+        // swallowed; `forget` walks `replaces` either way, so a copy left
+        // behind can never outlive the fact it copied.
+        if let Some(shared) = self.shared()? {
+            shared
+                .follow_correction(&self.persona, &old.uid, &new)
+                .context(
+                    "corrected, but a shared copy still has the old wording — \
+                 `mecha persona memory shared` lists it",
+                )?;
+        }
         Ok(new)
     }
 
@@ -906,18 +1001,24 @@ const SHARED_SELECT: &str = "uid, audience, from_uid, from_table, text, kind, so
      source_from, source_to, learned_by, origin, model, valid_from, valid_to, ingested_at,
      shared_at";
 
-fn shared_of(r: &Row) -> rusqlite::Result<SharedFact> {
+/// A shared row, or `None` when its audience or table is one this binary
+/// cannot read. Such a row is never shown to a persona — an audience it
+/// cannot read is not one it can prove a persona belongs to — and it never
+/// fails the listing around it: it is counted ([`Listing::unreadable`]).
+fn shared_of(r: &Row) -> rusqlite::Result<Option<SharedFact>> {
     let audience: String = r.get(1)?;
     let table: String = r.get(3)?;
-    Ok(SharedFact {
+    let (Ok(audience), Ok(from_table)) = (
+        Audience::from_wire(&audience),
+        serde_json::from_value::<Table>(serde_json::Value::String(table)),
+    ) else {
+        return Ok(None);
+    };
+    Ok(Some(SharedFact {
         uid: r.get(0)?,
-        audience: Audience::from_wire(&audience).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, e.into())
-        })?,
+        audience,
         from_uid: r.get(2)?,
-        from_table: serde_json::from_value(serde_json::Value::String(table)).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, e.into())
-        })?,
+        from_table,
         text: r.get(4)?,
         kind: unwire(&r.get::<_, String>(5)?),
         source: source_of(r, 6)?,
@@ -928,7 +1029,26 @@ fn shared_of(r: &Row) -> rusqlite::Result<SharedFact> {
         valid_to: r.get(13)?,
         ingested_at: r.get(14)?,
         shared_at: r.get(15)?,
-    })
+    }))
+}
+
+/// Shared facts as listed: the readable ones, and how many were not — an
+/// unreadable record is a finding, never an empty store.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Listing {
+    pub facts: Vec<SharedFact>,
+    pub unreadable: usize,
+}
+
+fn listing(rows: impl Iterator<Item = rusqlite::Result<Option<SharedFact>>>) -> Result<Listing> {
+    let mut out = Listing::default();
+    for row in rows {
+        match row? {
+            Some(f) => out.facts.push(f),
+            None => out.unreadable += 1,
+        }
+    }
+    Ok(out)
 }
 
 /// The store's `shared.db`.
@@ -1040,7 +1160,7 @@ impl Shared {
     /// The shared facts a persona in `groups` may read: everyone's, and its
     /// groups'. **The one query that separates personas** (§9.10) — a
     /// persona outside a group sees none of that group's rows.
-    pub fn visible_to(&self, groups: &[String]) -> Result<Vec<SharedFact>> {
+    pub fn visible_to(&self, groups: &[String]) -> Result<Listing> {
         let mut audiences = vec![Audience::Everyone.wire()];
         audiences.extend(groups.iter().map(|g| Audience::Group(g.clone()).wire()));
         let marks = vec!["?"; audiences.len()].join(", ");
@@ -1049,16 +1169,47 @@ impl Shared {
              ORDER BY shared_at DESC, uid"
         ))?;
         let rows = stmt.query_map(rusqlite::params_from_iter(audiences.iter()), shared_of)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        listing(rows)
     }
 
     /// Everything shared, for the owner.
-    pub fn all(&self) -> Result<Vec<SharedFact>> {
+    pub fn all(&self) -> Result<Listing> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {SHARED_SELECT} FROM shared_facts ORDER BY shared_at DESC, uid"
         ))?;
         let rows = stmt.query_map([], shared_of)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        listing(rows)
+    }
+
+    /// The full id of a shared copy, from the table itself — so a copy this
+    /// binary cannot read can still be named and unshared.
+    pub fn resolve(&self, short: &str) -> Result<String> {
+        let short = short_id(short)?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT uid FROM shared_facts WHERE substr(uid, 1, ?2) = ?1")?;
+        let mut hits = stmt
+            .query_map(params![short, short.len()], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        match hits.len() {
+            1 => Ok(hits.remove(0)),
+            0 => bail!("nothing shared with id `{short}`"),
+            n => bail!("`{short}` matches {n} shared facts; give more of the id"),
+        }
+    }
+
+    /// Re-point the copies of a corrected fact at its replacement, in the
+    /// owner's wording.
+    fn follow_correction(&self, persona: &str, old_uid: &str, new: &Fact) -> Result<usize> {
+        self.writable()?;
+        let n = self.conn.execute(
+            "UPDATE shared_facts SET from_uid = ?3, text = ?4, origin = ?5
+             WHERE learned_by = ?1 AND from_uid = ?2",
+            params![persona, old_uid, new.uid, new.text, wire(&new.origin)],
+        )?;
+        // The old wording was overwritten in place: scrub it from the log.
+        scrub(&self.conn)?;
+        Ok(n)
     }
 
     /// Stop sharing one copy. The learner's own row is untouched.
@@ -1074,14 +1225,19 @@ impl Shared {
         scrub(&self.conn)
     }
 
-    /// Drop every copy of one learned fact — what forgetting it in the
-    /// learner's memory owes the shared file.
-    fn unshare_from(&self, persona: &str, from_uid: &str) -> Result<usize> {
+    /// Drop every copy of the learned facts `from_uids` — what forgetting
+    /// or withdrawing one in the learner's memory owes the shared file.
+    fn unshare_from(&self, persona: &str, from_uids: &[String]) -> Result<usize> {
         self.writable()?;
-        let n = self.conn.execute(
-            "DELETE FROM shared_facts WHERE learned_by = ?1 AND from_uid = ?2",
-            [persona, from_uid],
-        )?;
+        let tx = self.conn.unchecked_transaction()?;
+        let mut n = 0;
+        for from_uid in from_uids {
+            n += tx.execute(
+                "DELETE FROM shared_facts WHERE learned_by = ?1 AND from_uid = ?2",
+                [persona, from_uid.as_str()],
+            )?;
+        }
+        tx.commit()?;
         scrub(&self.conn)?;
         Ok(n)
     }
@@ -1122,13 +1278,16 @@ pub fn forget_chat(store_dir: &Path, persona: &str, chat: &str) -> Result<Forgot
     Ok(out)
 }
 
-/// Forget one record, and every shared copy of it.
+/// Forget one record, and every shared copy of it — including a copy made
+/// before it was corrected, found through `replaces`.
 pub fn forget(store_dir: &Path, persona: &str, uid: &str) -> Result<usize> {
-    Memory::open(store_dir, persona)?.forget(uid)?;
-    if Shared::path(store_dir).is_file() {
-        return Shared::open(store_dir)?.unshare_from(persona, uid);
+    let memory = Memory::open_to_edit(store_dir, persona)?;
+    let lineage = memory.lineage(uid)?;
+    memory.forget(uid)?;
+    match memory.shared()? {
+        Some(shared) => shared.unshare_from(persona, &lineage),
+        None => Ok(0),
     }
-    Ok(0)
 }
 
 #[cfg(test)]

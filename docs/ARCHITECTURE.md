@@ -1164,6 +1164,17 @@ module.
     only inferred ones can; the split is enforced at `Memory::add_fact`.
   - Text is append-only: `correct` invalidates and inserts an owner-origin row
     with `replaces`, keeping the source. Only `forget` deletes.
+  - A shared copy follows its fact: `correct` re-points it at the new row in
+    the owner's wording, `invalidate` drops it, and `forget` drops copies of
+    every row in the `replaces` chain. The two files cannot share one commit,
+    so the chain is the backstop: a copy left behind can never outlive the
+    fact it copied (review of #463).
+  - `approve` acts on a candidate only; a withdrawn row stays withdrawn, so a
+    fact and its correction are never both recallable.
+  - A shared row whose audience or table this binary cannot read is skipped
+    and counted (`Listing::unreadable`) — never shown, never fatal to the
+    listing — and `Shared::resolve` reads ids from the table, so it can still
+    be unshared.
   - Closed sets are stored by their serde names and read back through
     `Default`, which is the narrowest variant: an unknown origin is untrusted,
     an unknown status is a candidate.
