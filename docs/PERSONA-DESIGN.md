@@ -898,6 +898,15 @@ All of it rides in the message stream; nothing touches the system prompt
   unknown is never clean. (`arm_for_content` today arms only `private`, only
   for images, briefs and appraisal stems — it cannot carry an origin, which
   is why the fold must arm; found on review.)
+
+  **As built (2026-10-01): two stems, not one.** `arm_for_content` re-reads
+  the whole conversation at *every* run start, not only on a torn record, so
+  one stem arming both would make every chat that recalled anything
+  untrusted — and the writer (§9.6) would then turn everything after it into
+  candidates. The harness picks the stem by what it folds: clean memory arms
+  `private`; a block holding any record of untrusted origin opens with the
+  other stem and arms both. What the fold armed, a resumed chat re-derives
+  exactly (`persona::recall`).
 - **On demand**, two tools over this persona's stores only: `recall`
   (search episodes and facts) and `recall_open` (the transcript turns an
   episode points at).
