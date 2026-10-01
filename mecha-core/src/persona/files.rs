@@ -85,6 +85,7 @@ impl Kind {
 pub fn roots(store: &Store, p: &Persona) -> Vec<(String, PathBuf)> {
     let all = store.files_roots(p);
     let last = all.len().saturating_sub(1);
+    let mut seen = std::collections::HashSet::new();
     all.into_iter()
         .enumerate()
         .map(|(i, root)| {
@@ -107,6 +108,10 @@ pub fn roots(store: &Store, p: &Persona) -> Vec<(String, PathBuf)> {
             };
             (prefix, root)
         })
+        // A group named twice in `groups` is one folder, listed once: two
+        // roots of one prefix would name every file in it twice (review of
+        // #459, pass 9). First seen wins, so the order of the rest holds.
+        .filter(|(_, root)| seen.insert(root.clone()))
         .collect()
 }
 
@@ -1234,6 +1239,23 @@ mod tests {
             "{block}"
         );
         assert!(block.contains("big.pdf is 3 MB"), "{block}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Pass 9 of #459: `groups = ["kelp", "kelp"]` is one folder. Listed
+    /// twice, every file in it had one name twice — a duplicate key that
+    /// takes the page's Files list down, and the text folded in twice.
+    #[test]
+    fn a_group_named_twice_is_listed_once() {
+        let (dir, store, mut p) = world();
+        p.settings.groups.push(p.settings.groups[0].clone());
+        let sources = list(&roots(&store, &p));
+        let names: Vec<&str> = sources.iter().map(|s| s.name.as_str()).collect();
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(names.len(), unique.len(), "{names:?}");
+        assert!(names.contains(&"@kelp/survey.txt"), "{names:?}");
         std::fs::remove_dir_all(dir).ok();
     }
 }

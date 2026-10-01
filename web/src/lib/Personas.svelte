@@ -1,5 +1,5 @@
 <script>
-  import { tick, untrack } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import TomlForm from './TomlForm.svelte';
   import MdForm from './MdForm.svelte';
@@ -41,6 +41,13 @@
   let sources = $state([]);
   let sourcesNote = $state('');
   let sourcesTimer = null;
+  // The poll stops with the page, not with the last read (review of #459) —
+  // and a load still in flight when it closes does not start it again.
+  let gone = false;
+  onDestroy(() => {
+    gone = true;
+    clearTimeout(sourcesTimer);
+  });
   let key = $state(null);
   let run = $state(emptyRun());
   // The open chat's safety switches, as its transcript reports them (§12).
@@ -392,7 +399,7 @@
     } catch {
       sources = [];
     }
-    if (sources.some((s) => s.processing)) sourcesTimer = setTimeout(loadSources, 3000);
+    if (!gone && sources.some((s) => s.processing)) sourcesTimer = setTimeout(loadSources, 3000);
   }
 
   async function addSources(files) {
