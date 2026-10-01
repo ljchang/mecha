@@ -365,7 +365,8 @@ and so is one that can never be on in a trial: only `graph` (and its
 `tasks`), `search`, and the front door (and its `publishing`) can be. Your
 mail, documents, web and the rest stay out of every trial home by design,
 so a task that needs mail gets it from a fixture server (`[fixtures]` in
-the manifest), not from the `mail` feature.
+the experiment's manifest, not in `environment.toml`), not from the `mail`
+feature.
 
 `requires` checks the switches only. It does not check that a switched-on
 feature is set up — `search` with no backend configured passes — and it is
