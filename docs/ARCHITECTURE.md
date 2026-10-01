@@ -1245,8 +1245,14 @@ module.
     (`carries_now`), so it lands in `messages[0]`, which compaction keeps
     whole. It holds about-me, the user facts the persona may see (its own,
     plus `Shared::visible_to` its groups under `user_facts = "shared"`),
-    its own facts and recent episodes, within `BUDGET_CHARS`, honouring each
-    `[memory]` switch read **live**. Candidates are never recalled.
+    its own facts and recent episodes, honouring each `[memory]` switch read
+    **live**. Candidates are never recalled, and a copy the owner shared of
+    the persona's own fact is not said twice.
+    - `BUDGET_CHARS` is split, not shared first-come: about-me takes at most
+      a third, each note a fair share and cut rather than dropped; recent
+      episodes have a third of their own, so facts can never price them out;
+      facts share the rest, and a cut section says how many it left out
+      (review of #477).
     - **Two stems, chosen by the harness.** `MEMORY_STEM` arms `private`;
       `UNTRUSTED_MEMORY_STEM` (any record of untrusted origin folded) arms
       `private` and `untrusted`. `Taint::arm_for_content` re-reads the
@@ -1255,8 +1261,10 @@ module.
       the writer would then have turned all its later memories into
       candidates. `stem_of` is the one predicate for the taint, the harness
       voice and `carries`; typing a stem only arms more.
-    - An unreadable store is a notice on the page and a log line, and the
-      turn goes ahead without memory — never "remembers nothing".
+    - An unreadable store, or an about-me file that cannot be read or is
+      over `MAX_PROSE_BYTES`, is a notice on the page and a log line
+      (`Recalled::problems`), and the turn goes ahead without it — never
+      "remembers nothing".
     - `what_a_persona_remembers_rides_in_the_first_turn_with_its_taint`
       drives the real doors and reads the chat's taint back.
   - **The writer** (`persona::writer`, §9.6) runs from `mecha persona memory

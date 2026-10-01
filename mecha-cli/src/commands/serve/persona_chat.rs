@@ -1245,17 +1245,31 @@ impl PersonaChats {
             mecha_core::persona::recall::chat_start(&Store::load(&dir), &persona)
         })
         .await;
+        let unread = |why: &str| {
+            let _ = notices.send(WireEvent::Notice {
+                text: format!(
+                    "Part of its memory could not be read ({why}), so this chat starts without it."
+                ),
+            });
+        };
         match read {
-            Ok(Ok(block)) => block.map(|b| b.text),
+            Ok(Ok(recalled)) => {
+                // Read, but not all of it: said, as an unreadable store is.
+                for problem in &recalled.problems {
+                    tracing::warn!("a persona's memory was not all read: {problem}");
+                    unread(problem);
+                }
+                recalled.block.map(|b| b.text)
+            }
             Ok(Err(e)) => {
                 tracing::warn!("a persona's memory could not be read: {e:#}");
-                let _ = notices.send(WireEvent::Notice {
-                    text: "Its memory could not be read, so this chat starts without it.".into(),
-                });
+                unread("its store");
                 None
             }
+            // A panic in the read is no quieter than an error (review of #477).
             Err(e) => {
                 tracing::warn!("reading a persona's memory failed: {e}");
+                unread("the read failed");
                 None
             }
         }
