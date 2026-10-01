@@ -122,7 +122,60 @@ was stripped from project layers but missing from
 `trial_env::OPERATOR_ONLY_TABLES`, so an experiment environment could point
 OCR at a remote server or run the PDF parser unconfined. `config_at` now
 refuses it like the other five.
-On this machine `mecha features` reads 20 of 21 rows on; `messages` is off.
+On 2026-09-30 `mecha features` read 20 of 21 rows on here; `messages` was off.
+
+**2026-09-30/10-01 — modular installs, steps 1–3: every feature follows its
+switch (#443, #445, #449, #451, #452).** Each sub-step below was one PR,
+merged by the mecha-d7 lane on a clean review pass. Steps 2 and 3a went live
+in mecha-d7's deploy of `346bb8a2` on the evening of 2026-09-30, and 3b in
+mecha-ce's deploy of `e856ce36` at 00:34Z on 2026-10-01 (HANDOFF's dated
+machine-state log has both).
+
+- **1a, #443:** the `[features]` table (`Config`, `ConfigLayer`, `apply`, the
+  project strip), `mecha features enable|disable` written in place by
+  `feature::write_switches` (`toml_edit`, so comments and a newer build's keys
+  survive), the upgrade notice (`feature::announcements`, printed by
+  `commands::features::print_notices`), and the environment refusal. It gated
+  nothing. This machine's table was written in the same deploy, 12 switches
+  true and `messages` absent.
+- **1b, #445:** registration and connections ask `feature::switched_on`,
+  never the readout; `feature::server_refusal` covers the four verbs that
+  spawn the graph server themselves; `mecha serve` refuses without `web`.
+- **2, #449:** `GET /api/features` (`serve/features.rs`) returns the same rows
+  as `mecha features --json` plus `pending`, re-reading the global file per
+  request and opening no socket. The web app reads each row's `shown`
+  (`web/src/lib/features.js`), so it never restates which states hide.
+  Settings → Features lists every feature with its command. Building it
+  found that `state` answered `Off` for a switched-on feature missing its
+  settings, which §5 calls `Unready`; `state` now converts a switched
+  feature's own `off`, and anything standing on an `Unready` need reads
+  `Unready`, never `On`.
+- **3a, #451:** `feature::refusal` is the one predicate behind a route's
+  404 `feature_off` and a verb's one sentence. Every route is added through
+  `serve::api()`'s `.at(path, owner, …)` (`serve/gate.rs`), and the guard sits
+  inside `owner_guard` and reads the file per request (`Gate::Live`). Verbs
+  call `commands::features::require`, which refuses when the config does not
+  load. It found that the graph's review queue, `mecha review accept`, the
+  web's entity create and merge, and the TUI's `/queues` and entity panel
+  ran `mecha-graph` directly and wrote the owner's graph with `graph = false`.
+  The owner's ruling L1: the library follows `image`, and `[tools]`
+  withholds only the model's library tools.
+- **3b, #452:** `Feature::gated` is true for every feature, so Slack,
+  personas, voice, incognito, the front door (with `factory-publish` now in
+  `server_feature`) and messages refuse whole. The owner's ruling M1:
+  `mecha msg` refuses when messages is off, reads included. Reading a store
+  and deleting cached data stay open; changing an entry is refused.
+  `mecha serve` mounts its voice facade only with calls on at start, and the
+  TUI registers `show_file` only with Slack on. `trial_env::config_at`
+  defaults `frontdoor` for a carried `factory-publish`, as it does `graph`.
+
+Twenty review passes across the five PRs (#443: 1, #445: 4, #449: 4, #451: 5,
+#452: 6, counted from each PR's record) found the same gap four times, all in
+#451 and #452:
+something reached a feature without going through its verb (the traps
+section has the rule). On 2026-09-30 the owner had `messages` switched on, and on
+2026-10-01 `mecha features` read 21 of 21 on, so nothing refused on this
+machine.
 
 **2026-09-30 — paint the part of a picture to change (#424, #429).** The
 owner asked for the web chat's Edit button to become a modal where areas can
@@ -8616,6 +8669,25 @@ before retrying it.
   wrong answer is the one you were hoping for.
 
 ### Containment and state
+
+**Guard the driver, not only the verb.** Features step 3 put a guard at the
+top of each feature's CLI verb, and review found four places that reached
+the same feature without the verb: the TUI's `/queues` and entity panel ran
+`mecha-graph` directly (#451); the TUI's `/send` and `/remote-control` called
+Slack's `send_file` and `attach`; the TUI's `/frontdoor` opened and
+reconciled the request store in-process, and its child's refusal went to a
+nulled stderr; and `/polls` called `pick_next` directly (all #452). Each
+wrote or posted with the switch off. **Anything that opens a feature's store
+or talks to its server asks for itself; the verb is one caller among
+several.**
+
+**A guard and what it guards must read the switch at the same time.**
+#451's route gate was a start-time snapshot while the nav re-read the file
+per page load. Enabling a feature while `serve` ran showed its tab and then
+404'd every request on it, naming the command just run, and disabling one
+kept its routes writing until a restart. Reading the file per request fixed
+both directions. **When two surfaces show one fact, give them one read of
+it.**
 
 **A vouch checked after the untrusted side already holds the data is not a
 gate.** #376 first refused an unvouched spoken turn at the voice facade, but
