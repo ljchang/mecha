@@ -440,10 +440,7 @@ fn migrate_memory(conn: &Connection) -> Result<()> {
             let mut sql = String::from(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS recall_fts USING fts5 (uid UNINDEXED, text);
                  INSERT INTO recall_fts (recall_fts, rank) VALUES ('secure-delete', 1);
-                 CREATE TABLE IF NOT EXISTS vectors (uid TEXT PRIMARY KEY, vec BLOB NOT NULL);
-                 INSERT INTO recall_fts (uid, text) SELECT uid, summary || ' ' || topics || ' ' ||
-                     decisions || ' ' || open_threads FROM episodes
-                     WHERE uid NOT IN (SELECT uid FROM recall_fts);",
+                 CREATE TABLE IF NOT EXISTS vectors (uid TEXT PRIMARY KEY, vec BLOB NOT NULL);",
             );
             for t in Table::ALL {
                 sql.push_str(&format!(
@@ -452,8 +449,32 @@ fn migrate_memory(conn: &Connection) -> Result<()> {
                     t.sql()
                 ));
             }
-            sql.push_str("PRAGMA user_version = 3;");
             tx.execute_batch(&sql)?;
+            // Episodes through `episode_words`, the one definition of an
+            // episode's text, rather than its raw JSON columns (review of #481).
+            let episodes: Vec<(String, String, String, String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT uid, summary, topics, decisions, open_threads FROM episodes
+                     WHERE uid NOT IN (SELECT uid FROM recall_fts)",
+                )?;
+                let rows = stmt.query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                })?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            for (uid, summary, topics, decisions, open) in episodes {
+                let words = words_of(
+                    &summary,
+                    &unlist(&topics),
+                    &unlist(&decisions),
+                    &unlist(&open),
+                );
+                tx.execute(
+                    "INSERT INTO recall_fts (uid, text) VALUES (?1, ?2)",
+                    params![uid, words],
+                )?;
+            }
+            tx.execute_batch("PRAGMA user_version = 3;")?;
         }
         tx.commit()?;
         debug_assert_eq!(SCHEMA, 3, "a new step goes above, and this moves with it");
@@ -678,15 +699,22 @@ fn recall_words(query: &str) -> Option<String> {
     (!words.is_empty()).then(|| words.join(" OR "))
 }
 
-/// An episode's words, as the index holds them.
+/// An episode's words — what the index holds and what is embedded. The one
+/// definition, so a record backfilled and one inserted live are the same
+/// text, and a vector is made from prose, not from JSON (review of #481).
 fn episode_words(e: &Episode) -> String {
-    format!(
-        "{} {} {} {}",
-        e.summary,
-        e.topics.join(" "),
-        e.decisions.join(" "),
-        e.open_threads.join(" ")
-    )
+    words_of(&e.summary, &e.topics, &e.decisions, &e.open_threads)
+}
+
+fn words_of(summary: &str, topics: &[String], decisions: &[String], open: &[String]) -> String {
+    let mut out = summary.trim().to_owned();
+    for part in [topics, decisions, open] {
+        if !part.is_empty() {
+            out.push(' ');
+            out.push_str(&part.join("; "));
+        }
+    }
+    out
 }
 
 /// Which records a listing returns.
@@ -1277,18 +1305,26 @@ impl Memory {
         })
     }
 
-    /// Active records with no vector yet, oldest first, at most `limit` —
-    /// what the writer embeds after writing.
+    /// Active records with no vector yet — episodes, then each fact table —
+    /// at most `limit`: what the writer embeds after writing.
     pub fn unembedded(&self, limit: usize) -> Result<Vec<(String, String)>> {
-        let mut out = Vec::new();
-        for t in std::iter::once("episodes").chain(Table::ALL.map(Table::sql)) {
-            let text = if t == "episodes" {
-                "summary || ' ' || topics || ' ' || decisions || ' ' || open_threads"
-            } else {
-                "text"
-            };
+        let embedded: std::collections::HashSet<String> = {
+            let mut stmt = self.conn.prepare("SELECT uid FROM vectors")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let mut out: Vec<(String, String)> = self
+            .episodes(Filter::Recallable)?
+            .into_iter()
+            .filter(|e| !embedded.contains(&e.uid))
+            .map(|e| {
+                let words = episode_words(&e);
+                (e.uid, words)
+            })
+            .collect();
+        for t in Table::ALL.map(Table::sql) {
             let mut stmt = self.conn.prepare(&format!(
-                "SELECT uid, {text} FROM {t} WHERE status = ?1
+                "SELECT uid, text FROM {t} WHERE status = ?1
                  AND uid NOT IN (SELECT uid FROM vectors) ORDER BY ingested_at"
             ))?;
             let rows = stmt.query_map([wire(&Status::Active)], |r| {
@@ -1391,7 +1427,7 @@ impl Memory {
         if let Some(fts) = recall_words(query) {
             let mut stmt = self.conn.prepare(
                 "SELECT uid FROM recall_fts WHERE recall_fts MATCH ?1
-                 ORDER BY bm25(recall_fts) LIMIT 200",
+                 ORDER BY bm25(recall_fts)",
             )?;
             let uids = stmt.query_map([fts], |r| r.get::<_, String>(0))?;
             let mut rank = 0;
