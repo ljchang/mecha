@@ -733,3 +733,95 @@ fn a_message_with_a_block_this_build_does_not_know_keeps_the_rest() {
     assert_eq!(chat.turns[0].message.as_ref().unwrap().text(), "hello");
     assert_eq!(stretches(&chat, 0).len(), 1, "the chat stays clean");
 }
+
+#[test]
+fn a_test_chat_never_becomes_a_memory_and_an_unreadable_one_is_said() {
+    let dir = scratch().join("sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let meta = |id: &str, kind: &str| {
+        format!(
+            "{{\"record\":\"meta\",\"id\":\"{id}\",\"created_at\":\"2026-10-01T03:00:00Z\",\"provider\":\"local\",\"model\":\"m\",\"workspace\":\"/tmp\",\"title\":\"persona: Mara\"{kind}}}\n"
+        )
+    };
+    let body = owner("hi") + &persona_says("hello") + &checkpoint(false);
+    std::fs::write(dir.join("real.jsonl"), meta("real", "") + &body).unwrap();
+    std::fs::write(
+        dir.join("smoke.jsonl"),
+        meta("smoke", ",\"kind\":\"test\"") + &body,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("trial.jsonl"),
+        meta("trial", ",\"kind\":\"experiment\"") + &body,
+    )
+    .unwrap();
+    std::fs::write(dir.join("torn.jsonl"), "{not json\n").unwrap();
+    std::fs::write(dir.join("real.persona.json"), "{}").unwrap();
+
+    let p = pending_chats(&dir, None, std::time::Duration::ZERO);
+    assert_eq!(
+        p.due.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        ["real"]
+    );
+    assert_eq!(p.marked, 2);
+    assert_eq!(p.problems.len(), 1, "{:?}", p.problems);
+    assert!(p.problems[0].contains("torn"));
+
+    // Recent chats wait unless named.
+    let p = pending_chats(&dir, None, std::time::Duration::from_secs(3600));
+    assert!(p.due.is_empty());
+    let p = pending_chats(&dir, Some("real"), std::time::Duration::from_secs(3600));
+    assert_eq!(p.due.len(), 1);
+    // A missing folder is a persona that has not chatted.
+    assert_eq!(
+        pending_chats(&dir.join("nope"), None, std::time::Duration::ZERO),
+        Pending::default()
+    );
+}
+
+#[test]
+fn an_owner_correction_during_the_model_call_is_not_undone() {
+    let w = world();
+    run(
+        &w,
+        stretch(Origin::ModelClean),
+        vec![add(true, Kind::Stated, "Teaches on Thursdays.")],
+    );
+    let m = Memory::open(&w.dir, "mara").unwrap();
+    // What the writer read before asking the model...
+    let snapshot = known(&m).unwrap();
+    let old = snapshot[0].uid.clone();
+    // ...and what the owner did while it was asking.
+    m.correct(&old, "Teaches on Fridays.").unwrap();
+    let chat = read_chat(&two_clean_then_untrusted());
+    let upto = m.written_upto("c1").unwrap();
+    let out = m
+        .write_stretch("c1", upto, upto + 2, |m| {
+            apply(
+                m,
+                &w.persona,
+                "c1",
+                &chat,
+                stretch(Origin::ModelClean),
+                &snapshot,
+                Proposal {
+                    episode: None,
+                    ops: vec![Op::Update {
+                        id: old[..8].into(),
+                        text: "Teaches on Mondays.".into(),
+                    }],
+                },
+            )
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!((out.updated, out.refused), (0, 1));
+    assert_eq!(
+        m.facts(Table::User, Filter::Recallable)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.text)
+            .collect::<Vec<_>>(),
+        ["Teaches on Fridays."]
+    );
+}

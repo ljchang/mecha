@@ -175,7 +175,7 @@ class Scripts(unittest.TestCase):
             calls,
             "-p",
             "x",
-            ["reflect", "distill", "validate", "compare", "learn", "propose-retirements", "ruminate", "--compare-sources"],
+            ["reflect", "distill", "persona", "validate", "compare", "learn", "propose-retirements", "ruminate", "--compare-sources"],
         )
         self.assert_pinned(calls, "--judge-provider", "j", ["validate"])
         # A pinned night with the judge unset judges on the pinned model, not
@@ -189,7 +189,7 @@ class Scripts(unittest.TestCase):
             calls,
             "-p",
             "local",
-            ["reflect", "distill", "validate", "compare", "learn", "propose-retirements", "ruminate", "--compare-sources"],
+            ["reflect", "distill", "persona", "validate", "compare", "learn", "propose-retirements", "ruminate", "--compare-sources"],
         )
         self.assert_pinned(calls, "--judge-provider", "local", ["validate"])
         # An unreadable config is not a router, nor is a flag mecha ignores.

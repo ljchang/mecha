@@ -596,9 +596,6 @@ impl Command {
                 a,
                 sessions::Args::Appraise { probe: true, .. } | sessions::Args::Compare { .. }
             ),
-            // `workflow resume` starts `mecha tasks work` as a child, which
-            // holds for itself; held here too, `--now` signalled the parent
-            // and left the child running unheld (review of D13).
             // `persona memory write` runs the memory writer on the local
             // model, so it holds and follows like `distill`; every other
             // `persona` verb reads or edits the store and runs no model.
@@ -608,6 +605,9 @@ impl Command {
                     cmd: commands::persona::MemoryCmd::Write { .. }
                 }
             ),
+            // `workflow resume` starts `mecha tasks work` as a child, which
+            // holds for itself; held here too, `--now` signalled the parent
+            // and left the child running unheld (review of D13).
             Command::Workflow(_) => false,
             // Long-lived: hold per turn (`follow::Follower::enter`) or per
             // fire (`trigger::run_agent`), or do not follow yet (`chat`,

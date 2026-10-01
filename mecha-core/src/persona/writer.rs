@@ -284,7 +284,8 @@ fn short(uid: &str) -> &str {
 }
 
 /// An id the model named, if it is one the writer could have shown: hex, at
-/// least four digits, at most a whole uid. Anything else is turned away
+/// most a whole uid, of which the first eight digits are kept. Shown ids
+/// are eight digits, so a shorter one is well-formed but matches nothing. Anything else is turned away
 /// rather than sliced — a model-written string reaches here from an
 /// untrusted stretch too, and slicing it by bytes could panic the writer
 /// (review of #468).
@@ -486,11 +487,14 @@ pub fn apply(
     // two updates of one id would otherwise leave two live replacements of
     // one fact — the pair `correct` refuses (review of #468).
     let mut consumed: HashSet<String> = HashSet::new();
-    let target = |id: &str, consumed: &HashSet<String>| -> Option<&Fact> {
+    // Found in the snapshot, then re-read inside the transaction this runs
+    // in: the owner may have corrected, withdrawn or pinned it during the
+    // model call, which held no lock (review of #468).
+    let target = |id: &str, consumed: &HashSet<String>| -> Option<Fact> {
         let id = named_id(id)?;
-        by_short
-            .get(id.as_str())
-            .copied()
+        let shown = by_short.get(id.as_str()).copied().flatten()?;
+        m.fact(&shown.uid)
+            .ok()
             .flatten()
             .filter(|f| changeable(f) && !consumed.contains(&f.uid))
     };
@@ -551,7 +555,7 @@ pub fn apply(
                     // later `add` of it is a duplicate.
                     added.push((old.table, text.clone()));
                     m.supersede(
-                        old,
+                        &old,
                         NewFact {
                             text,
                             kind: old.kind,
@@ -611,6 +615,93 @@ pub fn core(persona: &Persona) -> String {
 pub fn nothing_to_keep(persona: &Persona) -> bool {
     let s = &persona.settings.memory;
     !s.episodic && !s.semantic && s.user_facts == UserFacts::Off
+}
+
+/// The chats of one persona that are due for the writer.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Pending {
+    /// `(chat id, transcript)`, sorted by id.
+    pub due: Vec<(String, std::path::PathBuf)>,
+    /// Test and experiment chats, left out as every corpus reader leaves
+    /// them out.
+    pub marked: usize,
+    /// What could not be read, each said — never an empty queue.
+    pub problems: Vec<String>,
+}
+
+/// List a persona's `sessions/` for the writer. A missing folder is a
+/// persona that has not chatted; an unreadable one is a problem. A chat
+/// changed within `idle` may still be going and waits, unless it is the one
+/// `only` names. A test or experiment chat is never due: the mark CLAUDE.md
+/// describes as excluded from every corpus reader
+/// ([`crate::session::SessionMeta::admitted_by_default`]) — a smoke test of
+/// the persona page must not become a memory — and a header that cannot be
+/// read is unknown, which is not admitted (review of #468).
+pub fn pending_chats(
+    sessions: &std::path::Path,
+    only: Option<&str>,
+    idle: std::time::Duration,
+) -> Pending {
+    let mut out = Pending::default();
+    let entries = match std::fs::read_dir(sessions) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return out,
+        Err(e) => {
+            out.problems
+                .push(format!("{} could not be read ({e})", sessions.display()));
+            return out;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                out.problems
+                    .push(format!("a chat could not be listed ({e})"));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let Some(id) = path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .and_then(|f| f.strip_suffix(".jsonl"))
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if only.is_some_and(|c| c != id) {
+            continue;
+        }
+        match crate::session::Session::peek_meta(&path) {
+            Some(meta) if meta.admitted_by_default() => {}
+            Some(_) => {
+                out.marked += 1;
+                continue;
+            }
+            None => {
+                out.problems
+                    .push(format!("{id} has no readable header; left alone"));
+                continue;
+            }
+        }
+        let age = match entry.metadata().and_then(|m| m.modified()) {
+            Ok(t) => t.elapsed().ok(),
+            Err(e) => {
+                out.problems.push(format!(
+                    "{id} could not be checked ({e}); left for a later run"
+                ));
+                continue;
+            }
+        };
+        // A clock that reads the file as from the future is recent.
+        if only.is_none() && age.is_none_or(|age| age < idle) {
+            continue;
+        }
+        out.due.push((id, path));
+    }
+    out.due.sort();
+    out
 }
 
 /// What the model server is, as far as the writer can tell.

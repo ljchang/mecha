@@ -1226,8 +1226,19 @@ module.
     incognito chat will use.
   - **The writer** (`persona::writer`, §9.6) runs from `mecha persona memory
     write`, which `scripts/ruminate.sh` calls nightly; nothing writes after a
-    chat yet. It never runs during a chat, and only on a local provider,
-    because it reads whole transcripts (R29's rule).
+    chat yet. It never runs during a chat, and only on a provider that
+    `config::provider_is_local` accepts — loopback, no fallbacks, the
+    incognito gate — because it reads whole transcripts (R29). `kind =
+    "local"` is the wire dialect and can point at another machine.
+    - `pending_chats` lists what is due: never a test or experiment chat
+      (`SessionMeta::admitted_by_default`, the mark every corpus reader
+      honours), and a header it cannot read is a problem, not a chat.
+    - Each chat is written by **the model it ran on** (owner, 2026-10-01),
+      and only while that model is the router's resident one, or the router
+      is empty (`pick_model`), so the 2026-09-27 rule that background work
+      never swaps the resident model still holds. A router that will not say
+      what it has loaded makes every chat wait. `persona memory write` is
+      model-running and held in `main.rs`; no other `persona` verb is.
     - A turn is the n-th `message` record in the file, not a position in the
       loaded list: a compaction's `rewrite` moves list positions, while the
       append-only file never moves an ordinal. `source` and the ledger
@@ -1241,7 +1252,12 @@ module.
       stretch's request is built without the untrusted one;
       `a_chat_is_written_once_in_two_stretches_and_the_clean_one_never_sees_the_web`
       reads the captured request to check it.
+    - A stretch with no reply leaves the ledger where it is: the owner's turn
+      waits for the answer that makes it worth reading.
     - `apply` holds the rules. Untrusted stretches only add, as candidates.
+      An id the model names is validated (`named_id`), consumed once per
+      proposal, and re-read inside the transaction, so a correction the
+      owner made during the model call stands.
       Only model-origin, active, unpinned facts can be updated or withdrawn.
       A kind switched off in `[memory]` is turned away, and so is a duplicate.
       If memory is entirely off, nothing is asked and the ledger still
