@@ -1734,8 +1734,9 @@ struct LibraryAsk {
     /// People in the scene who are no library character, each described.
     extras: Vec<String>,
     style: Option<String>,
-    /// Words the model wrote that now ride in a cast member's `doing` or
-    /// `wearing` — an extra that was the persona (`cast_self`). The library
+    /// Words the model wrote in an extra that was the persona (`cast_self`):
+    /// all of them after the name, not only those that reached its `doing`
+    /// or `wearing` — conservative, for a guard (review of #454). The library
     /// guard reads them with the prompt and the extras, or a character named
     /// there would be drawn as a stranger unguarded (review of #454).
     folded: Vec<String>,
@@ -2119,12 +2120,13 @@ impl ImageGenerate {
         // which no guard sees (review of #454). So a full cast with the
         // persona in the scene is refused, naming the cap; a scene that does
         // not name it draws as written.
+        let in_prompt = named_at(prompt);
         if let Some(full) = ask
             .as_ref()
             .map(|a| a.cast.len())
             .filter(|&n| n >= crate::imagelib::MAX_CAST)
         {
-            if from_extra.is_some() || named_at(prompt).is_some() {
+            if from_extra.is_some() || in_prompt.is_some() {
                 return Err(format!(
                     "Your `cast` is full ({full} people) and the scene includes you. One \
                      picture holds at most {} people from the library, you included: drop \
@@ -2134,7 +2136,6 @@ impl ImageGenerate {
             }
             return Ok(());
         }
-        let in_prompt = named_at(prompt);
         if in_prompt.is_none() && from_extra.is_none() {
             return Ok(());
         }
@@ -2155,7 +2156,28 @@ impl ImageGenerate {
         // lounging on a couch, wearing a lace set". Otherwise they point at
         // the scene the prompt describes.
         let (wearing, doing) = match (&from_extra, in_prompt) {
-            (Some(after), _) => self_clauses(after),
+            // An extra is removed once cast, so its words have nowhere else
+            // to go: a one-word action ("Mara waving") is kept, where the
+            // prompt path's two-word floor would drop it (review of #454).
+            (Some(after), _) => match self_clauses(after) {
+                (wearing, None) => {
+                    let lead = after
+                        .split([',', '.', ';', '\n'])
+                        .next()
+                        .unwrap_or("")
+                        .trim();
+                    let lead = lead
+                        .char_indices()
+                        .map(|(i, _)| i)
+                        .find(|&i| {
+                            lead.get(i..i + 8)
+                                .is_some_and(|w| w.eq_ignore_ascii_case("wearing "))
+                        })
+                        .map_or(lead, |i| lead[..i].trim());
+                    (wearing, Some(lead.to_string()).filter(|d| !d.is_empty()))
+                }
+                both => both,
+            },
             (None, Some((0, end))) => self_clauses(&prompt[end..]),
             _ => (None, None),
         };
@@ -4978,7 +5000,7 @@ mod tests {
     /// made, leaving two entries the model wrote to the compiler.
     #[tokio::test]
     async fn a_persona_cast_from_its_own_words_wherever_it_writes_them() {
-        let (url, seen) = fake(vec![done(), done(), done()], "200 OK").await;
+        let (url, seen) = fake(vec![done(), done(), done(), done()], "200 OK").await;
         let dir = tempdir();
         let lib = library_with(&["maya", "john", "ann", "bea", "cy"]);
         let base = Arc::new(tool(&url).with_library_dir(lib.clone()));
@@ -5151,6 +5173,23 @@ mod tests {
             out.content
         );
         assert_eq!(draws(), before, "a refused call drew");
+
+        // A one-word action in a persona extra is kept: the extra is gone
+        // once cast, so the word has nowhere else to go.
+        let out = mara
+            .call(
+                json!({"prompt": "a harbour at noon", "extras": ["Mara waving"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            manifest_of(&dir, &out.content)["cast"][0]["doing"],
+            "waving",
+            "{}",
+            out.content
+        );
 
         // Named in passing in someone else's extra: refused before drawing,
         // in words the model can act on.
