@@ -1139,6 +1139,24 @@ module.
     correction mining. Without the first, a paper's words would enter a chat
     unmarked; without the second, they would draw as the owner's message.
     `the_personas_files_ride_in_the_first_turn_once` checks both.
+- **A persona's citations are checked by the harness, never by a tool**
+  (`persona::cite`, §10.4). Each `[file, p. N: "quote"]` in a reply is
+  looked up with `grounding::admit` in what the chat had *received* by then:
+  the files block and every `file_read` / `document_read` result, through
+  `grounding::calls` (first seen wins, a stale or failed result is no
+  evidence), over `Session::messages_ever` so a page compaction evicted
+  still counts for the answer that quoted it.
+  - Both sides are normalised the same way before containment: case,
+    typographic quotes and dashes, ligatures, a word hyphenated across a
+    line break, and the punctuation around each word. `mark` finds the span
+    by the same word comparison, so the passage marked is the passage
+    admitted.
+  - "Quoted" is the most a check says — never "verified". A real quote can
+    support the wrong claim, and the page says so.
+  - A citation opens the page **as text the chat received**
+    (`PersonaChats::cited`), never the file: a paper is third-party content,
+    and nothing but an image is served renderable (`serve::files`). A
+    CSP-sandboxed PDF would be safe and Chrome will not render one.
 
 ## Security model
 

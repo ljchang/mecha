@@ -29,7 +29,7 @@ assert.equal(withUnlock('/x?a=1', 'z'), '/x?a=1&unlock=z');
 assert.throws(() => personaUrl('mara', '/delete', null));
 assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 16);
+assert.equal(ENDPOINTS.length, 17);
 assert.ok(ENDPOINTS.includes('/api/personas/X/sources') && ENDPOINTS.includes('/api/personas/X/sources/remove'));
 assert.ok(ENDPOINTS.includes('/api/personas/authoring') && ENDPOINTS.includes('/api/personas/X/files'));
 assert.equal(authoringUrl('t'), '/api/personas/authoring?unlock=t');
@@ -288,6 +288,39 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   assert.equal(sourceLine({ name: '@group:all/g.md', bytes: 2048, shared: true, ready: true, processing: false }), '2 KB · ready · group all');
   assert.equal(sourceLine({ name: 'paper.pdf', bytes: 2048, shared: false, ready: false, on_request: true, processing: false }), '2 KB · read when asked');
   assert.equal(sourceLine({ name: 'scan.heic', bytes: 2048, shared: false, ready: false, processing: false, unreadable: 'scan.heic: a HEIC/HEIF photo' }), '2 KB · not readable');
+}
+
+// A reply cut at its checked citations (§10.4): each found by its own
+// text, a later check of the same text winning, and the words around them
+// kept whole. A quote that is there reads "quoted", never "verified".
+{
+  const { citeSegments, citeNote, citeOpens, citedUrl, applyEvent, emptyRun } = await import('../src/lib/persona.js');
+  const a = '[kelp.pdf, p. 1: "urchins graze kelp"]';
+  const b = '[kelp.pdf, p. 2: "otters eat forty a day"]';
+  const text = `They graze ${a} and ${b}, and again ${a}.`;
+  const checks = [
+    { raw: a, file: 'kelp.pdf', cited: 1, quote: 'urchins graze kelp', status: 'not_found' },
+    { raw: b, file: 'kelp.pdf', cited: 2, quote: 'otters eat forty a day', status: 'not_found' },
+    { raw: a, file: 'kelp.pdf', cited: 1, quote: 'urchins graze kelp', status: 'quoted', found: 1 },
+  ];
+  const segs = citeSegments(text, checks);
+  assert.equal(segs.map((s) => s.text).join(''), text, 'nothing lost or doubled');
+  assert.deepEqual(segs.filter((s) => s.check).map((s) => s.check.status), ['quoted', 'not_found', 'quoted']);
+  assert.deepEqual(citeSegments('plain words', []), [{ text: 'plain words' }]);
+  assert.deepEqual(citeSegments('', null), [{ text: '' }]);
+  assert.equal(citeNote({ status: 'quoted' }).label, 'quoted');
+  assert.match(citeNote({ status: 'quoted' }).title, /not checked for support/);
+  assert.equal(citeNote({ status: 'other_page', found: 4 }).label, 'on p. 4');
+  assert.equal(citeNote({ status: 'not_found' }).tone, 'bad');
+  assert.ok(citeOpens({ status: 'other_page' }) && !citeOpens({ status: 'not_found' }));
+  // The page it was found on, not the one cited; the quote to mark.
+  const url = citedUrl('p-0123456789ab', { file: '@kelp/s.pdf', cited: 2, found: 4, quote: 'a b' }, null);
+  assert.match(url, /^\/api\/persona-chat\/p-0123456789ab\/cited\?/);
+  const q = new URLSearchParams(url.split('?')[1]);
+  assert.deepEqual([q.get('file'), q.get('page'), q.get('quote')], ['@kelp/s.pdf', '4', 'a b']);
+  // The stream's checks replace the page's.
+  const run = applyEvent({ ...emptyRun([], null, checks) }, { type: 'citations', checks: [checks[1]] });
+  assert.deepEqual(run.citations, [checks[1]]);
 }
 
 console.log('persona: ok');
