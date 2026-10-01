@@ -108,13 +108,23 @@ const REPLY = '# Plan\n\n- **one** [p. 2: "a quote"]\n\n```\ncode\n```\n';
   const read = (f) => fs.readFileSync(path.join(here, '..', 'src', 'lib', f), 'utf8');
   const calls = (src) => [...src.matchAll(/<ChatProse\b[^>]*\/>/g)].map((m) => m[0]);
   const chat = calls(read('Chat.svelte'));
-  const finished = chat.filter((c) => c.includes('text={entry.text}'));
-  assert.equal(finished.length, 1, chat.join('\n'));
-  assert.match(finished[0], /actions="mecha"/);
-  assert.match(finished[0], /download=\{!\(incognito \|\| key\.startsWith\(INCOGNITO_PREFIX\)\)\}/);
-  for (const c of [...chat, ...calls(read('Personas.svelte'))]) {
-    if (/text=\{(streaming|run\.streaming)\}/.test(c)) assert.ok(!c.includes('actions'), c);
+  const personas = calls(read('Personas.svelte'));
+  // Every site is counted, so a rename cannot make a check vacuous: one
+  // finished and one streaming reply on each page.
+  const finished = (sites) => sites.filter((c) => c.includes('text={entry.text}'));
+  const streaming = (sites) => sites.filter((c) => /text=\{(streaming|run\.streaming)\}/.test(c));
+  for (const [page, sites] of [['Chat', chat], ['Personas', personas]]) {
+    assert.equal(finished(sites).length, 1, `${page}: ${sites.join('\n')}`);
+    assert.equal(streaming(sites).length, 1, `${page}: ${sites.join('\n')}`);
+    assert.match(finished(sites)[0], /actions=/, page);
+    assert.ok(!/actions|download/.test(streaming(sites)[0]), `${page}: a streaming reply has no actions`);
   }
+  assert.match(finished(chat)[0], /actions="mecha"/);
+  // Download only where the chat is not incognito: tied to the flag, not a
+  // bare `download`.
+  assert.match(finished(chat)[0], /download=\{[^}]*incognito/);
+  // ChatProse itself defaults Download off, so a new surface fails closed.
+  assert.match(read('ChatProse.svelte'), /download = false \} = \$props\(\)/);
 }
 
 console.log('reply-export: ok');
