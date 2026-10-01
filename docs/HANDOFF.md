@@ -22,6 +22,54 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-09-30/10-01 — files and pictures in chats (#438, #447, #450, #453):
+all merged; #438, #447 and #450 are installed (`346bb8a2`).** #453
+(`e856ce36`) went to mecha-ce's install; it was not verified here. What
+shipped, and the measurement, are in HISTORY under 2026-09-30/10-01. What
+is open:
+
+- **Images are read from pixels, by the owner's ruling (2026-09-30).**
+  Measured with `eval/image-read/`, the resident vision model never chose
+  `document_read` for an attached picture, and its answers were right. It
+  transcribed one hard page as well as OCR did. Always-on OCR or a verifier
+  for images is not built. The cost would be the GPU the chat model
+  shares, and nothing measured needed it. Re-open only with evidence. The
+  next measurement, if wanted, is harder pictures (tiny print, a real
+  crumpled receipt) through the same `attach` cases.
+- **Not built, each the owner's call (`DOCUMENT-EXTRACTION-DESIGN.md` §9):**
+  - office files (a confined LibreOffice to PDF);
+  - HEIC and TIFF (decoders not compiled in; both are refused by name);
+  - `document_read` in incognito, which needs `cache = false` for the room;
+  - Save to library from a persona chat (`/api/library/*` resolves the
+    assistant's chat key only).
+- **Minor review notes left at merge, each a few lines:**
+  - **#447:**
+    - an image's `confinement` string says "none" while the layout worker
+      is confined;
+    - `mode: both` on an image silently serves OCR only;
+    - `kind_of` checks TIFF before `%PDF-` and HEIF after it, unlike the
+      ARCHITECTURE sentence;
+    - `fit_pixels` has a dead disjunct.
+  - **#450:**
+    - the `unoffered_tools` note reaches stderr, not the scorecard JSON;
+    - `EvalCase` lacks `deny_unknown_fields`, so a misspelt `attach` is
+      silently empty;
+    - some `contains` values are thin (`14`, `33`);
+    - `the_image_read_cases_parse_and_every_picture_reads` sums `attach`
+      over the set where it means per case.
+  - **#453:**
+    - `no_command_exits_around_the_hold` matches only `std::process::exit(`;
+    - `an_early_exit_releases_the_run_hold` keys its temp dir on the pid
+      alone, so a leftover can flake it.
+  - **#438:** the lock test calls `workspace_of` and the `files::` helpers,
+    not the two handlers through the router.
+
+  (#438's other minor, the taint chip after a crisis pause with a picture,
+  was fixed by mecha-69's #446: `a_picture_on_a_paused_turn_arms_the_chat`.)
+- **Workspace at `257b7a78`** (#450's merge, verified on its merged head
+  `81b74494`): 3,917 passed, 0 failed. Clippy with `RUSTFLAGS=-D warnings
+  --all-features` and `fmt --check` were clean.
+
 **2026-09-30 — modular installs: designed, step 0 shipped (#427, #428,
 #432, #433), steps 1–8 open.** `FEATURES-DESIGN.md` is the authority: §7
 holds the owner's six rulings (all made), and §9 the build order. What
