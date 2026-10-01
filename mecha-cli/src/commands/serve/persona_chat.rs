@@ -1408,6 +1408,7 @@ impl PersonaChats {
             return Err(Refusal::Bad("that is not a reply in this chat".into()));
         }
         let store_dir = self.store.clone();
+        let embedded = crate::setup::file_embedder(&chat.follower.current().config).is_some();
         let (saved, src) = tokio::task::spawn_blocking(move || {
             let store = Store::load(&store_dir);
             let p = store.get(&name).ok_or("no such persona")?.clone();
@@ -1420,19 +1421,16 @@ impl PersonaChats {
                     .ok()
                     .cloned()
             });
+            // Unless the same content is already indexed (saved twice the
+            // same day), as an upload asks (`to_process`).
+            let index = mecha_core::persona::search::Index::open(&store_dir).ok();
+            let src = src.filter(|s| !indexed(index.as_ref(), s, embedded));
             Ok::<_, String>((saved, src))
         })
         .await
         .map_err(|e| Refusal::Failed(format!("saving the reply: {e}")))?
         .map_err(Refusal::Bad)?;
-        // Into the index, so the next chat's search finds it — unless the
-        // same content is already there (saved twice, same day), as an
-        // upload asks (`to_process`).
-        let embedded = crate::setup::file_embedder(&chat.follower.current().config).is_some();
-        let src = src.filter(|s| {
-            let index = mecha_core::persona::search::Index::open(&self.store).ok();
-            !indexed(index.as_ref(), s, embedded)
-        });
+        // Into the index, so the next chat's search finds it.
         if let Some(src) = src {
             let config = chat.follower.current().config.clone();
             self.read_in_background(src, None, crate::setup::file_embedder(&config));
