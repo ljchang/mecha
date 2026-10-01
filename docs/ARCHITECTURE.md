@@ -1378,6 +1378,59 @@ module.
     - `connect` reads `secure_delete` and `journal_mode` back. Without WAL,
       `wal_checkpoint` is a no-op that reports success, so a store that
       cannot forget safely refuses to open for writing.
+- **A call to a persona is a persona turn, on the persona's door**
+  (PERSONA-DESIGN §11). `chat::VoiceHost` hands a `p-` key to
+  `PersonaChats::speak` and never answers `Hosted::Unknown` for one, which
+  would send the words to the facade's own slot and have the assistant
+  answer a call placed to a persona. A spoken turn runs through the same
+  `start` as a typed one, so the lock, the crisis layer, the dose meter and
+  the record are the same code. It differs in three ways:
+    - It never steers. A run in flight is `Refusal::Busy`; `speak` cancels it
+      and tries again, because the facade is owed an answer of its own to
+      speak.
+    - The call note (`persona::call::note`) is a separate block in the
+      harness's voice, registered in `is_harness_voice`. It rides on the
+      first spoken turn of a stretch. It is not a prefix on the owner's
+      words, as the assistant's `VOICE_BLOCK` is, so no reader has to strip
+      it.
+    - A pause is heard. A streaming call speaks only what arrives as
+      `AgentEvent::TextDelta` on the tap; `HostedAnswer.text` is never
+      spoken there. So the persona door sends `SAFE_MESSAGE` as a delta: in
+      place of a reply on a crisis pause, and after the reply on a run the
+      judge stopped, since what was already spoken cannot be unsaid. A
+      verdict that lands after the reply has finished is not heard: the
+      call's turn has closed, so it reaches only the page. Whether a call
+      should wait for it (up to `JUDGE_WAIT`) is open for the owner. The
+      pause is spoken in the persona's own voice, by the owner's ruling of
+      2026-10-01.
+    - The lock and approval are checked before the barge-in (the
+      assistant's #376 order), so a refused call never stops the reply in
+      flight. A spoken turn that fails is rolled back with its call note,
+      and the next spoken turn carries the note again.
+- **Serve vouches for a persona call at the offer** (`persona_offer`).
+  The worker names a chat by key alone, so the page offers with its unlock
+  token. Serve checks it (`check_call`) and strips it, so the worker never
+  holds it. It binds the token for the call only once nothing else can refuse
+  the offer (`bind`, which returns an id). A refused offer therefore binds
+  nothing and never touches a call already placed. An offer the worker does
+  not take releases only the binding it made (`release_offer`). An offer it
+  takes answers with that id (`call`), and the page's hang-up (`/call`) names
+  it, so a second tab's call or a quick redial keeps its own binding. Every spoken turn is checked against the lock again with
+  that token, so a relock mid-call refuses the next word. The voice is
+  serve's to say, never the page's: `call_voice` reads the persona's
+  profile and refuses by name a reference clip, a missing profile or an
+  out-of-range value. `GET /mecha/voices` on the worker answers whether the
+  voice is one it lists; a worker without that route is refused, never
+  trusted to bind. The worker builds its TTS in the bound voice before the
+  first word, re-checks the voice, and refuses `voice-config` voice changes
+  for the rest of the call. A page-supplied `persona_voice` is stripped from
+  every offer.
+- **Call minutes have their own file** (`safety::CallRecord`,
+  `calls.jsonl`). A call record in `dose.jsonl` would read as one more turn to
+  an older binary, because `DoseRecord` takes unknown fields. The page reports
+  the length when a call ends (`/call`, sent with `keepalive`, so a tab that
+  closes still sends it), and serve clamps it to `MAX_CALL_SECS`. The same
+  request releases the call's unlock.
 
 ## Security model
 

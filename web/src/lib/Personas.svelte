@@ -6,6 +6,9 @@
   import ModelChip from './ModelChip.svelte';
   import EditModal from './EditModal.svelte';
   import ChatProse from './ChatProse.svelte';
+  import PersonaCall from './PersonaCall.svelte';
+  import { features } from './features.svelte.js';
+  import { isShown } from './features.js';
   import { composeEditMessage, maskName } from './image-edit.js';
   import { pictureOf, repeatedPictures, turnsWithoutPicture } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
@@ -32,6 +35,9 @@
   // no one touching it (`autolock.js`).
 
   let { initial = null } = $props();
+
+  // The call with the open chat's persona (§11), started from the header.
+  let caller = $state(null);
 
   let data = $state(null);
   let error = $state('');
@@ -1184,6 +1190,7 @@
     {#if key && chatModel}
       <ModelChip model={chatModel} />
     {/if}
+
     <button
       class="lockbtn"
       class:on={!!token}
@@ -1644,6 +1651,13 @@
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
           </button>
         </div>
+        {#if isShown(features.rows, 'calls')}
+          <!-- A call speaks into this chat, in the persona's voice (§11) —
+               beside send, where the assistant's chat keeps its own. -->
+          <button class="attachbtn callbtn" title={`call ${chosen.display}`} aria-label={`call ${chosen.display}`} onclick={() => caller?.start()}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /></svg>
+          </button>
+        {/if}
         {#if run.running}
           <button class="stopbtn" aria-label="Stop" title="Stop" onclick={stop}>
             <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
@@ -1752,7 +1766,21 @@
       <div class="barnote">The image library's password. Locking hides; it is not encryption.</div>
     </div>
   {/if}
+
+  {#if key && chosen}
+    <!-- Idle until the header's call button: it ends with the chat, and the
+         token goes only where the persona is locked, as a download's does. -->
+    <PersonaCall
+      bind:this={caller}
+      chatKey={key}
+      token={chosen.locked ? token : null}
+      display={chosen.display}
+      face={callFace}
+    />
+  {/if}
 </div>
+
+{#snippet callFace()}{@render avatar(chosen, 112)}{/snippet}
 
 {#if imageEdit}
   <EditModal
