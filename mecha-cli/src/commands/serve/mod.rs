@@ -4209,8 +4209,9 @@ mod boundary_tests {
     #[tokio::test]
     async fn uploads_cannot_follow_symlinks_or_overwrite_an_existing_file() {
         let home = crate::testenv::HomeGuard::new("web-file-jail");
-        let app = app(chat::test_chat());
-        let ws = chat::session_workspace("main").unwrap();
+        let chat = chat::test_chat();
+        let app = app(Arc::clone(&chat));
+        let ws = chat.session_workspace("main").unwrap();
         let outside = home.dir.join("outside");
         std::fs::create_dir_all(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, ws.join("inbox")).unwrap();
