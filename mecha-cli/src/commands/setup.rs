@@ -151,11 +151,15 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     // Naming a feature is a stronger statement than a stored "never": its
     // step is offered again for this run (review of #460). Nothing is written
     // unless the answer is: a skip keeps the old decline, a fresh "never"
-    // records it once more.
+    // records it once more. **Only where there is an offer**: under `--json`
+    // nothing is offered, so reopening could only turn a recorded answer into
+    // a non-zero exit — the "red over a choice already made" `Declined`
+    // exists to retire (review of #461).
     let mut honoured = declined.clone().unwrap_or_default();
-    let reopened = only.is_some_and(|f| {
-        onboarding::decline_keys(f.id()).fold(false, |had, k| honoured.remove(&k) | had)
-    });
+    let reopened = !args.json
+        && only.is_some_and(|f| {
+            onboarding::decline_keys(f.id()).fold(false, |had, k| honoured.remove(&k) | had)
+        });
     let facts = Facts {
         // The registry's readout against the global config, as `mecha
         // features` reads it — the feature steps are built from it.
@@ -189,7 +193,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         // A switch written `false` is the owner's answer in the config;
         // naming the feature asks for it to be offered, so its way back
         // becomes the remedy. Nothing runs without a `y`.
-        for s in &mut steps {
+        for s in steps.iter_mut().filter(|_| !args.json) {
             if let (Status::Declined, Some(undo)) = (s.status, s.undo.clone()) {
                 s.status = Status::Missing;
                 s.remedy = Some(mecha_core::doctor::Remedy {
@@ -295,10 +299,17 @@ fn finished_note(steps: &[Step]) {
                     .is_some_and(|u| u.get(1).map(String::as_str) == Some(verb))
         })
     };
-    if undoing("setup") {
-        println!("\n    mecha setup --undecline <id>   ask about a skipped step again");
+    // One group, set apart from `Next:` whichever lines it holds — a switch
+    // alone used to land flush against `mecha doctor`, reading as a fourth
+    // thing to do (review of #461).
+    let (setup_undo, switch_undo) = (undoing("setup"), undoing("features"));
+    if setup_undo || switch_undo {
+        println!();
     }
-    if undoing("features") {
+    if setup_undo {
+        println!("    mecha setup --undecline <id>   ask about a skipped step again");
+    }
+    if switch_undo {
         println!("    mecha features enable <id>     turn on one you switched off");
     }
     // The one trap a new install walks into unaided, and the only place a
