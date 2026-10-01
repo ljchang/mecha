@@ -187,6 +187,7 @@ export const ROUTES = [
   ['POST', /^\/api\/personas\/[^/]+\/sources$/, () => new Response('the demo does not keep files', { status: 501 })],
   ['POST', /^\/api\/personas\/[^/]+\/sources\/remove$/, () => new Response('the demo does not remove files', { status: 501 })],
   ['POST', /^\/api\/personas\/[^/]+\/lock$/, () => new Response('the demo does not lock', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/frame$/, () => new Response('the demo does not keep framing', { status: 501 })],
   ['GET', /^\/api\/personas\/[^/]+\/chats$/, () => fx.personaHistory],
   ['POST', /^\/api\/personas\/[^/]+\/chats$/, () => ({ key: 'p-0123456789ab', session: 'demo', refused: [] })],
   ['POST', /^\/api\/personas\/[^/]+\/resume$/, () => ({ key: 'p-0123456789ab', refused: [] })],

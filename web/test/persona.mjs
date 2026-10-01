@@ -29,7 +29,8 @@ assert.equal(withUnlock('/x?a=1', 'z'), '/x?a=1&unlock=z');
 assert.throws(() => personaUrl('mara', '/delete', null));
 assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 17);
+assert.equal(ENDPOINTS.length, 18);
+assert.ok(ENDPOINTS.includes('/api/personas/X/frame'));
 assert.ok(ENDPOINTS.includes('/api/personas/X/sources') && ENDPOINTS.includes('/api/personas/X/sources/remove'));
 assert.ok(ENDPOINTS.includes('/api/personas/authoring') && ENDPOINTS.includes('/api/personas/X/files'));
 assert.equal(authoringUrl('t'), '/api/personas/authoring?unlock=t');
@@ -340,3 +341,21 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
 }
 
 console.log('persona: ok');
+
+// The avatar's framing: a sent frame held to the server's ranges, the style
+// it draws with, and a drag.
+{
+  const { DEFAULT_FRAME, frameOf, frameStyle, dragFrame } = await import('../src/lib/persona.js');
+  assert.deepEqual(frameOf(null), DEFAULT_FRAME);
+  assert.deepEqual(frameOf({ x: 0.5, y: 'top', zoom: 1 }), DEFAULT_FRAME, 'not a frame: the default');
+  assert.deepEqual(frameOf({ x: 2, y: -1, zoom: 9 }), { x: 1, y: 0, zoom: 4 });
+  // Unplaced leans to the top, where a portrait's face is.
+  assert.equal(frameStyle(null), 'object-position:50% 20%;transform-origin:50% 20%;transform:scale(1)');
+  assert.equal(frameStyle({ x: 0.25, y: 0.1, zoom: 1.5 }), 'object-position:25% 10%;transform-origin:25% 10%;transform:scale(1.5)');
+  // Dragging right and down shows more of the left and top.
+  const moved = dragFrame({ x: 0.5, y: 0.5, zoom: 1 }, 20, 10, 200);
+  assert.ok(Math.abs(moved.x - 0.4) < 1e-9 && Math.abs(moved.y - 0.45) < 1e-9, JSON.stringify(moved));
+  // Zoomed in, the same drag moves less; and it stops at the edge.
+  assert.ok(dragFrame({ x: 0.5, y: 0.5, zoom: 2 }, 20, 0, 200).x > moved.x);
+  assert.equal(dragFrame({ x: 0.05, y: 0.5, zoom: 1 }, 100, 0, 200).x, 0);
+}

@@ -389,6 +389,51 @@ pub struct State {
     pub created: String,
     #[serde(default)]
     pub updated: String,
+    /// How the portrait sits in the round avatar, as the owner placed it;
+    /// `None` is centred and unzoomed. Display only — nothing reaches a
+    /// prompt, and a change is no new version.
+    #[serde(
+        default,
+        deserialize_with = "lenient_frame",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub frame: Option<Frame>,
+}
+
+/// Where a portrait sits in its circle: `x` and `y` are the point of the
+/// picture (0–1 across and down) put at the circle's centre, and `zoom` how
+/// far in it is (1 shows the whole picture's square).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Frame {
+    pub x: f32,
+    pub y: f32,
+    pub zoom: f32,
+}
+
+/// The furthest the avatar zooms in.
+pub const MAX_FRAME_ZOOM: f32 = 4.0;
+
+impl Frame {
+    /// The frame if every number is one the page can draw.
+    pub fn checked(self) -> Result<Frame> {
+        let unit = |v: f32| v.is_finite() && (0.0..=1.0).contains(&v);
+        if !unit(self.x) || !unit(self.y) {
+            bail!("a frame's x and y are 0 to 1");
+        }
+        if !self.zoom.is_finite() || !(1.0..=MAX_FRAME_ZOOM).contains(&self.zoom) {
+            bail!("a frame's zoom is 1 to {MAX_FRAME_ZOOM}");
+        }
+        Ok(self)
+    }
+}
+
+/// A frame that does not parse, or is out of range, loads as none: a bad
+/// framing line costs the framing, never the persona.
+fn lenient_frame<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Frame>, D::Error> {
+    let raw = Option::<toml::Value>::deserialize(d)?;
+    Ok(raw
+        .and_then(|v| v.try_into::<Frame>().ok())
+        .and_then(|f| f.checked().ok()))
 }
 
 impl Default for State {
@@ -401,6 +446,7 @@ impl Default for State {
             digest: String::new(),
             created: String::new(),
             updated: String::new(),
+            frame: None,
         }
     }
 }
@@ -1454,6 +1500,7 @@ pub fn create(dir: &Path, lib: &imagelib::Library, new: NewPersona) -> Result<Pe
             digest: String::new(),
             created: at.clone(),
             updated: at,
+            frame: None,
         },
     )?;
     snapshot(dir, &new.name)?;
@@ -1584,6 +1631,18 @@ pub fn approve(dir: &Path, name: &str) -> Result<State> {
     state.updated = now();
     write_state(&dir.join(name), &state)?;
     snapshot(dir, name)
+}
+
+/// Place the portrait in the persona's avatar, or `None` to centre it again.
+/// State only: the owner's files and the version are untouched.
+pub fn set_frame(dir: &Path, name: &str, frame: Option<Frame>) -> Result<State> {
+    let frame = frame.map(Frame::checked).transpose()?;
+    let (_, p) = current(dir, name)?;
+    let mut state = p.state;
+    state.frame = frame;
+    state.updated = now();
+    write_state(&dir.join(name), &state)?;
+    Ok(state)
 }
 
 /// The browse filter, per persona.
@@ -2576,6 +2635,60 @@ mod tests {
         };
         assert_eq!(names(false), vec!["priya".to_string()]);
         assert_eq!(names(true), vec!["mara".to_string(), "priya".to_string()]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_frame_is_state_only_checked_and_a_bad_one_costs_only_itself() {
+        let dir = scratch();
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        let before = Store::load(&dir).get("mara").unwrap().state.clone();
+        assert_eq!(before.frame, None);
+        let frame = Frame {
+            x: 0.5,
+            y: 0.3,
+            zoom: 1.6,
+        };
+        let set = set_frame(&dir, "mara", Some(frame)).unwrap();
+        assert_eq!(set.frame, Some(frame));
+        // Display only: no new version, nothing approved or unapproved.
+        assert_eq!(
+            (set.version, &set.digest, set.status),
+            (before.version, &before.digest, before.status)
+        );
+        assert_eq!(
+            Store::load(&dir).get("mara").unwrap().state.frame,
+            Some(frame)
+        );
+        for bad in [
+            Frame { x: 1.5, ..frame },
+            Frame { y: -0.1, ..frame },
+            Frame { zoom: 0.5, ..frame },
+            Frame {
+                zoom: MAX_FRAME_ZOOM + 1.0,
+                ..frame
+            },
+            Frame {
+                x: f32::NAN,
+                ..frame
+            },
+        ] {
+            assert!(set_frame(&dir, "mara", Some(bad)).is_err(), "{bad:?}");
+        }
+        assert_eq!(set_frame(&dir, "mara", None).unwrap().frame, None);
+        // A hand-edited frame out of range, or not a frame at all, loads as
+        // none — the persona itself still loads, approved as it was.
+        let path = dir.join("mara/state.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        for line in [
+            "frame = { x = 3.0, y = 0.5, zoom = 1.0 }",
+            "frame = \"top\"",
+        ] {
+            std::fs::write(&path, format!("{text}{line}\n")).unwrap();
+            let p = Store::load(&dir).get("mara").unwrap().clone();
+            assert_eq!(p.state.frame, None, "{line}");
+            assert_eq!(p.state.status, before.status, "{line}");
+        }
         std::fs::remove_dir_all(dir).ok();
     }
 
