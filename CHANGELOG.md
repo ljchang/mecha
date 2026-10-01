@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the persona's usage meters. The voice worker must be restarted on this
   version before a persona with a voice profile can be called; until then
   such a call is refused, naming the reason.
+
 - **Replies read as formatted text.** In the assistant's chat and in persona
   chats, a reply's Markdown (headings, bold, lists, code) is rendered rather
   than shown as `##` and `**`. Double-click a reply to see it as written, and

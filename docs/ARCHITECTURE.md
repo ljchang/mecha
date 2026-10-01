@@ -1364,8 +1364,9 @@ module.
   holds it. It binds the token for the call only once nothing else can refuse
   the offer (`bind`, which returns an id). A refused offer therefore binds
   nothing and never touches a call already placed. An offer the worker does
-  not take releases only the binding it made (`release_offer`), and the
-  page's hang-up (`/call`) releases the call's. Every spoken turn is checked against the lock again with
+  not take releases only the binding it made (`release_offer`). An offer it
+  takes answers with that id (`call`), and the page's hang-up (`/call`) names
+  it, so a second tab's call or a quick redial keeps its own binding. Every spoken turn is checked against the lock again with
   that token, so a relock mid-call refuses the next word. The voice is
   serve's to say, never the page's: `call_voice` reads the persona's
   profile and refuses by name a reference clip, a missing profile or an
