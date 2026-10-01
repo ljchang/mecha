@@ -16,7 +16,7 @@
   import { repairComments, changesOf } from './tomlform.js';
   import { isDirty as mdDirty } from './mdform.js';
   import {
-    listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
+    listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle, splitWaiting, proposalOrigin,
     taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
     toolStatus, waitingLine, withWorking, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
     citeEntries, citeOpens, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
@@ -378,7 +378,10 @@
       if (!chosen && initial && !usedInitial) {
         usedInitial = true;
         chosen = personas.find((p) => p.name === initial) ?? null;
-        if (chosen) await loadHistory();
+        if (chosen) {
+          loadReview();
+          await loadHistory();
+        }
       }
       // No reset here: `error` was cleared at the top, and anything set
       // since — a failed `+new` deep link — is the one worth showing.
@@ -518,6 +521,95 @@
     refused = [];
   }
 
+  // ─── A proposal, read and approved here (§4.4; the owner's rulings of
+  // 2026-10-01) ────────────────────────────────────────────────────────
+  // A persona the main chat proposed waits on this page, never in that chat:
+  // approval beside the model's own pitch is where reading cold is hardest.
+  // What is read carries the server's signature of it, and approving sends
+  // the signature back, so what is approved is what was shown — a revision
+  // landing between the read and the tap is refused and read again.
+  let review = $state(null);
+  let reviewNote = $state('');
+  let rejectArmed = $state(false);
+  let reviewGen = 0;
+  const waitingSplit = $derived(splitWaiting(personas));
+
+  async function loadReview() {
+    const name = chosen?.name;
+    const gen = ++reviewGen;
+    review = null;
+    reviewNote = '';
+    rejectArmed = false;
+    if (!name || !chosen.waiting) return;
+    try {
+      const res = await fetch(personaUrl(name, '/review', token));
+      if (gen !== reviewGen) return;
+      if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+      const read = await res.json();
+      if (gen === reviewGen) review = read;
+    } catch (e) {
+      if (gen === reviewGen) reviewNote = String(e?.message ?? e);
+    }
+  }
+
+  async function approveProposal() {
+    if (!review || busy) return;
+    busy = true;
+    reviewNote = '';
+    try {
+      const res = await fetch(personaUrl(chosen.name, '/approve', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          shown: review.shown,
+          // The portrait with it, in the same tap, only while it waits too.
+          character_shown: review.character?.waiting ? review.character.shown : undefined,
+          unlock: token ?? undefined,
+        }),
+      });
+      if (!res.ok) {
+        reviewNote = (await res.text()).trim();
+        // Changed since it was read: show what it says now.
+        if (res.status === 409) {
+          const why = reviewNote;
+          await loadReview();
+          reviewNote = why;
+        }
+        return;
+      }
+      review = null;
+      await load();
+      await loadHistory();
+    } catch (e) {
+      reviewNote = String(e?.message ?? e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function rejectProposal() {
+    if (!rejectArmed) {
+      rejectArmed = true;
+      return;
+    }
+    busy = true;
+    try {
+      const res = await fetch(personaUrl(chosen.name, '/reject', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ unlock: token ?? undefined }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      toList();
+      await load();
+    } catch (e) {
+      reviewNote = String(e?.message ?? e);
+    } finally {
+      busy = false;
+      rejectArmed = false;
+    }
+  }
+
   async function choose(p) {
     showGoal = false;
     close();
@@ -532,6 +624,7 @@
     run = emptyRun();
     refused = [];
     goal = '';
+    loadReview();
     await loadHistory();
   }
 
@@ -1286,9 +1379,31 @@
       {/if}
       <!-- A contacts list, not a wall of tiles: who they are to you reads at
            a glance, and a phone shows a dozen rather than three. -->
-      {#if personas.length}
+      <!-- Proposed in a chat, waiting on the owner (ruled 2026-10-01): above
+           the rest, as the library's Waiting pane is its own. -->
+      {#if waitingSplit.waiting.length}
+        <div class="earlier">Waiting for you</div>
+        <div class="plist waitlist">
+          {#each waitingSplit.waiting as p (p.name)}
+            <button class="prow" onclick={() => choose(p)}>
+              {@render avatar(p, 48)}
+              <span class="pbody">
+                <span class="pname">
+                  {p.display}
+                  {#if p.locked}<svg class="glyph" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="hidden behind the library lock"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>{/if}
+                </span>
+                <span class="prel">{relationshipLabel(p) || 'no relationship'}</span>
+              </span>
+              <span class="badge">proposed</span>
+              <svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+          {/each}
+        </div>
+        {#if waitingSplit.rest.length}<div class="earlier">Personas</div>{/if}
+      {/if}
+      {#if waitingSplit.rest.length}
         <div class="plist">
-          {#each personas as p (p.name)}
+          {#each waitingSplit.rest as p (p.name)}
             <button class="prow" onclick={() => choose(p)}>
               {@render avatar(p, 48)}
               <span class="pbody">
@@ -1428,15 +1543,53 @@
             </div>
           </div>
         </section>
-        {#if !chosen.approved}
-          <div class="warnline">
-            {chosen.display} is not approved — <code>mecha persona approve {chosen.name}</code> after reading them.
-          </div>
+        {#if chosen.waiting && chosen.origin !== 'owner'}
+          <!-- A proposal: read here, approved as shown. -->
+          <section class="reviewcard" aria-label="Proposal waiting for approval">
+            <div class="reviewhead">Waiting for your approval</div>
+            <div class="reviewnote" class:bad={chosen.origin !== 'model_clean'}>{proposalOrigin(chosen.origin)}</div>
+            {#if reviewNote}<div class="warnline">{reviewNote}</div>{/if}
+            {#if review}
+              <!-- Its relationships are the header's chips; the voice is not. -->
+              {#if review.voice}<div class="reviewmeta">voice: {review.voice}</div>{/if}
+              {#if review.character}
+                <div class="reviewchar">
+                  {#if review.character.portrait}<img src={review.character.portrait} alt="" />{/if}
+                  <div>
+                    <div class="reviewcharname">
+                      {review.character.name}{#if review.character.waiting}<span class="badge">portrait waiting too</span>{/if}
+                    </div>
+                    <div class="reviewchartext">{review.character.text}</div>
+                  </div>
+                </div>
+              {/if}
+              <div class="reviewlabel">Who they are</div>
+              <div class="reviewtext"><ChatProse text={review.identity} /></div>
+              {#if review.motivation?.trim()}
+                <div class="reviewlabel">What they want</div>
+                <div class="reviewtext"><ChatProse text={review.motivation} /></div>
+              {/if}
+              <div class="reviewbtns">
+                <button class="abtn" disabled={busy} onclick={rejectProposal}>{rejectArmed ? 'Tap again to reject' : 'Reject'}</button>
+                <button class="abtn primary" disabled={busy} onclick={approveProposal}>
+                  {review.character?.waiting ? 'Approve both' : 'Approve'}
+                </button>
+              </div>
+            {:else if !reviewNote}
+              <div class="loadingline">reading…</div>
+            {/if}
+          </section>
+        {:else}
+          {#if !chosen.approved}
+            <div class="warnline">
+              {chosen.display} is not approved — <code>mecha persona approve {chosen.name}</code> after reading them.
+            </div>
+          {/if}
+          {#each chosen.problems as problem}
+            <div class="warnline">{problem}</div>
+          {/each}
         {/if}
-        {#each chosen.problems as problem}
-          <div class="warnline">{problem}</div>
-        {/each}
-        <div class="startbox">
+        <div class="startbox" class:gone={chosen.waiting && chosen.origin !== 'owner'}>
           {#if showGoal || goal}
             <input
               class="editbox"
@@ -1964,6 +2117,20 @@
   .addtile:hover { background: var(--surface); }
   .addtile.off { opacity: 0.55; cursor: default; }
   .addtile input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .reviewcard { display: flex; flex-direction: column; gap: 10px; padding: 14px; background: var(--bg); border: 1px solid var(--accent-500); border-radius: 14px; }
+  .reviewhead { font-size: 15px; font-weight: 600; color: var(--text); }
+  .reviewnote { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
+  .reviewnote.bad { color: var(--hazard); }
+  .reviewmeta { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+  .reviewchar { display: flex; gap: 12px; align-items: flex-start; }
+  .reviewchar img { width: 64px; height: 64px; object-fit: cover; object-position: 50% 20%; border-radius: 10px; flex-shrink: 0; }
+  .reviewcharname { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); }
+  .reviewchartext { font-size: 12.5px; color: var(--text-muted); line-height: 1.45; }
+  .reviewlabel { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-300); margin-top: 4px; }
+  .reviewtext { font-size: 14px; line-height: 1.55; color: var(--text); }
+  .reviewbtns { display: flex; gap: 8px; margin-top: 4px; }
+  .reviewbtns .abtn { flex: 1; }
+  .startbox.gone { display: none; }
   .loadingline { font-family: var(--mono); font-size: 11px; color: var(--text-muted); padding: 4px 2px; }
   .hrow .when { margin: 0; font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
   .composer .cfield { flex: 1; display: flex; align-items: flex-end; gap: 6px; padding: 6px 6px 6px 14px; background: var(--surface); border: 1px solid var(--accent-700); border-radius: 22px; }

@@ -28,7 +28,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/sources', '/sources/remove', '/sources/file', '/sources/text'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call'];
 
 export const ENDPOINTS = [
@@ -233,6 +233,25 @@ export function keptEdits(files, saved) {
     out[f] = keep;
   }
   return out;
+}
+
+// The list, split as the page shows it: personas a chat proposed and the
+// owner has not yet read (the Waiting section, ruled 2026-10-01), and the
+// rest. An owner's own unapproved persona is not "waiting" — nobody proposed
+// it — and stays in the list with its badge.
+export function splitWaiting(personas) {
+  const waiting = [];
+  const rest = [];
+  for (const p of personas ?? []) (p.waiting && p.origin !== 'owner' ? waiting : rest).push(p);
+  return { waiting, rest };
+}
+
+// Where a proposal came from, as the library says it of a candidate: one
+// proposed in a conversation that had read outside content is read with that
+// in mind. Anything this page does not know reads as the cautious one.
+export function proposalOrigin(origin) {
+  if (origin === 'model_clean') return 'proposed in a chat';
+  return 'proposed in a chat that had read outside content — read it before approving';
 }
 
 export function relationshipLabel(p) {
