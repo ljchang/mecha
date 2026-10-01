@@ -1180,7 +1180,7 @@
   function toggleMute() {
     if (!vSession) return;
     vMuted = !vMuted;
-    vSession.setMicEnabled(!vMuted && !vTyping);
+    vSession.setMicEnabled(!vMuted);
   }
 
   // Typing into the call (the owner's ask, 2026-10-01): a typed line is a

@@ -149,7 +149,7 @@
   function toggleMute() {
     if (!session) return;
     muted = !muted;
-    session.setMicEnabled(!muted && !typing);
+    session.setMicEnabled(!muted);
   }
 
   // A different chat, or none: the call was this one's and ends with it.

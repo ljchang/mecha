@@ -2181,6 +2181,63 @@ def typed_turn(data) -> str | None:
     return text or None
 
 
+# How long a typed turn waits for the answer before it to begin being spoken,
+# and then to finish: bounds, so a turn that errored and never speaks cannot
+# hold the next line forever.
+TYPED_ANSWER_START_SECS = 60.0
+TYPED_ANSWER_END_SECS = 180.0
+
+
+class TypedTurns:
+    """Typed lines into one call, delivered one at a time (review of #499).
+
+    `docs/VOICE-LINK-DESIGN.md` §2.3: every delivery goes through one ordered
+    queue with one consumer and nothing is cancelled. Each client message
+    runs as its own task, so two lines typed in quick succession would each
+    push a turn and the second would take the conversation's slot - a
+    barge-in on the first answer before a word of it was spoken. Here a
+    line waits until the answer before it has been spoken (bounded), and
+    only then is given to the model."""
+
+    def __init__(self, push, bot_speaking, log=print,
+                 start_secs=TYPED_ANSWER_START_SECS, end_secs=TYPED_ANSWER_END_SECS):
+        self._push = push
+        self._bot_speaking = bot_speaking
+        self._log = log
+        self._start_secs = start_secs
+        self._end_secs = end_secs
+        self._queue: asyncio.Queue[str] = asyncio.Queue()
+
+    def put(self, data) -> bool:
+        """Enqueue a client message's payload; False when it is no turn."""
+        text = typed_turn(data)
+        if text is None:
+            return False
+        self._queue.put_nowait(text)
+        return True
+
+    async def _until(self, want: bool, secs: float):
+        for _ in range(int(secs * 10)):
+            if bool(self._bot_speaking()) == want:
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
+    async def run(self):
+        while True:
+            text = await self._queue.get()
+            # Not over an answer being spoken - a typed line is not a barge-in.
+            await self._until(False, self._end_secs)
+            # The words go to the journal only through `spoken_words`, so an
+            # incognito call keeps none of them.
+            self._log(f"voice typed turn: {spoken_words(text, 80)}")
+            await self._push(text)
+            # This answer, begun and finished, before the next line goes:
+            # bounded either way.
+            if await self._until(True, self._start_secs):
+                await self._until(False, self._end_secs)
+
+
 def spoken_words(text: str, limit: int) -> str:
     """Words for a log line: the first `limit` characters, or a placeholder
     while any incognito call is live. The rest of the line - durations, RMS,
@@ -2400,6 +2457,20 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
     # with the trust the audio on this channel already has (the buffered
     # uplink carries that audio here too), and never a field, a setting or
     # a command.
+    # Typed lines (`typed`): appended and run at once, as a late turn is -
+    # a transcript-only turn has no VAD edge for a stop strategy to rule on.
+    async def push_typed(text: str):
+        await transport.input().push_frame(
+            LLMMessagesAppendFrame(messages=[{"role": "user", "content": text}], run_llm=True)
+        )
+
+    typed = TypedTurns(
+        push_typed,
+        lambda: getattr(stt, "_bot_speaking", False),
+        log=lambda line: print(line, flush=True),
+    )
+    typed_task = asyncio.create_task(typed.run())
+
     @rtvi.event_handler("on_client_message")
     async def on_client_message(rtvi, msg):
         # The uplink's own messages: audio, and the clock it is stamped on.
@@ -2412,22 +2483,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
         if uplink is not None:
             transport.input().note_channel()
         if msg.type == "typed":
-            text = typed_turn(msg.data)
-            if text is None:
-                return
-            # Not over the answer being spoken, within reason - as a late
-            # turn waits (`LATE_BOT_WAIT_SECS`). Each client message runs as
-            # its own task, so the wait holds nothing else up.
-            for _ in range(int(LATE_BOT_WAIT_SECS * 10)):
-                if not getattr(stt, "_bot_speaking", False):
-                    break
-                await asyncio.sleep(0.1)
-            print(f"voice typed turn: {spoken_words(text, 80)}", flush=True)
-            # Appended and run at once, as a late turn is: a transcript-only
-            # turn has no VAD edge for a stop strategy to rule on.
-            await transport.input().push_frame(
-                LLMMessagesAppendFrame(messages=[{"role": "user", "content": text}], run_llm=True)
-            )
+            # Decided and enqueued before any await: one consumer delivers
+            # them in order (`TypedTurns`).
+            typed.put(msg.data)
             return
         if msg.type == "heartbeat":
             return
@@ -2556,6 +2614,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
     try:
         await runner.run()
     finally:
+        typed_task.cancel()
         await settle_deadline(deadline, fired)
 
 
