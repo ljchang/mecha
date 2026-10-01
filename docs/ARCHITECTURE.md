@@ -1285,12 +1285,60 @@ module.
       never as a path on the machine.
     - `what_a_persona_remembers_rides_in_the_first_turn_with_its_taint`
       drives the real doors and reads the chat's taint back.
+  - **Recall on every turn** (`recall::per_turn`, §9.7): past the first
+    reply, the owner's message — never the persona's — keys a search of the
+    persona's records (`Memory::recall_search`): words by FTS5, meaning by
+    cosine over `vectors` (blobs, D19), recency as a third ranking, fused by
+    reciprocal rank. The best `PER_TURN` that the conversation does not
+    already hold ride in that turn's message under the same two stems.
+    - Chat start covers what fits its budget, so per-turn recall reaches what
+      it left out: episodes past the newest five, and facts the budget cut.
+    - A meaning hit needs `MIN_COSINE` (0.5, unmeasured), and meaning counts
+      only when half the candidates carry a vector of the query's length;
+      equal by meaning, the newer ranks first so recency is not cancelled. A
+      message under `MIN_QUERY_CHARS` searches nothing.
+    - Words have a floor too: `recall_words` keeps content words only (three
+      letters or more, not in `STOPWORDS`), so a common word like "the" can
+      never be the only thing a message and a record share. Without it, a
+      record was recalled on "the" — and recalling an approved record from
+      outside arms the chat untrusted for good, so an incidental match is a
+      chat-wide state change, not noise (review of #481). A content word can
+      still match incidentally; measuring that is the first job for
+      `MIN_COSINE`'s eventual measurement.
+    - The words search has no limit ahead of the active-record filter: the
+      index keeps candidates and withdrawn rows, and a limit before the
+      filter let them crowd a live record out unseen.
+    - An episode's text is `episode_words`, one definition for the index,
+      the backfill and the vectors — never the raw JSON columns.
+    - **Per-turn recall opens `memory.db` writable** (if it exists; it never
+      creates one), so the v3 index can be built on first use. Chat start
+      reads through the read-only `open_existing`. An incognito persona chat
+      (§8.4: reads memory, writes nothing) must not use `per_turn` as it is.
+    - The v3 upgrade is the first step that is not idempotent, and per-turn
+      recall opens `memory.db` writable on every turn: the step takes the
+      write lock, reads the version again under it, and skips records
+      already indexed — `an_upgrade_run_twice_indexes_each_record_once`.
+    - The index is schema v3 of `memory.db`, backfilled on upgrade. FTS5 is
+      created with `secure-delete`, and every delete takes the record out of
+      `recall_fts` and `vectors` first; without `secure-delete` a forgotten
+      term survives in the file — `forgetting_takes_a_record_out_of_the_index_and_its_vector_with_it`
+      reads the bytes.
+    - The query is embedded with `Task::Recall` (its own instruction) under
+      `RECALL_EMBED_WAIT` (8 s, past the on-demand server's cold start);
+      slower or down, recall is by words. `persona memory write` embeds what
+      has no vector after writing.
   - **The writer** (`persona::writer`, §9.6) runs from `mecha persona memory
     write`, which `scripts/ruminate.sh` calls nightly; nothing writes after a
     chat yet. It never runs during a chat, and only on a provider that
     `config::provider_is_local` accepts — loopback, no fallbacks, the
     incognito gate — because it reads whole transcripts (R29). `kind =
     "local"` is the wire dialect and can point at another machine.
+    - **A record's `source.chat` is the transcript's file stem** (`<id>` of
+      `sessions/<id>.jsonl`, which `pending_chats` lists). The persona page's
+      earlier-chats list joins episodes to chats on it (#479), so a change to
+      either side breaks the headline silently —
+      `a_test_chat_never_becomes_a_memory_and_an_unreadable_one_is_said` pins
+      the id as the stem.
     - `pending_chats` lists what is due: never a test or experiment chat
       (`SessionMeta::admitted_by_default`, the mark every corpus reader
       honours), and a header it cannot read is a problem, not a chat.
