@@ -1312,6 +1312,12 @@ module.
     `config::provider_is_local` accepts — loopback, no fallbacks, the
     incognito gate — because it reads whole transcripts (R29). `kind =
     "local"` is the wire dialect and can point at another machine.
+    - **A record's `source.chat` is the transcript's file stem** (`<id>` of
+      `sessions/<id>.jsonl`, which `pending_chats` lists). The persona page's
+      earlier-chats list joins episodes to chats on it (#479), so a change to
+      either side breaks the headline silently —
+      `a_test_chat_never_becomes_a_memory_and_an_unreadable_one_is_said` pins
+      the id as the stem.
     - `pending_chats` lists what is due: never a test or experiment chat
       (`SessionMeta::admitted_by_default`, the mark every corpus reader
       honours), and a header it cannot read is a problem, not a chat.
