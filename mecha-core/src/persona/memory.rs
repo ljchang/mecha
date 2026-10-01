@@ -661,6 +661,15 @@ impl Memory {
         &self.persona
     }
 
+    /// Whether the file is a database this can read at all. SQLite opens
+    /// lazily, so a file that is not one opens without error and fails at
+    /// the first query; a reader that wants to degrade per store asks first.
+    pub fn readable(&self) -> Result<()> {
+        self.conn
+            .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;
+        Ok(())
+    }
+
     fn writable(&self) -> Result<()> {
         if !self.writable {
             bail!("{}'s memory was opened read-only", self.persona);

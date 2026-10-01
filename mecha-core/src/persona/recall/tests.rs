@@ -439,3 +439,60 @@ fn many_facts_about_the_owner_never_crowd_out_the_personas_own_canon() {
     assert_eq!(t.matches("not shown here").count(), 2, "{t}");
     assert!(t.chars().count() < BUDGET_CHARS + 600);
 }
+
+#[test]
+fn a_long_newest_episode_is_cut_not_dropped_and_a_cut_is_said() {
+    let w = World::new(&["mara"]);
+    let m = w.memory("mara");
+    for i in 0..4 {
+        episode(&m, &format!("An older conversation, number {i}."));
+    }
+    // Legal (under MAX_SUMMARY_CHARS) and longer than the whole share.
+    episode(
+        &m,
+        &format!("The newest conversation. {}", "We went on. ".repeat(300)),
+    );
+    let t = block(&w, &w.persona("mara")).unwrap().text;
+    assert!(t.contains("The newest conversation."), "{t}");
+    assert!(t.contains("An older conversation, number 0."), "{t}");
+    assert!(t.contains(" …"), "the long one is cut: {t}");
+}
+
+#[test]
+fn a_shared_fact_this_version_cannot_read_is_said() {
+    let w = World::new(&["mara", "otto"]);
+    let otto = w.memory("otto");
+    let f = otto
+        .add_fact(
+            Table::User,
+            fact("Has a cat.", Kind::Stated, Origin::ModelClean),
+        )
+        .unwrap();
+    let shared = Shared::open(&w.dir).unwrap();
+    shared.share(&f, Audience::Everyone, &[]).unwrap();
+    drop(shared);
+    let conn = rusqlite::Connection::open(w.dir.join("shared.db")).unwrap();
+    conn.execute(
+        "INSERT INTO shared_facts (uid, text, kind, source_chat, source_from, source_to,
+         learned_by, origin, model, ingested_at, audience, from_uid, from_table, shared_at)
+         VALUES ('feed0001', 'From the future.', 'stated', 'c9', 0, 0, 'otto', 'owner', 'm',
+         'now', 'everyone', 'x', 'a_fourth_table', 'now')",
+        [],
+    )
+    .unwrap();
+    let r = chat_start(&w.store(), &w.persona("mara")).unwrap();
+    assert!(r.block.unwrap().text.contains("Has a cat."));
+    assert_eq!(r.problems.len(), 1, "{:?}", r.problems);
+    assert!(r.problems[0].contains("cannot read"), "{:?}", r.problems);
+}
+
+#[test]
+fn a_memory_that_will_not_open_still_lets_the_about_me_notes_ride() {
+    let w = World::new(&["mara"]);
+    std::fs::write(w.dir.join("about-me.md"), "I study kelp.\n").unwrap();
+    std::fs::write(w.dir.join("mara").join("memory.db"), "not a database").unwrap();
+    let r = chat_start(&w.store(), &w.persona("mara")).unwrap();
+    assert!(r.block.unwrap().text.contains("I study kelp."));
+    assert_eq!(r.problems.len(), 1, "{:?}", r.problems);
+    assert!(r.problems[0].starts_with("its memory"), "{:?}", r.problems);
+}

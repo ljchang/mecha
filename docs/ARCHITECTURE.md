@@ -1250,7 +1250,9 @@ module.
     the persona's own fact is not said twice.
     - `BUDGET_CHARS` is split, not shared first-come: about-me takes at most
       a third, each note a fair share and cut rather than dropped; recent
-      episodes have a third of their own, so facts can never price them out;
+      episodes have a third of their own, so facts can never price them out,
+      and each episode is likewise a fair share, cut not dropped (a stored
+      summary can be longer than the whole share);
       the fact sections share the rest fairly — each an equal part of what
       is left, unused parts passed on — so owner facts can never price out
       the persona's own canon; a section cut, even to nothing, keeps its
@@ -1266,7 +1268,11 @@ module.
     - An unreadable store, or an about-me file that cannot be read or is
       over `MAX_PROSE_BYTES`, is a notice on the page and a log line
       (`Recalled::problems`), and the turn goes ahead without it — never
-      "remembers nothing".
+      "remembers nothing". So is a shared row this version cannot read
+      (`Listing::unreadable`), and a `memory.db` that will not read
+      (`Memory::readable`: SQLite opens lazily) costs its own sections, not
+      the about-me notes. The notice names a file as the owner knows it,
+      never as a path on the machine.
     - `what_a_persona_remembers_rides_in_the_first_turn_with_its_taint`
       drives the real doors and reads the chat's taint back.
   - **The writer** (`persona::writer`, §9.6) runs from `mecha persona memory
