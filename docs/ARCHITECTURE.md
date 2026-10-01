@@ -8351,9 +8351,12 @@ in five different ways. The design and its open steps are
   own commands (`onboarding::runnable`) — an edit is named, never made —
   and after one works it re-reads the row and says what is next
   (`setup::after_feature`). Step ids are the feature ids, so a decline
-  recorded against `mail` or 1a's `feature-mail` still holds. `mecha setup
-  <feature>` runs one step; `--minimal` declines every optional one and
-  writes no config.
+  recorded against `mail` or 1a's `feature-mail` still holds. A `Declined`
+  step carries its own way back (`Step::undo`): `--undecline <id>` for an
+  answer given in setup, `mecha features enable <id>` for a switch written
+  `false`. `mecha setup <feature>` runs one step and reopens it if declined
+  — in memory only, so a skip writes nothing; `--minimal` declines every
+  optional one and writes no config.
 - **An environment may only narrow.** `trial_env::config_at` refuses an
   environment's `[features]` key set `true` unless
   `Feature::switchable_from_environment` — an exhaustive match, today only
