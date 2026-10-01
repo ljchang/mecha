@@ -1269,7 +1269,7 @@ impl PersonaChats {
         let unread = |why: &str| {
             let _ = notices.send(WireEvent::Notice {
                 text: format!(
-                    "Part of its memory could not be read ({why}), so this chat starts without it."
+                    "Part of what it remembers could not be read ({why}); this chat goes on without that part."
                 ),
             });
         };

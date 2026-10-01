@@ -101,20 +101,28 @@ fn about_me(store: &Store, p: &Persona, problems: &mut Vec<String>) -> Vec<Strin
             paths.push(store.dir().join("groups").join(g).join("about-me.md"));
         }
     }
+    // Named as the owner knows it — `about-me.md`, `groups/work/about-me.md`
+    // — never as a path on this machine, since it reaches the page.
+    let shown = |path: &std::path::Path| {
+        path.strip_prefix(store.dir())
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    };
     let mut out = Vec::new();
     for path in paths {
         let meta = match std::fs::metadata(&path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => {
-                problems.push(format!("{} could not be read ({e})", path.display()));
+                problems.push(format!("{} could not be read ({e})", shown(&path)));
                 continue;
             }
         };
         if meta.len() > super::MAX_PROSE_BYTES {
             problems.push(format!(
                 "{} is over {} KB, so it was not read",
-                path.display(),
+                shown(&path),
                 super::MAX_PROSE_BYTES / 1024
             ));
             continue;
@@ -127,7 +135,7 @@ fn about_me(store: &Store, p: &Persona, problems: &mut Vec<String>) -> Vec<Strin
                     out.push(text);
                 }
             }
-            Err(e) => problems.push(format!("{} could not be read ({e})", path.display())),
+            Err(e) => problems.push(format!("{} could not be read ({e})", shown(&path))),
         }
     }
     out
@@ -197,16 +205,36 @@ pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
         }
     }
 
-    let memory = Memory::open_existing(store.dir(), &p.name)?;
+    // A store that will not open costs its own sections, not the about-me
+    // notes already read (review of #477).
+    let memory = match Memory::open_existing(store.dir(), &p.name)
+        .and_then(|m| m.map(|m| m.readable().map(|_| m)).transpose())
+    {
+        Ok(m) => m,
+        Err(e) => {
+            problems.push(format!("its memory ({e:#})"));
+            None
+        }
+    };
     if s.episodic {
         let episodes: Vec<Episode> = memory
             .as_ref()
             .map(|m| m.episodes(Filter::Recallable))
             .transpose()?
             .unwrap_or_default();
+        // The about-me rule, for the same reason: a stored summary may be
+        // longer than the whole share (`MAX_SUMMARY_CHARS`), so each episode
+        // gets a fair part of what is left and is cut, not dropped — the
+        // newest is never lost while an older one rides (review of #477).
+        let recent: Vec<Episode> = episodes.into_iter().take(EPISODES).collect();
+        let n = recent.len();
         let mut cap = third;
         let mut lines = Vec::new();
-        for e in episodes.into_iter().take(EPISODES) {
+        for (i, e) in recent.into_iter().enumerate() {
+            let share = cap / (n - i);
+            if share < 40 {
+                break;
+            }
             let when = e
                 .ended_at
                 .as_deref()
@@ -216,13 +244,22 @@ pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
             if !e.open_threads.is_empty() {
                 line.push_str(&format!(" (Left open: {}.)", e.open_threads.join("; ")));
             }
-            if take(&mut lines, &mut cap, line) {
+            if take(&mut lines, &mut cap, clip(&line, share - 1)) {
                 untrusted |= e.origin == Origin::ModelUntrusted;
             }
         }
-        if !lines.is_empty() {
-            episode_section = Some(format!("Recent conversations:\n{}", lines.join("\n")));
-        }
+        let cut = n - lines.len();
+        episode_section = match (lines.is_empty(), cut) {
+            (true, 0) => None,
+            (true, cut) => Some(format!(
+                "Recent conversations:\n({cut} remembered, none shown here.)"
+            )),
+            (false, 0) => Some(format!("Recent conversations:\n{}", lines.join("\n"))),
+            (false, cut) => Some(format!(
+                "Recent conversations:\n{}\n(And {cut} more not shown here.)",
+                lines.join("\n")
+            )),
+        };
     }
 
     // What the other two left, so an unused share is not wasted.
@@ -245,12 +282,22 @@ pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
             UserFacts::Shared => match Shared::open_existing(store.dir())? {
                 // Not a copy of what this persona learned itself: its own row
                 // is already here, and the copy would say it twice.
-                Some(sh) => sh
-                    .visible_to(&p.settings.groups)?
-                    .facts
-                    .into_iter()
-                    .filter(|f| f.learned_by != p.name)
-                    .collect(),
+                Some(sh) => {
+                    let listing = sh.visible_to(&p.settings.groups)?;
+                    // A row this binary cannot read is a finding, as the
+                    // listing counts it to be (review of #477).
+                    if listing.unreadable > 0 {
+                        problems.push(format!(
+                            "{} shared fact(s) this version cannot read",
+                            listing.unreadable
+                        ));
+                    }
+                    listing
+                        .facts
+                        .into_iter()
+                        .filter(|f| f.learned_by != p.name)
+                        .collect()
+                }
                 None => Vec::new(),
             },
             UserFacts::Own | UserFacts::Off => Vec::new(),
