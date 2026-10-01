@@ -44,7 +44,7 @@ const MAX_SCANNED: usize = 10_000;
 const MAX_DEPTH: usize = 3;
 
 /// A text file read whole: Markdown and plain text, up to this size.
-const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
+pub const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 
 /// One file a persona can read.
 #[derive(Debug, Clone, PartialEq, Eq)]

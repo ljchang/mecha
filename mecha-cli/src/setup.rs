@@ -1961,10 +1961,16 @@ pub fn persona_agent(
     // what reads beyond them, keeps the one tool that reads them — and never
     // in the assistant's registry, which has no persona to read for. Over
     // the store the caller's chats live in, never a second guess at it.
+    let extractor = document_extractor(&bound.config).map(Arc::new);
+    // The reader's cap, read off the reader the config builds: 0 without one.
+    let max_doc_bytes = extractor
+        .as_ref()
+        .map(|e| e.config().max_file_bytes())
+        .unwrap_or(0);
     let reader = mecha_core::persona::files::FileRead::new(
         store.to_path_buf(),
         pinned.name.clone(),
-        document_extractor(&bound.config).map(Arc::new),
+        extractor,
     );
     // It skips `registry_as`'s refusal of anything that can aim: so it
     // must never be able to, and is left out — in a release build too —
@@ -1979,6 +1985,7 @@ pub fn persona_agent(
         store.to_path_buf(),
         pinned.name.clone(),
         file_embedder(&bound.config),
+        max_doc_bytes,
     );
     if mecha_core::tool::Tool::capabilities(&search).egress == mecha_core::tool::Egress::None {
         tools.registry.insert(Arc::new(search));

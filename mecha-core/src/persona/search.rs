@@ -423,15 +423,37 @@ pub struct FileSearch {
     store: PathBuf,
     persona: String,
     embedder: Option<Embedder>,
+    /// The document reader's cap, `0` while document reading is off.
+    max_doc_bytes: u64,
 }
 
 impl FileSearch {
-    pub fn new(store: PathBuf, persona: String, embedder: Option<Embedder>) -> Self {
+    /// `max_doc_bytes` is the document reader's cap — `0` while document
+    /// reading is off — so a file nothing could index is never hashed to
+    /// find out ([`may_be_indexed`]).
+    pub fn new(
+        store: PathBuf,
+        persona: String,
+        embedder: Option<Embedder>,
+        max_doc_bytes: u64,
+    ) -> Self {
         FileSearch {
             store,
             persona,
             embedder,
+            max_doc_bytes,
         }
+    }
+}
+
+/// Whether `src` could be in the index at all: within its reader's cap.
+/// Asked before hashing it, because the hash is a whole read — the
+/// unbounded read `files::readiness` exists not to do, on a path the model
+/// can call as often as it likes (review of #467).
+pub fn may_be_indexed(src: &Source, max_doc_bytes: u64) -> bool {
+    match src.kind {
+        super::files::Kind::Text => src.bytes <= super::files::MAX_TEXT_BYTES,
+        super::files::Kind::Document => src.bytes <= max_doc_bytes,
     }
 }
 
@@ -493,7 +515,7 @@ impl Tool for FileSearch {
             .map(|n| (n as usize).clamp(1, MAX_HITS))
             .unwrap_or(6);
         // The persona's files, each hashed: the only passages it may see.
-        let (store, persona) = (self.store.clone(), self.persona.clone());
+        let (store, persona, cap) = (self.store.clone(), self.persona.clone(), self.max_doc_bytes);
         let listed = tokio::task::spawn_blocking(move || {
             let st = Store::load(&store);
             let sources = st.get(&persona).map(|p| list(&roots(&st, p)))?;
@@ -501,6 +523,10 @@ impl Tool for FileSearch {
             let mut named: HashMap<String, Source> = HashMap::new();
             let mut unindexed = Vec::new();
             for src in sources {
+                if !may_be_indexed(&src, cap) {
+                    unindexed.push(src.name);
+                    continue;
+                }
                 match sha_of(&src) {
                     Some(sha) if index.has(&sha).unwrap_or(false) => {
                         named.entry(sha).or_insert(src);
@@ -814,7 +840,7 @@ mod tests {
                 index_file(dir.clone(), &src, text, None).await.unwrap();
             }
         }
-        let tool = FileSearch::new(dir.clone(), "mara".into(), None);
+        let tool = FileSearch::new(dir.clone(), "mara".into(), None, 0);
         let ctx = ToolCtx::default();
         let out = tool.call(json!({"query": "urchins"}), &ctx).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
@@ -960,5 +986,27 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1, "not crowded out: {hits:?}");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Review of #467, pass 3: a file over its reader's cap is never
+    /// hashed by a search — it could not be indexed, so it is "not
+    /// searchable" without the read.
+    #[test]
+    fn a_file_past_its_cap_is_not_a_search_candidate() {
+        let at = |kind, bytes| Source {
+            name: "f".into(),
+            path: PathBuf::from("/nowhere"),
+            bytes,
+            kind,
+        };
+        use super::super::files::{Kind, MAX_TEXT_BYTES};
+        assert!(may_be_indexed(&at(Kind::Text, MAX_TEXT_BYTES), 0));
+        assert!(!may_be_indexed(&at(Kind::Text, MAX_TEXT_BYTES + 1), 0));
+        assert!(may_be_indexed(&at(Kind::Document, 10), 100));
+        assert!(!may_be_indexed(&at(Kind::Document, 101), 100));
+        assert!(
+            !may_be_indexed(&at(Kind::Document, 1), 0),
+            "reading switched off"
+        );
     }
 }
