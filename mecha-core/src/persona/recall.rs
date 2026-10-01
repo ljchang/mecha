@@ -463,18 +463,9 @@ pub fn per_turn(
     if !would_search(store_dir, p, message) {
         return Ok(None);
     }
-    let s = &p.settings.memory;
-    let mut kinds = Vec::new();
-    if s.episodic {
-        kinds.push(Recallable::Episodes);
-    }
-    if s.semantic {
-        kinds.push(Recallable::Facts(Table::Persona));
-    }
-    if s.user_facts != UserFacts::Off {
-        kinds.push(Recallable::Facts(Table::User));
-        kinds.push(Recallable::Facts(Table::Inferred));
-    }
+    // One reading of the switches, shared with the memory tools, so a new
+    // `[memory]` switch is learned once (review of #498).
+    let kinds = super::memory_tools::kinds(&p.settings);
     let m = Memory::open_to_edit(store_dir, &p.name)?;
     // Already in the chat by its opening words: chat start may have shown a
     // long episode cut short, and the whole text would not match it.

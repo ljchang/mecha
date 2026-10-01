@@ -296,3 +296,68 @@ fn neither_tool_can_send_anywhere() {
         assert!(caps.private_data && caps.untrusted_input);
     }
 }
+
+async fn read(dir: &Path, id: &str) -> ToolOutput {
+    MemoryRead::new(dir.to_path_buf(), "mara".into())
+        .call(json!({ "id": id }), &ToolCtx::default())
+        .await
+        .unwrap()
+}
+
+/// The line the interlock keys on (`untrusted |= caps.untrusted_input &&
+/// out.external`), measured at the tool rather than one layer down (review
+/// of #498).
+#[tokio::test]
+async fn the_read_tool_marks_a_conversation_from_outside_and_only_that() {
+    let dir = world();
+    transcript(
+        &dir,
+        "c1",
+        &[
+            owner("Let us call the kelp project Holdfast."),
+            says("Holdfast it is."),
+            checkpoint(false),
+            owner("Search what kelp sounds like."),
+            says("A page says kelp sings at dawn."),
+            checkpoint(true),
+        ],
+    );
+    let clean = episode(&dir, "c1", 0, 1, "Named the project.", Origin::ModelClean);
+    let web = episode(
+        &dir,
+        "c1",
+        2,
+        3,
+        "Read about kelp singing.",
+        Origin::ModelUntrusted,
+    );
+    let out = read(&dir, short(&clean)).await;
+    assert!(!out.is_error && !out.external, "{}", out.content);
+    let out = read(&dir, short(&web)).await;
+    assert!(!out.is_error && out.external, "{}", out.content);
+    // A refusal is the harness speaking, never third-party content.
+    let out = read(&dir, "zz").await;
+    assert!(out.is_error && !out.external);
+}
+
+#[tokio::test]
+async fn the_read_tool_reads_its_switch_live() {
+    let dir = world();
+    transcript(
+        &dir,
+        "c1",
+        &[owner("hello there"), says("hi"), checkpoint(false)],
+    );
+    let uid = episode(&dir, "c1", 0, 1, "Said hello.", Origin::ModelClean);
+    let toml = dir.join("mara").join("persona.toml");
+    let text = std::fs::read_to_string(&toml).unwrap();
+    let off = text.replace("episodic    = true", "episodic    = false");
+    assert_ne!(off, text, "the template's spelling moved");
+    std::fs::write(&toml, off).unwrap();
+    let out = read(&dir, short(&uid)).await;
+    assert!(
+        out.is_error && out.content.contains("switched off"),
+        "{}",
+        out.content
+    );
+}
