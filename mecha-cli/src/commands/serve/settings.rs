@@ -575,53 +575,16 @@ pub async fn voice(State(state): St) -> Json<serde_json::Value> {
     // an empty list would surface the misconfiguration only after someone
     // has recorded themselves.
     let mut cloned_error: Option<String> = None;
-    let cloned = state.voices_dir.as_ref().map(|dir| {
-        let mut out = Vec::new();
-        match std::fs::read_dir(dir.as_ref()) {
-            Err(e) => cloned_error = Some(format!("{}: {e}", dir.display())),
-            Ok(entries) => {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) != Some("wav") {
-                        continue;
-                    }
-                    let Some(name) = path.file_stem().and_then(|n| n.to_str()) else {
-                        continue;
-                    };
-                    // A bounded read: the fmt/data headers live in the first
-                    // few hundred bytes, and slurping every clone's megabytes
-                    // to answer a settings GET would make the page cost more
-                    // the more voices it lists. The header's declared size is
-                    // then clamped against the file's true length — a
-                    // streaming writer's placeholder (`0xFFFFFFFF`) otherwise
-                    // lists a 20-second reference as ~89,478s, found live on
-                    // this box's own Kokoro-derived voices.
-                    let seconds = read_head(&path, 64 * 1024)
-                        .ok()
-                        .and_then(|b| wav_info(&b).ok())
-                        .and_then(|info| {
-                            entry.metadata().ok().map(|m| info.seconds_within(m.len()))
-                        });
-                    let created = entry
-                        .metadata()
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs());
-                    out.push(serde_json::json!({
-                        "name": name,
-                        "seconds": seconds,
-                        // Unix seconds, off the mtime — which, for a store only
-                        // ever written by the clone endpoint, is when it was
-                        // recorded.
-                        "created": created,
-                    }));
-                }
+    let cloned = state
+        .voices_dir
+        .as_ref()
+        .map(|dir| match cloned_voices(dir) {
+            Ok(list) => list,
+            Err(e) => {
+                cloned_error = Some(e);
+                Vec::new()
             }
-        }
-        out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-        out
-    });
+        });
     Json(serde_json::json!({
         // None = voice is not wired on this serve at all — a different fact
         // from "wired and down", and the page shows them differently.
@@ -635,6 +598,206 @@ pub async fn voice(State(state): St) -> Json<serde_json::Value> {
         "cloned_error": cloned_error,
         "voices_dir": state.voices_dir.as_ref().map(|d| d.display().to_string()),
     }))
+}
+
+/// The cloned references on disk — name, duration, and when each was made —
+/// listed from the store itself rather than any cache: a file dropped in by
+/// hand belongs on the list as much as one recorded through the page. A
+/// directory that cannot be read is said, never folded into an empty list.
+pub(super) fn cloned_voices(dir: &std::path::Path) -> Result<Vec<serde_json::Value>, String> {
+    let mut out = Vec::new();
+    match std::fs::read_dir(dir) {
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("wav") {
+                    continue;
+                }
+                let Some(name) = path.file_stem().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                // A bounded read: the fmt/data headers live in the first
+                // few hundred bytes, and slurping every clone's megabytes
+                // to answer a settings GET would make the page cost more
+                // the more voices it lists. The header's declared size is
+                // then clamped against the file's true length — a
+                // streaming writer's placeholder (`0xFFFFFFFF`) otherwise
+                // lists a 20-second reference as ~89,478s, found live on
+                // this box's own Kokoro-derived voices.
+                let seconds = read_head(&path, 64 * 1024)
+                    .ok()
+                    .and_then(|b| wav_info(&b).ok())
+                    .and_then(|info| entry.metadata().ok().map(|m| info.seconds_within(m.len())));
+                let created = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
+                out.push(serde_json::json!({
+                    "name": name,
+                    "seconds": seconds,
+                    // Unix seconds, off the mtime — which, for a store only
+                    // ever written by the clone endpoint, is when it was
+                    // recorded.
+                    "created": created,
+                }));
+            }
+        }
+    }
+    out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    Ok(out)
+}
+
+#[derive(Deserialize)]
+pub struct VoicesQuery {
+    #[serde(default)]
+    pub(super) unlock: Option<String>,
+}
+
+/// GET /api/library/voices — the voice library (Library → Voices): every
+/// voice the TTS can speak, each with whether it is a clone here and which
+/// personas speak in it. Three sources, each said when it cannot be read
+/// rather than shown as nothing: the worker's list (`runner_voices`), the
+/// cloned clips (`cloned_voices`), and the persona store (`voices_in_use`,
+/// behind the lock).
+pub async fn library_voices(
+    State(state): St,
+    axum::extract::Query(q): axum::extract::Query<VoicesQuery>,
+) -> Json<serde_json::Value> {
+    let listed = match &state.offer_target {
+        None => Err("voice calls are not wired on this serve"),
+        Some(target) => super::runner_voices(target).await,
+    };
+    let (cloned, cloned_error) = match state.voices_dir.as_ref() {
+        None => (None, None),
+        Some(dir) => match cloned_voices(dir) {
+            Ok(list) => (Some(list), None),
+            Err(e) => (Some(Vec::new()), Some(e)),
+        },
+    };
+    // No chat state: no persona store to read, which is not "nobody".
+    let used = state
+        .chat
+        .as_ref()
+        .map(|c| {
+            c.personas
+                .voices_in_use(&state.library, q.unlock.as_deref())
+        })
+        .unwrap_or(super::persona_chat::VoicesInUse {
+            by_voice: Default::default(),
+            partial: Some("unreadable"),
+        });
+    let mut names: std::collections::BTreeSet<String> = Default::default();
+    if let Ok(list) = &listed {
+        names.extend(list.iter().cloned());
+    }
+    for c in cloned.iter().flatten() {
+        if let Some(n) = c["name"].as_str() {
+            names.insert(n.to_string());
+        }
+    }
+    // And every voice a persona names: one that is in neither list is
+    // exactly what this page is placed to say, rather than leaving the first
+    // sign of a typo to a refused call (review of #490). Behind the lock, as
+    // `used` is.
+    names.extend(used.by_voice.keys().cloned());
+    let voices: Vec<serde_json::Value> = names
+        .into_iter()
+        .map(|name| {
+            let clone = cloned
+                .iter()
+                .flatten()
+                .find(|c| c["name"].as_str() == Some(name.as_str()));
+            serde_json::json!({
+                // Whether the TTS can speak it now: unknown (null) when its
+                // list could not be read, which is not "no".
+                "listed": listed.as_ref().ok().map(|l| l.contains(&name)),
+                "cloned": clone.map(|c| serde_json::json!({
+                    "seconds": c["seconds"],
+                    "created": c["created"],
+                })),
+                "used_by": used.by_voice.get(&name).cloned().unwrap_or_default(),
+                "name": name,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({
+        "voices": voices,
+        "list_error": listed.err(),
+        // None = cloning unconfigured; a store that could not be read is
+        // its own answer, as on the settings pane.
+        "cloning": state.voices_dir.is_some(),
+        // Why `used_by` may be short — "locked" or "unreadable" — or null when
+        // every persona was read: an empty list then means nobody.
+        "used_by_partial": used.partial,
+        "cloned_error": cloned_error,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct SampleQuery {
+    pub(super) name: String,
+}
+
+/// GET /api/library/voices/sample?name= — a fixed line spoken in that voice,
+/// as the worker's `/mecha/sample` answers it: how the voice sounds as a
+/// clone, which is what the library is choosing between. The worker refuses
+/// a voice its TTS does not list before asking it to speak.
+pub async fn library_voice_sample(
+    State(state): St,
+    axum::extract::Query(q): axum::extract::Query<SampleQuery>,
+) -> Response {
+    let Some(target) = state.offer_target.as_ref() else {
+        return (
+            StatusCode::NOT_FOUND,
+            "voice calls are not wired on this serve\n",
+        )
+            .into_response();
+    };
+    if q.name.is_empty() || q.name.len() > 64 || q.name.chars().any(char::is_control) {
+        return (StatusCode::BAD_REQUEST, "not a voice name\n").into_response();
+    }
+    let Ok(mut url) = reqwest::Url::parse(target).and_then(|t| t.join("/mecha/sample")) else {
+        return (StatusCode::BAD_GATEWAY, "no voice worker address\n").into_response();
+    };
+    url.query_pairs_mut().append_pair("voice", &q.name);
+    let resp = match reqwest::Client::new()
+        .get(url)
+        // The TTS may be loading its model, and speaks the line whole.
+        .timeout(std::time::Duration::from_secs(90))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => {
+            return (StatusCode::BAD_GATEWAY, "the voice worker did not answer\n").into_response()
+        }
+    };
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let Ok(bytes) = resp.bytes().await else {
+        return (StatusCode::BAD_GATEWAY, "reading the sample\n").into_response();
+    };
+    if status.is_success() {
+        return ([("content-type", "audio/wav")], bytes.to_vec()).into_response();
+    }
+    // The worker's own refusal carries its reason in `error`; a 404 without
+    // one is the route missing — a worker older than previews (review of
+    // #490: both 404s carry a content-type, so the body is what tells them
+    // apart).
+    let why = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|v| v["error"].as_str().map(str::to_string));
+    match why {
+        Some(why) => (status, format!("{why}\n")).into_response(),
+        None if status == StatusCode::NOT_FOUND => (
+            StatusCode::CONFLICT,
+            "the voice worker predates previews — restart it on a current checkout\n",
+        )
+            .into_response(),
+        None => (status, format!("the voice worker answered {status}\n")).into_response(),
+    }
 }
 
 /// A voice name is a bare filename stem, and the alphabet is closed rather

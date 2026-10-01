@@ -2,12 +2,13 @@
   import { onDestroy, untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import { features } from './features.svelte.js';
-  import { opens } from './features.js';
+  import { opens, isShown } from './features.js';
   import {
     PANES, paneOf, entriesFor, counts, originLabel, listUrl, tameName,
     TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody,
   } from './library.js';
   import { watchIdle, idleSpan } from './autolock.js';
+  import VoicesPane from './VoicesPane.svelte';
   // The image library: the characters and styles `image_generate` compiles a
   // scene against (docs/IMAGE-COMPILER-DESIGN.md §7).
   //
@@ -34,7 +35,10 @@
   let { initial = '', navigate = () => {} } = $props();
 
   const pane = $derived(paneOf(initial));
-  const label = { characters: 'Characters', styles: 'Styles', candidates: 'Waiting' };
+  const label = { characters: 'Characters', styles: 'Styles', voices: 'Voices', candidates: 'Waiting' };
+  // How many voices the Voices pane last read: its own list, not an entry
+  // count; a dash until that pane has been opened.
+  let voiceCount = $state(null);
 
   let data = $state(null);
   let error = $state(null);
@@ -265,12 +269,16 @@
            pane opens for what waits in it (OPENS_ANYWAY), and no other. -->
       {#each PANES.filter((p) => opens(features.rows, 'library', p)) as p}
         <button class="chipbtn" class:active={pane === p} onclick={() => { open = null; closeForm(); navigate(`library/${p}`); }}>
-          {label[p]}<span class="chipcount">{data ? tally[p] : '—'}</span>
+          {label[p]}<span class="chipcount">{p === 'voices' ? (voiceCount ?? '—') : data ? tally[p] : '—'}</span>
         </button>
       {/each}
     </div>
     <!-- Compact on purpose: on a phone a labelled pill pushed the first
-         pane chip off the row. The state is in its colour and its label. -->
+         pane chip off the row. The state is in its colour and its label.
+         Only once the library has answered: with the image library off its
+         read refuses, `has_password` is unknown, and a password-less unlock
+         would fail and spend a try against the limit (review of #490). -->
+    {#if data}
     <button
       class="lockbtn"
       class:on={!!token}
@@ -283,9 +291,18 @@
         {#if token}<path d="M7 11V7a5 5 0 019.9-1M5 11h14v10H5z" />{:else}<path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" />{/if}
       </svg>
     </button>
+    {/if}
   </header>
 
   <div class="scroll">
+    {#if pane === 'voices'}
+      {#if !isShown(features.rows, 'library')}
+        <!-- Reached with image generation off (it opens anyway): say why the
+             other panes are not here. -->
+        <div class="barnote">The image library is off — characters and styles are hidden, and locked personas stay unnamed here.</div>
+      {/if}
+      <VoicesPane {token} oncount={(n) => (voiceCount = n)} />
+    {:else}
     {#if error}
       <div class="warnline">{error}</div>
     {/if}
@@ -419,6 +436,7 @@
     {/if}
     {#if data?.unreadable}
       <div class="warnline">{data.unreadable} {data.unreadable === 1 ? 'entry' : 'entries'} could not be read — <code>mecha imagelib list</code></div>
+    {/if}
     {/if}
   </div>
 

@@ -161,9 +161,15 @@ pub struct Settings {
     /// An image-library character: the persona's portrait and "self" (§8.6).
     #[serde(default)]
     pub character: Option<String>,
-    /// A profile in `voices/` (§11).
+    /// A voice in the voice library (Library → Voices): one the TTS server
+    /// lists, checked and bound when a call starts (§11). Unset speaks in the
+    /// worker's own voice.
     #[serde(default)]
     pub voice: Option<String>,
+    /// How fast the persona speaks on a call, 0.5–2.0; unset leaves the
+    /// listener's rate.
+    #[serde(default)]
+    pub voice_speed: Option<f64>,
     /// Groups declared in `groups.toml` this persona belongs to (§4.5).
     #[serde(default)]
     pub groups: Vec<String>,
@@ -582,24 +588,9 @@ pub struct Relationship {
     pub starter: bool,
 }
 
-/// `voices/<name>/profile.toml` (§11). Read and linked in this step; bound
-/// to a call in step 7.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VoiceProfile {
-    /// A voice the TTS server already lists, when there is no clip.
-    #[serde(default)]
-    pub voice: Option<String>,
-    /// A reference clip beside this file: a plain file name.
-    #[serde(default)]
-    pub reference: Option<String>,
-    #[serde(default)]
-    pub speed: Option<f64>,
-    #[serde(default)]
-    pub exaggeration: Option<f64>,
-    #[serde(default)]
-    pub cfg_weight: Option<f64>,
-}
+/// The rates a persona may speak at on a call — the voice worker's own
+/// (`MIN_SPEED, MAX_SPEED` in `scripts/voice/worker.py`).
+pub const VOICE_SPEED: std::ops::RangeInclusive<f64> = 0.5..=2.0;
 
 /// One group, as `groups.toml` declares it. Membership lives in each
 /// persona's `groups`, once.
@@ -642,7 +633,6 @@ pub struct Store {
     dir: PathBuf,
     personas: Vec<Persona>,
     relationships: BTreeMap<String, Relationship>,
-    voices: BTreeMap<String, VoiceProfile>,
     groups: BTreeMap<String, GroupDecl>,
     errors: Vec<LoadError>,
 }
@@ -741,7 +731,6 @@ impl Store {
             ..Store::default()
         };
         store.load_relationships();
-        store.load_voices();
         store.load_groups();
         let Ok(items) = std::fs::read_dir(dir) else {
             return store;
@@ -823,47 +812,6 @@ impl Store {
         }
     }
 
-    fn load_voices(&mut self) {
-        let Ok(items) = std::fs::read_dir(self.dir.join("voices")) else {
-            return;
-        };
-        for item in items.flatten() {
-            let path = item.path();
-            let Some(name) = dir_name(&path) else {
-                continue;
-            };
-            let file = path.join("profile.toml");
-            if name.starts_with('.') || !file.is_file() {
-                continue;
-            }
-            let loaded = validate_name(&name).and_then(|()| {
-                let profile: VoiceProfile = parse_toml(&read_prose(&file)?)?;
-                match (&profile.voice, &profile.reference) {
-                    (None, None) => bail!("a profile needs a `voice` or a `reference` clip"),
-                    (_, Some(clip)) => {
-                        if clip.contains('/') || clip.contains('\\') || clip.starts_with('.') {
-                            bail!("reference `{clip}` must be a file beside profile.toml");
-                        }
-                        if !path.join(clip).is_file() {
-                            bail!("reference clip `{clip}` is not in {}", path.display());
-                        }
-                    }
-                    _ => {}
-                }
-                Ok(profile)
-            });
-            match loaded {
-                Ok(p) => {
-                    self.voices.insert(name, p);
-                }
-                Err(e) => self.errors.push(LoadError {
-                    path: file,
-                    why: format!("{e:#}"),
-                }),
-            }
-        }
-    }
-
     fn load_groups(&mut self) {
         let path = self.dir.join("groups.toml");
         if !path.is_file() {
@@ -907,10 +855,6 @@ impl Store {
 
     pub fn relationships(&self) -> &BTreeMap<String, Relationship> {
         &self.relationships
-    }
-
-    pub fn voices(&self) -> &BTreeMap<String, VoiceProfile> {
-        &self.voices
     }
 
     pub fn groups(&self) -> &BTreeMap<String, GroupDecl> {
@@ -982,11 +926,14 @@ impl Store {
                 Some(_) => {}
             }
         }
-        if let Some(v) = &p.settings.voice {
-            if !self.voices.contains_key(v) {
+        // The voice itself is the TTS server's to know, and a call asks it
+        // (`call_voice`); the rate is checkable here.
+        if let Some(speed) = p.settings.voice_speed {
+            if !VOICE_SPEED.contains(&speed) {
                 out.push(format!(
-                    "names voice `{v}`, which is not a profile in {}",
-                    self.dir.join("voices").display()
+                    "voice_speed {speed} is outside {:.1}–{:.1}",
+                    VOICE_SPEED.start(),
+                    VOICE_SPEED.end()
                 ));
             }
         }
@@ -1168,7 +1115,10 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 /// starters. Never overwrites anything.
 pub fn ensure_layout(dir: &Path) -> Result<()> {
     private_dir(dir)?;
-    for sub in ["files", "groups", "relationships", "voices", "scenarios"] {
+    // No `voices/` since 2026-10-01: a persona names a library voice (§11).
+    // The name stays reserved, so a folder left by an older build is never
+    // read as a persona.
+    for sub in ["files", "groups", "relationships", "scenarios"] {
         private_dir(&dir.join(sub))?;
     }
     write_new(&dir.join("about-me.md"), ABOUT_ME)?;
@@ -1339,6 +1289,7 @@ fn render_settings(new: &NewPersona, tools: &[String], answers: Answers) -> Stri
          {relationship}\
          {character}\
          {voice}\
+         # voice_speed = 1.0   # 0.5–2.0 on a call; unset is the listener's rate\n\
          groups       = {groups}   # declared in ../groups.toml\n\
          # model      = \"local\"      # pin a model; unset is the default\n\
          \n\
@@ -1373,7 +1324,7 @@ fn render_settings(new: &NewPersona, tools: &[String], answers: Answers) -> Stri
         voice = opt(
             "voice",
             &new.voice,
-            "\"mara-low\"   # a profile in ../voices/"
+            "\"ada\"   # a voice in Library → Voices"
         ),
         groups = quoted_list(&new.groups),
         tools = quoted_list(tools),
@@ -1481,6 +1432,7 @@ fn create_with(
             } else {
                 new.voice.clone()
             },
+            voice_speed: None,
             groups: new.groups.clone(),
             model: None,
             tools: Tools::default(),
@@ -2582,9 +2534,11 @@ mod tests {
         for sub in ["files", "sessions", "candidates", "versions"] {
             assert!(dir.join("mara").join(sub).is_dir(), "{sub}");
         }
-        for sub in ["files", "groups", "relationships", "voices", "scenarios"] {
+        for sub in ["files", "groups", "relationships", "scenarios"] {
             assert!(dir.join(sub).is_dir(), "{sub}");
         }
+        // Not `voices/` since 2026-10-01: a persona names a library voice.
+        assert!(!dir.join("voices").exists());
         assert!(dir.join("about-me.md").is_file());
         assert_eq!(p.state.status, Status::Approved);
         assert_eq!(p.state.origin, Origin::Owner);
@@ -2762,7 +2716,7 @@ mod tests {
         let path = dir.join("mara/persona.toml");
         let text = std::fs::read_to_string(&path).unwrap();
         let text = text
-            .replace("display      = \"mara\"", "display = \"Mara\"\nrelationship = [\"colleague\", \"rival\"]\ncharacter = \"mara\"\nvoice = \"mara-low\"")
+            .replace("display      = \"mara\"", "display = \"Mara\"\nrelationship = [\"colleague\", \"rival\"]\ncharacter = \"mara\"\nvoice = \"ada\"\nvoice_speed = 3.0")
             .replace("groups       = []", "groups = [\"work\"]")
             .replace("fixed       = []", "fixed = [\"Background\", \"Hobbies\"]");
         std::fs::write(&path, text).unwrap();
@@ -2772,7 +2726,7 @@ mod tests {
         for needle in [
             "`rival`",
             "character `mara`",
-            "voice `mara-low`",
+            "voice_speed 3",
             "group `work`",
             "`Hobbies`",
         ] {
@@ -2780,14 +2734,13 @@ mod tests {
         }
         assert!(!problems.contains("`colleague`"), "{problems}");
         assert!(!problems.contains("`Background`"), "{problems}");
-        // Declared and profiled, the links resolve.
+        // Declared and in range, the links resolve. The voice itself is the
+        // TTS server's to know: a call checks it, the store cannot.
         add_group(&dir, "work", "the kelp project").unwrap();
-        std::fs::create_dir_all(dir.join("voices/mara-low")).unwrap();
-        std::fs::write(
-            dir.join("voices/mara-low/profile.toml"),
-            "voice = \"en-f-2\"\n",
-        )
-        .unwrap();
+        let text = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("voice_speed = 3.0", "voice_speed = 1.1");
+        std::fs::write(&path, text).unwrap();
         let store = Store::load(&dir);
         let problems = store
             .problems(store.get("mara").unwrap(), &no_lib())
@@ -3339,7 +3292,7 @@ mod tests {
         assert!(why.iter().any(|w| w.contains("a value holds")), "{why:?}");
         // Every string field, not just `display`, and a bare carriage return.
         for (field, value) in [
-            ("# voice      = \"mara-low\"", "voice = \"x\\u001b[2J\""),
+            ("# voice      = \"ada\"", "voice = \"x\\u001b[2J\""),
             ("allow = []", "allow = [\"web\\u0007\"]"),
             ("# model      = \"local\"", "model = \"a\\rb\""),
         ] {
@@ -3583,9 +3536,16 @@ mod tests {
     fn a_load_error_is_blamed_on_its_own_file() {
         let dir = scratch();
         ensure_layout(&dir).unwrap();
-        // A voice profile named like a persona that does not exist.
-        std::fs::create_dir_all(dir.join("voices/mara")).unwrap();
-        std::fs::write(dir.join("voices/mara/profile.toml"), "").unwrap();
+        // A relationship template named like a persona that does not exist,
+        // and broken: its error is its own file's, never the persona's.
+        std::fs::write(dir.join("relationships/mara.md"), "+++\nbad = [\n+++\nx\n").unwrap();
+        assert!(
+            Store::load(&dir)
+                .errors()
+                .iter()
+                .any(|e| e.path.ends_with("relationships/mara.md")),
+            "the broken template must be a load error, or this test proves nothing"
+        );
         let e = approve(&dir, "mara").unwrap_err();
         assert_eq!(format!("{e}"), "no persona named `mara`");
         std::fs::remove_dir_all(dir).ok();
@@ -3889,25 +3849,5 @@ mod tests {
         assert_eq!(s.answers, Some(Answers::Files), "CRLF front matter");
         assert_eq!(body, "# T\n");
         assert!(front_matter("+++\ntool = []\n+++\n").is_err());
-    }
-
-    #[test]
-    fn a_voice_profile_needs_a_voice_or_a_clip_beside_it() {
-        let dir = scratch();
-        let v = dir.join("voices");
-        for (name, body) in [
-            ("none", ""),
-            ("escape", "reference = \"../x.wav\"\n"),
-            ("missing", "reference = \"clip.wav\"\n"),
-            ("ok", "reference = \"clip.wav\"\nspeed = 1.1\n"),
-        ] {
-            std::fs::create_dir_all(v.join(name)).unwrap();
-            std::fs::write(v.join(name).join("profile.toml"), body).unwrap();
-        }
-        std::fs::write(v.join("ok/clip.wav"), b"RIFF").unwrap();
-        let store = Store::load(&dir);
-        assert_eq!(store.voices().keys().collect::<Vec<_>>(), vec!["ok"]);
-        assert_eq!(store.errors().len(), 3, "{:?}", store.errors());
-        std::fs::remove_dir_all(dir).ok();
     }
 }

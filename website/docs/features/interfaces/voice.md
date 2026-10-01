@@ -114,7 +114,9 @@ now, reading and writing the voice stack's own preference store — the one stor
 every page reads. A choice made there is the choice the next call opens with.
 
 **Voice.** Six generated references plus Chatterbox's own built-in voice, and
-any you have cloned. Chatterbox conditions on a few seconds of reference audio,
+any you have cloned. **Library → Voices** lists them all: tap one to hear a
+short sentence spoken in it, record or upload a new one, and see which
+personas speak in each. Chatterbox conditions on a few seconds of reference audio,
 so a voice is a `.wav` on disk — the server reads the voices directory live, and
 dropping a clip in by hand works exactly as well as recording one through the
 page.
@@ -135,7 +137,8 @@ appends it to an `ATTRIBUTION.md` in the voices directory. Keep that file with
 the clips if you share them. The script only adds files and never overwrites
 one, and it takes speaker ids, never a URL.
 
-**Cloning your own** needs `[web] voices_dir` pointed at the host directory the
+**Cloning your own** happens in Library → Voices: record someone reading the
+passage there, or upload a WAV recorded elsewhere. It needs `[web] voices_dir` pointed at the host directory the
 TTS container mounts as `/voices`; unset, the endpoint answers *not configured*
 rather than failing obscurely. A reference is **5 to 120 seconds** — under five
 Chatterbox has too little voice to condition on, and past two minutes the extra
@@ -152,7 +155,7 @@ sounding like a chipmunk.
 
 The picker enumerates from the worker's last answer, cached: a picker with no
 live call cannot ask, and showing the remembered answer with a dated note beats
-a hardcoded list or no picker at all. What the settings page lists as *cloned*
+a hardcoded list or no picker at all. What Library → Voices lists as *cloned*
 comes from the store itself, and a directory that could not be read is shown as
 such rather than as an empty list — "nothing cloned yet" and "could not look"
 are opposite findings, and folding them together would surface a

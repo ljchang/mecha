@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer is spoken in the call's voice. The microphone pauses while the box
   has focus and comes back as it was; the mute button stays yours.
 
+- **Library → Voices.** Every voice the voice server can speak is listed in
+  the library. Tap one to hear a sentence spoken in it, record or upload (WAV)
+  a new one, delete a clone, and see which personas speak in each. Recording
+  and deleting moved here from Settings → Voice, which keeps the assistant's
+  own voice and rate.
+
 - **Make a persona from the main chat.** Ask for one ("help me make a
   persona who…") and the assistant drafts who they are and what they want,
   and stages it with a new `persona_propose` tool. It waits on the Personas
@@ -520,6 +526,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it.
 
 ### Changed
+
+- **A persona names a library voice directly.** `voice = "ada"` in
+  `persona.toml` is a voice from Library → Voices, with an optional
+  `voice_speed` (0.5–2.0). The `voices/<name>/profile.toml` profiles are
+  gone; nothing used them yet.
 
 - **A persona's page is quieter.** It no longer states its crisis-detection
   setting, and its files are small tiles with a compact add tile, instead of
