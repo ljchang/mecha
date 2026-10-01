@@ -1355,12 +1355,15 @@ Two known edges:
   always the persona's, but its rate stays the listener's unless the profile
   sets one. Nothing on the page changes it today.
 
-Two questions are open for the owner (ARCHITECTURE §Personas):
+**Ruled (owner, 2026-10-01): on a call, the crisis pause is spoken in the
+persona's own voice**, to keep it simple. §12.2's "a plain voice" governs the
+words: the safe message, never the persona's. It does not govern the TTS
+voice, so the worker needs no per-utterance voice switch.
 
-- The crisis pause is spoken in the persona's bound voice, not a plain one.
-- A judge verdict that lands after a spoken reply has finished reaches only
-  the page. The call's turn has already closed, and waiting for the verdict
-  would hold every turn open for up to 90 s.
+Open for the owner (ARCHITECTURE §Personas): a judge verdict that lands
+after a spoken reply has finished reaches only the page. The call's turn
+has already closed, and waiting for the verdict would hold every turn open
+for up to 90 s.
 
 The voice stack already takes everything a profile needs. The worker's TTS
 leg is Chatterbox Turbo (`scripts/voice/worker.py`): voice name, speed,
