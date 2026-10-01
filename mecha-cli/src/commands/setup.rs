@@ -154,7 +154,8 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     // records it once more. **Only where there is an offer**: under `--json`
     // nothing is offered, so reopening could only turn a recorded answer into
     // a non-zero exit — the "red over a choice already made" `Declined`
-    // exists to retire (review of #461).
+    // exists to retire (review of #461). The gate goes first: the closure
+    // removes from `honoured`, so `&&` must short-circuit before it runs.
     let mut honoured = declined.clone().unwrap_or_default();
     let reopened = !args.json
         && only.is_some_and(|f| {
