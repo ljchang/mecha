@@ -283,7 +283,7 @@ mod tests {
         listed_sorted.sort();
         switches.sort();
         assert_eq!(listed_sorted, switches);
-        assert!(!cfg.messages.enabled);
+        assert!(!cfg.messages.on());
         assert!(cfg.features.0.values().all(|on| !on));
     }
 }
