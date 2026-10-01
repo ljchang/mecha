@@ -667,17 +667,20 @@ pub fn page_text(messages: &[Message], file: &str, page: Option<u32>) -> Option<
 /// where `quote` sits in it — or, for a quote the check found running over
 /// the page break (`Verdict::Quoted` from the pair), that page and the next
 /// joined, so the passage it admitted is the passage marked (review of
-/// #465, pass 5: the page alone marked nothing). Returns the text, the
-/// marked span, and the last page shown.
+/// #465, pass 5: the page alone marked nothing).
 pub fn passage(
     messages: &[Message],
     file: &str,
     page: Option<u32>,
     quote: &str,
-) -> Option<(String, Option<(usize, usize)>, Option<u32>)> {
+) -> Option<Passage> {
     let text = page_text(messages, file, page)?;
     if let Some(span) = mark(&text, quote) {
-        return Some((text, Some(span), page));
+        return Some(Passage {
+            text,
+            span: Some(span),
+            through: page,
+        });
     }
     if let Some(next) = page.and_then(|p| {
         let n = p + 1;
@@ -685,10 +688,30 @@ pub fn passage(
     }) {
         let joined = format!("{text}\n\n{}", next.1);
         if let Some(span) = mark(&joined, quote) {
-            return Some((joined, Some(span), Some(next.0)));
+            return Some(Passage {
+                text: joined,
+                span: Some(span),
+                through: Some(next.0),
+            });
         }
     }
-    Some((text, None, page))
+    Some(Passage {
+        text,
+        span: None,
+        through: page,
+    })
+}
+
+/// A cited page as the page shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Passage {
+    pub text: String,
+    /// Where the quote sits in `text`, as byte offsets; `None` when it
+    /// could not be placed.
+    pub span: Option<(usize, usize)>,
+    /// The last page `text` holds: the cited one, or the next where the
+    /// quote ran over the break.
+    pub through: Option<u32>,
 }
 
 /// Where `quote` sits in `text`, as byte offsets of its first and last
@@ -1065,7 +1088,11 @@ mod tests {
                 Verdict::NotRead,
             ]
         );
-        let (text, span, last) = passage(
+        let Passage {
+            text,
+            span,
+            through: last,
+        } = passage(
             &msgs,
             "kelp.pdf",
             Some(1),
