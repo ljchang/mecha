@@ -126,7 +126,7 @@
       </button>
       <div class="vtext">
         <span class="vname">{v.name}</span>
-        <span class="readingline">{voiceLine(v)}</span>
+        <span class="readingline">{voiceLine(v, data.used_by_partial)}</span>
       </div>
       {#if v.cloned}
         <button class="abtn tiny" class:armed={deleteArmed === v.name} onclick={() => remove(v.name)}>

@@ -32,6 +32,17 @@ assert.equal(
 assert.equal(voiceLine({ name: 'default', listed: true, cloned: null, used_by: [] }), "the voice server's own");
 assert.equal(voiceLine({ name: 'solo', listed: false, cloned: {}, used_by: ['Mara', 'Ada'] }), 'cloned here · not on the voice server yet · Mara, Ada speak in it');
 assert.equal(voiceLine({ name: 'x', listed: null, cloned: {}, used_by: [] }), 'cloned here');
+// A clone's row says when "who speaks in it" may be short — and only a
+// clone's, since that is the row with Delete.
+assert.equal(
+  voiceLine({ name: 'ada', listed: true, cloned: { seconds: 20 }, used_by: [] }, 'locked'),
+  'cloned here · 20s reference · unlock to see every persona that speaks in it',
+);
+assert.equal(
+  voiceLine({ name: 'ada', listed: true, cloned: {}, used_by: [] }, 'unreadable'),
+  'cloned here · who speaks in it could not be fully read',
+);
+assert.equal(voiceLine({ name: 'default', listed: true, cloned: null, used_by: [] }, 'locked'), "the voice server's own");
 // The server not asked: nothing claimed about where the voice comes from.
 assert.equal(voiceLine({ name: 'adaa', listed: null, cloned: null, used_by: ['Mara'] }), 'Mara speaks in it');
 assert.equal(voiceLine({ name: 'adaa', listed: null, cloned: null, used_by: [] }), '');
