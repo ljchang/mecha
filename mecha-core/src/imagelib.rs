@@ -751,6 +751,54 @@ pub fn verify_lock_password(dir: &Path, password: &str) -> Result<bool> {
         .is_ok())
 }
 
+/// The autolock's file, beside the lock's: how long an unlock lasts with no
+/// one using it. Its own file, because `lock.toml`'s presence is what says a
+/// password is set.
+const AUTOLOCK_FILE: &str = "autolock.toml";
+/// Minutes an unlock lasts without use when the owner has not said.
+pub const DEFAULT_AUTOLOCK_MINUTES: u32 = 15;
+/// The longest the owner may choose: the lock is a browse filter, and an
+/// unlock left open for a day is not one.
+pub const MAX_AUTOLOCK_MINUTES: u32 = 240;
+
+#[derive(Serialize, Deserialize)]
+struct AutolockFile {
+    idle_minutes: u32,
+}
+
+/// Minutes of no use before an unlock lapses — the page's idle clock and the
+/// server's token both. [`DEFAULT_AUTOLOCK_MINUTES`] when nothing is set;
+/// `Err` when the file cannot be read or holds a value out of range — a
+/// damaged setting is a finding, never a longer unlock.
+pub fn autolock_minutes(dir: &Path) -> Result<u32> {
+    let path = dir.join(AUTOLOCK_FILE);
+    if !path.is_file() {
+        return Ok(DEFAULT_AUTOLOCK_MINUTES);
+    }
+    let file: AutolockFile =
+        toml::from_str(&std::fs::read_to_string(&path)?).context("reading the autolock setting")?;
+    check_autolock(file.idle_minutes)?;
+    Ok(file.idle_minutes)
+}
+
+/// Set how many minutes of no use lock the library and personas again.
+pub fn set_autolock_minutes(dir: &Path, minutes: u32) -> Result<()> {
+    check_autolock(minutes)?;
+    std::fs::create_dir_all(dir)?;
+    let text = toml::to_string_pretty(&AutolockFile {
+        idle_minutes: minutes,
+    })?;
+    write_atomic_mode(&dir.join(AUTOLOCK_FILE), text.as_bytes(), Some(0o600))
+        .context("writing the autolock setting")
+}
+
+fn check_autolock(minutes: u32) -> Result<()> {
+    if !(1..=MAX_AUTOLOCK_MINUTES).contains(&minutes) {
+        bail!("the autolock is 1 to {MAX_AUTOLOCK_MINUTES} minutes, not {minutes}");
+    }
+    Ok(())
+}
+
 /// What an approval surface showed the owner: a digest over the entry's kind,
 /// name, version and text. The web page sends back the digest of the text it
 /// displayed; approval proceeds only if it still matches, so an untrusted
@@ -1636,6 +1684,28 @@ mod tests {
         // A damaged lock is a finding, never an open door.
         std::fs::write(dir.path().join("lock.toml"), "hash = \"nonsense\"").unwrap();
         assert!(verify_lock_password(dir.path(), "correct horse").is_err());
+    }
+
+    #[test]
+    fn the_autolock_defaults_keeps_its_range_and_is_not_the_password() {
+        let dir = scratch();
+        assert_eq!(
+            autolock_minutes(dir.path()).unwrap(),
+            DEFAULT_AUTOLOCK_MINUTES
+        );
+        set_autolock_minutes(dir.path(), 5).unwrap();
+        assert_eq!(autolock_minutes(dir.path()).unwrap(), 5);
+        // Setting it never makes a password appear: the lock stays a toggle.
+        assert!(!has_lock_password(dir.path()));
+        for out in [0, MAX_AUTOLOCK_MINUTES + 1] {
+            assert!(set_autolock_minutes(dir.path(), out).is_err(), "{out}");
+        }
+        assert_eq!(autolock_minutes(dir.path()).unwrap(), 5);
+        // A hand-edited value out of range is damage, not a long unlock.
+        std::fs::write(dir.path().join("autolock.toml"), "idle_minutes = 100000\n").unwrap();
+        assert!(autolock_minutes(dir.path()).is_err());
+        std::fs::write(dir.path().join("autolock.toml"), "nonsense").unwrap();
+        assert!(autolock_minutes(dir.path()).is_err());
     }
 
     #[test]

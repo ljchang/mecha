@@ -1658,6 +1658,15 @@ export const personas = {
   has_password: false,
 };
 
+// The library lock's settings: the default autolock, no password.
+export const lockSettings = {
+  idle_minutes: 15,
+  error: null,
+  default_minutes: 15,
+  max_minutes: 240,
+  has_password: false,
+};
+
 export const personaSources = {
   sources: [
     { name: 'urchin-barrens.pdf', bytes: 3870000, kind: 'document', shared: false, ready: false, unreadable: null, processing: true },
