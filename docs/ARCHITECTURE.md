@@ -1139,6 +1139,36 @@ module.
     correction mining. Without the first, a paper's words would enter a chat
     unmarked; without the second, they would draw as the owner's message.
     `the_personas_files_ride_in_the_first_turn_once` checks both.
+- **Memory** (`persona::memory`, `PERSONA-DESIGN.md` §9; the store only so
+  far — no writer, no recall, nothing reaches a prompt yet):
+  - One `memory.db` per persona, in its folder, and one `shared.db` at the top
+    of the store. A chat opens exactly one `memory.db`, so personas are kept
+    apart by the filesystem; the only cross-persona filter is
+    `Shared::visible_to`, and `a_persona_outside_a_group_sees_none_of_its_shared_facts`
+    is its test. Audiences are stored as `everyone` or `group:<name>`, so a
+    group named `everyone` is still a group.
+  - `source` (chat + turn range) is mandatory, in the API and as a `CHECK` in
+    the schema: it is the deletion key, and `memory::forget_chat` clears both
+    files by it. Chat ids are per persona, so the shared side also matches
+    `learned_by`.
+  - Forgetting means it: `secure_delete` on every writable connection, then
+    `wal_checkpoint(TRUNCATE)` after a delete. Each half alone leaves the text
+    on disk — without `secure_delete` in `memory.db`, without the truncate in
+    `memory.db-wal` — and `forgotten_text_survives_neither_in_the_file_nor_in_the_log`
+    reads both files' bytes.
+  - `Status::initial` is the one rule for a new record: `ModelUntrusted` is a
+    candidate, never recalled until the owner approves; anything else is
+    active (inferred facts included, D18). Approval keeps the origin, so
+    recall can re-arm the taint.
+  - Inferred facts about the owner can only go in `inferred_user_facts`, and
+    only inferred ones can; the split is enforced at `Memory::add_fact`.
+  - Text is append-only: `correct` invalidates and inserts an owner-origin row
+    with `replaces`, keeping the source. Only `forget` deletes.
+  - Closed sets are stored by their serde names and read back through
+    `Default`, which is the narrowest variant: an unknown origin is untrusted,
+    an unknown status is a candidate.
+  - Read paths (`open_existing`) never create a file — what recall and an
+    incognito chat will use.
 
 ## Security model
 

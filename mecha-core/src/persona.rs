@@ -36,6 +36,7 @@ pub use crate::imagelib::{Origin, Status};
 pub mod agent;
 pub mod files;
 pub mod judge;
+pub mod memory;
 pub mod safety;
 
 /// A name — persona, relationship, group or voice: `[a-z0-9][a-z0-9_-]*`.
