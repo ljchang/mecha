@@ -1085,20 +1085,7 @@ impl PersonaChats {
             src.filter(|s| s.kind == mecha_core::persona::files::Kind::Document),
             crate::setup::document_extractor(&chat.follower.current().config),
         ) {
-            let processing = Arc::clone(&self.processing);
-            if let Ok(mut set) = processing.lock() {
-                set.insert(src.path.clone(), std::time::Instant::now());
-            }
-            tokio::spawn(async move {
-                if let Err(e) =
-                    mecha_core::persona::files::read(&src, Some(&extractor), "all", None).await
-                {
-                    tracing::warn!("a persona file was not read: {}", e.why);
-                }
-                if let Ok(mut set) = processing.lock() {
-                    set.remove(&src.path);
-                }
-            });
+            self.read_in_background(src, Arc::new(extractor));
         }
         Ok(serde_json::json!({ "name": saved }))
     }
@@ -1130,12 +1117,31 @@ impl PersonaChats {
     /// or the list to read with `file_read`. `None` with no files.
     async fn files_block(&self, name: &str, bound: &crate::follow::Bound) -> Option<String> {
         let (store_dir, name) = (self.store.clone(), name.to_string());
-        // The store and the walk are file I/O: off the runtime.
-        let (sources, omitted) = tokio::task::spawn_blocking(move || {
-            let store = Store::load(&store_dir);
-            store.get(&name).map(|p| {
-                mecha_core::persona::files::listing(&mecha_core::persona::files::roots(&store, p))
+        let config = &bound.config;
+        let max_bytes = config
+            .documents
+            .as_ref()
+            .filter(|_| {
+                mecha_core::feature::switched_on(config, mecha_core::feature::Feature::Documents)
             })
+            .map(|d| d.max_file_bytes())
+            .unwrap_or(0);
+        // The store, the walk and the readiness hashes are file I/O: off the
+        // runtime.
+        let (sources, omitted, ready) = tokio::task::spawn_blocking(move || {
+            let store = Store::load(&store_dir);
+            let p = store.get(&name)?;
+            let (sources, omitted) =
+                mecha_core::persona::files::listing(&mecha_core::persona::files::roots(&store, p));
+            let cache = mecha_core::document::Cache::default_dir()
+                .ok()
+                .map(mecha_core::document::Cache::new);
+            let ready: std::collections::HashSet<PathBuf> = sources
+                .iter()
+                .filter(|s| mecha_core::persona::files::ready(s, cache.as_ref(), max_bytes))
+                .map(|s| s.path.clone())
+                .collect();
+            Some((sources, omitted, ready))
         })
         .await
         .map_err(|e| tracing::warn!("a persona's files were not listed: {e}"))
@@ -1144,11 +1150,58 @@ impl PersonaChats {
         if sources.is_empty() {
             return None;
         }
-        let extractor = crate::setup::document_extractor(&bound.config);
+        let extractor = crate::setup::document_extractor(config).map(Arc::new);
+        // What the first turn cannot include yet is read in the background,
+        // so a later `file_read` — or the next chat — finds it ready.
+        if let Some(extractor) = &extractor {
+            for src in sources.iter().filter(|s| {
+                s.kind == mecha_core::persona::files::Kind::Document && !ready.contains(&s.path)
+            }) {
+                self.read_in_background(src.clone(), Arc::clone(extractor));
+            }
+        }
         // A quarter of the window in tokens, at about four characters a
         // token, is about the window's size in characters.
         let budget = bound.context_window.unwrap_or(32_768) as usize;
-        mecha_core::persona::files::first_turn(&sources, omitted, extractor.as_ref(), budget).await
+        mecha_core::persona::files::first_turn(
+            &sources,
+            omitted,
+            extractor.as_deref(),
+            budget,
+            &|s| ready.contains(&s.path),
+        )
+        .await
+    }
+
+    /// Read a document once in the background (§10.3), so a chat that wants
+    /// it later does not wait — after an upload, and for whatever a first
+    /// turn could not include yet. Marked processing while it runs; a file
+    /// already being read is left to that read.
+    fn read_in_background(
+        &self,
+        src: mecha_core::persona::files::Source,
+        extractor: Arc<mecha_core::document::Extractor>,
+    ) {
+        let processing = Arc::clone(&self.processing);
+        match processing.lock() {
+            Ok(mut set) => {
+                if set.contains_key(&src.path) {
+                    return;
+                }
+                set.insert(src.path.clone(), std::time::Instant::now());
+            }
+            Err(_) => return,
+        }
+        tokio::spawn(async move {
+            if let Err(e) =
+                mecha_core::persona::files::read(&src, Some(&extractor), "all", None).await
+            {
+                tracing::warn!("a persona file was not read: {}", e.why);
+            }
+            if let Ok(mut set) = processing.lock() {
+                set.remove(&src.path);
+            }
+        });
     }
 
     pub async fn workspace_of(
