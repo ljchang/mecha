@@ -16,17 +16,23 @@
   // `actions`: who said it (`mecha`, a persona's name), for a finished reply
   // — Copy and Download act on the reply as written, and every code block
   // gets its own Copy (owner request, 2026-10-01). Left out while a reply
-  // streams: half an answer is not one to save.
+  // streams: half an answer is not one to save. `download={false}` keeps
+  // Copy and drops Download — an incognito chat's, since a file on the
+  // device outlives the room (INCOGNITO-DESIGN R2; review of #484).
+  import { onDestroy } from 'svelte';
   import { parseBlocks, hiddenTarget } from './mail-markdown.js';
   import { citeNote, citeOpens, citeMark, citeUnmark } from './persona.js';
   import { replyFilename, copyText, downloadText } from './reply-export.js';
 
-  let { text = '', cites = null, onCite = null, actions = null } = $props();
+  let { text = '', cites = null, onCite = null, actions = null, download = true } = $props();
   let raw = $state(false);
-  // Which control just copied — 'reply' or a code block's index — for a
-  // moment's "copied", or 'failed' when the phone refused.
-  let copied = $state(null);
+  // Which control just copied — 'reply' or the code block itself — for a
+  // moment's "copied", or 'failed' when the phone refused. Raw, so a block
+  // is held as itself: a proxied copy is never `===` the block the snippet
+  // draws, and its button never said "copied" (review of #484).
+  let copied = $state.raw(null);
   let copiedTimer = null;
+  onDestroy(() => clearTimeout(copiedTimer));
   async function copy(what, value) {
     const ok = await copyText(value);
     copied = ok ? what : 'failed';
@@ -65,7 +71,8 @@
       {#if actions}
         <div class="codewrap">
           <pre>{plain(b.text)}</pre>
-          <button class="codecopy" type="button" aria-label="Copy this code" onclick={() => copy(b, plain(b.text))}>
+          <!-- A double tap is a press, not the reply's raw toggle. -->
+          <button class="codecopy" type="button" aria-label="Copy this code" onclick={() => copy(b, plain(b.text))} ondblclick={(e) => e.stopPropagation()}>
             {copied === b ? 'copied' : 'copy'}
           </button>
         </div>
@@ -86,10 +93,12 @@
       <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2" /></svg>
       {copied === 'reply' ? 'Copied' : 'Copy'}
     </button>
-    <button type="button" class="ract" aria-label="Download this reply as Markdown" onclick={() => downloadText(replyFilename(actions), text)}>
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
-      Download
-    </button>
+    {#if download}
+      <button type="button" class="ract" aria-label="Download this reply as Markdown" onclick={() => downloadText(replyFilename(actions), text)}>
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
+        Download
+      </button>
+    {/if}
     {#if copied === 'failed'}<span class="copyfail">this browser would not copy — double-click the reply to select it as written</span>{/if}
   </div>
 {/if}
