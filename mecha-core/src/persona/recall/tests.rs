@@ -45,7 +45,9 @@ fn fact(text: &str, kind: Kind, origin: Origin) -> NewFact {
 }
 
 fn block(w: &World, p: &Persona) -> Option<MemoryBlock> {
-    chat_start(&w.store(), p).unwrap()
+    let r = chat_start(&w.store(), p).unwrap();
+    assert!(r.problems.is_empty(), "{:?}", r.problems);
+    r.block
 }
 
 fn armed(text: &str) -> Taint {
@@ -304,4 +306,91 @@ fn the_block_rides_once_before_the_first_reply_and_a_typed_stem_only_arms_more()
     };
     t.arm_for_content(&[Message::user(MEMORY_STEM)]);
     assert!(t.untrusted && t.private);
+}
+
+fn episode(m: &Memory, summary: &str) {
+    m.add_episode(NewEpisode {
+        source: Some(Source {
+            chat: "c1".into(),
+            from: 0,
+            to: 1,
+        }),
+        summary: summary.into(),
+        origin: Origin::ModelClean,
+        model: "m".into(),
+        ..NewEpisode::default()
+    })
+    .unwrap();
+}
+
+#[test]
+fn recent_conversations_survive_however_many_facts_there_are() {
+    let w = World::new(&["mara"]);
+    let m = w.memory("mara");
+    episode(&m, "Talked through the reviewer's second comment.");
+    for i in 0..400 {
+        m.add_fact(
+            Table::User,
+            fact(
+                &format!("A fairly ordinary fact about the owner, number {i}."),
+                Kind::Stated,
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    }
+    let t = block(&w, &w.persona("mara")).unwrap().text;
+    assert!(
+        t.contains("Talked through the reviewer's second comment."),
+        "{t}"
+    );
+    assert!(t.contains("more, older, not shown here"), "a cut is said");
+}
+
+#[test]
+fn a_long_about_me_is_cut_not_dropped_and_the_group_note_still_rides() {
+    let w = World::new(&["mara"]);
+    std::fs::write(w.dir.join("groups.toml"), "[work]\n").unwrap();
+    std::fs::create_dir_all(w.dir.join("groups/work")).unwrap();
+    let long = "I study kelp forests and their urchins. ".repeat(60);
+    std::fs::write(w.dir.join("about-me.md"), &long).unwrap();
+    std::fs::write(w.dir.join("groups/work/about-me.md"), "I lead the lab.\n").unwrap();
+    let mut p = w.persona("mara");
+    p.settings.groups = vec!["work".into()];
+    let t = block(&w, &p).unwrap().text;
+    assert!(
+        t.contains("I study kelp forests") && t.contains(" …"),
+        "{t}"
+    );
+    assert!(t.contains("I lead the lab."), "not crowded out: {t}");
+    assert!(t.chars().count() < BUDGET_CHARS + 600);
+}
+
+#[test]
+fn an_about_me_that_cannot_be_read_is_said_not_taken_for_empty() {
+    let w = World::new(&["mara"]);
+    let big = "x".repeat((crate::persona::MAX_PROSE_BYTES + 1) as usize);
+    std::fs::write(w.dir.join("about-me.md"), big).unwrap();
+    let r = chat_start(&w.store(), &w.persona("mara")).unwrap();
+    assert!(r.block.is_none());
+    assert_eq!(r.problems.len(), 1, "{:?}", r.problems);
+    assert!(r.problems[0].contains("not read"));
+}
+
+#[test]
+fn a_fact_this_persona_learned_and_the_owner_shared_is_said_once() {
+    let w = World::new(&["mara"]);
+    let m = w.memory("mara");
+    let f = m
+        .add_fact(
+            Table::User,
+            fact("Has a cat.", Kind::Stated, Origin::ModelClean),
+        )
+        .unwrap();
+    Shared::open(&w.dir)
+        .unwrap()
+        .share(&f, Audience::Everyone, &[])
+        .unwrap();
+    let t = block(&w, &w.persona("mara")).unwrap().text;
+    assert_eq!(t.matches("Has a cat.").count(), 1, "{t}");
 }

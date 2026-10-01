@@ -1829,7 +1829,9 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
                 .field(Field::toggle("memory.about_me", "About-me notes"))
                 .field(
                     Field::toggle("memory.self_update", "Self-update")
-                        .help(UNBUILT)
+                        .help(format!(
+                            "{UNBUILT} Sections of its identity evolve; never Core or a fixed one."
+                        ))
                         .unbuilt(),
                 )
                 .field(
