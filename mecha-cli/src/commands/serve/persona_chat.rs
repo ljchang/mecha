@@ -286,6 +286,26 @@ fn reader_shape(config: &mecha_core::config::Config) -> (u64, bool) {
         .unwrap_or((0, false))
 }
 
+/// The chat's citations, checked (§10.4) against everything it ever
+/// received — the session's `messages_ever`, so a page a compaction has
+/// since evicted still counts for the answer that quoted it. The live
+/// messages when the file cannot be read: what is left is still evidence,
+/// and a quote it no longer holds reads as unchecked, never as checked.
+async fn citations(session: &Session, live: &[Message]) -> Vec<mecha_core::persona::cite::Checked> {
+    let path = session.path.clone();
+    let live = live.to_vec();
+    tokio::task::spawn_blocking(move || {
+        let messages = std::fs::read_to_string(&path)
+            .map(|t| Session::messages_ever(&t))
+            .ok()
+            .filter(|m| !m.is_empty())
+            .unwrap_or(live);
+        mecha_core::persona::cite::check_conversation(&messages)
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// Whether a turn should carry the persona's files: only before the chat's
 /// first reply, so they land in `messages[0]` — the one message compaction
 /// keeps whole. Any later, they would sit mid-conversation, a compaction
@@ -1270,6 +1290,56 @@ impl PersonaChats {
         });
     }
 
+    /// One cited page as this chat received it, with the quoted passage
+    /// marked (§10.4): what a citation opens. Text drawn as text, never the
+    /// file itself — a paper is third-party content, and nothing but an
+    /// image is served renderable (`files::serve`). Behind the lock, as the
+    /// transcript is.
+    pub async fn cited(
+        &self,
+        library: &LibraryState,
+        key: &str,
+        file: &str,
+        page: Option<u32>,
+        quote: &str,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        self.persona_of(library, key, token).await?;
+        let (session, live) = {
+            let sessions = self.sessions.lock().await;
+            let ps = sessions.get(key).ok_or(Refusal::NotFound)?;
+            let live: &[Message] = match (&ps.conversation, &ps.live) {
+                (Some(c), _) => &c.messages,
+                (None, Some(live)) => &live.history,
+                (None, None) => &[],
+            };
+            (Arc::clone(&ps.session), live.to_vec())
+        };
+        let (file, quote) = (file.to_string(), quote.to_string());
+        tokio::task::spawn_blocking(move || {
+            let messages = std::fs::read_to_string(&session.path)
+                .map(|t| Session::messages_ever(&t))
+                .ok()
+                .filter(|m| !m.is_empty())
+                .unwrap_or(live);
+            let text = mecha_core::persona::cite::page_text(&messages, &file, page)
+                .ok_or(Refusal::NotFound)?;
+            let (before, marked, after) = match mecha_core::persona::cite::mark(&text, &quote) {
+                Some((a, b)) => (&text[..a], &text[a..b], &text[b..]),
+                None => (text.as_str(), "", ""),
+            };
+            Ok(serde_json::json!({
+                "file": file,
+                "page": page,
+                "before": before,
+                "marked": marked,
+                "after": after,
+            }))
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("reading the page: {e}")))?
+    }
+
     pub async fn workspace_of(
         &self,
         library: &LibraryState,
@@ -1295,13 +1365,21 @@ impl PersonaChats {
         let bound = chat.follower.current();
         let sessions = self.sessions.lock().await;
         let ps = sessions.get(key).ok_or(Refusal::NotFound)?;
-        let (entries, taint) = match (&ps.conversation, &ps.live) {
-            (Some(c), _) => (chat::transcript_entries(&c.messages), Some(c.taint)),
-            (None, Some(live)) => (chat::transcript_entries(&live.history), Some(live.taint)),
-            (None, None) => (Vec::new(), None),
+        let messages: &[Message] = match (&ps.conversation, &ps.live) {
+            (Some(c), _) => &c.messages,
+            (None, Some(live)) => &live.history,
+            (None, None) => &[],
+        };
+        let entries = chat::transcript_entries(messages);
+        // Checked once the lock is let go: the session file is read whole.
+        let for_citations = (Arc::clone(&ps.session), messages.to_vec());
+        let taint = match (&ps.conversation, &ps.live) {
+            (Some(c), _) => Some(c.taint),
+            (None, Some(live)) => Some(live.taint),
+            (None, None) => None,
         };
         let usage = ps.last_usage.lock().ok().and_then(|u| u.clone());
-        Ok(serde_json::json!({
+        let mut out = serde_json::json!({
             "session": ps.session.meta.id,
             "persona": ps.pinned.name,
             "version": ps.pinned.version,
@@ -1342,7 +1420,11 @@ impl PersonaChats {
                     + u.cache_creation_input_tokens,
                 "context_window": bound.context_window,
             })),
-        }))
+        });
+        drop(sessions);
+        let (session, messages) = for_citations;
+        out["citations"] = serde_json::json!(citations(&session, &messages).await);
+        Ok(out)
     }
 
     /// The chat's events, and whether its persona is locked — in which case
@@ -1852,6 +1934,14 @@ impl PersonaChats {
             // was not delivered, so the next turn still owes it.
             let owed_anchor = anchored && outcome.is_err();
             let taint = conversation.taint;
+            // Checked here, before the conversation goes back, so the page
+            // has them by the time it draws the finished reply.
+            if outcome.is_ok() {
+                let checks = citations(&session, &conversation.messages).await;
+                if !checks.is_empty() {
+                    let _ = bcast.send(WireEvent::Citations { checks });
+                }
+            }
             let done = match &outcome {
                 Ok(o) => WireEvent::Done {
                     ok: true,
@@ -2666,6 +2756,42 @@ pub async fn download(
 }
 
 #[derive(serde::Deserialize)]
+pub struct CitedQuery {
+    file: String,
+    #[serde(default)]
+    page: Option<u32>,
+    #[serde(default)]
+    quote: String,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// GET /api/persona-chat/{key}/cited?file=&page=&quote= — a cited page as
+/// the chat received it, the quote marked (`PersonaChats::cited`).
+pub async fn cited(
+    State(state): Web,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Query(q): Query<CitedQuery>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c.clone(),
+        Err(resp) => return resp,
+    };
+    respond(
+        chat.personas
+            .cited(
+                &state.library,
+                &key,
+                &q.file,
+                q.page,
+                &q.quote,
+                q.unlock.as_deref(),
+            )
+            .await,
+    )
+}
+
+#[derive(serde::Deserialize)]
 pub struct UploadQuery {
     name: String,
     #[serde(default)]
@@ -2776,6 +2902,8 @@ mod tests {
         /// Answers once the gate is opened.
         Gate(Arc<tokio::sync::Notify>),
         Fail,
+        /// Answers with this text.
+        Say(String),
     }
 
     /// What the crisis judge answers in a test world.
@@ -2863,11 +2991,14 @@ mod tests {
                 Mode::Hang => std::future::pending::<()>().await,
                 Mode::Gate(open) => open.notified().await,
                 Mode::Fail => anyhow::bail!("the model is not loaded"),
+                Mode::Say(_) => {}
             }
+            let text = match &self.1 {
+                Mode::Say(text) => text.clone(),
+                _ => "Hello from Mara.".into(),
+            };
             Ok(CompletionResponse {
-                message: Message::assistant(vec![Block::Text {
-                    text: "Hello from Mara.".into(),
-                }]),
+                message: Message::assistant(vec![Block::Text { text }]),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage::default(),
                 refusal: None,
@@ -3125,6 +3256,88 @@ mod tests {
             .collect();
         assert_eq!(bubbles, ["What do urchins do?", "And then?"], "{t}");
         assert_eq!(t["taint"]["untrusted"], true, "{t}");
+    }
+
+    /// §10.4: a citation is checked against what the chat received, sent to
+    /// the page just before the run's end and carried in the transcript, and
+    /// it opens the page it cites with the quote marked. A made-up quote is
+    /// said, not dropped.
+    #[tokio::test]
+    async fn a_citation_is_checked_against_the_files_and_opens_its_page() {
+        let w = world_with(Mode::Say(
+            "They graze [urchins.md: \"graze kelp holdfasts at night\"], and \
+             [urchins.md: \"otters eat forty a day\"]."
+                .into(),
+        ));
+        std::fs::write(
+            w.store().join("mara/files/urchins.md"),
+            "Sea urchins graze kelp holdfasts at night.",
+        )
+        .unwrap();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "What do urchins do?", None, None)
+            .await
+            .unwrap();
+        let mut sent = None;
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
+                Ok(Ok(WireEvent::Citations { checks })) => sent = Some(checks),
+                Ok(Ok(WireEvent::Done { ok, error, .. })) => {
+                    assert!(ok, "{error:?}");
+                    break;
+                }
+                Ok(Ok(_)) => continue,
+                other => panic!("no Done event: {other:?}"),
+            }
+        }
+        let sent = sent.expect("the citations come before the end");
+        let statuses = |v: &serde_json::Value| -> Vec<String> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c["status"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(statuses(&serde_json::json!(sent)), ["quoted", "not_found"]);
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(statuses(&t["citations"]), ["quoted", "not_found"], "{t}");
+
+        let page = w
+            .personas()
+            .cited(
+                &w.library,
+                &key,
+                "urchins.md",
+                None,
+                "graze kelp holdfasts",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(page["before"], "Sea urchins ", "{page}");
+        assert_eq!(page["marked"], "graze kelp holdfasts", "{page}");
+        // A file the chat never received is not served from here.
+        assert!(matches!(
+            w.personas()
+                .cited(&w.library, &key, "elsewhere.md", None, "x", None)
+                .await,
+            Err(Refusal::NotFound)
+        ));
     }
 
     /// Pass 8 of #459: the files ride before the first reply or not at all.

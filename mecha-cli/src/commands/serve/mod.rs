@@ -518,6 +518,11 @@ fn api() -> gate::Owned {
             get(persona_chat::download),
         )
         .at(
+            "/api/persona-chat/{key}/cited",
+            Owner::Of(Feature::Personas),
+            get(persona_chat::cited),
+        )
+        .at(
             "/api/persona-chat/{key}/upload",
             Owner::Of(Feature::Personas),
             axum::routing::post(persona_chat::upload)

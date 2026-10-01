@@ -901,6 +901,13 @@ pub enum WireEvent {
     Titled {
         title: String,
     },
+    /// A persona chat's citations, each checked against what the chat
+    /// received of its files (PERSONA-DESIGN §10.4) — all of them, so the
+    /// page replaces what it had. Sent just before a successful run's
+    /// `Done`; the assistant's chat never sends it.
+    Citations {
+        checks: Vec<mecha_core::persona::cite::Checked>,
+    },
     Done {
         ok: bool,
         stop: Option<String>,

@@ -1057,8 +1057,17 @@ persona's session file holds the text of the files it carried: resuming
 has to replay it, and the replay is what keeps the chat armed. The first turn never runs
 OCR: a document whose text is not in the cache yet is listed as being read
 and read in the background, one at a time, for `file_read` or the next
-chat. Checked citations (3b), search over large collections (3c) and saving
-study material (3d) come next.
+chat. Search over large collections (3c) and saving study material (3d)
+come next.
+
+*Building, 2026-10-01 (step 3b):* checked citations, as above —
+`persona::cite` checks each one after the run against what the chat
+received, the page tags it *quoted*, *on p. N*, *not in the file*, *no such
+file* or *too short to check*, and a found one opens the page it is on with
+the passage marked. One departure: the page opens as the chat's text of it,
+not the PDF with a box drawn on it — the PDF would have to be served
+renderable from this origin, which nothing but an image is, for the reason
+the assistant's downloads give.
 
 R14 asks for NotebookLM's usefulness — upload a paper or other material, ask
 questions of it, get summaries, study from it — and R18 asks that nothing be
