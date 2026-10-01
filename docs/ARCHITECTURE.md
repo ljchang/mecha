@@ -966,7 +966,7 @@ module.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**
-  (`Store::problems`): relationship templates, groups, voice profiles, and the
+  (`Store::problems`): relationship templates, groups, and the
   image-library character, which must be approved. `create` refuses a
   broken link, while a later hand edit is reported. A proposal
   (`create_with` through `propose`) may link a character that is still a
@@ -1431,14 +1431,23 @@ module.
   takes answers with that id (`call`), and the page's hang-up (`/call`) names
   it, so a second tab's call or a quick redial keeps its own binding. Every spoken turn is checked against the lock again with
   that token, so a relock mid-call refuses the next word. The voice is
-  serve's to say, never the page's: `call_voice` reads the persona's
-  profile and refuses by name a reference clip, a missing profile or an
-  out-of-range value. `GET /mecha/voices` on the worker answers whether the
+  serve's to say, never the page's: `call_voice` reads the library voice the
+  persona names (`voice`) and its `voice_speed`, and refuses an out-of-range
+  speed by name. `GET /mecha/voices` on the worker answers whether the
   voice is one it lists; a worker without that route is refused, never
   trusted to bind. The worker builds its TTS in the bound voice before the
   first word, re-checks the voice, and refuses `voice-config` voice changes
   for the rest of the call. A page-supplied `persona_voice` is stripped from
   every offer.
+- **The voice library** (Library → Voices) is served from
+  `settings::library_voices`. It merges three sources and names each one it
+  cannot read rather than showing an empty list: the worker's `/mecha/voices`
+  list, the clones in `[web] voices_dir` (`cloned_voices`), and the persona
+  store (`voices_in_use`, behind the library lock). A voice's preview is
+  `/mecha/sample` on the worker, proxied by `library_voice_sample`. It is a
+  fixed sentence, so the route cannot be made to say anything, and the worker
+  refuses an unlisted voice before asking the TTS. Clones are still written
+  and deleted through `/api/settings/voice/clone`; only the page moved.
 - **Call minutes have their own file** (`safety::CallRecord`,
   `calls.jsonl`). A call record in `dose.jsonl` would read as one more turn to
   an older binary, because `DoseRecord` takes unknown fields. The page reports

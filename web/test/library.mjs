@@ -1,7 +1,7 @@
 // The image library page's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
 import {
-  PANES, paneOf, entriesFor, counts, originLabel, listUrl, validName, tameName,
+  PANES, paneOf, entriesFor, counts, originLabel, listUrl, validName, tameName, voicesUrl, voiceLine,
   TEXT_MAX, fitWithin, formProblem, formBody,
 } from '../src/lib/library.js';
 
@@ -17,7 +17,44 @@ assert.equal(paneOf('candidates'), 'candidates');
 assert.equal(paneOf('styles'), 'styles');
 assert.equal(paneOf(''), 'characters');
 assert.equal(paneOf('nonsense'), 'characters');
-assert.deepEqual(PANES, ['characters', 'styles', 'candidates']);
+assert.deepEqual(PANES, ['characters', 'styles', 'voices', 'candidates']);
+assert.equal(paneOf('voices'), 'voices');
+assert.deepEqual(entriesFor('voices', entries), []);
+// The voice library's URL carries the unlock only when there is one.
+assert.equal(voicesUrl(null), '/api/library/voices');
+assert.equal(voicesUrl('a b'), '/api/library/voices?unlock=a%20b');
+// A voice's line: what it is, who speaks in it, and "not yet" only when the
+// server's list was read and lacks it.
+assert.equal(
+  voiceLine({ name: 'ada', listed: true, cloned: { seconds: 31.6 }, used_by: ['Mara'] }),
+  'cloned here · 32s reference · Mara speaks in it',
+);
+assert.equal(voiceLine({ name: 'default', listed: true, cloned: null, used_by: [] }), "the voice server's own");
+assert.equal(voiceLine({ name: 'solo', listed: false, cloned: {}, used_by: ['Mara', 'Ada'] }), 'cloned here · not on the voice server yet · Mara, Ada speak in it');
+assert.equal(voiceLine({ name: 'x', listed: null, cloned: {}, used_by: [] }), 'cloned here');
+// A clone's row says when "who speaks in it" may be short — and only a
+// clone's, since that is the row with Delete.
+assert.equal(
+  voiceLine({ name: 'ada', listed: true, cloned: { seconds: 20 }, used_by: [] }, 'locked'),
+  'cloned here · 20s reference · unlock to see every persona that speaks in it',
+);
+assert.equal(
+  voiceLine({ name: 'ada', listed: true, cloned: {}, used_by: [] }, 'unreadable'),
+  'cloned here · who speaks in it could not be fully read',
+);
+assert.equal(voiceLine({ name: 'default', listed: true, cloned: null, used_by: [] }, 'locked'), "the voice server's own");
+// The clone folder unread: a listed voice is not claimed as the server's own.
+assert.equal(voiceLine({ name: 'ada', listed: true, cloned: null, used_by: [] }, null, true), '');
+// Nor "nor this box" for a voice the server lacks: this box was not read.
+assert.equal(voiceLine({ name: 'adaa', listed: false, cloned: null, used_by: ['Mara'] }, null, true), 'Mara speaks in it');
+// The server not asked: nothing claimed about where the voice comes from.
+assert.equal(voiceLine({ name: 'adaa', listed: null, cloned: null, used_by: ['Mara'] }), 'Mara speaks in it');
+assert.equal(voiceLine({ name: 'adaa', listed: null, cloned: null, used_by: [] }), '');
+// Named by a persona and nowhere else: said, so a typo shows before a call.
+assert.equal(
+  voiceLine({ name: 'adaa', listed: false, cloned: null, used_by: ['Mara'] }),
+  'on neither the voice server nor this box — a call in it is refused · Mara speaks in it',
+);
 
 // Candidates are their own pane whatever their kind, and never among the
 // approved: a card there would read as usable.
