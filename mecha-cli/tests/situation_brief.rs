@@ -674,12 +674,18 @@ async fn web(deliver: bool) {
     let root = Root(std::env::temp_dir().join(format!("mecha-brief-web-{}", Session::new_id())));
     let (base_url, seen, server) = fixture_model().await;
     let home = seed(&root.0, &base_url, deliver);
-    let reserve = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = reserve.local_addr().unwrap().port();
-    drop(reserve);
-    let reserve = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let voice_port = reserve.local_addr().unwrap().port();
-    drop(reserve);
+    // Both held until both are read: a port dropped before the second is
+    // asked for can be handed straight back (macOS does), and serve then
+    // binds one address twice — `Address already in use` on 49287, twice.
+    let (a, b) = (
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+    );
+    let (port, voice_port) = (
+        a.local_addr().unwrap().port(),
+        b.local_addr().unwrap().port(),
+    );
+    drop((a, b));
     let log = std::fs::File::create(root.0.join("serve.log")).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_mecha"))
         .args([
