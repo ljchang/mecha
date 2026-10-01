@@ -203,8 +203,18 @@ pub async fn execute(args: Args) -> Result<()> {
     // Mount the voice facade on the same agent: one provider connection,
     // one cached prefix, two dialects. It rides this process's lifetime;
     // its graceful drain runs alongside the chat drain when the host stops.
+    // The facade is a second listener, mounted once: unlike a route it cannot
+    // refuse per request, so it is not mounted at all when calls are off at
+    // start (the voice call's other half, `/api/offer`, refuses per request).
+    let calls = crate::commands::features::require(mecha_core::feature::Feature::Calls);
+    if let (Err(e), port) = (&calls, args.voice_port) {
+        // Only where it would otherwise have been mounted (review of #452).
+        if port != 0 && state.chat.is_some() {
+            eprintln!("note: the voice facade is not mounted — {e:#}");
+        }
+    }
     let voice = match (&state.chat, args.voice_port) {
-        (Some(chat), port) if port != 0 => {
+        (Some(chat), port) if port != 0 && calls.is_ok() => {
             let (follower, outbox_root) = chat.voice_parts();
             match crate::voice::Facade::new(
                 follower,
@@ -1513,12 +1523,18 @@ mod tests {
         out
     }
 
-    /// F4 end to end, for every route a switched-off feature owns: the owner
-    /// gets 404 `feature_off` naming the feature and the command, and the
-    /// handler never runs, and core routes are never refused whatever the
-    /// gate holds. The negative — nothing refused, every route reached — is
-    /// `the_guard_lets_every_route_through_when_nothing_is_off`, against a
-    /// router where every route answers every method.
+    /// F4 for every route a switched-off feature owns, over the stub router —
+    /// where every route answers every method with "reached", so the guard is
+    /// the only thing that can say anything else: each gated feature's route
+    /// answers 404 `feature_off` naming the feature and the command, and every
+    /// core route is reached. The first version swept the real router, where a
+    /// core route ran its real handler — `model cancel` spawned the test
+    /// binary as a child (review of #451). The real router is held to the same
+    /// answer below for one route of every owner kind, each refused before
+    /// its handler can run. Every non-core route must refuse: a feature added
+    /// with routes but its guards still to come (`gated() == false`) fails
+    /// here, loudly — declare its routes with its guards, or teach this test
+    /// the exception.
     #[tokio::test]
     async fn an_off_feature_s_routes_answer_feature_off_and_nothing_else_does() {
         use mecha_core::feature::{Feature, Refusal};
@@ -1532,41 +1548,37 @@ mod tests {
             })
             .collect();
         let (_, owners) = api().finish();
-        let send = |app: Router, path: String| async move {
-            let response = app
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri(&path)
-                        .header("Tailscale-User-Login", "owner@example.com")
-                        .header("x-mecha-request", "1")
-                        .header("content-type", "application/json")
-                        .body(Body::from("{}"))
-                        .unwrap(),
-                )
+        let mut stub = Router::new();
+        for path in owners.0.keys() {
+            stub = stub.route(path, axum::routing::any(|| async { "reached" }));
+        }
+        let stub = stub.layer(middleware::from_fn_with_state(
+            (
+                Arc::new(gate::Gate::refusing(every_gated.clone())),
+                Arc::clone(&owners),
+            ),
+            gate::guard,
+        ));
+        let (mut refused, mut core) = (0, 0);
+        for (template, owner) in &owners.0 {
+            let path = concrete(template, *owner);
+            let response = stub
+                .clone()
+                .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
             let status = response.status();
             let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
                 .unwrap();
-            (status, String::from_utf8_lossy(&bytes).into_owned())
-        };
-        let (mut refused, mut core) = (0, 0);
-        for (template, owner) in &owners.0 {
-            let path = concrete(template, *owner);
+            let body = String::from_utf8_lossy(&bytes).into_owned();
             let feature = match owner {
                 gate::Owner::Core => None,
                 gate::Owner::Of(f) => Some(*f),
                 gate::Owner::ProposalStore => Some(Feature::Graph),
                 gate::Owner::ChatKey => Some(Feature::Incognito),
             };
-            let (status, body) = send(
-                test_router_gated(gate::Gate::refusing(every_gated.clone())),
-                path.clone(),
-            )
-            .await;
-            match feature.filter(|f| f.gated()) {
+            match feature {
                 Some(f) => {
                     assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
                     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -1580,21 +1592,50 @@ mod tests {
                     refused += 1;
                 }
                 None => {
-                    assert!(
-                        !body.contains("feature_off"),
-                        "{path} is not a gated feature's: {body}"
-                    );
-                    if feature.is_none() {
-                        core += 1;
-                    }
+                    assert_eq!(body, "reached", "core {path}");
+                    core += 1;
                 }
             }
         }
-        // Mail, graph (and its store and board), and the library today.
+        // Every feature is guarded since 3b: each non-core route refuses.
+        assert_eq!(refused + core, owners.0.len());
         assert!(
-            refused >= 40 && core >= 30,
+            refused >= 80 && core >= 30,
             "{refused} refused, {core} core"
         );
+
+        // The real router, layers and all: one route of every owner kind,
+        // each refused before its handler runs.
+        for (method, uri, id) in [
+            ("POST", "/api/mail/compose", "mail"),
+            ("POST", "/api/entity/create", "graph"),
+            ("GET", "/api/personas", "personas"),
+            ("POST", "/api/proposals/entities/x/accept", "graph"),
+            ("POST", "/api/chat/incognito-k/send", "incognito"),
+            ("POST", "/api/offer", "calls"),
+            ("GET", "/api/frontdoor", "frontdoor"),
+        ] {
+            let response = test_router_gated(gate::Gate::refusing(every_gated.clone()))
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("Tailscale-User-Login", "owner@example.com")
+                        .header("x-mecha-request", "1")
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(v["error"], "feature_off", "{uri}");
+            assert_eq!(v["feature"], id, "{uri}");
+        }
     }
 
     /// The guard alone, over a router where every owned route answers every

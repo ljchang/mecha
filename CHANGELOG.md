@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Slack, personas, voice, incognito, the front door and messages follow
+  their switches too**, the same way the rest do: off, their web pages answer
+  `feature_off` and `mecha slack`, `persona`, `msg`, `frontdoor`, `polls` and
+  `voice-serve` refuse with one sentence and the command that turns the
+  feature on. The front door's publishing server is no longer started with
+  `frontdoor` off, and `mecha serve` does not mount its voice facade with
+  voice calls off. Reading what is there stays open (`slack status`,
+  `threads`, `persona list`, `show`), and so do `slack auth` and `slack
+  unlink`. **`mecha msg` now refuses when messages is off**, reads included —
+  it used to work either way.
+
 - **A feature that is off refuses the same way everywhere.** With mail, the
   knowledge graph (and its task board), PDF extraction or image generation
   switched off in `[features]`, the web app's routes for them answer `404`

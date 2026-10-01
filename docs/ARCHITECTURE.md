@@ -8165,20 +8165,23 @@ in five different ways. The design and its open steps are
   the command's file name, so **a server launched through a wrapper belongs
   to no feature and is not gated** — the day a feature's server moves behind
   a launcher, `server_feature` has to learn it. `Feature::gated` says which
-  features a switch turns off today; the upgrade notice calls only those
-  off, and Slack, personas, voice, incognito and the front door — queue
-  and publishing server together, never one half first — "still working"
-  until §9 step 3 guards them. `mecha serve` refuses
+  features a switch turns off today, and the upgrade notice calls only those
+  off; since step 3b that is every feature, the front door's queue and its
+  publishing server (`factory-publish`) together — never one half first.
+  `mecha serve` refuses
   without `web`, telling "predates the switch" from `web = false`.
-- **A trial keeps what it carries, and `graph` is the only default.**
-  `trial_env::config_at` fills a trial's unanswered `graph` switch on when
-  the environment declares its own graph server or `live_servers` brings
-  the operator's in, so gating changes nothing an existing experiment
-  connects, and `search` follows the operator's own switch as its backends
-  do. Nothing else defaults: a `mecha-mail` or `mecha-docs` an environment
-  declares runs on the operator's credentials, which `switchable_from_environment` refuses, and a default
-  would assert on the environment's behalf what it may not (review of
-  #445). The environment's own answer stands.
+- **A trial keeps what it carries.** `trial_env::config_at` fills a trial's
+  unanswered `graph` switch on when the environment declares its own graph
+  server or `live_servers` brings the operator's in, and its `frontdoor`
+  switch when the environment declares a `factory-publish` server (since the
+  front door is gated whole, #452), so gating changes nothing an existing
+  experiment connects; `search` follows the operator's own switch as its
+  backends do. Nothing else defaults: a `mecha-mail` or `mecha-docs` an
+  environment declares runs on the operator's credentials, which
+  `switchable_from_environment` refuses, and a default would assert on the
+  environment's behalf what it may not (review of #445) — the front door is
+  the one switch an environment may set, so defaulting it asserts nothing it
+  could not. The environment's own answer stands.
 - **`messages` has one runtime answer.** `apply` writes `[features] messages`
   into `[messages] enabled` and drops it from the map, rather than or-ing two
   fields as the design proposed: `Lever::Messages` and every experiment arm
@@ -8275,12 +8278,44 @@ in five different ways. The design and its open steps are
   `[[mcp]]`. **The web keys a refusal's consequences on the row's `gated`**,
   never on `shown` alone (`features.js` `refuses`): Home's queue card for a
   feature that refuses is flat, with its command, and a feature's pane in a
-  core view (`PANE_FEATURE`: Review's graph queue, entities, front door) is
-  sent home — but a feature hidden before its guard lands keeps its door,
-  or the front door's queue, still filling, had none (review of #451). 3b's
-  flip moves the page with the routes, with no web edit. **3b is a flip, not a build:** the five
-  features `gated` still answers `false` for already declare their routes'
-  owner, and pass until their arm flips with their verbs guarded.
+  core view (`PANE_FEATURE`: Review's graph queue, entities, front door,
+  Settings' voice pane) is sent home — or-ed with the view's own feature,
+  never standing in for it — but a feature hidden before its guard lands
+  keeps its door, or the front door's queue, still filling, had none
+  (review of #451). **Step 3b guarded the rest whole**, by flipping their
+  `gated` arms: Slack, personas, voice (with dictation, calls and cloning),
+  incognito, the front door and messages. Their verbs refuse except where
+  the rules above leave them open — `slack status`, `auth`, `threads`,
+  `remote` without `--sweep`, and `unlink`; `persona list`, `show` and
+  `group list` — and `msg`,
+  `frontdoor`, `polls` and `voice-serve` refuse whole (`msg` by the owner's
+  ruling M1, over its older "works whether or not enabled"; `frontdoor`
+  because even its reads create and reconcile the store). **The line
+  between open and refused:** reading a store is open, deleting cached or
+  derived data (`document prune`/`forget`, `slack unlink`) is open, and
+  anything that changes an entry — including a `remove` that moves it aside
+  (`imagelib`, `persona`) — is refused. `mecha serve`'s voice facade is a
+  second listener mounted once, so it is not mounted when calls are off at
+  start; `/api/offer`, the call's web half, refuses per request. **Guard the
+  driver, not only the verb.** Anything that opens a feature's store or
+  talks to its server in-process asks `require` itself, because some caller
+  will skip the verb — found four times: the graph's (`review::graph_cli`,
+  the TUI's `graph_cli`/`graph_cli_raw`, #451), Slack's (`send::send_file`,
+  `remote::attach`, the connector, which the TUI's `/send` and
+  `/remote-control` call directly), the front door's (the TUI's
+  `frontdoor::load`, which reconciled and settled the store with the switch
+  off, and Slack's review-here and `request_state`) and its polls' (the
+  TUI's `polls::load`, `commands::polls::pick_next`, which the TUI calls
+  directly, and the TUI's `factory_cli`, #452). A `serve` listener mounted
+  once (the voice facade) is the same rule at start, and so is a feature's
+  model-facing tool: Slack's `show_file` registers only with `slack` on, read
+  when the session starts — the tool list is the front of the cached
+  prefix, so a flip mid-session (and a mirror attached before it) follows
+  the next session; `detach` ends a mirror now. The replay surface
+  (`setup::surface_only_registry`) keeps it, being never executed. The one opener
+  deliberately left open is a count of what waits (`review queues`), which
+  never degrades — and reads through `open_existing_default`, so counting
+  never creates the store it counts.
 - **An environment may only narrow.** `trial_env::config_at` refuses an
   environment's `[features]` key set `true` unless
   `Feature::switchable_from_environment` — an exhaustive match, today only

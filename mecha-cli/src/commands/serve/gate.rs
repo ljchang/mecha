@@ -69,8 +69,10 @@ impl Owner {
                 .and_then(crate::commands::review::review_source)
                 .is_none_or(|source| source.graph)
                 .then_some(Feature::Graph),
+            // The incognito module's own test, not a second spelling of its
+            // prefix (review of #451).
             Owner::ChatKey => capture("key")
-                .is_none_or(|key| key.starts_with(super::incognito::KEY_PREFIX))
+                .is_none_or(|key| super::incognito::is_incognito_key(&key))
                 .then_some(Feature::Incognito),
         }
     }
