@@ -1591,8 +1591,10 @@ pub struct Proposal {
 }
 
 /// Model-proposed personas waiting on the owner. A model that proposes in a
-/// loop fills a list nobody reads; past this a new one is refused, as the
-/// image library's `MAX_PENDING` refuses a candidate.
+/// loop fills a list nobody reads; past this a new *name* is refused, as the
+/// image library's `MAX_PENDING` refuses a candidate. It bounds names, not
+/// writes: each revision of a waiting one takes a version, as an owner's
+/// edit does.
 pub const MAX_PENDING_PROPOSALS: usize = 20;
 
 /// Whether [`propose`] made a candidate or rewrote one already waiting.
@@ -1652,7 +1654,7 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
         let waiting = store
             .personas
             .iter()
-            .filter(|q| q.state.status == Status::Candidate && q.state.origin != Origin::Owner)
+            .filter(|q| q.state.status == Status::Candidate && q.state.proposed.is_some())
             .count();
         if waiting >= MAX_PENDING_PROPOSALS {
             bail!(
@@ -1663,7 +1665,7 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
         let made = create_with(dir, lib, new, Some((&p.identity, &p.motivation)))?;
         return Ok((made, Proposed::New));
     };
-    if existing.state.status != Status::Candidate || existing.state.origin == Origin::Owner {
+    if existing.state.status != Status::Candidate || existing.state.proposed.is_none() {
         bail!(
             "`{}` is already a persona the owner has approved or made; a chat cannot change \
              it — the owner edits it on the Personas page. Propose under another name.",
@@ -1675,8 +1677,9 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
     let current = store.content_digest(&existing)?;
     if existing.state.proposed.as_deref() != Some(current.as_str()) {
         bail!(
-            "the owner has edited `{}` since it was proposed, so it is theirs now and a chat \
-             cannot change it — propose under another name, or ask the owner",
+            "`{}` has changed since it was proposed — the owner edited it, or a relationship \
+             template it names — so it is the owner's now and a chat cannot change it; \
+             propose under another name, or ask the owner",
             p.name
         );
     }
@@ -2990,7 +2993,10 @@ mod tests {
         let toml_text = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, format!("{toml_text}\n# the owner's note\n")).unwrap();
         let refused = propose(&store, &lib, proposal("## Core\nOverwritten.\n")).unwrap_err();
-        assert!(format!("{refused:#}").contains("theirs now"), "{refused:#}");
+        assert!(
+            format!("{refused:#}").contains("the owner's now"),
+            "{refused:#}"
+        );
         assert!(std::fs::read_to_string(&path)
             .unwrap()
             .contains("the owner's note"));

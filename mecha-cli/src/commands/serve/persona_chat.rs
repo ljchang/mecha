@@ -929,7 +929,10 @@ impl PersonaChats {
     /// Approve a waiting persona as it was shown, and, with
     /// `character_shown`, the waiting character it links. Both signatures
     /// are checked before anything is written; the character goes first, so
-    /// an approved persona never points at a character still waiting.
+    /// an approved persona never points at a character still waiting. The
+    /// persona's digest is checked once more at its own write, so a
+    /// revision landing in between refuses the persona and leaves the
+    /// character approved — what the owner had read of it, still.
     pub fn approve(
         &self,
         library: &LibraryState,
@@ -1083,7 +1086,8 @@ impl PersonaChats {
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     // Waiting on the owner — the page's Waiting section —
                     // and where it came from, said as the library says it.
-                    "waiting": p.state.status == mecha_core::persona::Status::Candidate,
+                    "waiting": p.state.status == mecha_core::persona::Status::Candidate
+                        && p.state.proposed.is_some(),
                     "origin": p.state.origin,
                     "locked": p.state.locked,
                     "problems": unnamed(store.problems(p, &lib), hidden),
@@ -3425,14 +3429,15 @@ pub struct LockBody {
     unlock: Option<String>,
 }
 
-/// A proposal still waiting: a model's candidate, as the page's Waiting
-/// section counts one. An owner's own unapproved persona is not reviewed,
-/// approved or turned away through these doors (review of #493) — it is
-/// approved with `mecha persona approve` and removed with `mecha persona
-/// remove`, as before.
+/// A proposal still waiting: a candidate a model's proposal wrote
+/// (`State::proposed`), as the page's Waiting section counts one. Not
+/// "anything not the owner's": a persona folder made by hand with no
+/// `state.toml`, or one that does not parse, loads as an untrusted
+/// candidate too, and must never be offered a Reject that moves its folder
+/// aside (review of #493). Those keep `mecha persona approve` and `remove`.
 fn waiting_proposal(p: &Persona) -> Result<(), Refusal> {
-    use mecha_core::imagelib::{Origin, Status};
-    if p.state.status != Status::Candidate || p.state.origin == Origin::Owner {
+    use mecha_core::imagelib::Status;
+    if p.state.status != Status::Candidate || p.state.proposed.is_none() {
         return Err(Refusal::Conflict(format!(
             "`{}` is not a proposal waiting for approval",
             p.name
@@ -5119,6 +5124,29 @@ mod tests {
             Err(Refusal::Conflict(_))
         ));
         assert!(Store::load(&w.store()).get("mine").is_some());
+        // A folder made by hand, with no state.toml at all, loads as an
+        // untrusted candidate — and is still not a proposal: not listed as
+        // waiting, not turned away, its folder left where it is.
+        std::fs::remove_file(&state_path).unwrap();
+        let bare = Store::load(&w.store()).get("mine").unwrap().clone();
+        assert_eq!(
+            (bare.state.status, bare.state.origin),
+            (Status::Candidate, Origin::ModelUntrusted)
+        );
+        let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
+        let row = listed["personas"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "mine")
+            .unwrap()
+            .clone();
+        assert_eq!(row["waiting"], false, "{row}");
+        assert!(matches!(
+            w.personas().reject(&w.library, "mine", None),
+            Err(Refusal::Conflict(_))
+        ));
+        assert!(w.store().join("mine/persona.toml").is_file());
 
         // A locked proposal (an incognito chat's) is hidden like any locked
         // persona until unlocked, then turned away.
