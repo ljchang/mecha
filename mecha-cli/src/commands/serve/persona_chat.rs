@@ -937,6 +937,8 @@ impl PersonaChats {
                                 "turns_today": d.turns_today,
                                 "turns_7d": d.turns_7d,
                                 "late_night_7d": d.late_night_7d,
+                                "call_secs_today": d.call_secs_today,
+                                "call_secs_7d": d.call_secs_7d,
                                 "skipped": doses.skipped,
                             })
                         }
@@ -1942,6 +1944,37 @@ impl PersonaChats {
             exaggeration: within("exaggeration", profile.exaggeration, 0.0, 2.0)?,
             cfg_weight: within("cfg_weight", profile.cfg_weight, 0.0, 1.0)?,
         }))
+    }
+
+    /// A call on `key` has ended after `seconds` (§11): counted on the dose
+    /// meter when the persona's switch is on, and the call's unlock let go —
+    /// a later spoken turn on this key needs a new offer. Never the words.
+    pub async fn call_ended(
+        &self,
+        library: &LibraryState,
+        key: &str,
+        token: Option<&str>,
+        seconds: u32,
+    ) -> Result<(), Refusal> {
+        let name = self.persona_of(library, key, token).await?;
+        self.calls
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(key);
+        let chat = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(key)
+                .map(|ps| ps.session.meta.id.clone())
+                .ok_or(Refusal::NotFound)?
+        };
+        let counts = Store::load(&self.store)
+            .get(&name)
+            .is_some_and(|p| p.settings.safety.dose);
+        if counts && seconds > 0 {
+            safety::record_call(&self.store, &name, &chat, seconds).map_err(failed)?;
+        }
+        Ok(())
     }
 
     /// A spoken turn on `key`, barging in on any run in flight — the
@@ -3479,6 +3512,33 @@ pub async fn source_text(
             .source_text(&chat, &state.library, &name, &q.file, q.unlock.as_deref())
             .await,
     )
+}
+
+#[derive(serde::Deserialize)]
+pub struct CallBody {
+    seconds: u32,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// POST /api/persona-chat/{key}/call — a call has ended, and how long it was.
+pub async fn call_ended(
+    State(state): Web,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Json(body): Json<CallBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c.clone(),
+        Err(resp) => return resp,
+    };
+    match chat
+        .personas
+        .call_ended(&state.library, &key, body.unlock.as_deref(), body.seconds)
+        .await
+    {
+        Ok(()) => Json(serde_json::json!({ "counted": true })).into_response(),
+        Err(r) => r.into_response(),
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -6852,5 +6912,48 @@ mod tests {
             sent["request_data"].get("persona_voice").is_none(),
             "{sent}"
         );
+    }
+
+    /// A call that ends is counted on the dose meter, in its own file and
+    /// never as a turn, and its unlock is let go: a later spoken turn needs
+    /// a new offer. Behind the lock like every door here.
+    #[tokio::test]
+    async fn an_ended_call_is_counted_and_lets_its_unlock_go() {
+        let w = world();
+        let key = open_chat(&w).await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .call_ended(&w.library, &key, None, 95)
+            .await
+            .unwrap();
+        let calls = std::fs::read_to_string(w.store().join("calls.jsonl")).unwrap();
+        assert!(
+            calls.contains("\"seconds\":95") && calls.contains("\"persona\":\"mara\""),
+            "{calls}"
+        );
+        assert!(
+            !w.store().join("dose.jsonl").exists(),
+            "a call was counted as a turn"
+        );
+        match w
+            .personas()
+            .speak(&w.chat, &w.library, &key, "hello?")
+            .await
+        {
+            crate::voice::Hosted::Failed(why) => assert!(why.contains("no call"), "{why}"),
+            _ => panic!("an ended call still took words"),
+        }
+        let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
+        let dose = &listed["personas"][0]["dose"];
+        assert_eq!(dose["call_secs_7d"], 95, "{dose}");
+        assert_eq!(dose["turns_7d"], 0, "{dose}");
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        assert!(matches!(
+            w.personas().call_ended(&w.library, &key, None, 10).await,
+            Err(Refusal::NotFound)
+        ));
     }
 }

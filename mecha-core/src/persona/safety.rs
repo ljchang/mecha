@@ -236,6 +236,34 @@ pub fn record_dose(dir: &Path, persona: &str, chat: &str, crisis: CrisisState) -
     append_line(&dir.join("dose.jsonl"), &serde_json::to_string(&record)?)
 }
 
+/// A call's length (§11: voice raises attachment, so the meters count call
+/// minutes, not only turns). Its own file rather than a field on
+/// [`DoseRecord`]: that struct takes unknown fields, so a call line in
+/// `dose.jsonl` would read as one more turn to an older binary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CallRecord {
+    /// When the call ended; its seconds are counted on that day.
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub persona: String,
+    pub chat: String,
+    pub seconds: u32,
+}
+
+/// The longest call a record will say: what the page reports is the
+/// owner's own page, but a clock that jumped is not a four-day call.
+pub const MAX_CALL_SECS: u32 = 4 * 60 * 60;
+
+/// Record a call that has ended. `dir` is the persona store.
+pub fn record_call(dir: &Path, persona: &str, chat: &str, seconds: u32) -> Result<()> {
+    let record = CallRecord {
+        at: chrono::Utc::now(),
+        persona: persona.into(),
+        chat: chat.into(),
+        seconds: seconds.min(MAX_CALL_SECS),
+    };
+    append_line(&dir.join("calls.jsonl"), &serde_json::to_string(&record)?)
+}
+
 /// What the dose meters say about one persona, as of `now`, in the owner's
 /// zone. "Today" is the local date; "the week" is the last 7×24 hours — a
 /// span of time, not seven calendar days, so it does not slide an hour
@@ -245,6 +273,9 @@ pub struct Dose {
     pub turns_today: u32,
     pub turns_7d: u32,
     pub late_night_7d: u32,
+    /// Seconds on calls, by the day each call ended (§11).
+    pub call_secs_today: u32,
+    pub call_secs_7d: u32,
 }
 
 pub fn is_late_night(hour: u32) -> bool {
@@ -279,6 +310,8 @@ pub fn dose<Tz: chrono::TimeZone>(
             turns_today: a.turns_today + d.turns_today,
             turns_7d: a.turns_7d + d.turns_7d,
             late_night_7d: a.late_night_7d + d.late_night_7d,
+            call_secs_today: a.call_secs_today + d.call_secs_today,
+            call_secs_7d: a.call_secs_7d + d.call_secs_7d,
         }),
     }
 }
@@ -293,6 +326,34 @@ pub fn doses<Tz: chrono::TimeZone>(
     tz: &Tz,
 ) -> Doses {
     let mut read = Doses::default();
+    let today = now.with_timezone(tz).date_naive();
+    let week_ago = now - chrono::Duration::days(7);
+    // The calls first: a turn file that cannot be read returns early, and
+    // either unreadable file makes every count unbelievable.
+    match std::fs::read_to_string(dir.join("calls.jsonl")) {
+        Ok(text) => {
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(r) = serde_json::from_str::<CallRecord>(line) else {
+                    read.skipped += 1;
+                    continue;
+                };
+                let out = read.by_persona.entry(r.persona.clone()).or_default();
+                let secs = r.seconds.min(MAX_CALL_SECS);
+                if r.at.with_timezone(tz).date_naive() == today {
+                    out.call_secs_today = out.call_secs_today.saturating_add(secs);
+                }
+                if r.at > week_ago && r.at <= now {
+                    out.call_secs_7d = out.call_secs_7d.saturating_add(secs);
+                }
+            }
+        }
+        // Never written: no calls yet, a true zero.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            read.unreadable = Some(e.to_string());
+            return read;
+        }
+    }
     let text = match std::fs::read_to_string(dir.join("dose.jsonl")) {
         Ok(text) => text,
         // Never written: no turns yet, which is a true zero.
@@ -302,8 +363,6 @@ pub fn doses<Tz: chrono::TimeZone>(
             return read;
         }
     };
-    let today = now.with_timezone(tz).date_naive();
-    let week_ago = now - chrono::Duration::days(7);
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let Ok(r) = serde_json::from_str::<DoseRecord>(line) else {
             read.skipped += 1;
@@ -442,7 +501,8 @@ mod tests {
             Dose {
                 turns_today: 2,
                 turns_7d: 3,
-                late_night_7d: 2
+                late_night_7d: 2,
+                ..Dose::default()
             }
         );
         assert_eq!(dose(&dir, None, now, &tz).turns_today, 3);
@@ -460,6 +520,48 @@ mod tests {
             doses(&dir, now, &tz).unreadable.is_some(),
             "a directory cannot be read as the file"
         );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Call minutes are counted by the day each call ended, apart from the
+    /// turns, and a call line never reads as a turn: it has its own file.
+    #[test]
+    fn calls_count_their_seconds_and_never_a_turn() {
+        use chrono::TimeZone;
+        let dir = std::env::temp_dir().join(format!("mecha-calls-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tz: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        let at = |d: u32, h: u32| tz.with_ymd_and_hms(2026, 9, d, h, 0, 0).unwrap().to_utc();
+        let line = |d, h, seconds| {
+            serde_json::to_string(&CallRecord {
+                at: at(d, h),
+                persona: "mara".into(),
+                chat: "c".into(),
+                seconds,
+            })
+            .unwrap()
+        };
+        let lines = [
+            line(29, 10, 300),
+            line(28, 22, 120),
+            line(20, 12, 900),                // over a week ago
+            line(29, 11, 10 * MAX_CALL_SECS), // a clock that jumped
+        ];
+        std::fs::write(dir.join("calls.jsonl"), lines.join("\n") + "\n").unwrap();
+        let now = at(29, 23);
+        let d = dose(&dir, Some("mara"), now, &tz);
+        assert_eq!(d.call_secs_today, 300 + MAX_CALL_SECS);
+        assert_eq!(d.call_secs_7d, 300 + 120 + MAX_CALL_SECS);
+        assert_eq!((d.turns_today, d.turns_7d), (0, 0), "a call is not a turn");
+        // Written through the door, it lands in its own file, clamped.
+        record_call(&dir, "ada", "c", u32::MAX).unwrap();
+        assert!(!dir.join("dose.jsonl").exists());
+        let d = dose(&dir, Some("ada"), chrono::Utc::now(), &tz);
+        assert_eq!(d.call_secs_7d, MAX_CALL_SECS);
+        // An unreadable call file is said, as an unreadable turn file is.
+        std::fs::remove_file(dir.join("calls.jsonl")).unwrap();
+        std::fs::create_dir_all(dir.join("calls.jsonl")).unwrap();
+        assert!(doses(&dir, now, &tz).unreadable.is_some());
         std::fs::remove_dir_all(dir).ok();
     }
 

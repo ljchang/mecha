@@ -29,7 +29,7 @@ export function withUnlock(path, token) {
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
 const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/sources', '/sources/remove', '/sources/file', '/sources/text'];
-const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save'];
+const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call'];
 
 export const ENDPOINTS = [
   '/api/personas',
@@ -418,12 +418,24 @@ export function taintLabel(taint) {
 }
 
 // The dose meters, in a line; '' when they are off.
+// Seconds on calls, as the meters say them: minutes, an hour and minutes past
+// the hour, and "under a minute" rather than a zero that reads as no call.
+export function callTime(secs) {
+  if (secs <= 0) return '0 min';
+  if (secs < 60) return 'under a minute';
+  const m = Math.round(secs / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
 export function doseLine(dose) {
   if (!dose) return '';
   // A store that could not be read is not zero turns (review of #418).
   if (dose.unread) return 'usage meters unreadable';
   const parts = [`${dose.turns_today} today`, `${dose.turns_7d} this week`];
   if (dose.late_night_7d) parts.push(`${dose.late_night_7d} late at night`);
+  // Call time, beside the turns rather than in them (§11: voice raises
+  // attachment, so the meters count minutes on calls too).
+  if (dose.call_secs_7d) parts.push(`calls ${callTime(dose.call_secs_today ?? 0)} today, ${callTime(dose.call_secs_7d)} this week`);
   if (dose.skipped) parts.push(`${dose.skipped} unreadable record${dose.skipped === 1 ? '' : 's'} not counted`);
   return parts.join(' · ');
 }

@@ -1333,15 +1333,15 @@ the template too.
 
 ## 11. Voice profiles (R13)
 
-*Built 2026-10-01 (step 7, first part, server and worker):* a call into a
-persona chat is answered by the persona (`PersonaChats::speak`). It goes
-behind the lock, through the crisis layer, and the pause is spoken as the
-plain words. A profile with a `voice` the worker lists is bound when the
-call starts. A reference clip, a missing profile, an out-of-range value, or
-a voice the worker does not list refuses the call by name. Still unbuilt:
+*Built 2026-10-01 (step 7, calls):* a call into a persona chat is answered
+by the persona (`PersonaChats::speak`). It goes behind the lock, through the
+crisis layer, and the pause is spoken as the plain words. A profile with a
+`voice` the worker lists is bound when the call starts. A reference clip, a
+missing profile, an out-of-range value, or a voice the worker does not list
+refuses the call by name. The page's call button sits beside send
+(`PersonaCall.svelte`). The meters count call minutes in their own
+`calls.jsonl`, by the day each call ended. Still unbuilt:
 
-- the page's call button;
-- call minutes on the dose meters;
 - binding a reference clip (writing it into `VOICES_DIR`);
 - recording a voice on the page.
 

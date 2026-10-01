@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Call a persona.** A persona chat has a call button beside send, where
+  calls are switched on. The persona answers in its own voice (its profile's
+  `voice`, which the voice server must list), and what is said lands in the
+  same chat. A locked persona can be called only while it is unlocked, and
+  locking it again ends the call. A crisis message on a call is answered
+  aloud with the same plain words the chat shows. Call minutes join turns on
+  the persona's usage meters. The voice worker must be restarted on this
+  version before a persona with a voice profile can be called; until then
+  such a call is refused, naming the reason.
 - **Replies read as formatted text.** In the assistant's chat and in persona
   chats, a reply's Markdown (headings, bold, lists, code) is rendered rather
   than shown as `##` and `**`. Double-click a reply to see it as written, and
