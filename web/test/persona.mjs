@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
-  taintLabel, doseLine, callTime, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
+  taintLabel, doseLine, callTime, hangUpReport, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
   fileUrl, uploadUrl,
 } from '../src/lib/persona.js';
 import { pictureOf } from '../src/lib/picture.js';
@@ -127,6 +127,11 @@ assert.equal(
 assert.equal(doseLine({ turns_today: 1, turns_7d: 1, late_night_7d: 0, call_secs_today: 0, call_secs_7d: 0 }), '1 today · 1 this week');
 assert.equal(callTime(0), '0 min');
 assert.equal(callTime(150), '3 min');
+// A hang-up reports its seconds and binding; one that never connected still
+// reports, so serve releases the binding; one with neither has nothing to say.
+assert.deepEqual(hangUpReport({ since: 1000, callId: 7, now: 61_400 }), { seconds: 60, call: 7 });
+assert.deepEqual(hangUpReport({ since: null, callId: 7, now: 5000 }), { seconds: 0, call: 7 });
+assert.equal(hangUpReport({ since: null, callId: null, now: 5000 }), null);
 assert.equal(doseLine(null), '');
 assert.equal(doseLine({ unread: 'Permission denied' }), 'usage meters unreadable');
 assert.equal(doseLine({ turns_today: 1, turns_7d: 2, late_night_7d: 0, skipped: 3 }), '1 today · 2 this week · 3 unreadable records not counted');

@@ -16,7 +16,7 @@
   import { onDestroy } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import { createVoiceSession } from '../../../scripts/voice/voice-core.js';
-  import { chatUrl } from './persona.js';
+  import { chatUrl, hangUpReport } from './persona.js';
 
   let { chatKey, token = null, display, face = null, onended = () => {} } = $props();
 
@@ -85,18 +85,22 @@
     });
   }
 
-  // The call's length to the meter, once per connection; `keepalive` so a
+  // The call's length to the meter, and its binding let go — once per
+  // connection, and for a call the worker took that never got past
+  // connecting too (zero seconds), or serve would hold its binding and
+  // unlock for the life of the process (review of #483). `keepalive` so a
   // closing tab still sends it.
   function count() {
-    if (since == null || !callKey) return;
-    const seconds = Math.max(0, Math.round((Date.now() - since) / 1000));
+    const report = callKey && hangUpReport({ since, callId, now: Date.now() });
+    if (!report) return;
     since = null;
     fetch(chatUrl(callKey, '/call'), {
       method: 'POST',
       keepalive: true,
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ seconds, call: callId ?? undefined, unlock: callToken ?? undefined }),
+      body: JSON.stringify({ ...report, unlock: callToken ?? undefined }),
     }).catch(() => {});
+    callId = null;
   }
 
   function stopSession() {
