@@ -411,6 +411,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **An experiment's condition hash now includes the features a trial runs
+  with.** Turning `search` on or off between two runs of an experiment used
+  to leave every trial's hash the same, so the two runs could be paired as
+  one condition. Every new trial's hash changes once with this release, so
+  trials planned from now on do not pair with ones planned before it; a
+  resumed experiment keeps the hashes of the trials it already finished.
+
 - **The character library follows image generation.** It is on whenever
   `image` is — its page, its routes, `mecha imagelib` — and `[tools]`
   disabling `image_library` or `image_library_propose` now only keeps those
