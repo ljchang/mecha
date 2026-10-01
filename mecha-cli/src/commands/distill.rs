@@ -551,7 +551,7 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
         // on the local model: the seats are llama-server's, and a provider
         // elsewhere holds none of them.
         let seat = if local {
-            take_seat(&meta.id).await
+            take_seat(&format!("distill {}", meta.id)).await
         } else {
             None
         };
@@ -1033,22 +1033,22 @@ fn backfill_targets(store: &LearningStore) -> Result<std::collections::BTreeSet<
     ))
 }
 
-/// Take a background seat, waiting for one if all are held — a nightly or
-/// a detached `session_end` hook can wait; nothing interactive runs this.
+/// Take a background seat for `what`, waiting for one if all are held — a
+/// nightly or a detached `session_end` hook can wait; nothing interactive
+/// runs this. Shared with the persona memory writer.
 /// The pool is a latency control, not a guard (`permit.rs`), so a pool that
 /// cannot be read is said and the calls go ahead unseated.
-async fn take_seat(session: &str) -> Option<mecha_core::permit::Held> {
+pub(crate) async fn take_seat(what: &str) -> Option<mecha_core::permit::Held> {
     let pool = match super::tasks::permits() {
         Ok(pool) => pool,
         Err(e) => {
-            eprintln!("mecha: the seat pool could not be opened ({e:#}); distilling unseated");
+            eprintln!("mecha: the seat pool could not be opened ({e:#}); running {what} unseated");
             return None;
         }
     };
-    let what = format!("distill {session}");
     let mut said: Option<std::time::Instant> = None;
     loop {
-        match pool.take(&what) {
+        match pool.take(what) {
             Ok(Ok(held)) => return Some(held),
             Ok(Err(holders)) => {
                 if said.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(300)) {
@@ -1066,7 +1066,7 @@ async fn take_seat(session: &str) -> Option<mecha_core::permit::Held> {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
             Err(e) => {
-                eprintln!("mecha: a seat could not be taken ({e:#}); distilling unseated");
+                eprintln!("mecha: a seat could not be taken ({e:#}); running {what} unseated");
                 return None;
             }
         }

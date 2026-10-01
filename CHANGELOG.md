@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Personas start remembering.** `mecha persona memory write` reads each
+  persona's chats and records an episode and facts per stretch of
+  conversation, in the persona's own memory. The nightly runs it. It uses
+  your local model only, leaves alone chats changed in the last 15 minutes,
+  and reads each turn once. A stretch after the chat read anything from
+  outside — a search, a file — is kept apart: what it produced waits for
+  your approval (`mecha persona memory approve`), and it can never change or
+  withdraw what the persona already knew. Nothing yet brings memories back
+  into a chat; that is the next step.
 - **A persona's citations are checked.** When a persona quotes one of its
   files as `[file, p. N: "…"]`, mecha looks the quote up in what that chat
   actually read and tags it: *quoted*, *on p. N* (the quote is real but on
