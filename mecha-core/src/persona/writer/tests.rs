@@ -461,7 +461,7 @@ async fn a_chat_is_written_once_in_two_stretches_and_the_clean_one_never_sees_th
             "facts": [{"op": "add", "about": "character", "how": "observed", "text": "Kelp sings at dawn."}]}"#,
     ]);
     let text = two_clean_then_untrusted();
-    let report = write_chat(&writer, &m, &w.persona, "c1", &text)
+    let report = write_chat(&writer, &m, &w.persona, "c1", &read_chat(&text))
         .await
         .unwrap();
     assert_eq!(report.stretches.len(), 2);
@@ -493,7 +493,7 @@ async fn a_chat_is_written_once_in_two_stretches_and_the_clean_one_never_sees_th
 
     // Run again: nothing new, so no model call and nothing written.
     let (again, seen) = scripted(&[]);
-    let report = write_chat(&again, &m, &w.persona, "c1", &text)
+    let report = write_chat(&again, &m, &w.persona, "c1", &read_chat(&text))
         .await
         .unwrap();
     assert!(report.stretches.is_empty());
@@ -502,7 +502,7 @@ async fn a_chat_is_written_once_in_two_stretches_and_the_clean_one_never_sees_th
     // The chat grows; only the new turns are read.
     let more = text + &owner("Goodnight.") + &persona_says("Goodnight.") + &checkpoint(true);
     let (third, seen) = scripted(&[r#"{"episode": null, "facts": []}"#]);
-    write_chat(&third, &m, &w.persona, "c1", &more)
+    write_chat(&third, &m, &w.persona, "c1", &read_chat(&more))
         .await
         .unwrap();
     let only = asked(&seen.lock().unwrap()[0]);
@@ -555,9 +555,15 @@ async fn memory_switched_off_asks_nothing_and_still_moves_on() {
     w.persona.settings.memory.user_facts = UserFacts::Off;
     let m = Memory::open(&w.dir, "mara").unwrap();
     let (writer, seen) = scripted(&[]);
-    write_chat(&writer, &m, &w.persona, "c1", &two_clean_then_untrusted())
-        .await
-        .unwrap();
+    write_chat(
+        &writer,
+        &m,
+        &w.persona,
+        "c1",
+        &read_chat(&two_clean_then_untrusted()),
+    )
+    .await
+    .unwrap();
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(m.written_upto("c1").unwrap(), 6);
 }
@@ -580,4 +586,74 @@ fn a_chat_is_written_by_its_own_model_and_never_swaps_the_resident_one() {
         pick_model(Some("story"), Some("work"), false, "default"),
         use_("default")
     );
+}
+
+#[test]
+fn one_proposal_updates_a_fact_once_and_never_adds_what_it_just_wrote() {
+    let w = world();
+    run(
+        &w,
+        stretch(Origin::ModelClean),
+        vec![add(true, Kind::Stated, "Teaches on Thursdays.")],
+    );
+    let m = Memory::open(&w.dir, "mara").unwrap();
+    let id = m.facts(Table::User, Filter::All).unwrap()[0].uid[..8].to_owned();
+    let out = run(
+        &w,
+        stretch(Origin::ModelClean),
+        vec![
+            Op::Update {
+                id: id.clone(),
+                text: "Teaches on Fridays.".into(),
+            },
+            Op::Update {
+                id: id.clone(),
+                text: "Teaches on Mondays.".into(),
+            },
+            Op::Invalidate { id },
+            add(true, Kind::Stated, "Teaches on Fridays."),
+        ],
+    );
+    assert_eq!(
+        (out.updated, out.invalidated, out.added, out.refused),
+        (1, 0, 0, 3)
+    );
+    assert_eq!(
+        m.facts(Table::User, Filter::Recallable)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.text)
+            .collect::<Vec<_>>(),
+        ["Teaches on Fridays."],
+        "one live replacement"
+    );
+}
+
+#[test]
+fn an_over_long_summary_is_turned_away_and_the_facts_beside_it_are_kept() {
+    let w = world();
+    let m = Memory::open(&w.dir, "mara").unwrap();
+    let chat = read_chat(&two_clean_then_untrusted());
+    let out = m
+        .write_stretch("c1", 0, 2, |m| {
+            apply(
+                m,
+                &w.persona,
+                "c1",
+                &chat,
+                stretch(Origin::ModelClean),
+                &[],
+                Proposal {
+                    episode: Some(EpisodeDraft {
+                        summary: "x".repeat(MAX_SUMMARY_CHARS + 1),
+                        ..EpisodeDraft::default()
+                    }),
+                    ops: vec![add(true, Kind::Stated, "Teaches on Thursdays.")],
+                },
+            )
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!((out.episodes, out.added, out.refused), (0, 1, 1));
+    assert_eq!(m.written_upto("c1").unwrap(), 2);
 }
