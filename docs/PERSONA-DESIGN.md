@@ -670,8 +670,11 @@ on 2026-09-28: **the lock hides, it never withholds.**
 
 - A locked persona, and every chat with it, is absent from the web chat
   list, the history list, home counts and `/queues` until the library is
-  unlocked — the same `POST /api/library/unlock` token, the same idle expiry
-  (`UNLOCK_IDLE`), the same `lock.toml` password where one is set.
+  unlocked — the same `POST /api/library/unlock` token, the same autolock
+  (`imagelib::autolock_minutes`, 15 minutes unless the owner sets it: the
+  server's token lapses on it and the page relocks itself after that long
+  untouched — owner request, 2026-10-01), the same `lock.toml` password
+  where one is set.
 - A single chat can be locked on its own, with a persona left visible.
 - A hidden chat answers 404 exactly like a missing one, as locked library
   entries do.

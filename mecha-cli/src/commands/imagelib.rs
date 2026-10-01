@@ -91,6 +91,10 @@ pub enum Cmd {
     /// Set the password that shows locked entries while browsing the web
     /// library. Read from the terminal without echo, or from stdin.
     SetLockPassword,
+    /// Lock the web library and personas again after this many minutes
+    /// with no one using them (1 to 240; 15 when never set). Takes effect
+    /// at the next unlock.
+    SetAutolock { minutes: u32 },
     /// Remove a candidate.
     Reject {
         name: String,
@@ -262,7 +266,7 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
     // same reason). What adds to, changes or removes an entry is refused.
     if !matches!(
         args.cmd,
-        Cmd::List { .. } | Cmd::Show { .. } | Cmd::SetLockPassword
+        Cmd::List { .. } | Cmd::Show { .. } | Cmd::SetLockPassword | Cmd::SetAutolock { .. }
     ) {
         super::features::require(mecha_core::feature::Feature::Library)?;
     }
@@ -396,6 +400,13 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             }
             imagelib::set_lock_password(dir, &first)?;
             println!("Lock password set. Locked entries show in the web library once unlocked.");
+        }
+        Cmd::SetAutolock { minutes } => {
+            imagelib::set_autolock_minutes(dir, minutes)?;
+            println!(
+                "Unlocks now lapse after {minutes} minute{} with no one using them, from the next unlock.",
+                if minutes == 1 { "" } else { "s" }
+            );
         }
         Cmd::Reject { name, kind } => {
             let e = resolve(&lib, &name, kind)?;

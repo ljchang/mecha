@@ -8,12 +8,13 @@
   import { composeEditMessage, maskName } from './image-edit.js';
   import { pictureOf, repeatedPictures, turnsWithoutPicture } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
+  import { watchIdle, idleSpan } from './autolock.js';
   import { repairComments, changesOf } from './tomlform.js';
   import { isDirty as mdDirty } from './mdform.js';
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
-    taintLabel, safetyLine, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
-    toolStatus, waitingLine, withWorking, fileUrl, uploadUrl, sourceLine,
+    taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
+    toolStatus, waitingLine, withWorking, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
     citeSegments, citeEntries, citeNote, citeOpens, citedUrl,
     frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM,
   } from './persona.js';
@@ -25,7 +26,9 @@
   // read or write one of the assistant's conversations.
   //
   // The lock is the image library's: the same password, the same token, held
-  // only in memory (the no-storage test holds the whole bundle to that).
+  // only in memory (the no-storage test holds the whole bundle to that) —
+  // and the same autolock: the page locks itself after the owner's span with
+  // no one touching it (`autolock.js`).
 
   let { initial = null } = $props();
 
@@ -39,6 +42,10 @@
   // The persona being looked at, its earlier chats, and the open chat.
   let chosen = $state(null);
   let history = $state([]);
+  // Whether the list is still on its way, and why it could not be read: an
+  // empty list is "no earlier chats", never a failed read in disguise.
+  let historyLoading = $state(false);
+  let historyNote = $state('');
   // The persona's files (§10): what it can read, and whether each is read yet.
   let sources = $state([]);
   let sourcesNote = $state('');
@@ -49,6 +56,10 @@
   onDestroy(() => {
     gone = true;
     clearTimeout(sourcesTimer);
+    // Leaving the tab ends the unlock: the page forgets its token, so the
+    // server should too, rather than hold it to its idle span.
+    stopIdle?.();
+    if (token) revoke(token);
   });
   let key = $state(null);
   let run = $state(emptyRun());
@@ -249,9 +260,16 @@
       const res = await fetch(listUrl(token));
       if (!res.ok) throw new Error((await res.text()).trim());
       data = await res.json();
-      // A token the server no longer honours has lapsed.
-      if (token && !data.unlocked) token = null;
-      if (chosen) chosen = personas.find((p) => p.name === chosen.name) ?? null;
+      // A token the server no longer honours has lapsed — its idle span, or
+      // a restart, which forgets every token.
+      if (token && !data.unlocked) dropToken();
+      // One that left the list (hidden by that lapse, or removed) closes
+      // whole, its chat stream and all, not just its heading.
+      if (chosen) {
+        const again = personas.find((p) => p.name === chosen.name);
+        if (again) chosen = again;
+        else toList();
+      }
       // A deep link (`#personas/mara`) opens that persona, earlier chats and
       // all — once: a later reload (a lock toggle) must not re-enter it.
       // `#personas/+new` opens the form for a new persona — `+`, because
@@ -290,7 +308,9 @@
         body: JSON.stringify({ password }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
-      token = (await res.json()).token;
+      const granted = await res.json();
+      token = granted.token;
+      armIdle(granted.idle_secs);
       sheet = false;
       await load();
       await rereadAuthoring();
@@ -302,22 +322,38 @@
     }
   }
 
+  // The autolock: the owner's span with no one touching the page locks it,
+  // and a return to the page asks whether the token outlived a restart.
+  let stopIdle = null;
+  function armIdle(secs) {
+    stopIdle?.();
+    stopIdle = watchIdle({ idleMs: idleSpan(secs) * 1000, onIdle: relock, onReturn: load });
+  }
+
+  function dropToken() {
+    token = null;
+    stopIdle?.();
+    stopIdle = null;
+  }
+
+  function revoke(t) {
+    fetch('/api/library/relock', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: t }),
+    }).catch(() => {});
+  }
+
   async function relock() {
     const t = token;
-    token = null;
+    dropToken();
     // Off the screen now, before the grid's round trip, not after it.
     if (making && authoring) authoring = { ...authoring, characters: [] };
     // A locked persona's chat closes with the lock: the lock hides (§8.3).
     if (chosen?.locked) toList();
     await load();
     await rereadAuthoring();
-    if (t) {
-      fetch('/api/library/relock', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ token: t }),
-      }).catch(() => {});
-    }
+    if (t) revoke(t);
   }
 
   function close() {
@@ -392,6 +428,8 @@
     // its own load (review of #459).
     sources = [];
     sourcesNote = '';
+    history = [];
+    historyNote = '';
     chosen = p;
     key = null;
     run = emptyRun();
@@ -400,14 +438,35 @@
     await loadHistory();
   }
 
+  // Numbered, as the transcript's reads are: a slow answer for the last
+  // persona never lands under this one. A failure keeps what was listed and
+  // says so — it used to read as "no earlier chats", which is what a token
+  // lapsed by a server restart looked like (the page then re-asks the list,
+  // which drops the token and closes a persona it hid).
+  let historyGen = 0;
   async function loadHistory() {
     if (!chosen) return;
     loadSources();
+    const name = chosen.name;
+    const gen = ++historyGen;
+    historyLoading = true;
+    let why = '';
     try {
-      const res = await fetch(personaUrl(chosen.name, '/chats', token));
-      history = res.ok ? (await res.json()).chats : [];
-    } catch {
-      history = [];
+      const res = await fetch(personaUrl(name, '/chats', token));
+      if (gen !== historyGen) return;
+      if (res.ok) {
+        history = (await res.json()).chats;
+      } else {
+        why = (await res.text()).trim() || `HTTP ${res.status}`;
+        if (token) await load();
+      }
+    } catch (e) {
+      why = String(e?.message ?? e);
+    } finally {
+      if (gen === historyGen) {
+        historyLoading = false;
+        historyNote = why && chosen?.name === name ? `earlier chats could not be read: ${why}` : '';
+      }
     }
   }
 
@@ -1279,44 +1338,55 @@
           />
           <button class="abtn primary wide" disabled={busy || !chosen.approved} onclick={start}>Start a chat</button>
         </div>
-        <div class="status">
-          <span class="stat">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z" /></svg>
-            {safetyLine(chosen.safety)}
-          </span>
-          {#if doseLine(chosen.dose)}
+        <!-- The safety switches are not stated here (owner ruling,
+             2026-10-01): they are the persona's settings, read and changed
+             in its editor; the usage meters stay. -->
+        {#if doseLine(chosen.dose)}
+          <div class="status">
             <span class="stat">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></svg>
               {doseLine(chosen.dose)}
             </span>
-          {/if}
-        </div>
+          </div>
+        {/if}
         <!-- Its files (§10): what every chat with it can read and cite.
              Added here or dropped into its folder; shared ones come from a
-             group's folder or everyone's. -->
+             group's folder or everyone's. Small tiles, so the add control
+             never reads as a second "Start a chat". -->
         <div class="earlier">Files</div>
-        <div class="plist">
+        <div class="tiles">
           {#each sources as s (s.name)}
-            <div class="hrow srow">
-              <span class="htitle">{s.name}</span>
-              <span class="when" title={s.unreadable ?? undefined}>{sourceLine(s)}</span>
-              {#if !s.shared}
-                <button class="iconbtn srm" aria-label="Remove {s.name}" title="Remove" disabled={busy} onclick={() => removeSource(s.name)}>
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+            {@const kind = fileKind(s.name)}
+            <div class="tile" class:bad={!!s.unreadable} title={`${s.name} — ${sourceLine(s)}${s.unreadable ? `\n${s.unreadable}` : ''}`}>
+              <span class="tkind">{kind}</span>
+              <span class="tname">{s.name.replace(/^@[^/]+\//, '')}</span>
+              <span class="tstate" class:busy={s.processing}>{sourceState(s)}</span>
+              {#if s.shared}
+                <!-- A group's or everyone's: removed from its own folder, not here. -->
+                <svg class="tshared" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="shared"><circle cx="9" cy="8" r="3" /><circle cx="17" cy="9" r="2.5" /><path d="M3.5 19c.6-3 2.8-4.5 5.5-4.5s4.9 1.5 5.5 4.5M15 14.6c2.6-.3 4.8 1 5.5 3.9" /></svg>
+              {:else}
+                <button class="trm" aria-label="Remove {s.name}" title="Remove" disabled={busy} onclick={() => removeSource(s.name)}>
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
                 </button>
               {/if}
             </div>
           {/each}
-          <label class="hrow addsrc" class:off={busy}>
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-            <span class="htitle">{sources.length ? 'Add files' : 'Add a paper or notes for it to read'}</span>
+          <label class="tile addtile" class:off={busy} title="Add a paper, notes or a picture for it to read">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            <span class="tname">{sources.length ? 'Add' : 'Add a file'}</span>
             <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.md,.markdown,.txt" disabled={busy}
               onchange={(e) => { addSources([...e.currentTarget.files]); e.currentTarget.value = ''; }} />
           </label>
         </div>
         {#if sourcesNote}<div class="warnline">{sourcesNote}</div>{/if}
-        {#if history.length}
+        {#if history.length || historyLoading || historyNote}
           <div class="earlier">Earlier chats</div>
+        {/if}
+        {#if historyNote}<div class="warnline">{historyNote}</div>{/if}
+        {#if !history.length && historyLoading}
+          <div class="loadingline">loading…</div>
+        {/if}
+        {#if history.length}
           <div class="plist">
             {#each history as h (h.id)}
               <button class="hrow" disabled={busy} onclick={() => resume(h.id)}>
@@ -1692,13 +1762,26 @@
   .stat svg { color: var(--accent-500); flex-shrink: 0; }
   .htitle { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hrow { min-height: 56px; }
-  .srow { flex-wrap: wrap; row-gap: 2px; }
-  .srow .htitle { flex-basis: 100%; }
-  .srow .when { margin: 0; font-family: var(--mono); font-size: 11px; color: var(--text-muted); flex: 1; }
-  .srm { width: 36px; height: 36px; margin: -6px -8px -6px 0; }
-  .addsrc { position: relative; cursor: pointer; color: var(--accent-400); }
-  .addsrc.off { opacity: 0.55; cursor: default; }
-  .addsrc input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  /* A file is a small tile, not a full-width row: the add control is the
+     same size as a file, so it never reads as a second primary button, and
+     a tile has the square a thumbnail will take. */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px; }
+  .tile { position: relative; display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; min-width: 0; height: 74px; padding: 8px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: 10px; }
+  .tile.bad { border-color: color-mix(in srgb, var(--hazard) 45%, var(--accent-900)); }
+  .tkind { position: absolute; top: 8px; left: 8px; padding: 1px 5px; border-radius: 4px; background: var(--accent-900); color: var(--accent-100); font-family: var(--mono); font-size: 9px; letter-spacing: 0.06em; }
+  .tname { font-size: 12px; line-height: 1.25; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tstate { font-family: var(--mono); font-size: 10px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tstate.busy { color: var(--accent-400); }
+  .tile.bad .tstate { color: var(--hazard); }
+  .trm { position: absolute; top: 2px; right: 2px; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; background: transparent; border: none; border-radius: 8px; color: var(--text-muted); cursor: pointer; }
+  .tshared { position: absolute; top: 10px; right: 9px; color: var(--accent-500); }
+  .trm:hover:not(:disabled) { background: var(--surface); color: var(--text); }
+  .addtile { align-items: center; justify-content: center; gap: 4px; border-style: dashed; color: var(--accent-400); cursor: pointer; }
+  .addtile .tname { color: inherit; }
+  .addtile:hover { background: var(--surface); }
+  .addtile.off { opacity: 0.55; cursor: default; }
+  .addtile input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .loadingline { font-family: var(--mono); font-size: 11px; color: var(--text-muted); padding: 4px 2px; }
   .hrow .when { margin: 0; font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
   .composer .cfield { flex: 1; display: flex; align-items: flex-end; gap: 6px; padding: 6px 6px 6px 14px; background: var(--surface); border: 1px solid var(--accent-700); border-radius: 22px; }
   .composer .cfield:focus-within { border-color: var(--accent-500); }

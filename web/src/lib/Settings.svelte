@@ -4,6 +4,8 @@
   import SettingsLearning from './SettingsLearning.svelte';
   import SettingsVoice from './SettingsVoice.svelte';
   import SettingsFeatures from './SettingsFeatures.svelte';
+  import SettingsLock from './SettingsLock.svelte';
+  import { autolockLine } from './autolock.js';
   import { features } from './features.svelte.js';
   import { isShown, summary } from './features.js';
 
@@ -14,12 +16,12 @@
   // two-tap save and the voice pane's live microphone have no business
   // sharing a scope.
   let { initial = null, navigate, backTo } = $props();
-  const PANES = ['charter', 'learning', 'voice', 'features'];
+  const PANES = ['charter', 'learning', 'voice', 'lock', 'features'];
   // Derived, never copied into state: App re-renders this with a new
   // `initial` on back/forward, and a `$state` snapshot would ignore it.
   const pane = $derived(PANES.includes(initial) ? initial : null);
 
-  const TITLE = { charter: 'Charter', learning: 'Learning', voice: 'Voice', features: 'Features' };
+  const TITLE = { charter: 'Charter', learning: 'Learning', voice: 'Voice', lock: 'Lock', features: 'Features' };
 
   // Each pane reads its own data when opened. These are only the one-line
   // summaries the index rows show, re-read on every return so an edit made
@@ -29,6 +31,7 @@
   let rules = $state(null);
   let rulesErr = $state(null);
   let voice = $state(null);
+  let lock = $state(null);
 
   async function loadSummary() {
     try {
@@ -55,6 +58,12 @@
       voice = res.ok ? await res.json() : null;
     } catch {
       voice = null;
+    }
+    try {
+      const res = await fetch('/api/settings/lock');
+      lock = res.ok ? await res.json() : null;
+    } catch {
+      lock = null;
     }
   }
 
@@ -103,6 +112,12 @@
     };
   });
 
+  const lockLine = $derived.by(() => {
+    if (lock === null) return { text: '—' };
+    if (lock.error) return { text: 'autolock unreadable — nothing unlocks', bad: true };
+    return { text: `locks after ${autolockLine(lock.idle_minutes)} idle` };
+  });
+
   const ICON = {
     // Ranked lines, shortening: the charter's order is its rank.
     charter: 'M5 6h14M5 11h10M5 16h6',
@@ -110,6 +125,8 @@
     learning: 'M9.5 18h5M10.5 21h3M12 3a6 6 0 00-3.5 10.9V16h7v-2.1A6 6 0 0012 3z',
     // A waveform.
     voice: 'M4 10v4M8 6.5v11M12 9v6M16 4.5v15M20 10v4',
+    // A padlock: the library's, which Personas share.
+    lock: 'M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z',
     // Switches.
     features: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4',
   };
@@ -127,6 +144,12 @@
       { pane: 'charter', name: 'Charter', line: charterLine },
       { pane: 'learning', name: 'Learning', line: learningLine },
       isShown(features.rows, 'voice') && { pane: 'voice', name: 'Voice', line: voiceLine },
+      // The lock guards two tabs; with both off it guards nothing to see.
+      (isShown(features.rows, 'personas') || isShown(features.rows, 'library')) && {
+        pane: 'lock',
+        name: 'Lock',
+        line: lockLine,
+      },
       { pane: 'features', name: 'Features', line: featuresLine },
     ].filter(Boolean),
   );
@@ -193,6 +216,8 @@
       <SettingsLearning />
     {:else if pane === 'features'}
       <SettingsFeatures />
+    {:else if pane === 'lock'}
+      <SettingsLock />
     {:else}
       <SettingsVoice />
     {/if}
