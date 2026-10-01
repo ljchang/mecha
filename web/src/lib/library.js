@@ -65,7 +65,7 @@ export function voiceLine(v, partial = null, clonesUnread = false) {
     const secs = v.cloned.seconds ? ` · ${Math.round(v.cloned.seconds)}s reference` : '';
     parts.push(`cloned here${secs}`);
     if (v.listed === false) parts.push('not on the voice server yet');
-  } else if (v.listed === false) {
+  } else if (v.listed === false && !clonesUnread) {
     // Named by a persona, and neither the server's nor a clone here: a typo,
     // or a voice removed — a call to it is refused.
     parts.push('on neither the voice server nor this box — a call in it is refused');

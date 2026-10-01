@@ -45,6 +45,8 @@ assert.equal(
 assert.equal(voiceLine({ name: 'default', listed: true, cloned: null, used_by: [] }, 'locked'), "the voice server's own");
 // The clone folder unread: a listed voice is not claimed as the server's own.
 assert.equal(voiceLine({ name: 'ada', listed: true, cloned: null, used_by: [] }, null, true), '');
+// Nor "nor this box" for a voice the server lacks: this box was not read.
+assert.equal(voiceLine({ name: 'adaa', listed: false, cloned: null, used_by: ['Mara'] }, null, true), 'Mara speaks in it');
 // The server not asked: nothing claimed about where the voice comes from.
 assert.equal(voiceLine({ name: 'adaa', listed: null, cloned: null, used_by: ['Mara'] }), 'Mara speaks in it');
 assert.equal(voiceLine({ name: 'adaa', listed: null, cloned: null, used_by: [] }), '');
