@@ -369,8 +369,6 @@ export function safetyLine(safety) {
     enabled: 'crisis detection: keywords + a model check on each message',
   }[safety.crisis] ?? 'crisis detection: keywords only (the model check could not answer)';
   const off = ['disclosure', 'reanchor', 'dose'].filter((k) => safety[k] === false);
-  // The farewell check arrives as a state, not a flag (review of #418).
-  if (safety.farewell === 'off') off.push('farewell');
   return off.length ? `${crisis} · off: ${off.join(', ')}` : crisis;
 }
 
