@@ -22,13 +22,71 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-10-01 — persona autolock and avatar framing are live; persona
+creation from the main chat is next (mecha-69).** #469, #473 and #480 are in
+HISTORY under 2026-10-01 and live: #469 in mecha-d7's `997a2894`, #473 in
+mecha-69's `36ff7573`, #480's page in `37fec515`. #484 (Copy and Download on
+every chat reply) is open. What is open, verified against `37fec515`:
+
+- **`persona_propose` from the main chat: the owner asked for it; unbuilt.**
+  The assistant can stage library characters (`image_library_propose`), but
+  has no tool to stage a persona. PERSONA-DESIGN §4.4 says a model may only
+  stage a candidate (`Origin::of_proposal`). `persona::create` already makes
+  a non-owner origin a candidate, but `NewPersona` carries no identity or
+  motivation prose. The only approval is `mecha persona approve`: there is
+  no read-then-approve on the page, as the library has (`approve_shown`).
+- **Review minors carried:**
+  - `lenient_frame` drops a damaged `frame` line with no `notes` entry;
+  - Settings fetches `/api/settings/lock` even when both tabs are hidden;
+  - the Library tab's copy of `armIdle`/`dropToken`/`revoke` has no test;
+  - `POST /api/settings/lock`'s happy path is untested, because it runs a CLI
+    child against the real home;
+  - `loadHistory`'s failure branch does not check the generation after
+    `res.text()` (benign: its note is discarded).
+
+**2026-10-01 — persona files (§10) done and live, and reading a chat is
+easier; what is open.** Steps 3a–3d (#459, #465, #467, #475) and the
+page and reading work (#479) are in HISTORY under 2026-10-01; all are live in
+mecha-d7's `1238cb5e`. Persona voice (§11, build step 7, moved forward at
+the owner's ask) is mecha-d7's, in progress. What is open, verified against
+`1238cb5e`:
+
+- **D15's threshold is unmeasured.** The first turn carries the files whole
+  below a quarter of `context_window`; §10.4 says the cut-off is "set by
+  measurement", and none has been made.
+- **Search (`persona::search`), known gaps:**
+  - nothing prunes `<store>/.search.db` when a file is removed (unreachable,
+    since the scope is the listing, but it is a second copy with no
+    retention rule);
+  - two embedding models of the same dimension share an index identity;
+  - a wedged `:8081` holds the one background permit for its 120 s timeout
+    per file;
+  - a text file that is not UTF-8 is re-read on every new chat;
+  - `validate()`'s refusal of a bad `embed_url` names `ocr_url`;
+  - the Files list does not say whether a file is searchable yet.
+- **Save to files:** a reply saved again after a page reload writes a
+  byte-identical second file (answer the existing name instead); a reply
+  opening with a `---` rule saves as `---.md`.
+- **Unmeasured joins:** that the page's streamed entry text equals the
+  stored `Block::Text` (Save to files and citations both rely on it), and
+  that a memory episode's `source.chat` equals the session id (the
+  earlier-chats headline relies on it).
+- **#479's minors:** ARCHITECTURE's `ChatProse` bullet still describes
+  matching citations by their characters (the code swaps them for
+  placeholders first); double-clicking a citation also toggles the raw
+  view; a drop while an upload is running is ignored silently; the 409
+  test does not tell `Reading` from `OnRequest`.
+- **Test scratch roots are never removed**, so each run leaves
+  `/tmp/mecha-chat-test-*` directories (`test_scratch_root`, #471).
+
 **2026-09-30 — personas: #446 and #448 shipped and live; what the lane
 still owes.** What shipped, and the measurement behind #448's threshold, are
 in HISTORY under 2026-09-30. Both were installed in mecha-d7's `346bb8a2`,
 and both were still in `9253038b` (`strings ~/.cargo/bin/mecha | grep -c 'one
 call refused identically, turn after turn'` → 4, checked after the 01:44Z
 install on 2026-10-01). Self-portraits (#444, #454) are mecha-d7's, live in
-`9253038b`, and theirs to record. Persona files (§10) are mecha-d7's build, in progress. What is
+`9253038b`, recorded in HISTORY under 2026-09-30. Persona files (§10) are
+done (the 2026-10-01 entry above). What is
 open, verified against `612075c8`:
 
 - **The farewell check (§12.4) is unbuilt.** `safety_json` reports it as
@@ -70,9 +128,9 @@ open, verified against `612075c8`:
     means re-scanning transcripts;
   - an outbox staging failure records `denied: false` (so it counts) while
     incrementing `denied_this_turn`.
-- **HISTORY has no paragraph for the persona arc itself** (#403–#434, #438,
-  #444, #454): only #446/#448 are there. Owed by this lane; each PR body
-  holds its own record.
+- **HISTORY has no paragraph for the persona arc itself** (#403–#434,
+  #438): only #446/#448 and the self-portraits (#444, #454) are there.
+  Owed by this lane; each PR body holds its own record.
 
 **2026-09-30/10-01 — files and pictures in chats (#438, #447, #450, #453):
 all merged and installed.** #438, #447 and #450 were installed in mecha-d7's
@@ -3674,6 +3732,62 @@ wrapper that runs only `factory-publish` and `mecha-mail`):
 Not touched: the voice worker, ComfyUI, `llama-*`, the graph binaries, and
 the shared `~/Github/mecha` checkout, left on `main` at `346bb8a2`.
 
+**2026-09-30 22:32Z, mecha-d7: `mecha` from `346bb8a2` (main through
+#451).** Among the range: the self-portraits (#444), the features gate
+(#445, #451), the refused-call loop guard (#448), document reading of
+images (#447) and image routing (#450). The shared checkout was
+fast-forwarded to `346bb8a2` at 22:31Z. Serve's other restarts that day
+(05:38–13:10Z) span several lanes and are not attributed here.
+
+**2026-10-01, mecha-d7: `mecha` six times from `main`.** Each was built in a
+clean detached worktree at `origin/main`, with the full gate (clippy
+`-D warnings`, the workspace tests) run on that tree first. Serve, Slack,
+triggers and drain were restarted together. `mecha-mail` and the voice
+worker were never touched, since no range changed them. Times are serve's
+start, from the journal:
+- **05:53Z, `9f306d8f`** (#452–#461: persona files 3a, the self-portrait
+  follow-ups, the mobile editor, setup from the registry). Dist rsynced.
+- **10:20Z, `85ca4dfe`** (#462–#466: checked citations 3b, mecha-5d's
+  persona memory store, setup and features fixes). Dist rsynced.
+- **13:09Z, `d990f813`** (#467: search 3c). Binary only. **This restart
+  interrupted a live run:** `~/.mecha/holds` held one entry, the command
+  printed the count and restarted anyway, and a chat's image generation
+  (ComfyUI prompt `8e58b93f…`, started 13:08:06Z) was cut off 81 s in. The
+  run was cancelled before it wrote its session, so the chat is unknown. The
+  `update` skill's serve restart is now gated in an `if` on no hold inside
+  `mecha-serve` (#482).
+- **14:17Z, `6565cfd8`** (#470–#472: the test-residue fix, features).
+  Binary only.
+- **15:17Z, `997a2894`** (#468, #469, #474, #475: the memory writer, the
+  persona autolock, `requires-reachable`, Save to files). Dist rsynced. **The shared
+  checkout was fast-forwarded** from `a45661ae` to `997a2894`, because
+  `mecha-ruminate` runs `scripts/ruminate.sh` from it and #468 added a stage
+  there. It was proven a fast-forward first, with `start-router.sh`,
+  `mmproj.sh`, `start-moe-mtp.sh`, `model-idle.sh` and `voice/` unchanged.
+- **17:44Z, `1238cb5e`** (#477, #479: persona recall, the persona page and
+  Markdown replies). Dist rsynced; `~/.mecha/web/dist` holds
+  `index-Bk-3J0Ll.js`. The checkout was fast-forwarded from mecha-69's
+  `36ff7573` (no `scripts/` change).
+
+**2026-10-01, mecha-69: `mecha` once, and a dist once.**
+- **15:37Z, `36ff7573`** (#473, #476). The shared checkout was
+  fast-forwarded from `997a2894` (no `scripts/` change) and `mecha-cli`
+  installed from it. `~/.mecha/holds` was empty, and serve, Slack, triggers
+  and drain were restarted together. Dist rsynced (`index-P8sJGqhn.js`).
+  Checked: `strings ~/.cargo/bin/mecha | grep -cF "a frame's zoom is 1 to"`
+  → 1, serve's `/proc/<pid>/exe` is the installed path, and `/api/personas`
+  rows carry `frame`.
+- **~18:08Z, `37fec515`** (#480, on mecha-d7's `1238cb5e`). Dist only: the
+  range's Rust is comments. The checkout was fast-forwarded and nothing was
+  restarted. Verified at 18:27Z: the 8443 door serves `index-BFEgTJhm.js`,
+  serve has been up since 17:44:37Z, and the binary probe above still
+  prints 1.
+
+**Test residue** from every lane's suite (#471's leak) was moved, never deleted, to
+`~/.mecha/test-residue-backup-20261001`: 251 `provider: test` sessions and
+the `work/web/{srctest,libtest}*` uploads (under `work-web/`). The persona `tau` is the owner's
+and was not touched.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -5776,6 +5890,13 @@ is true now:
   Decide from ledger data, not preemptively.
 
 ### Cheap, and worth doing first
+
+- **Three tests flake under full-suite load and pass alone (2026-10-01):**
+  `serve_lifecycle::folded_steering_is_acknowledged_once_and_recorded`
+  (CI on #459, and local), `document_backends::a_cancelled_run_stops_a_layout_read_mid_page`
+  (local), and `run_lifecycle::no_output_exit_removes_the_docker_mcp_container`
+  (CI on #470; a 30 s wait). Each passed on re-run. No issue is filed yet;
+  each is a timing bound the suite's load breaks.
 
 - **The grounding arc's owed minors** — the last review pass of #245 and of
   #246, none at the fix-and-push bar, each verified against the tree before
