@@ -1251,8 +1251,10 @@ module.
     - `BUDGET_CHARS` is split, not shared first-come: about-me takes at most
       a third, each note a fair share and cut rather than dropped; recent
       episodes have a third of their own, so facts can never price them out;
-      facts share the rest, and a cut section says how many it left out
-      (review of #477).
+      the fact sections share the rest fairly — each an equal part of what
+      is left, unused parts passed on — so owner facts can never price out
+      the persona's own canon; a section cut, even to nothing, keeps its
+      heading and says how many it left out (review of #477).
     - **Two stems, chosen by the harness.** `MEMORY_STEM` arms `private`;
       `UNTRUSTED_MEMORY_STEM` (any record of untrusted origin folded) arms
       `private` and `untrusted`. `Taint::arm_for_content` re-reads the
