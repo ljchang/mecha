@@ -27,6 +27,8 @@
  *                          // read off the offer — a persona chat's unlock
  *                          // token, which serve checks and strips before
  *                          // the worker sees it (PERSONA-DESIGN §11)
+ *     onAnswer,            // optional: (answer) — the host's word on the
+ *                          // call, e.g. a persona call's binding id
  *     rememberVoice,       // default true; false for a call whose voice is
  *                          // not the listener's to choose (a persona's):
  *                          // the remembered voice is neither sent nor
@@ -415,6 +417,7 @@ export function createVoiceSession(opts = {}) {
     sessionKey: null,
     offerExtra: null,
     rememberVoice: true,
+    onAnswer: () => {},
     requireUnlogged: false,
     onState: () => {},
     onTranscript: () => {},
@@ -953,6 +956,7 @@ export function createVoiceSession(opts = {}) {
     const answer = await resp.json();
     const refused = refusesAnswer(answer, cfg);
     if (refused) { end(refused); return; }
+    cfg.onAnswer(answer);
     await pc.setRemoteDescription(answer);
   }
 

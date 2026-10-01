@@ -1982,15 +1982,6 @@ impl PersonaChats {
         }))
     }
 
-    /// Let a call's unlock go: the offer that bound it did not become a
-    /// call, or the call has ended.
-    pub fn release_call(&self, key: &str) {
-        self.calls
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(key);
-    }
-
     /// A call on `key` has ended after `seconds` (§11): counted on the dose
     /// meter when the persona's switch is on, and the call's unlock let go —
     /// a later spoken turn on this key needs a new offer. Never the words.
@@ -2000,9 +1991,15 @@ impl PersonaChats {
         key: &str,
         token: Option<&str>,
         seconds: u32,
+        call: Option<u64>,
     ) -> Result<(), Refusal> {
         let name = self.persona_of(library, key, token).await?;
-        self.release_call(key);
+        // Only the binding this call's offer made: another tab's call, or a
+        // redial that bound before this hang-up landed, keeps its own
+        // (review of #483). A hang-up that names none releases nothing.
+        if let Some(id) = call {
+            self.release_offer(key, id);
+        }
         let chat = {
             let sessions = self.sessions.lock().await;
             sessions
@@ -2539,8 +2536,12 @@ impl PersonaChats {
         };
         let (tap, hosted_done) = hosted.unzip();
         // A second sender for what the harness says after the run: the
-        // judge's pause, spoken behind a reply it cut off. Held, it also
-        // keeps the facade reading until the words are sent.
+        // judge's pause, spoken behind a reply it cut off. Holding it is
+        // load-bearing: `voice::pump` streams until every sender is gone, so
+        // this clone, held in the run task past the forwarder's end, is what
+        // keeps the facade's stream open until the words are sent. Drop it
+        // earlier and the pause goes unspoken while every test here, which
+        // reads the channel directly, stays green.
         let after_tap = tap.clone();
         let noted = call_note.is_some();
         let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
@@ -2945,6 +2946,9 @@ impl PersonaChats {
         text: String,
         request_id: String,
     ) -> Result<serde_json::Value, Refusal> {
+        // A typed steer is a typed turn: the next spoken one owes the note
+        // again, since the persona has been writing for a reader since.
+        ps.last_turn_spoken = false;
         if switches.dose {
             if let Err(e) = safety::record_dose(
                 &self.store,
@@ -3605,6 +3609,9 @@ pub async fn source_text(
 #[derive(serde::Deserialize)]
 pub struct CallBody {
     seconds: u32,
+    /// The binding the offer's answer named (`call`).
+    #[serde(default)]
+    call: Option<u64>,
     #[serde(default)]
     unlock: Option<String>,
 }
@@ -3621,7 +3628,13 @@ pub async fn call_ended(
     };
     match chat
         .personas
-        .call_ended(&state.library, &key, body.unlock.as_deref(), body.seconds)
+        .call_ended(
+            &state.library,
+            &key,
+            body.unlock.as_deref(),
+            body.seconds,
+            body.call,
+        )
         .await
     {
         Ok(()) => Json(serde_json::json!({ "counted": true })).into_response(),
@@ -7074,7 +7087,18 @@ mod tests {
         );
 
         let token = library.grant_for_tests();
-        assert_eq!(call(offer(Some(&token))).await.status(), StatusCode::OK);
+        let answered = call(offer(Some(&token))).await;
+        assert_eq!(answered.status(), StatusCode::OK);
+        // The answer names the binding, for the page's hang-up to release
+        // exactly this call's (review of #483).
+        let answer: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(answered.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(answer["call"].is_u64(), "{answer}");
+        assert_eq!(answer["sdp"], "v=0", "the worker's answer passes through");
         let sent = bodies.lock().unwrap().pop().unwrap();
         let request = &sent["request_data"];
         assert_eq!(
@@ -7148,12 +7172,17 @@ mod tests {
     async fn an_ended_call_is_counted_and_lets_its_unlock_go() {
         let w = world();
         let key = open_chat(&w).await;
+        let id = w.personas().bind(&key, None);
+        // A redial bound before this hang-up landed: a hang-up naming the
+        // earlier call leaves the later one bound (review of #483).
+        let later = w.personas().bind(&key, None);
         w.personas()
-            .bind_call(&w.library, &key, None)
+            .call_ended(&w.library, &key, None, 95, Some(id))
             .await
             .unwrap();
+        spoken(&w, &key, "the redial still speaks").await;
         w.personas()
-            .call_ended(&w.library, &key, None, 95)
+            .call_ended(&w.library, &key, None, 0, Some(later))
             .await
             .unwrap();
         let calls = std::fs::read_to_string(w.store().join("calls.jsonl")).unwrap();
@@ -7161,9 +7190,12 @@ mod tests {
             calls.contains("\"seconds\":95") && calls.contains("\"persona\":\"mara\""),
             "{calls}"
         );
-        assert!(
-            !w.store().join("dose.jsonl").exists(),
-            "a call was counted as a turn"
+        // One turn — the redial's spoken word — and the call is not one.
+        let turns = std::fs::read_to_string(w.store().join("dose.jsonl")).unwrap();
+        assert_eq!(
+            turns.lines().count(),
+            1,
+            "a call was counted as a turn: {turns}"
         );
         match w
             .personas()
@@ -7176,10 +7208,12 @@ mod tests {
         let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
         let dose = &listed["personas"][0]["dose"];
         assert_eq!(dose["call_secs_7d"], 95, "{dose}");
-        assert_eq!(dose["turns_7d"], 0, "{dose}");
+        assert_eq!(dose["turns_7d"], 1, "{dose}");
         store::set_locked(&w.store(), "mara", true).unwrap();
         assert!(matches!(
-            w.personas().call_ended(&w.library, &key, None, 10).await,
+            w.personas()
+                .call_ended(&w.library, &key, None, 10, Some(later))
+                .await,
             Err(Refusal::NotFound)
         ));
     }

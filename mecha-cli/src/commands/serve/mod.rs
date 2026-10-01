@@ -1263,9 +1263,35 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
     if let (Some((key, id)), Some(chat)) = (bound, &state.chat) {
         if !answered.status().is_success() {
             chat.personas.release_offer(&key, id);
+            return answered;
         }
+        // One it took: the answer names the binding, for the page's hang-up
+        // to release exactly this call's.
+        return with_call_id(answered, id).await;
     }
     answered
+}
+
+/// The worker's answer with `"call": id` added — the binding a persona call
+/// holds, which its hang-up names. An answer that is not a JSON object passes
+/// unchanged, and the hang-up then releases nothing.
+async fn with_call_id(answered: Response, id: u64) -> Response {
+    let (parts, body) = answered.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+        return (
+            StatusCode::BAD_GATEWAY,
+            "reading the voice runner's answer\n",
+        )
+            .into_response();
+    };
+    let out = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(serde_json::Value::Object(mut answer)) => {
+            answer.insert("call".into(), serde_json::json!(id));
+            serde_json::to_vec(&answer).unwrap_or_else(|_| bytes.to_vec())
+        }
+        _ => bytes.to_vec(),
+    };
+    Response::from_parts(parts, axum::body::Body::from(out))
 }
 
 /// A refusal of an offer, as `persona_offer` answers one.
