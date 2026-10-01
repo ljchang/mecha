@@ -371,9 +371,9 @@ fn page_marker(line: &str) -> Option<u32> {
     n.parse().ok()
 }
 
-/// Lowercase, with typographic quotes made plain, a hyphen, en dash or
-/// minus a `-`, an em dash a space (it separates words), ligatures spelled
-/// out and soft hyphens dropped.
+/// Lowercase, with typographic quotes made plain, a hyphen, soft hyphen,
+/// en dash or minus a `-`, an em dash a space (it separates words), and
+/// ligatures spelled out.
 fn plain(s: &str) -> String {
     let mut plain = String::with_capacity(s.len());
     for c in s.chars() {
@@ -390,7 +390,10 @@ fn plain(s: &str) -> String {
             '\u{fb02}' => plain.push_str("fl"),
             '\u{fb03}' => plain.push_str("ffi"),
             '\u{fb04}' => plain.push_str("ffl"),
-            '\u{ad}' => {}
+            // A soft hyphen is a hyphen where it shows — at a line break —
+            // so `tokens` can join across it; mid-word it is dropped as any
+            // hyphen is (review of #465, pass 6).
+            '\u{ad}' => plain.push('-'),
             c => plain.extend(c.to_lowercase()),
         }
     }
@@ -1117,5 +1120,22 @@ mod tests {
             "[\u{6587}.pdf, p. 1: \"\u{6d77}\u{80c6}\u{98df}\u{6d77}\u{85fb}\u{306f}\"]",
         );
         assert_eq!(check_conversation(&msgs)[0].verdict, Verdict::CannotCheck);
+    }
+
+    /// Review of #465, pass 6: a page that hyphenates with a soft hyphen at
+    /// a line break is the same word as the model's copy of it.
+    #[test]
+    fn a_soft_hyphen_at_a_line_break_joins_the_word() {
+        let page = "document: kelp.pdf \u{b7} pdf \u{b7} 1 page(s) \u{b7} sha256 x\n\
+            \n=== page 1 of 1 \u{b7} text layer (the file's own words) ===\n\
+            Sea urchins graze kelp hold\u{ad}\nfasts at night.\n";
+        let msgs = chat(
+            page,
+            "[kelp.pdf, p. 1: \"urchins graze kelp holdfasts at night\"]",
+        );
+        assert_eq!(
+            check_conversation(&msgs)[0].verdict,
+            Verdict::Quoted { found: Some(1) }
+        );
     }
 }
