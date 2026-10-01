@@ -127,7 +127,12 @@ mod tests {
         // Whether its guard has landed, which the web keys a refusal's
         // consequences on (a flat card, a pane sent home).
         assert_eq!(image["gated"], true);
-        assert_eq!(row(&body, "frontdoor")["gated"], false);
+        // Every feature's guard has landed since step 3b.
+        assert!(body["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["gated"] == true));
         // Switched off since start: pending the other way.
         let body = super::body(&facts, &[Feature::Web, Feature::Image]);
         assert_eq!(row(&body, "image")["pending"], true);
