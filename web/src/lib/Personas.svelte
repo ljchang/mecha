@@ -129,6 +129,44 @@
   // A cited page open beside the chat (§10.4): the page as the chat read
   // it, the quote marked. Text drawn as text — never the file itself.
   let citedPage = $state(null);
+  // Replies saved to the persona's files this visit, by the reply's text
+  // (§10.5) — not its position, which a transcript re-read shifts when a
+  // page-only notice sits between entries (the crisis cards' lesson, #418).
+  let savedReplies = $state({});
+  $effect(() => {
+    key;
+    untrack(() => (savedReplies = {}));
+  });
+
+  // Save a reply into the persona's own files, on the owner's word: the
+  // server takes only text this chat's persona wrote (`save_reply`).
+  // Replies on their way to the server: a second click on the quiet link
+  // must not write a second identical file (review of #475).
+  let savingReplies = $state(new Set());
+
+  async function saveReply(text) {
+    if (!key || busy || savingReplies.has(text) || savedReplies[text]) return;
+    const k = key;
+    savingReplies = new Set([...savingReplies, text]);
+    try {
+      const res = await fetch(chatUrl(k, '/save', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text, unlock: token ?? undefined }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const { name } = await res.json();
+      if (key === k) {
+        savedReplies = { ...savedReplies, [text]: name };
+        loadSources();
+      }
+    } catch (e) {
+      notice(`not saved: ${String(e?.message ?? e)}`);
+    } finally {
+      savingReplies.delete(text);
+      savingReplies = new Set(savingReplies);
+    }
+  }
   // Which open answers: a slow first tap must not land under a later one's
   // header (review of #465), as `reread` counts with `readGen`.
   let citedGen = 0;
@@ -1366,6 +1404,13 @@
                  all a check can say — a real quote may support the wrong claim.
                  One that was found opens its page. -->
             <div class="answer">{#each citeSegments(entry.text, cites.get(i)) as seg, j (j)}{#if seg.check}{@const n = citeNote(seg.check)}{#if citeOpens(seg.check)}<span class="cite {n.tone}" role="button" tabindex="0" title={n.title} onclick={() => openCited(seg.check)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openCited(seg.check))}>{seg.text}<span class="citetag">{n.label}</span></span>{:else}<span class="cite {n.tone}" title={n.title}>{seg.text}<span class="citetag">{n.label}</span></span>{/if}{:else}{seg.text}{/if}{/each}</div>
+            {#if !run.running && entry.text?.trim()}
+              {#if savedReplies[entry.text]}
+                <span class="savednote">saved to files as {savedReplies[entry.text]}</span>
+              {:else}
+                <button class="linkbtn quiet saveline" disabled={busy || savingReplies.has(entry.text)} onclick={() => saveReply(entry.text)}>{savingReplies.has(entry.text) ? 'Saving…' : 'Save to files'}</button>
+              {/if}
+            {/if}
           {:else if entry.kind === 'tool'}
             {@const status = toolStatus(run.entries, i)}
             {@const picture = pictureOf(entry)}
@@ -1591,6 +1636,8 @@
   /* Not checked, or too short to: no underline that reads as affirmed. */
   .cite.muted { text-decoration: none; }
   .citedsheet { max-height: 75%; }
+  .saveline { margin-top: -4px; }
+  .savednote { margin-top: -4px; font-size: 11px; color: var(--text-muted); }
   .citedtext { overflow-y: auto; white-space: pre-wrap; font-size: 14px; line-height: 1.5; padding: 10px 12px; border: 1px solid var(--accent-900); border-radius: 10px; }
   .citedtext mark { background: var(--accent-700); color: var(--text); border-radius: 3px; }
   .tool { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
