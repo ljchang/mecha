@@ -907,6 +907,25 @@
     return mdDirty(f.doc, current.formDraft);
   });
 
+  // Whether any file in the editor holds unsaved changes — this one's text or
+  // form, or another tab's kept draft.
+  const anyUnsaved = $derived.by(() => {
+    if (!editing) return false;
+    if (textDirty || formDirty) return true;
+    return Object.entries(editing.files).some(([f, v]) => {
+      if (f === editing.file) return false;
+      if (v.draft != null && v.draft !== v.text) return true;
+      if (!v.formDraft || !v.form) return false;
+      if (v.form.form) return Object.keys(changesOf(v.form.form, v.form.values, v.formDraft)).length > 0;
+      return v.form.doc ? mdDirty(v.form.doc, v.formDraft) : false;
+    });
+  });
+  // Locking without the library's unlock hides the persona at once, and the
+  // page goes back to the list — the editor and its drafts with it. So it
+  // waits for them to be saved or dropped (review of #491). Unlocking, or
+  // locking with the unlock in hand, hides nothing.
+  const lockWaits = $derived(Boolean(chosen && !chosen.locked && !token && anyUnsaved));
+
   // Switch between the form and the text. Refused while the side being left
   // holds unsaved changes — each saves against the file as it stands, so
   // one would silently lose the other's edits.
@@ -1352,9 +1371,11 @@
           <div class="lockrow">
             <span class="locktext">
               Hide behind the library lock
-              <span class="hint">{chosen.locked ? 'shown only while the library is unlocked' : 'locking hides it until the library is unlocked'}</span>
+              <span class="hint">{lockWaits ? 'save or undo your changes first — locking closes the editor' : chosen.locked ? 'shown only while the library is unlocked' : 'locking hides it until the library is unlocked'}</span>
             </span>
-            <button type="button" role="switch" class="switch" class:on={chosen.locked} aria-checked={chosen.locked} aria-label="Hide behind the library lock" disabled={busy} onclick={() => setLocked(!chosen.locked)}></button>
+            <!-- The settings form's own switch (form.css), so it looks and
+                 focuses as the toggles below it do. -->
+            <button type="button" role="switch" class="tf-switch" aria-checked={chosen.locked} aria-label="Hide behind the library lock" disabled={busy || lockWaits} onclick={() => setLocked(!chosen.locked)}><span class="tf-knob"></span></button>
           </div>
         {/if}
         {#if asForm && current.form.form}
@@ -1951,12 +1972,7 @@
   .lockrow { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: 10px; font-size: 14px; }
   .locktext { flex: 1; min-width: 0; }
   .lockrow .hint { display: block; margin-top: 2px; }
-  /* A switch, as the settings form's own toggles are. */
-  .switch { flex-shrink: 0; position: relative; width: 52px; height: 30px; margin: 0; padding: 0; border-radius: 15px; background: var(--surface); border: 1px solid var(--accent-700); cursor: pointer; transition: background 120ms linear; }
-  .switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--text-muted); transition: transform 120ms linear, background 120ms linear; }
-  .switch.on { background: var(--accent-400); border-color: var(--accent-400); }
-  .switch.on::after { transform: translateX(22px); background: var(--void); }
-  .switch:disabled { opacity: 0.5; cursor: default; }
+  .lockrow :global(.tf-switch:disabled) { opacity: 0.5; cursor: default; }
   .abtn.wide { width: 100%; }
   .status { display: flex; flex-wrap: wrap; gap: 6px 16px; }
   .stat { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
