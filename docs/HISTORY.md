@@ -69,7 +69,7 @@ wording rode in #470.
   though an arm's `levers_on` switches it on: follow-up #476
   (`experiment::lever_that_switches_on`, derived by applying each lever)
   names `levers_on` there instead. mecha-d7 merged it as `d19995fa` after
-  two passes; it was not yet deployed when this was written.
+  two passes, and it went live in mecha-69's deploy of `36ff7573`.
 
 Fifteen review passes across the seven PRs (#460: 2, #461: 1, #464: 3,
 #466: 3, #470: 1, #472: 2, #474: 3, counted from each PR's record). Ruling 1 was put to the owner on a wrong premise — that an arm naming
