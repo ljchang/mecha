@@ -1139,6 +1139,26 @@ module.
     correction mining. Without the first, a paper's words would enter a chat
     unmarked; without the second, they would draw as the owner's message.
     `the_personas_files_ride_in_the_first_turn_once` checks both.
+- **A persona's citations are checked by the harness, never by a tool**
+  (`persona::cite`, §10.4). Each `[file, p. N: "quote"]` in a reply is
+  looked up with `grounding::admit` in what the chat had *received* by then:
+  the files block and every `file_read` / `document_read` result, through
+  `grounding::calls` (first seen wins, a stale or failed result is no
+  evidence), over `Session::messages_ever` so a page compaction evicted
+  still counts for the answer that quoted it.
+  - Both sides go through one tokeniser (`cite::tokens`) before
+    containment: case, typographic quotes, ligatures, an em dash as a word
+    break, an en dash or soft hyphen as a hyphen, the punctuation around each
+    word, and **every hyphen inside a word dropped** (one between digits
+    parts them instead) — no rule about the letter after a line break can tell
+    a compound's hyphen from the line's. Whole words only. `mark` uses the
+    same tokens, so the passage marked is the passage admitted.
+  - "Quoted" is the most a check says — never "verified". A real quote can
+    support the wrong claim, and the page says so.
+  - A citation opens the page **as text the chat received**
+    (`PersonaChats::cited`), never the file: a paper is third-party content,
+    and nothing but an image is served renderable (`serve::files`). A
+    CSP-sandboxed PDF would be safe and Chrome will not render one.
 - **Memory** (`persona::memory`, `PERSONA-DESIGN.md` §9; the store only so
   far — no writer, no recall, nothing reaches a prompt yet):
   - One `memory.db` per persona, in its folder, and one `shared.db` at the top

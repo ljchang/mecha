@@ -29,7 +29,7 @@ assert.equal(withUnlock('/x?a=1', 'z'), '/x?a=1&unlock=z');
 assert.throws(() => personaUrl('mara', '/delete', null));
 assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 16);
+assert.equal(ENDPOINTS.length, 17);
 assert.ok(ENDPOINTS.includes('/api/personas/X/sources') && ENDPOINTS.includes('/api/personas/X/sources/remove'));
 assert.ok(ENDPOINTS.includes('/api/personas/authoring') && ENDPOINTS.includes('/api/personas/X/files'));
 assert.equal(authoringUrl('t'), '/api/personas/authoring?unlock=t');
@@ -289,6 +289,54 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   assert.equal(sourceLine({ name: '@group:all/g.md', bytes: 2048, shared: true, ready: true, processing: false }), '2 KB · ready · group all');
   assert.equal(sourceLine({ name: 'paper.pdf', bytes: 2048, shared: false, ready: false, on_request: true, processing: false }), '2 KB · read when asked');
   assert.equal(sourceLine({ name: 'scan.heic', bytes: 2048, shared: false, ready: false, processing: false, unreadable: 'scan.heic: a HEIC/HEIF photo' }), '2 KB · not readable');
+}
+
+// A reply cut at its checked citations (§10.4). Each citation gets the
+// check made of it: the same quote cited before its page was read and
+// after reads "no such file" then "quoted" — never "quoted" twice (review
+// of #465). Paired from the end, so a compacted chat whose first answer is
+// gone still pairs its later ones right. "quoted", never "verified".
+{
+  const { citeSegments, citeEntries, citeNote, citeOpens, citedUrl, applyEvent, emptyRun } = await import('../src/lib/persona.js');
+  const a = '[kelp.pdf, p. 1: "urchins graze kelp"]';
+  const b = '[kelp.pdf, p. 2: "otters eat forty a day"]';
+  const before = { raw: a, file: 'kelp.pdf', cited: 1, quote: 'urchins graze kelp', status: 'no_such_file' };
+  const made = { raw: b, file: 'kelp.pdf', cited: 2, quote: 'otters eat forty a day', status: 'not_found' };
+  const after = { raw: a, file: 'kelp.pdf', cited: 1, quote: 'urchins graze kelp', status: 'quoted', found: 1 };
+  const entries = [
+    { kind: 'user', text: 'go' },
+    { kind: 'assistant', text: `Before reading: ${a}.` },
+    { kind: 'tool', name: 'file_read' },
+    { kind: 'assistant', text: `They graze ${a} and ${b}.` },
+  ];
+  const paired = citeEntries(entries, [before, after, made]);
+  assert.deepEqual(paired.get(1).map(([, c]) => c.status), ['no_such_file']);
+  assert.deepEqual(paired.get(3).map(([, c]) => c.status), ['quoted', 'not_found']);
+  const segs = citeSegments(entries[3].text, paired.get(3));
+  assert.equal(segs.map((s) => s.text).join(''), entries[3].text, 'nothing lost or doubled');
+  assert.deepEqual(segs.filter((s) => s.check).map((s) => s.check.status), ['quoted', 'not_found']);
+  // Compacted: the first answer is off the page, its check is not.
+  const later = citeEntries(entries.slice(2), [before, after, made]);
+  assert.deepEqual(later.get(1).map(([, c]) => c.status), ['quoted', 'not_found']);
+  assert.deepEqual(citeSegments('plain words', []), [{ text: 'plain words' }]);
+  assert.deepEqual(citeSegments('', null), [{ text: '' }]);
+  assert.equal(citeEntries(entries, []).size, 0);
+  assert.equal(citeNote({ status: 'quoted' }).label, 'quoted');
+  assert.match(citeNote({ status: 'quoted' }).title, /not checked for support/);
+  assert.equal(citeNote({ status: 'other_page', found: 4 }).label, 'on p. 4');
+  assert.equal(citeNote({ status: 'not_found' }).tone, 'bad');
+  // What the check cannot speak for, it does not accuse (review of #465).
+  assert.equal(citeNote({ status: 'not_read' }).tone, 'muted');
+  assert.equal(citeNote({ status: 'cannot_check' }).tone, 'muted');
+  assert.ok(citeOpens({ status: 'other_page' }) && !citeOpens({ status: 'not_found' }));
+  // The page it was found on, not the one cited; the quote to mark.
+  const url = citedUrl('p-0123456789ab', { file: '@kelp/s.pdf', cited: 2, found: 4, quote: 'a b' }, null);
+  assert.match(url, /^\/api\/persona-chat\/p-0123456789ab\/cited\?/);
+  const q = new URLSearchParams(url.split('?')[1]);
+  assert.deepEqual([q.get('file'), q.get('page'), q.get('quote')], ['@kelp/s.pdf', '4', 'a b']);
+  // The stream's checks replace the page's.
+  const run = applyEvent({ ...emptyRun([], null, [before]) }, { type: 'citations', checks: [made] });
+  assert.deepEqual(run.citations, [made]);
 }
 
 console.log('persona: ok');
