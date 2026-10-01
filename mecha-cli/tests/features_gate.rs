@@ -317,11 +317,11 @@ fn a_switched_off_feature_s_verbs_refuse_with_one_sentence() {
             &["polls", "list"][..],
             "Front door (inbound requests) is off (turned off in [features]) — `mecha features enable frontdoor`",
         ),
-        // `messages = false` is applied into `[messages] enabled`, which
-        // reads as unanswered (FEATURES-DESIGN.md §5): hence "not enabled".
+        // A `false` like every other switch's: once it read as unanswered
+        // ("not enabled"), because `[messages] enabled` was a plain bool.
         (
             &["msg", "list"][..],
-            "Messages between sessions is off (not enabled in [features]) — `mecha features enable messages`",
+            "Messages between sessions is off (turned off in [features]) — `mecha features enable messages`",
         ),
     ] {
         let err = run(off, argv);

@@ -348,25 +348,36 @@ pub enum Switch {
 /// `f`'s switch, or `None` for a part, which has none.
 ///
 /// `messages` is read from `[messages] enabled`, where `apply` puts a
-/// `[features] messages` answer (`config::FeaturesConfig`); its default is
-/// `false`, which reads as `Absent` — nothing distinguishes it from an
-/// unanswered key, and messaging is never announced anyway.
+/// `[features] messages` answer (`config::FeaturesConfig`), and reads like
+/// every other switch: unset is `Absent`, `false` is `Off`.
 pub fn switch(cfg: &Config, f: Feature) -> Option<Switch> {
     if !f.has_switch() {
         return None;
     }
-    if f == Feature::Messages {
-        return Some(if cfg.messages.enabled {
-            Switch::On
-        } else {
-            Switch::Absent
-        });
-    }
-    Some(match cfg.features.get(f.id()) {
+    let answer = if f == Feature::Messages {
+        cfg.messages.enabled
+    } else {
+        cfg.features.get(f.id())
+    };
+    Some(match answer {
         Some(true) => Switch::On,
         Some(false) => Switch::Off,
         None => Switch::Absent,
     })
+}
+
+/// Answer `f`'s switch in memory, where [`switch`] reads it: the
+/// `[features]` map, or `[messages] enabled` for `messages`. A part has no
+/// switch, so nothing is written for one.
+pub fn set_switch(cfg: &mut Config, f: Feature, on: bool) {
+    if !f.has_switch() {
+        return;
+    }
+    if f == Feature::Messages {
+        cfg.messages.enabled = Some(on);
+    } else {
+        cfg.features.0.insert(f.id().to_string(), on);
+    }
 }
 
 /// Whether `f` is switched on — its own bool, or for a part its parent's.
@@ -813,8 +824,8 @@ pub fn announcement(facts: &Facts, f: Feature) -> Option<Announcement> {
     }
     let mut assumed = facts.clone();
     for &g in Feature::ALL {
-        if switch(&facts.config, g) == Some(Switch::Absent) && g != Feature::Messages {
-            assumed.config.features.0.insert(g.id().to_string(), true);
+        if switch(&facts.config, g) == Some(Switch::Absent) {
+            set_switch(&mut assumed.config, g, true);
         }
     }
     let caveat = match state(&assumed, f) {
@@ -1218,13 +1229,8 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             None,
             "",
         ),
-        Feature::Messages => match cfg.messages.enabled {
-            true => on("[messages] enabled"),
-            false => off(
-                "[messages] enabled = false",
-                "set [messages] enabled = true",
-            ),
-        },
+        // Nothing to set up: past the switch, it is on.
+        Feature::Messages => on("[messages] enabled"),
     }
 }
 
@@ -1265,9 +1271,7 @@ mod tests {
 
     fn switch_all(cfg: &mut Config, on: bool) {
         for &f in Feature::ALL {
-            if f.has_switch() && f != Feature::Messages {
-                cfg.features.0.insert(f.id().to_string(), on);
-            }
+            set_switch(cfg, f, on);
         }
     }
 
@@ -1734,9 +1738,20 @@ mod tests {
         assert_eq!(state(&facts(&cfg), Feature::Graph).word(), "on");
         assert_eq!(switch(&cfg, Feature::Tasks), None);
         assert_eq!(switch(&cfg, Feature::Graph), Some(Switch::On));
-        // `messages` reads `[messages] enabled`, where `apply` puts the answer.
-        cfg.messages.enabled = true;
+        // `messages` reads `[messages] enabled`, where `apply` puts the
+        // answer, and like every other switch: unset is unanswered, and
+        // `false` is a no, not an unanswered question that setup asks forever.
+        assert_eq!(switch(&cfg, Feature::Messages), Some(Switch::Absent));
+        cfg.messages.enabled = Some(false);
+        assert_eq!(switch(&cfg, Feature::Messages), Some(Switch::Off));
+        let State::Off { reason, fix } = state(&facts(&cfg), Feature::Messages) else {
+            panic!("a false messages switch is off")
+        };
+        assert!(reason.contains("turned off"), "{reason}");
+        assert_eq!(fix.as_deref(), Some("mecha features enable messages"));
+        cfg.messages.enabled = Some(true);
         assert_eq!(switch(&cfg, Feature::Messages), Some(Switch::On));
+        assert_eq!(state(&facts(&cfg), Feature::Messages).word(), "on");
     }
 
     #[test]

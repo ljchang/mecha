@@ -898,7 +898,7 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
             Lever::Hooks => opts.no_hooks,
             Lever::Outbox => opts.no_outbox,
             Lever::Fallback => opts.no_fallback,
-            Lever::Messages => opts.no_messages || !cfg.messages.enabled,
+            Lever::Messages => opts.no_messages || !cfg.messages.on(),
             Lever::Skills => opts.no_skills,
             Lever::Charter => opts.no_charter,
             Lever::CompactTool => opts.no_compact_tool,
@@ -1602,7 +1602,7 @@ async fn prepare_tools_carrying(
     // fails at startup, not on the one send that mattered. Built whenever
     // `[messages]` is enabled, delivery or not: the route is also what stamps
     // outgoing taint, and a surface that can send must never send unstamped.
-    let mailbox = if !opts.no_messages && cfg.messages.enabled {
+    let mailbox = if !opts.no_messages && cfg.messages.on() {
         let store = mecha_core::mailbox::MailboxStore::from_config(&cfg.messages)?;
         // The inbound decision: config's word wins; otherwise a *scheduled*
         // run (the trigger runner is the only caller that sets
@@ -2715,12 +2715,14 @@ mod tests {
     /// `[messages] enabled = false` is a run with no mailbox, and nothing in
     /// `tools` or `system_prompt` can say so — the route lives on `ToolCtx`
     /// — so it is the one config switch outside `[agent]` the record folds.
+    /// Unanswered is off too: only an explicit yes opens a mailbox.
     #[test]
     fn a_disabled_mailbox_records_the_messages_lever_off() {
         let mut cfg = Config::default();
-        cfg.messages.enabled = false;
         assert!(levers_off(&GlobalOpts::default(), &cfg).contains(&Lever::Messages));
-        cfg.messages.enabled = true;
+        cfg.messages.enabled = Some(false);
+        assert!(levers_off(&GlobalOpts::default(), &cfg).contains(&Lever::Messages));
+        cfg.messages.enabled = Some(true);
         assert!(!levers_off(&GlobalOpts::default(), &cfg).contains(&Lever::Messages));
         let no = GlobalOpts {
             no_messages: true,
