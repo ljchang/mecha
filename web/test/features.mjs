@@ -95,6 +95,11 @@ console.log('where a link bounces');
   t('a pane that refuses beats one that opens anyway', bounceFor(new Map([...noImages, ['voice', row('voice', 'off', { gated: true })]]), 'library', 'voices') === 'voice');
   t('a core view never bounces', bounceFor(noImages, 'chat', null) === null);
   t('not answered is shown', bounceFor(null, 'library', 'characters') === null);
+  // The chip agrees with the bounce: offered with images off, never with
+  // voice off (review of #490).
+  t('the voices chip shows with images off', opens(noImages, 'library', 'voices') === true);
+  t('and not with voice off', opens(noVoice, 'library', 'voices') === false);
+  t('a core pane opening anyway still opens', opens(new Map([['tasks', row('tasks', 'off', { gated: true })]]), 'tasks', 'waiting') === true);
 }
 
 console.log('what refuses');
