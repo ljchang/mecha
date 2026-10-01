@@ -461,10 +461,12 @@ export const MAX_FRAME_ZOOM = 4; // `persona::MAX_FRAME_ZOOM`
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 // A frame the server sent, held to what it accepts; anything else is the
-// default rather than a broken picture.
+// default rather than a broken picture. Always a fresh object: the editor
+// binds its zoom slider into what this returns, and a write into the frozen
+// default threw (review of #473).
 export function frameOf(frame) {
   const ok = (v) => typeof v === 'number' && Number.isFinite(v);
-  if (!frame || !ok(frame.x) || !ok(frame.y) || !ok(frame.zoom)) return DEFAULT_FRAME;
+  if (!frame || !ok(frame.x) || !ok(frame.y) || !ok(frame.zoom)) return { ...DEFAULT_FRAME };
   return { x: clamp(frame.x, 0, 1), y: clamp(frame.y, 0, 1), zoom: clamp(frame.zoom, 1, MAX_FRAME_ZOOM) };
 }
 
