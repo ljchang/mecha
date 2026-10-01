@@ -148,7 +148,10 @@
   let pictureNote = $state(null); // { path, why }
   async function savePicture(path) {
     const why = await downloadPicture(fetch, pictureUrl(path), path);
-    pictureNote = why ? { path, why } : null;
+    // Only this picture's note: another's failure is not cleared by this one
+    // succeeding (review of #494).
+    if (why) pictureNote = { path, why };
+    else if (pictureNote?.path === path) pictureNote = null;
   }
 
   // The Edit modal (EditModal.svelte): anything already typed becomes its
