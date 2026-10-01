@@ -55,12 +55,6 @@ own `sessions_dir` and `work_dir`; a test door gets a fresh temporary root
 guarded tests read back through the door. The residue was moved to a dated
 backup.
 
-**2026-09-30 — personas draw themselves (#444, #454).** `image_generate`
-casts a persona's own character as "self" (`Tool::for_persona_as`,
-`PersonaSelf`), so "draw yourself" is the persona's portrait, not a
-stranger; #454 settled the follow-ups (a wearing/doing clause, a capped
-library ask, a reply that steers).
-
 **2026-10-01 — modular installs, step 4: setup reads the registry, and a
 trial carries its switches (#460, #461, #464, #466, #470, #472, #474,
 #476).**
@@ -203,6 +197,12 @@ out of the commands.
 #438, #447 and #450 were deployed in mecha-d7's `346bb8a2` install. The
 probes were checked here: `strings ~/.cargo/bin/mecha` holds "neither a PDF
 nor a PNG" and "attaches pictures", and serve runs that binary.
+
+**2026-09-30 — personas draw themselves (#444, #454).** `image_generate`
+casts a persona's own character as "self" (`Tool::for_persona_as`,
+`PersonaSelf`), so "draw yourself" is the persona's portrait, not a
+stranger; #454 settled the follow-ups (a wearing/doing clause, a capped
+library ask, a reply that steers).
 
 **2026-09-30 — a persona's refused call no longer loops for minutes, and a
 crisis pause keeps the taint chip honest (#446, #448).** Two fixes from the
