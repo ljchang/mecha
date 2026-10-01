@@ -76,6 +76,14 @@ pub struct Step {
     /// disagrees with its config, or anything else that is the machine being
     /// wrong rather than a feature going unused.
     pub optional: bool,
+    /// For a `Declined` step, the command that takes the decision back —
+    /// which differs by where it was made: `mecha setup --undecline <id>` for
+    /// an answer given here, `mecha features enable <id>` for a switch
+    /// written `false`. Without it the closing hint named `--undecline` for
+    /// both, and for a switch it answered "nothing to restore" (found on
+    /// review of #460).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undo: Option<Vec<String>>,
 }
 
 impl Step {
@@ -87,6 +95,7 @@ impl Step {
             detail: detail.into(),
             remedy: None,
             optional: false,
+            undo: None,
         }
     }
     /// Mark a step as one the owner may decline outright.
@@ -409,6 +418,11 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
         if step.optional && matches!(step.status, Status::Missing) && declined {
             step.status = Status::Declined;
             step.remedy = None;
+            step.undo = Some(
+                ["mecha", "setup", "--undecline", step.id.as_str()]
+                    .map(String::from)
+                    .to_vec(),
+            );
         }
     }
 
@@ -742,15 +756,19 @@ fn feature_steps(facts: &Facts) -> Vec<Step> {
                 // `false` is the owner's answer, written down. Not outstanding,
                 // and not a decline `--undecline` can take back: the switch is
                 // in the config, and the way back is the command that sets it.
-                State::Off { .. } if row.switch == Some(Switch::Off) => Step::new(
-                    id,
-                    title,
-                    Status::Declined,
-                    format!(
-                        "turned off in `[features]`; `{}` turns it on",
-                        row.next.as_deref().unwrap_or("mecha features enable")
-                    ),
-                ),
+                State::Off { .. } if row.switch == Some(Switch::Off) => {
+                    let mut step = Step::new(
+                        id,
+                        title,
+                        Status::Declined,
+                        format!(
+                            "turned off in `[features]`; `{}` turns it on",
+                            row.next.as_deref().unwrap_or("mecha features enable")
+                        ),
+                    );
+                    step.undo = row.next.as_deref().and_then(runnable).map(|(argv, _)| argv);
+                    step
+                }
                 State::Off { .. } => with_next(
                     Step::new(
                         id,
@@ -1006,7 +1024,7 @@ pub fn decline(home: &Path, id: &str) -> std::io::Result<DeclineWrite> {
 /// `undecline` taking it back — so the two cannot drift: a decline the plan
 /// honoured and the undo did not remove read as "nothing to restore" while
 /// the step still said no thanks (found on review of #460).
-fn decline_keys(id: &str) -> impl Iterator<Item = String> {
+pub fn decline_keys(id: &str) -> impl Iterator<Item = String> {
     [id.to_string(), format!("feature-{id}")].into_iter()
 }
 
@@ -1407,6 +1425,11 @@ mod tests {
         let steps = plan(&cfg, "local", &f);
         let slack = step(&steps, "slack");
         assert_eq!(slack.status, Status::Declined);
+        // Its way back is the switch, not `--undecline` (review of #460).
+        assert_eq!(
+            slack.undo.as_deref(),
+            Some(&["mecha", "features", "enable", "slack"].map(String::from)[..])
+        );
         assert!(
             slack.detail.contains("mecha features enable slack"),
             "{}",
@@ -1520,6 +1543,11 @@ mod tests {
 
         f.declined.insert("slack".into());
         let after = step(&plan(&cfg, "local", &f), "slack").clone();
+        // An answer given here is taken back here.
+        assert_eq!(
+            after.undo.as_deref(),
+            Some(&["mecha", "setup", "--undecline", "slack"].map(String::from)[..])
+        );
         assert_eq!(after.status, Status::Declined);
         assert!(
             after.remedy.is_none(),

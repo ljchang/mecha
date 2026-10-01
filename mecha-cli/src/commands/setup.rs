@@ -148,6 +148,14 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     };
 
     let declined = onboarding::read_declined(&home);
+    // Naming a feature is a stronger statement than a stored "never": its
+    // step is offered again for this run (review of #460). Nothing is written
+    // unless the answer is: a skip keeps the old decline, a fresh "never"
+    // records it once more.
+    let mut honoured = declined.clone().unwrap_or_default();
+    let reopened = only.is_some_and(|f| {
+        onboarding::decline_keys(f.id()).fold(false, |had, k| honoured.remove(&k) | had)
+    });
     let facts = Facts {
         // The registry's readout against the global config, as `mecha
         // features` reads it — the feature steps are built from it.
@@ -163,7 +171,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         // offering everything (see `Facts::declined`), and said out loud
         // below rather than swallowed — a checklist that quietly stopped
         // honouring your answers would be the worse half of this feature.
-        declined: declined.clone().unwrap_or_default(),
+        declined: honoured,
     };
 
     let mut steps = onboarding::plan(&cfg, &name, &facts);
@@ -172,6 +180,25 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         // 2). A feature blocked on another is offered with the chained
         // command, so its dependency is taken first in the same step.
         steps.retain(|s| s.id == f.id());
+        if reopened {
+            eprintln!(
+                "`{}` was declined before — offered again because you named it",
+                f.id()
+            );
+        }
+        // A switch written `false` is the owner's answer in the config;
+        // naming the feature asks for it to be offered, so its way back
+        // becomes the remedy. Nothing runs without a `y`.
+        for s in &mut steps {
+            if let (Status::Declined, Some(undo)) = (s.status, s.undo.clone()) {
+                s.status = Status::Missing;
+                s.remedy = Some(mecha_core::doctor::Remedy {
+                    description: format!("Switch `{}` back on.", s.id),
+                    argv: undo,
+                    needs_terminal: false,
+                });
+            }
+        }
     }
 
     // Nothing is offered when nobody is there to answer, which is the
@@ -256,8 +283,23 @@ fn finished_note(steps: &[Step]) {
     println!("    mecha tools          what this agent can call — no provider needed");
     println!("    mecha run \"…\"        one task, one answer, in the current directory");
     println!("    mecha doctor         a different question: what is silently wrong");
-    if steps.iter().any(|s| s.status == Status::Declined) {
+    // Each declined step carries its own way back (`Step::undo`): an answer
+    // given here is taken back with `--undecline`, a switch written `false`
+    // with `mecha features enable` — naming `--undecline` for both answered
+    // "nothing to restore" for the second (found on review of #460).
+    let undoing = |verb: &str| {
+        steps.iter().any(|s| {
+            s.status == Status::Declined
+                && s.undo
+                    .as_ref()
+                    .is_some_and(|u| u.get(1).map(String::as_str) == Some(verb))
+        })
+    };
+    if undoing("setup") {
         println!("\n    mecha setup --undecline <id>   ask about a skipped step again");
+    }
+    if undoing("features") {
+        println!("    mecha features enable <id>     turn on one you switched off");
     }
     // The one trap a new install walks into unaided, and the only place a
     // person is standing when they might. `work.rs` refuses a workspace
@@ -349,6 +391,11 @@ fn offer_with(
         if already_run.contains(&remedy.argv.as_slice()) {
             println!("\n{}", remedy.description);
             println!("already handled by the command above");
+            // Satisfied by the same command, so it deserves the same reading
+            // of where it now stands — `mail` and `docs` share an installer,
+            // and the install is rarely the last step for either (review of
+            // #460).
+            after(&s.id);
             continue;
         }
         // Only an *absent* optional thing can be declined. `Wrong` is
@@ -974,6 +1021,7 @@ mod tests {
                 needs_terminal: false,
             }),
             optional,
+            undo: None,
         };
         s.status = Status::Missing;
         s
@@ -1032,21 +1080,35 @@ mod tests {
     }
 
     /// After a remedy that worked, and only then, setup says where the step's
-    /// feature now stands (`after_feature`): a failed install has moved
-    /// nothing, and a step skipped or declined ran nothing to report on.
+    /// feature now stands (`after_feature`) — including a step the same
+    /// command satisfied, which is not asked again (`mail` and `docs` share an
+    /// installer). A failed command moved nothing, and a skipped step ran
+    /// nothing to report on. Each fixture has its own argv so every one is
+    /// actually reached — an earlier version shared one, and the skip was
+    /// never asked (review of #460).
     #[test]
     fn only_a_remedy_that_worked_is_followed_by_where_the_feature_stands() {
         let home = scratch_home(line!());
         let worked = step_with("mail", &["true"], true);
-        let failed = step_with("docs", &["false"], true);
-        let skipped = step_with("slack", &["true"], true);
+        let shared = step_with("docs", &["true"], true);
+        let failed = step_with("graph", &["false"], true);
+        let skipped = step_with("web", &["true", "skipped"], true);
         let seen = std::cell::RefCell::new(Vec::new());
+        // mail: y; docs: not asked (handled above); graph: y, fails; web: skip.
         let mut input = std::io::Cursor::new(b"y\ny\n\n".to_vec());
-        offer_with(&[&worked, &failed, &skipped], &home, &mut input, &|id| {
-            seen.borrow_mut().push(id.to_string())
-        })
+        offer_with(
+            &[&worked, &shared, &failed, &skipped],
+            &home,
+            &mut input,
+            &|id| seen.borrow_mut().push(id.to_string()),
+        )
         .unwrap();
-        assert_eq!(*seen.borrow(), ["mail"]);
+        assert_eq!(*seen.borrow(), ["mail", "docs"]);
+        assert_eq!(
+            input.position() as usize,
+            input.get_ref().len(),
+            "every answer was read, so the skip was really asked"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
