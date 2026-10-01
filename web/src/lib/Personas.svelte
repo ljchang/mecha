@@ -399,6 +399,7 @@
     if (!chosen || !files?.length) return;
     sourcesNote = '';
     busy = true;
+    const failed = [];
     try {
       for (const f of files) {
         const url = personaUrl(chosen.name, '/sources', token);
@@ -406,10 +407,12 @@
           method: 'POST',
           body: f,
         });
-        if (!res.ok) sourcesNote = `${f.name}: ${(await res.text()).trim()}`;
+        // Every failure, not the last: three of five refused says three.
+        if (!res.ok) failed.push(`${f.name}: ${(await res.text()).trim()}`);
       }
+      sourcesNote = failed.join(' · ');
     } catch (e) {
-      sourcesNote = String(e?.message ?? e);
+      sourcesNote = [...failed, String(e?.message ?? e)].join(' · ');
     } finally {
       busy = false;
       await loadSources();
@@ -1211,7 +1214,7 @@
           {#each sources as s (s.name)}
             <div class="hrow srow">
               <span class="htitle">{s.name}</span>
-              <span class="when">{sourceLine(s)}</span>
+              <span class="when" title={s.unreadable ?? undefined}>{sourceLine(s)}</span>
               {#if !s.shared}
                 <button class="iconbtn srm" aria-label="Remove {s.name}" title="Remove" disabled={busy} onclick={() => removeSource(s.name)}>
                   <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>

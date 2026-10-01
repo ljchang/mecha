@@ -465,9 +465,11 @@ fn api() -> gate::Owned {
             get(persona_chat::sources)
                 .post(persona_chat::add_source)
                 .layer(
-                    // A paper is larger than a JSON body: 50 MB, the default
-                    // `[documents] max_file_mb`.
-                    axum::extract::DefaultBodyLimit::max(52_428_800),
+                    // A paper is larger than a JSON body: 100 MB, the
+                    // default `[documents] max_file_mb` (review of #459: this
+                    // said 50 and was 50). A file past a lower configured cap
+                    // is kept and listed as not readable, with why.
+                    axum::extract::DefaultBodyLimit::max(104_857_600),
                 ),
         )
         .at(
