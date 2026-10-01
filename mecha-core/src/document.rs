@@ -117,6 +117,9 @@ pub struct DocumentsConfig {
     /// [`crate::imagegen::loopback_url`]'s argument, which applies here with
     /// page images in place of prompts.
     pub ocr_url: String,
+    /// The embeddings server's base URL (`:8081`), for searching a
+    /// persona's files (`persona::search`). Loopback, as the OCR server's.
+    pub embed_url: String,
     /// The model name sent in each request, and part of the cache key.
     pub ocr_model: String,
     /// How long the first request may wait for an idle-stopped server to
@@ -169,6 +172,7 @@ impl Default for DocumentsConfig {
         DocumentsConfig {
             ocr: true,
             ocr_url: "http://127.0.0.1:8085".into(),
+            embed_url: "http://127.0.0.1:8081".into(),
             ocr_model: "paddleocr-vl-1.6".into(),
             ocr_ready_secs: 120,
             page_timeout_secs: 180,
@@ -193,6 +197,7 @@ impl DocumentsConfig {
     /// Refuse a configuration whose promises cannot be kept, at registration
     /// — never at the first page.
     pub fn validate(&self) -> Result<()> {
+        ocr_url(&self.embed_url).context("[documents] embed_url")?;
         if self.ocr {
             ocr_url(&self.ocr_url)?;
             if self.ocr_model.trim().is_empty() {

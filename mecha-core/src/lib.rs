@@ -72,6 +72,7 @@ pub mod diagnose;
 pub mod distill;
 pub mod doctor;
 pub mod document;
+pub mod embed;
 pub mod eval;
 pub mod exp_report;
 pub mod experiment;
