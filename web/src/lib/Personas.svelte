@@ -154,18 +154,22 @@
   // offers — a dropped video is refused here, not after it has uploaded
   // (review of #479), the chat's own drop rule (`droppedFiles`).
   const ACCEPTED = /\.(pdf|png|jpe?g|webp|gif|md|markdown|txt)$/i;
-  function acceptedDrops(dt) {
-    const { files } = droppedFiles(dt);
+  async function dropSources(dt) {
+    const { files, folders } = droppedFiles(dt);
     const ok = files.filter((f) => ACCEPTED.test(f.name));
-    const refused = files.length - ok.length;
-    if (refused) sourcesNote = `${refused} file(s) not added: a PDF, picture, Markdown or text file can be read`;
-    return ok;
+    const refused = files.length - ok.length + folders.length;
+    await addSources(ok);
+    // After the upload, which clears the line it starts with (review of #479).
+    if (refused) {
+      const why = `${refused} not added: drop PDFs, pictures, Markdown or text files${folders.length ? ', not folders' : ''}`;
+      sourcesNote = sourcesNote ? `${sourcesNote} · ${why}` : why;
+    }
   }
 
   // A file opened from its tile: a sheet with its line, a download, and —
   // once it has been read — its text. Never the PDF itself: a paper is
   // third-party content, and nothing but an image is served renderable.
-  async function openFile(s) {
+  function openFile(s) {
     if (!chosen) return;
     fileSheet = { source: s, text: null, note: '', loading: false };
   }
@@ -320,6 +324,8 @@
   }
   function onDragOver(e) {
     if (!carriesFiles(e.dataTransfer)) return;
+    // The Files tiles claimed it: their drop, not the chat's (review of #479).
+    if (e.defaultPrevented) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = canDrop ? 'copy' : 'none';
   }
@@ -329,8 +335,10 @@
   }
   function onDrop(e) {
     if (!carriesFiles(e.dataTransfer)) return;
-    e.preventDefault();
+    // Counted down whoever takes the drop, so the overlay never sticks.
     dragDepth = 0;
+    if (e.defaultPrevented) return;
+    e.preventDefault();
     if (!canDrop) return;
     const { files, folders } = droppedFiles(e.dataTransfer);
     for (const name of folders) notice(`not attached: ${name} is a folder — drop the files inside it`);
@@ -1452,15 +1460,15 @@
         <div
           class="tiles"
           class:dropping
-          ondragover={(e) => { if (busy) return; e.preventDefault(); e.stopPropagation(); dropping = true; }}
+          ondragover={(e) => { if (busy) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; dropping = true; }}
           ondragleave={() => (dropping = false)}
-          ondrop={(e) => { e.preventDefault(); e.stopPropagation(); dropping = false; if (!busy) addSources(acceptedDrops(e.dataTransfer)); }}
+          ondrop={(e) => { e.preventDefault(); dropping = false; if (!busy) dropSources(e.dataTransfer); }}
         >
           {#each sources as s (s.name)}
             {@const kind = fileKind(s.name)}
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <div class="tile openable" class:bad={!!s.unreadable} role="button" tabindex="0" title={`${s.name} — ${sourceLine(s)}${s.unreadable ? `\n${s.unreadable}` : ''}`}
-              onclick={() => openFile(s)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openFile(s))}>
+              onclick={() => openFile(s)} onkeydown={(e) => e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openFile(s))}>
               <span class="tkind">{kind}</span>
               <span class="tname">{s.name.replace(/^@[^/]+\//, '')}</span>
               <span class="tstate" class:busy={s.processing}>{sourceState(s)}</span>

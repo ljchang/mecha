@@ -13,34 +13,15 @@
   // (`citeEntries`). Each is drawn where its text falls, tagged with what the
   // check found; `onCite` opens a found one.
   import { parseBlocks, hiddenTarget } from './mail-markdown.js';
-  import { citeNote, citeOpens } from './persona.js';
+  import { citeNote, citeOpens, citeMark, citeUnmark } from './persona.js';
 
   let { text = '', cites = null, onCite = null } = $props();
   let raw = $state(false);
-  const blocks = $derived(parseBlocks(text));
-  // The first check of each citation text in this reply.
-  const byRaw = $derived(new Map((cites ?? []).map(([r, c]) => [r, c]).reverse()));
-
-  // A text node cut at the citations it holds, in order.
-  function pieces(v) {
-    if (!byRaw.size) return [{ text: v }];
-    const found = [];
-    for (const r of byRaw.keys()) {
-      for (let at = v.indexOf(r); at !== -1; at = v.indexOf(r, at + r.length)) found.push({ at, r });
-    }
-    if (!found.length) return [{ text: v }];
-    found.sort((a, b) => a.at - b.at);
-    const out = [];
-    let pos = 0;
-    for (const f of found) {
-      if (f.at < pos) continue;
-      if (f.at > pos) out.push({ text: v.slice(pos, f.at) });
-      out.push({ text: f.r, check: byRaw.get(f.r) });
-      pos = f.at + f.r.length;
-    }
-    if (pos < v.length) out.push({ text: v.slice(pos) });
-    return out;
-  }
+  // Citations are swapped for placeholders before the Markdown is parsed
+  // and drawn back from them, so the parser cannot split one (`citeMark`).
+  const prepared = $derived(citeMark(text, cites));
+  const blocks = $derived(parseBlocks(prepared.text));
+  const pieces = (v) => citeUnmark(v, prepared.marks);
 </script>
 
 {#snippet textnode(v)}{#each pieces(v) as seg}{#if seg.check}{@const n = citeNote(seg.check)}{#if citeOpens(seg.check) && onCite}<span class="cite {n.tone}" role="button" tabindex="0" title={n.title} onclick={() => onCite(seg.check)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onCite(seg.check))}>{seg.text}<span class="citetag">{n.label}</span></span>{:else}<span class="cite {n.tone}" title={n.title}>{seg.text}<span class="citetag">{n.label}</span></span>{/if}{:else}{seg.text}{/if}{/each}{/snippet}

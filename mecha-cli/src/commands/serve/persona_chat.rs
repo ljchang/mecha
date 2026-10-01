@@ -317,10 +317,15 @@ fn opener(path: &Path) -> Option<String> {
         if record["record"] != "message" || record["role"] != "user" {
             continue;
         }
-        let text = record["content"].as_array()?.iter().find_map(|b| {
-            let t = b["text"].as_str()?;
-            (!mecha_core::agent::is_harness_voice(t)).then_some(t)
-        })?;
+        let Some(text) = record["content"].as_array().and_then(|blocks| {
+            blocks.iter().find_map(|b| {
+                let t = b["text"].as_str()?;
+                (!mecha_core::agent::is_harness_voice(t)).then_some(t)
+            })
+        }) else {
+            // Not the owner's words: the next user record may be.
+            continue;
+        };
         let text = match text.strip_prefix("(What I want from this conversation: ") {
             Some(rest) => rest.split_once(")\n\n").map(|(_, t)| t).unwrap_or(rest),
             None => text,
@@ -1003,7 +1008,13 @@ impl PersonaChats {
             mecha_core::persona::memory::Memory::open_existing(&self.store, &p.name)
                 .ok()
                 .flatten()
-                .and_then(|m| m.episodes(mecha_core::persona::memory::Filter::All).ok())
+                // Accepted episodes only: a candidate (a chat that carried
+                // its files is one until approved) or a withdrawn one is not
+                // the owner's account of the chat (review of #479).
+                .and_then(|m| {
+                    m.episodes(mecha_core::persona::memory::Filter::Recallable)
+                        .ok()
+                })
                 .map(|eps| {
                     let mut out = HashMap::new();
                     for e in eps {
@@ -1502,8 +1513,13 @@ impl PersonaChats {
         match state {
             Readiness::Ready => {}
             Readiness::Refused(why) => return Err(Refusal::Bad(why)),
-            Readiness::Reading | Readiness::OnRequest => {
-                return Err(Refusal::Conflict("it has not been read yet".into()))
+            Readiness::Reading => return Err(Refusal::Conflict("it is still being read".into())),
+            // With the extraction cache off nothing is read ahead, so this
+            // is not "yet" — a chat reads it when it asks.
+            Readiness::OnRequest => {
+                return Err(Refusal::Conflict(
+                    "it is read only when a chat asks for it (the extraction cache is off)".into(),
+                ))
             }
         }
         let extractor = crate::setup::document_extractor(&config).map(Arc::new);
