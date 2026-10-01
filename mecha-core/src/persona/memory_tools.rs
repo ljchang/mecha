@@ -53,8 +53,9 @@ pub const MAX_READ_CHARS: usize = 8000;
 /// words (`persona_chat`'s `RECALL_EMBED_WAIT`, for the same cold start).
 const EMBED_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
 
-/// What memory the persona's settings let a search reach.
-fn kinds(s: &Settings) -> Vec<Recallable> {
+/// What memory the persona's settings let a search reach — the one reading
+/// of the switches, shared with `recall::per_turn`.
+pub fn kinds(s: &Settings) -> Vec<Recallable> {
     let m = &s.memory;
     let mut out = Vec::new();
     if m.episodic {
@@ -121,8 +122,8 @@ impl Tool for MemorySearch {
     fn description(&self) -> &str {
         "Search what you remember from earlier conversations with the owner — what you talked \
          about, what is true between you, what you know about them. For when you need something \
-         the owner did not just name. A past conversation comes back with an id in brackets; \
-         read what was actually said in it with `memory_read`."
+         the owner did not just name. A past conversation comes back with an id in brackets, \
+         which `memory_read` opens in full when you have it."
     }
 
     fn input_schema(&self) -> Value {
