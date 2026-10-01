@@ -31,6 +31,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and deleting moved here from Settings → Voice, which keeps the assistant's
   own voice and rate.
 
+- **Make a persona from the main chat.** Ask for one ("help me make a
+  persona who…") and the assistant drafts who they are and what they want,
+  and stages it with a new `persona_propose` tool. It waits on the Personas
+  page under **Waiting for you**: read it there, then Approve or Reject.
+  Approval accepts exactly the text you were shown — if the chat revises it
+  meanwhile, you are asked to read it again. Ask the chat for changes and it
+  revises its proposal until you approve; after that only you edit it. If
+  it links a portrait that is also still waiting, **Approve both** takes
+  them together. A persona proposed in an incognito chat starts hidden
+  behind the library lock. The chat can set the name, display name,
+  relationships, identity, motivation, portrait and voice; tools, files,
+  memory, safety switches and the lock stay yours. Once you edit a waiting
+  proposal yourself, it is yours, and the chat can no longer change it.
+
 - **Download a generated picture.** Every picture a chat draws — in the
   assistant's chat or a persona's — has a Download button beside Edit,
   which saves the file under its own name. It works in incognito and locked

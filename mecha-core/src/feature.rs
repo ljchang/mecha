@@ -1203,7 +1203,14 @@ fn own_state(facts: &Facts, f: Feature) -> State {
                 reason: format!("the library's directory: {e:#}"),
             },
         },
-        Feature::Personas => on("~/.mecha/personas"),
+        // The store and the owner's page. The model's one door into it,
+        // `persona_propose`, is narrowed by `[tools]` like the library's, and
+        // said here rather than left to vanish (review of #493).
+        Feature::Personas => on(if cfg.tools.registers("persona_propose") {
+            "~/.mecha/personas".to_string()
+        } else {
+            "~/.mecha/personas ([tools] withholds persona_propose from the model)".to_string()
+        }),
         Feature::Voice => on("`mecha voice-serve`, and `mecha serve`'s voice flags"),
         Feature::Dictate => {
             on("the web app's speech to text, at a fixed address — not yet configurable")
@@ -1687,6 +1694,13 @@ mod tests {
             detail.contains("withholds image_library, image_library_propose"),
             "{detail}"
         );
+        // As the library's: the personas page stays on, and the row says the
+        // model cannot propose.
+        cfg.tools.disabled.push("persona_propose".into());
+        let State::On { detail } = state(&at(&cfg, &facts), Feature::Personas) else {
+            panic!("personas stay on whatever [tools] says")
+        };
+        assert!(detail.contains("withholds persona_propose"), "{detail}");
         cfg.image = image("http://10.0.0.5:8188");
         assert_eq!(state(&at(&cfg, &facts), Feature::Image).word(), "unready");
 

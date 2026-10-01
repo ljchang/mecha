@@ -10,6 +10,7 @@ pub mod document;
 pub mod goal_context;
 pub mod image_library;
 pub mod image_view;
+pub mod persona_propose;
 pub mod profile;
 pub mod recall;
 pub mod skill;
@@ -757,6 +758,12 @@ pub struct ToolCtx {
     /// the jail. `None` records nothing; the tool still deletes what it can
     /// when a job ends.
     pub image_trail: Option<PathBuf>,
+    /// Whatever this run stages for the owner's approval is hidden behind
+    /// the library lock from the start. Stamped by the front-end from the
+    /// chat's own mode — an incognito chat's proposals are (the owner's
+    /// ruling, 2026-10-01) — and never from anything a model sent. A
+    /// proposing tool may only add the lock with it, never remove one.
+    pub stage_locked: bool,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -941,6 +948,7 @@ impl Default for ToolCtx {
             run_posture: None,
             shell_registry: None,
             image_trail: None,
+            stage_locked: false,
         }
     }
 }
