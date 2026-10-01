@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Save a persona's reply to its files.** Under each of a persona's replies
+  there is a *Save to files* link: a study guide, quiz or glossary it wrote
+  when you asked is saved as a Markdown file in its own folder, there next
+  time (and searchable), and movable to a group's folder to share. Only the
+  persona's own reply is saved, never text it did not write. The `teacher`
+  starter now asks before revealing quiz answers (new installs; an installed
+  copy is yours and is not changed).
+
 - **Personas start remembering.** `mecha persona memory write` reads each
   persona's chats and records an episode and facts per stretch of
   conversation, in the persona's own memory. The nightly runs it. Each chat

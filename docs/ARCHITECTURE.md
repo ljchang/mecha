@@ -1170,6 +1170,11 @@ module.
     (`PersonaChats::cited`), never the file: a paper is third-party content,
     and nothing but an image is served renderable (`serve::files`). A
     CSP-sandboxed PDF would be safe and Chrome will not render one.
+- **Saving study material is the harness's write, on the owner's word**
+  (`PersonaChats::save_reply`, §10.5). The page sends a reply's text; the
+  server saves it only if it is one of the chat's own replies, so no route
+  writes text the persona did not write into its files, and no model holds a
+  write path. The file is indexed like an upload.
 - **A persona's search is scoped by its listing, not by a filter**
   (`persona::search`, §10.4). One index for the store (`.search.db`), keyed
   by content hash and never by persona; `FileSearch` lists the persona's
