@@ -2208,10 +2208,17 @@ impl PersonaChats {
         // row carrying it has Delete (review of #490). "locked" is said
         // whenever the library is locked, never only when a locked persona
         // exists — that would be a count (the lock hides without one).
-        let partial = if !store.errors().is_empty() {
-            Some("unreadable")
-        } else if !unlocked {
+        // A persona file that did not load, not a groups or relationship
+        // file: only the first can hide a voice's speaker. The lock first,
+        // since unlocking is what the owner can do about it.
+        let unread = store
+            .errors()
+            .iter()
+            .any(|e| e.path.file_name().is_some_and(|f| f == "persona.toml"));
+        let partial = if !unlocked {
             Some("locked")
+        } else if unread {
+            Some("unreadable")
         } else {
             None
         };
@@ -2235,8 +2242,13 @@ impl PersonaChats {
         // The range the worker takes, checked here so a bad value is
         // refused before the call rather than mid-sentence.
         if let Some(x) = settings.voice_speed {
-            if !(0.5..=2.0).contains(&x) {
-                return Err(format!("`{name}`: voice_speed {x} is outside 0.5–2.0"));
+            let range = mecha_core::persona::VOICE_SPEED;
+            if !range.contains(&x) {
+                return Err(format!(
+                    "`{name}`: voice_speed {x} is outside {:.1}–{:.1}",
+                    range.start(),
+                    range.end()
+                ));
             }
         }
         Ok(Some(CallVoice {
