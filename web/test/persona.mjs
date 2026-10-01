@@ -286,6 +286,7 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   assert.equal(sourceLine({ name: '@kelp/s.pdf', bytes: 2048, shared: true, ready: false, processing: false }), '2 KB · not read yet · group kelp');
   assert.equal(sourceLine({ name: '@all/g.md', bytes: 2048, shared: true, ready: true, processing: false }), '2 KB · ready · every persona');
   assert.equal(sourceLine({ name: '@group:all/g.md', bytes: 2048, shared: true, ready: true, processing: false }), '2 KB · ready · group all');
+  assert.equal(sourceLine({ name: 'scan.heic', bytes: 2048, shared: false, ready: false, processing: false, unreadable: 'scan.heic: a HEIC/HEIF photo' }), '2 KB · not readable');
 }
 
 console.log('persona: ok');

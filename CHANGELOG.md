@@ -24,7 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chat's first turn; otherwise the chat gets the list and reads pages with a
   new `file_read` tool. A persona also reads its groups' and everyone's
   `files/`, named `@group/…` and `@all/…`. Files are processed once on upload,
-  and the list says which are ready. A file's words are treated as outside
+  one at a time, and the list says which are ready, and why one cannot be
+  read. A chat never waits on a document still being processed: its first
+  turn says the file is on its way, and `file_read` reads it later. A
+  file's words are treated as outside
   content, so a chat that carried them is marked untrusted and private. With
   `[security] block_sends_after_private` on, a persona with files therefore
   stops `web_search` in its chats. `answers = "files"` keeps `file_read`,

@@ -28,6 +28,7 @@ use axum::Json;
 use mecha_core::agent::{Agent, AgentEvent, Conversation};
 use mecha_core::message::{Message, Usage};
 use mecha_core::persona::agent::{self as persona_agent, Pinned, Refused};
+use mecha_core::persona::files::{readiness, Readiness};
 use mecha_core::persona::{judge, safety};
 use mecha_core::persona::{Persona, Store};
 use mecha_core::session::{Record, Session, SessionMeta};
@@ -85,9 +86,15 @@ pub struct PersonaChats {
     provider: ProviderFactory,
     /// Files being read for the first time after an upload (§10.3), so the
     /// page can say "processing" rather than "not yet read".
-    /// With when each began, so a read whose task died stops reading as
-    /// "processing" after a while rather than for the life of the server.
-    processing: Arc<StdMutex<HashMap<PathBuf, std::time::Instant>>>,
+    /// With when each began — `None` while it waits its turn — so a read
+    /// whose task died stops reading as "processing" after a while rather
+    /// than for the life of the server, and a long queue is not taken for
+    /// dead reads and queued again.
+    processing: Arc<StdMutex<HashMap<PathBuf, Option<std::time::Instant>>>>,
+    /// One background read at a time: each takes a layout child and a share
+    /// of the one on-demand OCR model, so twenty unread papers are a queue,
+    /// not twenty extractions at once (review of #459, pass 7).
+    reading: Arc<tokio::sync::Semaphore>,
 }
 
 struct PersonaSession {
@@ -257,6 +264,32 @@ fn refused_json(refused: &[Refused]) -> serde_json::Value {
     )
 }
 
+/// The document reader as `setup::document_extractor` would build it: its
+/// cap (`0` while document reading is switched off, so nothing is "ready"
+/// that no chat could read) and whether `[documents] cache` keeps its reads
+/// — read off the config, never by building an extractor on every poll.
+/// A readiness that consulted a cache the reader never writes is how every
+/// document read "not read yet" forever with the cache off (review of
+/// #459, pass 7).
+fn reader_shape(config: &mecha_core::config::Config) -> (u64, bool) {
+    config
+        .documents
+        .as_ref()
+        .filter(|_| {
+            mecha_core::feature::switched_on(config, mecha_core::feature::Feature::Documents)
+        })
+        .map(|d| (d.max_file_bytes(), d.cache))
+        .unwrap_or((0, false))
+}
+
+/// The extraction cache, where the reader keeps one.
+fn reader_cache(cached: bool) -> Option<mecha_core::document::Cache> {
+    cached
+        .then(mecha_core::document::Cache::default_dir)
+        .and_then(Result::ok)
+        .map(mecha_core::document::Cache::new)
+}
+
 impl PersonaChats {
     pub fn new() -> Result<Self> {
         Ok(Self::with(
@@ -274,6 +307,7 @@ impl PersonaChats {
             agents: StdMutex::new(HashMap::new()),
             provider,
             processing: Arc::default(),
+            reading: Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 
@@ -992,21 +1026,9 @@ impl PersonaChats {
         let p = self
             .visible(library, name, token)
             .ok_or(Refusal::NotFound)?;
-        // Past this a document cannot be extracted, so it is never "ready"
-        // and is never read to find out (review of #459).
-        // And none is ready while document reading is switched off, since
-        // no chat could read it — the page agrees with the reader.
         // Read off the config rather than by building an extractor on every
         // poll (review of #459).
-        let config = &chat.follower.current().config;
-        let max_bytes = config
-            .documents
-            .as_ref()
-            .filter(|_| {
-                mecha_core::feature::switched_on(config, mecha_core::feature::Feature::Documents)
-            })
-            .map(|d| d.max_file_bytes())
-            .unwrap_or(0);
+        let (max_bytes, cached) = reader_shape(&chat.follower.current().config);
         let store_dir = self.store.clone();
         // A read longer than this has died, or is not worth a spinner.
         const STALE: std::time::Duration = std::time::Duration::from_secs(600);
@@ -1014,7 +1036,7 @@ impl PersonaChats {
             .processing
             .lock()
             .map(|mut s| {
-                s.retain(|_, since| since.elapsed() < STALE);
+                s.retain(|_, since| since.is_none_or(|t| t.elapsed() < STALE));
                 s.keys().cloned().collect()
             })
             .unwrap_or_default();
@@ -1022,14 +1044,13 @@ impl PersonaChats {
         // runtime.
         let rows = tokio::task::spawn_blocking(move || {
             let store = Store::load(&store_dir);
-            let cache = mecha_core::document::Cache::default_dir()
-                .ok()
-                .map(mecha_core::document::Cache::new);
+            let cache = reader_cache(cached);
             let sources =
                 mecha_core::persona::files::list(&mecha_core::persona::files::roots(&store, &p));
             sources
                 .iter()
                 .map(|s| {
+                    let state = readiness(s, cache.as_ref(), max_bytes);
                     serde_json::json!({
                         "name": s.name,
                         "bytes": s.bytes,
@@ -1038,7 +1059,13 @@ impl PersonaChats {
                             mecha_core::persona::files::Kind::Text => "text",
                         },
                         "shared": s.name.starts_with('@'),
-                        "ready": mecha_core::persona::files::ready(s, cache.as_ref(), max_bytes),
+                        // Ready, or why it never will be; "processing"
+                        // says a read is queued or running.
+                        "ready": matches!(state, Readiness::Ready),
+                        "unreadable": match &state {
+                            Readiness::Refused(why) => Some(why.as_str()),
+                            _ => None,
+                        },
                         "processing": processing.contains(&s.path),
                     })
                 })
@@ -1118,30 +1145,20 @@ impl PersonaChats {
     async fn files_block(&self, name: &str, bound: &crate::follow::Bound) -> Option<String> {
         let (store_dir, name) = (self.store.clone(), name.to_string());
         let config = &bound.config;
-        let max_bytes = config
-            .documents
-            .as_ref()
-            .filter(|_| {
-                mecha_core::feature::switched_on(config, mecha_core::feature::Feature::Documents)
-            })
-            .map(|d| d.max_file_bytes())
-            .unwrap_or(0);
+        let (max_bytes, cached) = reader_shape(config);
         // The store, the walk and the readiness hashes are file I/O: off the
         // runtime.
-        let (sources, omitted, ready) = tokio::task::spawn_blocking(move || {
+        let (sources, omitted, states) = tokio::task::spawn_blocking(move || {
             let store = Store::load(&store_dir);
             let p = store.get(&name)?;
             let (sources, omitted) =
                 mecha_core::persona::files::listing(&mecha_core::persona::files::roots(&store, p));
-            let cache = mecha_core::document::Cache::default_dir()
-                .ok()
-                .map(mecha_core::document::Cache::new);
-            let ready: std::collections::HashSet<PathBuf> = sources
+            let cache = reader_cache(cached);
+            let states: HashMap<PathBuf, Readiness> = sources
                 .iter()
-                .filter(|s| mecha_core::persona::files::ready(s, cache.as_ref(), max_bytes))
-                .map(|s| s.path.clone())
+                .map(|s| (s.path.clone(), readiness(s, cache.as_ref(), max_bytes)))
                 .collect();
-            Some((sources, omitted, ready))
+            Some((sources, omitted, states))
         })
         .await
         .map_err(|e| tracing::warn!("a persona's files were not listed: {e}"))
@@ -1152,11 +1169,14 @@ impl PersonaChats {
         }
         let extractor = crate::setup::document_extractor(config).map(Arc::new);
         // What the first turn cannot include yet is read in the background,
-        // so a later `file_read` — or the next chat — finds it ready.
+        // so a later `file_read` — or the next chat — finds it ready. Only
+        // what a read would leave in the cache: a refused file never will
+        // be, and with the cache off the read would be thrown away.
         if let Some(extractor) = &extractor {
-            for src in sources.iter().filter(|s| {
-                s.kind == mecha_core::persona::files::Kind::Document && !ready.contains(&s.path)
-            }) {
+            for src in sources
+                .iter()
+                .filter(|s| states.get(&s.path) == Some(&Readiness::Reading))
+            {
                 self.read_in_background(src.clone(), Arc::clone(extractor));
             }
         }
@@ -1168,15 +1188,22 @@ impl PersonaChats {
             omitted,
             extractor.as_deref(),
             budget,
-            &|s| ready.contains(&s.path),
+            &|s| {
+                states
+                    .get(&s.path)
+                    .cloned()
+                    // Listed since the walk: not seen, so not read here.
+                    .unwrap_or(Readiness::Reading)
+            },
         )
         .await
     }
 
     /// Read a document once in the background (§10.3), so a chat that wants
     /// it later does not wait — after an upload, and for whatever a first
-    /// turn could not include yet. Marked processing while it runs; a file
-    /// already being read is left to that read.
+    /// turn could not include yet. Marked processing while it waits and
+    /// while it runs; a file already queued or being read is left to that
+    /// read.
     fn read_in_background(
         &self,
         src: mecha_core::persona::files::Source,
@@ -1188,11 +1215,19 @@ impl PersonaChats {
                 if set.contains_key(&src.path) {
                     return;
                 }
-                set.insert(src.path.clone(), std::time::Instant::now());
+                set.insert(src.path.clone(), None);
             }
             Err(_) => return,
         }
+        let reading = Arc::clone(&self.reading);
         tokio::spawn(async move {
+            // Its turn: one read at a time, timed from when it starts.
+            let Ok(_turn) = reading.acquire_owned().await else {
+                return;
+            };
+            if let Ok(mut set) = processing.lock() {
+                set.insert(src.path.clone(), Some(std::time::Instant::now()));
+            }
             if let Err(e) =
                 mecha_core::persona::files::read(&src, Some(&extractor), "all", None).await
             {
@@ -4983,5 +5018,53 @@ mod tests {
                 .await;
             assert!(r.is_err(), "{key}");
         }
+    }
+
+    /// Pass 7 of #459: one background read at a time. Each takes a layout
+    /// child and a share of the one OCR model, so a collection opened in
+    /// one chat is a queue — every file marked processing, none started
+    /// until the one before it is done.
+    #[tokio::test]
+    async fn background_reads_wait_their_turn() {
+        let chats = PersonaChats::for_tests();
+        let extractor = Arc::new(
+            mecha_core::document::Extractor::new(
+                mecha_core::document::DocumentsConfig::default(),
+                None,
+            )
+            .unwrap(),
+        );
+        // Held here, as a read in progress would hold it.
+        let busy = Arc::clone(&chats.reading).acquire_owned().await.unwrap();
+        let dir = std::env::temp_dir().join(format!("mecha-queue-{}", uuid::Uuid::new_v4()));
+        for n in 0..3 {
+            chats.read_in_background(
+                mecha_core::persona::files::Source {
+                    name: format!("p{n}.pdf"),
+                    // Nothing there: the read fails at once when its turn comes.
+                    path: dir.join(format!("p{n}.pdf")),
+                    bytes: 10,
+                    kind: mecha_core::persona::files::Kind::Document,
+                },
+                Arc::clone(&extractor),
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        {
+            let queued = chats.processing.lock().unwrap();
+            assert_eq!(queued.len(), 3, "every file reads as processing");
+            assert!(
+                queued.values().all(Option::is_none),
+                "none started while another read holds the turn: {queued:?}"
+            );
+        }
+        drop(busy);
+        for _ in 0..100 {
+            if chats.processing.lock().unwrap().is_empty() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("the queue never drained");
     }
 }

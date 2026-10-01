@@ -1050,7 +1050,10 @@ deliberately: reading its own files is what a persona with files is for, and
 the tool reaches nothing but them. The files block is a chat's, from its
 first turn: a file added while a chat is open reaches the next chat, and
 one removed stays quoted in the chats that read it — unlike the situation
-brief, it is not re-folded after a compaction. Checked citations (3b), search over large collections (3c) and saving
+brief, it is not re-folded after a compaction. The first turn never runs
+OCR: a document whose text is not in the cache yet is listed as being read
+and read in the background, one at a time, for `file_read` or the next
+chat. Checked citations (3b), search over large collections (3c) and saving
 study material (3d) come next.
 
 R14 asks for NotebookLM's usefulness — upload a paper or other material, ask

@@ -326,7 +326,9 @@ export function doseLine(dose) {
 // `@kelp/…` is a group's, `@all/…` everyone's.
 export function sourceLine(s) {
   const size = s.bytes >= 1048576 ? `${(s.bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(s.bytes / 1024))} KB`;
-  const state = s.processing ? 'reading…' : s.ready ? 'ready' : 'not read yet';
+  // `unreadable` is why it never will be read (the reader's own words,
+  // shown whole in the row's title); it outranks a queued read.
+  const state = s.unreadable ? 'not readable' : s.processing ? 'reading…' : s.ready ? 'ready' : 'not read yet';
   // `@group:all/` is a group literally called `all` (files.rs `roots`).
   const group = s.name.slice(1, s.name.indexOf('/')).replace(/^group:/, '');
   const from = !s.shared ? '' : s.name.startsWith('@all/') ? ' · every persona' : ` · group ${group}`;

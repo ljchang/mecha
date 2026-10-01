@@ -260,12 +260,7 @@ pub async fn read(
     match src.kind {
         Kind::Text => {
             if src.bytes > MAX_TEXT_BYTES {
-                return Err(ReadError::ours(format!(
-                    "{} is {} KB, over the {} KB a text file is read at.",
-                    src.name,
-                    src.bytes / 1024,
-                    MAX_TEXT_BYTES / 1024
-                )));
+                return Err(ReadError::ours(text_too_long(src)));
             }
             // And bounded at the read, not only by the size the walk saw: a
             // file that grew since is caught here (review of #459).
@@ -282,11 +277,7 @@ pub async fn read(
         }
         Kind::Document => {
             let Some(extractor) = extractor else {
-                return Err(ReadError::ours(format!(
-                    "{} cannot be read here: document reading is switched off \
-                     (`mecha features enable documents`).",
-                    src.name
-                )));
+                return Err(ReadError::ours(reading_off(src)));
             };
             let bytes =
                 crate::tool::document::read_bounded(&src.path, extractor.config().max_file_bytes())
@@ -422,36 +413,107 @@ pub fn remove(store: &Store, p: &Persona, name: &str) -> Result<(), String> {
     Err(format!("too many removed files named like `{leaf}`"))
 }
 
-/// Whether a document's text is already in the extraction cache, so a chat
-/// reads it without waiting. A text file is always ready; a document over
-/// `max_bytes` never is, since it cannot be extracted — and is not read to
-/// find out (review of #459: hashing it unbounded, every three seconds).
-/// A document's hash is remembered by path, size and modified time, so a
-/// page polling the list does not re-read an unchanged file.
-pub fn ready(src: &Source, cache: Option<&crate::document::Cache>, max_bytes: u64) -> bool {
+/// What a chat can do with a file right now (review of #459, pass 7: one
+/// "not ready" had stood for three states, and told an unreadable file it
+/// was still being read).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Readiness {
+    /// Its text is to hand, so the first turn reads it without waiting.
+    Ready,
+    /// Not yet: a background read will put it in the cache.
+    Reading,
+    /// Read only when asked: with `[documents] cache` off nothing keeps a
+    /// read, so a background one would be thrown away and the next chat
+    /// would OCR it again.
+    OnRequest,
+    /// It cannot be read, and why — the reason `file_read` would give.
+    Refused(String),
+}
+
+/// Where a file stands (`Readiness`). `cache` is the extraction cache the
+/// reader writes, or `None` when `[documents] cache` is off; `max_bytes` is
+/// the reader's cap, `0` when document reading is switched off. A document
+/// over the cap is never hashed to find out (review of #459: hashing it
+/// unbounded, every three seconds), and one whose bytes are not a format
+/// the reader takes is refused from its first kilobyte, never OCR'd. A
+/// document's hash is remembered by path, size and modified time, so a page
+/// polling the list does not re-read an unchanged file.
+pub fn readiness(
+    src: &Source,
+    cache: Option<&crate::document::Cache>,
+    max_bytes: u64,
+) -> Readiness {
     match src.kind {
-        // Over the cap a text file is refused, so it is never ready (review
-        // of #459).
-        Kind::Text => src.bytes <= MAX_TEXT_BYTES,
-        Kind::Document if src.bytes > max_bytes => false,
+        // Over the cap a text file is refused (review of #459).
+        Kind::Text if src.bytes > MAX_TEXT_BYTES => Readiness::Refused(text_too_long(src)),
+        Kind::Text => Readiness::Ready,
+        Kind::Document if max_bytes == 0 => Readiness::Refused(reading_off(src)),
+        Kind::Document if src.bytes > max_bytes => Readiness::Refused(format!(
+            "{} is {} MB, over the {} MB a document is read at.",
+            src.name,
+            src.bytes.div_ceil(1 << 20),
+            max_bytes / (1 << 20)
+        )),
         Kind::Document => {
+            if let Err(e) = head(&src.path)
+                .and_then(|h| crate::document::kind_of(&h).map_err(|e| format!("{e:#}")))
+            {
+                return Readiness::Refused(format!("{}: {e}", src.name));
+            }
             let Some(cache) = cache else {
-                return false;
+                return Readiness::OnRequest;
             };
             // A cached text layer means no wait only where every page has
             // text of its own: a scan's layer is empty, and its first chat
             // would still OCR it (review of #459). Past that, ready is having
             // been read whole by this server — OCR cached as it went.
-            sha_of(src).is_some_and(|sha| {
+            let cached = sha_of(src).is_some_and(|sha| {
                 cache.load_layer(&sha).is_some_and(|layer| {
                     // Zero pages is not "every page has text" (a dash is
                     // never zero).
                     (layer.pages > 0 && (1..=layer.pages).all(|page| layer.has_text(page)))
                         || was_read(&sha)
                 })
-            })
+            });
+            if cached {
+                Readiness::Ready
+            } else {
+                Readiness::Reading
+            }
         }
     }
+}
+
+/// Whether a chat reads the file without waiting (`Readiness::Ready`).
+pub fn ready(src: &Source, cache: Option<&crate::document::Cache>, max_bytes: u64) -> bool {
+    readiness(src, cache, max_bytes) == Readiness::Ready
+}
+
+/// The first kilobyte, which is where `kind_of` decides.
+fn head(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut buf = Vec::with_capacity(1024);
+    std::fs::File::open(path)
+        .and_then(|f| f.take(1024).read_to_end(&mut buf))
+        .map_err(|e| e.to_string())?;
+    Ok(buf)
+}
+
+fn text_too_long(src: &Source) -> String {
+    format!(
+        "{} is {} KB, over the {} KB a text file is read at.",
+        src.name,
+        src.bytes / 1024,
+        MAX_TEXT_BYTES / 1024
+    )
+}
+
+fn reading_off(src: &Source) -> String {
+    format!(
+        "{} cannot be read here: document reading is switched off \
+         (`mecha features enable documents`).",
+        src.name
+    )
 }
 
 static READ: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
@@ -523,7 +585,7 @@ pub async fn first_turn(
     omitted: usize,
     extractor: Option<&Extractor>,
     budget_chars: usize,
-    is_ready: &(dyn Fn(&Source) -> bool + Send + Sync),
+    readiness: &(dyn Fn(&Source) -> Readiness + Send + Sync),
 ) -> Option<String> {
     if sources.is_empty() {
         return None;
@@ -533,17 +595,30 @@ pub async fn first_turn(
     let mut over = false;
     let mut unreadable = Vec::new();
     let mut pending = Vec::new();
+    let mut on_request = Vec::new();
     for src in sources {
         if over {
             break;
         }
-        // A document whose text is not to hand yet is not read here: the
-        // first turn runs before the chat can be stopped and while the
-        // router is held, so an OCR pass would hold both (review of #459).
-        // It is listed, and read in the background meanwhile.
-        if src.kind == Kind::Document && extractor.is_some() && !is_ready(src) {
-            pending.push(format!("- `{}`", src.name));
-            continue;
+        // Only a file whose text is to hand is read here: the first turn runs
+        // before the chat can be stopped and while the router is held, so an
+        // OCR pass would hold both (review of #459). The rest are listed for
+        // what they are — being read, read when asked, or not readable and
+        // why (pass 7: "still being read" had been told all three).
+        match readiness(src) {
+            Readiness::Ready => {}
+            Readiness::Reading => {
+                pending.push(format!("- `{}`", src.name));
+                continue;
+            }
+            Readiness::OnRequest => {
+                on_request.push(format!("- `{}`", src.name));
+                continue;
+            }
+            Readiness::Refused(why) => {
+                unreadable.push(why);
+                continue;
+            }
         }
         match read(src, extractor, "all", None).await {
             Ok(text) => {
@@ -583,6 +658,10 @@ pub async fn first_turn(
              later in this chat:\n",
         );
         out.push_str(&pending.join("\n"));
+    }
+    if !on_request.is_empty() && !over {
+        out.push_str("\n\nNot included — read them with `file_read` when you need them:\n");
+        out.push_str(&on_request.join("\n"));
     }
     if omitted > 0 {
         out.push_str(&format!(
@@ -821,19 +900,23 @@ mod tests {
     async fn the_first_turn_carries_the_files_whole_or_their_list() {
         let (dir, store, p) = world();
         let sources = list(&roots(&store, &p));
-        let whole = first_turn(&sources, 0, None, 10_000, &|_| true)
+        let whole = first_turn(&sources, 0, None, 10_000, &|_| Readiness::Ready)
             .await
             .unwrap();
         assert!(whole.starts_with(FILES_STEM), "{whole}");
         assert!(whole.contains("Urchins graze kelp.") && whole.contains("A field guide."));
-        let listed = first_turn(&sources, 0, None, 20, &|_| true).await.unwrap();
+        let listed = first_turn(&sources, 0, None, 20, &|_| Readiness::Ready)
+            .await
+            .unwrap();
         assert!(listed.contains("too long to include whole") && listed.contains("`notes.md`"));
         assert!(!listed.contains("Urchins graze kelp."));
-        assert!(first_turn(&[], 0, None, 10_000, &|_| true).await.is_none());
+        assert!(first_turn(&[], 0, None, 10_000, &|_| Readiness::Ready)
+            .await
+            .is_none());
         // A PDF with document reading switched off is said, not dropped.
         std::fs::write(dir.join("mara/files/paper.pdf"), b"%PDF-1.4").unwrap();
         let sources = list(&roots(&store, &p));
-        let block = first_turn(&sources, 0, None, 10_000, &|_| true)
+        let block = first_turn(&sources, 0, None, 10_000, &|_| Readiness::Ready)
             .await
             .unwrap();
         assert!(
@@ -910,7 +993,7 @@ mod tests {
             sources,
             "the same list every time"
         );
-        let block = first_turn(&sources, omitted, None, 1, &|_| true)
+        let block = first_turn(&sources, omitted, None, 1, &|_| Readiness::Ready)
             .await
             .unwrap();
         assert!(block.contains("3 more file(s)"), "{block}");
@@ -1080,7 +1163,11 @@ mod tests {
             crate::document::Extractor::new(crate::document::DocumentsConfig::default(), None)
                 .unwrap();
         let block = first_turn(&sources, 0, Some(&extractor), 10_000, &|s| {
-            s.kind == Kind::Text
+            if s.kind == Kind::Text {
+                Readiness::Ready
+            } else {
+                Readiness::Reading
+            }
         })
         .await
         .unwrap();
@@ -1093,6 +1180,59 @@ mod tests {
             !block.contains("Not readable"),
             "it was read inline: {block}"
         );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Pass 7 of #459: "still being read" had stood for three states. With
+    /// the cache off nothing would keep a read; a document over the cap, or
+    /// whose bytes are not a PDF, will never be read at all — and the first
+    /// turn says which, with the reason `file_read` would give.
+    #[tokio::test]
+    async fn readiness_tells_reading_from_on_request_from_refused() {
+        let (dir, store, p) = world();
+        std::fs::write(dir.join("mara/files/paper.pdf"), b"%PDF-1.4 a paper").unwrap();
+        std::fs::write(dir.join("mara/files/fake.pdf"), b"plain words, not a pdf").unwrap();
+        std::fs::write(dir.join("mara/files/big.pdf"), vec![b'%'; 3 << 20]).unwrap();
+        let sources = list(&roots(&store, &p));
+        let cache = crate::document::Cache::new(dir.join("cache"));
+        let paper = find(&sources, "paper.pdf").unwrap();
+        let cap = 2 << 20;
+        assert_eq!(readiness(paper, Some(&cache), cap), Readiness::Reading);
+        assert_eq!(
+            readiness(paper, None, cap),
+            Readiness::OnRequest,
+            "no cache keeps a read"
+        );
+        assert!(matches!(
+            readiness(paper, Some(&cache), 0),
+            Readiness::Refused(why) if why.contains("switched off")
+        ));
+        assert!(matches!(
+            readiness(find(&sources, "fake.pdf").unwrap(), Some(&cache), cap),
+            Readiness::Refused(why) if why.contains("neither a PDF")
+        ));
+        assert!(matches!(
+            readiness(find(&sources, "big.pdf").unwrap(), Some(&cache), cap),
+            Readiness::Refused(why) if why.contains("over the 2 MB")
+        ));
+        let extractor =
+            crate::document::Extractor::new(crate::document::DocumentsConfig::default(), None)
+                .unwrap();
+        let block = first_turn(&sources, 0, Some(&extractor), 10_000, &|s| {
+            readiness(s, None, cap)
+        })
+        .await
+        .unwrap();
+        assert!(!block.contains("Still being read"), "{block}");
+        assert!(
+            block.contains("when you need them:\n- `paper.pdf`"),
+            "{block}"
+        );
+        assert!(
+            block.contains("Not readable:") && block.contains("fake.pdf: neither a PDF"),
+            "{block}"
+        );
+        assert!(block.contains("big.pdf is 3 MB"), "{block}");
         std::fs::remove_dir_all(dir).ok();
     }
 }

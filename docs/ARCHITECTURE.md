@@ -1117,8 +1117,19 @@ module.
     It is never in the assistant's registry.
   - The whole collection rides in the first turn that runs the model and
     does not carry it yet, when it fits about a quarter of the window (D15);
-    otherwise the list of files does. It is read outside the sessions lock,
-    because a first read of a scanned paper is a model call.
+    otherwise the list of files does. **The first turn never extracts.** It
+    runs before the chat can be stopped and while the router is held, so it
+    includes only files whose text is to hand (`files::readiness`), and says
+    of the rest which they are: being read, read when asked (with
+    `[documents] cache` off nothing keeps a read), or not readable and why.
+  - Readiness asks the reader the config describes (`reader_shape`) — its
+    cap, and whether it caches — never a cache it does not write. Asking the
+    default cache with the cache off left every document "not read yet"
+    forever and re-OCR'd the collection every chat.
+  - Background reads queue one at a time on `PersonaChats::reading`: each
+    takes a layout child and a share of the one OCR model. A queued read is
+    marked processing with no start time, so a long queue is not pruned as
+    dead and queued again.
   - The block opens with `FILES_STEM`, which does two jobs:
     `Taint::arm_for_content` reads it as untrusted **and** private, and
     `is_harness_voice` keeps it out of the owner's bubble and out of
