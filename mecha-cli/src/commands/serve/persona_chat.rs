@@ -1349,6 +1349,11 @@ impl PersonaChats {
         message: &str,
         already: String,
     ) -> Option<String> {
+        // Asked first: the embed is the slow part, and it is spent only on a
+        // turn that will search (review of #481).
+        if !mecha_core::persona::recall::would_search(&self.store, &persona, message) {
+            return None;
+        }
         let qvec = match crate::setup::file_embedder(&bound.config) {
             Some(embedder) => {
                 match tokio::time::timeout(RECALL_EMBED_WAIT, embedder.recall_query(message)).await
@@ -4017,6 +4022,72 @@ mod tests {
             "{t}"
         );
         assert_eq!(t["taint"]["untrusted"], false, "{t}");
+    }
+
+    /// §9.7: a record from outside, recalled mid-chat, arms the chat
+    /// untrusted at the doors — the chat starts clean (its newest episodes
+    /// are clean) and the per-turn fold is what arms it (review of #481).
+    #[tokio::test]
+    async fn a_record_from_outside_recalled_mid_chat_arms_it_untrusted() {
+        use mecha_core::persona::memory::{Memory, NewEpisode, Source};
+        use mecha_core::persona::Origin;
+        let w = world();
+        let m = Memory::open(&w.store(), "mara").unwrap();
+        let outside = m
+            .add_episode(NewEpisode {
+                source: Some(Source {
+                    chat: "earlier".into(),
+                    from: 0,
+                    to: 1,
+                }),
+                summary: "Read a page claiming Holdfast kelp sings at dawn.".into(),
+                origin: Origin::ModelUntrusted,
+                model: "m".into(),
+                ..NewEpisode::default()
+            })
+            .unwrap();
+        m.approve(&outside.uid).unwrap();
+        for summary in [
+            "Weather.",
+            "A reading list.",
+            "A seminar.",
+            "A budget.",
+            "A film.",
+        ] {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            m.add_episode(NewEpisode {
+                source: Some(Source {
+                    chat: "earlier".into(),
+                    from: 0,
+                    to: 1,
+                }),
+                summary: summary.into(),
+                origin: Origin::ModelClean,
+                model: "m".into(),
+                ..NewEpisode::default()
+            })
+            .unwrap();
+        }
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        turn(&w, &key, "Hello again, how was your week?").await;
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(t["taint"]["untrusted"], false, "clean at the start: {t}");
+        turn(&w, &key, "What did that page say about Holdfast kelp?").await;
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(t["taint"]["untrusted"], true, "armed by the recall: {t}");
     }
 
     /// §10.4: a citation is checked against what the chat received, sent to
