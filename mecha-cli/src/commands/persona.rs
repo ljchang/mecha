@@ -266,11 +266,11 @@ async fn write_memory(
     // The writer reads whole transcripts of private conversations, so it
     // runs where the appraisal does: on the local model, never a cloud one
     // (R29's rule for reading transcripts).
-    if provider_cfg.kind != "local" {
-        bail!(
-            "{provider_name} is not a local provider — the memory writer reads whole \
-             persona chats, which stay on the local model"
-        );
+    // The address, not the dialect: `kind = "local"` can point at another
+    // machine. The incognito gate's check, fallbacks included (review of
+    // #468).
+    if let Err(why) = mecha_core::config::provider_is_local(&cfg, &provider_name) {
+        bail!("{why} — the memory writer reads whole persona chats, which stay on this machine");
     }
     let provider = mecha_core::provider::build(provider_cfg)?;
     let model = global.model.clone().or_else(|| provider_cfg.model.clone());
@@ -317,62 +317,22 @@ async fn write_memory(
     }
 
     let idle = std::time::Duration::from_secs(idle_minutes * 60);
-    let (mut chats, mut failed, mut waiting) = (0usize, 0usize, 0usize);
+    let (mut chats, mut failed, mut waiting, mut marked) = (0usize, 0usize, 0usize, 0usize);
     for p in personas {
-        let sessions = store.sessions_dir(&p.name);
-        let mut todo: Vec<(String, std::path::PathBuf)> = Vec::new();
-        // An unreadable folder is a finding, never an empty queue; a missing
-        // one is a persona that has not chatted yet (review of #468).
-        let entries = match std::fs::read_dir(&sessions) {
-            Ok(e) => e,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                eprintln!("{}: {} could not be read ({e})", p.name, sessions.display());
-                failed += 1;
-                continue;
-            }
-        };
-        for entry in entries {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(e) => {
-                    eprintln!("{}: a chat could not be listed ({e})", p.name);
-                    failed += 1;
-                    continue;
-                }
-            };
-            let path = entry.path();
-            let Some(id) = path
-                .file_name()
-                .and_then(|f| f.to_str())
-                .and_then(|f| f.strip_suffix(".jsonl"))
-            else {
-                continue;
-            };
-            if chat.as_deref().is_some_and(|c| c != id) {
-                continue;
-            }
-            // A chat still going is left for a later run; one named
-            // explicitly is the caller's call.
-            let age = match entry.metadata().and_then(|m| m.modified()) {
-                Ok(t) => t.elapsed().ok(),
-                Err(e) => {
-                    eprintln!(
-                        "{}: {id} could not be checked ({e}); left for a later run",
-                        p.name
-                    );
-                    failed += 1;
-                    continue;
-                }
-            };
-            // A clock that reads the file as from the future is recent.
-            let recent = age.is_none_or(|age| age < idle);
-            if recent && chat.is_none() {
-                continue;
-            }
-            todo.push((id.to_owned(), path));
+        let pending = writer::pending_chats(&store.sessions_dir(&p.name), chat.as_deref(), idle);
+        for problem in &pending.problems {
+            eprintln!("{}: {problem}", p.name);
         }
+        failed += pending.problems.len();
+        marked += pending.marked;
+        let mut todo = pending.due;
         if let Some(c) = &chat {
+            if pending.marked > 0 {
+                bail!(
+                    "{} `{c}` is a test or experiment chat; memory leaves those out",
+                    p.name
+                );
+            }
             if todo.is_empty() {
                 bail!("{} has no chat `{c}`", p.name);
             }
@@ -477,7 +437,8 @@ async fn write_memory(
         }
     }
     println!(
-        "{chats} chat(s) read, {waiting} waiting for their model, {failed} left for a later run"
+        "{chats} chat(s) read, {waiting} waiting for their model, {marked} test or \
+         experiment chat(s) left out, {failed} left for a later run"
     );
     if failed > 0 {
         bail!("{failed} chat(s) could not be written");
