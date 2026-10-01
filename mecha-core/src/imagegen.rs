@@ -2155,18 +2155,19 @@ impl ImageGenerate {
         // so does a prompt that opens with it — the common selfie, "Maya
         // reading on a bench, wearing a rain jacket". Otherwise they point at
         // the scene the prompt describes.
-        let (wearing, doing) =
-            match (&from_extra, in_prompt) {
-                // An extra is removed once cast, so its words have nowhere else
-                // to go: a one-word action ("Mara waving") is kept, where the
-                // prompt path's two-word floor would drop it (review of #454).
-                // A separator right after the name ("Mara, waving …") would leave
-                // the name's own clause empty and drop both fields (review of
-                // #454): the extra is only about the persona, so it starts at its
-                // first word.
-                (Some(after), _) => match self_clauses(after.trim_start_matches(|c: char| {
+        let (wearing, doing) = match (&from_extra, in_prompt) {
+            // An extra is removed once cast, so its words have nowhere else
+            // to go: a one-word action ("Mara waving") is kept, where the
+            // prompt path's two-word floor would drop it (review of #454).
+            // A separator right after the name ("Mara, waving …") would leave
+            // the name's own clause empty and drop both fields (review of
+            // #454): the extra is only about the persona, so it starts at its
+            // first word.
+            (Some(after), _) => {
+                let after = after.trim_start_matches(|c: char| {
                     matches!(c, ',' | ';' | '.') || c.is_whitespace()
-                })) {
+                });
+                match self_clauses(after) {
                     (wearing, None) => {
                         let lead = after
                             .split([',', '.', ';', '\n'])
@@ -2184,10 +2185,11 @@ impl ImageGenerate {
                         (wearing, Some(lead.to_string()).filter(|d| !d.is_empty()))
                     }
                     both => both,
-                },
-                (None, Some((0, end))) => self_clauses(&prompt[end..]),
-                _ => (None, None),
-            };
+                }
+            }
+            (None, Some((0, end))) => self_clauses(&prompt[end..]),
+            _ => (None, None),
+        };
         // Within the compiler's cap: over it, the call is refused over a
         // field the model never wrote, and it resends (review of #444).
         let me = crate::imagelib::CastMember {
@@ -5185,7 +5187,7 @@ mod tests {
         // once cast, so the word has nowhere else to go.
         let out = mara
             .call(
-                json!({"prompt": "a harbour at noon", "extras": ["Mara waving"]}),
+                json!({"prompt": "a harbour at noon", "extras": ["Mara, waving"]}),
                 &ctx(&dir),
             )
             .await
