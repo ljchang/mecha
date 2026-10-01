@@ -100,9 +100,9 @@ const REPLY = '# Plan\n\n- **one** [p. 2: "a quote"]\n\n```\ncode\n```\n';
 }
 
 // The call sites, read out of the components that ship: a finished reply
-// has its actions, a streaming one has none, and an incognito chat keeps
-// Copy but never Download — a file on the device outlives the room
-// (INCOGNITO-DESIGN R2; review of #484).
+// has its actions, a streaming one has none, and Download is offered in
+// every chat, an incognito one included (owner, 2026-10-01) — which rests on
+// the file being made in the browser, with nothing sent to the server.
 {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const read = (f) => fs.readFileSync(path.join(here, '..', 'src', 'lib', f), 'utf8');
@@ -120,9 +120,16 @@ const REPLY = '# Plan\n\n- **one** [p. 2: "a quote"]\n\n```\ncode\n```\n';
     assert.ok(!/actions|download/.test(streaming(sites)[0]), `${page}: a streaming reply has no actions`);
   }
   assert.match(finished(chat)[0], /actions="mecha"/);
-  // Download only where the chat is not incognito: tied to the flag, not a
-  // bare `download`.
-  assert.match(finished(chat)[0], /download=\{[^}]*incognito/);
+  // Download whatever the chat: a bare `download`, tied to no flag.
+  assert.match(finished(chat)[0], /\sdownload(\s|\/>)/);
+  assert.ok(!/incognito/i.test(finished(chat)[0]), finished(chat)[0]);
+  // What makes that safe in an incognito chat: the export module reaches no
+  // server. It makes a blob and clicks a link to it; a request of any kind
+  // here would leave a trace the room does not keep.
+  const exporter = read('reply-export.js');
+  for (const reach of [/\bfetch\s*\(/, /XMLHttpRequest/, /sendBeacon/, /WebSocket/, /EventSource/, /\/api\//]) {
+    assert.ok(!reach.test(exporter), `reply-export.js reaches the server: ${reach}`);
+  }
   // ChatProse itself defaults Download off, so a new surface fails closed.
   assert.match(read('ChatProse.svelte'), /download = false \} = \$props\(\)/);
 }
