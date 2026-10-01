@@ -83,7 +83,10 @@ export function opensAnyway(view, sub) {
  * ask before offering a way to another of its sub-views.
  */
 export function opens(rows, view, sub) {
-  return isShown(rows, featureOf(view, sub)) || opensAnyway(view, sub);
+  // Opening anyway answers only the *view's* switch: a pane with a feature of
+  // its own still needs that one (review of #490 — Voices with voice off).
+  const pane = PANE_FEATURE[`${view}/${sub}`];
+  return isShown(rows, featureOf(view, sub)) || (opensAnyway(view, sub) && isShown(rows, pane));
 }
 
 /** `/api/features`'s body as a map from id to row, or null when unanswered. */

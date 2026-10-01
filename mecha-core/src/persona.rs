@@ -588,6 +588,10 @@ pub struct Relationship {
     pub starter: bool,
 }
 
+/// The rates a persona may speak at on a call — the voice worker's own
+/// (`MIN_SPEED, MAX_SPEED` in `scripts/voice/worker.py`).
+pub const VOICE_SPEED: std::ops::RangeInclusive<f64> = 0.5..=2.0;
+
 /// One group, as `groups.toml` declares it. Membership lives in each
 /// persona's `groups`, once.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -925,8 +929,12 @@ impl Store {
         // The voice itself is the TTS server's to know, and a call asks it
         // (`call_voice`); the rate is checkable here.
         if let Some(speed) = p.settings.voice_speed {
-            if !(0.5..=2.0).contains(&speed) {
-                out.push(format!("voice_speed {speed} is outside 0.5–2.0"));
+            if !VOICE_SPEED.contains(&speed) {
+                out.push(format!(
+                    "voice_speed {speed} is outside {:.1}–{:.1}",
+                    VOICE_SPEED.start(),
+                    VOICE_SPEED.end()
+                ));
             }
         }
         for g in &p.settings.groups {
