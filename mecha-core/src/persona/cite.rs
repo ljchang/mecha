@@ -9,12 +9,19 @@
 //! PDF's text breaks lines, hyphenates across them and spells quotes and
 //! dashes typographically, and a model copying a sentence does none of that.
 //!
+//! **What was received is read off a flat rendering.** The walk splits a
+//! text at `document: <name> ·` headers and `=== page N of M ·` markers,
+//! so a line inside a page that spells one of those starts a "file" or
+//! "page" of its own. Only material the owner put in the folders can do
+//! it, and the worst it buys is a badge or a page attributed to the wrong
+//! name — never a quote admitted that the chat did not receive.
+//!
 //! **A citation is not entailment.** A quote that is there can still be
 //! made to support the wrong claim; the page says "quoted, not checked for
 //! support", which is all this establishes. And the check is the harness's,
 //! never a tool: a check the model may decline to call is not a check.
 
-use crate::grounding::{self, Claim, Evidence, Refusal};
+use crate::grounding::{self, Claim};
 use crate::message::{Block, Message, Role};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -181,58 +188,101 @@ struct Page {
     /// `None` for a text file, which has no pages.
     page: Option<u32>,
     text: String,
+    /// `text` through [`normal`], made once and dropped when `text` grows.
+    norm: Option<String>,
 }
 
-/// What the chat received of its files, page by page: the files block in
-/// its first turn, and every reader result the model read
-/// ([`grounding::calls`]: first seen wins, a stale or failed result is
+/// What the chat had received of its files, built up message by message:
+/// the files block in its first turn, and every reader result the model
+/// read ([`grounding::calls`]: first seen wins, a stale or failed result is
 /// never evidence).
-fn received(messages: &[Message]) -> Vec<Page> {
-    let read: HashMap<&str, &str> = grounding::calls(messages)
-        .into_iter()
-        .filter(|c| READERS.contains(&c.name))
-        .filter_map(|c| Some((c.id, c.result?)))
-        .collect();
-    let mut pages = Vec::new();
-    for m in messages {
+struct Received<'m> {
+    read: HashMap<&'m str, &'m str>,
+    pages: Vec<Page>,
+}
+
+impl<'m> Received<'m> {
+    fn new(messages: &'m [Message]) -> Self {
+        let read = grounding::calls(messages)
+            .into_iter()
+            .filter(|c| READERS.contains(&c.name))
+            .filter_map(|c| Some((c.id, c.result?)))
+            .collect();
+        Received {
+            read,
+            pages: Vec::new(),
+        }
+    }
+
+    /// Take in what one message delivered.
+    fn absorb(&mut self, m: &Message) {
         if m.role != Role::User {
-            continue;
+            return;
         }
         for block in &m.content {
-            match block {
+            let text = match block {
                 // The same predicate as `files::carries` and
                 // `Taint::arm_for_content` (review of #465).
                 Block::Text { text } if text.trim_start().starts_with(super::files::FILES_STEM) => {
-                    pages.extend(documents(text));
+                    text.as_str()
                 }
                 Block::ToolResult { tool_use_id, .. } => {
-                    if let Some(text) = read.get(tool_use_id.as_str()) {
-                        pages.extend(documents(text));
+                    match self.read.get(tool_use_id.as_str()) {
+                        Some(text) => text,
+                        None => continue,
                     }
                 }
-                _ => {}
+                _ => continue,
+            };
+            for page in documents(text) {
+                self.add(page);
             }
         }
     }
-    // A page received twice — the files block and a later `file_read` of
-    // it, or text layer and OCR — is one page, whatever came between, so a
-    // file is named once and a citation without its `@group/` resolves
-    // (review of #465: a consecutive-only dedup listed it twice, and the
-    // tail match then refused as ambiguous).
-    let mut merged: Vec<Page> = Vec::new();
-    for p in pages {
-        match merged
+
+    /// A page received twice — the files block and a later `file_read` of
+    /// it, or text layer and OCR — is one page, whatever came between, so a
+    /// file is named once and a citation without its `@group/` resolves
+    /// (review of #465). The same text twice is kept once, so the page
+    /// shows it once.
+    fn add(&mut self, p: Page) {
+        let Some(m) = self
+            .pages
             .iter_mut()
             .find(|m| m.file == p.file && m.page == p.page)
-        {
-            Some(m) => {
-                m.text.push('\n');
-                m.text.push_str(&p.text);
-            }
-            None => merged.push(p),
+        else {
+            self.pages.push(p);
+            return;
+        };
+        let (have, new) = (m.text.trim(), p.text.trim());
+        if have.contains(new) {
+            return;
         }
+        if new.contains(have) {
+            m.text = p.text;
+        } else {
+            m.text.push('\n');
+            m.text.push_str(&p.text);
+        }
+        m.norm = None;
     }
-    merged
+
+    /// Every file received, each once.
+    fn files(&self) -> Vec<&str> {
+        let mut files: Vec<&str> = self.pages.iter().map(|p| p.file.as_str()).collect();
+        files.sort_unstable();
+        files.dedup();
+        files
+    }
+}
+
+/// Everything the chat received of its files, by the end of `messages`.
+fn received(messages: &[Message]) -> Vec<Page> {
+    let mut r = Received::new(messages);
+    for m in messages {
+        r.absorb(m);
+    }
+    r.pages
 }
 
 /// The documents a rendered text holds, split at each `document: <name> ·`
@@ -242,7 +292,12 @@ fn documents(text: &str) -> Vec<Page> {
     let mut current: Option<(String, Option<u32>, String)> = None;
     let flush = |cur: Option<(String, Option<u32>, String)>, out: &mut Vec<Page>| {
         if let Some((file, page, text)) = cur {
-            out.push(Page { file, page, text });
+            out.push(Page {
+                file,
+                page,
+                text,
+                norm: None,
+            });
         }
     };
     for line in text.lines() {
@@ -363,10 +418,16 @@ fn resolve<'a>(cited: &str, files: &[&'a str]) -> Option<&'a str> {
 /// Every citation in the persona's replies, each checked against what the
 /// chat had received of its files by the time it was written — a quote
 /// from a page read only later does not count for an earlier answer.
+///
+/// In conversation order, one per citation as written: the page pairs them
+/// with the citations on screen counting from the end (`citeEntries` in
+/// `persona.js`), so reordering these misattributes every badge.
 pub fn check_conversation(messages: &[Message]) -> Vec<Checked> {
+    let mut received = Received::new(messages);
     let mut out = Vec::new();
-    for (i, m) in messages.iter().enumerate() {
+    for m in messages {
         if m.role != Role::Assistant {
+            received.absorb(m);
             continue;
         }
         let text: String = m
@@ -378,12 +439,9 @@ pub fn check_conversation(messages: &[Message]) -> Vec<Checked> {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let cites = parse(&text);
-        if cites.is_empty() {
-            continue;
+        for c in parse(&text) {
+            out.push(check(&c, &mut received));
         }
-        let pages = received(&messages[..i]);
-        out.extend(cites.iter().map(|c| check(c, &pages)));
     }
     out
 }
@@ -396,78 +454,88 @@ fn claim<'a>(statement: &'a str, id: &'a str, quote: &'a str) -> Claim<'a> {
     }
 }
 
-fn check(c: &Citation, pages: &[Page]) -> Checked {
-    let mut files: Vec<&str> = pages.iter().map(|p| p.file.as_str()).collect();
-    files.sort_unstable();
-    files.dedup();
-    let Some(file) = resolve(&c.file, &files) else {
-        return Checked {
-            raw: c.raw.clone(),
-            file: c.file.clone(),
-            cited: c.pages.map(|p| p.0),
-            quote: c.quote.clone(),
-            verdict: Verdict::NoSuchFile,
-        };
-    };
+/// One received page, normalised, as `admit` reads a referent.
+struct View<'a> {
+    id: String,
+    text: &'a str,
+}
+
+impl grounding::Referent for View<'_> {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn text(&self) -> &str {
+        self.text
+    }
+}
+
+fn check(c: &Citation, received: &mut Received<'_>) -> Checked {
     let cited = c.pages.map(|p| p.0);
-    let done = |verdict| Checked {
+    let checked = |file: &str, verdict| Checked {
         raw: c.raw.clone(),
         file: file.to_string(),
         cited,
         quote: c.quote.clone(),
         verdict,
     };
+    let Some(file) = resolve(&c.file, &received.files()).map(str::to_string) else {
+        return checked(&c.file, Verdict::NoSuchFile);
+    };
     let quote = normal(&c.quote);
-    let packet: Vec<Evidence> = pages
+    // Decided before any page is looked at, so it is the verdict wherever
+    // the cited page is (review of #465: a page never received skipped it).
+    if quote.chars().count() < MIN_QUOTE_CHARS {
+        return checked(&file, Verdict::TooShort);
+    }
+    for p in received.pages.iter_mut().filter(|p| p.file == file) {
+        if p.norm.is_none() {
+            p.norm = Some(normal(&p.text));
+        }
+    }
+    let views: Vec<View> = received
+        .pages
         .iter()
         .filter(|p| p.file == file)
-        .map(|p| Evidence {
+        .map(|p| View {
             id: p.page.map(|n| n.to_string()).unwrap_or_default(),
-            source: p.file.clone(),
-            text: normal(&p.text),
+            text: p.norm.as_deref().unwrap_or_default(),
         })
         .collect();
-    // The page cited first, then the rest of the file: admit is the lookup
-    // either way, so its refusals are the verdicts.
-    let in_range = |e: &Evidence| match (c.pages, e.id.parse::<u32>().ok()) {
+    let in_range = |v: &View| match (c.pages, v.id.parse::<u32>().ok()) {
         (Some((a, b)), Some(n)) => (a..=b).contains(&n),
         // No page cited, or a text file with none: the file is the page.
         _ => true,
     };
-
-    let mut short = false;
-    for e in packet.iter().filter(|e| in_range(e)) {
-        match grounding::admit(
-            &claim(&c.raw, &e.id, &quote),
-            std::slice::from_ref(e),
-            MIN_QUOTE_CHARS,
-        ) {
-            Ok(e) => {
-                return done(Verdict::Quoted {
-                    found: e.id.parse().ok(),
-                })
-            }
-            Err(Refusal::QuoteTooShort) => short = true,
-            Err(_) => {}
-        }
-    }
-    if short {
-        return done(Verdict::TooShort);
-    }
-    for e in packet.iter().filter(|e| !in_range(e)) {
-        if grounding::admit(
-            &claim(&c.raw, &e.id, &quote),
-            std::slice::from_ref(e),
+    // `admit` is the lookup; whole words on top of it, as `mark` compares,
+    // so "holdfast" is not quoted out of "holdfasts" and every quote the
+    // check admits is one the page can mark (review of #465).
+    let quoted = |v: &View| {
+        grounding::admit(
+            &claim(&c.raw, &v.id, &quote),
+            std::slice::from_ref(v),
             MIN_QUOTE_CHARS,
         )
         .is_ok()
-        {
-            if let Ok(found) = e.id.parse() {
-                return done(Verdict::OtherPage { found });
-            }
-        }
+            && grounding::holds(v.text, &quote)
+    };
+    // The page cited first, then the rest of the file.
+    if let Some(v) = views.iter().filter(|v| in_range(v)).find(|v| quoted(v)) {
+        return checked(
+            &file,
+            Verdict::Quoted {
+                found: v.id.parse().ok(),
+            },
+        );
     }
-    done(Verdict::NotFound)
+    if let Some(found) = views
+        .iter()
+        .filter(|v| !in_range(v))
+        .find(|v| quoted(v))
+        .and_then(|v| v.id.parse().ok())
+    {
+        return checked(&file, Verdict::OtherPage { found });
+    }
+    checked(&file, Verdict::NotFound)
 }
 
 /// One page of `file` as the chat received it — the files block and every
@@ -767,6 +835,34 @@ mod tests {
             "{got:?}"
         );
         assert_eq!(got[0].file, "@kelp/survey.pdf");
-        assert!(page_text(&msgs, "survey.pdf", Some(4)).is_some());
+        // Received twice, shown once (review of #465, pass 2).
+        let page = page_text(&msgs, "survey.pdf", Some(4)).unwrap();
+        assert_eq!(page.matches("run monthly").count(), 1, "{page}");
+    }
+
+    /// Review of #465, pass 2: whole words, as `mark` compares. "holdfast"
+    /// is not quoted out of "holdfasts" — which would be badged quoted with
+    /// nothing on the page to mark — and a short quote is too short to
+    /// check whichever page it cites, received or not.
+    #[test]
+    fn a_partial_word_is_not_quoted_and_short_is_short_on_any_page() {
+        let msgs = chat(
+            PAPER,
+            "[kelp.pdf, p. 1: \"urchins graze kelp holdfast\"] \
+             [kelp.pdf, p. 1: \"rchins graze kelp holdfasts\"] \
+             [kelp.pdf, p. 7: \"at night\"]",
+        );
+        let got: Vec<Verdict> = check_conversation(&msgs)
+            .into_iter()
+            .map(|c| c.verdict)
+            .collect();
+        assert_eq!(
+            got,
+            [Verdict::NotFound, Verdict::NotFound, Verdict::TooShort]
+        );
+        // And what the check admits, the page can mark.
+        let page = page_text(&msgs, "kelp.pdf", Some(1)).unwrap();
+        assert!(mark(&page, "urchins graze kelp holdfasts").is_some());
+        assert!(mark(&page, "urchins graze kelp holdfast").is_none());
     }
 }
