@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Copy and Download on every chat reply.** Under each finished reply, in
+  the assistant's chat and a persona's, Copy puts the reply on the
+  clipboard as written — its Markdown, not the rendered page — and Download
+  saves it as a `.md` file named for who said it and when. Every code block
+  in a reply has its own Copy.
+
 - **Call a persona.** A persona chat has a call button beside send, where
   calls are switched on. The persona answers in its own voice (its profile's
   `voice`, which the voice server must list), and what is said lands in the

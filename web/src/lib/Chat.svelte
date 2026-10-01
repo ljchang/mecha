@@ -1820,7 +1820,9 @@
           {#if entry.spoken}<span class="queued-tag">spoken</span>{/if}
         </div>
       {:else if entry.kind === 'assistant'}
-        <div class="answer"><ChatProse text={entry.text} /></div>
+        <!-- No Download in an incognito chat: a file outlives the room (R2).
+             Copy stays — text copied out is the owner's own act (§1). -->
+        <div class="answer"><ChatProse text={entry.text} actions="mecha" download={!(incognito || key.startsWith(INCOGNITO_PREFIX))} /></div>
       {:else if entry.kind === 'tool'}
         <!-- The chip names the call and says which one it was; the tap opens
              the whole of it — what it was called with, then what came back,
