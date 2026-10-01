@@ -3139,7 +3139,15 @@ mod boundary_tests {
             return;
         };
         const CANARY: &str = "KUMQUAT-7731";
-        let app = app(chat::test_chat_answering("noted", true));
+        let chat = chat::test_chat_answering("noted", true);
+        let app = app(Arc::clone(&chat));
+        // Anywhere a trace could land: the moved home, and the door's own.
+        let door = chat.sessions_dir().parent().unwrap().to_path_buf();
+        let traces = |needle: &str| {
+            let mut found = files_containing(&home.dir, needle);
+            found.extend(files_containing(&door, needle));
+            found
+        };
 
         // Open through its own door.
         let opened = app
@@ -3188,11 +3196,7 @@ mod boundary_tests {
         );
 
         // While open: nothing in the mecha home, everything in the room.
-        assert!(
-            files_containing(&home.dir, CANARY).is_empty(),
-            "{:?}",
-            files_containing(&home.dir, CANARY)
-        );
+        assert!(traces(CANARY).is_empty(), "{:?}", traces(CANARY));
         assert!(
             !files_containing(&runtime.0, CANARY).is_empty(),
             "the upload is in the room"
@@ -3209,7 +3213,7 @@ mod boundary_tests {
             files_containing(&runtime.0, CANARY).is_empty(),
             "the room is gone"
         );
-        assert!(files_containing(&home.dir, CANARY).is_empty());
+        assert!(traces(CANARY).is_empty());
         let reopened = app
             .clone()
             .oneshot(json_post(
@@ -3238,7 +3242,7 @@ mod boundary_tests {
         // so the scan above was looking where a trace would be.
         converse(&app, "main", &format!("remember {CANARY} for me")).await;
         assert!(
-            !files_containing(&home.dir, CANARY).is_empty(),
+            !traces(CANARY).is_empty(),
             "an ordinary chat's transcript carries the canary"
         );
     }
@@ -3720,7 +3724,7 @@ mod boundary_tests {
         converse(&app, "crossing", "second").await;
         converse(&app, "crossing", "third").await;
 
-        let dir = mecha_core::session::Session::default_dir().unwrap();
+        let dir = chat.sessions_dir().to_path_buf();
         let recorded: Vec<Vec<String>> = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()
@@ -3758,7 +3762,7 @@ mod boundary_tests {
             .unwrap();
         assert!(opened.status().is_success(), "{}", opened.status());
 
-        let dir = mecha_core::session::Session::default_dir().unwrap();
+        let dir = chat.sessions_dir().to_path_buf();
         let path = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()
@@ -4145,7 +4149,8 @@ mod boundary_tests {
     #[tokio::test]
     async fn mutations_require_a_non_simple_header_before_any_handler_runs() {
         let _home = crate::testenv::HomeGuard::new("web-csrf");
-        let app = app(chat::test_chat());
+        let chat = chat::test_chat();
+        let app = app(Arc::clone(&chat));
         for uri in [
             "/api/chat/main/upload?name=x.txt",
             "/api/outbox/known-id/approve",
@@ -4168,6 +4173,9 @@ mod boundary_tests {
                 "{uri}"
             );
         }
+        // The evidence no handler ran: no workspace where this door would
+        // have made one (review of #471), nor under the moved home.
+        assert!(!chat.work_dir().join("main").exists());
         assert!(!mecha_core::work::producer_dir("web")
             .unwrap()
             .join("main")
@@ -4214,8 +4222,9 @@ mod boundary_tests {
     #[tokio::test]
     async fn uploads_cannot_follow_symlinks_or_overwrite_an_existing_file() {
         let home = crate::testenv::HomeGuard::new("web-file-jail");
-        let app = app(chat::test_chat());
-        let ws = chat::session_workspace("main").unwrap();
+        let chat = chat::test_chat();
+        let app = app(Arc::clone(&chat));
+        let ws = chat.session_workspace("main").unwrap();
         let outside = home.dir.join("outside");
         std::fs::create_dir_all(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, ws.join("inbox")).unwrap();
@@ -4253,7 +4262,8 @@ mod boundary_tests {
     #[tokio::test]
     async fn downloading_from_an_unknown_chat_creates_no_session_or_workspace() {
         let home = crate::testenv::HomeGuard::new("web-read-creates-nothing");
-        let app = app(chat::test_chat());
+        let chat = chat::test_chat();
+        let app = app(Arc::clone(&chat));
         let request = Request::builder()
             .uri("/api/chat/unknown/file?path=x.txt")
             .header(TAILSCALE_LOGIN, "owner@example.com")
@@ -4263,6 +4273,9 @@ mod boundary_tests {
             app.oneshot(request).await.unwrap().status(),
             StatusCode::NOT_FOUND
         );
+        // Where this door would have made them (#471), and the moved home.
+        assert!(!chat.work_dir().join("unknown").exists());
+        assert!(!chat.sessions_dir().exists());
         assert!(!home.dir.join("work/web/unknown").exists());
         assert!(!home.dir.join("sessions").exists());
     }
@@ -4277,8 +4290,12 @@ mod boundary_tests {
         request
             .headers_mut()
             .insert("content-type", HeaderValue::from_static("application/json"));
-        let response = app(chat::test_chat()).oneshot(request).await.unwrap();
+        let chat = chat::test_chat();
+        let door = chat.sessions_dir().parent().unwrap().to_path_buf();
+        let response = app(Arc::clone(&chat)).oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!chat.sessions_dir().exists());
+        assert!(!door.join("escape").exists());
         assert!(!home.dir.join("sessions").exists());
         assert!(!home.dir.join("escape").exists());
     }
@@ -4304,13 +4321,15 @@ mod boundary_tests {
             crate::voice::Hosted::Failed(_)
         ));
         chat.drain().await;
+        assert!(!chat.sessions_dir().exists());
         assert!(!home.dir.join("sessions").exists());
     }
 
     #[tokio::test]
     async fn chat_reads_never_create_and_explicit_open_is_guarded_and_idempotent() {
         let home = crate::testenv::HomeGuard::new("web-explicit-open");
-        let app = app(chat::test_chat());
+        let chat = chat::test_chat();
+        let app = app(Arc::clone(&chat));
         for method in ["GET", "HEAD"] {
             for suffix in ["", "/events", "/todo"] {
                 let req = Request::builder()
@@ -4323,7 +4342,7 @@ mod boundary_tests {
                     app.clone().oneshot(req).await.unwrap().status(),
                     StatusCode::NOT_FOUND
                 );
-                assert!(!home.dir.join("sessions").exists());
+                assert!(!chat.sessions_dir().exists());
                 assert!(!home.dir.join("work/web/new").exists());
             }
         }
@@ -4333,7 +4352,7 @@ mod boundary_tests {
             app.clone().oneshot(forged).await.unwrap().status(),
             StatusCode::FORBIDDEN
         );
-        assert!(!home.dir.join("sessions").exists());
+        assert!(!chat.sessions_dir().exists());
         for _ in 0..2 {
             assert_eq!(
                 app.clone()
@@ -4344,12 +4363,7 @@ mod boundary_tests {
                 StatusCode::NO_CONTENT
             );
         }
-        assert_eq!(
-            std::fs::read_dir(home.dir.join("sessions"))
-                .unwrap()
-                .count(),
-            1
-        );
+        assert_eq!(std::fs::read_dir(chat.sessions_dir()).unwrap().count(), 1);
         for suffix in ["", "/events", "/todo"] {
             let req = Request::builder()
                 .uri(format!("/api/chat/new{suffix}"))
@@ -4361,12 +4375,7 @@ mod boundary_tests {
                 StatusCode::OK
             );
         }
-        assert_eq!(
-            std::fs::read_dir(home.dir.join("sessions"))
-                .unwrap()
-                .count(),
-            1
-        );
+        assert_eq!(std::fs::read_dir(chat.sessions_dir()).unwrap().count(), 1);
     }
 
     /// Point the graph redactor at nothing for the guard's lifetime: a test
@@ -4401,7 +4410,15 @@ mod boundary_tests {
         const CANARY: &str = "the cartographer's lemon-yellow kayak";
         let home = crate::testenv::HomeGuard::new("web-archive-delete");
         let _graph = NoGraph::under(&home.dir);
-        let app = app(chat::test_chat_answering("noted", false));
+        let chat = chat::test_chat_answering("noted", false);
+        let app = app(Arc::clone(&chat));
+        // Anywhere a trace could land: the moved home, and the door's own.
+        let door = chat.sessions_dir().parent().unwrap().to_path_buf();
+        let traces = |needle: &str| {
+            let mut found = files_containing(&home.dir, needle);
+            found.extend(files_containing(&door, needle));
+            found
+        };
         converse(&app, "chat-arch", CANARY).await;
         let rail = body(app.clone().oneshot(get("/api/sessions")).await.unwrap()).await;
         let id = rail["sessions"]
@@ -4422,7 +4439,7 @@ mod boundary_tests {
 
         // Archive: out of the rail and the list, into the archive, and the
         // record untouched.
-        let transcript = home.dir.join("sessions").join(format!("{id}.jsonl"));
+        let transcript = chat.sessions_dir().join(format!("{id}.jsonl"));
         let before = std::fs::read(&transcript).unwrap();
         let r = app
             .clone()
@@ -4476,7 +4493,7 @@ mod boundary_tests {
             .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
         assert!(
-            !mecha_core::archive::is_archived(&home.dir.join("sessions"), &id),
+            !mecha_core::archive::is_archived(chat.sessions_dir(), &id),
             "opening an archived conversation left it archived"
         );
         // Resumed under a new key; let it go again so the delete below can run.
@@ -4545,10 +4562,12 @@ mod boundary_tests {
         );
         assert!(transcript.exists());
 
-        assert!(
-            !files_containing(&home.dir, CANARY).is_empty(),
-            "the canary was never recorded"
-        );
+        assert!(!traces(CANARY).is_empty(), "the canary was never recorded");
+        // A file the chat wrote, so the delete's workspace purge is measured
+        // rather than passing on an empty directory (review of #471).
+        let ws = chat.work_dir().join("chat-arch");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("notes.txt"), CANARY).unwrap();
         let del = Request::builder()
             .method("DELETE")
             .uri(format!("/api/sessions/{id}"))
@@ -4560,8 +4579,19 @@ mod boundary_tests {
         assert_eq!(r.status(), StatusCode::OK);
         let report = body(r).await;
         assert_eq!(report["complete"], true, "{report}");
-        assert_eq!(files_containing(&home.dir, CANARY), Vec::<PathBuf>::new());
-        assert_eq!(files_containing(&home.dir, &id), Vec::<PathBuf>::new());
+        let purged = report["removed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r[0] == "workspace")
+            .and_then(|r| r[1].as_u64());
+        assert!(
+            purged.is_some_and(|n| n > 0),
+            "the workspace was kept: {report}"
+        );
+        assert!(!ws.exists());
+        assert_eq!(traces(CANARY), Vec::<PathBuf>::new());
+        assert_eq!(traces(&id), Vec::<PathBuf>::new());
         assert!(!listed(
             &body(app.clone().oneshot(get("/api/history")).await.unwrap()).await,
             &id
@@ -4572,11 +4602,12 @@ mod boundary_tests {
     #[tokio::test]
     async fn resumed_attachments_use_the_recorded_workspace_and_stream_downloads() {
         let home = crate::testenv::HomeGuard::new("web-resume-files");
-        let app = app(chat::test_chat());
+        let chat = chat::test_chat();
+        let app = app(Arc::clone(&chat));
         let ws = home.dir.join("task-workspace");
         std::fs::create_dir_all(&ws).unwrap();
         let session = mecha_core::session::Session::create(
-            &mecha_core::session::Session::default_dir().unwrap(),
+            chat.sessions_dir(),
             mecha_core::session::SessionMeta {
                 id: mecha_core::session::Session::new_id(),
                 created_at: chrono::Utc::now(),

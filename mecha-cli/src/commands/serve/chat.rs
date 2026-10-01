@@ -84,6 +84,13 @@ pub struct ChatState {
     pub(super) follower: Arc<crate::follow::Follower>,
     routes: QuestionRoutes,
     outbox_root: PathBuf,
+    /// Where this door records and resumes transcripts, and where its chats'
+    /// workspaces live: `~/.mecha/sessions` and `~/.mecha/work/web` in
+    /// `serve`, a scratch directory in a test. Held here rather than
+    /// resolved per call, so a test's chats can never land in the owner's
+    /// store — they did, by the hundred, through every lane's suite.
+    sessions_dir: PathBuf,
+    work_dir: PathBuf,
     sessions: Mutex<HashMap<String, WebSession>>,
     /// Persona chats: their own map, agents and transcript directory, so no
     /// route of the assistant's can reach one (`persona_chat`).
@@ -319,6 +326,8 @@ impl ChatState {
             follower,
             routes,
             outbox_root,
+            sessions_dir: Session::default_dir()?,
+            work_dir: producer_root()?,
             sessions: Mutex::new(HashMap::new()),
             personas: Arc::new(super::persona_chat::PersonaChats::new()?),
             stopping: Default::default(),
@@ -599,13 +608,25 @@ fn producer_root() -> Result<PathBuf> {
     Ok(root)
 }
 
-/// One producer, per-session subdirectories — so `work clean`'s retention
-/// retires whole old sessions (the Slack thread pattern).
-pub(super) fn session_workspace(key: &str) -> Result<PathBuf> {
-    let dir = work::producer_dir("web")?.join(key);
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    work::ensure_outside_mecha_home(&dir)?;
-    Ok(dir)
+impl ChatState {
+    /// One producer, per-session subdirectories — so `work clean`'s
+    /// retention retires whole old sessions (the Slack thread pattern).
+    pub(super) fn session_workspace(&self, key: &str) -> Result<PathBuf> {
+        let dir = self.work_dir.join(key);
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        work::ensure_outside_mecha_home(&dir)?;
+        Ok(dir)
+    }
+
+    /// Where this door's transcripts are.
+    pub(super) fn sessions_dir(&self) -> &std::path::Path {
+        &self.sessions_dir
+    }
+
+    /// Where this door's chats' workspaces are.
+    pub(super) fn work_dir(&self) -> &std::path::Path {
+        &self.work_dir
+    }
 }
 
 /// File routes must use the same session entry as tool calls. In particular,
@@ -1427,8 +1448,7 @@ fn ensure_session_as<'a>(
         // messages *and* the recorded taint, so a conversation that read a
         // hostile page before the restart still remembers after it.
         let recorded = init.resume_from.as_deref().and_then(|id| {
-            let dir = Session::default_dir().ok()?;
-            let path = Session::find(&dir, id).ok()?;
+            let path = Session::find(&chat.sessions_dir, id).ok()?;
             Session::load(&path)
                 .ok()
                 .map(|(meta, convo)| (meta, path, convo))
@@ -1438,7 +1458,7 @@ fn ensure_session_as<'a>(
                 std::fs::create_dir_all(&w)?;
                 w
             }
-            None => session_workspace(key)?,
+            None => chat.session_workspace(key)?,
         };
         let (session, mut conversation) = match recorded {
             Some((meta, path, convo)) => {
@@ -1453,7 +1473,7 @@ fn ensure_session_as<'a>(
             }
             None => (
                 Session::create(
-                    &Session::default_dir()?,
+                    &chat.sessions_dir,
                     SessionMeta {
                         id: Session::new_id(),
                         created_at: chrono::Utc::now(),
@@ -1879,17 +1899,14 @@ pub async fn send(
     let (notices, workspace) = notices.unzip();
     // A chat that left the map between its upload and this send — a `serve`
     // restart, a handover — is re-created below by `ensure_session` in
-    // `session_workspace(key)`, where the upload still is. Named here without
+    // `ChatState::session_workspace(key)`, where the upload still is. Named here without
     // creating anything, so a send that fails leaves no directory; never for
     // an incognito key, which is not re-created (found on review of #366).
     let workspace = workspace.or_else(|| {
         if super::incognito::is_incognito_key(&key) || body.attachments.is_empty() {
             return None;
         }
-        work::producer_dir("web")
-            .ok()
-            .map(|dir| dir.join(&key))
-            .filter(|dir| dir.is_dir())
+        Some(chat.work_dir.join(&key)).filter(|dir| dir.is_dir())
     });
 
     // The model this turn will run on, followed before the lock: a rebuild
@@ -3482,10 +3499,7 @@ pub async fn history(
             .map(|(k, ws)| (ws.session.id().to_string(), k.clone()))
             .collect()
     };
-    let dir = match Session::default_dir() {
-        Ok(d) => d,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
-    };
+    let dir = chat.sessions_dir().to_path_buf();
     let mut metas = match Session::list(&dir) {
         Ok(m) => m,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
@@ -3589,10 +3603,7 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
         Ok(c) => c.clone(),
         Err(resp) => return resp,
     };
-    let dir = match Session::default_dir() {
-        Ok(d) => d,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
-    };
+    let dir = chat.sessions_dir().to_path_buf();
     let mut sessions = chat.sessions.lock().await;
     if let Some((k, _)) = sessions.iter().find(|(_, ws)| ws.session.id() == body.id) {
         return Json(serde_json::json!({ "key": k })).into_response();
@@ -4714,12 +4725,15 @@ pub(super) fn test_chat() -> Arc<ChatState> {
         None,
     )
     .unwrap();
+    let test_root = test_scratch_root();
     Arc::new(ChatState {
         follower: Arc::new(crate::follow::Follower::fixed(
             agent, "test", "test", config,
         )),
         routes: Arc::default(),
-        outbox_root: OutboxStore::default_root().unwrap(),
+        outbox_root: test_root.join("outbox"),
+        sessions_dir: test_root.join("sessions"),
+        work_dir: test_root.join("work/web"),
         sessions: Mutex::new(HashMap::new()),
         personas: Arc::new(super::persona_chat::PersonaChats::for_tests()),
         stopping: Default::default(),
@@ -5093,10 +5107,13 @@ pub(super) fn test_chat_built(
         Some(todo) => follower.with_todo(todo),
         None => follower,
     };
+    let test_root = test_scratch_root();
     Arc::new(ChatState {
         follower: Arc::new(follower),
         routes: Arc::default(),
-        outbox_root: OutboxStore::default_root().unwrap(),
+        outbox_root: test_root.join("outbox"),
+        sessions_dir: test_root.join("sessions"),
+        work_dir: test_root.join("work/web"),
         sessions: Mutex::new(HashMap::new()),
         personas: Arc::new(personas),
         stopping: Default::default(),
@@ -5435,4 +5452,40 @@ mod workflow_recording_tests {
             }
         }
     }
+}
+
+/// A test door's home: where its transcripts, workspaces and outbox go —
+/// always a fresh temporary directory of its own. Never the owner's
+/// `~/.mecha`, which every lane's suite had been writing "web: srctest"
+/// sessions and test pictures into; and never another test's moved home,
+/// which a door reading the process-global `MECHA_HOME` would adopt from a
+/// concurrent `HomeGuard` (review of #471). A test reads back what its door
+/// wrote through `ChatState::sessions_dir`.
+#[cfg(test)]
+pub(super) fn test_scratch_root() -> PathBuf {
+    std::env::temp_dir().join(format!("mecha-chat-test-{}", uuid::Uuid::new_v4()))
+}
+
+/// A test door never resolves to the owner's home, and never to another
+/// test's: measured under a live `HomeGuard`, where a door reading
+/// `MECHA_HOME` would have adopted the guard's directory (review of #471).
+#[cfg(test)]
+#[test]
+fn a_test_door_writes_under_its_own_temporary_home() {
+    let guard = crate::testenv::HomeGuard::new("door-own-home");
+    let chat = test_chat();
+    let other = test_chat();
+    for dir in [chat.sessions_dir(), &chat.work_dir, &chat.outbox_root] {
+        assert!(dir.starts_with(std::env::temp_dir()), "{}", dir.display());
+        assert!(
+            !dir.starts_with(&guard.dir),
+            "adopted the guard's home: {}",
+            dir.display()
+        );
+    }
+    assert_ne!(
+        chat.sessions_dir(),
+        other.sessions_dir(),
+        "each door its own"
+    );
 }
