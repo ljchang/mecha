@@ -1860,6 +1860,30 @@ class UplinkAudio:
 INCOGNITO_PREFIX = "incognito-"
 
 
+def persona_voice(body) -> dict | None:
+    """The voice a persona call speaks in (PERSONA-DESIGN.md §11), as
+    `mecha serve` put it in the offer - never the page, whose own
+    `persona_voice` serve strips. Checked again here, for the reason
+    `named_chat_session` is: a claim checked on one side of a seam only.
+    Raises on a malformed one, which ends the call - a persona speaking in
+    the default voice instead is the failure this exists to prevent."""
+    want = body.get("persona_voice") if isinstance(body, dict) else None
+    if want is None:
+        return None
+    if not isinstance(want, dict) or not isinstance(want.get("voice"), str):
+        raise ValueError("persona_voice without a voice")
+    out = {"voice": want["voice"]}
+    for field, lo, hi in (("speed", MIN_SPEED, MAX_SPEED), ("exaggeration", 0.0, 2.0),
+                          ("cfg_weight", 0.0, 1.0)):
+        if field in want:
+            value = want[field]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                    or not lo <= value <= hi:
+                raise ValueError(f"persona_voice {field} {value!r} is outside {lo}-{hi}")
+            out[field] = float(value)
+    return out
+
+
 def named_chat_session(body) -> str | None:
     """The chat session the offer names (D3), or None.
 
@@ -2067,6 +2091,16 @@ def install(app) -> None:
     async def unlogged():
         return {"unlogged": True}
 
+    # What `mecha serve` checks a persona's voice against before it forwards
+    # a call to one (PERSONA-DESIGN.md §11), asked fresh so a voice cloned a
+    # minute ago counts. Also the vouch that this worker applies
+    # `persona_voice`: one that predates it 404s here and is never handed a
+    # persona call, which it would answer in its own voice. `None` when the
+    # TTS could not be asked - unknown, and serve refuses on it.
+    @app.get("/mecha/voices")
+    async def voices():
+        return {"voices": available_voices(refresh=True)}
+
     app.add_middleware(OfferSilence)
 
 
@@ -2092,16 +2126,20 @@ def spoken_words(text: str, limit: int) -> str:
 # `named` is required, with no default: a second caller that forgot it would
 # silently lose the chat binding - and an incognito call its silence - rather
 # than fail.
-async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named: str | None):
+async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named: str | None,
+                  bound: dict | None):
     LoopSampler.start()
     stt = ParakeetSTT(api_key="unused", base_url=STT_URL)
+    # A persona call's voice is bound here, at construction, so its first
+    # word is already in it; `bound` is `persona_voice`'s, checked in `bot`.
+    bound = bound or {}
     tts = LocalTTS(
         api_key="unused",
         base_url=TTS_URL,
-        settings=OpenAITTSService.Settings(voice=TTS_VOICE, model="tts"),
-        speed=TTS_SPEED,
-        exaggeration=TTS_EXAGGERATION,
-        cfg_weight=TTS_CFG_WEIGHT,
+        settings=OpenAITTSService.Settings(voice=bound.get("voice", TTS_VOICE), model="tts"),
+        speed=bound.get("speed", TTS_SPEED),
+        exaggeration=bound.get("exaggeration", TTS_EXAGGERATION),
+        cfg_weight=bound.get("cfg_weight", TTS_CFG_WEIGHT),
         # One window, both ends: the STT reads what the TTS wrote, and no
         # other call on this worker can reach it.
         echo_window=stt.echo_window,
@@ -2347,7 +2385,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
             return
         data = msg.data or {}
         applied, refused = {}, {}
-        if "voice" in data:
+        if "voice" in data and bound.get("voice"):
+            # A persona call's voice is the persona's, bound at the offer:
+            # the page's remembered voice must not re-voice it.
+            refused["voice"] = str(data["voice"])
+        elif "voice" in data:
             want = str(data["voice"])
             known = available_voices()
             if known is not None and want not in known:
@@ -2443,6 +2485,21 @@ async def bot(runner_args: RunnerArguments):
             # kept; the call ends instead.
             await webrtc_connection.disconnect()
             return
+        try:
+            bound = persona_voice(body)
+        except ValueError as e:
+            print(f"voice: refusing a persona call ({e})", flush=True)
+            await webrtc_connection.disconnect()
+            return
+        if bound is not None:
+            known = available_voices(refresh=True)
+            if known is None or bound["voice"] not in known:
+                # Serve asked a moment ago; a voice removed since is refused
+                # here rather than spoken as the default.
+                print(f"voice: refusing a persona call in unknown voice {bound['voice']!r}",
+                      flush=True)
+                await webrtc_connection.disconnect()
+                return
         # Decided here, from the offer, before any RTP frame is read: a switch
         # mid-call would deliver the first words twice.
         transport_cls = UplinkTransport if body.get("uplink") == "channel" else SmallWebRTCTransport
@@ -2453,7 +2510,7 @@ async def bot(runner_args: RunnerArguments):
                 audio_out_enabled=True,
             ),
         )
-        await run_bot(transport, runner_args, named)
+        await run_bot(transport, runner_args, named, bound)
 
 
 if __name__ == "__main__":

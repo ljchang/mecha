@@ -226,7 +226,10 @@ pub async fn execute(args: Args) -> Result<()> {
                     // D3: a call that names one of this process's chat
                     // sessions speaks into it, so talking and typing are one
                     // conversation rather than two transcripts.
-                    host: Some(Arc::new(chat::VoiceHost(Arc::clone(chat)))),
+                    host: Some(Arc::new(chat::VoiceHost(
+                        Arc::clone(chat),
+                        Arc::clone(&state.library),
+                    ))),
                 },
             ) {
                 Ok(f) => {
@@ -1245,7 +1248,131 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
     let Some(target) = &state.offer_target else {
         return (StatusCode::NOT_FOUND, "voice offers are disabled\n").into_response();
     };
+    let body = match persona_offer(&state, target, body).await {
+        Ok(body) => body,
+        Err(refused) => return refused,
+    };
     forward_offer(target, body).await
+}
+
+/// An offer, as the worker may see it, when it names a persona chat
+/// (PERSONA-DESIGN.md §11) — the second place serve is a participant rather
+/// than a pipe, after the incognito vouch.
+///
+/// - **The lock.** The page offers with the unlock it holds
+///   (`request_data.unlock`); a call to a persona the token does not show is
+///   refused as its page is, and the token stays here (`bind_call`) — the
+///   worker never holds it.
+/// - **The voice.** Serve, not the page, says which voice the persona
+///   speaks in (`persona_voice`), checked against what the worker can speak
+///   before the call exists: an unknown voice refuses the call by name.
+///
+/// Any other offer passes unchanged except that a page cannot name a
+/// `persona_voice` of its own.
+async fn persona_offer(
+    state: &WebState,
+    target: &str,
+    body: axum::body::Bytes,
+) -> Result<axum::body::Bytes, Response> {
+    let Ok(serde_json::Value::Object(mut offer)) = serde_json::from_slice(&body) else {
+        // `forward_offer` refuses what it cannot read.
+        return Ok(body);
+    };
+    let key = offer_session(&serde_json::Value::Object(offer.clone()));
+    let Some(request) = offer
+        .get_mut("request_data")
+        .and_then(|r| r.as_object_mut())
+    else {
+        return Ok(body);
+    };
+    let page_voice = request.remove("persona_voice").is_some();
+    let unlock = request.remove("unlock");
+    let Some(key) = key.filter(|k| persona_chat::is_persona_key(k)) else {
+        return Ok(if page_voice || unlock.is_some() {
+            reencode(&offer, body)
+        } else {
+            body
+        });
+    };
+    let Some(chat) = &state.chat else {
+        return Err((StatusCode::NOT_FOUND, "no such persona chat\n").into_response());
+    };
+    let token = unlock.and_then(|t| t.as_str().map(str::to_string));
+    let name = chat
+        .personas
+        .bind_call(&state.library, &key, token)
+        .await
+        .map_err(IntoResponse::into_response)?;
+    let voice = chat
+        .personas
+        .call_voice(&name)
+        .map_err(|why| (StatusCode::CONFLICT, format!("{why}\n")).into_response())?;
+    if let Some(voice) = &voice {
+        match runner_voices(target).await {
+            Some(known) if known.iter().any(|v| v == &voice.voice) => {}
+            Some(_) => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!(
+                        "voice `{}` is not one the voice server lists — record or add it first\n",
+                        voice.voice
+                    ),
+                )
+                    .into_response())
+            }
+            None => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    "the voice worker could not say which voices it has — \
+                     a worker that predates persona voices needs a restart on a current checkout\n",
+                )
+                    .into_response())
+            }
+        }
+        if let Some(request) = offer
+            .get_mut("request_data")
+            .and_then(|r| r.as_object_mut())
+        {
+            request.insert(
+                "persona_voice".into(),
+                serde_json::to_value(voice).unwrap_or_default(),
+            );
+        }
+    }
+    Ok(reencode(&offer, body))
+}
+
+/// An edited offer back to bytes; the original if it will not encode.
+fn reencode(
+    offer: &serde_json::Map<String, serde_json::Value>,
+    original: axum::body::Bytes,
+) -> axum::body::Bytes {
+    serde_json::to_vec(offer)
+        .map(axum::body::Bytes::from)
+        .unwrap_or(original)
+}
+
+/// The voices the runner beside `target` can speak in: `GET /mecha/voices`,
+/// answered `{"voices": [...]}` by a worker that binds persona voices.
+/// `None` — a 404 from one that predates it, a timeout, a list it could not
+/// read — is "unknown", never permissive.
+async fn runner_voices(target: &str) -> Option<Vec<String>> {
+    let url = reqwest::Url::parse(target)
+        .and_then(|t| t.join("/mecha/voices"))
+        .ok()?;
+    let resp = reqwest::Client::new()
+        .get(url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .ok()
+        .filter(|r| r.status().is_success())?;
+    let v: serde_json::Value = resp.json().await.ok()?;
+    v.get("voices")?
+        .as_array()?
+        .iter()
+        .map(|x| x.as_str().map(str::to_string))
+        .collect()
 }
 
 /// The pipe behind `offer_proxy`, apart from the state that switches it off.
@@ -4336,9 +4463,12 @@ mod boundary_tests {
             StatusCode::SERVICE_UNAVAILABLE
         );
         assert!(matches!(
-            chat::VoiceHost(chat.clone())
-                .speak("new", "too late", false, false)
-                .await,
+            chat::VoiceHost(
+                chat.clone(),
+                library::state_for_tests(std::path::PathBuf::new())
+            )
+            .speak("new", "too late", false, false)
+            .await,
             crate::voice::Hosted::Failed(_)
         ));
         chat.drain().await;

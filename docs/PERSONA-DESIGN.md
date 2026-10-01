@@ -1333,6 +1333,21 @@ the template too.
 
 ## 11. Voice profiles (R13)
 
+*Built 2026-10-01 (step 7, first part, server and worker):* a call into a
+persona chat is answered by the persona (`PersonaChats::speak`). It goes
+behind the lock, through the crisis layer, and the pause is spoken as the
+plain words. A profile with a `voice` the worker lists is bound when the
+call starts. A reference clip, a missing profile, an out-of-range value, or
+a voice the worker does not list refuses the call by name. Still unbuilt:
+
+- the page's call button;
+- call minutes on the dose meters;
+- binding a reference clip (writing it into `VOICES_DIR`);
+- recording a voice on the page.
+
+The crisis pause is spoken in the persona's bound voice, not a plain one;
+that is open for the owner (ARCHITECTURE §Personas).
+
 The voice stack already takes everything a profile needs. The worker's TTS
 leg is Chatterbox Turbo (`scripts/voice/worker.py`): voice name, speed,
 exaggeration and cfg_weight are start values, and the page can already change
