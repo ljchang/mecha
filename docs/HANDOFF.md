@@ -137,7 +137,8 @@ CLI verbs and the TUI's own drivers. This machine reads 21 of 21 on
 (`mecha features --json` from the installed `36ff7573` build, 2026-10-01,
 which carries #476's refusal text — checked with `strings`), so nothing
 refuses here. Workspace at `d19995fa` (`cargo test --workspace
---no-fail-fast`, summed over every `test result` line): 4,053 passed, 0 failed, 5 ignored. Open, cheapest first:
+--no-fail-fast`, summed over every `test result` line): 4,053 passed, 0
+failed, 5 ignored. Open, cheapest first:
 
 - **Step 5: `[voice]` and `[personas]` settings tables**, each four places
   plus a decision on `trial_env`'s lists (§9 says both go on
