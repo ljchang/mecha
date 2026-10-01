@@ -402,6 +402,12 @@ pub struct State {
         skip_serializing_if = "Option::is_none"
     )]
     pub frame: Option<Frame>,
+    /// The content digest a model's proposal last wrote (`propose`), or
+    /// `None` for a persona no model wrote. A revision goes ahead only while
+    /// the files still hash to it: once the owner has edited a proposal it
+    /// is theirs, and a chat cannot write over their edits (review of #493).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed: Option<String>,
 }
 
 /// Where a portrait sits in its circle, as the page draws it: `x` and `y`
@@ -453,6 +459,7 @@ impl Default for State {
             created: String::new(),
             updated: String::new(),
             frame: None,
+            proposed: None,
         }
     }
 }
@@ -1539,13 +1546,24 @@ fn create_with(
             created: at.clone(),
             updated: at,
             frame: None,
+            proposed: None,
         },
     )?;
-    snapshot(dir, &new.name)?;
+    let state = snapshot(dir, &new.name)?;
+    if prose.is_some() {
+        mark_proposed(dir, &new.name, state)?;
+    }
     Store::load(dir)
         .get(&new.name)
         .cloned()
         .ok_or_else(|| anyhow!("`{}` was written but does not load", new.name))
+}
+
+/// Record that the files as they stand are a model's proposal, so a later
+/// revision can tell whether the owner has edited them since.
+fn mark_proposed(dir: &Path, name: &str, mut state: State) -> Result<()> {
+    state.proposed = Some(state.digest.clone());
+    write_state(&dir.join(name), &state)
 }
 
 /// What a model may stage as a persona (§4.4; the owner's rulings of
@@ -1652,6 +1670,16 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
             p.name
         );
     }
+    // Edited by the owner since a model last wrote it: theirs now. A
+    // revision rewrites persona.toml whole, which would undo their settings.
+    let current = store.content_digest(&existing)?;
+    if existing.state.proposed.as_deref() != Some(current.as_str()) {
+        bail!(
+            "the owner has edited `{}` since it was proposed, so it is theirs now and a chat \
+             cannot change it — propose under another name, or ask the owner",
+            p.name
+        );
+    }
     // The same checks a new one gets, against the revised text.
     let mut new = new;
     if new.display.trim().is_empty() {
@@ -1707,7 +1735,8 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
     state.locked = new.locked;
     state.updated = now();
     write_state(&pdir, &state)?;
-    snapshot(dir, &p.name)?;
+    let state = snapshot(dir, &p.name)?;
+    mark_proposed(dir, &p.name, state)?;
     let revised = Store::load(dir)
         .get(&p.name)
         .cloned()
@@ -2954,6 +2983,18 @@ mod tests {
             Origin::ModelUntrusted,
             "taint only rises"
         );
+
+        // Edited by the owner while it waits: theirs, and a revision would
+        // undo their edit, so it is refused and the edit stands.
+        let path = store.join("wren/persona.toml");
+        let toml_text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("{toml_text}\n# the owner's note\n")).unwrap();
+        let refused = propose(&store, &lib, proposal("## Core\nOverwritten.\n")).unwrap_err();
+        assert!(format!("{refused:#}").contains("theirs now"), "{refused:#}");
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("the owner's note"));
+        std::fs::write(&path, &toml_text).unwrap();
 
         // Approved as shown, and only as shown: a digest from before the
         // last revision is refused and leaves it waiting.

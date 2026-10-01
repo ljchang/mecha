@@ -1550,8 +1550,11 @@
             <div class="reviewnote" class:bad={chosen.origin !== 'model_clean'}>{proposalOrigin(chosen.origin)}</div>
             {#if reviewNote}<div class="warnline">{reviewNote}</div>{/if}
             {#if review}
-              <!-- Its relationships are the header's chips; the voice is not. -->
+              <!-- Its relationships are the header's chips; the voice and the
+                   tools those relationships grant are not, and approval is
+                   of what was seen. -->
               {#if review.voice}<div class="reviewmeta">voice: {review.voice}</div>{/if}
+              <div class="reviewmeta">tools: {review.tools?.length ? review.tools.join(', ') : 'none'}</div>
               {#if review.character}
                 <div class="reviewchar">
                   {#if review.character.portrait}<img src={review.character.portrait} alt="" />{/if}
