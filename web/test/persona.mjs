@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
-  taintLabel, doseLine, callTime, hangUpReport, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
+  taintLabel, doseLine, fileUnsaved, unsavedFiles, lockWaits, callTime, hangUpReport, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
   fileUrl, uploadUrl,
 } from '../src/lib/persona.js';
 import { pictureOf } from '../src/lib/picture.js';
@@ -465,6 +465,31 @@ console.log('persona: ok');
   }
   // It stops at the picture's edge.
   assert.equal(dragFrame({ x: 0.05, y: 0.5, zoom: 2 }, 400, 0, 200).x, 0);
+}
+
+// Unsaved edits, as the lock switch reads them (review of #491): the open
+// tab by its text, another tab by its kept draft — and locking waits only
+// when it would close the editor (no unlock, not yet locked).
+{
+  const editing = {
+    file: 'settings',
+    text: 'display = "Mara"',
+    files: {
+      identity: { text: '# Mara', draft: '# Mara' },
+      motivation: { text: 'kelp', draft: 'kelp and urchins' },
+      settings: { text: 'display = "Mara"' },
+    },
+  };
+  assert.deepEqual(unsavedFiles(editing), ['motivation'], 'a draft in another tab counts');
+  assert.equal(fileUnsaved(editing.files.identity), false, 'a draft equal to the file is not a change');
+  assert.deepEqual(unsavedFiles({ ...editing, text: 'display = "M"' }), ['motivation', 'settings']);
+  const mara = { locked: false };
+  assert.equal(lockWaits({ chosen: mara, token: null, editing }), true);
+  assert.equal(lockWaits({ chosen: mara, token: 't', editing }), false, 'with the unlock, locking hides nothing');
+  assert.equal(lockWaits({ chosen: { locked: true }, token: null, editing }), false, 'unlocking never waits');
+  const clean = { ...editing, files: { ...editing.files, motivation: { text: 'kelp' } } };
+  assert.equal(lockWaits({ chosen: mara, token: null, editing: clean }), false);
+  assert.equal(lockWaits({ chosen: mara, token: null, editing: null }), false);
 }
 
 // The Waiting section (ruled 2026-10-01): proposals a chat made, apart from
