@@ -24,6 +24,9 @@
   let session = null;
   let callKey = null;
   let callToken = null;
+  // The binding serve made for this connection (the offer's answer names
+  // it): the hang-up releases exactly this one, never another tab's call.
+  let callId = null;
   let callState = $state({ name: 'idle', label: '' });
   let level = $state(0);
   let linked = $state(false);
@@ -51,6 +54,7 @@
     // the words being spoken redirected into it.
     callKey = chatKey;
     callToken = token;
+    callId = null;
     open = true;
     muted = false;
     callState = { name: 'connecting', label: 'connecting' };
@@ -60,6 +64,7 @@
       sessionKey: callKey,
       offerExtra: callToken ? { unlock: callToken } : null,
       rememberVoice: false,
+      onAnswer: (answer) => (callId = Number.isInteger(answer?.call) ? answer.call : null),
       onState: (name, label) => {
         callState = { name, label };
         if (since == null && (name === 'listening' || name === 'speaking')) since = Date.now();
@@ -90,7 +95,7 @@
       method: 'POST',
       keepalive: true,
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ seconds, unlock: callToken ?? undefined }),
+      body: JSON.stringify({ seconds, call: callId ?? undefined, unlock: callToken ?? undefined }),
     }).catch(() => {});
   }
 

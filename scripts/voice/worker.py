@@ -2407,7 +2407,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
                 applied["voice"] = want
             else:
                 refused["voice"] = want
-        if "speed" in data:
+        if "speed" in data and "speed" in bound:
+            # The profile's speed, like its voice, is the persona's.
+            refused["speed"] = data["speed"]
+        elif "speed" in data:
             try:
                 want = float(data["speed"])
             except (TypeError, ValueError):
