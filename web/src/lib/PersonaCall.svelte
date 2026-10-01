@@ -139,6 +139,13 @@
     if (open && chatKey !== callKey) end();
   });
   onDestroy(end);
+  // A tab closing, reloading or navigating away runs no `onDestroy`: the
+  // hang-up goes out on `pagehide`, which is what `keepalive` is for
+  // (review of #483; `mail-queue.svelte.js` is the precedent).
+  $effect(() => {
+    window.addEventListener('pagehide', end);
+    return () => window.removeEventListener('pagehide', end);
+  });
 </script>
 
 {#if open}
