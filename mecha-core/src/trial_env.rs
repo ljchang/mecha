@@ -183,8 +183,48 @@ impl Environment {
                 path.display()
             )
         })?;
+        self.config_from(&text, &path, dir, real, base)
+    }
+
+    /// The features a trial of this environment runs with switched on
+    /// (`feature::switches_on`), from the resolved files and nothing built on
+    /// disk: a term of every row's condition hash, so it must be computable
+    /// wherever a plan is — `status` and `report` included. The config is
+    /// the one `prepare` builds, from the same text, so the set is the one
+    /// the trial's session records **before its arm's levers are applied**:
+    /// a lever that is also a switch (`Lever::Messages` writes
+    /// `[messages] enabled`) moves the recorded set per arm, and is carried
+    /// in the hash by its own `levers_off` / `forced_on` term (review of
+    /// #472).
+    pub fn features_on(&self, real: &Config, base: &Path) -> Result<Vec<crate::feature::Feature>> {
+        let files = self.resolve(base)?;
+        let dir = self.dir(base);
+        let text = files
+            .get("config.toml")
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .with_context(|| {
+                format!(
+                    "the experiment environment {} has no config.toml (a manifest with no \
+                     [environment] runs in {DEFAULT_DIR}, relative to the checkout)",
+                    dir.display()
+                )
+            })?;
+        let cfg = self.config_from(&text, &dir.join("config.toml"), &dir, real, base)?;
+        Ok(crate::feature::switches_on(&cfg))
+    }
+
+    /// [`Environment::config_at`] over text already read: `path` and `dir`
+    /// name it in errors only.
+    fn config_from(
+        &self,
+        text: &str,
+        path: &Path,
+        dir: &Path,
+        real: &Config,
+        base: &Path,
+    ) -> Result<Config> {
         let table: toml::Table =
-            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+            toml::from_str(text).with_context(|| format!("parsing {}", path.display()))?;
         for key in MACHINE_TABLES {
             anyhow::ensure!(
                 !table.contains_key(key),
@@ -258,7 +298,7 @@ impl Environment {
             }
         }
         let mut cfg = Config::default();
-        cfg.merge_environment_file(&path)?;
+        cfg.merge_environment_text(text, path)?;
         cfg.default_provider = real.default_provider.clone();
         cfg.providers = real.providers.clone();
         // A trial runs the model its arm names. Following whatever the owner
@@ -1174,6 +1214,40 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
             .prepare(&operator(), tmp.path(), &cache)
             .unwrap_err();
         assert!(format!("{err:#}").contains("requires `graph`"), "{err:#}");
+    }
+
+    /// `features_on` — the set every row's condition hash carries — reads
+    /// the resolved config, so a variant whose base declares the graph
+    /// server hashes `graph` on, as its prepared trial runs it. Read from
+    /// the variant's own directory it saw only the variant's half and hashed
+    /// a set the trial did not run (found writing it, 2026-10-01).
+    #[test]
+    fn the_hashed_switches_are_the_prepared_trials_through_extends() {
+        let tmp = Scratch::new();
+        let base_dir = tmp.path().join("envs/base");
+        std::fs::create_dir_all(&base_dir).unwrap();
+        std::fs::write(
+            base_dir.join("config.toml"),
+            "[[mcp]]\nname = \"g\"\ncommand = \"mecha-graph-mcp\"\nargs = [\"--db\", \"${STORE}/g.db\"]\n",
+        )
+        .unwrap();
+        let variant_dir = tmp.path().join("envs/variant");
+        std::fs::create_dir_all(&variant_dir).unwrap();
+        std::fs::write(variant_dir.join(ENV_MANIFEST), "extends = \"envs/base\"\n").unwrap();
+        std::fs::write(variant_dir.join("config.toml"), "[agent]\nmax_turns = 6\n").unwrap();
+        let variant = Environment {
+            dir: Some("envs/variant".into()),
+            live_servers: Vec::new(),
+        };
+        let hashed = variant.features_on(&operator(), tmp.path()).unwrap();
+        let world = variant
+            .prepare(&operator(), tmp.path(), &tmp.path().join("cache"))
+            .unwrap();
+        assert_eq!(hashed, crate::feature::switches_on(&world.config));
+        assert!(
+            hashed.contains(&crate::feature::Feature::Graph),
+            "{hashed:?}"
+        );
     }
 
     /// An environment that is, contains or sits inside the real home is
