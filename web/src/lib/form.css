@@ -41,7 +41,9 @@
 .tf-text { width: 100%; min-height: 40px; padding: 0 12px; background: var(--void); border: 1px solid var(--accent-900); border-radius: 8px; color: var(--text); font-family: var(--sans); font-size: 14px; }
 .tf-text:focus, .tf-select select:focus { outline: none; border-color: var(--accent-500); }
 
-.tf-bar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 10px; padding: 12px 0 4px; background: linear-gradient(transparent, var(--void) 30%); }
+/* Solid, not a fade: text scrolling under a see-through bar read as a
+ * rendering fault on a phone (owner, 2026-10-01). */
+.tf-bar { position: sticky; bottom: 0; z-index: 3; display: flex; align-items: center; gap: 10px; padding: 10px 0 6px; background: var(--void); border-top: 1px solid var(--accent-900); }
 .tf-count { flex: 1; font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
 .tf-bar.live .tf-count { color: var(--accent-300); }
 .tf-btn { min-height: 40px; padding: 0 18px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: 8px; color: var(--text); font-size: 14px; cursor: pointer; }
@@ -78,7 +80,9 @@
 .tf-area { display: block; width: 100%; padding: 0; resize: none; overflow: hidden; background: transparent; border: none; color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.6; outline: none; font-variant-ligatures: none; font-feature-settings: 'calt' 0, 'liga' 0; }
 .tf-area::placeholder { color: color-mix(in srgb, var(--text-muted) 70%, transparent); }
 .tf-notearea { font-size: 13px; line-height: 1.5; color: var(--text-muted); font-style: italic; }
-.tf-body { margin: 2px -8px 0; padding: 6px 8px; border-radius: 8px; transition: background 0.15s; }
+/* The focus wash reaches 8px past the text on *both* sides: a 100% width
+ * shifted left by its padding stopped 16px short on the right. */
+.tf-body { width: calc(100% + 16px); margin: 2px -8px 0; padding: 6px 8px; border-radius: 8px; transition: background 0.15s; }
 .tf-body:focus { background: color-mix(in srgb, var(--surface) 55%, transparent); }
 .tf-addsec { display: flex; align-items: center; gap: 8px; min-height: 48px; margin: 4px 10px 6px; padding: 0 8px; background: transparent; border: none; border-radius: 10px; color: var(--accent-400); font-size: 14px; cursor: pointer; }
 .tf-addsec:hover:not(:disabled) { background: var(--surface); }
@@ -89,3 +93,14 @@
 .tf-count .tf-dot { display: inline-block; }
 /* A switch the harness does not read yet: still settable, visibly quieter. */
 .tf-row.unbuilt .tf-name, .tf-row.unbuilt .tf-switch, .tf-row.unbuilt .tf-seg { opacity: 0.55; }
+
+/* A phone. iOS Safari zooms the page into any field under 16px when it is
+ * focused and does not zoom back, which on these forms read as broken
+ * (owner, 2026-10-01): every editable field is at least 16px on a touch
+ * screen. Desktop keeps its sizes. */
+@media (hover: none) and (pointer: coarse) {
+  .tf-area, .tf-notearea, .tf-text, .tf-add input, .tf-select select { font-size: 16px; }
+}
+@media (max-width: 480px) {
+  .tf-part { padding: 14px 14px 10px; }
+}
