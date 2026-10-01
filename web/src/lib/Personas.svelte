@@ -118,7 +118,9 @@
   // A cited page open beside the chat (§10.4): the page as the chat read
   // it, the quote marked. Text drawn as text — never the file itself.
   let citedPage = $state(null);
-  // Replies saved to the persona's files this visit, by entry (§10.5).
+  // Replies saved to the persona's files this visit, by the reply's text
+  // (§10.5) — not its position, which a transcript re-read shifts when a
+  // page-only notice sits between entries (the crisis cards' lesson, #418).
   let savedReplies = $state({});
   $effect(() => {
     key;
@@ -127,19 +129,19 @@
 
   // Save a reply into the persona's own files, on the owner's word: the
   // server takes only text this chat's persona wrote (`save_reply`).
-  async function saveReply(i, text) {
+  async function saveReply(text) {
     if (!key || busy) return;
     const k = key;
     try {
       const res = await fetch(chatUrl(k, '/save', null), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text, unlock: chosen?.locked ? token ?? undefined : undefined }),
+        body: JSON.stringify({ text, unlock: token ?? undefined }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       const { name } = await res.json();
       if (key === k) {
-        savedReplies = { ...savedReplies, [i]: name };
+        savedReplies = { ...savedReplies, [text]: name };
         loadSources();
       }
     } catch (e) {
@@ -1325,10 +1327,10 @@
                  One that was found opens its page. -->
             <div class="answer">{#each citeSegments(entry.text, cites.get(i)) as seg, j (j)}{#if seg.check}{@const n = citeNote(seg.check)}{#if citeOpens(seg.check)}<span class="cite {n.tone}" role="button" tabindex="0" title={n.title} onclick={() => openCited(seg.check)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openCited(seg.check))}>{seg.text}<span class="citetag">{n.label}</span></span>{:else}<span class="cite {n.tone}" title={n.title}>{seg.text}<span class="citetag">{n.label}</span></span>{/if}{:else}{seg.text}{/if}{/each}</div>
             {#if !run.running && entry.text?.trim()}
-              {#if savedReplies[i]}
-                <span class="savednote">saved to files as {savedReplies[i]}</span>
+              {#if savedReplies[entry.text]}
+                <span class="savednote">saved to files as {savedReplies[entry.text]}</span>
               {:else}
-                <button class="linkbtn quiet saveline" disabled={busy} onclick={() => saveReply(i, entry.text)}>Save to files</button>
+                <button class="linkbtn quiet saveline" disabled={busy} onclick={() => saveReply(entry.text)}>Save to files</button>
               {/if}
             {/if}
           {:else if entry.kind === 'tool'}

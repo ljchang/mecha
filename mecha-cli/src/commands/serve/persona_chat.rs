@@ -1425,7 +1425,14 @@ impl PersonaChats {
         .await
         .map_err(|e| Refusal::Failed(format!("saving the reply: {e}")))?
         .map_err(Refusal::Bad)?;
-        // Into the index, so the next chat's search finds it.
+        // Into the index, so the next chat's search finds it — unless the
+        // same content is already there (saved twice, same day), as an
+        // upload asks (`to_process`).
+        let embedded = crate::setup::file_embedder(&chat.follower.current().config).is_some();
+        let src = src.filter(|s| {
+            let index = mecha_core::persona::search::Index::open(&self.store).ok();
+            !indexed(index.as_ref(), s, embedded)
+        });
         if let Some(src) = src {
             let config = chat.follower.current().config.clone();
             self.read_in_background(src, None, crate::setup::file_embedder(&config));
