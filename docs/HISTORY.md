@@ -78,6 +78,34 @@ skipped for good; a section was cut to nothing with its heading gone. Each
 was fixed with a test that fails on the old code, and the key ones were
 mutation-checked.
 
+**2026-10-01 — personas from the main chat, and pictures you can save
+(#493, #494, #495, #496).** The owner's asks, on the rulings of that day
+(Waiting section on the Personas page; the chat sets name, display,
+relationships, identity, motivation, character and voice only; revise until
+approved; a waiting portrait approved in the same tap; either mode, staged
+locked from incognito).
+- **`persona_propose` (#493):** `persona::propose` stages a candidate with
+  the model's own prose (`create_with`), or revises one a proposal wrote.
+  `State::proposed` records the digest the model last wrote; one owner edit
+  (to the files, or a template they name) and the persona is the owner's,
+  and a revision is refused. A revision is a patch in the tool (left-out
+  fields keep their values); the lock only rises; origin is the less
+  trusted. `ToolCtx::stage_locked`, stamped from the chat's room, stages an
+  incognito proposal locked — the one writer incognito allows outside the
+  room (INCOGNITO-DESIGN R3's exception). Approval reads
+  `/api/personas/{name}/review` with a server signature of the content
+  digest and approves via `persona::approve_as_shown`, a waiting character
+  with it or not at all; review/approve/reject act only on a candidate a
+  proposal wrote, never a hand-made folder.
+- **A proposal's voice is a name (#496):** never looked up (voices live on
+  the voice server since #490), held to `validate_name` so a control
+  character is refused before a write, and kept out of the store probe whose
+  message would have handed the model the store's path.
+- **Picture Download (#494, #495):** beside Edit in both chats, read through
+  the chat's own file route and saved from a blob, so a locked or incognito
+  chat's picture leaves no address in the history; the note under a failed
+  download leaves with its chat, an ended incognito one included.
+
 **2026-10-01 — the persona page locks itself, a portrait can be framed,
 and every reply can be copied or saved (#469, #473, #480, #484).** The
 owner's asks from a phone, each through its own review loop.
