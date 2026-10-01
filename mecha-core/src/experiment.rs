@@ -2033,6 +2033,23 @@ impl Arm {
     }
 }
 
+/// The lever that switches `f` on for an arm, if any: one whose
+/// [`config_switch`] turns `f`'s switch on in a config that had it
+/// unanswered. Derived, not listed, so a lever that later writes a feature's
+/// switch is found here without anyone remembering it. An environment's
+/// `requires` is checked before an arm's levers apply, so it cannot ask for
+/// such a feature; this is how its refusal names where to ask instead.
+pub fn lever_that_switches_on(f: crate::feature::Feature) -> Option<Lever> {
+    let owner = f.switch_owner();
+    Lever::ALL.into_iter().find(|&lever| {
+        config_switch(lever).is_some_and(|set| {
+            let mut cfg = crate::config::Config::default();
+            set(&mut cfg, true);
+            crate::feature::switch(&cfg, owner) == Some(crate::feature::Switch::On)
+        })
+    })
+}
+
 /// The config field a lever's off position can live in, when it has one:
 /// turning such a lever on is an act (the operator's `false` must be
 /// overwritten), not the absence of a flag. The one list `resolve_forced_on`
@@ -5501,6 +5518,19 @@ rationale = "r"
             again[0].judgement.holdout.wins,
             verdicts[0].judgement.holdout.wins
         );
+    }
+
+    /// The one feature an arm's lever switches on is `messages`, found by
+    /// applying each lever rather than from a list — so a lever that later
+    /// writes a feature's switch is found too.
+    #[test]
+    fn only_messages_is_switched_on_by_a_lever() {
+        use crate::feature::Feature;
+        let found: Vec<(&str, &str)> = Feature::ALL
+            .iter()
+            .filter_map(|&f| lever_that_switches_on(f).map(|l| (f.id(), l.as_str())))
+            .collect();
+        assert_eq!(found, [("messages", "messages")]);
     }
 
     /// The switches a trial ran with are a term of its row's hash (the
