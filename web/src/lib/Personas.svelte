@@ -507,8 +507,11 @@
     key = null;
     imageEdit = null;
     // A sheet over a persona that has gone — a relock lands here — must go
-    // with it, or it renders without one (review of #479).
+    // with it, or it renders without one (review of #479) — the framing
+    // sheet too, or the next persona opens it with this one's frame and
+    // Save writes it there (review of #491).
     fileSheet = null;
+    framing = null;
     citedPage = null;
     attachments = [];
     run = emptyRun();
@@ -519,6 +522,7 @@
   async function choose(p) {
     showGoal = false;
     close();
+    framing = null;
     // Another persona's files must not draw under this one's heading while
     // its own load (review of #459).
     sources = [];
@@ -1341,13 +1345,17 @@
           <!-- The lock is a setting of the persona's, not an action of the
                page's (owner, 2026-10-01). It lives in state.toml, written by
                the server, so it is a switch here rather than a form field. -->
-          <label class="lockrow">
+          <!-- A button drawn from the state, as the settings form's toggles
+               are: a refused lock leaves the persona as it was, and an input
+               the click had already flipped would say otherwise (review of
+               #491). -->
+          <div class="lockrow">
             <span class="locktext">
               Hide behind the library lock
               <span class="hint">{chosen.locked ? 'shown only while the library is unlocked' : 'locking hides it until the library is unlocked'}</span>
             </span>
-            <input type="checkbox" role="switch" class="switch" checked={chosen.locked} disabled={busy} onchange={(e) => setLocked(e.currentTarget.checked)} />
-          </label>
+            <button type="button" role="switch" class="switch" class:on={chosen.locked} aria-checked={chosen.locked} aria-label="Hide behind the library lock" disabled={busy} onclick={() => setLocked(!chosen.locked)}></button>
+          </div>
         {/if}
         {#if asForm && current.form.form}
           {#key current.digest}
@@ -1940,14 +1948,14 @@
      tapped, and nothing else changes how it looks. */
   .avatarbtn { flex-shrink: 0; padding: 0; background: none; border: none; border-radius: 50%; cursor: pointer; line-height: 0; }
   .avatarbtn:hover :global(.avatar), .avatarbtn:focus-visible :global(.avatar) { box-shadow: 0 0 0 2px var(--accent-400); }
-  .lockrow { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: 10px; font-size: 14px; cursor: pointer; }
+  .lockrow { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: 10px; font-size: 14px; }
   .locktext { flex: 1; min-width: 0; }
   .lockrow .hint { display: block; margin-top: 2px; }
   /* A switch, as the settings form's own toggles are. */
-  .switch { appearance: none; flex-shrink: 0; position: relative; width: 52px; height: 30px; margin: 0; border-radius: 15px; background: var(--surface); border: 1px solid var(--accent-700); cursor: pointer; transition: background 120ms linear; }
+  .switch { flex-shrink: 0; position: relative; width: 52px; height: 30px; margin: 0; padding: 0; border-radius: 15px; background: var(--surface); border: 1px solid var(--accent-700); cursor: pointer; transition: background 120ms linear; }
   .switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--text-muted); transition: transform 120ms linear, background 120ms linear; }
-  .switch:checked { background: var(--accent-400); border-color: var(--accent-400); }
-  .switch:checked::after { transform: translateX(22px); background: var(--void); }
+  .switch.on { background: var(--accent-400); border-color: var(--accent-400); }
+  .switch.on::after { transform: translateX(22px); background: var(--void); }
   .switch:disabled { opacity: 0.5; cursor: default; }
   .abtn.wide { width: 100%; }
   .status { display: flex; flex-wrap: wrap; gap: 6px 16px; }
