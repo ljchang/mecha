@@ -1276,32 +1276,45 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
             return answered;
         }
         // One it took: the answer names the binding, for the page's hang-up
-        // to release exactly this call's.
-        return with_call_id(answered, id).await;
+        // to release exactly this call's. An answer that cannot carry the id
+        // leaves a binding no hang-up could name, so it goes now: that call
+        // has no persona to speak to, which is the safe way to fail
+        // (review of #483).
+        let (answered, named) = with_call_id(answered, id).await;
+        if !named {
+            chat.personas.release_offer(&key, id);
+        }
+        return answered;
     }
     answered
 }
 
 /// The worker's answer with `"call": id` added — the binding a persona call
-/// holds, which its hang-up names. An answer that is not a JSON object passes
-/// unchanged, and the hang-up then releases nothing.
-async fn with_call_id(answered: Response, id: u64) -> Response {
+/// holds, which its hang-up names — and whether it could be added. An answer
+/// that is not a JSON object passes unchanged, and the caller releases the
+/// binding no hang-up could name.
+async fn with_call_id(answered: Response, id: u64) -> (Response, bool) {
     let (parts, body) = answered.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
         return (
-            StatusCode::BAD_GATEWAY,
-            "reading the voice runner's answer\n",
-        )
-            .into_response();
+            (
+                StatusCode::BAD_GATEWAY,
+                "reading the voice runner's answer\n",
+            )
+                .into_response(),
+            false,
+        );
     };
-    let out = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+    let named = match serde_json::from_slice::<serde_json::Value>(&bytes) {
         Ok(serde_json::Value::Object(mut answer)) => {
             answer.insert("call".into(), serde_json::json!(id));
-            serde_json::to_vec(&answer).unwrap_or_else(|_| bytes.to_vec())
+            serde_json::to_vec(&answer).ok()
         }
-        _ => bytes.to_vec(),
+        _ => None,
     };
-    Response::from_parts(parts, axum::body::Body::from(out))
+    let ok = named.is_some();
+    let out = named.unwrap_or_else(|| bytes.to_vec());
+    (Response::from_parts(parts, axum::body::Body::from(out)), ok)
 }
 
 /// A refusal of an offer, as `persona_offer` answers one.
