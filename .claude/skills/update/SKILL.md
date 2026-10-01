@@ -339,20 +339,36 @@ in a unit you are not restarting does not block; on 2026-09-30 that was
 `mecha-ruminate`'s nightly `validate`. A new page waiting on this restart
 stays unpublished until it happens (step 1b).
 
-```bash
-systemctl --user restart mecha-slack.service mecha-triggers.service \
-                         mecha-drain.service mecha-serve.service \
-                         mecha-voice-worker.service
-```
-
-With a hold in `mecha-serve`, restart the rest now and serve once it clears:
+**The serve restart is gated in code, not by reading the list above.** On
+2026-10-01 at 13:09Z the count was printed beside an unconditional restart,
+read `1`, and the restart went ahead anyway — it cut off a chat's picture 81 s
+into rendering. Restart the rest, then serve only through the test:
 
 ```bash
+# Is a run held inside mecha-serve? Unknown is held: a holds directory that
+# exists and cannot be read, or a live pid whose cgroup cannot be read.
+serve_held() {
+  [ -e ~/.mecha/holds ] && [ ! -r ~/.mecha/holds ] && return 0
+  for f in ~/.mecha/holds/*.hold; do [ -e "$f" ] || continue
+    name=$(basename "$f"); pid=${name%%-*}
+    [ -d /proc/$pid ] || continue          # gone: a stale file, not a run
+    cg=$(tail -1 /proc/$pid/cgroup 2>/dev/null) || return 0
+    case "$cg" in *mecha-serve.service*) return 0 ;; esac
+  done
+  return 1
+}
 systemctl --user restart mecha-slack.service mecha-triggers.service \
                          mecha-drain.service mecha-voice-worker.service
-# later, when the check above prints nothing in mecha-serve.service:
-systemctl --user restart mecha-serve.service
+if serve_held; then
+  echo "HELD: a run in mecha-serve — run this block again once it clears"
+else
+  systemctl --user restart mecha-serve.service
+fi
 ```
+
+Running the block again once the hold clears restarts the other four a
+second time, which costs nothing. A new page waits on the serve restart
+(step 1b), so do not rsync it while this says HELD.
 
 **`mecha-serve` and `mecha-voice-worker` were missing from this list until
 2026-08-25**, which is worth naming because the omission is the shape this
