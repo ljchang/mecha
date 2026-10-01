@@ -15,6 +15,7 @@
 
 use anyhow::{Context, Result};
 use mecha_core::doctor::Remedy;
+use mecha_core::feature::{self, Feature};
 use mecha_core::onboarding::{self, Facts, Status, Step};
 use std::io::{IsTerminal, Write};
 
@@ -42,6 +43,17 @@ pub struct Args {
     /// a preference rather than a door that locks behind you.
     #[arg(long, value_name = "STEP_ID")]
     pub undecline: Option<String>,
+
+    /// Set up one optional feature: just its step (`mecha features` lists
+    /// the ids; a part such as `ocr` sets up the feature it belongs to).
+    #[arg(value_name = "FEATURE", conflicts_with_all = ["write", "undecline", "minimal"])]
+    pub feature: Option<String>,
+
+    /// Decline every optional step still outstanding, in one pass — the
+    /// light install. Writes declines, never config; `mecha features enable`
+    /// turns any one on later, and `--undecline` asks again.
+    #[arg(long, conflicts_with_all = ["json", "write", "undecline"])]
+    pub minimal: bool,
 }
 
 pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
@@ -124,16 +136,22 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         onboarding::LocalProbe::NotAttempted
     };
 
+    // Which feature `mecha setup <feature>` names, settled before any work:
+    // a typo is refused by name rather than read as "nothing to do".
+    let only: Option<Feature> = match &args.feature {
+        None => None,
+        Some(id) => Some(
+            Feature::parse(id)
+                .with_context(|| format!("`{id}` is not a feature — `mecha features` lists them"))?
+                .switch_owner(),
+        ),
+    };
+
     let declined = onboarding::read_declined(&home);
     let facts = Facts {
-        has_mail_binary: onboarding::on_path("mecha-mail"),
-        has_docs_binary: onboarding::on_path("mecha-docs"),
-        has_graph_binary: onboarding::on_path("mecha-graph-mcp"),
-        // Each store by its owner's rule, not `home.join(..)` — see
-        // `onboarding::mail_store_dir`.
-        mail_accounts: onboarding::mail_store_dir().and_then(|d| onboarding::count_accounts(&d)),
-        docs_accounts: onboarding::docs_store_dir().and_then(|d| onboarding::count_accounts(&d)),
-        slack_linked: onboarding::slack_linked(&home),
+        // The registry's readout against the global config, as `mecha
+        // features` reads it — the feature steps are built from it.
+        features: feature_rows(&home),
         provider_credential: pcfg.resolve_api_key().is_some(),
         props,
         scheduler_installed: scheduler_installed(),
@@ -146,17 +164,15 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         // below rather than swallowed — a checklist that quietly stopped
         // honouring your answers would be the worse half of this feature.
         declined: declined.clone().unwrap_or_default(),
-        // Read against the global config, as `mecha features` reads it.
-        feature_offers: mecha_core::config::Config::load_global()
-            .map(|global| {
-                mecha_core::feature::announcements(&mecha_core::feature::Facts::read(
-                    &home, &global,
-                ))
-            })
-            .unwrap_or_default(),
     };
 
-    let steps = onboarding::plan(&cfg, &name, &facts);
+    let mut steps = onboarding::plan(&cfg, &name, &facts);
+    if let Some(f) = only {
+        // One feature's step and nothing else (FEATURES-DESIGN.md §4.2 item
+        // 2). A feature blocked on another is offered with the chained
+        // command, so its dependency is taken first in the same step.
+        steps.retain(|s| s.id == f.id());
+    }
 
     // Nothing is offered when nobody is there to answer, which is the
     // `doctor` rule: a setup flow that acts with no one watching is the
@@ -206,6 +222,9 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     }
     if args.write {
         return write_verified(&name, pcfg.kind != "local", &facts);
+    }
+    if args.minimal {
+        return minimal(&outstanding, &home);
     }
     render(&steps);
 
@@ -310,6 +329,17 @@ enum Answer {
 /// builds the declined store by hand and so was structurally unable to see
 /// the bug above — the only way to catch it is to drive the answers.
 fn offer(steps: &[&Step], home: &std::path::Path, read: &mut impl std::io::BufRead) -> Result<()> {
+    offer_with(steps, home, read, &|id| after_feature(id, home))
+}
+
+/// `offer`, with what to do after a remedy succeeds handed in — so the loop
+/// is testable without the global config `after_feature` reads.
+fn offer_with(
+    steps: &[&Step],
+    home: &std::path::Path,
+    read: &mut impl std::io::BufRead,
+    after: &dyn Fn(&str),
+) -> Result<()> {
     let mut already_run: Vec<&[String]> = Vec::new();
     for s in steps {
         let Some(remedy) = &s.remedy else { continue };
@@ -357,6 +387,7 @@ fn offer(steps: &[&Step], home: &std::path::Path, read: &mut impl std::io::BufRe
                 // already done.
                 if run(remedy)? {
                     already_run.push(&remedy.argv);
+                    after(&s.id);
                 }
             }
             Answer::Skip => println!("skipped — asked again next time"),
@@ -377,6 +408,70 @@ fn offer(steps: &[&Step], home: &std::path::Path, read: &mut impl std::io::BufRe
                 Err(e) => println!("could not record that: {e} — it will be offered again"),
             },
         }
+    }
+    Ok(())
+}
+
+/// The registry's rows against the global configuration — empty when it does
+/// not load, which the plan's own config step already reports.
+fn feature_rows(home: &std::path::Path) -> Vec<mecha_core::feature::Row> {
+    mecha_core::config::Config::load_global()
+        .map(|global| feature::all(&feature::Facts::read(home, &global)))
+        .unwrap_or_default()
+}
+
+/// After a feature step's remedy worked: where the feature stands now, read
+/// afresh, and what is next. A switch turned on is rarely the last move — an
+/// `[[mcp]]` entry, an account, a settings table — and saying so here is
+/// what keeps `mecha setup <feature>` from ending on a step that only looks
+/// finished. Nothing for a step that is not a feature's.
+fn after_feature(id: &str, home: &std::path::Path) {
+    let Some(f) = Feature::parse(id).filter(|f| f.has_switch()) else {
+        return;
+    };
+    let Some(row) = feature_rows(home).into_iter().find(|r| r.id == f) else {
+        return;
+    };
+    match (&row.state, &row.next) {
+        (feature::State::On { .. }, _) => println!("`{id}` is on"),
+        (state, Some(next)) => println!(
+            "`{id}` now reads {} — next: {next} (`mecha setup {id}` again once that is done)",
+            state.word()
+        ),
+        (state, None) => println!("`{id}` now reads {}", state.word()),
+    }
+}
+
+/// `--minimal`: decline every optional step still outstanding, in one pass,
+/// and say which. Declines only — never a config write, so a later `mecha
+/// features enable` or `--undecline` undoes any one of them.
+fn minimal(outstanding: &[&Step], home: &std::path::Path) -> Result<()> {
+    let mut declined = Vec::new();
+    for s in outstanding
+        .iter()
+        .filter(|s| s.optional && s.status == Status::Missing)
+    {
+        let wrote = onboarding::decline(home, &s.id)?;
+        report_salvage(wrote.salvaged);
+        declined.push(s.id.as_str());
+    }
+    if declined.is_empty() {
+        println!("nothing optional is outstanding — nothing to decline");
+    } else {
+        println!(
+            "declined {} — `mecha setup --undecline <id>` asks again, `mecha features enable <id>` turns one on",
+            declined.join(", ")
+        );
+    }
+    // What is left is what cannot be declined: said, as a plain run says it.
+    let left: Vec<&str> = outstanding
+        .iter()
+        .filter(|s| !(s.optional && s.status == Status::Missing))
+        .map(|s| s.id.as_str())
+        .collect();
+    if !left.is_empty() {
+        println!("still outstanding, and not declinable: {}", left.join(", "));
+        crate::exit_with(1);
     }
     Ok(())
 }
@@ -914,7 +1009,7 @@ mod tests {
         // "never" to the first, "never" to the second: both asked, both
         // recorded.
         let mut input = std::io::Cursor::new(b"never\nnever\n".to_vec());
-        offer(&steps, &home, &mut input).unwrap();
+        offer_with(&steps, &home, &mut input, &|_| {}).unwrap();
         let declined = onboarding::read_declined(&home).unwrap();
         assert!(
             declined.contains("mail") && declined.contains("docs"),
@@ -925,7 +1020,7 @@ mod tests {
         // rather than silently swallowing it.
         let home = scratch_home(line!());
         let mut input = std::io::Cursor::new(b"never\n\n".to_vec());
-        offer(&steps, &home, &mut input).unwrap();
+        offer_with(&steps, &home, &mut input, &|_| {}).unwrap();
         let declined = onboarding::read_declined(&home).unwrap();
         assert!(declined.contains("mail"));
         assert!(
@@ -933,6 +1028,25 @@ mod tests {
             "a skip is not a decline, and one answer is not two: {declined:?}"
         );
 
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// After a remedy that worked, and only then, setup says where the step's
+    /// feature now stands (`after_feature`): a failed install has moved
+    /// nothing, and a step skipped or declined ran nothing to report on.
+    #[test]
+    fn only_a_remedy_that_worked_is_followed_by_where_the_feature_stands() {
+        let home = scratch_home(line!());
+        let worked = step_with("mail", &["true"], true);
+        let failed = step_with("docs", &["false"], true);
+        let skipped = step_with("slack", &["true"], true);
+        let seen = std::cell::RefCell::new(Vec::new());
+        let mut input = std::io::Cursor::new(b"y\ny\n\n".to_vec());
+        offer_with(&[&worked, &failed, &skipped], &home, &mut input, &|id| {
+            seen.borrow_mut().push(id.to_string())
+        })
+        .unwrap();
+        assert_eq!(*seen.borrow(), ["mail"]);
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -954,7 +1068,7 @@ mod tests {
         ];
         let home = scratch_home(line!());
         let mut input = std::io::Cursor::new(b"y\nnever\n".to_vec());
-        offer(&[&failing[0], &failing[1]], &home, &mut input).unwrap();
+        offer_with(&[&failing[0], &failing[1]], &home, &mut input, &|_| {}).unwrap();
         assert!(
             onboarding::read_declined(&home).unwrap().contains("docs"),
             "the install failed, so `docs` is still outstanding and must be asked"
@@ -969,7 +1083,7 @@ mod tests {
         ];
         let home = scratch_home(line!());
         let mut input = std::io::Cursor::new(b"y\nnever\n".to_vec());
-        offer(&[&working[0], &working[1]], &home, &mut input).unwrap();
+        offer_with(&[&working[0], &working[1]], &home, &mut input, &|_| {}).unwrap();
         assert!(
             onboarding::read_declined(&home).unwrap().is_empty(),
             "one successful install satisfies both, so nothing was declined"
@@ -984,7 +1098,7 @@ mod tests {
         let home = scratch_home(line!());
         let mail = step_with("mail", &["cargo", "install", "mecha-mail"], true);
         let mut input = std::io::Cursor::new(Vec::new());
-        offer(&[&mail], &home, &mut input).unwrap();
+        offer_with(&[&mail], &home, &mut input, &|_| {}).unwrap();
         assert!(onboarding::read_declined(&home).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -998,7 +1112,7 @@ mod tests {
         let home = scratch_home(line!());
         let credential = step_with("provider-credential", &["mecha", "config", "show"], false);
         let mut input = std::io::Cursor::new(b"never\n".to_vec());
-        offer(&[&credential], &home, &mut input).unwrap();
+        offer_with(&[&credential], &home, &mut input, &|_| {}).unwrap();
         assert!(
             onboarding::read_declined(&home).unwrap().is_empty(),
             "`never` on a required step is not an answer this may record"

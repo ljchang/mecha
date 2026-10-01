@@ -25,8 +25,10 @@
 > model's library tools, never the page; the library's lock and portrait
 > routes are core, because Personas uses them. One deliberate departure from §5: `[features] messages` is
 > applied *into* `[messages] enabled` rather than or-ed with it, so experiment
-> levers keep one field (ARCHITECTURE §Features says why). Steps 4–8 are
-> unbuilt. The owner
+> levers keep one field (ARCHITECTURE §Features says why). **Step 4 is split
+> too: 4a — `mecha setup` iterates the registry, `mecha setup <feature>` and
+> `--minimal` — is built;** 4b (experiments record the feature set, and an
+> environment's `requires`) and steps 5–8 are unbuilt. The owner
 > ruled F1–F6 the same day (§7): the switch is a `[features]` table of
 > bools — not a table's presence, which this doc first recommended — and §5
 > is written to that ruling; F5 is `hardware.md`'s four tiers, in two

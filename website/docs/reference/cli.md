@@ -1470,18 +1470,21 @@ mecha distill -p local --limit 10 --server graph
 What this install still needs, and the one command that fixes each.
 
 ```
-mecha setup [--json] [--write] [--undecline <STEP_ID>]
+mecha setup [FEATURE] [--json] [--write] [--minimal] [--undecline <STEP_ID>]
 ```
 
 | Flag | Description |
 |---|---|
+| `FEATURE` | Only that optional feature's step — `mecha setup mail`. A part sets up the feature it belongs to (`ocr` → `documents`); an id that is not a feature is refused by name. |
 | `--json` | Print the plan as JSON and exit. Never prompts, even at a terminal. |
 | `--write` | Rewrite the local provider's `model`, `context_window` and `vision` from what its server reports. |
+| `--minimal` | Decline every optional step still outstanding, in one pass — the light install. Writes declines, never config; `mecha features enable <id>` turns any one on later. |
 | `--undecline <STEP_ID>` | Ask about a step you said `never` to again. `all` clears every one. Says so when the id was never declined, rather than reporting an undo it did not perform. |
 
-The three are mutually exclusive: each is a different verb, and a pair used to
-resolve by whichever branch came first — `--json --write` printed a plan,
-exited 1 and wrote nothing. The parser refuses the combination instead.
+`--json`, `--write`, `--minimal` and `--undecline` are mutually exclusive: each
+is a different verb, and a pair used to resolve by whichever branch came first —
+`--json --write` printed a plan, exited 1 and wrote nothing. The parser refuses
+the combination instead.
 
 Where it differs from [`doctor`](#doctor), and why both exist: doctor answers
 *what is silently broken about a working install*, in one pass with no network
@@ -1532,9 +1535,26 @@ set a variable it does not name.
 
 ### Everything else
 
-It also inventories the integrations — mail, documents, Slack, the knowledge
-graph — reporting each as ok, not set up, or **unknown**, and offering the next
-command for the ones it can. And it offers `mecha config init` when there is no
+It also has **a step for every optional feature** — the web app, Slack, mail,
+docs, the knowledge graph, web search, PDF extraction, image generation,
+personas, voice, incognito chat, the front door and messages — read from the
+same registry as [`features`](#features), in that order, so a feature's
+dependency is offered before it:
+
+| `mecha features` says | The step |
+|---|---|
+| on | done, with its parts (`documents (ocr on, layout on)`) |
+| switched off (`false`) | declined — an answer already given; `mecha features enable` is the way back |
+| not switched on, or waiting on one that is not | outstanding and declinable; the command is `mecha features enable …`, the dependency first |
+| switched on but unready | wrong, not declinable — you said yes and it does not work; the next command, or the edit it needs |
+| unknown | unknown, offering nothing |
+
+Setup only ever *runs* a command; an edit to `config.toml` (an `[[mcp]]` entry, an
+`[image]` table) is named in the step and left to you. After a command works,
+it reads the feature again and says where it stands and what is next. Mail,
+docs and the graph count as set up only with an enabled `[[mcp]]` entry naming
+their server, as their tools do — an installed binary alone is not mail. And it
+offers `mecha config init` when there is no
 config file: `Config::load_global` tolerating its absence is right, since mecha
 must work before anybody has written one, and is also exactly why nobody ever
 learned about the file that every other step is fixed by editing. Unknown is deliberately not "not set up": a
@@ -1570,8 +1590,8 @@ something to go looking for.
 Three guarantees on it, each structural rather than a matter of the prompt
 being careful:
 
-- **Only genuinely optional things are declinable** — the four integrations and
-  the charter. A provider that cannot answer is not a feature going unused, and
+- **Only genuinely optional things are declinable** — the optional features
+  (while not switched on) and the charter. A provider that cannot answer is not a feature going unused, and
   declining it would report `Nothing outstanding.` on an install that cannot
   answer a prompt.
 - **A decline never hides a fault or a fact.** It applies only to a step that
