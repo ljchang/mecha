@@ -17,8 +17,11 @@ still worth knowing about, because the next person will otherwise re-derive it.
 **2026-10-01 — modular installs, step 4: setup reads the registry, and a
 trial carries its switches (#460, #461, #464, #466, #470, #472, #474,
 #476).**
-Each was merged on a clean review pass — by the mecha-d7 lane, and #474
-by mecha-5d's under the owner's "merge everything" — and all went live in
+Each was merged by the mecha-d7 lane on a clean review pass, except #474:
+mecha-5d's lane merged it under the owner's "merge everything" at a head
+whose pass 3 had named one substantive issue still open — the refusal
+calling `messages` "never on in a trial" — which mecha-ce graded minor and
+fixed in #476 rather than holding the merge. All went live in
 mecha-d7's deploys of `9f306d8f` (#460, #461), `85ca4dfe` (#464, #466),
 `6565cfd8` (#470, #472) and `997a2894` (#474). The deploys themselves are
 mecha-d7's rows, written after this one.
@@ -31,7 +34,8 @@ wording rode in #470.
   and 1a's `feature-<id>` offers. A switch written `false` reads Declined,
   an unanswered one Missing and declinable, a blocked or unready one Wrong,
   and an on one Done with its parts. `onboarding::runnable` runs only
-  mecha's own binaries. `mecha setup <feature>` runs one step, and
+  mecha's own binaries and `cargo` (for the `cargo install` a missing
+  server's step names). `mecha setup <feature>` runs one step, and
   `--minimal` declines every optional one without writing config.
 - **#461:** each decline carries its way back (`Step::undo`): `mecha setup
   --undecline <id>` for an answer given in setup, `mecha features enable
@@ -63,7 +67,9 @@ wording rode in #470.
   config now loads from the resolved text (`Config::merge_environment_text`).
 - **#474, ruling 4:** a `requires` naming a feature no trial home can have
   refuses at load, listing the five that can (`graph`, `tasks`, `search`,
-  `frontdoor`, `publishing`) and pointing at fixture servers.
+  `frontdoor`, `publishing`); only `mail` and `docs`, which fixture servers
+  stand in for, are pointed at them, and the run-time refusal says how a
+  trial gets the feature it names (`how_a_trial_gets`).
   `trial_env::can_be_on_in_a_trial` reads the lists `config_at` defaults
   from, and a test holds it to what a trial actually switches on.
   Its pass 3 found the refusal calling `messages` "never on in a trial",
