@@ -55,7 +55,13 @@ export async function copyText(text, nav = globalThis.navigator, doc = globalThi
 // Save `text` as a Markdown file named `name`, from a blob made here — the
 // reply never goes back to the server to be downloaded.
 export function downloadText(name, text, doc = globalThis.document, url = globalThis.URL) {
-  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+  saveBlob(name, new Blob([text], { type: 'text/markdown;charset=utf-8' }), doc, url);
+}
+
+// Hand `blob` to the browser as a download named `name`, and let it go.
+// Nothing here reaches the server: a caller that has to read something
+// first (a picture, `picture.js`) does so itself and hands the blob over.
+export function saveBlob(name, blob, doc = globalThis.document, url = globalThis.URL) {
   const href = url.createObjectURL(blob);
   const a = doc.createElement('a');
   a.href = href;
