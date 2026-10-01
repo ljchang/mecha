@@ -565,6 +565,46 @@ pub fn nothing_to_keep(persona: &Persona) -> bool {
     !s.episodic && !s.semantic && s.user_facts == UserFacts::Off
 }
 
+/// Which model writes a chat, or that it waits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelPick {
+    Use(String),
+    /// The chat's model is not the one loaded; writing now would swap it in.
+    Wait(String),
+}
+
+/// The owner's ruling (2026-10-01): a chat is written by **the model it ran
+/// on**. Reconciled with the earlier one (2026-09-27, REMOTE-SURFACE-DESIGN
+/// §14) that background work never swaps the router's resident model — a
+/// swap at night once pulled production out from under a comparison run:
+///
+/// - the chat's model is resident: it writes;
+/// - nothing is resident: it writes, and loading it evicts nothing;
+/// - another model is resident: the chat **waits** for a run when its model
+///   is loaded again — which the next chat with that persona does;
+/// - the chat recorded no model: the resident one writes;
+/// - not a router: one model is served, whatever a request names.
+///
+/// `resident` is what the router has loaded (`None`: nothing); `router` is
+/// whether the provider is one at all.
+pub fn pick_model(
+    chat: Option<&str>,
+    resident: Option<&str>,
+    router: bool,
+    fallback: &str,
+) -> ModelPick {
+    if !router {
+        return ModelPick::Use(fallback.to_owned());
+    }
+    match (chat, resident) {
+        (Some(c), Some(r)) if c == r => ModelPick::Use(c.to_owned()),
+        (Some(c), Some(_)) => ModelPick::Wait(c.to_owned()),
+        (Some(c), None) => ModelPick::Use(c.to_owned()),
+        (None, Some(r)) => ModelPick::Use(r.to_owned()),
+        (None, None) => ModelPick::Use(fallback.to_owned()),
+    }
+}
+
 /// One model call per stretch, on a quarantined pass.
 pub struct Writer {
     provider: Box<dyn crate::provider::Provider>,
@@ -586,6 +626,11 @@ impl Writer {
 
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// Write the next chat with `model` ([`pick_model`]'s answer).
+    pub fn set_model(&mut self, model: String) {
+        self.model = model;
     }
 
     /// Ask about one stretch. `Ok(None)`: the reply ended normally but held

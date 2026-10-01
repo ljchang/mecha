@@ -561,3 +561,23 @@ async fn memory_switched_off_asks_nothing_and_still_moves_on() {
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(m.written_upto("c1").unwrap(), 6);
 }
+
+#[test]
+fn a_chat_is_written_by_its_own_model_and_never_swaps_the_resident_one() {
+    let use_ = |m: &str| ModelPick::Use(m.into());
+    let pick = |chat, resident| pick_model(chat, resident, true, "default");
+    assert_eq!(pick(Some("story"), Some("story")), use_("story"));
+    assert_eq!(
+        pick(Some("story"), Some("work")),
+        ModelPick::Wait("story".into())
+    );
+    // An empty router: loading the chat's model evicts nothing.
+    assert_eq!(pick(Some("story"), None), use_("story"));
+    assert_eq!(pick(None, Some("work")), use_("work"));
+    assert_eq!(pick(None, None), use_("default"));
+    // One model served, whatever a request names.
+    assert_eq!(
+        pick_model(Some("story"), Some("work"), false, "default"),
+        use_("default")
+    );
+}

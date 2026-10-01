@@ -147,6 +147,10 @@ class Scripts(unittest.TestCase):
             [
                 ["reflect"],
                 ["distill"],
+                # Persona memory: each chat's own model, and only while it is
+                # the resident one (`writer::pick_model`), so unpinned here
+                # like every other stage.
+                ["persona"],
                 ["validate"],
                 # The brake right after validate, ahead of every paid pass
                 # (owner, 2026-09-27).
