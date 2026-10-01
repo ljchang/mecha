@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Personas remember you in the next chat.** A new chat with a persona
+  starts with what it remembers: your about-me notes, what it knows about you
+  (and what you shared with it), its own facts, and its last few
+  conversations, each switch on its settings page honoured. Memory that came
+  from something read from outside — a search, a file — marks the chat as
+  having outside content, as reading it again would; ordinary memory does
+  not. Searching memory during a chat comes next.
 - **Personas start remembering.** `mecha persona memory write` reads each
   persona's chats and records an episode and facts per stretch of
   conversation, in the persona's own memory. The nightly runs it. Each chat
