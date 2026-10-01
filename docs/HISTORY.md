@@ -14,6 +14,53 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-10-01 — personas read their files: folders, checked citations,
+search, saving (#459, #465, #467, #475), and a page that reads well (#479).**
+PERSONA-DESIGN §10's four build steps in one day, each through its own
+review loop.
+- **3a (#459):** a `files/` folder at three levels (own, group, everyone),
+  read by name, never by path; the whole collection rides in the first
+  turn below a quarter of the window, or else its list. The first turn
+  never runs OCR: an unread document is read in the background, one at a
+  time.
+- **3b (#465):** every `[file, p. N: "quote"]` is looked up by the harness
+  (`persona::cite`, over `grounding::admit`) in what the chat had received,
+  and tagged quoted, on another page, not in the file, no such file, not
+  read, can't check or too short. A citation opens the chat's text of the
+  page, never the PDF.
+- **3c (#467):** `file_search`, over one store index keyed by content hash
+  and scoped by the persona's listing. It ranks by vectors from `:8081`
+  fused with FTS5, by words alone where meaning is unavailable, and says
+  which. `mecha_core::embed` is ported from mecha-graph's client.
+- **3d (#475):** a *Save to files* link writes a reply into the persona's
+  own folder, but only text that is one of the chat's own replies.
+- **#479:** Markdown rendering in both chats through `ChatProse` (the mail
+  reader's parser, no `{@html}`), with double-click for the raw text. A
+  file sheet to download or read a file. Drop to add, with upload
+  feedback. Earlier chats headed by summary, goal or opener; the goal
+  behind a link.
+
+What the review loops found most often was a check that kept working and
+stopped being true: a token stuck in a guard, a dedup by neighbours, a
+fallback that read a cache the reader never wrote. Each was fixed with a
+test that fails on the old behaviour.
+
+**2026-10-01 — test chats wrote into the owner's store (#471).**
+`chat::test_chat()` built a door that resolved sessions, workspaces and the
+outbox from the real home, so every lane's suite added "web: srctest"
+sessions and test pictures to `~/.mecha`, counted by the run-quality
+corpus as real chats (251 moved out by the end of the day). `ChatState` now holds its
+own `sessions_dir` and `work_dir`; a test door gets a fresh temporary root
+(never `MECHA_HOME`, which a concurrent `HomeGuard` may hold), and the
+guarded tests read back through the door. The residue was moved to a dated
+backup.
+
+**2026-09-30 — personas draw themselves (#444, #454).** `image_generate`
+casts a persona's own character as "self" (`Tool::for_persona_as`,
+`PersonaSelf`), so "draw yourself" is the persona's portrait, not a
+stranger; #454 settled the follow-ups (a wearing/doing clause, a capped
+library ask, a reply that steers).
+
 **2026-10-01 — modular installs, step 4: setup reads the registry, and a
 trial carries its switches (#460, #461, #464, #466, #470, #472, #474,
 #476).**
