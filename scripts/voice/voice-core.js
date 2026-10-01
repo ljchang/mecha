@@ -31,8 +31,9 @@
  *                          // call, e.g. a persona call's binding id
  *     rememberVoice,       // default true; false for a call whose voice is
  *                          // not the listener's to choose (a persona's):
- *                          // the remembered voice is neither sent nor
- *                          // overwritten by the call's
+ *                          // the remembered voice and rate are neither sent
+ *                          // nor overwritten by the call's — the worker's
+ *                          // voice list and range are still cached
  *     requireUnlogged,     // optional: go on only if the answer says nothing
  *                          // of the call is logged (`refusesAnswer`) — set
  *                          // for a call into an incognito chat
@@ -771,7 +772,12 @@ export function createVoiceSession(opts = {}) {
         if (msg.data?.t === "voice-config") {
           // Written before the UI renders it, and written from the
           // server's state rather than from whatever was asked for.
+          // A persona call's voice and rate are the persona's, never the
+          // listener's preference — but the worker's list and range are the
+          // same either way, and the settings picker reads them from here
+          // (review of #483).
           if (cfg.rememberVoice) writePrefs(msg.data);
+          else writePrefs({ voices: msg.data.voices, range: msg.data.range });
           cfg.onVoiceConfig(msg.data);
         }
         // The worker's own watch over its microphone audio: it saw the gap
