@@ -1179,6 +1179,12 @@
   ondragover={onDragOver}
   ondragleave={onDragLeave}
   ondrop={onDrop}
+  onkeydown={(e) => {
+    // Escape closes the framing sheet, as Cancel does — at the window, since
+    // the sheet can open unasked with focus left in the editor (review of
+    // #491).
+    if (e.key === 'Escape' && framing) framing = null;
+  }}
 />
 
 <div class="page">
@@ -1753,10 +1759,9 @@
 
   {#if framing && chosen?.portrait}
     <button class="scrim" aria-label="close" onclick={() => (framing = null)}></button>
-    <!-- It can open unasked (a new portrait), so it says what it is and
-         Escape closes it, as Cancel does (review of #491). -->
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="sheet framesheet" role="dialog" aria-label={`Adjust ${chosen.display}'s picture`} tabindex="-1" onkeydown={(e) => e.key === 'Escape' && (framing = null)}>
+    <!-- It can open unasked (a new portrait), so it says what it is; Escape
+         closes it from the window (review of #491). -->
+    <div class="sheet framesheet" role="dialog" aria-label={`Adjust ${chosen.display}'s picture`}>
       <div class="sheet-grip"></div>
       <div class="sheet-text">Adjust {chosen.display}'s picture</div>
       <div
