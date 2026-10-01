@@ -11,6 +11,8 @@
 // `images/<name>.png`; `image_view` reports a workspace-relative path of
 // plain segments, none starting with a dot. A refusal or failure has no
 // picture.
+
+import { saveBlob } from './reply-export.js';
 const PICTURE = {
   image_generate: /^image: (images\/[A-Za-z0-9._-]+\.png)$/,
   image_view: /^image: ((?:[A-Za-z0-9_-][A-Za-z0-9._ -]*\/)*[A-Za-z0-9_-][A-Za-z0-9._ -]*\.(?:png|jpe?g|gif|webp))$/i,
@@ -74,4 +76,26 @@ export function turnsWithoutPicture(entries, running = false) {
   });
   if (!running) close();
   return out;
+}
+
+// A generated picture's file name: the last part of its workspace path.
+export function pictureName(path) {
+  const base = String(path ?? '').split('/').filter(Boolean).pop() ?? '';
+  return base || 'picture.png';
+}
+
+// Save a generated picture (owner request, 2026-10-01): read through the
+// chat's own file route — `get`, the page's same-origin fetch — and saved
+// from a blob, never by pointing the browser at the URL, so no picture
+// address lands in the history a locked or incognito chat keeps out of it.
+// Returns '' when saved, or why not.
+export async function downloadPicture(get, url, path, doc = globalThis.document, urls = globalThis.URL) {
+  try {
+    const res = await get(url);
+    if (!res.ok) return (await res.text()).trim() || `HTTP ${res.status}`;
+    saveBlob(pictureName(path), await res.blob(), doc, urls);
+    return '';
+  } catch (e) {
+    return String(e?.message ?? e);
+  }
 }
