@@ -22,6 +22,28 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-10-01 — persona autolock and avatar framing are live; persona
+creation from the main chat is next (mecha-69).** #469, #473 and #480 are in
+HISTORY under 2026-10-01 and live: #469 in mecha-d7's `997a2894`, #473 in
+mecha-69's `36ff7573`, #480's page in `37fec515`. #484 (Copy and Download on
+every chat reply) is open. What is open, verified against `37fec515`:
+
+- **`persona_propose` from the main chat: the owner asked for it; unbuilt.**
+  The assistant can stage library characters (`image_library_propose`), but
+  has no tool to stage a persona. PERSONA-DESIGN §4.4 says a model may only
+  stage a candidate (`Origin::of_proposal`). `persona::create` already makes
+  a non-owner origin a candidate, but `NewPersona` carries no identity or
+  motivation prose. The only approval is `mecha persona approve`: there is
+  no read-then-approve on the page, as the library has (`approve_shown`).
+- **Review minors carried:**
+  - `lenient_frame` drops a damaged `frame` line with no `notes` entry;
+  - Settings fetches `/api/settings/lock` even when both tabs are hidden;
+  - the Library tab's copy of `armIdle`/`dropToken`/`revoke` has no test;
+  - `POST /api/settings/lock`'s happy path is untested, because it runs a CLI
+    child against the real home;
+  - `loadHistory`'s failure branch does not check the generation after
+    `res.text()` (benign: its note is discarded).
+
 **2026-10-01 — persona files (§10) done and live, and reading a chat is
 easier; what is open.** Steps 3a–3d (#459, #465, #467, #475) and the
 page and reading work (#479) are in HISTORY under 2026-10-01; all are live in
@@ -3747,8 +3769,21 @@ start, from the journal:
   `index-Bk-3J0Ll.js`. The checkout was fast-forwarded from mecha-69's
   `36ff7573` (no `scripts/` change).
 
-mecha-69's 15:37Z install of `36ff7573` (#473, #476) is theirs. **Test
-residue** from every lane's suite (#471's leak) was moved, never deleted, to
+**2026-10-01, mecha-69: `mecha` once, and a dist once.**
+- **15:37Z, `36ff7573`** (#473, #476). The shared checkout was
+  fast-forwarded from `997a2894` (no `scripts/` change) and `mecha-cli`
+  installed from it. `~/.mecha/holds` was empty, and serve, Slack, triggers
+  and drain were restarted together. Dist rsynced (`index-P8sJGqhn.js`).
+  Checked: `strings ~/.cargo/bin/mecha | grep -cF "a frame's zoom is 1 to"`
+  → 1, serve's `/proc/<pid>/exe` is the installed path, and `/api/personas`
+  rows carry `frame`.
+- **~18:08Z, `37fec515`** (#480, on mecha-d7's `1238cb5e`). Dist only: the
+  range's Rust is comments. The checkout was fast-forwarded and nothing was
+  restarted. Verified at 18:27Z: the 8443 door serves `index-BFEgTJhm.js`,
+  serve has been up since 17:44:37Z, and the binary probe above still
+  prints 1.
+
+**Test residue** from every lane's suite (#471's leak) was moved, never deleted, to
 `~/.mecha/test-residue-backup-20261001`: 251 `provider: test` sessions and
 the `work/web/{srctest,libtest}*` uploads (under `work-web/`). The persona `tau` is the owner's
 and was not touched.
