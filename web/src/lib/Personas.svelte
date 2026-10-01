@@ -140,9 +140,14 @@
 
   // Save a reply into the persona's own files, on the owner's word: the
   // server takes only text this chat's persona wrote (`save_reply`).
+  // Replies on their way to the server: a second click on the quiet link
+  // must not write a second identical file (review of #475).
+  let savingReplies = $state(new Set());
+
   async function saveReply(text) {
-    if (!key || busy) return;
+    if (!key || busy || savingReplies.has(text) || savedReplies[text]) return;
     const k = key;
+    savingReplies = new Set([...savingReplies, text]);
     try {
       const res = await fetch(chatUrl(k, '/save', null), {
         method: 'POST',
@@ -157,6 +162,9 @@
       }
     } catch (e) {
       notice(`not saved: ${String(e?.message ?? e)}`);
+    } finally {
+      savingReplies.delete(text);
+      savingReplies = new Set(savingReplies);
     }
   }
   // Which open answers: a slow first tap must not land under a later one's
@@ -1400,7 +1408,7 @@
               {#if savedReplies[entry.text]}
                 <span class="savednote">saved to files as {savedReplies[entry.text]}</span>
               {:else}
-                <button class="linkbtn quiet saveline" disabled={busy} onclick={() => saveReply(entry.text)}>Save to files</button>
+                <button class="linkbtn quiet saveline" disabled={busy || savingReplies.has(entry.text)} onclick={() => saveReply(entry.text)}>{savingReplies.has(entry.text) ? 'Saving…' : 'Save to files'}</button>
               {/if}
             {/if}
           {:else if entry.kind === 'tool'}

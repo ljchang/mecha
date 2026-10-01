@@ -327,12 +327,13 @@ pub fn carries(messages: &[crate::message::Message]) -> bool {
 /// when asked, there next time and movable to a group's folder to share.
 /// The harness writes it, on the owner's word — never a write path the
 /// model holds (§10.2). Named from its first heading or line; a line says
-/// where it came from. Answers the name the file is listed by.
+/// where it came from and on which `day` — the owner's calendar day, which
+/// the caller reads in `[agent] timezone`. Answers the name it is listed by.
 pub fn save_reply(
     store: &Store,
     p: &Persona,
     text: &str,
-    when: chrono::DateTime<chrono::Utc>,
+    day: chrono::NaiveDate,
 ) -> Result<String, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -362,7 +363,7 @@ pub fn save_reply(
         } else {
             &p.settings.display
         },
-        when.format("%Y-%m-%d")
+        day.format("%Y-%m-%d")
     );
     add(store, p, &format!("{title}.md"), body.as_bytes())
 }
@@ -1311,9 +1312,7 @@ mod tests {
     #[test]
     fn a_saved_reply_is_a_file_of_its_own() {
         let (dir, store, p) = world();
-        let when = chrono::DateTime::parse_from_rfc3339("2026-10-01T12:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let when = chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
         let text = "# Study guide: chapter 2\n\n1. What do urchins graze? [notes.md: \"Urchins graze kelp\"]";
         let name = save_reply(&store, &p, text, when).unwrap();
         assert_eq!(name, "study-guide-chapter-2.md");
