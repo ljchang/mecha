@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Personas can look things up in their own memory.** Two new persona
+  tools, offered whenever a persona's memory is on: `memory_search` finds
+  what it remembers when it needs something you did not just mention, and
+  `memory_read` opens a remembered conversation in full, so it can quote what
+  was actually said rather than the summary. Conversations in its memory now
+  show a short id in brackets for that. Reading a past conversation that took
+  in outside content marks the current chat the same way.
 - **Make a persona from the main chat.** Ask for one ("help me make a
   persona who…") and the assistant drafts who they are and what they want,
   and stages it with a new `persona_propose` tool. It waits on the Personas

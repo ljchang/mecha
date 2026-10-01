@@ -930,6 +930,14 @@ All of it rides in the message stream; nothing touches the system prompt
   (search episodes and facts) and `recall_open` (the transcript turns an
   episode points at).
 
+  **As built (2026-10-01): `memory_search` and `memory_read`.** `recall` is
+  the assistant's tool for its own conversation (`tool::recall`), so the
+  pair is named as `file_search`/`file_read` are: find a memory, then read
+  it in full. They are offered when the persona's memory is on, and each
+  episode line carries a short id for `memory_read`. `memory_read` reads
+  *another* conversation — what `tool::recall` forbids itself — so the turns
+  it returns carry their own recorded taint (`persona::memory_tools`).
+
 ### 9.8 The owner curates
 
 `mecha persona memory <name>` and a web page — *what Mara remembers* — show
