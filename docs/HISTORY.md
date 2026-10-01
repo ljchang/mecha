@@ -122,12 +122,14 @@ was stripped from project layers but missing from
 `trial_env::OPERATOR_ONLY_TABLES`, so an experiment environment could point
 OCR at a remote server or run the PDF parser unconfined. `config_at` now
 refuses it like the other five.
-On this machine `mecha features` reads 20 of 21 rows on; `messages` is off.
+On 2026-09-30 `mecha features` read 20 of 21 rows on here; `messages` was off.
 
 **2026-09-30/10-01 — modular installs, steps 1–3: every feature follows its
 switch (#443, #445, #449, #451, #452).** Each sub-step below was one PR,
-merged by the mecha-d7 lane on a clean review pass, and steps 2–3b were deployed in two
-coordinated deploys on 2026-10-01 (`main` `e856ce36`, then `9253038b`).
+merged by the mecha-d7 lane on a clean review pass. Steps 2 and 3a went live
+in mecha-d7's deploy of `346bb8a2` on the evening of 2026-09-30, and 3b in
+mecha-ce's deploy of `e856ce36` at 00:34Z on 2026-10-01 (HANDOFF's dated
+machine-state log has both).
 
 - **1a, #443:** the `[features]` table (`Config`, `ConfigLayer`, `apply`, the
   project strip), `mecha features enable|disable` written in place by
@@ -171,8 +173,9 @@ Twenty review passes across the five PRs (#443: 1, #445: 4, #449: 4, #451: 5,
 #452: 6, counted from each PR's record) found the same gap four times, all in
 #451 and #452:
 something reached a feature without going through its verb (the traps
-section has the rule). On 2026-10-01 the owner had `messages` switched on, so
-this machine reads 21 of 21 on and nothing refuses here.
+section has the rule). On 2026-09-30 the owner had `messages` switched on, and on
+2026-10-01 `mecha features` read 21 of 21 on, so nothing refused on this
+machine.
 
 **2026-09-30 — paint the part of a picture to change (#424, #429).** The
 owner asked for the web chat's Edit button to become a modal where areas can
