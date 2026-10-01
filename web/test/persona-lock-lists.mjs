@@ -30,7 +30,19 @@ const fns = [
   readOut('  async function relock() {'),
   readOut('  async function rereadAuthoring() {'),
   readOut('  async function addNew() {'),
+  readOut('  function armIdle(secs) {'),
+  readOut('  function dropToken() {'),
+  readOut('  function revoke(t) {'),
 ].join('\n');
+
+// The autolock's watcher, recorded rather than run: what span it was armed
+// with, and whether it was stopped.
+const watched = [];
+function watchIdle({ idleMs }) {
+  const w = { idleMs, stopped: false };
+  watched.push(w);
+  return () => (w.stopped = true);
+}
 
 // The server's rule (`PersonaChat::authoring`): locked characters only to an
 // unlocked page. `stella` is locked.
@@ -44,7 +56,7 @@ const LISTS = (unlocked) => ({
 // test can close the form while it is in flight.
 function page({ unlocked, character, hold, holdIf = () => true, gate = null, formOpen = true, failIf = null }) {
   const fetch = async (url, init) => {
-    if (url === '/api/library/unlock') return { ok: true, json: async () => ({ token: 't1' }) };
+    if (url === '/api/library/unlock') return { ok: true, json: async () => ({ token: 't1', idle_secs: 900 }) };
     if (url === '/api/library/relock') return { ok: true, json: async () => ({}) };
     if (url === '/api/personas/relationships') {
       const g = gate?.(url);
@@ -62,7 +74,7 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
     throw new Error(`unexpected fetch ${url} ${init?.method ?? 'GET'}`);
   };
   return new Function(
-    'fetch', 'authoringUrl', 'keptCharacter', 'personaName', 'start',
+    'fetch', 'authoringUrl', 'keptCharacter', 'personaName', 'watchIdle', 'start',
     `'use strict';
      let token = start.unlocked ? 't0' : null;
      let authoring = start.lists;
@@ -72,6 +84,7 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
      let chosen = null, sheet = false, busy = false, password = '', error = '';
      let authoringGen = 0;
      let adding = null;
+     let stopIdle = null;
      const TEMPLATE = (name) => '# ' + name;
      const back = () => {};
      // The grid's read takes a turn, as a real round trip does, so a list
@@ -85,7 +98,7 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
        close: () => { making = null; },
        get: () => ({ token, authoring, making, error, loads }),
      };`,
-  )(fetch, authoringUrl, keptCharacter, personaName, {
+  )(fetch, authoringUrl, keptCharacter, personaName, watchIdle, {
     unlocked, character, formOpen, lists: formOpen ? LISTS(unlocked) : null,
   });
 }
@@ -98,6 +111,20 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
   assert.equal(error, '');
   assert.deepEqual(authoring.characters, ['john', 'maya', 'stella']);
   assert.equal(making.character, 'maya', 'an unlock keeps what was chosen');
+}
+
+// An unlock arms the autolock with the server's span, and a relock — the
+// autolock's own or a tap — stops it, so a dead token is never relocked twice.
+{
+  watched.length = 0;
+  const p = page({ unlocked: false, character: 'maya' });
+  await p.unlock();
+  assert.equal(watched.length, 1);
+  assert.equal(watched[0].idleMs, 900_000);
+  assert.equal(watched[0].stopped, false);
+  await p.relock();
+  assert.equal(watched[0].stopped, true);
+  assert.equal(p.get().token, null);
 }
 
 // Relocking takes it back out, and drops it if it was the chosen portrait.

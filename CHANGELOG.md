@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The library and personas lock themselves again.** After 15 minutes with
+  no one touching the page, the Library and Personas tabs relock on their
+  own, and the unlock ends on the server too. Change the span under
+  **Settings → Lock** or with `mecha imagelib set-autolock <minutes>` (1 to
+  240). Leaving either tab also ends its unlock.
+
 - **A persona's citations are checked.** When a persona quotes one of its
   files as `[file, p. N: "…"]`, mecha looks the quote up in what that chat
   actually read and tags it: *quoted*, *on p. N* (the quote is real but on
@@ -404,6 +410,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A persona's page is quieter.** It no longer states its crisis-detection
+  setting, and its files are small tiles with a compact add tile, instead of
+  full-width rows that read like a second "Start a chat".
+
 - **The character library follows image generation.** It is on whenever
   `image` is — its page, its routes, `mecha imagelib` — and `[tools]`
   disabling `image_library` or `image_library_propose` now only keeps those
@@ -478,6 +488,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The owner's amendment to `INCOGNITO-DESIGN.md` §6.1 (2026-09-28).
 
 ### Fixed
+
+- **A persona's earlier chats no longer vanish after a restart.** An unlock
+  lives in `mecha serve`'s memory, so a restart ended it while the page still
+  showed the persona, and its earlier chats came back as an empty list. The
+  page now notices the lapsed unlock and locks, says when the list could not
+  be read, and shows that it is loading.
 
 - **The persona file editor works on a phone.** Tapping a field no longer
   zooms the page and leaves it zoomed: every editable field is at least 16px
