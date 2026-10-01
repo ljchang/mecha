@@ -22,11 +22,14 @@
   const prepared = $derived(citeMark(text, cites));
   const blocks = $derived(parseBlocks(prepared.text));
   const pieces = (v) => citeUnmark(v, prepared.marks);
+  // Code keeps a citation's words, drawn plain: a placeholder must never
+  // show (review of #479).
+  const plain = (v) => pieces(v).map((p) => p.text).join('');
 </script>
 
 {#snippet textnode(v)}{#each pieces(v) as seg}{#if seg.check}{@const n = citeNote(seg.check)}{#if citeOpens(seg.check) && onCite}<span class="cite {n.tone}" role="button" tabindex="0" title={n.title} onclick={() => onCite(seg.check)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onCite(seg.check))}>{seg.text}<span class="citetag">{n.label}</span></span>{:else}<span class="cite {n.tone}" title={n.title}>{seg.text}<span class="citetag">{n.label}</span></span>{/if}{:else}{seg.text}{/if}{/each}{/snippet}
 
-{#snippet inline(nodes)}{#each nodes as n}{#if n.t === 'text'}{@render textnode(n.v)}{:else if n.t === 'br'}<br />{:else if n.t === 'strong'}<strong>{@render inline(n.c)}</strong>{:else if n.t === 'em'}<em>{@render inline(n.c)}</em>{:else if n.t === 'code'}<code>{n.v}</code>{:else if n.t === 'img'}<span class="img" title={n.alt || 'image not loaded'}>image{n.alt ? `: ${n.alt}` : ''}</span>{:else if n.t === 'link'}<a href={n.href} title={n.href} target="_blank" rel="noopener noreferrer nofollow">{@render inline(n.c)}</a>{#if hiddenTarget(n)}<span class="dest">{' → '}{hiddenTarget(n)}</span>{/if}{/if}{/each}{/snippet}
+{#snippet inline(nodes)}{#each nodes as n}{#if n.t === 'text'}{@render textnode(n.v)}{:else if n.t === 'br'}<br />{:else if n.t === 'strong'}<strong>{@render inline(n.c)}</strong>{:else if n.t === 'em'}<em>{@render inline(n.c)}</em>{:else if n.t === 'code'}<code>{plain(n.v)}</code>{:else if n.t === 'img'}<span class="img" title={n.alt || 'image not loaded'}>image{n.alt ? `: ${n.alt}` : ''}</span>{:else if n.t === 'link'}<a href={n.href} title={n.href} target="_blank" rel="noopener noreferrer nofollow">{@render inline(n.c)}</a>{#if hiddenTarget(n)}<span class="dest">{' → '}{hiddenTarget(n)}</span>{/if}{/if}{/each}{/snippet}
 
 {#snippet block(bs)}
   {#each bs as b}
@@ -43,7 +46,7 @@
     {:else if b.type === 'hr'}
       <hr />
     {:else if b.type === 'code'}
-      <pre>{b.text}</pre>
+      <pre>{plain(b.text)}</pre>
     {/if}
   {/each}
 {/snippet}

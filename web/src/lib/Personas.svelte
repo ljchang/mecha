@@ -470,10 +470,6 @@
     return { update: () => requestAnimationFrame(fit), destroy: () => node.removeEventListener('input', fit) };
   }
 
-  // An earlier chat's goal, when it was opened with one: what tells two
-  // chats apart. (A session title here is always the automatic
-  // "persona: …", so it is never shown — review of #431.)
-
   // One step back at a time: out of a chat or the editor to the persona,
   // and from the persona to the list. The chat's "Done" button was this.
   // The lock never steps: `toList` hides everything at once (review of #431).
@@ -506,6 +502,10 @@
     chosen = null;
     key = null;
     imageEdit = null;
+    // A sheet over a persona that has gone — a relock lands here — must go
+    // with it, or it renders without one (review of #479).
+    fileSheet = null;
+    citedPage = null;
     attachments = [];
     run = emptyRun();
     history = [];
@@ -577,8 +577,8 @@
   }
 
   async function addSources(files) {
-    if (!chosen || !files?.length) return;
     sourcesNote = '';
+    if (!chosen || !files?.length) return;
     busy = true;
     const failed = [];
     uploading = files.map((f) => f.name);
@@ -1460,7 +1460,7 @@
         <div
           class="tiles"
           class:dropping
-          ondragover={(e) => { if (busy) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; dropping = true; }}
+          ondragover={(e) => { if (busy || !carriesFiles(e.dataTransfer)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; dropping = true; }}
           ondragleave={() => (dropping = false)}
           ondrop={(e) => { e.preventDefault(); dropping = false; if (!busy) dropSources(e.dataTransfer); }}
         >
@@ -1650,7 +1650,7 @@
     {/if}
   {/if}
 
-  {#if fileSheet}
+  {#if fileSheet && chosen}
     <button class="scrim" aria-label="close" onclick={() => (fileSheet = null)}></button>
     <div class="sheet citedsheet" role="dialog" aria-label="file">
       <div class="sheet-grip"></div>
