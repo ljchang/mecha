@@ -336,18 +336,17 @@ fn page_marker(line: &str) -> Option<u32> {
     n.parse().ok()
 }
 
-/// Lowercase, with typographic quotes and dashes made plain, ligatures
-/// spelled out and soft hyphens dropped — character by character, so a
-/// word keeps its place in the text.
+/// Lowercase, with typographic quotes made plain, a hyphen of any kind a
+/// `-`, an en or em dash a space (it separates words), ligatures spelled
+/// out and soft hyphens dropped.
 fn plain(s: &str) -> String {
     let mut plain = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
             '\u{2018}' | '\u{2019}' | '\u{201b}' | '\u{2032}' => plain.push('\''),
             '\u{201c}' | '\u{201d}' | '\u{201f}' | '\u{2033}' => plain.push('"'),
-            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2212}' => {
-                plain.push('-')
-            }
+            '\u{2010}' | '\u{2011}' => plain.push('-'),
+            '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}' | '\u{2212}' => plain.push(' '),
             '\u{fb00}' => plain.push_str("ff"),
             '\u{fb01}' => plain.push_str("fi"),
             '\u{fb02}' => plain.push_str("fl"),
@@ -360,44 +359,62 @@ fn plain(s: &str) -> String {
     plain
 }
 
-/// A word as [`normal`] leaves it: [`plain`], punctuation around it gone.
-fn word(raw: &str) -> String {
-    plain(raw)
-        .trim_matches(|c: char| !c.is_alphanumeric())
-        .to_string()
-}
-
-/// What both sides go through before containment: lowercase, typographic
-/// quotes and dashes made plain, ligatures spelled out, a word hyphenated
-/// across a line break joined, the punctuation around each word dropped,
-/// and the words joined by single spaces.
-fn normal(s: &str) -> String {
-    let plain = plain(s);
-    // "kelp hold-\nfasts" is "kelp holdfasts": a hyphen that ends a line
-    // before a lowercase letter is the line's, not the word's.
-    let mut joined = String::with_capacity(plain.len());
-    let mut chars = plain.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '-' && chars.peek() == Some(&'\n') {
-            let mut ahead = chars.clone();
-            ahead.next();
-            while ahead.peek().is_some_and(|c| *c == ' ' || *c == '\t') {
-                ahead.next();
+/// The words of `text` as the check compares them, each with the byte span
+/// of the text it came from — one tokeniser for both [`normal`] and
+/// [`mark`], so what the check admits is what the page marks.
+///
+/// A word is [`plain`], with the punctuation around it dropped and **every
+/// hyphen inside it dropped**: "Anglo-Saxon", "Anglo-\nSaxon" broken at a
+/// line and "anglosaxon" are one word, and so are "hold-\nfasts" and
+/// "holdfasts". A PDF breaks lines wherever it likes, and no rule about the
+/// letter after the break can tell a compound's hyphen from the line's
+/// (review of #465: one that tried was dead code, `plain` having already
+/// lowercased the letter it looked at).
+fn tokens(text: &str) -> Vec<(usize, usize, String)> {
+    let mut out = Vec::new();
+    let mut spans = text
+        .split_whitespace()
+        .map(|w| {
+            let start = w.as_ptr() as usize - text.as_ptr() as usize;
+            (start, start + w.len())
+        })
+        .peekable();
+    while let Some((start, mut end)) = spans.next() {
+        let mut joined = plain(&text[start..end]);
+        // A word broken at a line by a hyphen is one word.
+        while joined.ends_with('-') {
+            let Some(&(next, next_end)) = spans.peek() else {
+                break;
+            };
+            let gap = &text[end..next];
+            if !(gap.starts_with('\n') && gap[1..].chars().all(|c| c == ' ' || c == '\t')) {
+                break;
             }
-            if ahead.peek().is_some_and(|c| c.is_lowercase()) {
-                chars = ahead;
-                continue;
+            spans.next();
+            joined.push_str(&plain(&text[next..next_end]));
+            end = next_end;
+        }
+        // An en or em dash became a space: it may part one span in two.
+        for part in joined.split_whitespace() {
+            let w: String = part
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .chars()
+                .filter(|c| *c != '-')
+                .collect();
+            if !w.is_empty() {
+                out.push((start, end, w));
             }
         }
-        joined.push(c);
     }
-    // Word by word, as `grounding::holds` compares: punctuation around a
-    // word dropped, so a copy that loses a comma or the quote marks around
-    // a term is still the same words.
-    joined
-        .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
-        .filter(|w| !w.is_empty())
+    out
+}
+
+/// What both sides go through before containment: [`tokens`]' words,
+/// joined by single spaces.
+fn normal(s: &str) -> String {
+    tokens(s)
+        .into_iter()
+        .map(|t| t.2)
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -509,6 +526,7 @@ fn check(c: &Citation, received: &mut Received<'_>) -> Checked {
     // `admit` is the lookup; whole words on top of it, as `mark` compares,
     // so "holdfast" is not quoted out of "holdfasts" and every quote the
     // check admits is one the page can mark (review of #465).
+    let padded = format!(" {quote} ");
     let quoted = |v: &View| {
         grounding::admit(
             &claim(&c.raw, &v.id, &quote),
@@ -516,7 +534,9 @@ fn check(c: &Citation, received: &mut Received<'_>) -> Checked {
             MIN_QUOTE_CHARS,
         )
         .is_ok()
-            && grounding::holds(v.text, &quote)
+            // Both sides are `tokens` joined by single spaces, so a padded
+            // match is a match of whole words.
+            && format!(" {} ", v.text).contains(&padded)
     };
     // The page cited first, then the rest of the file.
     if let Some(v) = views.iter().filter(|v| in_range(v)).find(|v| quoted(v)) {
@@ -559,43 +579,14 @@ pub fn page_text(messages: &[Message], file: &str, page: Option<u32>) -> Option<
 /// word — the words compared as the check compares them, so the passage it
 /// admitted is the passage marked. `None` when it is not there.
 pub fn mark(text: &str, quote: &str) -> Option<(usize, usize)> {
-    // Every word with its span in `text`; a word hyphenated across a line
-    // break is one word, as `normal` joins it.
-    let mut words: Vec<(usize, usize, String)> = Vec::new();
-    let mut spans = text
-        .split_whitespace()
-        .map(|w| {
-            let start = w.as_ptr() as usize - text.as_ptr() as usize;
-            (start, start + w.len())
-        })
-        .peekable();
-    while let Some((start, mut end)) = spans.next() {
-        let mut joined = word(&text[start..end]);
-        while plain(&text[start..end]).ends_with('-') {
-            let Some(&(next, next_end)) = spans.peek() else {
-                break;
-            };
-            let gap = &text[end..next];
-            let broken = gap.starts_with('\n') && gap[1..].chars().all(|c| c == ' ' || c == '\t');
-            if !(broken && plain(&text[next..next_end]).starts_with(char::is_lowercase)) {
-                break;
-            }
-            spans.next();
-            joined.push_str(&word(&text[next..next_end]));
-            end = next_end;
-        }
-        if !joined.is_empty() {
-            words.push((start, end, joined));
-        }
-    }
-    let quote = normal(quote);
-    let wanted: Vec<&str> = quote.split(' ').filter(|w| !w.is_empty()).collect();
+    let words = tokens(text);
+    let wanted = tokens(quote);
     if wanted.is_empty() {
         return None;
     }
     words
         .windows(wanted.len())
-        .find(|run| run.iter().map(|w| w.2.as_str()).eq(wanted.iter().copied()))
+        .find(|run| run.iter().map(|w| &w.2).eq(wanted.iter().map(|w| &w.2)))
         .map(|run| (run[0].0, run[run.len() - 1].1))
 }
 
@@ -864,5 +855,34 @@ mod tests {
         let page = page_text(&msgs, "kelp.pdf", Some(1)).unwrap();
         assert!(mark(&page, "urchins graze kelp holdfasts").is_some());
         assert!(mark(&page, "urchins graze kelp holdfast").is_none());
+    }
+
+    /// Review of #465, pass 3: a compound broken at a line is the same
+    /// word as the model's copy of it, whatever case follows the break —
+    /// and an em dash parts words rather than gluing them.
+    #[test]
+    fn a_compound_broken_at_a_line_is_still_the_same_words() {
+        let page = "document: hist.pdf \u{b7} pdf \u{b7} 1 page(s) \u{b7} sha256 x\n\
+            \n=== page 1 of 1 \u{b7} text layer (the file's own words) ===\n\
+            The Anglo-\nSaxon chronicle is a well-\nknown source\u{2014}mostly.\n";
+        let msgs = chat(
+            page,
+            "[hist.pdf, p. 1: \"The Anglo-Saxon chronicle is a well-known source\"] \
+             [hist.pdf, p. 1: \"a well-known source - mostly\"]",
+        );
+        let got: Vec<Verdict> = check_conversation(&msgs)
+            .into_iter()
+            .map(|c| c.verdict)
+            .collect();
+        assert_eq!(
+            got,
+            [
+                Verdict::Quoted { found: Some(1) },
+                Verdict::Quoted { found: Some(1) },
+            ]
+        );
+        let text = page_text(&msgs, "hist.pdf", Some(1)).unwrap();
+        let (a, b) = mark(&text, "Anglo-Saxon chronicle").unwrap();
+        assert_eq!(&text[a..b], "Anglo-\nSaxon chronicle");
     }
 }

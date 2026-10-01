@@ -285,19 +285,18 @@ fn reader_shape(config: &mecha_core::config::Config) -> (u64, bool) {
 
 /// The chat's citations, checked (§10.4) against everything it ever
 /// received — the session's `messages_ever`, so a page a compaction has
-/// since evicted still counts for the answer that quoted it. The live
-/// messages when the file cannot be read: what is left is still evidence,
-/// and a quote it no longer holds reads as unchecked, never as checked.
-async fn citations(session: &Session, live: &[Message]) -> Vec<mecha_core::persona::cite::Checked> {
+/// since evicted still counts for the answer that quoted it. Off the
+/// runtime: the file is read whole. Unreadable, it is no citations at all
+/// rather than a guess from a copy of the live messages — untagged says
+/// "nothing was checked", never "this was checked" (review of #465: the
+/// copy was the whole conversation, cloned under the lock, for a fallback
+/// that almost never ran).
+async fn citations(session: &Session) -> Vec<mecha_core::persona::cite::Checked> {
     let path = session.path.clone();
-    let live = live.to_vec();
     tokio::task::spawn_blocking(move || {
-        let messages = std::fs::read_to_string(&path)
-            .map(|t| Session::messages_ever(&t))
-            .ok()
-            .filter(|m| !m.is_empty())
-            .unwrap_or(live);
-        mecha_core::persona::cite::check_conversation(&messages)
+        std::fs::read_to_string(&path)
+            .map(|t| mecha_core::persona::cite::check_conversation(&Session::messages_ever(&t)))
+            .unwrap_or_default()
     })
     .await
     .unwrap_or_default()
@@ -1302,23 +1301,15 @@ impl PersonaChats {
         token: Option<&str>,
     ) -> Result<serde_json::Value, Refusal> {
         self.persona_of(library, key, token).await?;
-        let (session, live) = {
+        let session = {
             let sessions = self.sessions.lock().await;
-            let ps = sessions.get(key).ok_or(Refusal::NotFound)?;
-            let live: &[Message] = match (&ps.conversation, &ps.live) {
-                (Some(c), _) => &c.messages,
-                (None, Some(live)) => &live.history,
-                (None, None) => &[],
-            };
-            (Arc::clone(&ps.session), live.to_vec())
+            Arc::clone(&sessions.get(key).ok_or(Refusal::NotFound)?.session)
         };
         let (file, quote) = (file.to_string(), quote.to_string());
         tokio::task::spawn_blocking(move || {
             let messages = std::fs::read_to_string(&session.path)
                 .map(|t| Session::messages_ever(&t))
-                .ok()
-                .filter(|m| !m.is_empty())
-                .unwrap_or(live);
+                .map_err(|e| Refusal::Failed(format!("reading the chat: {e}")))?;
             let text = mecha_core::persona::cite::page_text(&messages, &file, page)
                 .ok_or(Refusal::NotFound)?;
             let (before, marked, after) = match mecha_core::persona::cite::mark(&text, &quote) {
@@ -1369,7 +1360,7 @@ impl PersonaChats {
         };
         let entries = chat::transcript_entries(messages);
         // Checked once the lock is let go: the session file is read whole.
-        let for_citations = (Arc::clone(&ps.session), messages.to_vec());
+        let session = Arc::clone(&ps.session);
         let taint = match (&ps.conversation, &ps.live) {
             (Some(c), _) => Some(c.taint),
             (None, Some(live)) => Some(live.taint),
@@ -1419,8 +1410,7 @@ impl PersonaChats {
             })),
         });
         drop(sessions);
-        let (session, messages) = for_citations;
-        out["citations"] = serde_json::json!(citations(&session, &messages).await);
+        out["citations"] = serde_json::json!(citations(&session).await);
         Ok(out)
     }
 
@@ -1931,14 +1921,7 @@ impl PersonaChats {
             // was not delivered, so the next turn still owes it.
             let owed_anchor = anchored && outcome.is_err();
             let taint = conversation.taint;
-            // Checked here, before the conversation goes back, so the page
-            // has them by the time it draws the finished reply.
-            if outcome.is_ok() {
-                let checks = citations(&session, &conversation.messages).await;
-                if !checks.is_empty() {
-                    let _ = bcast.send(WireEvent::Citations { checks });
-                }
-            }
+            let run_ok = outcome.is_ok();
             let done = match &outcome {
                 Ok(o) => WireEvent::Done {
                     ok: true,
@@ -2015,6 +1998,15 @@ impl PersonaChats {
             }
             drop(sessions);
             let _ = bcast.send(done);
+            // The citations, checked once the reply is handed back — a long
+            // chat's input is not held for them (review of #465). They land
+            // a moment after `Done`, and the page replaces its checks.
+            if run_ok {
+                let checks = citations(&session).await;
+                if !checks.is_empty() {
+                    let _ = bcast.send(WireEvent::Citations { checks });
+                }
+            }
             // A verdict still out when the run ended: waited for here, after
             // the reply is handed back — bounded, and a judge that does not
             // answer in time is "couldn't check", never clear.
@@ -3256,7 +3248,7 @@ mod tests {
     }
 
     /// §10.4: a citation is checked against what the chat received, sent to
-    /// the page just before the run's end and carried in the transcript, and
+    /// the page just after the run's end and carried in the transcript, and
     /// it opens the page it cites with the quote marked. A made-up quote is
     /// said, not dropped.
     #[tokio::test]
@@ -3286,19 +3278,23 @@ mod tests {
             .send(&w.chat, &w.library, &key, "What do urchins do?", None, None)
             .await
             .unwrap();
-        let mut sent = None;
-        loop {
+        // The run's end, then its citations: checked once the reply is
+        // handed back, so the input is not held for them (review of #465).
+        let mut done = false;
+        let sent = loop {
             match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
-                Ok(Ok(WireEvent::Citations { checks })) => sent = Some(checks),
+                Ok(Ok(WireEvent::Citations { checks })) => {
+                    assert!(done, "the citations follow the end");
+                    break checks;
+                }
                 Ok(Ok(WireEvent::Done { ok, error, .. })) => {
                     assert!(ok, "{error:?}");
-                    break;
+                    done = true;
                 }
                 Ok(Ok(_)) => continue,
-                other => panic!("no Done event: {other:?}"),
+                other => panic!("no citations after the end: {other:?}"),
             }
-        }
-        let sent = sent.expect("the citations come before the end");
+        };
         let statuses = |v: &serde_json::Value| -> Vec<String> {
             v.as_array()
                 .unwrap()

@@ -1514,6 +1514,8 @@
   .cite.ok .citetag { color: var(--accent-300); }
   .cite.warn .citetag { color: var(--text); }
   .cite.bad .citetag { color: var(--hazard); }
+  /* Not checked, or too short to: no underline that reads as affirmed. */
+  .cite.muted { text-decoration: none; }
   .citedsheet { max-height: 75%; }
   .citedtext { overflow-y: auto; white-space: pre-wrap; font-size: 14px; line-height: 1.5; padding: 10px 12px; border: 1px solid var(--accent-900); border-radius: 10px; }
   .citedtext mark { background: var(--accent-700); color: var(--text); border-radius: 3px; }

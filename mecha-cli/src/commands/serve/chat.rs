@@ -903,8 +903,9 @@ pub enum WireEvent {
     },
     /// A persona chat's citations, each checked against what the chat
     /// received of its files (PERSONA-DESIGN §10.4) — all of them, so the
-    /// page replaces what it had. Sent just before a successful run's
-    /// `Done`; the assistant's chat never sends it.
+    /// page replaces what it had. Sent just after a successful run's
+    /// `Done`, so the input is not held for the check; the assistant's chat
+    /// never sends it.
     Citations {
         checks: Vec<mecha_core::persona::cite::Checked>,
     },
