@@ -160,7 +160,9 @@ fn walk(
         let Some(name) = name.to_str() else {
             continue;
         };
-        if name.starts_with('.') {
+        // Hidden entries, and `@…`: an own folder called `@all` would read as
+        // everyone's (review of #459).
+        if name.starts_with('.') || name.starts_with('@') {
             continue;
         }
         // `symlink_metadata`: a link is neither followed nor listed.
@@ -243,11 +245,20 @@ pub async fn read(
     src: &Source,
     extractor: Option<&Extractor>,
     pages: &str,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<String, ReadError> {
     match src.kind {
         Kind::Text => {
-            // Bounded at the read, not by the size the walk saw: a file that
-            // grew since is caught here (review of #459).
+            if src.bytes > MAX_TEXT_BYTES {
+                return Err(ReadError::ours(format!(
+                    "{} is {} KB, over the {} KB a text file is read at.",
+                    src.name,
+                    src.bytes / 1024,
+                    MAX_TEXT_BYTES / 1024
+                )));
+            }
+            // And bounded at the read, not only by the size the walk saw: a
+            // file that grew since is caught here (review of #459).
             let bytes = crate::tool::document::read_bounded(&src.path, MAX_TEXT_BYTES)
                 .await
                 .map_err(|e| ReadError::ours(format!("{}: {e}", src.name)))?;
@@ -272,7 +283,9 @@ pub async fn read(
                     .await
                     .map_err(|e| ReadError::ours(format!("{}: {e}", src.name)))?;
             extractor
-                .extract(&bytes, pages, Mode::Auto, false, None)
+                // The chat's stop reaches an OCR pass, as it does
+                // `document_read`'s (review of #459).
+                .extract(&bytes, pages, Mode::Auto, false, cancel)
                 .await
                 .map(|ex| {
                     if pages == "all" && ex.ocr_deferred.is_empty() && !ex.cancelled {
@@ -407,7 +420,9 @@ pub fn remove(store: &Store, p: &Persona, name: &str) -> Result<(), String> {
 /// page polling the list does not re-read an unchanged file.
 pub fn ready(src: &Source, cache: Option<&crate::document::Cache>, max_bytes: u64) -> bool {
     match src.kind {
-        Kind::Text => true,
+        // Over the cap a text file is refused, so it is never ready (review
+        // of #459).
+        Kind::Text => src.bytes <= MAX_TEXT_BYTES,
         Kind::Document if src.bytes > max_bytes => false,
         Kind::Document => {
             let Some(cache) = cache else {
@@ -419,7 +434,10 @@ pub fn ready(src: &Source, cache: Option<&crate::document::Cache>, max_bytes: u6
             // been read whole by this server — OCR cached as it went.
             sha_of(src).is_some_and(|sha| {
                 cache.load_layer(&sha).is_some_and(|layer| {
-                    (1..=layer.pages).all(|page| layer.has_text(page)) || was_read(&sha)
+                    // Zero pages is not "every page has text" (a dash is
+                    // never zero).
+                    (layer.pages > 0 && (1..=layer.pages).all(|page| layer.has_text(page)))
+                        || was_read(&sha)
                 })
             })
         }
@@ -507,7 +525,7 @@ pub async fn first_turn(
         if over {
             break;
         }
-        match read(src, extractor, "all").await {
+        match read(src, extractor, "all", None).await {
             Ok(text) => {
                 total += text.chars().count();
                 if total > budget_chars {
@@ -542,7 +560,7 @@ pub async fn first_turn(
     if omitted > 0 {
         out.push_str(&format!(
             "\n\n{omitted} more file(s) are in your folders than are listed here; \
-             the owner can move some into a subfolder or remove them."
+             the owner can remove some to bring them in."
         ));
     }
     if !unreadable.is_empty() {
@@ -611,7 +629,7 @@ impl Tool for FileRead {
         Some(self)
     }
 
-    async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+    async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(file) = input.get("file").and_then(Value::as_str) else {
             return Ok(ToolOutput::err(
                 "`file` is required: a name from your files list.",
@@ -643,11 +661,13 @@ impl Tool for FileRead {
             Ok(src) => src,
             Err(why) => return Ok(ToolOutput::err(why)),
         };
-        Ok(match read(src, self.extractor.as_deref(), pages).await {
-            Ok(text) => ToolOutput::ok(text).from_outside(),
-            Err(e) if e.outside => ToolOutput::err(e.why).from_outside(),
-            Err(e) => ToolOutput::err(e.why),
-        })
+        Ok(
+            match read(src, self.extractor.as_deref(), pages, ctx.cancel.as_ref()).await {
+                Ok(text) => ToolOutput::ok(text).from_outside(),
+                Err(e) if e.outside => ToolOutput::err(e.why).from_outside(),
+                Err(e) => ToolOutput::err(e.why),
+            },
+        )
     }
 }
 
@@ -986,6 +1006,29 @@ mod tests {
         );
         mark_read(&sha);
         assert!(ready(doc, Some(&cache), 1 << 20), "read whole");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// An own folder called `@all` is not everyone's, and is not listed; a
+    /// text file over the cap is never ready, since it would be refused.
+    #[test]
+    fn an_at_folder_is_not_listed_and_an_oversized_text_is_not_ready() {
+        let (dir, store, p) = world();
+        std::fs::create_dir_all(dir.join("mara/files/@all")).unwrap();
+        std::fs::write(dir.join("mara/files/@all/guide.md"), "mine").unwrap();
+        let sources = list(&roots(&store, &p));
+        assert_eq!(
+            sources.iter().filter(|s| s.name == "@all/guide.md").count(),
+            1
+        );
+        std::fs::write(
+            dir.join("mara/files/huge.txt"),
+            vec![b'a'; MAX_TEXT_BYTES as usize + 1],
+        )
+        .unwrap();
+        let sources = list(&roots(&store, &p));
+        assert!(!ready(find(&sources, "huge.txt").unwrap(), None, 0));
+        assert!(ready(find(&sources, "notes.md").unwrap(), None, 0));
         std::fs::remove_dir_all(dir).ok();
     }
 }

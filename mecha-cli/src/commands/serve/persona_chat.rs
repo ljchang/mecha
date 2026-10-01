@@ -85,7 +85,9 @@ pub struct PersonaChats {
     provider: ProviderFactory,
     /// Files being read for the first time after an upload (§10.3), so the
     /// page can say "processing" rather than "not yet read".
-    processing: Arc<StdMutex<std::collections::HashSet<PathBuf>>>,
+    /// With when each began, so a read whose task died stops reading as
+    /// "processing" after a while rather than for the life of the server.
+    processing: Arc<StdMutex<HashMap<PathBuf, std::time::Instant>>>,
 }
 
 struct PersonaSession {
@@ -1006,10 +1008,15 @@ impl PersonaChats {
             .map(|d| d.max_file_bytes())
             .unwrap_or(0);
         let store_dir = self.store.clone();
-        let processing = self
+        // A read longer than this has died, or is not worth a spinner.
+        const STALE: std::time::Duration = std::time::Duration::from_secs(600);
+        let processing: std::collections::HashSet<PathBuf> = self
             .processing
             .lock()
-            .map(|s| s.clone())
+            .map(|mut s| {
+                s.retain(|_, since| since.elapsed() < STALE);
+                s.keys().cloned().collect()
+            })
             .unwrap_or_default();
         // Hashing every document to ask the cache is file I/O: off the
         // runtime.
@@ -1080,11 +1087,11 @@ impl PersonaChats {
         ) {
             let processing = Arc::clone(&self.processing);
             if let Ok(mut set) = processing.lock() {
-                set.insert(src.path.clone());
+                set.insert(src.path.clone(), std::time::Instant::now());
             }
             tokio::spawn(async move {
                 if let Err(e) =
-                    mecha_core::persona::files::read(&src, Some(&extractor), "all").await
+                    mecha_core::persona::files::read(&src, Some(&extractor), "all", None).await
                 {
                     tracing::warn!("a persona file was not read: {}", e.why);
                 }
