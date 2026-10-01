@@ -400,8 +400,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // answers the only question a caller can't get elsewhere: is there an
     // answer at all.
     match outcome.stop_reason {
-        StopReason::Refusal => std::process::exit(2),
-        _ if outcome.stop_cause == mecha_core::agent::StopCause::NoOutput => std::process::exit(3),
+        StopReason::Refusal => crate::exit_with(2),
+        _ if outcome.stop_cause == mecha_core::agent::StopCause::NoOutput => crate::exit_with(3),
         _ => Ok(()),
     }
 }

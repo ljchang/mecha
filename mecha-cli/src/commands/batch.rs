@@ -94,7 +94,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // and its MCP clients before the failure exit skips their destructors.
     drop(prepared);
     if summary.failed > 0 {
-        std::process::exit(1);
+        crate::exit_with(1);
     }
     Ok(())
 }
