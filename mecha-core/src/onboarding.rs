@@ -405,8 +405,7 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
     for step in &mut steps {
         // A feature step's id is the feature's; step 1a offered the same
         // switch as `feature-<id>`, and an answer given there still counts.
-        let declined = facts.declined.contains(&step.id)
-            || facts.declined.contains(&format!("feature-{}", step.id));
+        let declined = decline_keys(&step.id).any(|k| facts.declined.contains(&k));
         if step.optional && matches!(step.status, Status::Missing) && declined {
             step.status = Status::Declined;
             step.remedy = None;
@@ -711,8 +710,8 @@ Every run is starting un-chartered until this parses."
 /// |---|---|
 /// | on | done, with its parts |
 /// | switch written `false` | declined: an answer, already given |
-/// | switch unanswered, or blocked on one | missing and declinable, the remedy the enable command |
-/// | switched on, not ready | wrong: a yes that does not work is not a preference |
+/// | switch unanswered | missing and declinable, the remedy the enable command |
+/// | switched on, but blocked or not ready | wrong: a yes that does not work is not a preference |
 /// | unknown | unknown, offering nothing |
 fn feature_steps(facts: &Facts) -> Vec<Step> {
     use crate::feature::{State, Switch};
@@ -768,22 +767,32 @@ fn feature_steps(facts: &Facts) -> Vec<Step> {
                     row.next.as_deref(),
                 )
                 .optional(),
+                // Reached only with the switch written `true` (`state` stops
+                // at an absent or `false` one), so a yes that does not work,
+                // like `Unready` — never a "no thanks" (review of #460). The
+                // chained command takes the dependency first.
                 State::Blocked { on } => with_next(
                     Step::new(
                         id,
                         title,
-                        Status::Missing,
-                        format!("{} It needs {} first.", blurb(f), on.label().to_lowercase()),
+                        Status::Wrong,
+                        format!(
+                            "Switched on, but it needs {} first. `mecha features disable {id}` \
+                             turns it off instead.",
+                            on.label().to_lowercase()
+                        ),
                     ),
                     row.next.as_deref(),
-                )
-                .optional(),
+                ),
                 State::Unready { reason, .. } => with_next(
                     Step::new(
                         id,
                         title,
                         Status::Wrong,
-                        format!("Switched on, but not ready: {reason}."),
+                        format!(
+                            "Switched on, but not ready: {reason}. `mecha features disable \
+                             {id}` turns it off instead."
+                        ),
                     ),
                     row.next.as_deref(),
                 ),
@@ -991,10 +1000,22 @@ pub fn decline(home: &Path, id: &str) -> std::io::Result<DeclineWrite> {
 
 /// Take one back out — the undo, so a decline is a preference rather than a
 /// door that locks behind you. `id` of `None` clears every one.
+/// The keys that record a decline of step `id`: the id itself and, for a
+/// feature step, the `feature-<id>` step 1a offered the same switch under.
+/// One function for both readers — `plan` honouring a decline and
+/// `undecline` taking it back — so the two cannot drift: a decline the plan
+/// honoured and the undo did not remove read as "nothing to restore" while
+/// the step still said no thanks (found on review of #460).
+fn decline_keys(id: &str) -> impl Iterator<Item = String> {
+    [id.to_string(), format!("feature-{id}")].into_iter()
+}
+
 pub fn undecline(home: &Path, id: Option<&str>) -> std::io::Result<DeclineWrite> {
     let (mut set, salvaged) = read_for_write(home);
     let changed = match id {
-        Some(id) => set.remove(id),
+        // Every key the plan reads as this step's decline, so the undo
+        // cannot report "nothing to restore" over one it still honours.
+        Some(id) => decline_keys(id).fold(false, |changed, k| set.remove(&k) | changed),
         None => {
             let had = !set.is_empty();
             set.clear();
@@ -1313,12 +1334,25 @@ mod tests {
             mail.remedy.as_ref().unwrap().argv,
             ["mecha", "features", "enable", "mail"]
         );
-        // An answer given to step 1a's offer, under its old id, still holds.
+        // An answer given to step 1a's offer, under its old id, still holds —
+        // and `--undecline mail` takes it back, reporting that it did, since
+        // `mail` is the only id any surface shows (review of #460).
         f.declined.insert("feature-mail".into());
         assert_eq!(
             step(&plan(&cfg, "local", &f), "mail").status,
             Status::Declined
         );
+        let home = std::env::temp_dir().join(format!(
+            "mecha-feature-decline-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        decline(&home, "feature-mail").unwrap();
+        assert!(undecline(&home, Some("mail")).unwrap().changed);
+        assert!(read_declined(&home).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The registry decides, so setup asks what registration asks (§1.1): an
@@ -1360,8 +1394,8 @@ mod tests {
 
     /// `false` is an answer written down: declined, not outstanding, and the
     /// way back is the enable command rather than `--undecline`. A feature
-    /// blocked on an unanswered dependency is offered with the chained
-    /// command, dependency first.
+    /// switched on but blocked on an unanswered dependency is a yes that does
+    /// not work, offered the chained command, dependency first.
     #[test]
     fn an_explicit_false_is_an_answer_and_a_dependency_comes_first() {
         let cfg = cfg_with_local(262144, Some(true));
@@ -1378,8 +1412,18 @@ mod tests {
             "{}",
             slack.detail
         );
+        // Switched on and blocked is a yes that does not work: wrong, not
+        // declinable, its remedy the chained command (review of #460).
         let incognito = step(&steps, "incognito");
-        assert_eq!(incognito.status, Status::Missing);
+        assert_eq!(incognito.status, Status::Wrong);
+        assert!(!incognito.optional);
+        assert!(
+            incognito
+                .detail
+                .contains("mecha features disable incognito"),
+            "{}",
+            incognito.detail
+        );
         assert_eq!(
             incognito.remedy.as_ref().unwrap().argv,
             ["mecha", "features", "enable", "web", "incognito"]

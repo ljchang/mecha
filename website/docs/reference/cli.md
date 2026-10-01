@@ -1545,8 +1545,8 @@ dependency is offered before it:
 |---|---|
 | on | done, with its parts (`documents (ocr on, layout on)`) |
 | switched off (`false`) | declined — an answer already given; `mecha features enable` is the way back |
-| not switched on, or waiting on one that is not | outstanding and declinable; the command is `mecha features enable …`, the dependency first |
-| switched on but unready | wrong, not declinable — you said yes and it does not work; the next command, or the edit it needs |
+| not switched on | outstanding and declinable; the command is `mecha features enable …`, a dependency first |
+| switched on, but waiting on another feature or not ready | wrong, not declinable — you said yes and it does not work; the next command or the edit it needs, and `mecha features disable` turns it off instead |
 | unknown | unknown, offering nothing |
 
 Setup only ever *runs* a command; an edit to `config.toml` (an `[[mcp]]` entry, an

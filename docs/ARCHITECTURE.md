@@ -8322,9 +8322,12 @@ in five different ways. The design and its open steps are
   dependency is offered first and a step asks what registration asks — the
   four hand-written steps it replaced read an installed binary with no
   `[[mcp]]` entry as done (FEATURES-DESIGN.md §1.1). A switch written
-  `false` is `Declined` (an answer, not a gap); an unanswered or blocked one
-  is outstanding and declinable, its remedy the enable command; a
-  switched-on `Unready` is `Wrong` and not declinable. Setup runs only our
+  `false` is `Declined` (an answer, not a gap); an unanswered one is
+  outstanding and declinable, its remedy the enable command; a switched-on
+  `Blocked` or `Unready` is `Wrong` and not declinable — `Blocked` is
+  reachable only with the switch written `true`, so declining it recorded a
+  "no thanks" against a yes (review of #460). `undecline` removes every key
+  `plan` reads as a decline (`decline_keys`), 1a's `feature-<id>` included. Setup runs only our
   own commands (`onboarding::runnable`) — an edit is named, never made —
   and after one works it re-reads the row and says what is next
   (`setup::after_feature`). Step ids are the feature ids, so a decline
