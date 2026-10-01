@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A persona's picture can be framed.** "Adjust picture" in a persona's ⋯
+  menu opens its portrait in the circle: drag it into place and zoom, then
+  Save; Reset centres it again. Until you do, a tall portrait now shows its
+  top — the face — rather than its middle.
+
 - **Save a persona's reply to its files.** Under each of a persona's replies
   there is a *Save to files* link: a study guide, quiz or glossary it wrote
   when you asked is saved as a Markdown file in its own folder, there next
