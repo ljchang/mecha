@@ -397,7 +397,8 @@ one unlock shows locked characters and locked personas together (§8.3).
   display only — no new version, nothing in a prompt — and
   a value out of range loads as none rather than costing the persona. A
   settings save that changes `character` clears it, since it was measured
-  against the old picture (`write_owner_file`). With
+  against the old picture (`write_owner_file`), and so does a new picture
+  for the same character (`imagelib update`, `clear_frames_for`). With
   none, the avatar leans to the top of the picture, where a portrait's face
   is.
 - **Memory is SQLite, one database per persona** (§9.10). It is the part
