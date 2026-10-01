@@ -10,7 +10,7 @@
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
   import { composeEditMessage, maskName } from './image-edit.js';
-  import { pictureOf, repeatedPictures, turnsWithoutPicture } from './picture.js';
+  import { pictureOf, repeatedPictures, turnsWithoutPicture, downloadPicture } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { watchIdle, idleSpan } from './autolock.js';
   import { repairComments, changesOf } from './tomlform.js';
@@ -140,6 +140,16 @@
   // Each answer's citations with the check made of each (§10.4).
   const cites = $derived(citeEntries(run.entries, run.citations));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
+
+  // Download a generated picture: read and saved from a blob, so a locked
+  // persona's picture leaves no address (with its unlock token) in the
+  // browser's history — the reason it is not a link. Why one failed shows
+  // under it.
+  let pictureNote = $state(null); // { path, why }
+  async function savePicture(path) {
+    const why = await downloadPicture(fetch, pictureUrl(path), path);
+    pictureNote = why ? { path, why } : null;
+  }
 
   // The Edit modal (EditModal.svelte): anything already typed becomes its
   // instruction. Not `editing`, which is the persona-file editor's.
@@ -1570,6 +1580,8 @@
                 </a>
               {/if}
               <button class="genedit" onclick={() => editImage(picture)}>Edit</button>
+              <button class="genedit" onclick={() => savePicture(picture)}>Download</button>
+              {#if pictureNote?.path === picture}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
             {/if}
           {:else if entry.kind === 'notice'}
             <div class="notice">{entry.text}</div>
@@ -1873,6 +1885,7 @@
   /* As the assistant's chat draws a picture and its Edit button. */
   .genimg { display: block; max-width: min(100%, 512px); }
   .genimg img { display: block; width: 100%; height: auto; border-radius: 8px; }
+  .genfail { font-size: 12px; color: var(--hazard); }
   .genedit {
     align-self: flex-start; margin-top: -4px; padding: 4px 12px;
     font-family: var(--mono); font-size: 12px; color: var(--accent-400);

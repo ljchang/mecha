@@ -1,3 +1,4 @@
+import { saveBlob } from './reply-export.js';
 // The picture under a tool row, in either chat — the assistant's
 // (`Chat.svelte`) and a persona's (`Personas.svelte`). One matcher for both:
 // the match is what turns a tool's text into a URL the page fetches, and two
@@ -74,4 +75,26 @@ export function turnsWithoutPicture(entries, running = false) {
   });
   if (!running) close();
   return out;
+}
+
+// A generated picture's file name: the last part of its workspace path.
+export function pictureName(path) {
+  const base = String(path ?? '').split('/').filter(Boolean).pop() ?? '';
+  return base || 'picture.png';
+}
+
+// Save a generated picture (owner request, 2026-10-01): read through the
+// chat's own file route — `get`, the page's same-origin fetch — and saved
+// from a blob, never by pointing the browser at the URL, so no picture
+// address lands in the history a locked or incognito chat keeps out of it.
+// Returns '' when saved, or why not.
+export async function downloadPicture(get, url, path, doc = globalThis.document, urls = globalThis.URL) {
+  try {
+    const res = await get(url);
+    if (!res.ok) return (await res.text()).trim() || `HTTP ${res.status}`;
+    saveBlob(pictureName(path), await res.blob(), doc, urls);
+    return '';
+  } catch (e) {
+    return String(e?.message ?? e);
+  }
 }
