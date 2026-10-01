@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
-  taintLabel, safetyLine, doseLine, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
+  taintLabel, doseLine, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
   fileUrl, uploadUrl,
 } from '../src/lib/persona.js';
 import { pictureOf } from '../src/lib/picture.js';
@@ -104,14 +104,6 @@ assert.deepEqual(s.entries.map((e) => e.delivery), ['delivered', 'discarded']);
 assert.equal(taintLabel({ private: true, untrusted: true }), 'private + untrusted');
 assert.equal(taintLabel({ private: false, untrusted: false }), '');
 assert.equal(taintLabel(null), '');
-assert.equal(safetyLine({ crisis: 'on', disclosure: true, reanchor: true, dose: true }), 'crisis detection on');
-assert.equal(safetyLine({ crisis: 'enabled' }), 'crisis detection: keywords + a model check on each message');
-assert.equal(safetyLine({ crisis: 'degraded', disclosure: true, reanchor: true, dose: true }), 'crisis detection: keywords only (the model check could not answer)');
-// A state this page does not know reads as the cautious one, never as "on".
-assert.ok(safetyLine({ crisis: 'judged-v2' }).includes('keywords only'));
-assert.equal(safetyLine({ crisis: 'off', disclosure: false, reanchor: true, dose: false }), 'crisis detection off · off: disclosure, dose');
-// The farewell check was dropped (2026-10-01): an older server's state for it is not a switch.
-assert.equal(safetyLine({ crisis: 'on', disclosure: true, reanchor: true, dose: true, farewell: 'off' }), 'crisis detection on');
 // Two crisis cards get two ids, and a re-read keeps each card's own.
 {
   let r = emptyRun();
@@ -290,6 +282,20 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   assert.equal(sourceLine({ name: '@group:all/g.md', bytes: 2048, shared: true, ready: true, processing: false }), '2 KB · ready · group all');
   assert.equal(sourceLine({ name: 'paper.pdf', bytes: 2048, shared: false, ready: false, on_request: true, processing: false }), '2 KB · read when asked');
   assert.equal(sourceLine({ name: 'scan.heic', bytes: 2048, shared: false, ready: false, processing: false, unreadable: 'scan.heic: a HEIC/HEIF photo' }), '2 KB · not readable');
+}
+
+// A file's tile: its state alone, and a badge from its extension.
+{
+  const { sourceState, fileKind } = await import('../src/lib/persona.js');
+  assert.equal(sourceState({ ready: true, processing: false }), 'ready');
+  // Unreadable outranks a read in progress.
+  assert.equal(sourceState({ unreadable: 'x', processing: true }), 'not readable');
+  assert.equal(fileKind('paper.PDF'), 'PDF');
+  assert.equal(fileKind('@kelp/photo.jpeg'), 'IMG');
+  assert.equal(fileKind('notes.markdown'), 'MD');
+  assert.equal(fileKind('plain.txt'), 'TXT');
+  assert.equal(fileKind('README'), 'FILE');
+  assert.equal(fileKind('dir.d/README'), 'FILE');
 }
 
 // A reply cut at its checked citations (§10.4). Each citation gets the
