@@ -13817,6 +13817,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A run records which features it had switched on — the switches,
+    /// never the effects, in `Feature::ALL` order — so a light trial is
+    /// recorded as light (FEATURES-DESIGN.md §5.1). Nothing switched on is an
+    /// empty set, which is a fact, not unknown; and a part, which has no
+    /// switch, is never listed.
+    #[tokio::test]
+    async fn a_run_records_the_features_it_had_switched_on() {
+        use crate::feature::Feature;
+        let (agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
+        let mut config = crate::config::Config::default();
+        let of = |c: &crate::config::Config| {
+            crate::session::RunConfig::of(&agent, c, "scripted", &[], None).features_on
+        };
+        assert_eq!(of(&config), Some(vec![]));
+        for id in ["graph", "web", "documents"] {
+            config.features.0.insert(id.into(), true);
+        }
+        config.features.0.insert("mail".into(), false);
+        assert_eq!(
+            of(&config),
+            Some(vec![Feature::Web, Feature::Graph, Feature::Documents])
+        );
+    }
+
     /// D1: a block rendered past a skipped learned file is not a measurement
     /// of the rule set. The record says unknown (`rules_hash: None`, no ids),
     /// never the hash of what was left. Fails on the old `RunConfig::of`,

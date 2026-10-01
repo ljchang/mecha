@@ -159,6 +159,26 @@ where
     }))
 }
 
+/// `RunConfig::features_on`'s loader, on [`lenient_levers`]' wire rule: the
+/// whole set degrades, never one entry. A feature this build does not know,
+/// dropped from the set, would read as *off*, and two arms that differed in
+/// it would read as identical — so one unknown id makes the set `None`,
+/// unknown, filed with the sessions recorded before the field existed
+/// (FEATURES-DESIGN.md §5.1).
+fn lenient_features<'de, D>(
+    d: D,
+) -> std::result::Result<Option<Vec<crate::feature::Feature>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let ids = Option::<Vec<String>>::deserialize(d)?;
+    Ok(ids.and_then(|ids| {
+        ids.iter()
+            .map(|id| crate::feature::Feature::parse(id))
+            .collect::<Option<Vec<_>>>()
+    }))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
 pub enum Record {
@@ -429,6 +449,26 @@ pub struct RunConfig {
     )]
     pub levers_off: Option<Vec<crate::harness::Lever>>,
 
+    /// Which features this run had switched on, in `Feature::ALL` order: the
+    /// switches as `feature::switched_on` reads them (a bool on whose
+    /// required switch is off reads off), never the effects (`harness.rs`'s
+    /// rule for levers) — `web`,
+    /// `personas` and `voice` change no tool name, so `tools` cannot say.
+    /// A condition of the run as much as `levers_off` is, so an experiment
+    /// can tell two arms apart that differ only in a feature, and a light
+    /// trial is recorded as light (FEATURES-DESIGN.md §5.1). `Some(vec![])` is
+    /// a run with every feature off; `None` is unknown — recorded before the
+    /// field existed, or carrying an id this build does not know. It records
+    /// the switch, so a lever can still have taken the feature away for this
+    /// run: `levers_off = ["mcp"]` beside `graph` here is a graph switched on
+    /// and not connected, and the two fields read together.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_features"
+    )]
+    pub features_on: Option<Vec<crate::feature::Feature>>,
+
     /// [`crate::learning::rules_hash`] of the learned-rules block this run's
     /// prefix carried, and the learned rules in it by id — the pair the
     /// validation ledger keys on, recorded at render time so the two cannot
@@ -584,6 +624,7 @@ impl Default for RunConfig {
             sandbox: "none".into(),
             sandbox_network: false,
             levers_off: None,
+            features_on: None,
             experiment: None,
             rules_hash: None,
             rule_ids: Vec::new(),
@@ -666,6 +707,15 @@ impl RunConfig {
             sandbox: config.sandbox.kind.as_str().to_string(),
             sandbox_network: config.sandbox.network,
             levers_off: Some(levers_off),
+            // The switches the run was built with: `[features]` is the global
+            // file's (stripped from project layers) or a trial home's own.
+            features_on: Some(
+                crate::feature::Feature::ALL
+                    .iter()
+                    .copied()
+                    .filter(|f| f.has_switch() && crate::feature::switched_on(config, *f))
+                    .collect(),
+            ),
             experiment: crate::experiment::ExperimentRef::from_env(),
             // A block rendered past a skipped file is not a measurement of
             // the rule set: unknown, never the hash of what was left.
@@ -3381,6 +3431,36 @@ mod tests {
         })
         .unwrap();
         assert!(wire.contains(r#""levers_off":["boredom"]"#), "{wire}");
+    }
+
+    /// `features_on` keeps `levers_off`'s wire rule: an unknown feature id
+    /// makes the whole recorded set unknown, never shorter — dropped, it would
+    /// read as *off*, and two arms differing in it as identical
+    /// (FEATURES-DESIGN.md §5.1). A record from before the field reads `None`;
+    /// `Some([])` is a run with every feature off.
+    #[test]
+    fn an_unknown_feature_reads_the_recorded_set_as_unknown_not_as_shorter() {
+        use crate::feature::Feature;
+        let known: RunConfig = serde_json::from_str(r#"{"features_on":["web","graph"]}"#).unwrap();
+        assert_eq!(known.features_on, Some(vec![Feature::Web, Feature::Graph]));
+        let light: RunConfig = serde_json::from_str(r#"{"features_on":[]}"#).unwrap();
+        assert_eq!(light.features_on, Some(vec![]));
+        let before: RunConfig = serde_json::from_str(r#"{"provider":"local"}"#).unwrap();
+        assert_eq!(
+            before.features_on, None,
+            "a transcript from before the field"
+        );
+        let newer: RunConfig =
+            serde_json::from_str(r#"{"features_on":["web","teleport"]}"#).unwrap();
+        assert_eq!(newer.features_on, None, "never [web]");
+        let wire = serde_json::to_string(&RunConfig::default()).unwrap();
+        assert!(!wire.contains("features_on"), "{wire}");
+        let wire = serde_json::to_string(&RunConfig {
+            features_on: Some(vec![Feature::Frontdoor]),
+            ..RunConfig::default()
+        })
+        .unwrap();
+        assert!(wire.contains(r#""features_on":["frontdoor"]"#), "{wire}");
     }
 
     /// `Transcript::outcomes` / `outcome_positions`: every run's outcome, in
