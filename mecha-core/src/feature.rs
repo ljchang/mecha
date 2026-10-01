@@ -366,6 +366,19 @@ pub fn switch(cfg: &Config, f: Feature) -> Option<Switch> {
     })
 }
 
+/// The top-level features `cfg` has switched on, in `Feature::ALL` order:
+/// what a run records (`RunConfig::features_on`) and what an experiment row's
+/// condition hash carries, from this one definition so the two cannot drift.
+/// Parts are left out — they have no switch, and are recomputable from the
+/// config.
+pub fn switches_on(cfg: &Config) -> Vec<Feature> {
+    Feature::ALL
+        .iter()
+        .copied()
+        .filter(|f| f.has_switch() && switched_on(cfg, *f))
+        .collect()
+}
+
 /// Answer `f`'s switch in memory, where [`switch`] reads it: the
 /// `[features]` map, or `[messages] enabled` for `messages`. A part has no
 /// switch, so nothing is written for one.

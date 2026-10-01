@@ -8480,11 +8480,18 @@ in five different ways. The design and its open steps are
   `levers_off`, and `lenient_features` loads it all-or-nothing like
   `lenient_levers`: one id a later build does not know reads the set as
   `None`, because a dropped entry would read as *off* and two different
-  trials as identical. The session record is where it lives because it is
-  the one place every trial's switches show: `condition_hash` sees an
-  environment's own `[features]` through its digest, but not `search`, which
-  follows the operator's switch, nor any switch of an arm that runs on the
-  operator's config.
+  trials as identical. **And the same set is a term of every experiment
+  row's condition hash** (the owner's ruling, 2026-10-01):
+  `Manifest::env_conditions` computes it per environment, from the resolved
+  files with nothing built (`Environment::features_on`, over the config
+  `prepare` builds), and `condition_hash_world` appends `|features=`. The
+  environment's digest already held most of a trial's switches — its own
+  `[features]` and the servers `graph` and `frontdoor` follow — but not
+  `search`, which follows the operator's switch, so two experiments
+  differing only there shared every hash. The whole set rather than `search`
+  alone, so a switch a later build takes from the operator is covered
+  without anyone remembering it. Both readers take it from
+  `feature::switches_on`, so the hashed set is the recorded one.
 - **An environment says what its tasks need.** `environment.toml`'s
   `requires` names feature ids, inherited down `extends`, and an unknown id
   refuses at load — it would otherwise require nothing.
