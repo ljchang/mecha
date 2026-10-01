@@ -177,6 +177,10 @@ export function citeNote(check) {
       return { tone: 'bad', label: 'not in the file', title: 'This quote is not in what the chat read of the file.' };
     case 'no_such_file':
       return { tone: 'bad', label: 'no such file', title: 'Not one of the files this chat read.' };
+    case 'not_read':
+      return { tone: 'muted', label: 'file not read', title: 'One of its files, but this chat had not read it when it quoted it.' };
+    case 'cannot_check':
+      return { tone: 'muted', label: "can't check", title: 'This file is in a script without spaces between words, which the check cannot compare.' };
     case 'too_short':
       return { tone: 'muted', label: 'too short to check', title: 'Too short to tell a quote from a coincidence.' };
     default:

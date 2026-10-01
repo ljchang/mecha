@@ -22,6 +22,11 @@
 //! it, and the badge then overstates. And a quote is checked against a
 //! page, or a page and the next: one that spans three is not found.
 //!
+//! A citation is found by its brackets, on one line: a quote holding a
+//! bracket of its own (a reference mark, "as shown [4]") or wrapped across
+//! a line is not parsed, and goes untagged — unchecked, which is what an
+//! untagged citation says.
+//!
 //! **A citation is not entailment.** A quote that is there can still be
 //! made to support the wrong claim; the page says "quoted, not checked for
 //! support", which is all this establishes. And the check is the harness's,
@@ -66,6 +71,13 @@ pub enum Verdict {
     OtherPage { found: u32 },
     /// Not one of the files this chat read.
     NoSuchFile,
+    /// One of its files, listed to the chat, whose text the chat had not
+    /// read when it quoted it — the quote may be invented, the file is not
+    /// (review of #465, pass 5).
+    NotRead,
+    /// A file in a script written without spaces: its words cannot be told
+    /// apart here, so the check cannot speak for the quote either way.
+    CannotCheck,
     /// Too short to tell a quote from a coincidence.
     TooShort,
     /// The file was read and the quote is not in it.
@@ -205,6 +217,9 @@ struct Page {
 struct Received<'m> {
     read: HashMap<&'m str, &'m str>,
     pages: Vec<Page>,
+    /// Files the files block named without their text (too long to include,
+    /// still being read, read on request).
+    listed: Vec<String>,
 }
 
 impl<'m> Received<'m> {
@@ -217,6 +232,7 @@ impl<'m> Received<'m> {
         Received {
             read,
             pages: Vec::new(),
+            listed: Vec::new(),
         }
     }
 
@@ -230,6 +246,9 @@ impl<'m> Received<'m> {
                 // The same predicate as `files::carries` and
                 // `Taint::arm_for_content` (review of #465).
                 Block::Text { text } if text.trim_start().starts_with(super::files::FILES_STEM) => {
+                    self.listed.extend(text.lines().filter_map(|l| {
+                        Some(l.strip_prefix("- `")?.strip_suffix('`')?.to_string())
+                    }));
                     text.as_str()
                 }
                 Block::ToolResult { tool_use_id, .. } => {
@@ -413,15 +432,26 @@ fn tokens(text: &str) -> Vec<(usize, usize, String)> {
             joined.push_str(&plain(&text[next..next_end]));
             end = next_end;
         }
-        // An en or em dash became a space: it may part one span in two.
-        for part in joined.split_whitespace() {
-            let w: String = part
-                .trim_matches(|c: char| !c.is_alphanumeric())
-                .chars()
-                .filter(|c| *c != '-')
-                .collect();
+        // An em dash became a space: it may part one span in two. A hyphen
+        // between digits parts them too — "2019-2025", "2019–2025" and
+        // "2019 – 2025" are one run of words (review of #465, pass 5) —
+        // and anywhere else it is dropped, joining the word.
+        let chars: Vec<char> = joined.chars().collect();
+        let mut parted = String::with_capacity(joined.len());
+        for (i, &ch) in chars.iter().enumerate() {
+            if ch != '-' {
+                parted.push(ch);
+            } else if i > 0
+                && chars[i - 1].is_ascii_digit()
+                && chars.get(i + 1).is_some_and(char::is_ascii_digit)
+            {
+                parted.push(' ');
+            }
+        }
+        for part in parted.split_whitespace() {
+            let w = part.trim_matches(|c: char| !c.is_alphanumeric());
             if !w.is_empty() {
-                out.push((start, end, w));
+                out.push((start, end, w.to_string()));
             }
         }
     }
@@ -515,14 +545,13 @@ fn check(c: &Citation, received: &mut Received<'_>) -> Checked {
         verdict,
     };
     let Some(file) = resolve(&c.file, &received.files()).map(str::to_string) else {
-        return checked(&c.file, Verdict::NoSuchFile);
+        let listed: Vec<&str> = received.listed.iter().map(String::as_str).collect();
+        return match resolve(&c.file, &listed) {
+            Some(file) => checked(file, Verdict::NotRead),
+            None => checked(&c.file, Verdict::NoSuchFile),
+        };
     };
     let quote = normal(&c.quote);
-    // Decided before any page is looked at, so it is the verdict wherever
-    // the cited page is (review of #465: a page never received skipped it).
-    if quote.chars().count() < MIN_QUOTE_CHARS {
-        return checked(&file, Verdict::TooShort);
-    }
     for p in received.pages.iter_mut().filter(|p| p.file == file) {
         if p.norm.is_none() {
             p.norm = Some(normal(&p.text));
@@ -537,6 +566,21 @@ fn check(c: &Citation, received: &mut Received<'_>) -> Checked {
             text: p.norm.as_deref().unwrap_or_default(),
         })
         .collect();
+    // A script without spaces is a handful of "words" a paragraph: nothing
+    // here can say whether a quote is in it (review of #465, pass 5).
+    let (chars, words) = views.iter().fold((0usize, 0usize), |(c, w), v| {
+        (c + v.text.chars().count(), w + v.text.split(' ').count())
+    });
+    if chars > 200 && chars > words * 30 {
+        return checked(&file, Verdict::CannotCheck);
+    }
+    // Decided before any page is searched, so it is the verdict wherever the
+    // cited page is (review of #465: a page never received skipped it) —
+    // and after the script check, a short quote in a script without spaces
+    // being a sentence, not a coincidence.
+    if quote.chars().count() < MIN_QUOTE_CHARS {
+        return checked(&file, Verdict::TooShort);
+    }
     let in_range = |v: &View| match (c.pages, v.id.parse::<u32>().ok()) {
         (Some((a, b)), Some(n)) => (a..=b).contains(&n),
         // No page cited, or a text file with none: the file is the page.
@@ -617,6 +661,34 @@ pub fn page_text(messages: &[Message], file: &str, page: Option<u32>) -> Option<
     of_file
         .find(|p| unpaged || p.page == page)
         .map(|p| p.text.trim().to_string())
+}
+
+/// What a citation opens: `page` of `file` as the chat received it, with
+/// where `quote` sits in it — or, for a quote the check found running over
+/// the page break (`Verdict::Quoted` from the pair), that page and the next
+/// joined, so the passage it admitted is the passage marked (review of
+/// #465, pass 5: the page alone marked nothing). Returns the text, the
+/// marked span, and the last page shown.
+pub fn passage(
+    messages: &[Message],
+    file: &str,
+    page: Option<u32>,
+    quote: &str,
+) -> Option<(String, Option<(usize, usize)>, Option<u32>)> {
+    let text = page_text(messages, file, page)?;
+    if let Some(span) = mark(&text, quote) {
+        return Some((text, Some(span), page));
+    }
+    if let Some(next) = page.and_then(|p| {
+        let n = p + 1;
+        Some((n, page_text(messages, file, Some(n))?))
+    }) {
+        let joined = format!("{text}\n\n{}", next.1);
+        if let Some(span) = mark(&joined, quote) {
+            return Some((joined, Some(span), Some(next.0)));
+        }
+    }
+    Some((text, None, page))
 }
 
 /// Where `quote` sits in `text`, as byte offsets of its first and last
@@ -777,7 +849,8 @@ mod tests {
         assert_eq!(
             v,
             [
-                ("survey.pdf", &Verdict::NoSuchFile),
+                // Listed to the chat, not yet read (review of #465, pass 5).
+                ("@kelp/survey.pdf", &Verdict::NotRead),
                 ("@kelp/survey.pdf", &Verdict::Quoted { found: Some(4) }),
                 ("@kelp/survey.pdf", &Verdict::OtherPage { found: 4 }),
             ]
@@ -959,5 +1032,63 @@ mod tests {
                 Verdict::NotFound,
             ]
         );
+    }
+
+    /// Review of #465, pass 5: what the check admits across a page break
+    /// is what the page marks; a spaced range dash is the model's hyphen;
+    /// a listed file not yet read is "not read", not "no such file"; and a
+    /// script without spaces is "can't check", not "not in the file".
+    #[test]
+    fn what_the_check_cannot_speak_for_it_does_not_accuse() {
+        let doc = "document: kelp.pdf \u{b7} pdf \u{b7} 2 page(s) \u{b7} sha256 x\n\
+            \n=== page 1 of 2 \u{b7} text layer (the file's own words) ===\n\
+            Transects ran 2019 \u{2013} 2025 at six sites, and the\n\
+            \n=== page 2 of 2 \u{b7} text layer (the file's own words) ===\n\
+            counts fell every winter.\n";
+        let block =
+            format!("{doc}\nNot included \u{2014} read them with `file_read`:\n- `survey.pdf`");
+        let msgs = chat(
+            &block,
+            "[kelp.pdf, p. 1: \"Transects ran 2019-2025 at six sites\"] \
+             [kelp.pdf, p. 1: \"six sites, and the counts fell every winter\"] \
+             [survey.pdf, p. 3: \"an invented sentence about otters\"]",
+        );
+        let got: Vec<Verdict> = check_conversation(&msgs)
+            .into_iter()
+            .map(|c| c.verdict)
+            .collect();
+        assert_eq!(
+            got,
+            [
+                Verdict::Quoted { found: Some(1) },
+                Verdict::Quoted { found: Some(1) },
+                Verdict::NotRead,
+            ]
+        );
+        let (text, span, last) = passage(
+            &msgs,
+            "kelp.pdf",
+            Some(1),
+            "six sites, and the counts fell every winter",
+        )
+        .unwrap();
+        let (a, b) = span.expect("marked across the break");
+        assert!(
+            text[a..b].starts_with("six sites") && text[a..b].ends_with("winter."),
+            "{:?}",
+            &text[a..b]
+        );
+        assert_eq!(last, Some(2));
+
+        let cjk = format!(
+            "document: \u{6587}.pdf \u{b7} pdf \u{b7} 1 page(s) \u{b7} sha256 x\n\
+             \n=== page 1 of 1 \u{b7} text layer (the file's own words) ===\n{}\n",
+            "\u{6d77}\u{80c6}\u{98df}\u{6d77}\u{85fb}".repeat(60)
+        );
+        let msgs = chat(
+            &cjk,
+            "[\u{6587}.pdf, p. 1: \"\u{6d77}\u{80c6}\u{98df}\u{6d77}\u{85fb}\u{306f}\"]",
+        );
+        assert_eq!(check_conversation(&msgs)[0].verdict, Verdict::CannotCheck);
     }
 }

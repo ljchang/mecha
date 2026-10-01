@@ -325,6 +325,9 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   assert.match(citeNote({ status: 'quoted' }).title, /not checked for support/);
   assert.equal(citeNote({ status: 'other_page', found: 4 }).label, 'on p. 4');
   assert.equal(citeNote({ status: 'not_found' }).tone, 'bad');
+  // What the check cannot speak for, it does not accuse (review of #465).
+  assert.equal(citeNote({ status: 'not_read' }).tone, 'muted');
+  assert.equal(citeNote({ status: 'cannot_check' }).tone, 'muted');
   assert.ok(citeOpens({ status: 'other_page' }) && !citeOpens({ status: 'not_found' }));
   // The page it was found on, not the one cited; the quote to mark.
   const url = citedUrl('p-0123456789ab', { file: '@kelp/s.pdf', cited: 2, found: 4, quote: 'a b' }, null);

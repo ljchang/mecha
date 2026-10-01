@@ -1310,15 +1310,18 @@ impl PersonaChats {
             let messages = std::fs::read_to_string(&session.path)
                 .map(|t| Session::messages_ever(&t))
                 .map_err(|e| Refusal::Failed(format!("reading the chat: {e}")))?;
-            let text = mecha_core::persona::cite::page_text(&messages, &file, page)
-                .ok_or(Refusal::NotFound)?;
-            let (before, marked, after) = match mecha_core::persona::cite::mark(&text, &quote) {
+            let (text, span, through) =
+                mecha_core::persona::cite::passage(&messages, &file, page, &quote)
+                    .ok_or(Refusal::NotFound)?;
+            let (before, marked, after) = match span {
                 Some((a, b)) => (&text[..a], &text[a..b], &text[b..]),
                 None => (text.as_str(), "", ""),
             };
             Ok(serde_json::json!({
                 "file": file,
                 "page": page,
+                // The last page shown: the next, where the quote ran over.
+                "through": through,
                 "before": before,
                 "marked": marked,
                 "after": after,
