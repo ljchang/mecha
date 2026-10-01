@@ -28,6 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   content, so a chat that carried them is marked untrusted. `answers =
   "files"` keeps `file_read`, since that is what reading the files means.
 
+- **`mecha setup` covers every optional feature.** It has a step for each —
+  the web app, Slack, mail, docs, the knowledge graph, web search, PDF
+  extraction, image generation, personas, voice, incognito chat, the front
+  door and messages — read from the same registry as `mecha features`, with a
+  feature's dependency offered first. A feature not switched on is offered
+  with `mecha features enable …` and can be declined; one you switched off in
+  `[features]` counts as answered; one switched on but not working is shown
+  as wrong, with the next command or the edit it needs. Mail, docs and the
+  graph now count as set up only with an `[[mcp]]` entry for their server —
+  an installed binary alone used to read as done. `mecha setup <feature>`
+  sets up one, and `mecha setup --minimal` declines every optional step in
+  one pass without touching your config. A step you declined before keeps
+  its answer.
+
 - **Slack, personas, voice, incognito, the front door and messages follow
   their switches too**, the same way the rest do: off, their web pages answer
   `feature_off` and `mecha slack`, `persona`, `msg`, `frontdoor`, `polls` and

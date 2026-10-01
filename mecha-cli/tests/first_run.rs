@@ -1058,3 +1058,65 @@ fn reject_all_continues_past_uncertain_delivery_and_reports_partial_failure() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("2 rejected, 1 failed"));
     assert!(String::from_utf8_lossy(&out.stderr).contains(uncertain));
 }
+
+/// FEATURES-DESIGN.md §9 step 4: setup iterates the registry. A fresh
+/// install is offered every optional feature as a declinable step — through
+/// its switch, which reads off whatever is on `PATH`, so this holds on any
+/// contributor's machine; `mecha setup <feature>` narrows to one, a part
+/// naming its parent; a typo is refused by name; and `--minimal` declines
+/// them all in one pass while writing no config at all.
+#[test]
+fn setup_offers_every_feature_and_minimal_declines_them_without_touching_config() {
+    let home = Home::new("setup-registry");
+    let features = [
+        "web",
+        "slack",
+        "mail",
+        "docs",
+        "graph",
+        "search",
+        "documents",
+        "image",
+        "personas",
+        "voice",
+        "incognito",
+        "frontdoor",
+        "messages",
+    ];
+    let plan = steps(&mecha(&home, &["setup", "--json"]));
+    for id in features {
+        let s = step(&plan, id);
+        assert_eq!(s["status"], "missing", "{id}: {s}");
+        assert_eq!(s["optional"], true, "{id}: {s}");
+    }
+
+    let one = steps(&mecha(&home, &["setup", "ocr", "--json"]));
+    assert_eq!(one.len(), 1, "{one:?}");
+    assert_eq!(one[0]["id"], "documents");
+
+    let typo = mecha(&home, &["setup", "nope"]);
+    assert!(!typo.status.success());
+    assert!(
+        String::from_utf8_lossy(&typo.stderr).contains("`nope` is not a feature"),
+        "{}",
+        String::from_utf8_lossy(&typo.stderr)
+    );
+
+    let config = home.path().join("config.toml");
+    let before = std::fs::read(&config).ok();
+    let out = mecha(&home, &["setup", "--minimal"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("declined"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(
+        std::fs::read(&config).ok(),
+        before,
+        "--minimal writes no config"
+    );
+    let after = steps(&mecha(&home, &["setup", "--json"]));
+    for id in features {
+        assert_eq!(step(&after, id)["status"], "declined", "{id}");
+    }
+}
