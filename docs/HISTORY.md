@@ -86,6 +86,56 @@ out of the commands.
 probes were checked here: `strings ~/.cargo/bin/mecha` holds "neither a PDF
 nor a PNG" and "attaches pictures", and serve runs that binary.
 
+**2026-09-30 — a persona's refused call no longer loops for minutes, and a
+crisis pause keeps the taint chip honest (#446, #448).** Two fixes from the
+persona lane, both installed by mecha-d7 in `346bb8a2` and still live in
+`9253038b`.
+
+#446 (`a768852e`) closed #438's last review minor. A crisis pause starts no
+run, and only a run's start called `Taint::arm_for_content`. So a picture on
+the paused turn left the pause's `Done`, the transcript chip and the session
+file reading clean. `resume` takes taint from the file's `Taint` records and
+never re-scans, so a restart kept the chat clean too. `PersonaChats::send_with`'s
+pause branch now arms the conversation and checkpoints a `Record::Taint` when
+that changed it. It is reachable only through a crisis hit in the session goal,
+because a hit in the message pauses before any pixels are read. Test:
+`a_picture_on_a_paused_turn_arms_the_chat`. Mutation checks: without the
+arming it fails at the `Done`, and without the checkpoint it fails at the
+reloaded file. One review pass.
+
+#448 (`b8f27e7f`) answers the owner's "Let's fix 1". The owner's persona chat
+resent one refused `image_generate` forty times a run, twice, to `max_turns`.
+The second loop held the model and the GPU while a new chat drew. The loop
+guard was dormant until a compaction, which a chat never reaches, and persona
+agents forced boredom off. The guard's dormancy had asked for a measurement
+before watching ordinary work. The scan covered 1,031 transcripts
+(`~/.mecha/sessions` and `~/.mecha/personas/*/sessions`, 3,187 tool turns,
+2026-09-30), counting one call with one identical `is_error` result in N
+consecutive turns:
+- N=3: 4 fires. Two were mail runs that recovered on the very next turn,
+  after boredom's notice named the repeat (the model added `account`).
+- N=4 to N=7: only the persona chat's loop.
+
+So `LoopGuard::observe_refusals` stops at `REFUSED_REPEATS` =
+`boredom::STILL_STUCK + 1` (7), after both of boredom's rungs have spoken.
+It takes the usual tool-less final turn as `StopCause::Loop`, compaction or
+not. Neither trigger counts a call this turn's trace marks `denied` (approver,
+hook, policy, interlock), because appraisal scores `Loop` against the run
+(`appraisal.rs`'s counter arm). `persona::agent::agent_config` now carries
+`boredom` from the base config. The scan's count included denials; the
+shipped rule excludes them, and every fire at N ≥ 4 was a tool error anyway.
+
+Four review passes moved it:
+- the threshold went from 5 to 7, which made the Delegate rung reachable;
+- the denial exclusion was added, then extended to the post-compaction
+  trigger;
+- the "after compacting" wording was fixed in `StopCause::describe`,
+  `RunEnd::words`, `render.rs`'s remedy, and two website pages.
+
+Installed: `strings ~/.cargo/bin/mecha | grep -c 'one call refused
+identically, turn after turn'` → 4 (one literal, several monomorphised
+copies).
+
 **2026-09-30 — modular installs: the design, and `mecha features` (#427,
 #428, #432, #433).** The owner asked how a new user installs only the parts
 they want: Slack, the web app, image generation, personas, OCR and voice
@@ -7355,6 +7405,15 @@ matters is the general shape.
 
 ### Measuring
 
+**A pinned session runs the version it was opened with, so "deployed"
+is not "reaching the owner".** After #444 shipped self-portraits, the owner
+still saw refused pictures. Their persona chat was pinned to persona version 4
+(`sessions/<id>.persona.json`), and v4 had no `character` line, which arrived
+in v5. The fix was live and could never apply in that chat; a new chat drew
+first time. When a fix depends on per-object state, check the object the
+owner is actually using (its pin, its version, its cached config) before
+reading the code for a bug.
+
 **Re-deriving a seeded fixture's truth means replaying every draw, or not
 re-deriving it at all.** Scoring a transcription against text a seeded
 generator wrote, the scoring script stubbed out the photo step, which also
@@ -9246,6 +9305,15 @@ and is what finally exercised the path.)
   (2026-08-25.)
 
 ### Review process
+
+**Every check failing at once, with zero steps, is the runners, not the
+code.** #446's first CI run showed 13 jobs failed, rustfmt included,
+which had passed locally. Each job's annotation read "The job was not
+started because it repeatedly failed to be acquired (5 attempts)". The steps
+list was empty, and `--log-failed` held no error lines. `gh run rerun
+<id> --failed` passed everything. Read a failed job's steps and annotations
+before its diff (`gh api repos/<o>/<r>/check-runs/<job>/annotations`). A
+check that never started is not a check that failed.
 
 - **`--delete-branch` on someone else's PR can close a third PR stacked on
   it.** Merging #416 with the flag deleted `docs/handoff-408`, which was
