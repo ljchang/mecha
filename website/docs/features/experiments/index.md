@@ -388,6 +388,11 @@ also moves every variant that extends it, since that edit changes what the
 variant runs. Arms whose environments resolve the same share a condition
 and are flagged as identical like any other.
 
+The features a trial runs with switched on are part of the hash too. Nearly
+all of them come from the environment, but `search` follows your own
+switch, so the same experiment run with search on and with it off is two
+conditions, not one.
+
 The digest covers the files *inside* the environment, not files its config
 points to elsewhere in the checkout. The default's `system_prompt_file =
 "prompts/agent.md"` is one: editing that file changes what every arm runs
