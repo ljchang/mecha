@@ -859,12 +859,14 @@
   // A sheet over the persona page: drag the picture in its circle, zoom
   // with the slider. Nothing is sent until Save; a frame is display only
   // (`State::frame`), so it is no new version and reaches no prompt.
-  let framing = $state(null); // { frame, from: { x, y, at } | null }
+  // { frame, aspect, from: { x, y, at } | null } — `aspect` is the picture's
+  // width / height, read when it loads: a drag pans only what is hidden.
+  let framing = $state(null);
   const FRAME_SIZE = 220;
 
   function openFraming() {
     menuOpen = false;
-    framing = { frame: frameOf(chosen.frame), from: null };
+    framing = { frame: frameOf(chosen.frame), aspect: 1, from: null };
   }
 
   function frameDown(e) {
@@ -875,7 +877,7 @@
   function frameMove(e) {
     if (!framing?.from) return;
     const { x, y, at } = framing.from;
-    framing.frame = dragFrame(at, e.clientX - x, e.clientY - y, FRAME_SIZE);
+    framing.frame = dragFrame(at, e.clientX - x, e.clientY - y, FRAME_SIZE, framing.aspect);
   }
 
   function frameUp() {
@@ -1564,11 +1566,20 @@
           const step = { ArrowLeft: [-8, 0], ArrowRight: [8, 0], ArrowUp: [0, -8], ArrowDown: [0, 8] }[e.key];
           if (step) {
             e.preventDefault();
-            framing.frame = dragFrame(framing.frame, step[0], step[1], FRAME_SIZE);
+            framing.frame = dragFrame(framing.frame, step[0], step[1], FRAME_SIZE, framing.aspect);
           }
         }}
       >
-        <img src={chosen.portrait} alt="" draggable="false" style={frameStyle(framing.frame)} />
+        <img
+          src={chosen.portrait}
+          alt=""
+          draggable="false"
+          style={frameStyle(framing.frame)}
+          onload={(e) => {
+            const { naturalWidth: w, naturalHeight: h } = e.currentTarget;
+            if (framing && w > 0 && h > 0) framing.aspect = w / h;
+          }}
+        />
       </div>
       <label class="zoomline">
         <span>zoom</span>

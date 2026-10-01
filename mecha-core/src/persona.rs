@@ -400,9 +400,11 @@ pub struct State {
     pub frame: Option<Frame>,
 }
 
-/// Where a portrait sits in its circle: `x` and `y` are the point of the
-/// picture (0–1 across and down) put at the circle's centre, and `zoom` how
-/// far in it is (1 shows the whole picture's square).
+/// Where a portrait sits in its circle, as the page draws it: `x` and `y`
+/// are CSS `object-position` fractions — how far across what the circle
+/// hides the picture has slid, 0 at its left or top edge, 1 at its right or
+/// bottom — and `zoom` a scale about that same point (1 is the picture
+/// `cover`-fitted, as it was before frames).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Frame {
     pub x: f32,

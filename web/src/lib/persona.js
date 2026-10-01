@@ -447,9 +447,10 @@ export function fileKind(name) {
 
 // ─── The avatar's framing ────────────────────────────────────────────────
 // A portrait drawn into the round avatar with `object-fit: cover`. The frame
-// (`State::frame`, set by the owner) says which point of the picture shows
-// — `object-position`, so the picture slides and never leaves a gap — and
-// how far in, scaled about that same point, which stays put as it zooms.
+// (`State::frame`, set by the owner) is `object-position` — `x` and `y` say
+// how far across what is hidden the picture has slid, 0 its left or top
+// edge, 1 its right or bottom, so it never leaves a gap — and how far in,
+// scaled about that same point, which stays put as it zooms.
 // Unplaced, it leans to the top: portraits are people, and a tall one
 // cropped at its middle shows a chest (owner report, 2026-10-01).
 export const DEFAULT_FRAME = Object.freeze({ x: 0.5, y: 0.2, zoom: 1 });
@@ -474,11 +475,23 @@ export function frameStyle(frame) {
   return `object-position:${at};transform-origin:${at};transform:scale(${+f.zoom.toFixed(3)})`;
 }
 
-// A drag of `dx`, `dy` pixels across an avatar `size` pixels wide. Dragging
-// right shows more of the picture's left, so `x` falls; zoomed in, the same
-// drag covers less of the picture.
-export function dragFrame(frame, dx, dy, size) {
+// A drag of `dx`, `dy` pixels across an avatar `size` pixels wide, over a
+// picture `aspect` (width / height) wide. The picture follows the finger.
+//
+// Along one axis, with the picture `cover`-fitted to `R` pixels in a box of
+// `S` and scaled by `z` about the same point `object-position` picks, the
+// picture's point `u` lands at `X = z·u + p·(S − z·R)` — so a drag of `dX`
+// moves `p` by `−dX / (z·R − S)`, and an axis with nothing hidden to pan to
+// (`z·R = S`: a square at zoom 1, or a tall picture's width) does not move
+// at all, rather than changing a frame the circle cannot show (review of
+// #473).
+export function dragFrame(frame, dx, dy, size, aspect = 1) {
   const f = frameOf(frame);
-  const k = 1 / (Math.max(1, size) * f.zoom);
-  return { ...f, x: clamp(f.x - dx * k, 0, 1), y: clamp(f.y - dy * k, 0, 1) };
+  const S = Math.max(1, size);
+  const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
+  const pan = (p, d, R) => {
+    const room = f.zoom * R - S;
+    return room > 0.5 ? clamp(p - d / room, 0, 1) : p;
+  };
+  return { ...f, x: pan(f.x, dx, S * Math.max(1, a)), y: pan(f.y, dy, S * Math.max(1, 1 / a)) };
 }
