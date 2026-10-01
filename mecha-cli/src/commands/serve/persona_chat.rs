@@ -99,7 +99,11 @@ pub struct PersonaChats {
     /// a chat by its key alone, so the token the page offered with is held
     /// here, keyed by chat, and every spoken turn is checked against the
     /// lock with it as a typed turn is with its own (`bind_call`).
-    calls: StdMutex<HashMap<String, Option<String>>>,
+    /// Each with the id of the offer that bound it, so an offer that fails
+    /// releases its own binding and never a live call's (review of #483).
+    calls: StdMutex<HashMap<String, (u64, Option<String>)>>,
+    /// The next binding's id.
+    next_call: std::sync::atomic::AtomicU64,
 }
 
 /// A spoken turn's other end (§11): the voice facade's tap on the run's
@@ -485,6 +489,7 @@ impl PersonaChats {
             processing: Arc::default(),
             reading: Arc::new(tokio::sync::Semaphore::new(1)),
             calls: StdMutex::new(HashMap::new()),
+            next_call: std::sync::atomic::AtomicU64::new(1),
         }
     }
 
@@ -1891,23 +1896,54 @@ impl PersonaChats {
         })
     }
 
-    /// Hold the unlock a call on `key` was placed under (§11). Checked at
-    /// the offer, before the worker hears the call exists: `Ok` for a chat
-    /// whose persona the token shows, `NotFound` otherwise — a locked
-    /// persona's call is refused exactly as its page is. The token is
-    /// checked again on every spoken turn, so a relock mid-call ends it.
+    /// `check_call` and `bind` in one, as the tests place a call.
+    #[cfg(test)]
     pub async fn bind_call(
         &self,
         library: &LibraryState,
         key: &str,
         token: Option<String>,
     ) -> Result<String, Refusal> {
-        let name = self.persona_of(library, key, token.as_deref()).await?;
+        let name = self.check_call(library, key, token.as_deref()).await?;
+        self.bind(key, token);
+        Ok(name)
+    }
+
+    /// The lock a call on `key` is placed under (§11), checked at the offer
+    /// before anything binds or the worker hears the call exists: the
+    /// persona's name for a chat the token shows, `NotFound` otherwise — a
+    /// locked persona's call is refused exactly as its page is. The token is
+    /// checked again on every spoken turn, so a relock mid-call ends it.
+    pub async fn check_call(
+        &self,
+        library: &LibraryState,
+        key: &str,
+        token: Option<&str>,
+    ) -> Result<String, Refusal> {
+        self.persona_of(library, key, token).await
+    }
+
+    /// Hold `token` for calls on `key`, replacing any earlier binding; the
+    /// id names this binding for `release_offer`.
+    pub fn bind(&self, key: &str, token: Option<String>) -> u64 {
+        let id = self
+            .next_call
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.calls
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(key.to_string(), token);
-        Ok(name)
+            .insert(key.to_string(), (id, token));
+        id
+    }
+
+    /// Release the binding offer `id` made, if it is still the one held — an
+    /// offer the worker did not take must not unbind a call that a later
+    /// offer placed.
+    pub fn release_offer(&self, key: &str, id: u64) {
+        let mut calls = self.calls.lock().unwrap_or_else(|p| p.into_inner());
+        if calls.get(key).is_some_and(|(held, _)| *held == id) {
+            calls.remove(key);
+        }
     }
 
     /// The voice a call to `name` speaks in (§11): `None` for a persona with
@@ -2001,7 +2037,7 @@ impl PersonaChats {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(key)
-            .cloned()
+            .map(|(_, token)| token.clone())
         else {
             return Hosted::Failed("no call was placed to this persona chat".into());
         };
@@ -7061,14 +7097,19 @@ mod tests {
         assert!(String::from_utf8_lossy(&why).contains("`nobody`"));
         assert!(bodies.lock().unwrap().is_empty());
 
-        // That refused offer bound nothing: the chat takes no spoken words.
+        // That refusal leaves the call the earlier offer placed alone: it
+        // bound nothing of its own and released nothing (review of #483).
+        // Spoken through the library that granted the token.
         match w
             .personas()
-            .speak(&w.chat, &w.library, &key, "hello?")
+            .speak(&w.chat, &library, &key, "still there?")
             .await
         {
-            crate::voice::Hosted::Failed(why) => assert!(why.contains("no call"), "{why}"),
-            _ => panic!("a refused offer left its binding"),
+            crate::voice::Hosted::Started(turn) => {
+                let _ = turn.done.await;
+            }
+            crate::voice::Hosted::Failed(why) => panic!("the placed call was unbound: {why}"),
+            _ => panic!("the placed call did not start"),
         }
 
         // An ordinary call's page-named voice goes nowhere.
@@ -7081,6 +7122,23 @@ mod tests {
             sent["request_data"].get("persona_voice").is_none(),
             "{sent}"
         );
+    }
+
+    /// An offer the worker did not take releases its own binding, and only
+    /// that: a later offer's binding stands.
+    #[tokio::test]
+    async fn an_offer_releases_only_the_binding_it_made() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let first = w.personas().bind(&key, None);
+        let second = w.personas().bind(&key, None);
+        w.personas().release_offer(&key, first);
+        spoken(&w, &key, "the later call stands").await;
+        w.personas().release_offer(&key, second);
+        match w.personas().speak(&w.chat, &w.library, &key, "gone?").await {
+            crate::voice::Hosted::Failed(why) => assert!(why.contains("no call"), "{why}"),
+            _ => panic!("the offer's own binding was not released"),
+        }
     }
 
     /// A call that ends is counted on the dose meter, in its own file and

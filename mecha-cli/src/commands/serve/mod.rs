@@ -1253,22 +1253,24 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
     let Some(target) = &state.offer_target else {
         return (StatusCode::NOT_FOUND, "voice offers are disabled\n").into_response();
     };
-    let key = serde_json::from_slice::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|o| offer_session(&o))
-        .filter(|k| persona_chat::is_persona_key(k));
-    let answered = match persona_offer(&state, target, body).await {
-        Ok(body) => forward_offer(target, body).await,
-        Err(refused) => *refused,
+    let (body, bound) = match persona_offer(&state, target, body).await {
+        Ok(ready) => ready,
+        Err(refused) => return *refused,
     };
-    // An offer that did not become a call — refused here, or not taken by
-    // the worker — leaves no binding, so "no call was placed" stays true.
-    if let (Some(key), Some(chat)) = (key, &state.chat) {
+    let answered = forward_offer(target, body).await;
+    // An offer the worker did not take is no call: the binding it made goes,
+    // and only that one — a call a later offer placed keeps its own.
+    if let (Some((key, id)), Some(chat)) = (bound, &state.chat) {
         if !answered.status().is_success() {
-            chat.personas.release_call(&key);
+            chat.personas.release_offer(&key, id);
         }
     }
     answered
+}
+
+/// A refusal of an offer, as `persona_offer` answers one.
+fn offer_refused(status: StatusCode, why: impl std::fmt::Display) -> Box<Response> {
+    Box::new((status, format!("{why}\n")).into_response())
 }
 
 /// An offer, as the worker may see it, when it names a persona chat
@@ -1277,104 +1279,107 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
 ///
 /// - **The lock.** The page offers with the unlock it holds
 ///   (`request_data.unlock`); a call to a persona the token does not show is
-///   refused as its page is, and the token stays here (`bind_call`) — the
-///   worker never holds it.
+///   refused as its page is, and the token stays here (`bind`) — the worker
+///   never holds it.
 /// - **The voice.** Serve, not the page, says which voice the persona
 ///   speaks in (`persona_voice`), checked against what the worker can speak
 ///   before the call exists: an unknown voice refuses the call by name.
 ///
-/// Any other offer passes unchanged except that a page cannot name a
-/// `persona_voice` of its own.
+/// Everything is checked before anything binds, so a refused offer leaves
+/// no binding and never touches a call already placed. The binding comes
+/// back with its id, for `offer_proxy` to release if the worker does not
+/// take the call. Any other offer passes unchanged except that a page
+/// cannot name a `persona_voice` of its own.
 async fn persona_offer(
     state: &WebState,
     target: &str,
     body: axum::body::Bytes,
-) -> Result<axum::body::Bytes, Box<Response>> {
+) -> Result<(axum::body::Bytes, Option<(String, u64)>), Box<Response>> {
     let Ok(serde_json::Value::Object(mut offer)) = serde_json::from_slice(&body) else {
         // `forward_offer` refuses what it cannot read.
-        return Ok(body);
+        return Ok((body, None));
     };
     let key = offer_session(&serde_json::Value::Object(offer.clone()));
     let Some(request) = offer
         .get_mut("request_data")
         .and_then(|r| r.as_object_mut())
     else {
-        return Ok(body);
+        return Ok((body, None));
     };
     let page_voice = request.remove("persona_voice").is_some();
     let unlock = request.remove("unlock");
     let Some(key) = key.filter(|k| persona_chat::is_persona_key(k)) else {
-        return Ok(if page_voice || unlock.is_some() {
-            reencode(&offer, body)
+        return if page_voice || unlock.is_some() {
+            Ok((reencode(&offer)?, None))
         } else {
-            body
-        });
+            Ok((body, None))
+        };
     };
     let Some(chat) = &state.chat else {
-        return Err(Box::new(
-            (StatusCode::NOT_FOUND, "no such persona chat\n").into_response(),
-        ));
+        return Err(offer_refused(StatusCode::NOT_FOUND, "no such persona chat"));
     };
     let token = unlock.and_then(|t| t.as_str().map(str::to_string));
     let name = chat
         .personas
-        .bind_call(&state.library, &key, token)
+        .check_call(&state.library, &key, token.as_deref())
         .await
         .map_err(|r| Box::new(r.into_response()))?;
     let voice = chat
         .personas
         .call_voice(&name)
-        .map_err(|why| Box::new((StatusCode::CONFLICT, format!("{why}\n")).into_response()))?;
+        .map_err(|why| offer_refused(StatusCode::CONFLICT, why))?;
     if let Some(voice) = &voice {
         match runner_voices(target).await {
             Ok(known) if known.iter().any(|v| v == &voice.voice) => {}
             Ok(_) => {
-                return Err(Box::new(
-                    (
-                        StatusCode::CONFLICT,
-                        format!(
-                        "voice `{}` is not one the voice server lists — record or add it first\n",
+                return Err(offer_refused(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "voice `{}` is not one the voice server lists — record or add it first",
                         voice.voice
                     ),
-                    )
-                        .into_response(),
                 ))
             }
-            Err(why) => {
-                return Err(Box::new(
-                    (StatusCode::CONFLICT, format!("{why}\n")).into_response(),
-                ))
-            }
+            Err(why) => return Err(offer_refused(StatusCode::CONFLICT, why)),
         }
-        if let Some(request) = offer
+        // Refused rather than defaulted: a missing or null `persona_voice`
+        // reads on the worker as the default voice.
+        let bound = serde_json::to_value(voice).map_err(|e| {
+            offer_refused(
+                StatusCode::CONFLICT,
+                format!("the persona's voice would not encode: {e}"),
+            )
+        })?;
+        let Some(request) = offer
             .get_mut("request_data")
             .and_then(|r| r.as_object_mut())
-        {
-            // Refused rather than defaulted: a null here reads on the worker
-            // as "no persona voice", which is the default voice.
-            let bound = serde_json::to_value(voice).map_err(|e| {
-                Box::new(
-                    (
-                        StatusCode::CONFLICT,
-                        format!("the persona's voice would not encode: {e}\n"),
-                    )
-                        .into_response(),
-                )
-            })?;
-            request.insert("persona_voice".into(), bound);
-        }
+        else {
+            return Err(offer_refused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the offer lost its request_data",
+            ));
+        };
+        request.insert("persona_voice".into(), bound);
     }
-    Ok(reencode(&offer, body))
+    let body = reencode(&offer)?;
+    // Last, once nothing can refuse: the binding this offer makes.
+    let id = chat.personas.bind(&key, token);
+    Ok((body, Some((key, id))))
 }
 
-/// An edited offer back to bytes; the original if it will not encode.
+/// An edited offer back to bytes — refused, never the original, which still
+/// carries what was stripped from it.
 fn reencode(
     offer: &serde_json::Map<String, serde_json::Value>,
-    original: axum::body::Bytes,
-) -> axum::body::Bytes {
+) -> Result<axum::body::Bytes, Box<Response>> {
     serde_json::to_vec(offer)
         .map(axum::body::Bytes::from)
-        .unwrap_or(original)
+        .map_err(|e| {
+            offer_refused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("the offer would not re-encode: {e}"),
+            )
+        })
 }
 
 /// The voices the runner beside `target` can speak in: `GET /mecha/voices`,
