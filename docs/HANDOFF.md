@@ -3732,7 +3732,8 @@ start, from the journal:
   printed the count and restarted anyway, and a chat's image generation
   (ComfyUI prompt `8e58b93f…`, started 13:08:06Z) was cut off 81 s in. The
   run was cancelled before it wrote its session, so the chat is unknown. The
-  restart is now gated in an `if` on an empty holds directory.
+  `update` skill's serve restart is now gated in an `if` on no hold inside
+  `mecha-serve` (#482).
 - **14:17Z, `6565cfd8`** (#470–#472: the test-residue fix, features).
   Binary only.
 - **15:17Z, `997a2894`** (#468, #469, #474, #475: the memory writer, the
