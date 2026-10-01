@@ -10,7 +10,7 @@
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
   import { composeEditMessage, maskName } from './image-edit.js';
-  import { pictureOf, repeatedPictures, turnsWithoutPicture } from './picture.js';
+  import { pictureOf, repeatedPictures, turnsWithoutPicture, downloadPicture } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { watchIdle, idleSpan } from './autolock.js';
   import { repairComments, changesOf } from './tomlform.js';
@@ -140,6 +140,22 @@
   // Each answer's citations with the check made of each (§10.4).
   const cites = $derived(citeEntries(run.entries, run.citations));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
+
+  // Download a generated picture: read and saved from a blob, so a locked
+  // persona's picture leaves no address (with its unlock token) in the
+  // browser's history — the reason it is not a link. Why one failed shows
+  // under it.
+  let pictureNote = $state(null); // { path, why }
+  async function savePicture(path) {
+    const k = key;
+    const why = await downloadPicture(fetch, pictureUrl(path), path);
+    // A chat left while the download ran keeps no note of it (review of #494).
+    if (key !== k) return;
+    // Only this picture's note: another's failure is not cleared by this one
+    // succeeding (review of #494).
+    if (why) pictureNote = { path, why };
+    else if (pictureNote?.path === path) pictureNote = null;
+  }
 
   // The Edit modal (EditModal.svelte): anything already typed becomes its
   // instruction. Not `editing`, which is the persona-file editor's.
@@ -487,6 +503,7 @@
       close();
       key = null;
       imageEdit = null;
+      pictureNote = null;
       attachments = [];
       run = emptyRun();
       // The chat's switches leave with it: a persona page reads its own
@@ -511,6 +528,7 @@
     chosen = null;
     key = null;
     imageEdit = null;
+    pictureNote = null;
     // A sheet over a persona that has gone — a relock lands here — must go
     // with it, or it renders without one (review of #479).
     fileSheet = null;
@@ -763,6 +781,7 @@
     // A modal over the last chat's picture must not send into this one, and
     // the last chat's files are paths in another jail.
     imageEdit = null;
+    pictureNote = null;
     attachments = [];
     // Or the previous chat's resources show for a round trip (review of #418).
     safety = null;
@@ -1726,6 +1745,8 @@
                 </a>
               {/if}
               <button class="genedit" onclick={() => editImage(picture)}>Edit</button>
+              <button class="genedit" onclick={() => savePicture(picture)}>Download</button>
+              {#if pictureNote?.path === picture}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
             {/if}
           {:else if entry.kind === 'notice'}
             <div class="notice">{entry.text}</div>
@@ -2029,6 +2050,7 @@
   /* As the assistant's chat draws a picture and its Edit button. */
   .genimg { display: block; max-width: min(100%, 512px); }
   .genimg img { display: block; width: 100%; height: auto; border-radius: 8px; }
+  .genfail { font-size: 12px; color: var(--hazard); }
   .genedit {
     align-self: flex-start; margin-top: -4px; padding: 4px 12px;
     font-family: var(--mono); font-size: 12px; color: var(--accent-400);
