@@ -369,6 +369,19 @@ pub fn switch(cfg: &Config, f: Feature) -> Option<Switch> {
     })
 }
 
+/// The top-level features `cfg` has switched on, in `Feature::ALL` order:
+/// what a run records (`RunConfig::features_on`) and what an experiment row's
+/// condition hash carries, from this one definition so the two cannot drift.
+/// Parts are left out — they have no switch, and are recomputable from the
+/// config.
+pub fn switches_on(cfg: &Config) -> Vec<Feature> {
+    Feature::ALL
+        .iter()
+        .copied()
+        .filter(|f| f.has_switch() && switched_on(cfg, *f))
+        .collect()
+}
+
 /// Whether `f` is switched on — its own bool, or for a part its parent's.
 ///
 /// What tool registration and server connection ask (FEATURES-DESIGN.md §4.2
