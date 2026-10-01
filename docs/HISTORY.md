@@ -14,6 +14,70 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-10-01 — the persona page locks itself, and a portrait can be framed
+(#469, #473, #480).** The owner's asks from a phone, each through its own
+review loop.
+- **Autolock (#469):** `imagelib::autolock_minutes` reads `autolock.toml`,
+  beside `lock.toml` (15 minutes unless set, 1 to 240; a damaged file grants
+  no unlock). It is set from Settings → Lock or `mecha imagelib
+  set-autolock`. Each token keeps the span it was granted
+  (`LibraryState::unlocks`), and the page relocks after the same span
+  untouched (`web/src/lib/autolock.js`), checked again when the page comes
+  back to the foreground. Leaving the Library or Personas tab revokes its
+  unlock.
+- **The persona page (#469, #480):** no crisis-detection line (the owner's
+  ruling); files as tiles. "Earlier chats don't load" was a token lapsed by
+  a serve restart, drawn as an empty list. A failed read while the page
+  holds a token now re-reads the list, which drops the token and closes a
+  persona it hid; reads are numbered across the body's wait too.
+- **Avatar framing (#473):** `persona::State::frame` (`Frame`) lives in
+  `state.toml`: display only, no new version, and out of range loads as
+  none. It is drawn as `object-position` plus a scale about the same point,
+  so no setting leaves a gap. Unplaced, a portrait leans to the top.
+  `dragFrame` inverts `X = z·u + p·(S − z·R)`, so the picture follows the
+  finger and an axis with nothing hidden does not move.
+
+**2026-10-01 — personas read their files: folders, checked citations,
+search, saving (#459, #465, #467, #475), and a page that reads well (#479).**
+PERSONA-DESIGN §10's four build steps in one day, each through its own
+review loop.
+- **3a (#459):** a `files/` folder at three levels (own, group, everyone),
+  read by name, never by path; the whole collection rides in the first
+  turn below a quarter of the window, or else its list. The first turn
+  never runs OCR: an unread document is read in the background, one at a
+  time.
+- **3b (#465):** every `[file, p. N: "quote"]` is looked up by the harness
+  (`persona::cite`, over `grounding::admit`) in what the chat had received,
+  and tagged quoted, on another page, not in the file, no such file, not
+  read, can't check or too short. A citation opens the chat's text of the
+  page, never the PDF.
+- **3c (#467):** `file_search`, over one store index keyed by content hash
+  and scoped by the persona's listing. It ranks by vectors from `:8081`
+  fused with FTS5, by words alone where meaning is unavailable, and says
+  which. `mecha_core::embed` is ported from mecha-graph's client.
+- **3d (#475):** a *Save to files* link writes a reply into the persona's
+  own folder, but only text that is one of the chat's own replies.
+- **#479:** Markdown rendering in both chats through `ChatProse` (the mail
+  reader's parser, no `{@html}`), with double-click for the raw text. A
+  file sheet to download or read a file. Drop to add, with upload
+  feedback. Earlier chats headed by summary, goal or opener; the goal
+  behind a link.
+
+What the review loops found most often was a check that kept working and
+stopped being true: a token stuck in a guard, a dedup by neighbours, a
+fallback that read a cache the reader never wrote. Each was fixed with a
+test that fails on the old behaviour.
+
+**2026-10-01 — test chats wrote into the owner's store (#471).**
+`chat::test_chat()` built a door that resolved sessions, workspaces and the
+outbox from the real home, so every lane's suite added "web: srctest"
+sessions and test pictures to `~/.mecha`, counted by the run-quality
+corpus as real chats (251 moved out by the end of the day). `ChatState` now holds its
+own `sessions_dir` and `work_dir`; a test door gets a fresh temporary root
+(never `MECHA_HOME`, which a concurrent `HomeGuard` may hold), and the
+guarded tests read back through the door. The residue was moved to a dated
+backup.
+
 **2026-10-01 — modular installs, step 4: setup reads the registry, and a
 trial carries its switches (#460, #461, #464, #466, #470, #472, #474,
 #476).**
@@ -156,6 +220,12 @@ out of the commands.
 #438, #447 and #450 were deployed in mecha-d7's `346bb8a2` install. The
 probes were checked here: `strings ~/.cargo/bin/mecha` holds "neither a PDF
 nor a PNG" and "attaches pictures", and serve runs that binary.
+
+**2026-09-30 — personas draw themselves (#444, #454).** `image_generate`
+casts a persona's own character as "self" (`Tool::for_persona_as`,
+`PersonaSelf`), so "draw yourself" is the persona's portrait, not a
+stranger; #454 settled the follow-ups (a wearing/doing clause, a capped
+library ask, a reply that steers).
 
 **2026-09-30 — a persona's refused call no longer loops for minutes, and a
 crisis pause keeps the taint chip honest (#446, #448).** Two fixes from the
@@ -7477,6 +7547,14 @@ matters is the general shape.
 
 ### Measuring
 
+**An activity sensor must listen to the person, not to what the page does.**
+The persona autolock first counted `scroll` as use. The chat pins itself to
+the bottom with `scrollTop =` on every streamed event, so a long reply kept
+the unlock open with nobody there (#469, pass 1). Activity is input events
+(`pointerdown`, `keydown`, `wheel`, `touchstart`, and `mousemove`, which is
+what keeps a desktop open). An effect the page itself can cause is never
+evidence of a person.
+
 **A pinned session runs the version it was opened with, so "deployed"
 is not "reaching the owner".** After #444 shipped self-portraits, the owner
 still saw refused pictures. Their Stella chat was pinned to persona version 4
@@ -9377,6 +9455,15 @@ and is what finally exercised the path.)
   (2026-08-25.)
 
 ### Review process
+
+**A reviewer's mechanism is a claim to measure, in either direction.** On
+#473 a pass warned that `frame`, a TOML table, must stay `State`'s last
+field, or a later scalar would fail to serialise with `ValueAfterTable`. A
+ten-line probe showed `toml` 1.x writes keys before tables regardless of
+declaration order, and the comment was not added. The same PR's real
+defect, a drag that saved a frame the circle could not show, was confirmed
+by deriving the layout formula before fixing it. Grade the artifact both
+when a finding looks real and when it looks like a rule.
 
 **Read the code's own account of an invariant before putting a question
 about it to the owner.** On 2026-10-01 #466's open question — should an
