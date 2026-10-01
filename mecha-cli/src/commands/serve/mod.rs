@@ -1255,7 +1255,7 @@ async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> 
     };
     let body = match persona_offer(&state, target, body).await {
         Ok(body) => body,
-        Err(refused) => return refused,
+        Err(refused) => return *refused,
     };
     forward_offer(target, body).await
 }
@@ -1278,7 +1278,7 @@ async fn persona_offer(
     state: &WebState,
     target: &str,
     body: axum::body::Bytes,
-) -> Result<axum::body::Bytes, Response> {
+) -> Result<axum::body::Bytes, Box<Response>> {
     let Ok(serde_json::Value::Object(mut offer)) = serde_json::from_slice(&body) else {
         // `forward_offer` refuses what it cannot read.
         return Ok(body);
@@ -1300,38 +1300,39 @@ async fn persona_offer(
         });
     };
     let Some(chat) = &state.chat else {
-        return Err((StatusCode::NOT_FOUND, "no such persona chat\n").into_response());
+        return Err(Box::new(
+            (StatusCode::NOT_FOUND, "no such persona chat\n").into_response(),
+        ));
     };
     let token = unlock.and_then(|t| t.as_str().map(str::to_string));
     let name = chat
         .personas
         .bind_call(&state.library, &key, token)
         .await
-        .map_err(IntoResponse::into_response)?;
+        .map_err(|r| Box::new(r.into_response()))?;
     let voice = chat
         .personas
         .call_voice(&name)
-        .map_err(|why| (StatusCode::CONFLICT, format!("{why}\n")).into_response())?;
+        .map_err(|why| Box::new((StatusCode::CONFLICT, format!("{why}\n")).into_response()))?;
     if let Some(voice) = &voice {
         match runner_voices(target).await {
-            Some(known) if known.iter().any(|v| v == &voice.voice) => {}
-            Some(_) => {
-                return Err((
-                    StatusCode::CONFLICT,
-                    format!(
+            Ok(known) if known.iter().any(|v| v == &voice.voice) => {}
+            Ok(_) => {
+                return Err(Box::new(
+                    (
+                        StatusCode::CONFLICT,
+                        format!(
                         "voice `{}` is not one the voice server lists — record or add it first\n",
                         voice.voice
                     ),
-                )
-                    .into_response())
+                    )
+                        .into_response(),
+                ))
             }
-            None => {
-                return Err((
-                    StatusCode::CONFLICT,
-                    "the voice worker could not say which voices it has — \
-                     a worker that predates persona voices needs a restart on a current checkout\n",
-                )
-                    .into_response())
+            Err(why) => {
+                return Err(Box::new(
+                    (StatusCode::CONFLICT, format!("{why}\n")).into_response(),
+                ))
             }
         }
         if let Some(request) = offer
@@ -1358,26 +1359,39 @@ fn reencode(
 }
 
 /// The voices the runner beside `target` can speak in: `GET /mecha/voices`,
-/// answered `{"voices": [...]}` by a worker that binds persona voices.
-/// `None` — a 404 from one that predates it, a timeout, a list it could not
-/// read — is "unknown", never permissive.
-async fn runner_voices(target: &str) -> Option<Vec<String>> {
+/// answered `{"voices": [...]}` by a worker that binds persona voices. Every
+/// other answer is "unknown", never permissive, and says which unknown it
+/// is: a worker without the route needs a restart, one whose TTS could not
+/// be asked (`{"voices": null}`) needs its TTS.
+async fn runner_voices(target: &str) -> Result<Vec<String>, &'static str> {
+    const UNREACHABLE: &str = "the voice worker did not answer which voices it has";
     let url = reqwest::Url::parse(target)
         .and_then(|t| t.join("/mecha/voices"))
-        .ok()?;
+        .map_err(|_| UNREACHABLE)?;
     let resp = reqwest::Client::new()
         .get(url)
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
-        .ok()
-        .filter(|r| r.status().is_success())?;
-    let v: serde_json::Value = resp.json().await.ok()?;
-    v.get("voices")?
-        .as_array()?
-        .iter()
-        .map(|x| x.as_str().map(str::to_string))
-        .collect()
+        .map_err(|_| UNREACHABLE)?;
+    if resp.status() == StatusCode::NOT_FOUND {
+        return Err("the voice worker predates persona voices — restart it on a current checkout");
+    }
+    if !resp.status().is_success() {
+        return Err(UNREACHABLE);
+    }
+    let v: serde_json::Value = resp.json().await.map_err(|_| UNREACHABLE)?;
+    match v.get("voices") {
+        Some(serde_json::Value::Array(list)) => list
+            .iter()
+            .map(|x| x.as_str().map(str::to_string))
+            .collect::<Option<_>>()
+            .ok_or(UNREACHABLE),
+        Some(serde_json::Value::Null) => {
+            Err("the voice worker could not ask its TTS server which voices it has")
+        }
+        _ => Err(UNREACHABLE),
+    }
 }
 
 /// The pipe behind `offer_proxy`, apart from the state that switches it off.

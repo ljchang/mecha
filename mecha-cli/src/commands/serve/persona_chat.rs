@@ -1999,6 +1999,21 @@ impl PersonaChats {
         else {
             return Hosted::Failed("no call was placed to this persona chat".into());
         };
+        // The door before the barge-in, which cancels the run in flight:
+        // a relocked or unapproved persona's reply must not be stopped by a
+        // call that is then turned away (the assistant's rule, review of
+        // #376; here, review of #483). `start` checks again per turn.
+        match self.persona_of(library, key, token.as_deref()).await {
+            Err(r) => return Hosted::Failed(r.said()),
+            Ok(name) => {
+                let approved = Store::load(&self.store)
+                    .get(&name)
+                    .is_some_and(|p| p.state.status == mecha_core::persona::Status::Approved);
+                if !approved {
+                    return Hosted::Failed(format!("`{name}` is not approved"));
+                }
+            }
+        }
         for _ in 0..BARGE_IN_TRIES {
             {
                 let sessions = self.sessions.lock().await;
@@ -2439,8 +2454,14 @@ impl PersonaChats {
                 error: None,
             });
             // On a call the pause is heard, not only shown: the plain words
-            // are the answer the facade speaks, and the persona says nothing.
+            // go out as the call's text — a streaming call speaks only what
+            // arrives as `TextDelta`, never `done`'s text (review of #483) —
+            // and the persona says nothing.
             if let Some(spoken) = spoken {
+                let _ = spoken
+                    .tap
+                    .send(AgentEvent::TextDelta(safety::SAFE_MESSAGE.to_string()));
+                drop(spoken.tap);
                 let _ = spoken.done.send(Ok(spoken_answer(safety::SAFE_MESSAGE)));
             }
             return Ok(serde_json::json!({ "started": false, "paused": true }));
@@ -2475,6 +2496,11 @@ impl PersonaChats {
             None => (mecha_core::agent::CancelHandle::new(), None),
         };
         let (tap, hosted_done) = hosted.unzip();
+        // A second sender for what the harness says after the run: the
+        // judge's pause, spoken behind a reply it cut off. Held, it also
+        // keeps the facade reading until the words are sent.
+        let after_tap = tap.clone();
+        let noted = call_note.is_some();
         let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
         let queued_ids: Arc<StdMutex<VecDeque<String>>> = Arc::default();
         let working: Arc<StdMutex<Vec<serde_json::Value>>> = Arc::default();
@@ -2654,6 +2680,11 @@ impl PersonaChats {
                 if compacted || owed_anchor {
                     ps.anchor_due = true;
                 }
+                // A failed turn was rolled back with the call note in it: the
+                // next spoken turn still owes it (review of #483).
+                if noted && !run_ok {
+                    ps.last_turn_spoken = false;
+                }
                 // A crisis message typed while this run was live: recorded
                 // now, beside the run it stopped, so the words are kept.
                 if let Some(said) = ps.pending_crisis.take() {
@@ -2685,6 +2716,16 @@ impl PersonaChats {
             // next word (`chat::begin_turn`'s order). A run the judge stopped
             // is answered with the pause's plain words, as a typed one shows
             // them, never with the half-reply it was cut off in.
+            if let Some(after) = after_tap {
+                if stopped_by_judge && outcome.is_ok() {
+                    // Streaming cannot un-say what was already spoken, so
+                    // the plain words follow it.
+                    let _ = after.send(AgentEvent::TextDelta(format!(
+                        " {}",
+                        safety::SAFE_MESSAGE
+                    )));
+                }
+            }
             if let Some(done) = hosted_done {
                 let _ = done.send(match &outcome {
                     Ok(_) if stopped_by_judge => Ok(spoken_answer(safety::SAFE_MESSAGE)),
@@ -6687,9 +6728,116 @@ mod tests {
             .bind_call(&w.library, &key, None)
             .await
             .unwrap();
-        let answer = spoken(&w, &key, "honestly I want to die").await;
-        assert_eq!(answer.text, safety::SAFE_MESSAGE);
+        let (said, answer) = heard(&w, &key, "honestly I want to die").await;
+        // What a streaming call speaks is the events, not `done`'s text
+        // (review of #483): the pause must be in them.
+        assert_eq!(said, safety::SAFE_MESSAGE);
+        assert_eq!(answer.unwrap().text, safety::SAFE_MESSAGE);
         assert!(w.seen.lock().unwrap().is_empty(), "the persona answered");
+    }
+
+    /// A spoken turn as a streaming call hears it: every `TextDelta` the
+    /// facade would speak, then the answer.
+    async fn heard(
+        w: &World,
+        key: &str,
+        words: &str,
+    ) -> (String, Result<crate::voice::HostedAnswer, String>) {
+        let crate::voice::Hosted::Started(mut turn) =
+            w.personas().speak(&w.chat, &w.library, key, words).await
+        else {
+            panic!("the call did not start");
+        };
+        let mut said = String::new();
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), turn.events.recv()).await
+            {
+                Ok(Some(AgentEvent::TextDelta(t))) => said.push_str(&t),
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => panic!("the call's events never ended"),
+            }
+        }
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(10), turn.done)
+            .await
+            .expect("never answered")
+            .expect("the answer was dropped");
+        (said, answer)
+    }
+
+    /// A run the crisis judge stops on a call: what was spoken stays spoken,
+    /// and the plain words follow it on the stream (review of #483).
+    #[tokio::test]
+    async fn a_judge_stop_on_a_call_is_followed_by_the_plain_words() {
+        let w = world_with(Mode::Hang);
+        *w.judge.lock().unwrap() = JudgeSays::Concern;
+        let key = open_chat(&w).await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        let (said, _) = heard(&w, &key, "tell me about the reef").await;
+        assert!(said.contains(safety::SAFE_MESSAGE), "{said:?}");
+    }
+
+    /// The lock is checked before the barge-in: a relocked persona's reply is
+    /// not stopped by a call that is then turned away (review of #483).
+    #[tokio::test]
+    async fn a_refused_call_does_not_stop_the_reply_in_flight() {
+        let w = world_with(Mode::Hang);
+        let key = open_chat(&w).await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "a long answer, please",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        match w
+            .personas()
+            .speak(&w.chat, &w.library, &key, "stop that")
+            .await
+        {
+            crate::voice::Hosted::Failed(why) => assert_eq!(why, "no such persona chat"),
+            _ => panic!("a relocked persona took a call"),
+        }
+        // A cancelled run takes a moment to wind down: give it the time a
+        // stopped one needs, and the reply must still be running after it.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let live = w.personas().sessions.lock().await[&key].live.is_some();
+        assert!(live, "the refused call stopped the reply in flight");
+        w.chat.stop().await;
+    }
+
+    /// A spoken turn that fails is rolled back with its note, and the next
+    /// spoken turn carries the note again (review of #483).
+    #[tokio::test]
+    async fn a_failed_spoken_turn_leaves_the_note_owed() {
+        let w = world_with(Mode::Fail);
+        let key = open_chat(&w).await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        let (_, first) = heard(&w, &key, "hello").await;
+        assert!(first.is_err(), "the test provider was meant to fail");
+        let (_, second) = heard(&w, &key, "hello again").await;
+        assert!(second.is_err(), "the provider still fails");
+        let seen = w.seen.lock().unwrap().clone();
+        assert!(seen.len() >= 2, "{}", seen.len());
+        assert!(
+            noted(&seen[0]) && noted(seen.last().unwrap()),
+            "the note was not owed"
+        );
     }
 
     /// Speaking over a reply stops it and starts the new turn — a call is
