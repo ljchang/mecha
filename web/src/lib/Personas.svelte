@@ -118,6 +118,34 @@
   // A cited page open beside the chat (§10.4): the page as the chat read
   // it, the quote marked. Text drawn as text — never the file itself.
   let citedPage = $state(null);
+  // Replies saved to the persona's files this visit, by entry (§10.5).
+  let savedReplies = $state({});
+  $effect(() => {
+    key;
+    untrack(() => (savedReplies = {}));
+  });
+
+  // Save a reply into the persona's own files, on the owner's word: the
+  // server takes only text this chat's persona wrote (`save_reply`).
+  async function saveReply(i, text) {
+    if (!key || busy) return;
+    const k = key;
+    try {
+      const res = await fetch(chatUrl(k, '/save', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text, unlock: chosen?.locked ? token ?? undefined : undefined }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const { name } = await res.json();
+      if (key === k) {
+        savedReplies = { ...savedReplies, [i]: name };
+        loadSources();
+      }
+    } catch (e) {
+      notice(`not saved: ${String(e?.message ?? e)}`);
+    }
+  }
   // Which open answers: a slow first tap must not land under a later one's
   // header (review of #465), as `reread` counts with `readGen`.
   let citedGen = 0;
@@ -1296,6 +1324,13 @@
                  all a check can say — a real quote may support the wrong claim.
                  One that was found opens its page. -->
             <div class="answer">{#each citeSegments(entry.text, cites.get(i)) as seg, j (j)}{#if seg.check}{@const n = citeNote(seg.check)}{#if citeOpens(seg.check)}<span class="cite {n.tone}" role="button" tabindex="0" title={n.title} onclick={() => openCited(seg.check)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openCited(seg.check))}>{seg.text}<span class="citetag">{n.label}</span></span>{:else}<span class="cite {n.tone}" title={n.title}>{seg.text}<span class="citetag">{n.label}</span></span>{/if}{:else}{seg.text}{/if}{/each}</div>
+            {#if !run.running && entry.text?.trim()}
+              {#if savedReplies[i]}
+                <span class="savednote">saved to files as {savedReplies[i]}</span>
+              {:else}
+                <button class="linkbtn quiet saveline" disabled={busy} onclick={() => saveReply(i, entry.text)}>Save to files</button>
+              {/if}
+            {/if}
           {:else if entry.kind === 'tool'}
             {@const status = toolStatus(run.entries, i)}
             {@const picture = pictureOf(entry)}
@@ -1521,6 +1556,8 @@
   /* Not checked, or too short to: no underline that reads as affirmed. */
   .cite.muted { text-decoration: none; }
   .citedsheet { max-height: 75%; }
+  .saveline { margin-top: -4px; }
+  .savednote { margin-top: -4px; font-size: 11px; color: var(--text-muted); }
   .citedtext { overflow-y: auto; white-space: pre-wrap; font-size: 14px; line-height: 1.5; padding: 10px 12px; border: 1px solid var(--accent-900); border-radius: 10px; }
   .citedtext mark { background: var(--accent-700); color: var(--text); border-radius: 3px; }
   .tool { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }

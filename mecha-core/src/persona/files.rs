@@ -322,6 +322,51 @@ pub fn carries(messages: &[crate::message::Message]) -> bool {
     })
 }
 
+/// Save one of `p`'s replies into its own folder as a Markdown file
+/// (PERSONA-DESIGN §10.5): a study guide, a quiz or a glossary it wrote
+/// when asked, there next time and movable to a group's folder to share.
+/// The harness writes it, on the owner's word — never a write path the
+/// model holds (§10.2). Named from its first heading or line; a line says
+/// where it came from. Answers the name the file is listed by.
+pub fn save_reply(
+    store: &Store,
+    p: &Persona,
+    text: &str,
+    when: chrono::DateTime<chrono::Utc>,
+) -> Result<String, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("an empty reply has nothing to save".into());
+    }
+    let title: String = text
+        .lines()
+        .map(|l| l.trim().trim_start_matches('#').trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or("saved")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+        .take(60)
+        .collect::<String>()
+        .trim()
+        .to_lowercase()
+        .replace(' ', "-");
+    let title = if title.is_empty() {
+        "saved".to_string()
+    } else {
+        title
+    };
+    let body = format!(
+        "<!-- Saved from a chat with {}, {}. -->\n\n{text}\n",
+        if p.settings.display.is_empty() {
+            &p.name
+        } else {
+            &p.settings.display
+        },
+        when.format("%Y-%m-%d")
+    );
+    add(store, p, &format!("{title}.md"), body.as_bytes())
+}
+
 /// A file the owner added, written into `p`'s own folder under a tamed
 /// name (`paper.pdf`, `paper (2).pdf` when that is taken) — never over an
 /// existing file. Only kinds this module reads are taken. Answers the name
@@ -1257,6 +1302,32 @@ mod tests {
         unique.dedup();
         assert_eq!(names.len(), unique.len(), "{names:?}");
         assert!(names.contains(&"@kelp/survey.txt"), "{names:?}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// §10.5: a reply saved is a Markdown file in the persona's own folder,
+    /// named from its first heading, saying where it came from — never over
+    /// another, and listed for the next chat.
+    #[test]
+    fn a_saved_reply_is_a_file_of_its_own() {
+        let (dir, store, p) = world();
+        let when = chrono::DateTime::parse_from_rfc3339("2026-10-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let text = "# Study guide: chapter 2\n\n1. What do urchins graze? [notes.md: \"Urchins graze kelp\"]";
+        let name = save_reply(&store, &p, text, when).unwrap();
+        assert_eq!(name, "study-guide-chapter-2.md");
+        let again = save_reply(&store, &p, text, when).unwrap();
+        assert_eq!(
+            again, "study-guide-chapter-2 (2).md",
+            "never over the first"
+        );
+        let saved = std::fs::read_to_string(dir.join("mara/files").join(&name)).unwrap();
+        assert!(saved.starts_with("<!-- Saved from a chat with"), "{saved}");
+        assert!(saved.contains("2026-10-01") && saved.contains("Urchins graze kelp"));
+        assert!(list(&roots(&store, &p)).iter().any(|s| s.name == name));
+        assert!(save_reply(&store, &p, "   ", when).is_err());
+        assert_eq!(save_reply(&store, &p, "?!", when).unwrap(), "saved.md");
         std::fs::remove_dir_all(dir).ok();
     }
 }
