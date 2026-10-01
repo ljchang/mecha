@@ -865,6 +865,163 @@ impl PersonaChats {
         Ok(serde_json::json!({ "locked": state.locked }))
     }
 
+    /// A waiting persona as the owner reads it before approving (§4.4; the
+    /// owner's rulings of 2026-10-01): every field a proposal can set, and
+    /// this server's signature of the files' digest — what approval sends
+    /// back, so what is approved is what was shown. A linked character still
+    /// waiting comes with its own description, portrait and signature, so
+    /// one tap can approve both. The lock holds as for every read.
+    pub fn review(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::imagelib::{self, Kind, Library, Status};
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        if p.state.status != Status::Candidate {
+            return Err(Refusal::Conflict(format!(
+                "`{}` is not waiting for approval",
+                p.name
+            )));
+        }
+        let store = Store::load(&self.store);
+        let digest = store.content_digest(&p).map_err(failed)?;
+        let lib = Library::load(&library.dir).0;
+        let unlocked = library.unlocked(token);
+        // A locked character is not named to a locked page (#425's rule),
+        // and so is neither shown nor offered for approval here.
+        let character = match hidden_character(&p, &lib, unlocked) {
+            Some(_) => serde_json::Value::Null,
+            None => p
+                .settings
+                .character
+                .as_deref()
+                .and_then(|c| lib.get(Kind::Character, c))
+                .map(|e| {
+                    let waiting = e.status == Status::Candidate;
+                    serde_json::json!({
+                        "name": e.name,
+                        "text": e.text,
+                        "portrait": super::library::portrait_url(e, token.filter(|_| unlocked)),
+                        "waiting": waiting,
+                        "origin": e.origin,
+                        "shown": waiting.then(|| library.sign(&imagelib::shown_digest(e))),
+                    })
+                })
+                .unwrap_or(serde_json::Value::Null),
+        };
+        Ok(serde_json::json!({
+            "name": p.name,
+            "display": p.display(),
+            "relationships": p.settings.relationship.0,
+            "voice": p.settings.voice,
+            "identity": p.identity,
+            "motivation": p.motivation,
+            "origin": p.state.origin,
+            "locked": p.state.locked,
+            "character": character,
+            "shown": library.sign(&digest),
+        }))
+    }
+
+    /// Approve a waiting persona as it was shown, and, with
+    /// `character_shown`, the waiting character it links. Both signatures
+    /// are checked before anything is written; the character goes first, so
+    /// an approved persona never points at a character still waiting.
+    pub fn approve(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        shown: &str,
+        character_shown: Option<&str>,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::imagelib::{self, Kind, Library, Status};
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        if p.state.status != Status::Candidate {
+            return Err(Refusal::Conflict(format!(
+                "`{}` is not waiting for approval",
+                p.name
+            )));
+        }
+        let changed = || {
+            Refusal::Conflict(format!(
+                "`{}` is not what was shown — read it again before approving",
+                p.name
+            ))
+        };
+        let digest = Store::load(&self.store)
+            .content_digest(&p)
+            .map_err(failed)?;
+        if !library.signed(&digest, shown) {
+            return Err(changed());
+        }
+        let lib = Library::load(&library.dir).0;
+        let unlocked = library.unlocked(token);
+        let character = match character_shown {
+            None => None,
+            Some(sig) => {
+                // A character hidden from this page is not offered here.
+                let shown_character = match hidden_character(&p, &lib, unlocked) {
+                    Some(_) => None,
+                    None => p.settings.character.as_deref(),
+                };
+                let entry = shown_character
+                    .and_then(|c| lib.get(Kind::Character, c))
+                    .filter(|e| e.status == Status::Candidate)
+                    .ok_or_else(|| {
+                        Refusal::Conflict("its character is not waiting for approval".into())
+                    })?;
+                let entry_digest = imagelib::shown_digest(entry);
+                if !library.signed(&entry_digest, sig) {
+                    return Err(Refusal::Conflict(format!(
+                        "`{}` is not what was shown — read it again before approving",
+                        entry.name
+                    )));
+                }
+                Some((entry.name.clone(), entry_digest))
+            }
+        };
+        if let Some((c, d)) = &character {
+            imagelib::approve_as_shown(&library.dir, Kind::Character, c, d)
+                .map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
+        }
+        let state = mecha_core::persona::approve_as_shown(&self.store, &p.name, &digest)
+            .map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
+        Ok(serde_json::json!({
+            "approved": p.name,
+            "version": state.version,
+            "character": character.map(|(c, _)| c),
+        }))
+    }
+
+    /// Turn a waiting persona away: moved aside under `removed/`, as
+    /// `mecha persona remove` does. Only a candidate — an approved persona
+    /// is removed from the terminal, deliberately.
+    pub fn reject(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        if p.state.status != mecha_core::imagelib::Status::Candidate {
+            return Err(Refusal::Conflict(format!(
+                "`{}` is not waiting for approval",
+                p.name
+            )));
+        }
+        mecha_core::persona::remove(&self.store, &p.name).map_err(failed)?;
+        Ok(serde_json::json!({ "rejected": p.name }))
+    }
+
     /// Place the portrait in a persona's avatar, or return it to the
     /// default. The lock
     /// holds as for every write: a hidden persona answers as a missing one.
@@ -935,6 +1092,10 @@ impl PersonaChats {
                     "frame": p.state.frame,
                     "version": p.state.version,
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
+                    // Waiting on the owner — the page's Waiting section —
+                    // and where it came from, said as the library says it.
+                    "waiting": p.state.status == mecha_core::persona::Status::Candidate,
+                    "origin": p.state.origin,
                     "locked": p.state.locked,
                     "problems": unnamed(store.problems(p, &lib), hidden),
                     "safety": safety_json(&p.settings.safety, None),
@@ -3275,6 +3436,87 @@ pub struct LockBody {
     unlock: Option<String>,
 }
 
+/// GET /api/personas/{name}/review
+pub async fn review(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(q): Query<UnlockQuery>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    match tokio::task::spawn_blocking(move || personas.review(&library, &name, q.unlock.as_deref()))
+        .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("reading the proposal: {e}")).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct ApproveBody {
+    /// This server's signature of what the page showed (`review`'s `shown`).
+    shown: String,
+    /// The linked character's, to approve it in the same tap.
+    #[serde(default)]
+    character_shown: Option<String>,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// POST /api/personas/{name}/approve
+pub async fn approve(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<ApproveBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    match tokio::task::spawn_blocking(move || {
+        personas.approve(
+            &library,
+            &name,
+            &body.shown,
+            body.character_shown.as_deref(),
+            body.unlock.as_deref(),
+        )
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("approving: {e}")).into_response(),
+    }
+}
+
+/// POST /api/personas/{name}/reject
+pub async fn reject(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<UnlockBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    match tokio::task::spawn_blocking(move || {
+        personas.reject(&library, &name, body.unlock.as_deref())
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("rejecting: {e}")).into_response(),
+    }
+}
+
 #[derive(serde::Deserialize)]
 pub struct FrameBody {
     /// Absent or null returns the portrait to the page's default framing.
@@ -4719,6 +4961,154 @@ mod tests {
             .frame(&w.library, "mara", None, Some(&token))
             .unwrap();
         assert!(row(Some(&token))["frame"].is_null(), "the default again");
+    }
+
+    /// A proposal from the main chat, read and approved where personas live
+    /// (the owner's rulings of 2026-10-01): approved only as shown, its
+    /// waiting character with it in one tap, turned away only while waiting,
+    /// and behind the lock like every read.
+    #[tokio::test]
+    async fn a_proposal_is_approved_as_shown_with_its_character_or_turned_away() {
+        use mecha_core::imagelib::{self, Kind, Origin, Status};
+        use mecha_core::persona::{propose, Proposal};
+        let w = world();
+        let lib_dir = w.library.dir.clone();
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 4)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        imagelib::create(
+            &lib_dir,
+            imagelib::NewEntry {
+                kind: Kind::Character,
+                name: "wren".into(),
+                text: "short, freckled, a wool cap".into(),
+                portrait: Some(png),
+                source_seed: None,
+                origin: Origin::ModelClean,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let lib = || imagelib::Library::load(&lib_dir).0;
+        let proposal = |name: &str, core: &str, locked: bool| Proposal {
+            name: name.into(),
+            display: String::new(),
+            relationships: Vec::new(),
+            character: (name == "wren").then(|| "wren".to_string()),
+            voice: None,
+            identity: format!("## Core\n{core}\n"),
+            motivation: String::new(),
+            origin: Origin::ModelClean,
+            locked,
+        };
+        propose(
+            &w.store(),
+            &lib(),
+            proposal("wren", "A field botanist.", false),
+        )
+        .unwrap();
+
+        // Listed as waiting, and read with what approval needs.
+        let listed = w.personas().list(&w.library, None, Some(chrono_tz::UTC));
+        let row = listed["personas"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "wren")
+            .unwrap()
+            .clone();
+        assert_eq!(row["waiting"], true);
+        assert_eq!(row["origin"], "model_clean");
+        let read = w.personas().review(&w.library, "wren", None).unwrap();
+        assert!(read["identity"].as_str().unwrap().contains("botanist"));
+        assert_eq!(read["character"]["waiting"], true);
+        let shown = read["shown"].as_str().unwrap().to_string();
+        let char_shown = read["character"]["shown"].as_str().unwrap().to_string();
+
+        // A forged signature, or one from before a revision, approves nothing.
+        assert!(matches!(
+            w.personas()
+                .approve(&w.library, "wren", "forged", None, None),
+            Err(Refusal::Conflict(_))
+        ));
+        propose(
+            &w.store(),
+            &lib(),
+            proposal("wren", "A field botanist, revised.", false),
+        )
+        .unwrap();
+        assert!(matches!(
+            w.personas()
+                .approve(&w.library, "wren", &shown, Some(&char_shown), None),
+            Err(Refusal::Conflict(_))
+        ));
+        assert_eq!(
+            lib().get(Kind::Character, "wren").unwrap().status,
+            Status::Candidate,
+            "a refused persona approves no character"
+        );
+
+        // Read again, approved as shown: the character with it.
+        let read = w.personas().review(&w.library, "wren", None).unwrap();
+        let approved = w
+            .personas()
+            .approve(
+                &w.library,
+                "wren",
+                read["shown"].as_str().unwrap(),
+                read["character"]["shown"].as_str(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(approved["character"], "wren");
+        assert_eq!(
+            lib().get(Kind::Character, "wren").unwrap().status,
+            Status::Approved
+        );
+        let wren = Store::load(&w.store()).get("wren").unwrap().clone();
+        assert_eq!(wren.state.status, Status::Approved);
+        assert!(
+            wren.identity.contains("revised"),
+            "what was shown, the last read"
+        );
+        // Approved: no longer waiting, and not turned away from here.
+        assert!(matches!(
+            w.personas().review(&w.library, "wren", None),
+            Err(Refusal::Conflict(_))
+        ));
+        assert!(matches!(
+            w.personas().reject(&w.library, "wren", None),
+            Err(Refusal::Conflict(_))
+        ));
+
+        // A locked proposal (an incognito chat's) is hidden like any locked
+        // persona until unlocked, then turned away.
+        propose(
+            &w.store(),
+            &lib(),
+            proposal("noor", "A night-shift nurse.", true),
+        )
+        .unwrap();
+        assert!(matches!(
+            w.personas().review(&w.library, "noor", None),
+            Err(Refusal::NotFound)
+        ));
+        assert!(matches!(
+            w.personas().reject(&w.library, "noor", None),
+            Err(Refusal::NotFound)
+        ));
+        let token = w.library.grant_for_tests();
+        assert_eq!(
+            w.personas()
+                .review(&w.library, "noor", Some(&token))
+                .unwrap()["locked"],
+            true
+        );
+        w.personas()
+            .reject(&w.library, "noor", Some(&token))
+            .unwrap();
+        assert!(Store::load(&w.store()).get("noor").is_none());
     }
 
     #[tokio::test]

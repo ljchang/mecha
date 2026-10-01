@@ -69,6 +69,11 @@ const ALLOWED_BUILTINS: &[&str] = &[
     // Reads the owner's library and writes nothing; proposing an entry
     // (`image_library_propose`) writes outside the room, so it stays out.
     "image_library",
+    // The one writer outside the room on purpose (the owner's ruling,
+    // 2026-10-01): a persona proposed here is staged locked — the chat's
+    // `ToolCtx::stage_locked` — and waits on the Personas page, hidden
+    // until unlocked. These will mostly be locked profiles.
+    "persona_propose",
 ];
 
 /// The MCP server whose read-only tools an incognito chat may call (R3:
@@ -491,6 +496,7 @@ mod tests {
             ("image_generate", true),
             ("image_library", true),
             ("image_library_propose", true),
+            ("persona_propose", true),
             ("research", false),
             ("http_fetch", true),
             ("a_tool_added_tomorrow", true),

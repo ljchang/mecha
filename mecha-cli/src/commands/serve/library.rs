@@ -100,13 +100,13 @@ impl LibraryState {
 
     /// HMAC-SHA256 of an entry's `shown_digest` under this process's key,
     /// hex: what the page sends back to approve exactly what it displayed.
-    fn sign(&self, digest: &str) -> String {
+    pub(super) fn sign(&self, digest: &str) -> String {
         imagelib::sign_shown(&self.key, digest)
     }
 
     /// Whether `presented` is this process's signature of `digest`, compared
     /// without an early exit.
-    fn signed(&self, digest: &str, presented: &str) -> bool {
+    pub(super) fn signed(&self, digest: &str, presented: &str) -> bool {
         let want = self.sign(digest);
         want.len() == presented.len()
             && want
