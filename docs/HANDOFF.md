@@ -73,46 +73,53 @@ is open:
   `81b74494`): 3,917 passed, 0 failed. Clippy with `RUSTFLAGS=-D warnings
   --all-features` and `fmt --check` were clean.
 
-**2026-09-30 — modular installs: designed, step 0 shipped (#427, #428,
-#432, #433), steps 1–8 open.** `FEATURES-DESIGN.md` is the authority: §7
-holds the owner's six rulings (all made), and §9 the build order. What
-shipped is in HISTORY under 2026-09-30. `ARCHITECTURE.md` §Features
-describes the registry and is the checklist for adding a feature. Open:
+**2026-10-01 — modular installs: steps 0–3 shipped and live, 4–8 open.**
+`FEATURES-DESIGN.md` is the authority (§7 the owner's rulings, plus L1 and
+M1 in its status header; §9 the build order); `ARCHITECTURE.md` §Features
+holds the invariants and the "Adding a feature" checklist; what shipped is in
+HISTORY under 2026-09-30 and 2026-09-30/10-01. Every feature now follows its
+switch on every surface — tools, servers, web routes (404 `feature_off`),
+CLI verbs and the TUI's own drivers. This machine reads 21 of 21 on
+(verified 2026-10-01 through the 8443 door: `/api/features`, 0 pending), so
+nothing refuses here. Workspace at `9253038b` (`cargo test --workspace
+--no-fail-fast`, summed over every `test result` line): 3,936 passed, 0
+failed, 5 ignored. Open, cheapest first:
 
-- **Step 1 is next**, and it is the first one that changes behaviour for an
-  existing install:
-  - the `[features]` table (`Config`, `ConfigLayer`, `apply`, the project
-    strip and a nested-layer test);
-  - an in-place `mecha features enable|disable` writer, since
-    `setup::apply` bails when the header is absent;
-  - tool registration gated on the global bool;
-  - the upgrade notice on every start;
-  - `Feature::switchable_from_environment`, which `trial_env::config_at`
-    asks of every `[features]` key an environment sets. (`voice` and
-    `personas` join `OPERATOR_ONLY_TABLES` in step 5, with the tables they
-    gate.)
-  Step 1 ships in two PRs: **1a** adds the table, the writer, the notice and
-  the environment refusal, and gates nothing. **1b** gates registration and
-  connections on the switch, so the notice and this machine's table are in
-  place before anything can turn off.
-  `personas` and `voice` still read "always on" in step 0, and step 1 must
-  give them real evidence before the notice keys on it (§4.2). Three
-  decisions the design leaves to step 1, from #435's last pass:
-  - which `state`s count as "usable" for the notice and F6's offer — **ruled
-    by the owner 2026-09-30: `On` and `Unready`, each with its reason**
-    ("mail: configured but not enabled — no account authorised yet").
-    `Unknown` is never announced, or F6 would write `slack = true` off a store
-    it could not read;
-  - F6's row in §7 still lists presence evidence ("an `[image]` table"),
-    while §4.2 says the detector is `state`. Code it as `state`, which is
-    what step 0 already paid for — its rows ask what registration asks and
-    never a field's presence;
-  - the test "`graph` absent with no manifest server reads off" should also
-    say the environment declares no graph server of its own.
-- **Minor, from the #428/#432/#433 reviews:**
+- **Step 4: `mecha setup` iterates the registry** — a step per feature,
+  `mecha setup <feature>`, `--minimal`, dependencies offered first, the
+  `[[mcp]]` checks `mail`, `docs` and `graph` lack today; and experiments
+  record the feature set beside `levers_off`, with an environment's
+  `requires` refusing a trial that lacks one (§9, §5.1).
+- **Step 5: `[voice]` and `[personas]` settings tables**, each four places
+  plus a decision on `trial_env`'s lists (§9 says both go on
+  `OPERATOR_ONLY_TABLES`).
+- **Steps 6–8:** model recommendations as data with `hardware.md` in F5's
+  two columns; per-feature installers with `--remove`; and the one
+  `CLAUDE.md` bullet pointing at `ARCHITECTURE.md` §Features (the checklist
+  there is already written).
+- **Not built from §5:** `mecha features` should say "off, 3 requests
+  waiting" for a front door switched off with work in its store. Home keeps
+  the count (a flat card with the command); the CLI row does not.
+- **Minor, left for the owner by the #449–#452 reviews:**
+  - `mecha msg` has no upgrade-notice line: `evidence` is false for
+    `messages`, so an install that used it with `[messages] enabled` absent
+    loses it under M1 with only the refusal to say so.
+  - `mecha slack auth` stays open while `slack link` refuses, so a new
+    owner's setup is half-open until the switch is on.
+  - `review queues`' front-door and graph rows name a verb (`opens`) that
+    refuses when that feature is off; `Queue::opens` is `&'static str`, so
+    fixing it changes every row's type.
+  - `review queues` reads a failed `mecha_home()` as zero front-door
+    requests, as its questions row does.
+  - The CHANGELOG's 3b entry lists fewer open verbs than
+    `website/docs/reference/configuration.md` (it omits `slack remote` and
+    `persona group list`).
+  - `App.svelte`'s pane redirect for `settings/voice` is untested; the
+    helpers it uses (`featureOf`, `refuses`) are.
+- **Minor, from the #428/#432/#433 reviews, still true at `9253038b`:**
   - The `incognito` row asks `provider_is_local` of `default_provider`, not
     the bound router preset.
-  - `every_variant_is_in_all` relies on a count raised by hand.
+  - `every_variant_is_in_all` relies on a count raised by hand (21).
   - `mcp_entry` matches a command's file name, so a wrapper script reads off.
   - `testenv::HomeGuard`'s `STORE_OVERRIDES` omits `MECHA_MAIL_DIR`.
   - `onboarding`'s store helpers copy the mail crate's rule with nothing
@@ -3569,6 +3576,30 @@ holds clear, then rsync. mecha-5d caught it.
 
 The voice worker, ComfyUI, `llama-*` and the graph binaries were not touched.
 mecha-69's 00:46Z restart (persona authoring, `bbfe4b6b`) is theirs to record.
+
+**2026-10-01 00:34Z and 01:44Z, mecha-ce: `mecha` twice from `main`,
+coordinated with mecha-d7.** (mecha-d7's own deploy of `346bb8a2` on the
+evening of 2026-09-30, #447–#451 with `messages` switched on, is theirs to
+record.) Both builds ran in a detached worktree at `origin/main`, since the
+shared checkout was behind it; only `mecha` was installed, because neither
+range touched `mecha-mail`, the Slack crate, `scripts/` or the graph repo.
+`mecha-slack`, `mecha-triggers`, `mecha-drain` and `mecha-serve` were
+restarted; the voice worker was not, since `worker.py` was unchanged. Before
+each restart, `mecha tools --json` gave 72 and `mecha features` 21 on. Each
+probe came from the range's added lines and was checked against
+`/proc/<pid>/exe` of serve, Slack and triggers (`mecha-drain` is a bash
+wrapper that runs only `factory-publish` and `mecha-mail`):
+- **00:34Z, `e856ce36` (#452, #453).** `the voice facade is not mounted`
+  0 → 1. No hold was live. The dist was rebuilt and the door served
+  `index-9Y-Jxt8J.js`; `voice-uplink-transform.js` returned
+  `200 text/javascript`, and `/api/features` gave 21 rows, 21 on, 21 gated,
+  0 pending.
+- **01:44Z, `9253038b` (#454, #455).** `Two entries in` 0 → 1. One hold was
+  live, `mecha-graph extract --limit 100` from `cron.service`, which no
+  restart touched. No web change; the door still served `index-9Y-Jxt8J.js`.
+
+Not touched: the voice worker, ComfyUI, `llama-*`, the graph binaries, and
+the shared `~/Github/mecha` checkout, left on `main` at `346bb8a2`.
 
 ## What the measurements say
 
