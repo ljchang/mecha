@@ -15,7 +15,7 @@ The three legs are env-configurable base URLs (D6):
     MECHA_VOICE_TTS_VOICE  voice name for the TTS leg (start value; the
                       page can change it per session)
     MECHA_VOICE_TTS_SPEED  speaking rate, 0.5-2.0 (start value, likewise)
-    MECHA_VOICE_TTS_EXAGGERATION  emotion intensity, 0.0-1.0
+    MECHA_VOICE_TTS_EXAGGERATION  emotion intensity, 0.0-2.0
     MECHA_VOICE_TTS_CFG_WEIGHT    guidance weight, 0.0-1.0 (lower = more
                       expressive pacing; it moves *against* exaggeration)
 """

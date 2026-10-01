@@ -289,7 +289,8 @@ pub fn is_late_night(hour: u32) -> bool {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Doses {
     pub by_persona: std::collections::HashMap<String, Dose>,
-    /// Why `dose.jsonl` could not be read, when it exists and could not.
+    /// Why `dose.jsonl` or `calls.jsonl` could not be read, when one exists
+    /// and could not.
     pub unreadable: Option<String>,
     /// Lines that did not parse, and so are in no count.
     pub skipped: u32,

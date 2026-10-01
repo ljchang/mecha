@@ -1654,7 +1654,7 @@
         {#if isShown(features.rows, 'calls')}
           <!-- A call speaks into this chat, in the persona's voice (§11) —
                beside send, where the assistant's chat keeps its own. -->
-          <button class="attachbtn callbtn" title={`call ${chosen.display}`} aria-label={`call ${chosen.display}`} onclick={() => caller?.start()}>
+          <button class="attachbtn" title={`call ${chosen.display}`} aria-label={`call ${chosen.display}`} onclick={() => caller?.start()}>
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /></svg>
           </button>
         {/if}
