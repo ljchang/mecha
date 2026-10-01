@@ -992,13 +992,10 @@ impl PersonaChats {
             .ok_or(Refusal::NotFound)?;
         // Past this a document cannot be extracted, so it is never "ready"
         // and is never read to find out (review of #459).
-        let max_bytes = chat
-            .follower
-            .current()
-            .config
-            .documents
-            .as_ref()
-            .map(|d| d.max_file_bytes())
+        // And none is ready while document reading is switched off, since
+        // no chat could read it — the page agrees with the reader.
+        let max_bytes = crate::setup::document_extractor(&chat.follower.current().config)
+            .map(|ex| ex.config().max_file_bytes())
             .unwrap_or(0);
         let store_dir = self.store.clone();
         let processing = self
@@ -1126,6 +1123,7 @@ impl PersonaChats {
             })
         })
         .await
+        .map_err(|e| tracing::warn!("a persona's files were not listed: {e}"))
         .ok()
         .flatten()?;
         if sources.is_empty() {
