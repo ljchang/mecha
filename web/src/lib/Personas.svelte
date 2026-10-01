@@ -1349,6 +1349,11 @@
   .barnote.ok { color: var(--accent-400); }
   .startbox .editbox { flex: 1; margin-bottom: 0; }
   .editbox { width: 100%; background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius); color: var(--text); font-family: var(--sans); font-size: 15px; padding: 12px 14px; box-sizing: border-box; }
+  /* iOS zooms into a field under 16px on focus and stays zoomed — the text
+     editor too, not only the forms (owner, 2026-10-01). */
+  @media (hover: none) and (pointer: coarse) {
+    .editbox, .filebox, .adding .editbox { font-size: 16px; }
+  }
   .abtn { flex-shrink: 0; min-height: 44px; padding: 0 16px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; cursor: pointer; white-space: nowrap; }
   .abtn.primary { background: var(--accent-400); color: var(--void); font-weight: 500; border: none; }
   .abtn:disabled { opacity: 0.5; }

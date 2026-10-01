@@ -56,15 +56,37 @@
   }
 
   // Grow a text box with its text, so a section reads as a page rather than
-  // a scrolling well.
-  function autosize(node) {
+  // a scrolling well. It refits on typing, on a width change (rotation, the
+  // keyboard, a box first laid out while hidden) and when its value is set
+  // from outside (Discard, a restored draft); and it holds the scroll still
+  // while it measures, or collapsing to `auto` jumps the page on iOS
+  // (owner, 2026-10-01: "buggy on mobile").
+  function autosize(node, _value) {
+    const scroller = node.closest('.scroll') ?? document.scrollingElement;
+    let width = 0;
     const fit = () => {
+      const top = scroller?.scrollTop ?? 0;
       node.style.height = 'auto';
       node.style.height = `${node.scrollHeight}px`;
+      if (scroller) scroller.scrollTop = top;
     };
     requestAnimationFrame(fit);
     node.addEventListener('input', fit);
-    return { destroy: () => node.removeEventListener('input', fit) };
+    const seen = new ResizeObserver(([entry]) => {
+      const w = Math.round(entry.contentRect.width);
+      if (w !== width) {
+        width = w;
+        fit();
+      }
+    });
+    seen.observe(node);
+    return {
+      update: () => requestAnimationFrame(fit),
+      destroy: () => {
+        node.removeEventListener('input', fit);
+        seen.disconnect();
+      },
+    };
   }
 
   // Menu icons, as SVG paths.
@@ -112,7 +134,7 @@
         disabled={busy}
         {value}
         oninput={(e) => set(e.currentTarget.value)}
-        use:autosize
+        use:autosize={value}
       ></textarea>
     </div>
   {/if}
@@ -151,7 +173,7 @@
           aria-label={labels.body ?? 'Text'}
           disabled={busy}
           bind:value={draft.body}
-          use:autosize
+          use:autosize={draft.body}
         ></textarea>
       {/if}
     </header>
@@ -187,7 +209,7 @@
           <p class="tf-caption">{labels.fixed[s.heading.trim()]}</p>
         {/if}
         {@render note(s.id, s.note, (v) => (s.note = v))}
-        <textarea class="tf-area tf-body" rows="1" placeholder="Write here" aria-label={s.heading || 'Section text'} disabled={busy} bind:value={s.body} use:autosize></textarea>
+        <textarea class="tf-area tf-body" rows="1" placeholder="Write here" aria-label={s.heading || 'Section text'} disabled={busy} bind:value={s.body} use:autosize={s.body}></textarea>
       </section>
     {/each}
 
