@@ -707,3 +707,76 @@ fn an_edit_never_creates_a_memory_just_to_find_the_id_missing() {
     assert!(forget(&dir, "mara", "abcd1234").is_err());
     assert!(!dir.join("mara").join(MEMORY_DB).exists());
 }
+
+#[test]
+fn a_forget_whose_log_cannot_be_truncated_says_so_and_the_next_one_clears_it() {
+    let dir = store(&["mara"]);
+    let secret = "zq-held-by-a-reader-4410";
+    let (m, shared, f) = shared_fact(&dir, secret);
+    for i in 0..20 {
+        m.add_fact(
+            Table::User,
+            fact(
+                &format!("filler {i}"),
+                Kind::Stated,
+                "c2",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    }
+    // A chat recalling on another connection, mid-read.
+    let reader = Connection::open_with_flags(
+        dir.join("mara").join(MEMORY_DB),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    let _: i64 = reader
+        .query_row("SELECT count(*) FROM user_facts", [], |r| r.get(0))
+        .unwrap();
+
+    let err = forget(&dir, "mara", &f.uid).unwrap_err();
+    assert!(err.to_string().contains("write-ahead log"), "{err}");
+    // The deletes still all happened: the row, and its shared copy.
+    assert!(m.fact(&f.uid).unwrap().is_none());
+    assert!(shared.all().unwrap().facts.is_empty());
+
+    drop(reader);
+    let filler = m.facts(Table::User, Filter::All).unwrap()[0].uid.clone();
+    forget(&dir, "mara", &filler).unwrap();
+    for name in [MEMORY_DB, "memory.db-wal"] {
+        if let Ok(bytes) = std::fs::read(dir.join("mara").join(name)) {
+            assert!(
+                !bytes.windows(secret.len()).any(|w| w == secret.as_bytes()),
+                "still in {name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_withdrawn_fact_cannot_be_corrected_into_a_second_live_branch() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let f = m
+        .add_fact(
+            Table::User,
+            fact(
+                "Teaches on Tuesdays.",
+                Kind::Stated,
+                "c1",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    m.correct(&f.uid, "Teaches on Thursdays.").unwrap();
+    let stamp = m.fact(&f.uid).unwrap().unwrap().invalidated_at;
+    let err = m.correct(&f.uid, "Teaches on Fridays.").unwrap_err();
+    assert!(err.to_string().contains("withdrawn"), "{err}");
+    assert_eq!(m.fact(&f.uid).unwrap().unwrap().invalidated_at, stamp);
+    assert_eq!(
+        texts(&m.facts(Table::User, Filter::Recallable).unwrap()),
+        ["Teaches on Thursdays."]
+    );
+}

@@ -452,10 +452,28 @@ fn migrate_shared(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// After a delete: fold the write-ahead log back and truncate it, so the
+/// After a delete: fold each write-ahead log back and truncate it, so the
 /// deleted text does not survive in the log's copy of the page.
-fn scrub(conn: &Connection) -> Result<()> {
-    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+///
+/// A checkpoint another reader blocks does not fail — SQLite reports it as
+/// `busy = 1` in the returned row — so the row is read, and an untruncated
+/// log is an error: reporting it as done would be the silently-degrading
+/// guard. Every connection is tried before reporting, and callers run their
+/// deletes first, so a busy log never stops a delete from happening; the
+/// next delete's checkpoint clears what this one could not (review of #463).
+fn scrub(conns: &[&Connection]) -> Result<()> {
+    let mut busy = 0;
+    for conn in conns {
+        let b: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+        busy += usize::from(b != 0);
+    }
+    if busy > 0 {
+        bail!(
+            "deleted, but the write-ahead log could not be truncated while a chat \
+             or the page was reading memory; the text may stay in the log until \
+             the next delete"
+        );
+    }
     Ok(())
 }
 
@@ -858,10 +876,12 @@ impl Memory {
             ),
             params![uid, wire(&Status::Invalidated), now()],
         )?;
-        match self.shared()? {
-            Some(shared) => shared.unshare_from(&self.persona, &[uid.to_owned()]),
-            None => Ok(0),
-        }
+        let Some(shared) = self.shared()? else {
+            return Ok(0);
+        };
+        let n = shared.unshare_from(&self.persona, &[uid.to_owned()])?;
+        scrub(&[&shared.conn])?;
+        Ok(n)
     }
 
     /// `shared.db` for writing, if anything was ever shared — never created
@@ -911,11 +931,18 @@ impl Memory {
         let old = self
             .fact(uid)?
             .ok_or_else(|| anyhow!("{} has no fact with id `{uid}`", self.persona))?;
+        // Only a live row is corrected: correcting a withdrawn one would
+        // re-stamp when it was withdrawn and grow a second live replacement
+        // of the same fact — the pair `approve` refuses (review of #463).
+        if old.status == Status::Invalidated {
+            bail!("that record was withdrawn; correct the row that replaced it, or add the fact again");
+        }
         let tx = self.conn.unchecked_transaction()?;
         let stamp = now();
         tx.execute(
             &format!(
-                "UPDATE {} SET status = ?3, invalidated_at = ?2 WHERE uid = ?1",
+                "UPDATE {} SET status = ?3, invalidated_at = coalesce(invalidated_at, ?2)
+                 WHERE uid = ?1",
                 old.table.sql()
             ),
             params![uid, stamp, wire(&Status::Invalidated)],
@@ -947,12 +974,15 @@ impl Memory {
     }
 
     /// Delete one record outright — the only edit that removes text.
-    pub fn forget(&self, uid: &str) -> Result<()> {
+    /// Private, and unscrubbed: it does not reach `shared.db` or the log, so
+    /// [`forget`] — which walks `replaces`, drops the copies and scrubs both
+    /// files — is the only door.
+    fn delete(&self, uid: &str) -> Result<()> {
         self.writable()?;
         let table = self.locate(uid)?;
         self.conn
             .execute(&format!("DELETE FROM {table} WHERE uid = ?1"), [uid])?;
-        scrub(&self.conn)
+        Ok(())
     }
 
     /// Delete every record whose source is `chat`; (episodes, facts) removed.
@@ -968,7 +998,6 @@ impl Memory {
             )?;
         }
         tx.commit()?;
-        scrub(&self.conn)?;
         Ok((episodes, facts))
     }
 
@@ -1208,7 +1237,7 @@ impl Shared {
             params![persona, old_uid, new.uid, new.text, wire(&new.origin)],
         )?;
         // The old wording was overwritten in place: scrub it from the log.
-        scrub(&self.conn)?;
+        scrub(&[&self.conn])?;
         Ok(n)
     }
 
@@ -1222,7 +1251,7 @@ impl Shared {
         {
             bail!("nothing shared with id `{uid}`");
         }
-        scrub(&self.conn)
+        scrub(&[&self.conn])
     }
 
     /// Drop every copy of the learned facts `from_uids` — what forgetting
@@ -1238,18 +1267,15 @@ impl Shared {
             )?;
         }
         tx.commit()?;
-        scrub(&self.conn)?;
         Ok(n)
     }
 
     fn forget_chat(&self, persona: &str, chat: &str) -> Result<usize> {
         self.writable()?;
-        let n = self.conn.execute(
+        Ok(self.conn.execute(
             "DELETE FROM shared_facts WHERE learned_by = ?1 AND source_chat = ?2",
             [persona, chat],
-        )?;
-        scrub(&self.conn)?;
-        Ok(n)
+        )?)
     }
 }
 
@@ -1267,14 +1293,26 @@ pub fn forget_chat(store_dir: &Path, persona: &str, chat: &str) -> Result<Forgot
         bail!("which chat?");
     }
     let mut out = Forgotten::default();
-    if store_dir.join(persona).join(MEMORY_DB).is_file() {
-        let (e, f) = Memory::open(store_dir, persona)?.forget_chat(chat)?;
-        out.episodes = e;
-        out.facts = f;
-    }
-    if Shared::path(store_dir).is_file() {
-        out.shared = Shared::open(store_dir)?.forget_chat(persona, chat)?;
-    }
+    let memory = if store_dir.join(persona).join(MEMORY_DB).is_file() {
+        let m = Memory::open(store_dir, persona)?;
+        (out.episodes, out.facts) = m.forget_chat(chat)?;
+        Some(m)
+    } else {
+        None
+    };
+    let shared = if Shared::path(store_dir).is_file() {
+        let s = Shared::open(store_dir)?;
+        out.shared = s.forget_chat(persona, chat)?;
+        Some(s)
+    } else {
+        None
+    };
+    let conns: Vec<&Connection> = memory
+        .iter()
+        .map(|m| &m.conn)
+        .chain(shared.iter().map(|s| &s.conn))
+        .collect();
+    scrub(&conns)?;
     Ok(out)
 }
 
@@ -1283,11 +1321,14 @@ pub fn forget_chat(store_dir: &Path, persona: &str, chat: &str) -> Result<Forgot
 pub fn forget(store_dir: &Path, persona: &str, uid: &str) -> Result<usize> {
     let memory = Memory::open_to_edit(store_dir, persona)?;
     let lineage = memory.lineage(uid)?;
-    memory.forget(uid)?;
-    match memory.shared()? {
-        Some(shared) => shared.unshare_from(persona, &lineage),
-        None => Ok(0),
-    }
+    memory.delete(uid)?;
+    let Some(shared) = memory.shared()? else {
+        scrub(&[&memory.conn])?;
+        return Ok(0);
+    };
+    let copies = shared.unshare_from(persona, &lineage)?;
+    scrub(&[&memory.conn, &shared.conn])?;
+    Ok(copies)
 }
 
 #[cfg(test)]
