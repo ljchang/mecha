@@ -8379,7 +8379,8 @@ in five different ways. The design and its open steps are
   and `graph = true` could meet a manifest's `live_servers` and read the
   owner's live graph.
 - **A run records the switches it had** (step 4b). `RunConfig::of` writes
-  `features_on` — the `[features]` bools on, top-level features only, since
+  `features_on` — the top-level features `switched_on` reads on (the bool,
+  and every switch it `requires`), since
   a part has no switch and is recomputable from the config — beside
   `levers_off`, and `lenient_features` loads it all-or-nothing like
   `lenient_levers`: one id a later build does not know reads the set as
@@ -8395,8 +8396,11 @@ in five different ways. The design and its open steps are
   `Environment::prepare` asks the registry of the trial home's own config
   and refuses a required feature that is `Off` or `Blocked`, by name, before
   any trial starts; `Unready` passes, since a trial home's stores are built
-  after it. Running anyway would score the model on a task it could not
-  attempt.
+  after it. It is a check of the **switches**, as the design specifies: a
+  switched-on feature's own `Off` reads `Unready`, so `search` on with no
+  backend passes, and it runs once per environment, before an arm's
+  `levers_off` — `levers_off = ["mcp"]` under `requires = ["graph"]` is not
+  caught (review of #466).
 
 ### Adding a feature
 
