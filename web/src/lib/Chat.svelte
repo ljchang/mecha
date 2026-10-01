@@ -1274,8 +1274,10 @@
   async function savePicture(path) {
     const k = key;
     const why = await downloadPicture(fetch, workspaceFile(path), path);
-    // A chat left while the download ran keeps no note of it (review of #494).
-    if (key !== k) return;
+    // A chat left — or an incognito chat ended (`forget` keeps the key and
+    // sets `gone`) — while the download ran keeps no note of it (reviews of
+    // #494).
+    if (key !== k || gone) return;
     // Only this picture's note: another's failure is not cleared by this one
     // succeeding (review of #494).
     if (why) pictureNote = { path, why };
