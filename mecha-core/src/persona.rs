@@ -393,7 +393,8 @@ pub struct State {
     #[serde(default)]
     pub updated: String,
     /// How the portrait sits in the round avatar, as the owner placed it;
-    /// `None` is centred and unzoomed. Display only — nothing reaches a
+    /// `None` is the page's default framing (leaning to the top of the
+    /// picture, unzoomed). Display only — nothing reaches a
     /// prompt, and a change is no new version.
     #[serde(
         default,
@@ -1638,7 +1639,7 @@ pub fn approve(dir: &Path, name: &str) -> Result<State> {
     snapshot(dir, name)
 }
 
-/// Place the portrait in the persona's avatar, or `None` to centre it again.
+/// Place the portrait in the persona's avatar, or `None` for the default.
 /// State only: the owner's files and the version are untouched.
 pub fn set_frame(dir: &Path, name: &str, frame: Option<Frame>) -> Result<State> {
     let frame = frame.map(Frame::checked).transpose()?;
