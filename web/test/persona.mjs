@@ -29,7 +29,8 @@ assert.equal(withUnlock('/x?a=1', 'z'), '/x?a=1&unlock=z');
 assert.throws(() => personaUrl('mara', '/delete', null));
 assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 14);
+assert.equal(ENDPOINTS.length, 16);
+assert.ok(ENDPOINTS.includes('/api/personas/X/sources') && ENDPOINTS.includes('/api/personas/X/sources/remove'));
 assert.ok(ENDPOINTS.includes('/api/personas/authoring') && ENDPOINTS.includes('/api/personas/X/files'));
 assert.equal(authoringUrl('t'), '/api/personas/authoring?unlock=t');
 assert.equal(personaUrl('mara', '/files', null), '/api/personas/mara/files');
@@ -274,6 +275,19 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   // A page-only notice carried after the server's entries is not the reply.
   const noticed = [...reloaded, { kind: 'notice', text: 'upload failed' }];
   assert.deepEqual([...turnsWithoutPicture(noticed)], [4], 'not under the notice');
+}
+
+// A file's row: size, whether a chat can read it without waiting, and where
+// a shared one comes from.
+{
+  const { sourceLine } = await import('../src/lib/persona.js');
+  assert.equal(sourceLine({ name: 'paper.pdf', bytes: 3870000, shared: false, ready: false, processing: true }), '3.7 MB · reading…');
+  assert.equal(sourceLine({ name: 'notes.md', bytes: 300, shared: false, ready: true, processing: false }), '1 KB · ready');
+  assert.equal(sourceLine({ name: '@kelp/s.pdf', bytes: 2048, shared: true, ready: false, processing: false }), '2 KB · not read yet · group kelp');
+  assert.equal(sourceLine({ name: '@all/g.md', bytes: 2048, shared: true, ready: true, processing: false }), '2 KB · ready · every persona');
+  assert.equal(sourceLine({ name: '@group:all/g.md', bytes: 2048, shared: true, ready: true, processing: false }), '2 KB · ready · group all');
+  assert.equal(sourceLine({ name: 'paper.pdf', bytes: 2048, shared: false, ready: false, on_request: true, processing: false }), '2 KB · read when asked');
+  assert.equal(sourceLine({ name: 'scan.heic', bytes: 2048, shared: false, ready: false, processing: false, unreadable: 'scan.heic: a HEIC/HEIF photo' }), '2 KB · not readable');
 }
 
 console.log('persona: ok');
