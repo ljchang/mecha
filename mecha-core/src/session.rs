@@ -54,7 +54,7 @@ fn extension_of(
 /// `tool_result` orphaned in the next message, and nothing prunes orphans
 /// at load. Strictly better than dropping the whole message either way,
 /// and the fix when that day comes is a load-time orphan sweep beside this.
-fn lenient_record(line: &str) -> Option<Record> {
+pub(crate) fn lenient_record(line: &str) -> Option<Record> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     match v.get("record").and_then(serde_json::Value::as_str)? {
         "message" => lenient_message(&v).map(Record::Message),

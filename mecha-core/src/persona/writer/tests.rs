@@ -571,7 +571,7 @@ async fn memory_switched_off_asks_nothing_and_still_moves_on() {
 #[test]
 fn a_chat_is_written_by_its_own_model_and_never_swaps_the_resident_one() {
     let use_ = |m: &str| ModelPick::Use(m.into());
-    let pick = |chat, resident| pick_model(chat, resident, true, "default");
+    let pick = |chat, resident| pick_model(chat, Server::Router(resident), "default");
     assert_eq!(pick(Some("story"), Some("story")), use_("story"));
     assert_eq!(
         pick(Some("story"), Some("work")),
@@ -583,8 +583,17 @@ fn a_chat_is_written_by_its_own_model_and_never_swaps_the_resident_one() {
     assert_eq!(pick(None, None), use_("default"));
     // One model served, whatever a request names.
     assert_eq!(
-        pick_model(Some("story"), Some("work"), false, "default"),
+        pick_model(Some("story"), Server::One, "default"),
         use_("default")
+    );
+    // A router that would not say: naming any model could be the swap.
+    assert_eq!(
+        pick_model(Some("story"), Server::Unanswered, "default"),
+        ModelPick::Wait("story".into())
+    );
+    assert_eq!(
+        pick_model(None, Server::Unanswered, "default"),
+        ModelPick::Wait("default".into())
     );
 }
 
@@ -656,4 +665,71 @@ fn an_over_long_summary_is_turned_away_and_the_facts_beside_it_are_kept() {
         .unwrap();
     assert_eq!((out.episodes, out.added, out.refused), (0, 1, 1));
     assert_eq!(m.written_upto("c1").unwrap(), 2);
+}
+
+#[test]
+fn an_id_the_model_invents_is_turned_away_never_sliced() {
+    let w = world();
+    run(
+        &w,
+        stretch(Origin::ModelClean),
+        vec![add(true, Kind::Stated, "Teaches on Thursdays.")],
+    );
+    // Multi-byte at the eighth byte: sliced by bytes, this panicked.
+    let out = run(
+        &w,
+        stretch(Origin::ModelUntrusted),
+        vec![
+            Op::Invalidate {
+                id: "abcdefg\u{1F600}".into(),
+            },
+            Op::Update {
+                id: "zzzzzzzz".into(),
+                text: "x".into(),
+            },
+        ],
+    );
+    assert_eq!(out.refused, 2);
+}
+
+#[tokio::test]
+async fn an_unanswered_owner_turn_waits_for_its_reply() {
+    let w = world();
+    let m = Memory::open(&w.dir, "mara").unwrap();
+    // The run failed after the owner spoke: a checkpoint, no reply.
+    let first = [
+        META.to_string(),
+        owner("The seminar moved to Fridays."),
+        checkpoint(false),
+    ]
+    .concat();
+    let (none, seen) = scripted(&[]);
+    write_chat(&none, &m, &w.persona, "c1", &read_chat(&first))
+        .await
+        .unwrap();
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(m.written_upto("c1").unwrap(), 0, "not skipped for good");
+
+    // The persona answers the next day; the owner's words reach the model.
+    let later = first + &persona_says("Fridays, then.") + &checkpoint(false);
+    let (writer, seen) = scripted(&[r#"{"episode": null, "facts": []}"#]);
+    write_chat(&writer, &m, &w.persona, "c1", &read_chat(&later))
+        .await
+        .unwrap();
+    assert!(asked(&seen.lock().unwrap()[0]).contains("The seminar moved to Fridays."));
+    assert_eq!(m.written_upto("c1").unwrap(), 2);
+}
+
+#[test]
+fn a_message_with_a_block_this_build_does_not_know_keeps_the_rest() {
+    let text = [
+        META.to_string(),
+        "{\"record\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"},{\"type\":\"hologram\"}]}\n".to_string(),
+        persona_says("hi"),
+        checkpoint(false),
+    ]
+    .concat();
+    let chat = read_chat(&text);
+    assert_eq!(chat.turns[0].message.as_ref().unwrap().text(), "hello");
+    assert_eq!(stretches(&chat, 0).len(), 1, "the chat stays clean");
 }

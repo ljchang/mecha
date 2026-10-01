@@ -284,16 +284,29 @@ async fn write_memory(
     use mecha_core::provider::router;
     let pinned = global.provider.is_some() || global.model.is_some();
     let base = provider_cfg.base_url.as_deref().map(router::base);
-    let (_, seen) = router::observe_seen(&cfg, !pinned).await;
-    let on_router = !pinned
-        && base
-            .as_ref()
-            .is_some_and(|b| seen.iter().any(|s| &s.base_url == b));
-    let mut resident: Option<String> = base
+    let (warnings, seen) = router::observe_seen(&cfg, !pinned).await;
+    for w in warnings {
+        eprintln!("mecha: {w}");
+    }
+    // A default that follows a router which then did not answer is the one
+    // case with no safe model to name: every chat waits (review of #468).
+    let follows = !pinned
+        && cfg
+            .providers
+            .get(&cfg.default_provider)
+            .is_some_and(router::follows_here);
+    let here = base
         .as_ref()
-        .and_then(|b| seen.iter().find(|s| &s.base_url == b))
-        .and_then(|s| s.resident.clone());
-    if on_router {
+        .and_then(|b| seen.iter().find(|s| &s.base_url == b));
+    let on_router = follows && here.is_some();
+    let unanswered = follows && here.is_none();
+    let mut resident: Option<String> = here.and_then(|s| s.resident.clone());
+    if unanswered {
+        eprintln!(
+            "the router at {} did not say what it has loaded; every chat waits for a run when it does",
+            base.as_deref().unwrap_or("?")
+        );
+    } else if on_router {
         eprintln!(
             "writing persona memory with each chat's own model, while it is loaded ({provider_name}; \
              loaded now: {})",
@@ -401,12 +414,14 @@ async fn write_memory(
                     continue;
                 }
             }
-            match writer::pick_model(
-                parsed.model.as_deref(),
-                resident.as_deref(),
-                on_router,
-                &fallback,
-            ) {
+            let server = if unanswered {
+                writer::Server::Unanswered
+            } else if on_router {
+                writer::Server::Router(resident.as_deref())
+            } else {
+                writer::Server::One
+            };
+            match writer::pick_model(parsed.model.as_deref(), server, &fallback) {
                 writer::ModelPick::Wait(model) => {
                     println!(
                         "{} {id}: waits until {model} is loaded — writing it now would swap \
