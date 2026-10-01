@@ -1146,11 +1146,12 @@ module.
   `grounding::calls` (first seen wins, a stale or failed result is no
   evidence), over `Session::messages_ever` so a page compaction evicted
   still counts for the answer that quoted it.
-  - Both sides are normalised the same way before containment: case,
-    typographic quotes and dashes, ligatures, a word hyphenated across a
-    line break, and the punctuation around each word. `mark` finds the span
-    by the same word comparison, so the passage marked is the passage
-    admitted.
+  - Both sides go through one tokeniser (`cite::tokens`) before
+    containment: case, typographic quotes, ligatures, an en or em dash as a
+    word break, the punctuation around each word, and **every hyphen inside
+    a word dropped** — no rule about the letter after a line break can tell
+    a compound's hyphen from the line's. Whole words only. `mark` uses the
+    same tokens, so the passage marked is the passage admitted.
   - "Quoted" is the most a check says — never "verified". A real quote can
     support the wrong claim, and the page says so.
   - A citation opens the page **as text the chat received**
