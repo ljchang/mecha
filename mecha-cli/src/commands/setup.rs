@@ -193,14 +193,16 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         // A switch written `false` is the owner's answer in the config;
         // naming the feature asks for it to be offered, so its way back
         // becomes the remedy. Nothing runs without a `y`.
-        for s in steps.iter_mut().filter(|_| !args.json) {
-            if let (Status::Declined, Some(undo)) = (s.status, s.undo.clone()) {
-                s.status = Status::Missing;
-                s.remedy = Some(mecha_core::doctor::Remedy {
-                    description: format!("Switch `{}` back on.", s.id),
-                    argv: undo,
-                    needs_terminal: false,
-                });
+        if !args.json {
+            for s in &mut steps {
+                if let (Status::Declined, Some(undo)) = (s.status, s.undo.clone()) {
+                    s.status = Status::Missing;
+                    s.remedy = Some(mecha_core::doctor::Remedy {
+                        description: format!("Switch `{}` back on.", s.id),
+                        argv: undo,
+                        needs_terminal: false,
+                    });
+                }
             }
         }
     }
