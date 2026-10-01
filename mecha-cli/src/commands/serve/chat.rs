@@ -624,7 +624,6 @@ impl ChatState {
     }
 
     /// Where this door's chats' workspaces are.
-    #[cfg(test)]
     pub(super) fn work_dir(&self) -> &std::path::Path {
         &self.work_dir
     }
