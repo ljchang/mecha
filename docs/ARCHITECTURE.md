@@ -8378,6 +8378,25 @@ in five different ways. The design and its open steps are
   would otherwise reach `[messages] enabled` round the operator-only table,
   and `graph = true` could meet a manifest's `live_servers` and read the
   owner's live graph.
+- **A run records the switches it had** (step 4b). `RunConfig::of` writes
+  `features_on` — the `[features]` bools on, top-level features only, since
+  a part has no switch and is recomputable from the config — beside
+  `levers_off`, and `lenient_features` loads it all-or-nothing like
+  `lenient_levers`: one id a later build does not know reads the set as
+  `None`, because a dropped entry would read as *off* and two different
+  trials as identical. The session record is where it lives because it is
+  the one place every trial's switches show: `condition_hash` sees an
+  environment's own `[features]` through its digest, but not `search`, which
+  follows the operator's switch, nor any switch of an arm that runs on the
+  operator's config.
+- **An environment says what its tasks need.** `environment.toml`'s
+  `requires` names feature ids, inherited down `extends`, and an unknown id
+  refuses at load — it would otherwise require nothing.
+  `Environment::prepare` asks the registry of the trial home's own config
+  and refuses a required feature that is `Off` or `Blocked`, by name, before
+  any trial starts; `Unready` passes, since a trial home's stores are built
+  after it. Running anyway would score the model on a task it could not
+  attempt.
 
 ### Adding a feature
 
