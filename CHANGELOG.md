@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A persona's picture can be framed.** "Adjust picture" in a persona's ⋯
+  menu opens its portrait in the circle: drag it into place and zoom, then
+  Save; Reset centres it again. Until you do, a tall portrait now shows its
+  top — the face — rather than its middle.
+
 - **A persona searches its files.** When a persona's files are too long to
   read whole, it finds the passages that answer a question with a new
   `file_search` tool, by meaning (through the `:8081` embeddings server,

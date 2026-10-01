@@ -15,6 +15,7 @@
     taintLabel, safetyLine, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
     toolStatus, waitingLine, withWorking, fileUrl, uploadUrl, sourceLine,
     citeSegments, citeEntries, citeNote, citeOpens, citedUrl,
+    frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
@@ -795,6 +796,53 @@
     }
   }
 
+  // ─── The avatar's framing ────────────────────────────────────────────
+  // A sheet over the persona page: drag the picture in its circle, zoom
+  // with the slider. Nothing is sent until Save; a frame is display only
+  // (`State::frame`), so it is no new version and reaches no prompt.
+  let framing = $state(null); // { frame, from: { x, y, at } | null }
+  const FRAME_SIZE = 220;
+
+  function openFraming() {
+    menuOpen = false;
+    framing = { frame: frameOf(chosen.frame), from: null };
+  }
+
+  function frameDown(e) {
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    framing.from = { x: e.clientX, y: e.clientY, at: framing.frame };
+  }
+
+  function frameMove(e) {
+    if (!framing?.from) return;
+    const { x, y, at } = framing.from;
+    framing.frame = dragFrame(at, e.clientX - x, e.clientY - y, FRAME_SIZE);
+  }
+
+  function frameUp() {
+    if (framing) framing.from = null;
+  }
+
+  // `null` centres it again: the default, never a stored copy of it.
+  async function saveFrame(frame) {
+    busy = true;
+    try {
+      const res = await fetch(personaUrl(chosen.name, '/frame', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ frame, unlock: token ?? undefined }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      framing = null;
+      await load();
+      if (!chosen) toList();
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      busy = false;
+    }
+  }
+
   async function setLocked(locked) {
     busy = true;
     try {
@@ -921,7 +969,7 @@
 
 {#snippet avatar(p, size)}
   <span class="avatar" style="width:{size}px;height:{size}px;font-size:{Math.round(size * 0.42)}px">
-    {#if p.portrait}<img src={p.portrait} alt="" />{:else}{p.display.slice(0, 1).toUpperCase()}{/if}
+    {#if p.portrait}<img src={p.portrait} alt="" style={frameStyle(p.frame)} />{:else}{p.display.slice(0, 1).toUpperCase()}{/if}
   </span>
 {/snippet}
 
@@ -1199,6 +1247,12 @@
               </button>
               {#if menuOpen}
                 <div class="menu" role="menu">
+                  {#if chosen.portrait}
+                    <button role="menuitem" class="mitem" disabled={busy} onclick={openFraming}>
+                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 8v8M8 12h8" /></svg>
+                      Adjust picture
+                    </button>
+                  {/if}
                   <button role="menuitem" class="mitem" disabled={busy} onclick={() => { menuOpen = false; setLocked(!chosen.locked); }}>
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z" /></svg>
                     {chosen.locked ? 'Stop hiding behind the library lock' : 'Hide behind the library lock'}
@@ -1420,6 +1474,44 @@
     </div>
   {/if}
 
+  {#if framing && chosen?.portrait}
+    <button class="scrim" aria-label="close" onclick={() => (framing = null)}></button>
+    <div class="sheet framesheet">
+      <div class="sheet-grip"></div>
+      <div class="sheet-text">Adjust {chosen.display}'s picture</div>
+      <div
+        class="framer"
+        style="width:{FRAME_SIZE}px;height:{FRAME_SIZE}px"
+        role="slider"
+        tabindex="0"
+        aria-label="drag to move the picture in its circle"
+        aria-valuetext="{Math.round(framing.frame.x * 100)}% across, {Math.round(framing.frame.y * 100)}% down"
+        onpointerdown={frameDown}
+        onpointermove={frameMove}
+        onpointerup={frameUp}
+        onpointercancel={frameUp}
+        onkeydown={(e) => {
+          const step = { ArrowLeft: [8, 0], ArrowRight: [-8, 0], ArrowUp: [0, 8], ArrowDown: [0, -8] }[e.key];
+          if (step) {
+            e.preventDefault();
+            framing.frame = dragFrame(framing.frame, step[0], step[1], FRAME_SIZE);
+          }
+        }}
+      >
+        <img src={chosen.portrait} alt="" draggable="false" style={frameStyle(framing.frame)} />
+      </div>
+      <label class="zoomline">
+        <span>zoom</span>
+        <input type="range" min="1" max={MAX_FRAME_ZOOM} step="0.05" bind:value={framing.frame.zoom} />
+      </label>
+      <div class="framebtns">
+        <button class="abtn" disabled={busy} onclick={() => saveFrame(null)}>Reset</button>
+        <button class="abtn" disabled={busy} onclick={() => (framing = null)}>Cancel</button>
+        <button class="abtn primary" disabled={busy} onclick={() => saveFrame(framing.frame)}>Save</button>
+      </div>
+    </div>
+  {/if}
+
   {#if sheet}
     <button class="scrim" aria-label="close" onclick={() => (sheet = false)}></button>
     <div class="sheet">
@@ -1560,6 +1652,14 @@
   .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--accent-500); border-radius: 16px 16px 0 0; padding: 14px var(--gutter) 28px; display: flex; flex-direction: column; gap: 12px; z-index: 6; }
   .sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-900); align-self: center; }
   .sheet-text { font-size: 15px; font-weight: 500; }
+  .framesheet { align-items: stretch; }
+  .framer { position: relative; align-self: center; overflow: hidden; border-radius: 50%; touch-action: none; cursor: grab; background: var(--accent-900); box-shadow: 0 0 0 1px var(--accent-500); }
+  .framer:active { cursor: grabbing; }
+  .framer img { width: 100%; height: 100%; object-fit: cover; user-select: none; -webkit-user-drag: none; pointer-events: none; }
+  .zoomline { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+  .zoomline input { flex: 1; accent-color: var(--accent-400); }
+  .framebtns { display: flex; gap: 8px; }
+  .framebtns .abtn { flex: 1; }
   .avatar { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 50%; background: linear-gradient(145deg, var(--accent-700), var(--accent-900)); color: var(--accent-100); font-family: var(--sans); font-weight: 600; }
   .avatar img { width: 100%; height: 100%; object-fit: cover; }
   .pname { display: flex; align-items: center; gap: 6px; font-family: var(--sans); font-size: 15px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
