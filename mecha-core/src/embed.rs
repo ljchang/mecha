@@ -52,7 +52,12 @@ impl Embedder {
     /// embedded is the owner's material.
     pub fn new(url: &str) -> Result<Self> {
         let url = crate::document::ocr_url(url)
-            .map_err(|e| anyhow!("[documents] embed_url: {e:#}"))?
+            // `ocr_url` names its own key; this is `embed_url`'s refusal.
+            .map_err(|_| {
+                anyhow!(
+                    "[documents] embed_url `{url}` must be an http URL on this machine (loopback)"
+                )
+            })?
             .as_str()
             .trim_end_matches('/')
             .to_string();

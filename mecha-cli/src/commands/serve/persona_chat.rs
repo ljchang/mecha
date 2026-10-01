@@ -322,21 +322,36 @@ fn carries_files_now(messages: &[Message]) -> bool {
 /// and not yet indexed for `file_search`. Not one read on request (the
 /// cache is off, so nothing would keep the read) or one that will be
 /// refused.
-fn to_process(state: &Readiness, indexed: bool) -> bool {
+///
+/// `indexed` is asked only of a ready file: hashing one that is refused or
+/// over the cap is the unbounded read `readiness` exists not to do (review
+/// of #467).
+fn to_process(state: &Readiness, indexed: impl FnOnce() -> bool) -> bool {
     match state {
         Readiness::Reading => true,
-        Readiness::Ready => !indexed,
+        Readiness::Ready => !indexed(),
         Readiness::OnRequest | Readiness::Refused(_) => false,
     }
 }
 
-/// Whether the search index holds `src` — unknown reads as not.
+/// Whether the search index holds `src` as fully as it can: with an
+/// embeddings server configured, every passage embedded — a file indexed
+/// while `:8081` was down, or whose vectors a new model dropped, is taken
+/// round again until it is (review of #467: `has` alone left it words-only
+/// for good). Without one, its passages in. Unknown reads as not.
 fn indexed(
     index: Option<&mecha_core::persona::search::Index>,
     src: &mecha_core::persona::files::Source,
+    embedded: bool,
 ) -> bool {
     index.is_some_and(|i| {
-        mecha_core::persona::files::sha_of(src).is_some_and(|sha| i.has(&sha).unwrap_or(false))
+        mecha_core::persona::files::sha_of(src).is_some_and(|sha| {
+            if embedded {
+                i.complete(&sha).unwrap_or(false)
+            } else {
+                i.has(&sha).unwrap_or(false)
+            }
+        })
     })
 }
 
@@ -1155,6 +1170,7 @@ impl PersonaChats {
         let file_name = file_name.to_string();
         let config = chat.follower.current().config.clone();
         let (max_bytes, cached) = reader_shape(&config);
+        let embedded = crate::setup::file_embedder(&config).is_some();
         let (saved, src) = tokio::task::spawn_blocking(move || {
             let store = Store::load(&store_dir);
             let saved = mecha_core::persona::files::add(&store, &p, &file_name, &body)?;
@@ -1171,10 +1187,9 @@ impl PersonaChats {
             let cache = reader_cache(cached);
             let index = mecha_core::persona::search::Index::open(&store_dir).ok();
             let src = src.filter(|s| {
-                to_process(
-                    &readiness(s, cache.as_ref(), max_bytes),
-                    indexed(index.as_ref(), s),
-                )
+                to_process(&readiness(s, cache.as_ref(), max_bytes), || {
+                    indexed(index.as_ref(), s, embedded)
+                })
             });
             Ok::<_, String>((saved, src))
         })
@@ -1226,6 +1241,8 @@ impl PersonaChats {
             // on one (review of #459, pass 8).
             None => (0, false),
         };
+        let embedder = crate::setup::file_embedder(config);
+        let embedded = embedder.is_some();
         // The store, the walk and the readiness hashes are file I/O: off the
         // runtime.
         let (sources, omitted, states, unindexed) = tokio::task::spawn_blocking(move || {
@@ -1239,9 +1256,13 @@ impl PersonaChats {
                 .map(|s| (s.path.clone(), readiness(s, cache.as_ref(), max_bytes)))
                 .collect();
             let index = mecha_core::persona::search::Index::open(&store_dir).ok();
+            // Asked of ready files only (`to_process`).
             let unindexed: std::collections::HashSet<PathBuf> = sources
                 .iter()
-                .filter(|s| !indexed(index.as_ref(), s))
+                .filter(|s| {
+                    states.get(&s.path) == Some(&Readiness::Ready)
+                        && !indexed(index.as_ref(), s, embedded)
+                })
                 .map(|s| s.path.clone())
                 .collect();
             Some((sources, omitted, states, unindexed))
@@ -1258,11 +1279,10 @@ impl PersonaChats {
         // what the index does not hold is indexed, so `file_search` finds
         // it. Only what a read would keep: a refused file never will be,
         // and with the cache off a read would be thrown away.
-        let embedder = crate::setup::file_embedder(config);
         for src in sources.iter().filter(|s| {
             states
                 .get(&s.path)
-                .is_some_and(|st| to_process(st, !unindexed.contains(&s.path)))
+                .is_some_and(|st| to_process(st, || !unindexed.contains(&s.path)))
         }) {
             self.read_in_background(src.clone(), extractor.clone(), embedder.clone());
         }
@@ -5345,6 +5365,49 @@ mod tests {
                 .await;
             assert!(r.is_err(), "{key}");
         }
+    }
+
+    /// Review of #467: with an embeddings server configured, a file whose
+    /// passages are in but not embedded is not "indexed" — it goes round
+    /// again — and a refused file is never asked about (never hashed).
+    #[test]
+    fn a_file_without_its_vectors_is_taken_round_again() {
+        let dir = std::env::temp_dir().join(format!("mecha-indexed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("files")).unwrap();
+        std::fs::write(
+            dir.join("files/a.md"),
+            "Urchins graze kelp holdfasts at night.",
+        )
+        .unwrap();
+        let src = mecha_core::persona::files::list(&[(String::new(), dir.join("files"))])
+            .pop()
+            .unwrap();
+        let sha = mecha_core::persona::files::sha_of(&src).unwrap();
+        let mut index = mecha_core::persona::search::Index::open(&dir).unwrap();
+        index
+            .put(
+                &sha,
+                "document: a.md \u{b7} text\n\nUrchins graze kelp holdfasts at night.",
+            )
+            .unwrap();
+        assert!(
+            indexed(Some(&index), &src, false),
+            "words: its passages are in"
+        );
+        assert!(
+            !indexed(Some(&index), &src, true),
+            "meaning: its vectors are not"
+        );
+        assert!(to_process(&Readiness::Ready, || indexed(
+            Some(&index),
+            &src,
+            true
+        )));
+        assert!(!to_process(
+            &Readiness::Refused("too big".into()),
+            || panic!("asked of a refused file")
+        ));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// §10.4: an uploaded file is indexed in the background, so

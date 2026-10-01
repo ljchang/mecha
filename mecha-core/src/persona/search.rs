@@ -241,9 +241,16 @@ impl Index {
         let mut scores: HashMap<i64, f32> = HashMap::new();
         let mut by_meaning = false;
         if let Some(q) = qvec {
+            // Only vectors made the query's way: one of another length is
+            // from another model, and its cosine of 0 would tie every
+            // passage and rank them by row (review of #467). None of them,
+            // and the search is by words — and says so.
             let mut ranked: Vec<(i64, f32)> = corpus
                 .iter()
-                .filter_map(|(id, v)| Some((*id, embed::cosine(q, v.as_ref()?))))
+                .filter_map(|(id, v)| {
+                    let v = v.as_ref().filter(|v| v.len() == q.len())?;
+                    Some((*id, embed::cosine(q, v)))
+                })
                 .collect();
             by_meaning = !ranked.is_empty();
             ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -310,6 +317,15 @@ pub async fn embed_missing(store: PathBuf, sha: String, embedder: &Embedder) -> 
     for batch in todo.chunks(BATCH) {
         let texts: Vec<String> = batch.iter().map(|(_, t)| t.clone()).collect();
         let vectors = embedder.embed(&texts, Task::Passage).await?;
+        // Position ties a vector to its passage: a short reply is refused,
+        // never zipped short (the rule `embed` keeps).
+        if vectors.len() != batch.len() {
+            anyhow::bail!(
+                "asked for {} embeddings, got {}",
+                batch.len(),
+                vectors.len()
+            );
+        }
         let rows: Vec<(i64, Vec<u8>)> = batch
             .iter()
             .zip(&vectors)
@@ -467,9 +483,7 @@ impl Tool for FileSearch {
             return Ok(ToolOutput::err(if unindexed.is_empty() {
                 "You have no files to search.".to_string()
             } else {
-                "None of your files is ready to search yet — they are still being processed. \
-                 Read them with `file_read` meanwhile."
-                    .to_string()
+                "None of your files can be searched yet. Read them with `file_read`.".to_string()
             }));
         }
         // Meaning when the server answers; words alone when it does not.
@@ -516,7 +530,7 @@ impl Tool for FileSearch {
         }
         if !unindexed.is_empty() {
             out.push_str(&format!(
-                "(Not searched yet, still being processed: {}.)\n",
+                "(Not searchable yet — read with `file_read`: {}.)\n",
                 unindexed
                     .iter()
                     .map(|n| format!("`{n}`"))
@@ -588,7 +602,10 @@ fn passages_of(text: &str) -> Vec<String> {
 fn fts_query(query: &str) -> Option<String> {
     let words: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.chars().count() > 1)
+        // A single letter is noise; a single digit is the "3" of "table 3".
+        .filter(|w| {
+            w.chars().count() > 1 || (!w.is_empty() && w.chars().all(|c| c.is_ascii_digit()))
+        })
         .map(|w| format!("\"{}\"", w.to_lowercase()))
         .collect();
     (!words.is_empty()).then(|| words.join(" OR "))
@@ -790,5 +807,33 @@ mod tests {
             super::super::cite::Verdict::Quoted { found: None }
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Review of #467: stored vectors of another length are never ranked —
+    /// a query from a new model finds by words, says so, and does not hand
+    /// out row-order "meaning" hits.
+    #[test]
+    fn vectors_of_another_length_are_not_ranked() {
+        let store = scratch();
+        let mut index = Index::open(&store).unwrap();
+        index.put("aaa", PAPER).unwrap();
+        index.claim_identity(2).unwrap();
+        for (id, _) in index.unembedded("aaa").unwrap() {
+            index
+                .conn
+                .execute(
+                    "UPDATE passages SET vec = ?1 WHERE id = ?2",
+                    params![embed::to_blob(&[1.0, 0.0]), id],
+                )
+                .unwrap();
+        }
+        let (hits, found) = index
+            .search(&["aaa".into()], "otters", Some(&[0.0, 1.0, 0.0]), 5)
+            .unwrap();
+        assert_eq!(found, Found::WordsOnly);
+        assert_eq!(hits.len(), 1, "the word hit only: {hits:?}");
+        assert_eq!(hits[0].page, Some(2));
+        assert_eq!(fts_query("table 3").unwrap(), "\"table\" OR \"3\"");
+        std::fs::remove_dir_all(store).ok();
     }
 }
