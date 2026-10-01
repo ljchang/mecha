@@ -1155,7 +1155,11 @@ module.
     `wal_checkpoint(TRUNCATE)` after a delete. Each half alone leaves the text
     on disk — without `secure_delete` in `memory.db`, without the truncate in
     `memory.db-wal` — and `forgotten_text_survives_neither_in_the_file_nor_in_the_log`
-    reads both files' bytes.
+    reads both files' bytes. A checkpoint a reader blocks comes back as
+    `busy = 1` in the row, not as an error, so `scrub` reads it and reports
+    an untruncated log; the free `forget`/`forget_chat` run every delete
+    first and scrub both files last, so a busy log never leaves a shared copy
+    behind. `Memory::delete` is private for the same reason.
   - `Status::initial` is the one rule for a new record: `ModelUntrusted` is a
     candidate, never recalled until the owner approves; anything else is
     active (inferred facts included, D18). Approval keeps the origin, so
