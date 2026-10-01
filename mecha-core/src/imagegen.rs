@@ -1591,28 +1591,51 @@ fn capped(text: &str) -> String {
     }
 }
 
-/// A prompt that opens with the persona's name (`name_words` long), read for
-/// what it wears and does: the rest of the first clause is what it is doing,
-/// and a "wearing …" clause is what it wears. "Stella lounging on a plush couch,
-/// wearing a lace set, warm light" gives "lounging on a plush couch" and "a
-/// lace set". Either is `None` when the prompt does not say it that way.
-fn self_clauses(prompt: &str, name_words: usize) -> (Option<String>, Option<String>) {
-    let clauses: Vec<&str> = prompt
-        .split([',', '.', ';', '\n'])
-        .map(str::trim)
-        .filter(|c| !c.is_empty())
+/// The words of `text` as `imagelib::named_in` reads them — letters, digits
+/// and hyphens — each with its byte range in `text` and lowercased.
+fn word_spans(text: &str) -> Vec<(usize, usize, String)> {
+    let mut out = Vec::new();
+    let mut start = None;
+    for (i, ch) in text.char_indices() {
+        let inside = ch.is_alphanumeric() || ch == '-';
+        match (inside, start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                out.push((s, i, text[s..i].to_lowercase()));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        out.push((s, text.len(), text[s..].to_lowercase()));
+    }
+    out
+}
+
+/// What a persona wears and does, read from the words that follow its name
+/// where a prompt (or an extra) opens with it: the rest of that first clause
+/// is what it is doing, and a "wearing …" clause is what it wears. After
+/// "Stella", " lounging on a plush couch, wearing a lace set, warm light"
+/// gives "lounging on a plush couch" and "a lace set". Either is `None` when
+/// the text does not say it that way. Handed the text *after* the name, so a
+/// name with punctuation in it ("Mara O'Brien", "J.R. Smith") is never
+/// miscounted into the clause (review of #444).
+fn self_clauses(after_name: &str) -> (Option<String>, Option<String>) {
+    // A possessive belongs to the name, not to what it is doing: after
+    // "Mara", "'s hand holding a cup" is "hand holding a cup" (review of
+    // #454).
+    let after_name = ["'s", "’s", "'", "’"]
+        .iter()
+        .find_map(|p| after_name.strip_prefix(p))
+        .unwrap_or(after_name);
+    let mut parts = after_name.split([',', '.', ';', '\n']).map(str::trim);
+    // The first part is the rest of the name's own clause, even when empty
+    // ("Stella, wearing a coat"): what follows it is a new clause.
+    let rest = parts.next().unwrap_or("");
+    let clauses: Vec<&str> = std::iter::once(rest)
+        .chain(parts.filter(|c| !c.is_empty()))
         .collect();
-    let Some(first) = clauses.first() else {
-        return (None, None);
-    };
-    // The name is the first word, or words for a display name; what it is
-    // doing follows it in the same clause.
-    let rest = first
-        .split_whitespace()
-        .skip(name_words)
-        .collect::<Vec<_>>()
-        .join(" ");
-    let rest = rest.as_str();
     // "wearing" as a word, found on the original string at char boundaries.
     // Lowercasing first and slicing the original at that offset panics where
     // lowercasing changes a length ("İ" is two bytes, "i̇" three — review of
@@ -1711,6 +1734,12 @@ struct LibraryAsk {
     /// People in the scene who are no library character, each described.
     extras: Vec<String>,
     style: Option<String>,
+    /// Words the model wrote in an extra that was the persona (`cast_self`):
+    /// all of them after the name, not only those that reached its `doing`
+    /// or `wearing` — conservative, for a guard (review of #454). The library
+    /// guard reads them with the prompt and the extras, or a character named
+    /// there would be drawn as a stranger unguarded (review of #454).
+    folded: Vec<String>,
 }
 
 impl ImageGenerate {
@@ -1929,7 +1958,12 @@ impl ImageGenerate {
     /// is left to the guard, and an unknown cast name is still refused.
     /// `Err` is an expected failure for the model to route around: `self`
     /// asked of a persona with no character.
-    fn cast_self(&self, ask: &mut Option<LibraryAsk>, prompt: &str) -> Result<(), String> {
+    fn cast_self(
+        &self,
+        ask: &mut Option<LibraryAsk>,
+        prompt: &str,
+        lib: Option<&crate::imagelib::Library>,
+    ) -> Result<(), String> {
         let Some(who) = &self.self_as else {
             return Ok(());
         };
@@ -1943,12 +1977,8 @@ impl ImageGenerate {
             .as_deref()
             .map(|c| c.trim().to_lowercase())
             .filter(|c| {
-                self.library_dir.as_ref().is_some_and(|dir| {
-                    crate::imagelib::Library::load(dir)
-                        .0
-                        .get(crate::imagelib::Kind::Character, c)
-                        .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
-                })
+                lib.and_then(|l| l.get(crate::imagelib::Kind::Character, c))
+                    .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
             });
         let is_self = |n: &str| n.trim().eq_ignore_ascii_case("self");
         if let Some(a) = ask.as_mut() {
@@ -1960,67 +1990,205 @@ impl ImageGenerate {
                             .to_string(),
                     );
                 };
+                // `self` beside the character's own name, or `self` twice: one
+                // of them. Only a duplicate `self` made — two entries the
+                // model wrote under one name are the compiler's to refuse, as
+                // they would be without `self` (review of #444).
+                let mut seen = a
+                    .cast
+                    .iter()
+                    .any(|m| !is_self(&m.name) && m.name.trim().eq_ignore_ascii_case(c));
+                a.cast.retain(|m| {
+                    if !is_self(&m.name) {
+                        return true;
+                    }
+                    let keep = !seen;
+                    seen = true;
+                    keep
+                });
                 for m in a.cast.iter_mut().filter(|m| is_self(&m.name)) {
                     m.name = c.clone();
                 }
-                // `self` and the character's own name both given: the first
-                // of them. Only that duplicate — any other is the compiler's
-                // to refuse, as it would be without `self` (review of #444).
-                let mut kept = false;
-                a.cast.retain(|m| {
-                    let this = m.name.trim().eq_ignore_ascii_case(c);
-                    let keep = !(this && kept);
-                    kept |= this;
-                    keep
-                });
             }
         }
         let Some(c) = character else {
             return Ok(());
         };
+        // The persona's names, each as words: its character, its folder name
+        // and the name it is shown by.
+        let names: Vec<Vec<String>> = [c.as_str(), who.name.as_str(), who.display.as_str()]
+            .iter()
+            .map(|n| {
+                word_spans(n)
+                    .into_iter()
+                    .map(|(_, _, w)| w)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|n| !n.is_empty())
+            .collect();
+        // Where `text` first names the persona: the word it starts at and
+        // the byte its name ends at — earliest, and at one place the
+        // longest ("Mara Quinn" over "mara").
+        let named_at = |text: &str| -> Option<(usize, usize)> {
+            let spans = word_spans(text);
+            names
+                .iter()
+                .filter_map(|n| {
+                    (n.len() <= spans.len())
+                        .then(|| {
+                            (0..=spans.len() - n.len()).find(|&i| {
+                                spans[i..i + n.len()].iter().map(|(_, _, w)| w).eq(n.iter())
+                            })
+                        })
+                        .flatten()
+                        .map(|i| (i, n.len(), spans[i + n.len() - 1].1))
+                })
+                .min_by_key(|&(i, len, _)| (i, std::cmp::Reverse(len)))
+                .map(|(i, _, end)| (i, end))
+        };
+        // An extra that opens with the persona *is* the persona: it becomes
+        // its cast entry, described by its own words. One that names it in
+        // passing is someone else's description, and the compiler refuses an
+        // extra naming a cast member — so it is refused here, in the model's
+        // terms, before anything is added (review of #444).
+        // Read first, changed only once the persona is cast: an extra removed
+        // on a path that then declines to cast would be a person the model
+        // wrote, gone without a word (review of #454).
+        let mut from_extra: Option<String> = None;
+        let mut is_persona = Vec::new();
+        for extra in ask.iter().flat_map(|a| a.extras.iter()) {
+            // "Mara's dog at her feet" opens with the name but is about
+            // something of hers: a possessive is a mention, not the persona
+            // (review of #454).
+            let possessive = |end: usize| {
+                ["'s", "’s", "'", "’"]
+                    .iter()
+                    .any(|p| extra[end..].starts_with(p))
+            };
+            match named_at(extra) {
+                Some((0, end)) if !possessive(end) => {
+                    // Two extras that are the persona are one person twice:
+                    // refused, as the compiler refuses a name twice in
+                    // `cast`, rather than one dropped (review of #454).
+                    if from_extra.is_some() {
+                        return Err(
+                            "Two entries in `extras` describe you. You are one person: say \
+                             what you are doing once, in one of them or in the prompt."
+                                .to_string(),
+                        );
+                    }
+                    from_extra = Some(extra[end..].to_string());
+                    is_persona.push(true);
+                }
+                Some(_) => {
+                    return Err(format!(
+                        "This extra names you: \"{extra}\". You are drawn from your own \
+                         portrait, so say what you are doing in the prompt, and describe the \
+                         other people in `extras` without your name."
+                    ));
+                }
+                None => is_persona.push(false),
+            }
+        }
+        let drop_persona_extras = |ask: &mut Option<LibraryAsk>| {
+            if let Some(a) = ask.as_mut() {
+                let mut flags = is_persona.iter();
+                a.extras.retain(|_| !flags.next().copied().unwrap_or(false));
+            }
+        };
+        // Already cast by the model: that entry draws the persona. An extra
+        // that is the persona too would be a second face, and dropping it
+        // would lose what it said (review of #454): refused, to say it once.
         if ask.as_ref().is_some_and(|a| {
             a.cast
                 .iter()
                 .any(|m| m.name.trim().eq_ignore_ascii_case(&c))
-                // A full cast: adding the persona would make a call the
-                // compiler refuses and the model never wrote. The guard
-                // below names everyone instead, the persona included.
-                || a.cast.len() >= crate::imagelib::MAX_CAST
         }) {
+            if from_extra.is_some() {
+                return Err(
+                    "You are in `cast` and an entry in `extras` describes you too. You are one \
+                     person: say what you are wearing and doing once, in your `cast` entry."
+                        .to_string(),
+                );
+            }
             return Ok(());
         }
-        // Whole words, as `imagelib::named_in` reads a prompt: "Ann" is not
-        // named by "planning".
-        let words = |text: &str| -> Vec<String> {
-            text.split(|ch: char| !(ch.is_alphanumeric() || ch == '-'))
-                .filter(|w| !w.is_empty())
-                .map(str::to_lowercase)
-                .collect()
-        };
-        let said = words(prompt);
-        let first = |name: &[String]| -> Option<usize> {
-            (!name.is_empty() && name.len() <= said.len())
-                .then(|| (0..=said.len() - name.len()).find(|&i| said[i..i + name.len()] == *name))
-                .flatten()
-        };
-        // Where the prompt first names the persona, and in how many words.
-        let Some((at, len)) = [vec![c.clone()], words(&who.name), words(&who.display)]
-            .iter()
-            .filter_map(|n| first(n).map(|i| (i, n.len())))
-            // Earliest, and at one place the longest: "Mara Quinn" over "mara".
-            .min_by_key(|&(i, len)| (i, std::cmp::Reverse(len)))
-        else {
+        // A full cast: adding the persona would make a call the compiler
+        // refuses and the model never wrote. Leaving it out draws it as a
+        // stranger wherever the scene names it — in an extra, or in the
+        // prompt by a name the library does not hold ("Mara" for maya),
+        // which no guard sees (review of #454). So a full cast with the
+        // persona in the scene is refused, naming the cap; a scene that does
+        // not name it draws as written.
+        let in_prompt = named_at(prompt);
+        if let Some(full) = ask
+            .as_ref()
+            .map(|a| a.cast.len())
+            .filter(|&n| n >= crate::imagelib::MAX_CAST)
+        {
+            if from_extra.is_some() || in_prompt.is_some() {
+                return Err(format!(
+                    "Your `cast` is full ({full} people) and the scene includes you. One \
+                     picture holds at most {} people from the library, you included: drop \
+                     someone from `cast`, or split the scene.",
+                    crate::imagelib::MAX_CAST
+                ));
+            }
             return Ok(());
-        };
+        }
+        if in_prompt.is_none() && from_extra.is_none() {
+            return Ok(());
+        }
+        // A prompt that opens with the persona and an extra that is the
+        // persona: two descriptions of one face, refused as the other two
+        // duplicates are (review of #454).
+        if from_extra.is_some() && matches!(in_prompt, Some((0, _))) {
+            return Err(
+                "The prompt opens with you and an entry in `extras` describes you too. You \
+                 are one person: say what you are wearing and doing once, in the prompt or in \
+                 that extra."
+                    .to_string(),
+            );
+        }
         // The compiler needs what they wear and do, or the portrait's own
-        // outfit and pose come along. A prompt that opens with the persona —
-        // the common selfie, "Stella lounging on a couch, wearing a lace set"
-        // — says both in its first clauses; otherwise they point at the scene
-        // the prompt describes.
-        let (wearing, doing) = if at == 0 {
-            self_clauses(prompt, len)
-        } else {
-            (None, None)
+        // outfit and pose come along. An extra that is the persona says both;
+        // so does a prompt that opens with it — the common selfie, "Stella
+        // lounging on a couch, wearing a lace set". Otherwise they point at
+        // the scene the prompt describes.
+        let (wearing, doing) = match (&from_extra, in_prompt) {
+            // An extra is removed once cast, so its words have nowhere else
+            // to go: a one-word action ("Mara waving") is kept, where the
+            // prompt path's two-word floor would drop it (review of #454).
+            // A separator right after the name ("Mara, waving …") would leave
+            // the name's own clause empty and drop both fields (review of
+            // #454): the extra is only about the persona, so it starts at its
+            // first word.
+            (Some(after), _) => {
+                let after = after.trim_start_matches(|c: char| {
+                    matches!(c, ',' | ';' | '.') || c.is_whitespace()
+                });
+                match self_clauses(after) {
+                    (wearing, None) => {
+                        let lead = after
+                            .split([',', '.', ';', '\n'])
+                            .next()
+                            .unwrap_or("")
+                            .trim();
+                        let lead = lead
+                            .char_indices()
+                            .map(|(i, _)| i)
+                            .find(|&i| {
+                                lead.get(i..i + 8)
+                                    .is_some_and(|w| w.eq_ignore_ascii_case("wearing "))
+                            })
+                            .map_or(lead, |i| lead[..i].trim());
+                        (wearing, Some(lead.to_string()).filter(|d| !d.is_empty()))
+                    }
+                    both => both,
+                }
+            }
+            (None, Some((0, end))) => self_clauses(&prompt[end..]),
+            _ => (None, None),
         };
         // Within the compiler's cap: over it, the call is refused over a
         // field the model never wrote, and it resends (review of #444).
@@ -2029,16 +2197,37 @@ impl ImageGenerate {
             wearing: capped(wearing.as_deref().unwrap_or(SELF_WEARING)),
             doing: capped(doing.as_deref().unwrap_or(SELF_DOING)),
         };
+        drop_persona_extras(ask);
+        let folded = from_extra.clone();
+        let spans = word_spans(prompt);
+        let first_word = |name: &str| -> Option<usize> {
+            let n: Vec<String> = word_spans(name).into_iter().map(|(_, _, w)| w).collect();
+            (!n.is_empty() && n.len() <= spans.len())
+                .then(|| {
+                    (0..=spans.len() - n.len())
+                        .find(|&i| spans[i..i + n.len()].iter().map(|(_, _, w)| w).eq(n.iter()))
+                })
+                .flatten()
+        };
         match ask.as_mut() {
             // Left to right, as the cast is read: before the first member the
-            // prompt names later, or who it does not name at all.
+            // prompt names later, or who it does not name at all. Named only
+            // in an extra: before the first member the prompt does not name.
             Some(a) => {
-                let slot = a
-                    .cast
-                    .iter()
-                    .position(|m| first(&words(&m.name)).is_none_or(|i| i > at))
-                    .unwrap_or(a.cast.len());
+                let slot = match in_prompt {
+                    Some((at, _)) => a
+                        .cast
+                        .iter()
+                        .position(|m| first_word(&m.name).is_none_or(|i| i > at))
+                        .unwrap_or(a.cast.len()),
+                    None => a
+                        .cast
+                        .iter()
+                        .position(|m| first_word(&m.name).is_none())
+                        .unwrap_or(a.cast.len()),
+                };
                 a.cast.insert(slot, me);
+                a.folded.extend(folded);
             }
             None => {
                 *ask = Some(LibraryAsk {
@@ -2166,6 +2355,7 @@ impl ImageGenerate {
                 cast,
                 extras,
                 style,
+                folded: Vec::new(),
             });
         let size = match input.get("size").and_then(Value::as_str) {
             _ if mask.is_some() => None,
@@ -2350,8 +2540,15 @@ impl Tool for ImageGenerate {
         // otherwise refuse the persona for naming itself (§8.6). Not on an
         // edit: its people carry their own identity, and `request` refuses a
         // cast beside `reference_images` anyway.
+        // Read once for the self cast and the guard below, which each loaded
+        // it before (review of #444); the compile step still reads its own.
+        let library = self
+            .library_dir
+            .as_ref()
+            .filter(|_| !is_edit && !waived)
+            .map(|dir| crate::imagelib::Library::load(dir).0);
         if !is_edit && !waived {
-            if let Err(why) = self.cast_self(&mut ask, &req.prompt) {
+            if let Err(why) = self.cast_self(&mut ask, &req.prompt, library.as_ref()) {
                 return Ok(refused(why));
             }
         }
@@ -2365,18 +2562,25 @@ impl Tool for ImageGenerate {
         // `null` is no cast, as `request` reads it; an edit's people carry
         // their own identity.
         if !is_edit && !waived {
-            if let Some(dir) = &self.library_dir {
-                let (lib, _) = crate::imagelib::Library::load(dir);
+            if let Some(lib) = &library {
                 // A broken entry is invisible to `named_in`, so it is checked
                 // on its own: otherwise a corrupt `maya` lets "Maya at a
                 // diner" reach the GPU and draw a stranger (review of #383).
                 // The extras are words about people too: "John waving" as an
                 // extra is John drawn from words.
-                let said = match ask.as_ref().filter(|a| !a.extras.is_empty()) {
-                    Some(a) => format!("{} {}", req.prompt, a.extras.join(" ")),
+                let said = match ask
+                    .as_ref()
+                    .filter(|a| !a.extras.is_empty() || !a.folded.is_empty())
+                {
+                    Some(a) => format!(
+                        "{} {} {}",
+                        req.prompt,
+                        a.extras.join(" "),
+                        a.folded.join(" ")
+                    ),
                     None => req.prompt.clone(),
                 };
-                let broken = crate::imagelib::broken_named_in(&lib, &said);
+                let broken = crate::imagelib::broken_named_in(lib, &said);
                 if !broken.is_empty() {
                     return Ok(refused(format!(
                         "{} named in the prompt {} in the owner's image \
@@ -2399,7 +2603,7 @@ impl Tool for ImageGenerate {
                             .collect()
                     })
                     .unwrap_or_default();
-                let in_prompt = crate::imagelib::named_in(&lib, &said);
+                let in_prompt = crate::imagelib::named_in(lib, &said);
                 let named: Vec<String> = in_prompt
                     .iter()
                     .filter(|n| !cast.contains(*n))
@@ -4665,7 +4869,9 @@ mod tests {
     #[test]
     fn self_clauses_read_only_the_personas_own_words() {
         let read = |p: &str| {
-            let (w, d) = self_clauses(p, 1);
+            // The name is the first word here; the caller hands over what follows it.
+            let after = p.split_once(char::is_whitespace).map_or("", |(_, r)| r);
+            let (w, d) = self_clauses(&format!(" {after}"));
             (
                 w.as_deref().map(str::to_string),
                 d.as_deref().map(str::to_string),
@@ -4698,7 +4904,7 @@ mod tests {
         );
         // Over the compiler's cap: cut at a word, within it.
         let long = format!("Stella, wearing {}", "a very long lace set ".repeat(30));
-        let full = self_clauses(&long, 1).0.unwrap();
+        let full = self_clauses(&long["Stella".len()..]).0.unwrap();
         let w = capped(&full);
         assert!(
             w.chars().count() <= crate::imagelib::MAX_CAST_FIELD,
@@ -4711,6 +4917,11 @@ mod tests {
             "{w}"
         );
         assert_eq!(capped("short"), "short");
+        // A possessive is the name's: "Stella's hand" is a hand, not "'s hand".
+        assert_eq!(
+            self_clauses("'s hand holding a cup, wearing a ring"),
+            (Some("a ring".into()), Some("hand holding a cup".into()))
+        );
         // Lowercasing "İ" makes it longer: no panic, and the right slice.
         assert_eq!(
             read("Stella İstanbul skyline behind her wearing é coat"),
@@ -4787,6 +4998,262 @@ mod tests {
             );
             assert!(!out.content.contains(character), "{}", out.content);
         }
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// #444's follow-ups: a display name with punctuation is not miscounted
+    /// into what the persona is doing; an extra that opens with the persona
+    /// is the persona, cast with its words, while one naming it in passing is
+    /// refused in the model's terms; and `self` drops only the duplicate it
+    /// made, leaving two entries the model wrote to the compiler.
+    #[tokio::test]
+    async fn a_persona_cast_from_its_own_words_wherever_it_writes_them() {
+        let (url, seen) = fake(vec![done(), done(), done(), done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john", "ann", "bea", "cy"]);
+        let base = Arc::new(tool(&url).with_library_dir(lib.clone()));
+        let mara = Arc::clone(&base)
+            .for_persona_as(&crate::tool::PersonaSelf {
+                name: "mara".into(),
+                display: "Mara O'Brien".into(),
+                character: Some("maya".into()),
+            })
+            .unwrap();
+        let draws = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.starts_with("POST /prompt"))
+                .count()
+        };
+
+        // "O'Brien" is two words to the name matcher; the clause still starts
+        // after the whole name.
+        let out = mara
+            .call(
+                json!({"prompt": "Mara O'Brien lounging on a couch, wearing a robe"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let cast = manifest_of(&dir, &out.content)["cast"][0].clone();
+        assert_eq!(cast["name"], "maya", "{cast}");
+        assert_eq!(cast["doing"], "lounging on a couch", "{cast}");
+        assert_eq!(cast["wearing"], "a robe", "{cast}");
+
+        // Named only in an extra that opens with it: cast from that extra,
+        // and the extra is gone — not left to collide with the cast.
+        let out = mara
+            .call(
+                json!({"prompt": "a balcony at dusk", "extras": [
+                    "Mara, waving from the rail, wearing a red scarf",
+                    "a man with a dog walking below"
+                ]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let manifest = manifest_of(&dir, &out.content);
+        assert_eq!(manifest["cast"][0]["name"], "maya", "{manifest}");
+        assert_eq!(
+            manifest["cast"][0]["doing"], "waving from the rail",
+            "{manifest}"
+        );
+        assert_eq!(manifest["cast"][0]["wearing"], "a red scarf", "{manifest}");
+        assert_eq!(
+            manifest["extras"],
+            json!(["a man with a dog walking below"]),
+            "{manifest}"
+        );
+
+        // A full cast with the persona in `extras`: refused, naming the cap —
+        // neither dropped silently nor drawn as a stranger with its name.
+        let before = draws();
+        let out = mara
+            .call(
+                json!({"prompt": "a crowded kitchen", "cast": [
+                    {"name": "john", "wearing": "an apron", "doing": "cooking"},
+                    {"name": "ann", "wearing": "a coat", "doing": "leaving"},
+                    {"name": "bea", "wearing": "a hat", "doing": "reading"},
+                    {"name": "cy", "wearing": "a scarf", "doing": "waving"}
+                ], "extras": ["Mara leaning on the door"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("Your `cast` is full"),
+            "{}",
+            out.content
+        );
+        assert_eq!(draws(), before, "a refused call drew");
+        // The same full cast with the persona named in the prompt by a name
+        // the library does not hold: refused too, not drawn as a stranger.
+        let out = mara
+            .call(
+                json!({"prompt": "Mara O'Brien in a crowded kitchen", "cast": [
+                    {"name": "john", "wearing": "an apron", "doing": "cooking"},
+                    {"name": "ann", "wearing": "a coat", "doing": "leaving"},
+                    {"name": "bea", "wearing": "a hat", "doing": "reading"},
+                    {"name": "cy", "wearing": "a scarf", "doing": "waving"}
+                ]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("Your `cast` is full (4 people)"),
+            "{}",
+            out.content
+        );
+        // Two extras that are both the persona: refused, not one dropped.
+        let out = mara
+            .call(
+                json!({"prompt": "a park", "extras": ["Mara on a bench", "Mara feeding ducks"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("Two entries in `extras` describe you"),
+            "{}",
+            out.content
+        );
+        assert_eq!(draws(), before, "a refused call drew");
+        // A persona extra that names another character: its words are the
+        // guard's to read, so john is refused, not drawn as a stranger.
+        let out = mara
+            .call(
+                json!({"prompt": "a bar at night", "extras": ["Mara with john at the bar"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("`john`"),
+            "{}",
+            out.content
+        );
+        // The prompt opens with the persona and an extra is the persona too.
+        let out = mara
+            .call(
+                json!({"prompt": "Mara lounging on a couch", "extras": ["Mara in a robe"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("The prompt opens with you"),
+            "{}",
+            out.content
+        );
+        // Cast by the model and described again in an extra: refused, not
+        // the extra dropped.
+        let out = mara
+            .call(
+                json!({"prompt": "a park",
+                       "cast": [{"name": "maya", "wearing": "a coat", "doing": "walking"}],
+                       "extras": ["Mara holding a dog"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("You are in `cast`"),
+            "{}",
+            out.content
+        );
+        assert_eq!(draws(), before, "a refused call drew");
+        // A possessive extra is about something of hers, not her: refused
+        // as a mention, never read as the persona (the dog would vanish).
+        let out = mara
+            .call(
+                json!({"prompt": "Mara lounging on a couch", "extras": ["Mara's dog at her feet"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("This extra names you"),
+            "{}",
+            out.content
+        );
+        assert_eq!(draws(), before, "a refused call drew");
+
+        // A one-word action in a persona extra is kept: the extra is gone
+        // once cast, so the word has nowhere else to go.
+        let out = mara
+            .call(
+                json!({"prompt": "a harbour at noon", "extras": ["Mara, waving"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            manifest_of(&dir, &out.content)["cast"][0]["doing"],
+            "waving",
+            "{}",
+            out.content
+        );
+
+        // Named in passing in someone else's extra: refused before drawing,
+        // in words the model can act on.
+        let before = draws();
+        let out = mara
+            .call(
+                json!({"prompt": "a diner", "extras": ["a waiter handing Mara a menu"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("This extra names you"),
+            "{}",
+            out.content
+        );
+        assert_eq!(draws(), before, "a refused call drew");
+
+        // `self` beside the character's name: one maya, drawn.
+        let out = mara
+            .call(
+                json!({"prompt": "a kitchen", "cast": [
+                    {"name": "self", "wearing": "a robe", "doing": "reading"},
+                    {"name": "maya", "wearing": "a coat", "doing": "leaving"}
+                ]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let cast = manifest_of(&dir, &out.content)["cast"].clone();
+        assert_eq!(cast.as_array().unwrap().len(), 1, "{cast}");
+        assert_eq!(
+            cast[0]["wearing"], "a coat",
+            "the model's own entry is kept: {cast}"
+        );
+        // Two entries the model wrote are still the compiler's to refuse.
+        let before = draws();
+        let out = mara
+            .call(
+                json!({"prompt": "a kitchen", "cast": [
+                    {"name": "maya", "wearing": "a robe", "doing": "reading"},
+                    {"name": "maya", "wearing": "a coat", "doing": "leaving"},
+                    {"name": "self", "wearing": "a hat", "doing": "waving"}
+                ]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("appears twice"),
+            "{}",
+            out.content
+        );
+        assert_eq!(draws(), before, "a refused call drew");
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }

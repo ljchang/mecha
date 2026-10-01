@@ -413,6 +413,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A persona draws itself from whatever it writes about itself.** Follow-ups
+  to #444: a display name with punctuation ("Mara O'Brien") no longer eats
+  the first word of what the persona is doing; an `extras` entry that opens
+  with the persona is taken as the persona and cast from its own words,
+  where it used to be refused or drawn as a stranger; an extra that names the
+  persona in passing is refused before drawing, saying how to fix it; `self`
+  beside the character's name drops only the duplicate it made; and the
+  library is read once for the self-cast and the guard instead of once each.
+
 - **A command that ends non-zero no longer leaves a model hold behind.**
   `mecha eval` with a failed case, `mecha batch` with a failed item, and a
   refused `mecha run` exited without removing their file in
