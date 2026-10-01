@@ -79,4 +79,45 @@ const PNG = new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })
   }
 }
 
+// An incognito chat ended while its picture downloaded keeps no note of it:
+// `forget` clears the note but keeps the key, so a read resolving after End
+// must not write the path back (review of #494, pass 3). Driven over the
+// shipped `savePicture`, `forget` and `closeIncognito`.
+{
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = fs.readFileSync(path.join(here, '..', 'src', 'lib', 'Chat.svelte'), 'utf8');
+  const readOut = (marker) => {
+    const start = src.indexOf(marker);
+    assert.ok(start >= 0, marker);
+    return src.slice(start, src.indexOf('\n  }\n', start) + 4);
+  };
+  const fns = [
+    readOut('  async function savePicture(path) {'),
+    readOut('  function forget() {'),
+    readOut('  function closeIncognito(why) {'),
+  ].join('\n');
+  let release;
+  const slow = new Promise((r) => (release = r));
+  const p = new Function(
+    'downloadPicture', 'slow',
+    `'use strict';
+     let key = 'incognito-ab', gone = null, running = true, pictureNote = null;
+     let entries = [], streaming = '', draft = '', attachments = [], editing = null;
+     let todo = [], usage = null, taint = null, affect = null, valence = null, vEntries = [];
+     const endVoice = () => {}, dropRing = () => {}, loadRail = () => {};
+     const workspaceFile = (p) => '/api/chat/' + key + '/file?path=' + p;
+     const fetch = () => {};
+     ${fns}
+     return { savePicture, closeIncognito, note: () => pictureNote };`,
+  )(async () => {
+    await slow;
+    return 'no such file';
+  }, slow);
+  const pending = p.savePicture('images/a.png');
+  p.closeIncognito('ended');
+  release();
+  await pending;
+  assert.equal(p.note(), null, 'an ended chat gets no note back');
+}
+
 console.log('picture-download: ok');
