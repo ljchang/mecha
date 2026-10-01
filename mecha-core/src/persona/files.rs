@@ -246,17 +246,13 @@ pub async fn read(
 ) -> Result<String, ReadError> {
     match src.kind {
         Kind::Text => {
-            if src.bytes > MAX_TEXT_BYTES {
-                return Err(ReadError::ours(format!(
-                    "{} is {} KB, over the {} KB a text file is read at.",
-                    src.name,
-                    src.bytes / 1024,
-                    MAX_TEXT_BYTES / 1024
-                )));
-            }
-            let text = tokio::fs::read_to_string(&src.path)
+            // Bounded at the read, not by the size the walk saw: a file that
+            // grew since is caught here (review of #459).
+            let bytes = crate::tool::document::read_bounded(&src.path, MAX_TEXT_BYTES)
                 .await
                 .map_err(|e| ReadError::ours(format!("{}: {e}", src.name)))?;
+            let text = String::from_utf8(bytes)
+                .map_err(|_| ReadError::ours(format!("{} is not UTF-8 text.", src.name)))?;
             Ok(format!(
                 "document: {} · text\n\n{}",
                 src.name,
@@ -278,7 +274,12 @@ pub async fn read(
             extractor
                 .extract(&bytes, pages, Mode::Auto, false, None)
                 .await
-                .map(|ex| ex.render(&src.name))
+                .map(|ex| {
+                    if pages == "all" && ex.ocr_deferred.is_empty() && !ex.cancelled {
+                        mark_read(&ex.sha256);
+                    }
+                    ex.render(&src.name)
+                })
                 .map_err(|e| ReadError {
                     why: format!("{}: {e:#}", src.name),
                     outside: crate::document::carries_document_text(&e),
@@ -412,9 +413,38 @@ pub fn ready(src: &Source, cache: Option<&crate::document::Cache>, max_bytes: u6
             let Some(cache) = cache else {
                 return false;
             };
-            sha_of(src).is_some_and(|sha| cache.load_layer(&sha).is_some())
+            // A cached text layer means no wait only where every page has
+            // text of its own: a scan's layer is empty, and its first chat
+            // would still OCR it (review of #459). Past that, ready is having
+            // been read whole by this server — OCR cached as it went.
+            sha_of(src).is_some_and(|sha| {
+                cache.load_layer(&sha).is_some_and(|layer| {
+                    (1..=layer.pages).all(|page| layer.has_text(page)) || was_read(&sha)
+                })
+            })
         }
     }
+}
+
+static READ: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+/// A document this server has read whole, OCR and all. In memory only: after
+/// a restart a scan reads "not read yet" until it is read again, which the
+/// cache then answers at once.
+fn mark_read(sha: &str) {
+    if let Ok(mut read) = READ.get_or_init(Default::default).lock() {
+        if read.len() > 4096 {
+            read.clear();
+        }
+        read.insert(sha.to_string());
+    }
+}
+
+fn was_read(sha: &str) -> bool {
+    READ.get_or_init(Default::default)
+        .lock()
+        .is_ok_and(|read| read.contains(sha))
 }
 
 type ShaKey = (PathBuf, u64, Option<std::time::SystemTime>);
@@ -921,5 +951,41 @@ mod tests {
         assert!(!carries(&[Message::assistant(vec![Block::text(
             block.clone()
         )])]));
+    }
+
+    /// Ready means a chat need not wait: a cached layer with text on every
+    /// page is; a scan's empty layer is not, until the document has been read
+    /// whole (review of #459 — `ready` was only pinned on its refusals).
+    #[test]
+    fn ready_is_a_full_text_layer_or_a_whole_read() {
+        let (dir, store, p) = world();
+        let bytes = b"%PDF-1.4 a document".to_vec();
+        std::fs::write(dir.join("mara/files/doc.pdf"), &bytes).unwrap();
+        let sources = list(&roots(&store, &p));
+        let doc = find(&sources, "doc.pdf").unwrap();
+        let sha = crate::document::sha256_hex(&bytes);
+        let cache = crate::document::Cache::new(dir.join("cache"));
+        let layer = |text: Vec<String>| crate::document::Layer {
+            sha256: sha.clone(),
+            pages: text.len() as u32,
+            sizes: vec![(612.0, 792.0); text.len()],
+            regions: vec![Vec::new(); text.len()],
+            text,
+        };
+        assert!(!ready(doc, Some(&cache), 1 << 20), "nothing cached");
+        cache
+            .store_layer(&layer(vec!["word ".repeat(40); 2]))
+            .unwrap();
+        assert!(ready(doc, Some(&cache), 1 << 20), "text on every page");
+        cache
+            .store_layer(&layer(vec!["word ".repeat(40), String::new()]))
+            .unwrap();
+        assert!(
+            !ready(doc, Some(&cache), 1 << 20),
+            "a scanned page still to OCR"
+        );
+        mark_read(&sha);
+        assert!(ready(doc, Some(&cache), 1 << 20), "read whole");
+        std::fs::remove_dir_all(dir).ok();
     }
 }

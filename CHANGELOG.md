@@ -25,8 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new `file_read` tool. A persona also reads its groups' and everyone's
   `files/`, named `@group/…` and `@all/…`. Files are processed once on upload,
   and the list says which are ready. A file's words are treated as outside
-  content, so a chat that carried them is marked untrusted. `answers =
-  "files"` keeps `file_read`, since that is what reading the files means.
+  content, so a chat that carried them is marked untrusted and private. With
+  `[security] block_sends_after_private` on, a persona with files therefore
+  stops `web_search` in its chats. `answers = "files"` keeps `file_read`,
+  since that is what reading the files means.
 
 - **`mecha setup` covers every optional feature.** It has a step for each —
   the web app, Slack, mail, docs, the knowledge graph, web search, PDF

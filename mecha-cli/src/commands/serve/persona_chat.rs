@@ -994,8 +994,16 @@ impl PersonaChats {
         // and is never read to find out (review of #459).
         // And none is ready while document reading is switched off, since
         // no chat could read it — the page agrees with the reader.
-        let max_bytes = crate::setup::document_extractor(&chat.follower.current().config)
-            .map(|ex| ex.config().max_file_bytes())
+        // Read off the config rather than by building an extractor on every
+        // poll (review of #459).
+        let config = &chat.follower.current().config;
+        let max_bytes = config
+            .documents
+            .as_ref()
+            .filter(|_| {
+                mecha_core::feature::switched_on(config, mecha_core::feature::Feature::Documents)
+            })
+            .map(|d| d.max_file_bytes())
             .unwrap_or(0);
         let store_dir = self.store.clone();
         let processing = self

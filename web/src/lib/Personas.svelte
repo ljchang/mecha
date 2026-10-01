@@ -356,6 +356,10 @@
 
   async function choose(p) {
     close();
+    // Another persona's files must not draw under this one's heading while
+    // its own load (review of #459).
+    sources = [];
+    sourcesNote = '';
     chosen = p;
     key = null;
     run = emptyRun();
