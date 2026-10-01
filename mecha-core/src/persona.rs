@@ -1471,7 +1471,16 @@ fn create_with(
             } else {
                 new.character.clone()
             },
-            voice: new.voice.clone(),
+            // A proposal's voice is a name the owner reads in the Waiting
+            // card, not checked here: voices live on the voice server
+            // (#490), and `Store::problems`' message would hand the model
+            // the store's path (review of #493, pass 5). A call to the
+            // persona refuses an unknown voice by name.
+            voice: if prose.is_some() {
+                None
+            } else {
+                new.voice.clone()
+            },
             groups: new.groups.clone(),
             model: None,
             tools: Tools::default(),
@@ -1658,6 +1667,14 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
             bail!("there is no relationship template `{r}`");
         }
     }
+    // The voice is not looked up (voices live on the voice server), but it
+    // is a name by this store's rule, checked before anything is written:
+    // a control character in it would be written into persona.toml and
+    // refused on the read back, leaving a half-made persona or a wrecked
+    // revision (review of #496).
+    if let Some(v) = &p.voice {
+        validate_name(v).context("the voice")?;
+    }
     let Some(existing) = store.get(&p.name).cloned() else {
         let waiting = store
             .personas
@@ -1723,7 +1740,7 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
     probe.settings.display = new.display.clone();
     probe.settings.relationship = Names(new.relationships.clone());
     probe.settings.character = None;
-    probe.settings.voice = new.voice.clone();
+    probe.settings.voice = None; // as `create_with`'s probe: a name, not checked here
     probe.state.status = Status::Approved;
     probe.identity = p.identity.clone();
     probe.motivation = p.motivation.clone();
@@ -3096,6 +3113,36 @@ mod tests {
         assert!(
             refused.contains("nemesis") && !refused.contains(&*store.to_string_lossy()),
             "{refused}"
+        );
+        // A voice is a name the owner reads before approving, not checked
+        // against a store the model could learn the path of: proposed as
+        // given, and nothing refused carries the path.
+        let mut voiced = proposal(core);
+        voiced.name = "other".into();
+        voiced.voice = Some("gravel".into());
+        let (p, _) = propose(&store, &lib, voiced).unwrap();
+        assert_eq!(p.settings.voice.as_deref(), Some("gravel"));
+        // But it is a name: one that could repaint a terminal is refused
+        // before anything is written, new or revised.
+        for name in ["fresh", "other"] {
+            let mut bad = proposal(core);
+            bad.name = name.into();
+            bad.voice = Some("x\u{1b}[2J".into());
+            assert!(propose(&store, &lib, bad).is_err(), "{name}");
+        }
+        assert!(
+            Store::load(&store).get("fresh").is_none(),
+            "nothing half-made"
+        );
+        assert_eq!(
+            Store::load(&store)
+                .get("other")
+                .unwrap()
+                .settings
+                .voice
+                .as_deref(),
+            Some("gravel"),
+            "a waiting proposal is not wrecked"
         );
 
         // Edited by the owner while it waits: theirs, and a revision would
