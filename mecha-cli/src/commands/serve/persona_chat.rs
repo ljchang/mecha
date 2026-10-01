@@ -1253,6 +1253,49 @@ impl PersonaChats {
         Ok(serde_json::json!({ "removed": true }))
     }
 
+    /// The persona's memory block for a chat's first turn (§9.7), or `None`.
+    /// A store that cannot be read is said on the page and in the log, never
+    /// taken for "remembers nothing" — and the turn goes ahead without it.
+    async fn memory_block(
+        &self,
+        persona: mecha_core::persona::Persona,
+        notices: &tokio::sync::broadcast::Sender<WireEvent>,
+    ) -> Option<String> {
+        let dir = self.store.clone();
+        let read = tokio::task::spawn_blocking(move || {
+            mecha_core::persona::recall::chat_start(&Store::load(&dir), &persona)
+        })
+        .await;
+        let unread = |why: &str| {
+            let _ = notices.send(WireEvent::Notice {
+                text: format!(
+                    "Part of what it remembers could not be read ({why}); this chat goes on without that part."
+                ),
+            });
+        };
+        match read {
+            Ok(Ok(recalled)) => {
+                // Read, but not all of it: said, as an unreadable store is.
+                for problem in &recalled.problems {
+                    tracing::warn!("a persona's memory was not all read: {problem}");
+                    unread(problem);
+                }
+                recalled.block.map(|b| b.text)
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("a persona's memory could not be read: {e:#}");
+                unread("its store");
+                None
+            }
+            // A panic in the read is no quieter than an error (review of #477).
+            Err(e) => {
+                tracing::warn!("reading a persona's memory failed: {e}");
+                unread("the read failed");
+                None
+            }
+        }
+    }
+
     /// What this persona's files say for a chat's first turn (§10.4): all
     /// their text when it fits about a quarter of the context window (D15),
     /// or the list to read with `file_read`. `None` with no files.
@@ -1690,13 +1733,13 @@ impl PersonaChats {
         // pinned it: switching a protection back on reaches an open chat
         // (review of #418), as revoking approval already does. The prompt
         // stays the pinned version's.
-        let live_switches = live.map(|p| p.settings.safety);
+        let live_switches = live.as_ref().map(|p| p.settings.safety);
         if !approved {
             return Err(Refusal::Conflict(format!(
                 "`{name}` is not approved — `mecha persona approve {name}` after reading it"
             )));
         }
-        let (pinned, notices, early_pause, wants_files) = {
+        let (pinned, notices, early_pause, wants_files, wants_memory) = {
             let mut sessions = self.sessions.lock().await;
             let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
             if ps.live.is_some() {
@@ -1720,11 +1763,17 @@ impl PersonaChats {
                 .conversation
                 .as_ref()
                 .is_some_and(|c| carries_files_now(&c.messages));
+            // And what it remembers, by the same rule (§9.7).
+            let wants_memory = ps
+                .conversation
+                .as_ref()
+                .is_some_and(|c| mecha_core::persona::recall::carries_now(&c.messages));
             (
                 Arc::clone(&ps.pinned),
                 ps.events.clone(),
                 early_pause,
                 wants_files,
+                wants_memory,
             )
         };
         if chat.stopping.is_cancelled() {
@@ -1784,6 +1833,13 @@ impl PersonaChats {
             (Some((bound, _)), true) => self.files_block(&name, bound).await,
             _ => None,
         };
+        // What the persona remembers, read off its store outside the lock
+        // and with the memory switches as the persona stands now — turning
+        // one off reaches an open chat, as the safety switches do.
+        let memory_block = match (&ready, wants_memory, live) {
+            (Some(_), true, Some(persona)) => self.memory_block(persona, &notices).await,
+            _ => None,
+        };
 
         let mut sessions = self.sessions.lock().await;
         // Under the lock `stop` takes, so a turn is either cancelled by it or
@@ -1804,6 +1860,8 @@ impl PersonaChats {
         // under the first lock, two awaits ago, and a turn that finished in
         // between may have carried the files already (review of #459).
         let files_block = files_block.filter(|_| carries_files_now(&conversation.messages));
+        let memory_block = memory_block
+            .filter(|_| mecha_core::persona::recall::carries_now(&conversation.messages));
         // The session goal rides in the first turn, never the system prompt,
         // so setting one costs the persona's cached prefix nothing (§6).
         let goal = ps.goal.take();
@@ -1867,6 +1925,9 @@ impl PersonaChats {
             if let Some(files) = &files_block {
                 mecha_core::agent::append_user_text(&mut conversation.messages, files.clone());
             }
+            if let Some(memory) = &memory_block {
+                mecha_core::agent::append_user_text(&mut conversation.messages, memory.clone());
+            }
             if let Some(anchor) = &anchor {
                 mecha_core::agent::append_user_text(&mut conversation.messages, anchor.clone());
             }
@@ -1884,6 +1945,13 @@ impl PersonaChats {
             if let Some(files) = &files_block {
                 user.content.push(mecha_core::message::Block::Text {
                     text: files.clone(),
+                });
+            }
+            // What it remembers, in the harness's registered voice too; the
+            // stem it opens with is what arms the chat (§9.7).
+            if let Some(memory) = &memory_block {
+                user.content.push(mecha_core::message::Block::Text {
+                    text: memory.clone(),
                 });
             }
             // Its own block, in the harness's registered voice: never drawn in
@@ -3488,6 +3556,93 @@ mod tests {
             .map(|e| e["text"].as_str().unwrap_or("").to_string())
             .collect();
         assert_eq!(bubbles, ["What do urchins do?", "And then?"], "{t}");
+        assert_eq!(t["taint"]["untrusted"], true, "{t}");
+    }
+
+    /// §9.7: what the persona remembers rides in a chat's first turn, once,
+    /// in the harness's voice. Clean memory leaves the chat private and
+    /// trusted — so the writer keeps forming ordinary memories from it — and
+    /// a recalled record that came from outside makes the chat untrusted.
+    #[tokio::test]
+    async fn what_a_persona_remembers_rides_in_the_first_turn_with_its_taint() {
+        use mecha_core::persona::memory::{Kind, Memory, NewFact, Source, Table};
+        use mecha_core::persona::Origin;
+        let w = world();
+        let remember = |text: &str, origin: Origin| {
+            let m = Memory::open(&w.store(), "mara").unwrap();
+            let f = m
+                .add_fact(
+                    Table::User,
+                    NewFact {
+                        text: text.into(),
+                        kind: Kind::Stated,
+                        source: Source {
+                            chat: "earlier".into(),
+                            from: 0,
+                            to: 1,
+                        },
+                        origin,
+                        model: "m".into(),
+                        valid_from: None,
+                        valid_to: None,
+                    },
+                )
+                .unwrap();
+            if origin == Origin::ModelUntrusted {
+                m.approve(&f.uid).unwrap();
+            }
+        };
+        let chat = |said: &'static str| async {
+            let opened = w
+                .personas()
+                .open(&w.chat, &w.library, "mara", None, None)
+                .await
+                .unwrap();
+            let key = opened["key"].as_str().unwrap().to_string();
+            turn(&w, &key, said).await;
+            turn(&w, &key, "And then?").await;
+            let t = w
+                .personas()
+                .transcript(&w.chat, &w.library, &key, None)
+                .await
+                .unwrap();
+            t
+        };
+
+        remember(
+            "Teaches a methods seminar on Thursdays.",
+            Origin::ModelClean,
+        );
+        let t = chat("Hello again.").await;
+        let seen = w.seen.lock().unwrap().clone();
+        let first = seen[0].messages[0].text();
+        assert!(
+            first.contains(mecha_core::persona::recall::MEMORY_STEM)
+                && first.contains("Teaches a methods seminar on Thursdays."),
+            "{first}"
+        );
+        let second = seen[1].messages.last().unwrap().text();
+        assert!(
+            mecha_core::persona::recall::stem_of(&second).is_none()
+                && !second.contains("methods seminar"),
+            "once: {second}"
+        );
+        let bubbles: Vec<String> = t["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "user")
+            .map(|e| e["text"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(bubbles, ["Hello again.", "And then?"], "{t}");
+        assert_eq!(t["taint"]["private"], true, "{t}");
+        assert_eq!(
+            t["taint"]["untrusted"], false,
+            "clean memory stays trusted: {t}"
+        );
+
+        remember("Lives by the sea.", Origin::ModelUntrusted);
+        let t = chat("Hi.").await;
         assert_eq!(t["taint"]["untrusted"], true, "{t}");
     }
 
