@@ -16,7 +16,7 @@
   import { repairComments, changesOf } from './tomlform.js';
   import { isDirty as mdDirty } from './mdform.js';
   import {
-    listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle, splitWaiting, proposalOrigin,
+    listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle, splitWaiting, proposalOrigin, isProposal,
     taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
     toolStatus, waitingLine, withWorking, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
     citeEntries, citeOpens, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
@@ -558,7 +558,7 @@
     review = null;
     reviewNote = '';
     rejectArmed = false;
-    if (!name || !chosen.waiting) return;
+    if (!name || !isProposal(chosen)) return;
     try {
       const res = await fetch(personaUrl(name, '/review', token));
       if (gen !== reviewGen) return;
@@ -1562,7 +1562,7 @@
             </div>
           </div>
         </section>
-        {#if chosen.waiting && chosen.origin !== 'owner'}
+        {#if isProposal(chosen)}
           <!-- A proposal: read here, approved as shown. -->
           <section class="reviewcard" aria-label="Proposal waiting for approval">
             <div class="reviewhead">Waiting for your approval</div>
@@ -1611,7 +1611,7 @@
             <div class="warnline">{problem}</div>
           {/each}
         {/if}
-        <div class="startbox" class:gone={chosen.waiting && chosen.origin !== 'owner'}>
+        <div class="startbox" class:gone={isProposal(chosen)}>
           {#if showGoal || goal}
             <input
               class="editbox"
