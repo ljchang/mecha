@@ -722,6 +722,39 @@ impl Command {
     }
 }
 
+/// This process's hold on the router (D13), kept where an early exit reaches
+/// it. It lived in `dispatch`'s frame, and `std::process::exit` skips
+/// destructors: every command that ends non-zero — a failed eval case, a
+/// failed batch item, a refused `mecha run` — left its hold file behind. A
+/// dead pid's hold is swept, never waited on, so nothing blocked; the files
+/// just accumulated (five `mecha eval` holds on 2026-09-30).
+static RUN_HOLD: std::sync::Mutex<Option<mecha_core::hold::Held>> = std::sync::Mutex::new(None);
+
+/// Release this process's router hold, if it has one.
+fn release_run_hold() {
+    let held = RUN_HOLD.lock().unwrap_or_else(|e| e.into_inner()).take();
+    drop(held);
+}
+
+/// End the process with `code`, releasing its router hold first. Every
+/// command's non-zero exit goes through here rather than
+/// `std::process::exit`, which would skip the hold's drop
+/// (`no_command_exits_around_the_hold` keeps it so).
+pub(crate) fn exit_with(code: i32) -> ! {
+    release_run_hold();
+    std::process::exit(code)
+}
+
+/// Releases the run hold when `dispatch` returns, as the local it replaced
+/// did when it went out of scope.
+struct ReleaseRunHold;
+
+impl Drop for ReleaseRunHold {
+    fn drop(&mut self) {
+        release_run_hold();
+    }
+}
+
 /// This process's hold on the router (D13), for a command that is one run.
 ///
 /// "Switch now" stops it, and the children it covers (`follow::cover_child`),
@@ -828,12 +861,13 @@ async fn dispatch() -> Result<()> {
     let cli = Cli::parse();
     // D13: a command that is one run holds the router for its whole life,
     // taken before the snapshot below so it can never resolve the model a
-    // pending switch is replacing. Dropped when the command returns.
-    let _held = if cli.command.runs_a_model() && cli.command.is_one_run() {
-        hold_for_this_run(&cli.global).await?
-    } else {
-        None
-    };
+    // pending switch is replacing. Released when the command returns, or by
+    // `exit_with` when it ends early.
+    let _release = ReleaseRunHold;
+    if cli.command.runs_a_model() && cli.command.is_one_run() {
+        let held = hold_for_this_run(&cli.global).await?;
+        *RUN_HOLD.lock().unwrap_or_else(|e| e.into_inner()) = held;
+    }
     if cli.command.runs_a_model() {
         follow_the_loaded_model(&cli.global, cli.command.may_follow()).await;
     }
@@ -893,6 +927,59 @@ async fn dispatch() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// An early exit releases this process's router hold: the file a real
+    /// hold wrote is gone once `release_run_hold` — what `exit_with` calls
+    /// before `std::process::exit` — has run. Before, the hold lived in
+    /// `dispatch`'s frame and a non-zero exit left the file behind.
+    #[test]
+    fn an_early_exit_releases_the_run_hold() {
+        let dir = std::env::temp_dir().join(format!("mecha-run-hold-{}", std::process::id()));
+        let holds = mecha_core::hold::Holds::new(&dir);
+        let held = holds
+            .try_hold("http://127.0.0.1:9", "mecha eval")
+            .unwrap()
+            .expect("no switch is pending in a fresh directory");
+        assert_eq!(holds.live("http://127.0.0.1:9").len(), 1);
+        *super::RUN_HOLD.lock().unwrap() = Some(held);
+        super::release_run_hold();
+        assert!(
+            holds.live("http://127.0.0.1:9").is_empty(),
+            "the hold outlived the exit"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// No command ends the process around the hold: every non-zero exit in
+    /// the commands goes through `exit_with`, which releases it first. A bare
+    /// `std::process::exit` added later is how the leak comes back.
+    #[test]
+    fn no_command_exits_around_the_hold() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![src.clone()];
+        let mut found = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") && path != src.join("main.rs")
+                {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    for (i, line) in text.lines().enumerate() {
+                        let code = line.trim_start();
+                        if !code.starts_with("//") && code.contains("std::process::exit(") {
+                            found.push(format!("{}:{}", path.display(), i + 1));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "exit through `crate::exit_with`: {found:?}"
+        );
+    }
+
     /// D13: a command holds the router for its life only where it runs a
     /// model. Held per command, `tasks stop` — the way to stop a detached
     /// `tasks work` — waited behind a switch waiting for that same run, and

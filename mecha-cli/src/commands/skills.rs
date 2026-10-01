@@ -122,7 +122,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Exit non-zero when something did not load, so this works as a check in
     // a script the way `doctor` does. A store that is merely empty is healthy.
     if !errors.is_empty() {
-        std::process::exit(1);
+        crate::exit_with(1);
     }
     Ok(())
 }
