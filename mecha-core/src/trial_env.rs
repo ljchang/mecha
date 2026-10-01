@@ -535,7 +535,9 @@ const DEFAULTED_FROM_SERVERS: [crate::feature::Feature; 2] = [
 /// backends behind them.
 const FOLLOW_THE_OPERATOR: [crate::feature::Feature; 1] = [crate::feature::Feature::Search];
 
-/// Whether a trial home can ever have `f` on: its switch is one an
+/// Whether a trial home can have `f` on from its environment and the
+/// operator — before an arm's levers, which can switch on more
+/// (`experiment::lever_that_switches_on`): its switch is one an
 /// environment may set, or one `config_at` defaults — from the
 /// [`DEFAULTED_FROM_SERVERS`] lists or [`FOLLOW_THE_OPERATOR`] — and so is
 /// every switch it `requires`. Everything else is the operator's alone
@@ -668,17 +670,30 @@ fn resolve_dir(
         // 2026-10-01: say so here, at load).
         anyhow::ensure!(
             can_be_on_in_a_trial(f),
-            "{}: `requires` names `{id}`, which can never be on in a trial; only {} can be. {}",
+            "{}: `requires` names `{id}`, which no experiment environment can switch on; only {} \
+             can be on from one. {}",
             dir.join(ENV_MANIFEST).display(),
             trial_reachable_ids(),
-            match f.switch_owner() {
+            match (
+                crate::experiment::lever_that_switches_on(f),
+                f.switch_owner(),
+            ) {
+                // An arm's lever can: `requires` is checked per environment,
+                // before the arm's levers apply, so it cannot ask (review of
+                // #474, pass 3).
+                (Some(lever), _) => format!(
+                    "An arm switches it on with `levers_on = [\"{}\"]`, after `requires` is \
+                     checked; name it there instead",
+                    lever.as_str()
+                ),
                 // The two the fixture servers stand in for
                 // (`eval/fixtures/mail_server.py`, `docs_server.py`).
-                crate::feature::Feature::Mail | crate::feature::Feature::Docs => {
+                (None, crate::feature::Feature::Mail | crate::feature::Feature::Docs) => {
                     "A task that needs it gets it from a fixture server — `[fixtures]` in the \
                      experiment's own manifest, not this file — not from the feature"
+                        .to_string()
                 }
-                _ => "It is yours alone, and stays out of every trial home",
+                (None, _) => "It is yours alone, and stays out of every trial home".to_string(),
             }
         );
         if !requires.contains(&f) {
@@ -1383,14 +1398,15 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
     /// 2026-10-01). A part of a reachable feature is fine.
     #[test]
     fn a_requirement_no_trial_can_meet_is_refused_at_load() {
-        for (id, fixture) in [
-            ("mail", true),
-            ("docs", true),
-            ("documents", false),
-            ("ocr", false),
-            ("web", false),
-            ("messages", false),
-            ("dictate", false),
+        // (id, fixture advice, the lever an arm uses instead)
+        for (id, fixture, lever) in [
+            ("mail", true, false),
+            ("docs", true, false),
+            ("documents", false, false),
+            ("ocr", false, false),
+            ("web", false, false),
+            ("messages", false, true),
+            ("dictate", false, false),
         ] {
             let tmp = Scratch::new();
             let env = env_at(tmp.path(), "");
@@ -1402,7 +1418,21 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
             let err = env.resolve(tmp.path()).unwrap_err();
             let text = format!("{err:#}");
             assert!(
-                text.contains(&format!("`{id}`, which can never be on in a trial")),
+                text.contains(&format!(
+                    "`{id}`, which no experiment environment can switch on"
+                )),
+                "{text}"
+            );
+            // `messages` is an arm's to switch on, not "never" (review of
+            // #474, pass 3); the rest stay out of every trial home.
+            assert_eq!(
+                text.contains(&format!("levers_on = [\"{id}\"]")),
+                lever,
+                "{text}"
+            );
+            assert_eq!(
+                text.contains("stays out of every trial home"),
+                !fixture && !lever,
                 "{text}"
             );
             // Fixture advice only where a fixture server stands in.
@@ -1410,7 +1440,9 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
             // The list comes from the predicate, parts included, and the
             // pointer names the file `[fixtures]` lives in (review of #474).
             assert!(
-                text.contains("only `graph`, `tasks`, `search`, `frontdoor`, `publishing` can be"),
+                text.contains(
+                    "only `graph`, `tasks`, `search`, `frontdoor`, `publishing` can be on from one"
+                ),
                 "{text}"
             );
             if fixture {
