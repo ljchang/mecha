@@ -14,7 +14,10 @@
 //! the password `mecha imagelib set-lock-password` set, or, when none is set,
 //! for the asking: the password is optional, and without one the lock is a
 //! plain show/hide toggle (the owner's ruling, 2026-09-28). It is held in
-//! this process's memory only and expires after [`UNLOCK_IDLE`] without use.
+//! this process's memory only and expires after the owner's autolock
+//! (`imagelib::autolock_minutes`, 15 minutes unless set) without use — the
+//! same span the page counts down from the last touch, so a page left open
+//! locks itself and a page closed leaves a token that lapses on its own.
 //! The page keeps it in a variable — no cookie and no storage, which
 //! `web/test/no-storage.mjs` forbids — so a reload locks again. Generation
 //! ignores all of this: the lock hides, it never withholds.
@@ -67,8 +70,6 @@ use std::time::{Duration, Instant};
 
 type St = State<super::WebState>;
 
-/// How long an unlock lasts without use.
-pub const UNLOCK_IDLE: Duration = Duration::from_secs(30 * 60);
 /// Wrong passwords allowed per window before the door answers 429.
 const MAX_FAILURES: usize = 5;
 const FAILURE_WINDOW: Duration = Duration::from_secs(5 * 60);
@@ -76,7 +77,9 @@ const FAILURE_WINDOW: Duration = Duration::from_secs(5 * 60);
 /// The library's directory and the unlocks this process has granted.
 pub struct LibraryState {
     pub dir: PathBuf,
-    unlocks: Mutex<HashMap<String, Instant>>,
+    /// Each live token: when it lapses, and the idle span that refreshes it
+    /// — the autolock as it stood at the unlock.
+    unlocks: Mutex<HashMap<String, (Instant, Duration)>>,
     failures: Mutex<Vec<Instant>>,
     /// Signs what the page was shown; drawn at start, never stored.
     key: [u8; 32],
@@ -120,10 +123,10 @@ impl LibraryState {
         };
         let mut unlocks = self.unlocks.lock().unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
-        unlocks.retain(|_, expires| *expires > now);
+        unlocks.retain(|_, (expires, _)| *expires > now);
         match unlocks.get_mut(token) {
-            Some(expires) => {
-                *expires = now + UNLOCK_IDLE;
+            Some((expires, idle)) => {
+                *expires = now + *idle;
                 true
             }
             None => false,
@@ -134,15 +137,17 @@ impl LibraryState {
     /// the persona door's tests, which need the lock both ways.
     #[cfg(test)]
     pub(super) fn grant_for_tests(&self) -> String {
-        self.grant()
+        self.grant(Duration::from_secs(
+            u64::from(imagelib::DEFAULT_AUTOLOCK_MINUTES) * 60,
+        ))
     }
 
-    fn grant(&self) -> String {
+    fn grant(&self, idle: Duration) -> String {
         let token = uuid::Uuid::new_v4().simple().to_string();
         self.unlocks
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(token.clone(), Instant::now() + UNLOCK_IDLE);
+            .insert(token.clone(), (Instant::now() + idle, idle));
         token
     }
 
@@ -332,6 +337,27 @@ pub struct UnlockBody {
 /// per process; a wrong password and an unset one answer the same 403, so
 /// the door says nothing about which it was.
 pub async fn unlock(State(state): St, Json(body): Json<UnlockBody>) -> Response {
+    // The autolock first: a damaged setting is a finding, never an unlock
+    // that lasts longer than the owner chose.
+    let dir = state.library.dir.clone();
+    let idle = match tokio::task::spawn_blocking(move || imagelib::autolock_minutes(&dir)).await {
+        Ok(Ok(minutes)) => Duration::from_secs(u64::from(minutes) * 60),
+        Ok(Err(e)) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
+        }
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "reading the autolock\n").into_response();
+        }
+    };
+    let granted = |state: &super::WebState| {
+        no_store(
+            Json(serde_json::json!({
+                "token": state.library.grant(idle),
+                "idle_secs": idle.as_secs(),
+            }))
+            .into_response(),
+        )
+    };
     // No password set: the lock is a plain show/hide toggle (the owner's
     // ruling, 2026-09-28 — the password is optional). Checked by the file's
     // presence, so a damaged lock file still goes through verification below
@@ -341,13 +367,7 @@ pub async fn unlock(State(state): St, Json(body): Json<UnlockBody>) -> Response 
         .await
         .unwrap_or(true);
     if !has {
-        return no_store(
-            Json(serde_json::json!({
-                "token": state.library.grant(),
-                "idle_secs": UNLOCK_IDLE.as_secs(),
-            }))
-            .into_response(),
-        );
+        return granted(&state);
     }
     if !state.library.may_try() {
         return (
@@ -364,13 +384,7 @@ pub async fn unlock(State(state): St, Json(body): Json<UnlockBody>) -> Response 
         state.library.succeeded();
     }
     match verdict {
-        Ok(Ok(true)) => no_store(
-            Json(serde_json::json!({
-                "token": state.library.grant(),
-                "idle_secs": UNLOCK_IDLE.as_secs(),
-            }))
-            .into_response(),
-        ),
+        Ok(Ok(true)) => granted(&state),
         Ok(Ok(false)) => (StatusCode::FORBIDDEN, "wrong password\n").into_response(),
         // A damaged lock file is a finding, never an open door.
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
@@ -387,6 +401,61 @@ pub struct TokenBody {
 pub async fn relock(State(state): St, Json(body): Json<TokenBody>) -> Response {
     state.library.revoke(&body.token);
     Json(serde_json::json!({"ok": true})).into_response()
+}
+
+/// GET /api/settings/lock — the autolock, and whether a password is set.
+/// Neither says anything about what the lock hides.
+pub async fn lock_settings(State(state): St) -> Response {
+    let dir = state.library.dir.clone();
+    let read = tokio::task::spawn_blocking(move || {
+        (
+            imagelib::autolock_minutes(&dir),
+            imagelib::has_lock_password(&dir),
+        )
+    })
+    .await;
+    let Ok((minutes, has_password)) = read else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "reading the lock settings\n",
+        )
+            .into_response();
+    };
+    Json(serde_json::json!({
+        // Unknown is said as unknown: a damaged setting is no number at all,
+        // never the default standing in for it.
+        "idle_minutes": minutes.as_ref().ok(),
+        "error": minutes.as_ref().err().map(|e| format!("{e:#}")),
+        "default_minutes": imagelib::DEFAULT_AUTOLOCK_MINUTES,
+        "max_minutes": imagelib::MAX_AUTOLOCK_MINUTES,
+        "has_password": has_password,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct LockSettingsBody {
+    idle_minutes: u32,
+}
+
+/// POST /api/settings/lock — set the autolock, as `mecha imagelib
+/// set-autolock` does (it is that child). Needs no unlock: a longer span
+/// opens nothing, and only an unlock — password and all — starts one.
+pub async fn set_lock_settings(State(state): St, Json(body): Json<LockSettingsBody>) -> Response {
+    // The child checks the range too; refused here first, so a bad value
+    // never costs a process.
+    if !(1..=imagelib::MAX_AUTOLOCK_MINUTES).contains(&body.idle_minutes) {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "the autolock is 1 to {} minutes\n",
+                imagelib::MAX_AUTOLOCK_MINUTES
+            ),
+        )
+            .into_response();
+    }
+    let minutes = body.idle_minutes.to_string();
+    super::review::verb(&state, &["imagelib", "set-autolock", &minutes]).await
 }
 
 fn parse_kind(kind: &str) -> Option<&'static str> {
@@ -934,18 +1003,36 @@ mod tests {
         let s = LibraryState::new(PathBuf::new());
         assert!(!s.unlocked(None));
         assert!(!s.unlocked(Some("guess")));
-        let t = s.grant();
+        let idle = Duration::from_secs(60);
+        let t = s.grant(idle);
         assert!(s.unlocked(Some(&t)));
         s.revoke(&t);
         assert!(!s.unlocked(Some(&t)));
         // An expired token is gone, not merely refused.
-        let t = s.grant();
+        let t = s.grant(idle);
         s.unlocks
             .lock()
             .unwrap()
-            .insert(t.clone(), Instant::now() - Duration::from_secs(1));
+            .insert(t.clone(), (Instant::now() - Duration::from_secs(1), idle));
         assert!(!s.unlocked(Some(&t)));
         assert!(s.unlocks.lock().unwrap().is_empty());
+    }
+
+    /// A use refreshes a token by its own span — the autolock as it stood
+    /// at its unlock — not by one span for every token.
+    #[test]
+    fn a_use_refreshes_a_token_by_its_own_span() {
+        let s = LibraryState::new(PathBuf::new());
+        let short = s.grant(Duration::from_secs(60));
+        let long = s.grant(Duration::from_secs(3600));
+        for t in [&short, &long] {
+            let mut unlocks = s.unlocks.lock().unwrap();
+            unlocks.get_mut(t).unwrap().0 = Instant::now() + Duration::from_secs(1);
+        }
+        assert!(s.unlocked(Some(&short)) && s.unlocked(Some(&long)));
+        let left = |t: &str| s.unlocks.lock().unwrap()[t].0 - Instant::now();
+        assert!(left(&short) <= Duration::from_secs(60) && left(&short) > Duration::from_secs(50));
+        assert!(left(&long) > Duration::from_secs(3500));
     }
 
     #[test]
@@ -1376,6 +1463,59 @@ mod route_tests {
         )
         .await;
         assert!(names(&list).contains(&"theo".to_string()));
+    }
+
+    #[tokio::test]
+    async fn an_unlock_lasts_the_owners_autolock_and_a_damaged_one_opens_nothing() {
+        let f = fixture();
+        std::fs::remove_file(f.dir.join("lock.toml")).unwrap();
+        let unlock = || async {
+            f.app
+                .clone()
+                .oneshot(post("/api/library/unlock", serde_json::json!({})))
+                .await
+                .unwrap()
+        };
+        let r = unlock().await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(json(r).await["idle_secs"], 15 * 60, "the default");
+        imagelib::set_autolock_minutes(&f.dir, 5).unwrap();
+        assert_eq!(json(unlock().await).await["idle_secs"], 5 * 60);
+        let settings = json(
+            f.app
+                .clone()
+                .oneshot(get("/api/settings/lock"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(settings["idle_minutes"], 5);
+        assert_eq!(settings["has_password"], false);
+        // Damaged: no unlock at all, and the settings say unknown, not 15.
+        std::fs::write(f.dir.join("autolock.toml"), "idle_minutes = 0\n").unwrap();
+        assert_eq!(unlock().await.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let settings = json(
+            f.app
+                .clone()
+                .oneshot(get("/api/settings/lock"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(settings["idle_minutes"].is_null() && settings["error"].is_string());
+        // Out of range is refused before any child could run.
+        for bad in [0, imagelib::MAX_AUTOLOCK_MINUTES + 1] {
+            let r = f
+                .app
+                .clone()
+                .oneshot(post(
+                    "/api/settings/lock",
+                    serde_json::json!({ "idle_minutes": bad }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{bad}");
+        }
     }
 
     #[tokio::test]

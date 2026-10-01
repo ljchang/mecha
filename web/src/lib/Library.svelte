@@ -1,5 +1,5 @@
 <script>
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import { features } from './features.svelte.js';
   import { opens } from './features.js';
@@ -7,6 +7,7 @@
     PANES, paneOf, entriesFor, counts, originLabel, listUrl, tameName,
     TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody,
   } from './library.js';
+  import { watchIdle, idleSpan } from './autolock.js';
   // The image library: the characters and styles `image_generate` compiles a
   // scene against (docs/IMAGE-COMPILER-DESIGN.md §7).
   //
@@ -19,8 +20,11 @@
   // Locked entries are hidden by the server, not by this page. Showing them
   // trades the lock password — or nothing, when none is set, which makes the
   // lock a plain toggle (the owner's ruling) — for a token held in a variable
-  // here: no cookie, no storage, so a reload hides them again, and it lapses
-  // on its own after half an hour idle. Generation never looks at the lock.
+  // here: no cookie, no storage, so a reload hides them again. It lapses
+  // after the owner's autolock (Settings → Lock, 15 minutes unless set) with
+  // no one touching the page — the page locks itself (`autolock.js`), and the
+  // server's token lapses on the same span for a page that was closed.
+  // Generation never looks at the lock.
   //
   // Adding and editing are the owner's own acts, each the same `mecha
   // imagelib` command the terminal runs. A portrait is scaled down and
@@ -68,7 +72,7 @@
       data = await res.json();
       // A token the server no longer honours has lapsed: drop it, so the
       // toggle says what is true.
-      if (token && !data.unlocked) token = null;
+      if (token && !data.unlocked) dropToken();
       if (open) open = data.entries.find((e) => e.kind === open.kind && e.name === open.name) ?? null;
       // An edit form lives only as long as the entry it edits.
       if (!open && form?.mode === 'edit') closeForm();
@@ -93,7 +97,9 @@
         body: JSON.stringify({ password }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
-      token = (await res.json()).token;
+      const granted = await res.json();
+      token = granted.token;
+      armIdle(granted.idle_secs);
       sheet = null;
       await load();
     } catch (e) {
@@ -104,21 +110,45 @@
     }
   }
 
+  // The autolock, as the Personas tab keeps it: the owner's span with no one
+  // touching the page locks it, and a return to the page asks whether the
+  // token outlived a restart.
+  let stopIdle = null;
+  function armIdle(secs) {
+    stopIdle?.();
+    stopIdle = watchIdle({ idleMs: idleSpan(secs) * 1000, onIdle: relock, onReturn: load });
+  }
+
+  function dropToken() {
+    token = null;
+    stopIdle?.();
+    stopIdle = null;
+  }
+
+  function revoke(t) {
+    fetch('/api/library/relock', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: t }),
+    }).catch(() => {});
+  }
+
+  // Leaving the tab ends the unlock: the page forgets its token, so the
+  // server should too.
+  onDestroy(() => {
+    stopIdle?.();
+    if (token) revoke(token);
+  });
+
   async function relock() {
     const t = token;
-    token = null;
+    dropToken();
     if (open?.locked) {
       open = null;
       if (form?.mode === 'edit') closeForm();
     }
     await load();
-    if (t) {
-      fetch('/api/library/relock', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ token: t }),
-      }).catch(() => {});
-    }
+    if (t) revoke(t);
   }
 
   function startAdd(kind) {
