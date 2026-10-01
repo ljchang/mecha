@@ -430,16 +430,27 @@ fn resolve_existing_prefix(p: &Path) -> Result<PathBuf> {
 /// Refuse a trial home that lacks a feature its environment `requires`
 /// (FEATURES-DESIGN.md §5.1): off or blocked there, a task needing it could
 /// not be attempted, and running anyway would record that as a result.
-/// Asked of the registry over the trial's own config alone — off and blocked
-/// are the switches' and the settings' answer, needing no fact from disk —
-/// so it cannot fail open on a store it could not read. Refused before any
-/// trial starts, as `prepare_worlds` runs ahead of the dry run.
+/// A check of the **switches**, as §5.1 specifies: a switched-on feature's
+/// own `Off` reads `Unready` and passes, so `search` on with no backend, or
+/// the front door on with no `factory-publish`, is not caught here; nor is
+/// an arm's `levers_off`, applied per arm after this per-environment check.
+/// Off and blocked need no store, so it cannot fail open on one it could
+/// not read. Refused before any trial starts, as `prepare_worlds` runs ahead
+/// of the dry run.
 fn refuse_missing_requires(
     requires: &[crate::feature::Feature],
     config: &Config,
     env: &Path,
 ) -> Result<()> {
+    // The binaries are the machine's, which a trial shares, so they are read;
+    // left at their default they would assert `false`, and a part's refusal
+    // would name the wrong fix (review of #466). The stores stay unread.
+    use crate::onboarding::on_path;
     let facts = crate::feature::Facts {
+        has_mail_binary: on_path("mecha-mail"),
+        has_docs_binary: on_path("mecha-docs"),
+        has_graph_binary: on_path("mecha-graph-mcp"),
+        has_factory_binary: on_path("factory-publish"),
         config: config.clone(),
         ..Default::default()
     };

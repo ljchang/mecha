@@ -450,7 +450,9 @@ pub struct RunConfig {
     pub levers_off: Option<Vec<crate::harness::Lever>>,
 
     /// Which features this run had switched on, in `Feature::ALL` order: the
-    /// switches, never the effects (`harness.rs`'s rule for levers) — `web`,
+    /// switches as `feature::switched_on` reads them (a bool on whose
+    /// required switch is off reads off), never the effects (`harness.rs`'s
+    /// rule for levers) — `web`,
     /// `personas` and `voice` change no tool name, so `tools` cannot say.
     /// A condition of the run as much as `levers_off` is, so an experiment
     /// can tell two arms apart that differ only in a feature, and a light
