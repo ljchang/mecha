@@ -2155,32 +2155,39 @@ impl ImageGenerate {
         // so does a prompt that opens with it — the common selfie, "Stella
         // lounging on a couch, wearing a lace set". Otherwise they point at
         // the scene the prompt describes.
-        let (wearing, doing) = match (&from_extra, in_prompt) {
-            // An extra is removed once cast, so its words have nowhere else
-            // to go: a one-word action ("Mara waving") is kept, where the
-            // prompt path's two-word floor would drop it (review of #454).
-            (Some(after), _) => match self_clauses(after) {
-                (wearing, None) => {
-                    let lead = after
-                        .split([',', '.', ';', '\n'])
-                        .next()
-                        .unwrap_or("")
-                        .trim();
-                    let lead = lead
-                        .char_indices()
-                        .map(|(i, _)| i)
-                        .find(|&i| {
-                            lead.get(i..i + 8)
-                                .is_some_and(|w| w.eq_ignore_ascii_case("wearing "))
-                        })
-                        .map_or(lead, |i| lead[..i].trim());
-                    (wearing, Some(lead.to_string()).filter(|d| !d.is_empty()))
-                }
-                both => both,
-            },
-            (None, Some((0, end))) => self_clauses(&prompt[end..]),
-            _ => (None, None),
-        };
+        let (wearing, doing) =
+            match (&from_extra, in_prompt) {
+                // An extra is removed once cast, so its words have nowhere else
+                // to go: a one-word action ("Mara waving") is kept, where the
+                // prompt path's two-word floor would drop it (review of #454).
+                // A separator right after the name ("Mara, waving …") would leave
+                // the name's own clause empty and drop both fields (review of
+                // #454): the extra is only about the persona, so it starts at its
+                // first word.
+                (Some(after), _) => match self_clauses(after.trim_start_matches(|c: char| {
+                    matches!(c, ',' | ';' | '.') || c.is_whitespace()
+                })) {
+                    (wearing, None) => {
+                        let lead = after
+                            .split([',', '.', ';', '\n'])
+                            .next()
+                            .unwrap_or("")
+                            .trim();
+                        let lead = lead
+                            .char_indices()
+                            .map(|(i, _)| i)
+                            .find(|&i| {
+                                lead.get(i..i + 8)
+                                    .is_some_and(|w| w.eq_ignore_ascii_case("wearing "))
+                            })
+                            .map_or(lead, |i| lead[..i].trim());
+                        (wearing, Some(lead.to_string()).filter(|d| !d.is_empty()))
+                    }
+                    both => both,
+                },
+                (None, Some((0, end))) => self_clauses(&prompt[end..]),
+                _ => (None, None),
+            };
         // Within the compiler's cap: over it, the call is refused over a
         // field the model never wrote, and it resends (review of #444).
         let me = crate::imagelib::CastMember {
@@ -2203,7 +2210,7 @@ impl ImageGenerate {
         match ask.as_mut() {
             // Left to right, as the cast is read: before the first member the
             // prompt names later, or who it does not name at all. Named only
-            // in an extra, after everyone the prompt names.
+            // in an extra: before the first member the prompt does not name.
             Some(a) => {
                 let slot = match in_prompt {
                     Some((at, _)) => a
@@ -5039,7 +5046,7 @@ mod tests {
         let out = mara
             .call(
                 json!({"prompt": "a balcony at dusk", "extras": [
-                    "Mara waving from the rail, wearing a red scarf",
+                    "Mara, waving from the rail, wearing a red scarf",
                     "a man with a dog walking below"
                 ]}),
                 &ctx(&dir),
