@@ -27,8 +27,12 @@
 > applied *into* `[messages] enabled` rather than or-ed with it, so experiment
 > levers keep one field (ARCHITECTURE §Features says why). **Step 4 is split
 > too: 4a — `mecha setup` iterates the registry, `mecha setup <feature>` and
-> `--minimal` — is built;** 4b (experiments record the feature set, and an
-> environment's `requires`) and steps 5–8 are unbuilt. The owner
+> `--minimal` — is built, and so is 4b** (a run records the feature set
+> on its session record, and an environment's `requires`); steps 5–8 are
+> unbuilt. The feature set rides on the session record, not the experiment
+> manifest: `condition_hash` cannot see `search` or an arm on the
+> operator's config, and the session sees every trial's switches
+> (ARCHITECTURE §Features). The owner
 > ruled F1–F6 the same day (§7): the switch is a `[features]` table of
 > bools — not a table's presence, which this doc first recommended — and §5
 > is written to that ruling; F5 is `hardware.md`'s four tiers, in two
