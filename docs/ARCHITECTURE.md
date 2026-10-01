@@ -1158,6 +1158,51 @@ module.
     (`PersonaChats::cited`), never the file: a paper is third-party content,
     and nothing but an image is served renderable (`serve::files`). A
     CSP-sandboxed PDF would be safe and Chrome will not render one.
+- **Memory** (`persona::memory`, `PERSONA-DESIGN.md` §9; the store only so
+  far — no writer, no recall, nothing reaches a prompt yet):
+  - One `memory.db` per persona, in its folder, and one `shared.db` at the top
+    of the store. A chat opens exactly one `memory.db`, so personas are kept
+    apart by the filesystem; the only cross-persona filter is
+    `Shared::visible_to`, and `a_persona_outside_a_group_sees_none_of_its_shared_facts`
+    is its test. Audiences are stored as `everyone` or `group:<name>`, so a
+    group named `everyone` is still a group.
+  - `source` (chat + turn range) is mandatory, in the API and as a `CHECK` in
+    the schema: it is the deletion key, and `memory::forget_chat` clears both
+    files by it. Chat ids are per persona, so the shared side also matches
+    `learned_by`.
+  - Forgetting means it: `secure_delete` on every writable connection, then
+    `wal_checkpoint(TRUNCATE)` after a delete. Each half alone leaves the text
+    on disk — without `secure_delete` in `memory.db`, without the truncate in
+    `memory.db-wal` — and `forgotten_text_survives_neither_in_the_file_nor_in_the_log`
+    reads both files' bytes. A checkpoint a reader blocks comes back as
+    `busy = 1` in the row, not as an error, so `scrub` reads it and reports
+    an untruncated log; the free `forget`/`forget_chat` run every delete
+    first and scrub both files last, so a busy log never leaves a shared copy
+    behind. `Memory::delete` is private for the same reason.
+  - `Status::initial` is the one rule for a new record: `ModelUntrusted` is a
+    candidate, never recalled until the owner approves; anything else is
+    active (inferred facts included, D18). Approval keeps the origin, so
+    recall can re-arm the taint.
+  - Inferred facts about the owner can only go in `inferred_user_facts`, and
+    only inferred ones can; the split is enforced at `Memory::add_fact`.
+  - Text is append-only: `correct` invalidates and inserts an owner-origin row
+    with `replaces`, keeping the source. Only `forget` deletes.
+  - A shared copy follows its fact: `correct` re-points it at the new row in
+    the owner's wording, `invalidate` drops it, and `forget` drops copies of
+    every row in the `replaces` chain. The two files cannot share one commit,
+    so the chain is the backstop: a copy left behind can never outlive the
+    fact it copied (review of #463).
+  - `approve` acts on a candidate only; a withdrawn row stays withdrawn, so a
+    fact and its correction are never both recallable.
+  - A shared row whose audience or table this binary cannot read is skipped
+    and counted (`Listing::unreadable`) — never shown, never fatal to the
+    listing — and `Shared::resolve` reads ids from the table, so it can still
+    be unshared.
+  - Closed sets are stored by their serde names and read back through
+    `Default`, which is the narrowest variant: an unknown origin is untrusted,
+    an unknown status is a candidate.
+  - Read paths (`open_existing`) never create a file — what recall and an
+    incognito chat will use.
 
 ## Security model
 
@@ -8388,7 +8433,9 @@ in five different ways. The design and its open steps are
   step carries its own way back (`Step::undo`): `--undecline <id>` for an
   answer given in setup, `mecha features enable <id>` for a switch written
   `false`. `mecha setup <feature>` runs one step and reopens it if declined
-  — in memory only, so a skip writes nothing; `--minimal` declines every
+  — in memory only, so a skip writes nothing, and only where there is an
+  offer: under `--json` a recorded answer stays recorded (review of #461),
+  as does every declined step's way back; `--minimal` declines every
   optional one and writes no config.
 - **An environment may only narrow.** `trial_env::config_at` refuses an
   environment's `[features]` key set `true` unless
