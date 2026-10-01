@@ -34,6 +34,7 @@ use crate::imagelib::{self, write_atomic_mode};
 pub use crate::imagelib::{Origin, Status};
 
 pub mod agent;
+pub mod call;
 pub mod cite;
 pub mod files;
 pub mod judge;

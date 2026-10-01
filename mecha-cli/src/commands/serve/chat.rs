@@ -3052,7 +3052,10 @@ const BARGE_IN_TRIES: usize = 200;
 /// A wrapper rather than an impl on `ChatState` itself, because starting a
 /// turn needs an owned `Arc<ChatState>` to hand the spawned run — the same
 /// handle `send` clones out of axum's state.
-pub struct VoiceHost(pub Arc<ChatState>);
+///
+/// The library rides beside it for one reason: a persona chat is behind the
+/// library's lock, and a call into one is checked against it (§11).
+pub struct VoiceHost(pub Arc<ChatState>, pub Arc<super::library::LibraryState>);
 
 #[async_trait::async_trait]
 impl crate::voice::SessionHost for VoiceHost {
@@ -3069,6 +3072,15 @@ impl crate::voice::SessionHost for VoiceHost {
         // it is model-adjacent input the moment a page script can choose it.
         if !valid_key(key) {
             return Hosted::Unknown;
+        }
+        // A persona chat answers in the persona (PERSONA-DESIGN.md §11), on
+        // its own door: its lock, its safety layer, its record.
+        if super::persona_chat::is_persona_key(key) {
+            return self
+                .0
+                .personas
+                .speak(&self.0, &self.1, key, utterance)
+                .await;
         }
         // Ahead of the barge-in below, which cancels the run in flight before
         // `begin_turn` gets its turn to refuse: an unvouched call into an
@@ -5221,7 +5233,10 @@ mod held_tests {
     async fn an_unvouched_call_is_refused_before_it_reaches_the_chat() {
         use crate::voice::{Hosted, SessionHost};
         let _home = crate::testenv::HomeGuard::new("incognito-voice-door");
-        let host = VoiceHost(test_chat());
+        let host = VoiceHost(
+            test_chat(),
+            super::super::library::state_for_tests(std::path::PathBuf::new()),
+        );
         let key = super::super::incognito::new_key();
         match host.speak(&key, "hello", false, false).await {
             Hosted::Failed(why) => assert_eq!(why, UNVOUCHED_CALL),

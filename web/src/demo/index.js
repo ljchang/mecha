@@ -213,6 +213,7 @@ export const ROUTES = [
     },
   ],
   ['POST', /^\/api\/persona-chat\/[^/]+\/cancel$/, () => ({ cancelled: false })],
+  ['POST', /^\/api\/persona-chat\/[^/]+\/call$/, () => ({ counted: true })],
   // The demo's persona draws nothing, so there is no picture to show or edit.
   ['GET', /^\/api\/persona-chat\/[^/]+\/file$/, () => new Response('no such file', { status: 404 })],
   ['GET', /^\/api\/persona-chat\/[^/]+\/cited$/, () => fx.personaCited],
