@@ -56,13 +56,22 @@
   }
 
   // Grow a text box with its text, so a section reads as a page rather than
-  // a scrolling well. It refits on typing, on a width change (rotation, the
-  // keyboard, a box first laid out while hidden) and when its value is set
-  // from outside (Discard, a restored draft); and it holds the scroll still
-  // while it measures, or collapsing to `auto` jumps the page on iOS
-  // (owner, 2026-10-01: "buggy on mobile").
+  // a scrolling well. It refits on typing, on a width change (rotation, a
+  // box first laid out while hidden) and when its value is set from outside
+  // (Discard, a restored draft); and it holds the scroll still while it
+  // measures, or collapsing to `auto` jumps the page on iOS (owner,
+  // 2026-10-01: "buggy on mobile"). The scroller is whichever ancestor
+  // actually scrolls, found by its style — a class name would tie this to
+  // the page that hosts the form (review of #457).
+  function scrollerOf(node) {
+    for (let el = node.parentElement; el; el = el.parentElement) {
+      const y = getComputedStyle(el).overflowY;
+      if (y === 'auto' || y === 'scroll') return el;
+    }
+    return document.scrollingElement;
+  }
   function autosize(node, _value) {
-    const scroller = node.closest('.scroll') ?? document.scrollingElement;
+    const scroller = scrollerOf(node);
     let width = 0;
     const fit = () => {
       const top = scroller?.scrollTop ?? 0;
