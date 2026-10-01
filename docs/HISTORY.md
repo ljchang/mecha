@@ -79,8 +79,8 @@ non-zero exit (a failed eval case, a failed batch item, a refused run) left
 its file in `~/.mecha/holds/`. The hold now sits in `RUN_HOLD`, `exit_with`
 releases it first, and `no_command_exits_around_the_hold` keeps bare exits
 out of the commands.
-- **Live check:** a failing eval with the fix left no hold. The installed
-  binary, on the same case, left one.
+- **Live check:** a failing eval with the fix left no hold. The binary then
+  installed, from before #453, left one on the same case.
 
 #438, #447 and #450 were deployed in mecha-d7's `346bb8a2` install. The
 probes were checked here: `strings ~/.cargo/bin/mecha` holds "neither a PDF
