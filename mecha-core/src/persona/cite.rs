@@ -16,6 +16,12 @@
 //! it, and the worst it buys is a badge or a page attributed to the wrong
 //! name — never a quote admitted that the chat did not receive.
 //!
+//! **Words are split at spaces.** A script written without them (Chinese,
+//! Japanese, Thai) is one word per paragraph here, so a quote from such a
+//! file is "not in the file" whatever it says — the check cannot speak for
+//! it, and the badge then overstates. And a quote is checked against a
+//! page, or a page and the next: one that spans three is not found.
+//!
 //! **A citation is not entailment.** A quote that is there can still be
 //! made to support the wrong claim; the page says "quoted, not checked for
 //! support", which is all this establishes. And the check is the harness's,
@@ -318,6 +324,16 @@ fn documents(text: &str) -> Vec<Page> {
         }
     }
     flush(current, &mut out);
+    // Before a paged document's first marker is its header matter (the
+    // layout stage's notice, say), not a page: kept, it would answer for
+    // every cited page and mark nothing (review of #465, pass 4). A text
+    // file has no markers, and its body is its one page.
+    let paged: Vec<String> = out
+        .iter()
+        .filter(|p| p.page.is_some())
+        .map(|p| p.file.clone())
+        .collect();
+    out.retain(|p| p.page.is_some() || !paged.contains(&p.file));
     out
 }
 
@@ -336,8 +352,8 @@ fn page_marker(line: &str) -> Option<u32> {
     n.parse().ok()
 }
 
-/// Lowercase, with typographic quotes made plain, a hyphen of any kind a
-/// `-`, an en or em dash a space (it separates words), ligatures spelled
+/// Lowercase, with typographic quotes made plain, a hyphen, en dash or
+/// minus a `-`, an em dash a space (it separates words), ligatures spelled
 /// out and soft hyphens dropped.
 fn plain(s: &str) -> String {
     let mut plain = String::with_capacity(s.len());
@@ -345,8 +361,11 @@ fn plain(s: &str) -> String {
         match c {
             '\u{2018}' | '\u{2019}' | '\u{201b}' | '\u{2032}' => plain.push('\''),
             '\u{201c}' | '\u{201d}' | '\u{201f}' | '\u{2033}' => plain.push('"'),
-            '\u{2010}' | '\u{2011}' => plain.push('-'),
-            '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}' | '\u{2212}' => plain.push(' '),
+            // A figure or en dash joins what it ranges over ("2019–2025"),
+            // as a hyphen does, so a model's "2019-2025" is the same word
+            // (review of #465, pass 4); an em dash breaks words.
+            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2212}' => plain.push('-'),
+            '\u{2014}' | '\u{2015}' => plain.push(' '),
             '\u{fb00}' => plain.push_str("ff"),
             '\u{fb01}' => plain.push_str("fi"),
             '\u{fb02}' => plain.push_str("fl"),
@@ -554,6 +573,31 @@ fn check(c: &Citation, received: &mut Received<'_>) -> Checked {
         .and_then(|v| v.id.parse().ok())
     {
         return checked(&file, Verdict::OtherPage { found });
+    }
+    // Last, a quote that runs over a page break: each page with the next,
+    // found on the first of the two (review of #465, pass 4: it was "not
+    // in the file", the harshest verdict, for a sentence that is).
+    let mut paged: Vec<(u32, &str)> = views
+        .iter()
+        .filter_map(|v| Some((v.id.parse().ok()?, v.text)))
+        .collect();
+    paged.sort_by_key(|p| p.0);
+    for pair in paged.windows(2) {
+        let ((a, first), (b, second)) = (pair[0], pair[1]);
+        if b != a + 1 || !format!(" {first} {second} ").contains(&padded) {
+            continue;
+        }
+        let cited_here = c
+            .pages
+            .is_none_or(|(x, y)| (x..=y).contains(&a) || (x..=y).contains(&b));
+        return checked(
+            &file,
+            if cited_here {
+                Verdict::Quoted { found: Some(a) }
+            } else {
+                Verdict::OtherPage { found: a }
+            },
+        );
     }
     checked(&file, Verdict::NotFound)
 }
@@ -884,5 +928,36 @@ mod tests {
         let text = page_text(&msgs, "hist.pdf", Some(1)).unwrap();
         let (a, b) = mark(&text, "Anglo-Saxon chronicle").unwrap();
         assert_eq!(&text[a..b], "Anglo-\nSaxon chronicle");
+    }
+
+    /// Review of #465, pass 4: the page's en dash is the model's hyphen; a
+    /// sentence over a page break is quoted, not "not in the file"; and a
+    /// paged document's preamble is no page of its own.
+    #[test]
+    fn a_range_dash_a_page_break_and_a_preamble_are_read_right() {
+        let doc = "document: kelp.pdf \u{b7} pdf \u{b7} 2 page(s) \u{b7} sha256 x\n\
+            (the layout stage is unavailable, so OCR pages below were read whole)\n\
+            \n=== page 1 of 2 \u{b7} text layer (the file's own words) ===\n\
+            Transects ran 2019\u{2013}2025 at six sites, and the\n\
+            \n=== page 2 of 2 \u{b7} text layer (the file's own words) ===\n\
+            counts fell every winter.\n";
+        let msgs = chat(
+            doc,
+            "[kelp.pdf, p. 1: \"Transects ran 2019-2025 at six sites\"] \
+             [kelp.pdf, p. 1: \"six sites, and the counts fell every winter\"] \
+             [kelp.pdf, p. 2: \"layout stage is unavailable\"]",
+        );
+        let got: Vec<Verdict> = check_conversation(&msgs)
+            .into_iter()
+            .map(|c| c.verdict)
+            .collect();
+        assert_eq!(
+            got,
+            [
+                Verdict::Quoted { found: Some(1) },
+                Verdict::Quoted { found: Some(1) },
+                Verdict::NotFound,
+            ]
+        );
     }
 }

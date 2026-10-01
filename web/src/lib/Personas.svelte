@@ -118,18 +118,22 @@
   // A cited page open beside the chat (§10.4): the page as the chat read
   // it, the quote marked. Text drawn as text — never the file itself.
   let citedPage = $state(null);
+  // Which open answers: a slow first tap must not land under a later one's
+  // header (review of #465), as `reread` counts with `readGen`.
+  let citedGen = 0;
 
   async function openCited(check) {
     if (!key || !citeOpens(check)) return;
     const k = key;
+    const gen = ++citedGen;
     citedPage = { file: check.file, page: check.found ?? check.cited, loading: true };
     try {
       const res = await fetch(citedUrl(k, check, chosen?.locked ? token : null));
       if (!res.ok) throw new Error((await res.text()).trim() || 'not found');
       const page = await res.json();
-      if (key === k && citedPage) citedPage = { ...page, page: page.page ?? citedPage.page };
+      if (key === k && citedPage && gen === citedGen) citedPage = { ...page, page: page.page ?? citedPage.page };
     } catch (e) {
-      if (key === k && citedPage) citedPage = { ...citedPage, loading: false, error: String(e?.message ?? e) };
+      if (key === k && citedPage && gen === citedGen) citedPage = { ...citedPage, loading: false, error: String(e?.message ?? e) };
     }
   }
   function editImage(path) {
