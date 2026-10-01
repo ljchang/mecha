@@ -73,5 +73,42 @@ class VoicesRoute(unittest.TestCase):
         self.assertEqual(r.json(), {"voices": None})
 
 
+class SampleRoute(unittest.TestCase):
+    """The library's preview speaks a fixed line in a listed voice, and
+    refuses before asking the TTS for one it does not list."""
+
+    def setUp(self):
+        self.real = (worker.available_voices, worker.tts_sample)
+        self.asked = []
+
+        async def fake_sample(voice):
+            self.asked.append(voice)
+            return b"RIFF....WAVE"
+
+        worker.tts_sample = fake_sample
+        self.client = VoicesRoute.client(self)
+
+    def tearDown(self):
+        worker.available_voices, worker.tts_sample = self.real
+
+    def listing(self, voices):
+        worker.available_voices = lambda refresh=False: voices
+
+    def test_a_listed_voice_is_spoken(self):
+        self.listing(["ada"])
+        r = self.client.get("/mecha/sample", params={"voice": "ada"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["content-type"], "audio/wav")
+        self.assertEqual(r.content, b"RIFF....WAVE")
+        self.assertEqual(self.asked, ["ada"])
+
+    def test_an_unlisted_voice_never_reaches_the_tts(self):
+        self.listing(["ada"])
+        self.assertEqual(self.client.get("/mecha/sample", params={"voice": "nobody"}).status_code, 404)
+        self.listing(None)
+        self.assertEqual(self.client.get("/mecha/sample", params={"voice": "ada"}).status_code, 503)
+        self.assertEqual(self.asked, [])
+
+
 if __name__ == "__main__":
     unittest.main()

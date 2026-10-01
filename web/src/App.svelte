@@ -11,7 +11,7 @@
   import Graph from './lib/Graph.svelte';
   import Settings from './lib/Settings.svelte';
   import { features, loadFeatures } from './lib/features.svelte.js';
-  import { VIEW_FEATURE, PANE_FEATURE, featureOf, isShown, refuses, banner, hiddenLine, opensAnyway } from './lib/features.js';
+  import { featureOf, isShown, banner, hiddenLine, bounceFor } from './lib/features.js';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
   // A hash may carry a sub-view after a slash (#review/frontdoor), which the
@@ -104,11 +104,8 @@
     // A hidden view goes home (step 2), and so does a feature's pane whose
     // routes refuse — either one, never the pane's standing in for the
     // view's (review of #451).
-    const viewF = VIEW_FEATURE[view];
-    const paneF = PANE_FEATURE[`${view}/${route.sub}`];
-    const f =
-      viewF && !isShown(features.rows, viewF) ? viewF : paneF && refuses(features.rows, paneF) ? paneF : null;
-    if (f && !opensAnyway(view, route.sub)) {
+    const f = bounceFor(features.rows, view, route.sub);
+    if (f) {
       hiddenNotice = hiddenLine(features.rows, f);
       navigate('home', { replace: true });
     } else if (view !== 'home') {

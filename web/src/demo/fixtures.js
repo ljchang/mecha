@@ -1047,6 +1047,20 @@ export const voice = {
   cloned_error: null,
 };
 
+// Library → Voices: the worker's own voice, a clone a persona speaks in, and
+// a clone the voice server has not picked up yet.
+export const voices = {
+  voices: [
+    { name: 'default', listed: true, cloned: null, used_by: [] },
+    { name: 'reading-voice', listed: true, cloned: { seconds: 42, created: 1786665600 }, used_by: ['Mara'] },
+    { name: 'field-notes', listed: false, cloned: { seconds: 28, created: 1786752000 }, used_by: [] },
+  ],
+  list_error: null,
+  cloning: true,
+  cloned_error: null,
+  used_by_partial: null,
+};
+
 // --- chat ----------------------------------------------------------------
 
 export const sessions = {
