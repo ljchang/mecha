@@ -59,7 +59,7 @@ export function voicesUrl(token) {
 // reference is, who speaks in it, and whether the server can speak it yet.
 // `listed` is null when the server's list could not be read — unknown, not
 // "no", so it says nothing then.
-export function voiceLine(v, partial = null) {
+export function voiceLine(v, partial = null, clonesUnread = false) {
   const parts = [];
   if (v.cloned) {
     const secs = v.cloned.seconds ? ` · ${Math.round(v.cloned.seconds)}s reference` : '';
@@ -69,9 +69,11 @@ export function voiceLine(v, partial = null) {
     // Named by a persona, and neither the server's nor a clone here: a typo,
     // or a voice removed — a call to it is refused.
     parts.push('on neither the voice server nor this box — a call in it is refused');
-  } else if (v.listed === true) {
+  } else if (v.listed === true && !clonesUnread) {
     parts.push("the voice server's own");
   }
+  // The clone folder could not be read: no row can say it is not a clone,
+  // as an unasked server says nothing about being listed (review of #490).
   // listed null and no clone: the server could not be asked, so this says
   // nothing about where the voice comes from (review of #490).
   if (v.used_by?.length) parts.push(`${v.used_by.join(', ')} speak${v.used_by.length === 1 ? 's' : ''} in it`);
