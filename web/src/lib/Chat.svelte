@@ -1820,9 +1820,12 @@
           {#if entry.spoken}<span class="queued-tag">spoken</span>{/if}
         </div>
       {:else if entry.kind === 'assistant'}
-        <!-- No Download in an incognito chat: a file outlives the room (R2).
-             Copy stays — text copied out is the owner's own act (§1). -->
-        <div class="answer"><ChatProse text={entry.text} actions="mecha" download={!(incognito || key.startsWith(INCOGNITO_PREFIX))} /></div>
+        <!-- Download in every chat, incognito too (owner, 2026-10-01): the
+             file is made in the browser from the reply on the page
+             (`reply-export.js`), so the server keeps no trace, and a reply
+             saved to the device is the owner's own act, like text copied
+             out (INCOGNITO-DESIGN §1, R2's refinement). -->
+        <div class="answer"><ChatProse text={entry.text} actions="mecha" download /></div>
       {:else if entry.kind === 'tool'}
         <!-- The chip names the call and says which one it was; the tap opens
              the whole of it — what it was called with, then what came back,
