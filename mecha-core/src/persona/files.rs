@@ -217,26 +217,46 @@ pub fn find<'a>(sources: &'a [Source], name: &str) -> Result<&'a Source, String>
     })
 }
 
+/// Why a file was not read, and whether the reason carries the file's own
+/// words. Only a parser speaking about the document does (`ParserSaid`, as
+/// `document_read` splits it); the harness's own refusals — a cap, reading
+/// switched off — are mecha's advice, and marking them as outside content
+/// would arm a chat where nothing from outside arrived (review of #459).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadError {
+    pub why: String,
+    pub outside: bool,
+}
+
+impl ReadError {
+    fn ours(why: String) -> Self {
+        ReadError {
+            why,
+            outside: false,
+        }
+    }
+}
+
 /// A file's text, pages labelled: `pages` is the extractor's page spec
 /// ("all", "1-5", "3"); a text file is read whole.
 pub async fn read(
     src: &Source,
     extractor: Option<&Extractor>,
     pages: &str,
-) -> Result<String, String> {
+) -> Result<String, ReadError> {
     match src.kind {
         Kind::Text => {
             if src.bytes > MAX_TEXT_BYTES {
-                return Err(format!(
+                return Err(ReadError::ours(format!(
                     "{} is {} KB, over the {} KB a text file is read at.",
                     src.name,
                     src.bytes / 1024,
                     MAX_TEXT_BYTES / 1024
-                ));
+                )));
             }
             let text = tokio::fs::read_to_string(&src.path)
                 .await
-                .map_err(|e| format!("{}: {e}", src.name))?;
+                .map_err(|e| ReadError::ours(format!("{}: {e}", src.name)))?;
             Ok(format!(
                 "document: {} · text\n\n{}",
                 src.name,
@@ -245,23 +265,41 @@ pub async fn read(
         }
         Kind::Document => {
             let Some(extractor) = extractor else {
-                return Err(format!(
+                return Err(ReadError::ours(format!(
                     "{} cannot be read here: document reading is switched off \
                      (`mecha features enable documents`).",
                     src.name
-                ));
+                )));
             };
             let bytes =
                 crate::tool::document::read_bounded(&src.path, extractor.config().max_file_bytes())
                     .await
-                    .map_err(|e| format!("{}: {e}", src.name))?;
+                    .map_err(|e| ReadError::ours(format!("{}: {e}", src.name)))?;
             extractor
                 .extract(&bytes, pages, Mode::Auto, false, None)
                 .await
                 .map(|ex| ex.render(&src.name))
-                .map_err(|e| format!("{}: {e:#}", src.name))
+                .map_err(|e| ReadError {
+                    why: format!("{}: {e:#}", src.name),
+                    outside: crate::document::carries_document_text(&e),
+                })
         }
     }
+}
+
+/// Whether a conversation already carries the files block: the owner's turns
+/// only, as `Taint::arm_for_content` reads the stem. One predicate for
+/// deciding to fold the files in and for checking again before folding, so a
+/// turn that finished in between cannot make the collection ride twice
+/// (review of #459).
+pub fn carries(messages: &[crate::message::Message]) -> bool {
+    messages.iter().any(|m| {
+        m.role == crate::message::Role::User
+            && m.content.iter().any(|b| {
+                matches!(b, crate::message::Block::Text { text }
+                    if text.trim_start().starts_with(FILES_STEM))
+            })
+    })
 }
 
 /// A file the owner added, written into `p`'s own folder under a tamed
@@ -448,7 +486,7 @@ pub async fn first_turn(
                     whole.push(text);
                 }
             }
-            Err(why) => unreadable.push(why),
+            Err(e) => unreadable.push(e.why),
         }
     }
     let names = sources
@@ -577,7 +615,8 @@ impl Tool for FileRead {
         };
         Ok(match read(src, self.extractor.as_deref(), pages).await {
             Ok(text) => ToolOutput::ok(text).from_outside(),
-            Err(why) => ToolOutput::err(why).from_outside(),
+            Err(e) if e.outside => ToolOutput::err(e.why).from_outside(),
+            Err(e) => ToolOutput::err(e.why),
         })
     }
 }
@@ -846,5 +885,41 @@ mod tests {
         kept.sort();
         assert_eq!(kept, ["x", "y"]);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The harness's own refusal is not outside content: only a parser
+    /// speaking about the document is (review of #459). A chat told "reading
+    /// is switched off" was armed untrusted though nothing came in.
+    #[tokio::test]
+    async fn a_harness_refusal_from_file_read_is_not_outside_content() {
+        let (dir, _store, p) = world();
+        std::fs::write(dir.join("mara/files/paper.pdf"), b"%PDF-1.4").unwrap();
+        let tool = FileRead::new(dir.clone(), p.name.clone(), None);
+        let out = tool
+            .call(json!({"file": "paper.pdf"}), &ToolCtx::default())
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("switched off"),
+            "{}",
+            out.content
+        );
+        assert!(
+            !out.external,
+            "mecha's own advice was marked as outside content"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// `carries` is the owner's turns only, the rule `arm_for_content` reads.
+    #[test]
+    fn carries_reads_the_owners_turns_only() {
+        use crate::message::{Block, Message};
+        let block = format!("{FILES_STEM} — x)");
+        assert!(carries(&[Message::user(&block)]));
+        assert!(!carries(&[Message::user("hello")]));
+        assert!(!carries(&[Message::assistant(vec![Block::text(
+            block.clone()
+        )])]));
     }
 }
