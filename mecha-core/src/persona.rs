@@ -1667,6 +1667,14 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
             bail!("there is no relationship template `{r}`");
         }
     }
+    // The voice is not looked up (voices live on the voice server), but it
+    // is a name by this store's rule, checked before anything is written:
+    // a control character in it would be written into persona.toml and
+    // refused on the read back, leaving a half-made persona or a wrecked
+    // revision (review of #496).
+    if let Some(v) = &p.voice {
+        validate_name(v).context("the voice")?;
+    }
     let Some(existing) = store.get(&p.name).cloned() else {
         let waiting = store
             .personas
@@ -3034,6 +3042,28 @@ mod tests {
         voiced.voice = Some("gravel".into());
         let (p, _) = propose(&store, &lib, voiced).unwrap();
         assert_eq!(p.settings.voice.as_deref(), Some("gravel"));
+        // But it is a name: one that could repaint a terminal is refused
+        // before anything is written, new or revised.
+        for name in ["fresh", "other"] {
+            let mut bad = proposal(core);
+            bad.name = name.into();
+            bad.voice = Some("x\u{1b}[2J".into());
+            assert!(propose(&store, &lib, bad).is_err(), "{name}");
+        }
+        assert!(
+            Store::load(&store).get("fresh").is_none(),
+            "nothing half-made"
+        );
+        assert_eq!(
+            Store::load(&store)
+                .get("other")
+                .unwrap()
+                .settings
+                .voice
+                .as_deref(),
+            Some("gravel"),
+            "a waiting proposal is not wrecked"
+        );
 
         // Edited by the owner while it waits: theirs, and a revision would
         // undo their edit, so it is refused and the edit stands.
