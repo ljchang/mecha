@@ -555,7 +555,10 @@ const MARK_CLOSE = '\uE001';
 export function citeMark(text, cites) {
   const byRaw = new Map((cites ?? []).map(([r, c]) => [r, c]).reverse());
   const marks = [];
-  let out = text ?? '';
+  // The placeholder characters themselves are dropped from the reply first:
+  // a reply relaying a paper could hold them, and one would then show raw
+  // or replay another citation's badge (review of #479).
+  let out = (text ?? '').replace(/[\uE000\uE001]/g, '');
   for (const [r, check] of byRaw) {
     if (!r || !out.includes(r)) continue;
     out = out.split(r).join(`${MARK_OPEN}${marks.length}${MARK_CLOSE}`);

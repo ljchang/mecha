@@ -513,6 +513,7 @@
   }
 
   async function choose(p) {
+    showGoal = false;
     close();
     // Another persona's files must not draw under this one's heading while
     // its own load (review of #459).
@@ -1662,7 +1663,10 @@
         <div class="barnote">{fileSheet.note}</div>
       {/if}
       <div class="sheetacts">
-        <a class="abtn" href={sourceFileUrl(chosen.name, fileSheet.source.name, 'file', token)} download>Download</a>
+        <!-- The unlock token only where the persona is locked, as a picture's
+             link carries it: a download keeps its URL in the browser's
+             history (review of #479). -->
+        <a class="abtn" href={sourceFileUrl(chosen.name, fileSheet.source.name, 'file', chosen.locked ? token : null)} download>Download</a>
         {#if fileSheet.text == null && fileSheet.source.ready}
           <button class="abtn" disabled={fileSheet.loading} onclick={readFileText}>{fileSheet.loading ? 'Reading…' : 'Show its text'}</button>
         {/if}
