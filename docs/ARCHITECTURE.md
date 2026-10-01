@@ -1170,6 +1170,16 @@ module.
     (`PersonaChats::cited`), never the file: a paper is third-party content,
     and nothing but an image is served renderable (`serve::files`). A
     CSP-sandboxed PDF would be safe and Chrome will not render one.
+- **A reply is rendered as structure, never as markup** (`ChatProse.svelte`,
+  over `mail-markdown.js`'s parser): text nodes and a closed set of elements,
+  no `{@html}`, links only http/https/mailto, no image fetched — the mail
+  reader's rules, because a reply can carry a paper's or a page's words.
+  Citations are drawn inside the rendered text from their exact characters,
+  which the parser keeps whole within a text node.
+- **A persona's file opens as a download or its read text, never inline**
+  (`sources/file`, `sources/text`): found by name in the persona's own
+  listing, served as an inert attachment; the text only once read — a page
+  click never starts an OCR pass.
 - **Saving study material is the harness's write, on the owner's word**
   (`PersonaChats::save_reply`, §10.5). The page sends a reply's text; the
   server saves it only if it is one of the chat's own replies, so no route

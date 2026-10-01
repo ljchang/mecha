@@ -1679,7 +1679,7 @@ export const personaHistory = {
   persona: 'mara',
   chats: [
     { id: '20260928T161200-a1b2c3d4', created: '2026-09-28T16:12:00Z', title: 'persona: Mara', goal: 'Decide whether the winter transects can go' },
-    { id: '20260926T093000-e5f6a7b8', created: '2026-09-26T09:30:00Z', title: 'persona: Mara', goal: null },
+    { id: '20260926T093000-e5f6a7b8', created: '2026-09-26T09:30:00Z', title: 'persona: Mara', goal: null, summary: 'Went over why the winter transects catch the die-back early', opener: 'Can we skip the winter transects?' },
   ],
 };
 
@@ -1703,7 +1703,7 @@ export const personaTranscript = {
 
 // What a persona says back, whatever is typed — the demo has no model.
 export const personaScript = [
-  [140, { type: 'delta', text: 'Fair. Then let\'s say what would change your mind: ' }],
+  [140, { type: 'delta', text: '## What would change your mind\n\nFair. Then let\'s say what would change your mind:\n\n- **autumn counts** below last year\'s\n- a third bad winter\n\n' }],
   [260, { type: 'delta', text: 'if the autumn counts come in below last year\'s, we keep the winter transects.' }],
   [200, { type: 'delta', text: ' The die-back shows first in the holdfasts [kelp-forest-survey-2025.pdf, p. 4: "die-back begins in the holdfasts before the canopy thins"].' }],
   [80, { type: 'citations', checks: [{ raw: '[kelp-forest-survey-2025.pdf, p. 4: "die-back begins in the holdfasts before the canopy thins"]', file: '@kelp/kelp-forest-survey-2025.pdf', cited: 4, quote: 'die-back begins in the holdfasts before the canopy thins', status: 'quoted', found: 4 }] }],
