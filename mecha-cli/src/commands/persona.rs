@@ -308,7 +308,26 @@ async fn write_memory(
     for p in personas {
         let sessions = store.sessions_dir(&p.name);
         let mut todo: Vec<(String, std::path::PathBuf)> = Vec::new();
-        for entry in std::fs::read_dir(&sessions).into_iter().flatten().flatten() {
+        // An unreadable folder is a finding, never an empty queue; a missing
+        // one is a persona that has not chatted yet (review of #468).
+        let entries = match std::fs::read_dir(&sessions) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                eprintln!("{}: {} could not be read ({e})", p.name, sessions.display());
+                failed += 1;
+                continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("{}: a chat could not be listed ({e})", p.name);
+                    failed += 1;
+                    continue;
+                }
+            };
             let path = entry.path();
             let Some(id) = path
                 .file_name()
@@ -322,12 +341,19 @@ async fn write_memory(
             }
             // A chat still going is left for a later run; one named
             // explicitly is the caller's call.
-            let recent = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .is_none_or(|age| age < idle);
+            let age = match entry.metadata().and_then(|m| m.modified()) {
+                Ok(t) => t.elapsed().ok(),
+                Err(e) => {
+                    eprintln!(
+                        "{}: {id} could not be checked ({e}); left for a later run",
+                        p.name
+                    );
+                    failed += 1;
+                    continue;
+                }
+            };
+            // A clock that reads the file as from the future is recent.
+            let recent = age.is_none_or(|age| age < idle);
             if recent && chat.is_none() {
                 continue;
             }
@@ -342,7 +368,16 @@ async fn write_memory(
         if todo.is_empty() {
             continue;
         }
-        let m = Memory::open(dir, &p.name)?;
+        // One persona's store failing to open is that persona's finding, not
+        // the end of the night for every persona after it.
+        let m = match Memory::open(dir, &p.name) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("{}: memory could not be opened ({e:#})", p.name);
+                failed += 1;
+                continue;
+            }
+        };
         for (id, path) in todo {
             let text = match std::fs::read_to_string(&path) {
                 Ok(t) => t,
@@ -357,8 +392,14 @@ async fn write_memory(
             };
             // Only wait for a model seat when there is something to ask.
             let parsed = writer::read_chat(&text);
-            if m.written_upto(&id)? as usize >= parsed.turns.len() {
-                continue;
+            match m.written_upto(&id) {
+                Ok(upto) if upto as usize >= parsed.turns.len() => continue,
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("{} {id}: the ledger could not be read ({e:#})", p.name);
+                    failed += 1;
+                    continue;
+                }
             }
             match writer::pick_model(
                 parsed.model.as_deref(),
@@ -386,7 +427,7 @@ async fn write_memory(
                 }
             }
             let seat = super::distill::take_seat(&format!("persona memory {} {id}", p.name)).await;
-            let report = writer::write_chat(&writer, &m, p, &id, &text).await;
+            let report = writer::write_chat(&writer, &m, p, &id, &parsed).await;
             drop(seat);
             chats += 1;
             match report {

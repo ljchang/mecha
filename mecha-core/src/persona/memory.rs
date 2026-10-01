@@ -1035,8 +1035,20 @@ impl Memory {
     }
 
     /// How many of `chat`'s messages the writer has written up to — `0` for
-    /// a chat it has never read (§9.6).
+    /// a chat it has never read (§9.6), and on a store from before the
+    /// ledger, which a read-only handle does not upgrade.
     pub fn written_upto(&self, chat: &str) -> Result<u32> {
+        let ledger: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'written'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if ledger.is_none() {
+            return Ok(0);
+        }
         Ok(self
             .conn
             .query_row("SELECT upto FROM written WHERE chat = ?1", [chat], |r| {
@@ -1052,6 +1064,11 @@ impl Memory {
     /// model (`Ok(None)`). The model call happens before this, with no lock
     /// held; the check here is what keeps two writers from recording one
     /// stretch twice.
+    ///
+    /// The transaction is `memory.db`'s. A withdrawal inside `f` also drops
+    /// the fact's shared copies from `shared.db`, which it does not cover: if
+    /// a later step fails and this rolls back, those copies stay gone — two
+    /// files cannot share one commit (review of #468).
     pub fn write_stretch<T>(
         &self,
         chat: &str,

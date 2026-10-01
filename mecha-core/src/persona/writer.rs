@@ -36,10 +36,11 @@
 use anyhow::{bail, Result};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::memory::{
     Fact, Filter, Kind, Memory, NewEpisode, NewFact, Source, Status, Table, MAX_FACT_CHARS,
+    MAX_SUMMARY_CHARS,
 };
 use super::{Origin, Persona, UserFacts};
 use crate::agent::Taint;
@@ -424,7 +425,10 @@ pub fn apply(
     let mut out = Applied::default();
 
     if let Some(ep) = proposal.episode {
-        if settings.episodic {
+        // Bounded here, as facts are: an over-long summary is turned away,
+        // never an error that throws the stretch's facts out with it
+        // (review of #468).
+        if settings.episodic && ep.summary.chars().count() <= MAX_SUMMARY_CHARS {
             m.add_episode(NewEpisode {
                 source: Some(source.clone()),
                 started_at: (s.from == 0).then(|| chat.created_at.clone()).flatten(),
@@ -445,11 +449,16 @@ pub fn apply(
     }
 
     let by_short: HashMap<&str, &Fact> = known.iter().map(|f| (short(&f.uid), f)).collect();
-    let target = |id: &str| -> Option<&Fact> {
+    // `known` was read before any op ran, so a fact this proposal already
+    // updated or withdrew still reads active in it. Each is consumed once:
+    // two updates of one id would otherwise leave two live replacements of
+    // one fact — the pair `correct` refuses (review of #468).
+    let mut consumed: HashSet<String> = HashSet::new();
+    let target = |id: &str, consumed: &HashSet<String>| -> Option<&Fact> {
         by_short
             .get(short(id.trim()))
             .copied()
-            .filter(|f| changeable(f))
+            .filter(|f| changeable(f) && !consumed.contains(&f.uid))
     };
     let allowed = |table: Table| match table {
         Table::Persona => settings.semantic,
@@ -496,13 +505,17 @@ pub fn apply(
             }
             // The two edits reach existing facts, so an untrusted stretch
             // makes neither.
-            Op::Update { id, text } => match target(&id) {
+            Op::Update { id, text } => match target(&id, &consumed) {
                 Some(old)
                     if s.origin != Origin::ModelUntrusted
                         && allowed(old.table)
                         && text.chars().count() <= MAX_FACT_CHARS
                         && !same_text(&old.text, &text) =>
                 {
+                    consumed.insert(old.uid.clone());
+                    // The new wording is a fact this proposal wrote, so a
+                    // later `add` of it is a duplicate.
+                    added.push((old.table, text.clone()));
                     m.supersede(
                         old,
                         NewFact {
@@ -520,8 +533,9 @@ pub fn apply(
                 }
                 _ => false,
             },
-            Op::Invalidate { id } => match target(&id) {
+            Op::Invalidate { id } => match target(&id, &consumed) {
                 Some(old) if s.origin != Origin::ModelUntrusted => {
+                    consumed.insert(old.uid.clone());
                     m.invalidate(&old.uid)?;
                     out.invalidated += 1;
                     true
@@ -672,32 +686,31 @@ pub struct ChatReport {
     pub raced: usize,
 }
 
-/// Write everything new in one chat of `persona`. `text` is the transcript,
-/// read once by the caller.
+/// Write everything new in one chat of `persona`, parsed once by the caller
+/// ([`read_chat`]).
 pub async fn write_chat(
     writer: &Writer,
     m: &Memory,
     persona: &Persona,
     chat_id: &str,
-    text: &str,
+    chat: &Chat,
 ) -> Result<ChatReport> {
-    let chat = read_chat(text);
     let mut report = ChatReport {
         chat: chat_id.to_owned(),
         ..ChatReport::default()
     };
     let from = m.written_upto(chat_id)?;
-    for s in stretches(&chat, from) {
+    for s in stretches(chat, from) {
         let known = known(m)?;
-        let proposal = if nothing_to_keep(persona) || !has_reply(&chat, s) {
+        let proposal = if nothing_to_keep(persona) || !has_reply(chat, s) {
             Proposal::default()
         } else {
-            let conversation = render(&chat, s, persona.display());
+            let conversation = render(chat, s, persona.display());
             let asked = ask(persona.display(), &core(persona), &known, &conversation);
             writer.propose(asked).await?.unwrap_or_default()
         };
         match m.write_stretch(chat_id, s.from, s.to, |m| {
-            apply(m, persona, chat_id, &chat, s, &known, proposal)
+            apply(m, persona, chat_id, chat, s, &known, proposal)
         })? {
             Some(applied) => report.stretches.push((s.from, s.to, s.origin, applied)),
             None => {
