@@ -699,7 +699,7 @@ fn passages_of(text: &str) -> Vec<String> {
 
 /// A query as FTS5 reads it: its words, each quoted (so nothing in them is
 /// FTS syntax), any of them. `None` when it has no word.
-pub(crate) fn fts_query(query: &str) -> Option<String> {
+fn fts_query(query: &str) -> Option<String> {
     let words: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric())
         // A single letter is noise; a single digit is the "3" of "table 3".

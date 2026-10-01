@@ -918,6 +918,9 @@ fn meaning_needs_a_floor_and_recency_breaks_ties() {
             fact("Likes the sea.", Kind::Stated, "c1", Origin::ModelClean),
         )
         .unwrap();
+    // Timestamps are to the millisecond; a fast runner wrote both in one
+    // (CI on #481), leaving no recency to break the tie with.
+    std::thread::sleep(std::time::Duration::from_millis(5));
     let b = m
         .add_fact(
             Table::User,
@@ -1051,4 +1054,69 @@ fn an_upgrade_run_twice_indexes_each_record_once() {
         )
         .unwrap();
     assert_eq!(n, 1);
+}
+
+#[test]
+fn withdrawn_rows_never_crowd_the_live_one_out_of_a_word_search() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    for i in 0..250 {
+        let f = m
+            .add_fact(
+                Table::User,
+                fact(
+                    &format!("Holdfast note {i}."),
+                    Kind::Stated,
+                    "c1",
+                    Origin::ModelClean,
+                ),
+            )
+            .unwrap();
+        m.invalidate(&f.uid).unwrap();
+    }
+    m.add_fact(
+        Table::User,
+        fact(
+            "Holdfast is due in June.",
+            Kind::Stated,
+            "c2",
+            Origin::ModelClean,
+        ),
+    )
+    .unwrap();
+    assert_eq!(recall_words(&m, "holdfast"), ["Holdfast is due in June."]);
+}
+
+#[test]
+fn an_episode_is_indexed_and_embedded_as_prose_never_json() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let ep = |summary: &str| NewEpisode {
+        source: Some(src("c1")),
+        summary: summary.into(),
+        topics: vec!["kelp".into()],
+        origin: Origin::ModelClean,
+        model: "m".into(),
+        ..NewEpisode::default()
+    };
+    let live = m.add_episode(ep("Named the project.")).unwrap();
+    // Backfilled: a store from before the index, upgraded.
+    let old = m.add_episode(ep("Planned the survey.")).unwrap();
+    m.conn
+        .execute_batch("DROP TABLE recall_fts; DROP TABLE vectors; PRAGMA user_version = 2;")
+        .unwrap();
+    drop(m);
+    let m = Memory::open(&dir, "mara").unwrap();
+    for uid in [&live.uid, &old.uid] {
+        let text: String = m
+            .conn
+            .query_row("SELECT text FROM recall_fts WHERE uid = ?1", [uid], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(!text.contains('[') && text.contains("kelp"), "{text}");
+    }
+    for (_, text) in m.unembedded(10).unwrap() {
+        assert!(!text.contains('[') && !text.contains('"'), "{text}");
+    }
 }

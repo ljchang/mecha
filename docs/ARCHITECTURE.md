@@ -1298,10 +1298,22 @@ module.
       equal by meaning, the newer ranks first so recency is not cancelled. A
       message under `MIN_QUERY_CHARS` searches nothing.
     - Words have a floor too: `recall_words` keeps content words only (three
-      letters or more, not in `STOPWORDS`). Without it, "thanks, that is all
-      for the day" recalled a record on "the" — and recalling an approved
-      record from outside arms the chat untrusted for good, so an incidental
-      match is a chat-wide state change, not noise (review of #481).
+      letters or more, not in `STOPWORDS`), so a common word like "the" can
+      never be the only thing a message and a record share. Without it, a
+      record was recalled on "the" — and recalling an approved record from
+      outside arms the chat untrusted for good, so an incidental match is a
+      chat-wide state change, not noise (review of #481). A content word can
+      still match incidentally; measuring that is the first job for
+      `MIN_COSINE`'s eventual measurement.
+    - The words search has no limit ahead of the active-record filter: the
+      index keeps candidates and withdrawn rows, and a limit before the
+      filter let them crowd a live record out unseen.
+    - An episode's text is `episode_words`, one definition for the index,
+      the backfill and the vectors — never the raw JSON columns.
+    - **Per-turn recall opens `memory.db` writable** (if it exists; it never
+      creates one), so the v3 index can be built on first use. Chat start
+      reads through the read-only `open_existing`. An incognito persona chat
+      (§8.4: reads memory, writes nothing) must not use `per_turn` as it is.
     - The v3 upgrade is the first step that is not idempotent, and per-turn
       recall opens `memory.db` writable on every turn: the step takes the
       write lock, reads the version again under it, and skips records
