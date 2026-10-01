@@ -16,7 +16,7 @@
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle,
     taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
     toolStatus, waitingLine, withWorking, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
-    citeEntries, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
+    citeEntries, citeOpens, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
     frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
@@ -149,6 +149,18 @@
     key;
     untrack(() => (savedReplies = {}));
   });
+
+  // What a drop may add: files, not folders, of the kinds the picker
+  // offers — a dropped video is refused here, not after it has uploaded
+  // (review of #479), the chat's own drop rule (`droppedFiles`).
+  const ACCEPTED = /\.(pdf|png|jpe?g|webp|gif|md|markdown|txt)$/i;
+  function acceptedDrops(dt) {
+    const { files } = droppedFiles(dt);
+    const ok = files.filter((f) => ACCEPTED.test(f.name));
+    const refused = files.length - ok.length;
+    if (refused) sourcesNote = `${refused} file(s) not added: a PDF, picture, Markdown or text file can be read`;
+    return ok;
+  }
 
   // A file opened from its tile: a sheet with its line, a download, and —
   // once it has been read — its text. Never the PDF itself: a paper is
@@ -453,7 +465,6 @@
   // An earlier chat's goal, when it was opened with one: what tells two
   // chats apart. (A session title here is always the automatic
   // "persona: …", so it is never shown — review of #431.)
-  const chatGoal = (h) => (h.goal ?? '').trim();
 
   // One step back at a time: out of a chat or the editor to the persona,
   // and from the persona to the list. The chat's "Done" button was this.
@@ -572,7 +583,9 @@
         });
         // Every failure, not the last: three of five refused says three.
         if (!res.ok) failed.push(`${f.name}: ${(await res.text()).trim()}`);
-        uploading = uploading.filter((n) => n !== f.name);
+        // This one, not every file of its name (review of #479).
+        const at = uploading.indexOf(f.name);
+        uploading = uploading.filter((_, k) => k !== at);
       }
       sourcesNote = failed.join(' · ');
     } catch (e) {
@@ -1441,7 +1454,7 @@
           class:dropping
           ondragover={(e) => { if (busy) return; e.preventDefault(); e.stopPropagation(); dropping = true; }}
           ondragleave={() => (dropping = false)}
-          ondrop={(e) => { e.preventDefault(); e.stopPropagation(); dropping = false; if (!busy) addSources([...(e.dataTransfer?.files ?? [])]); }}
+          ondrop={(e) => { e.preventDefault(); e.stopPropagation(); dropping = false; if (!busy) addSources(acceptedDrops(e.dataTransfer)); }}
         >
           {#each sources as s (s.name)}
             {@const kind = fileKind(s.name)}
@@ -1461,7 +1474,7 @@
               {/if}
             </div>
           {/each}
-          {#each uploading as u (u)}
+          {#each uploading as u, j (j)}
             <div class="tile uploading" title={u}>
               <span class="tkind">{fileKind(u)}</span>
               <span class="tname">{u}</span>
