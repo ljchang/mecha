@@ -87,20 +87,27 @@ first real night. What is open, verified against `4bbed7ca`:
       night over a large store; read a slow embed stage that way before
       blaming the writer.
 
-**2026-10-01 — persona autolock and avatar framing are live; persona
-creation from the main chat is next (mecha-69).** #469, #473 and #480 are in
-HISTORY under 2026-10-01 and live: #469 in mecha-d7's `997a2894`, #473 in
-mecha-69's `36ff7573`, #480's page in `37fec515`, #484 (Copy and Download
-on every chat reply) in `d352536b`. What is open, verified against
-`d352536b`:
+**2026-10-01 — persona autolock, framing, and personas from the main chat
+are live (mecha-69).** #469, #473, #480, #484 and #493–#496 are in HISTORY
+under 2026-10-01 and live: #469 in mecha-d7's `997a2894`, #473 in
+`36ff7573`, #480 in `37fec515`, #484 in `d352536b`, #493–#495 in `55358fef`,
+#496 in `941313b5`. What is open, verified against `941313b5`:
 
-- **`persona_propose` from the main chat: the owner asked for it; unbuilt.**
-  The assistant can stage library characters (`image_library_propose`), but
-  has no tool to stage a persona. PERSONA-DESIGN §4.4 says a model may only
-  stage a candidate (`Origin::of_proposal`). `persona::create` already makes
-  a non-owner origin a candidate, but `NewPersona` carries no identity or
-  motivation prose. The only approval is `mecha persona approve`: there is
-  no read-then-approve on the page, as the library has (`approve_shown`).
+- **Picture Download has not been clicked in a browser.** The demo draws no
+  pictures, so #494 is pinned by a source guard and fake-fetch tests; one
+  tap on a live picture settles it.
+- **persona_propose minors carried:**
+  - `propose`'s revise path re-derives `create_with`'s validation (display,
+    relationship → tools/answers, the probe) — two copies of one gate;
+  - each changing revision takes a `versions/<digest>/`, and nothing prunes
+    them; `MAX_PENDING_PROPOSALS` bounds names, not writes;
+  - a locked candidate character hidden from the page is not offered, so the
+    persona can be approved pointing at it (#425's rule, stated in
+    `PersonaChats::approve`'s comment);
+  - the tool lowercases `name` and `character` but not `voice`, so
+    `Mara-Low` is refused rather than tamed;
+  - `create_with` treats `prose.is_some()` as "a proposal, skip the
+    character and voice checks", with the compensating checks in `propose`.
 - **Review minors carried:**
   - `lenient_frame` drops a damaged `frame` line with no `notes` entry;
   - Settings fetches `/api/settings/lock` even when both tabs are hidden;
@@ -3848,6 +3855,19 @@ start, from the journal:
   door serves `index-DMCoOD_n.js`, and serve is still the 17:44:37Z start.
   Download was clicked under serve's live CSP header
   (`media-src 'self' blob:`, no `blob:` elsewhere) with no violation.
+- **22:51Z, `55358fef`** (#492–#495: persona_propose, picture Download, and
+  another lane's serve lifecycle ports). The checkout was fast-forwarded
+  from mecha-d7's `72e404ca` (no `scripts/` change), `mecha-cli` installed
+  from it, Slack, triggers and drain restarted, then serve through the
+  `serve_held` gate with no hold; the voice worker was not restarted.
+  Dist rsynced (`index-DI6J4UFj.js`). Checked: `mecha --workspace <scratch>
+  tools` lists `persona_propose [read-only]`, and `/api/personas` rows carry
+  `waiting` and `origin`.
+- **23:28Z, `941313b5`** (#496, and mecha-d7's #491, announced to it first).
+  The same steps from a fast-forward of `55358fef`, no hold; dist
+  `index-DyNMsu8Z.js`. Probe: `strings ~/.cargo/bin/mecha | grep -cF "a
+  persona's old framing was not cleared"` → 1 (from #491's diff). mecha-d7
+  deploys #490 after this, with the voice-worker restart it needs.
 
 **Test residue** from every lane's suite (#471's leak) was moved, never deleted, to
 `~/.mecha/test-residue-backup-20261001`: 251 `provider: test` sessions and
