@@ -1475,7 +1475,7 @@ mecha setup [FEATURE] [--json] [--write] [--minimal] [--undecline <STEP_ID>]
 
 | Flag | Description |
 |---|---|
-| `FEATURE` | Only that optional feature's step — `mecha setup mail`. A part sets up the feature it belongs to (`ocr` → `documents`); an id that is not a feature is refused by name. Naming a feature you declined, or switched off, offers it again for this run; nothing is written unless you answer. |
+| `FEATURE` | Only that optional feature's step — `mecha setup mail`. A part sets up the feature it belongs to (`ocr` → `documents`); an id that is not a feature is refused by name. Naming a feature you declined, or switched off, offers it again for this run; nothing is written unless you answer. With `--json` nothing is offered, so it stays declined and exits 0. |
 | `--json` | Print the plan as JSON and exit. Never prompts, even at a terminal. |
 | `--write` | Rewrite the local provider's `model`, `context_window` and `vision` from what its server reports. |
 | `--minimal` | Decline every optional step still outstanding, in one pass — the light install. Writes declines, never config; `mecha features enable <id>` turns any one on later. |

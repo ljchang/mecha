@@ -65,6 +65,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   note says how to take back each kind of "no" (`--undecline` for one given in
   setup, `mecha features enable` for a switch you set to `false`).
 
+- **Personas have a memory store.** Each persona keeps its own `memory.db`
+  (episodes, its own facts, and what it learned or inferred about you), and
+  facts you choose to share with every persona or a group go in `shared.db`.
+  `mecha persona memory show|export|approve|correct|pin|unpin|forget|share|shared|unshare`
+  is how you curate it. Every record names the chat it came from, so
+  `forget --chat` removes everything remembered from that chat from both
+  files, and deleted text is overwritten on disk. Nothing writes memories or
+  recalls them into a chat yet — those come next.
+
 - **Slack, personas, voice, incognito, the front door and messages follow
   their switches too**, the same way the rest do: off, their web pages answer
   `feature_off` and `mecha slack`, `persona`, `msg`, `frontdoor`, `polls` and

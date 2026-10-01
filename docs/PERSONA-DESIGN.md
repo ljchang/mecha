@@ -906,8 +906,13 @@ an owner-origin one; only forgetting deletes.
 - **Deleting a chat** (`mecha_core::forget`) deletes every row whose
   `source` is that chat — in the persona's `memory.db` and in `shared.db`, in
   one pass — with `secure_delete` on so the text does not survive in freed
-  pages. This is why `source` is mandatory.
-- **Deleting a persona** deletes its folder, `memory.db` with it. What it
+  pages, and the write-ahead log truncated after, so it does not survive
+  there either. A truncation another reader blocks is reported, never
+  passed off as done. This is why `source` is mandatory.
+- **Deleting a persona** deletes its folder, `memory.db` with it. As built,
+  `mecha persona remove` *parks* the folder under `removed/` (reversible, as
+  `imagelib remove` is) — so its memory is still on disk until that folder
+  is deleted. `forget` is what erases; `remove` is not. What it
   learned that the owner had shared is listed, and the owner decides whether
   those copies stay. A copy that stays is re-stamped as the owner's: its
   `source` becomes the owner's decision to keep it, with the original
@@ -944,8 +949,10 @@ growing only with its own persona. What it costs is a view across personas
 turn — a page read occasionally, not on every turn.
 
 What SQLite costs, named by the same research and not optional: a new
-dependency (bundled `rusqlite`); `secure_delete` and `VACUUM` so `forget`
-means it; commands and an export for inspection, since `cat` no longer
+dependency (bundled `rusqlite`); `secure_delete` so `forget` means it —
+with the write-ahead log truncated after each delete, which, since
+`secure_delete` zeroes the freed cell in place, does what `VACUUM` would
+have without rewriting the file; commands and an export for inspection, since `cat` no longer
 works; and a deterministic export, so an experiment's condition digest stays
 byte-stable. It is a mecha-owned database, opened only by mecha core —
 **never `graph.db`** (§4.1).
