@@ -1342,13 +1342,22 @@
   .btnrow .abtn { flex: 1; }
   /* No ligatures: JetBrains Mono draws `-->` as an arrow, and a comment's
    * close must look like what it is — the owner reported it as autocorrect. */
-  .filebox { min-height: 50vh; font-family: var(--mono); font-size: 13px; line-height: 1.5; resize: vertical; font-variant-ligatures: none; font-feature-settings: 'calt' 0, 'liga' 0; }
+  /* `.editbox.filebox`, not `.filebox`: `.editbox` below has the same
+     specificity and came later, so the monospace face and no-ligature
+     guard here never applied — text mode drew `->` as an arrow (review of
+     #457). */
+  .editbox.filebox { min-height: 50vh; font-family: var(--mono); font-size: 13px; line-height: 1.5; resize: vertical; font-variant-ligatures: none; font-feature-settings: 'calt' 0, 'liga' 0; }
   .modeline { display: flex; justify-content: flex-end; min-height: 20px; }
   .linkbtn { background: none; border: none; padding: 4px 0; color: var(--accent-400); font-size: 12px; cursor: pointer; }
   .linkbtn:disabled { color: var(--text-muted); cursor: default; }
   .barnote.ok { color: var(--accent-400); }
   .startbox .editbox { flex: 1; margin-bottom: 0; }
   .editbox { width: 100%; background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius); color: var(--text); font-family: var(--sans); font-size: 15px; padding: 12px 14px; box-sizing: border-box; }
+  /* iOS zooms into a field under 16px on focus and stays zoomed — the text
+     editor too, not only the forms (owner, 2026-10-01). */
+  @media (hover: none) and (pointer: coarse) {
+    .editbox, .editbox.filebox, .adding .editbox { font-size: 16px; }
+  }
   .abtn { flex-shrink: 0; min-height: 44px; padding: 0 16px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; cursor: pointer; white-space: nowrap; }
   .abtn.primary { background: var(--accent-400); color: var(--void); font-weight: 500; border: none; }
   .abtn:disabled { opacity: 0.5; }

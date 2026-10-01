@@ -413,6 +413,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The persona file editor works on a phone.** Tapping a field no longer
+  zooms the page and leaves it zoomed: every editable field is at least 16px
+  on a touch screen, the size below which iOS Safari zooms (text mode too).
+  The Save bar is solid instead of letting the text scroll visibly under it;
+  the highlight on the field being edited is centred; text boxes refit on
+  rotation and after Discard and no longer jump the page while measuring; and
+  sections take less width on a narrow screen. The Settings form shares the
+  same styles and gets the same fixes.
+
 - **A persona draws itself from whatever it writes about itself.** Follow-ups
   to #444: a display name with punctuation ("Mara O'Brien") no longer eats
   the first word of what the persona is doing; an `extras` entry that opens
