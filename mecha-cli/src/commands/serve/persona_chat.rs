@@ -1075,10 +1075,10 @@ impl PersonaChats {
                 set.insert(src.path.clone());
             }
             tokio::spawn(async move {
-                if let Err(why) =
+                if let Err(e) =
                     mecha_core::persona::files::read(&src, Some(&extractor), "all").await
                 {
-                    tracing::warn!("a persona file was not read: {why}");
+                    tracing::warn!("a persona file was not read: {}", e.why);
                 }
                 if let Ok(mut set) = processing.lock() {
                     set.remove(&src.path);
@@ -1328,15 +1328,10 @@ impl PersonaChats {
             // lock, since a first read of a scanned paper is a model call.
             // The owner's turns only, as `Taint::arm_for_content` reads the
             // stem: the two must agree on what "carried" means.
-            let wants_files = ps.conversation.as_ref().is_some_and(|c| {
-                !c.messages.iter().any(|m| {
-                    m.role == mecha_core::message::Role::User
-                        && m.content.iter().any(|b| {
-                        matches!(b, mecha_core::message::Block::Text { text }
-                            if text.trim_start().starts_with(mecha_core::persona::files::FILES_STEM))
-                    })
-                })
-            });
+            let wants_files = ps
+                .conversation
+                .as_ref()
+                .is_some_and(|c| !mecha_core::persona::files::carries(&c.messages));
             (
                 Arc::clone(&ps.pinned),
                 ps.events.clone(),
@@ -1417,6 +1412,11 @@ impl PersonaChats {
         let Some(mut conversation) = ps.conversation.take() else {
             return Err(Refusal::Conflict("a turn is still finishing".into()));
         };
+        // Asked again with the conversation in hand: `wants_files` was read
+        // under the first lock, two awaits ago, and a turn that finished in
+        // between may have carried the files already (review of #459).
+        let files_block =
+            files_block.filter(|_| !mecha_core::persona::files::carries(&conversation.messages));
         // The session goal rides in the first turn, never the system prompt,
         // so setting one costs the persona's cached prefix nothing (§6).
         let goal = ps.goal.take();
