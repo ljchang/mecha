@@ -393,7 +393,8 @@ one unlock shows locked characters and locked personas together (§8.3).
   machine-state write, which is what it is. (Settled in building phase 1.)
   `frame` joined them on 2026-10-01 (owner request): where the portrait sits
   in the round avatar, `{x, y, zoom}`, set by tapping the picture on the
-  persona page (and offered when a persona gets a new portrait). It is display only — no new version, nothing in a prompt — and
+  persona page (and offered when a persona gets a new portrait). It is
+  display only — no new version, nothing in a prompt — and
   a value out of range loads as none rather than costing the persona. With
   none, the avatar leans to the top of the picture, where a portrait's face
   is.
