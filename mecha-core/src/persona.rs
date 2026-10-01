@@ -1658,6 +1658,13 @@ pub fn propose(dir: &Path, lib: &imagelib::Library, p: Proposal) -> Result<(Pers
             bail!("there is no relationship template `{r}`");
         }
     }
+    // The voice likewise: `Store::problems` names the voices folder, and a
+    // refusal reaches the model (review of #493, pass 5).
+    if let Some(v) = &p.voice {
+        if !store.voices.contains_key(v) {
+            bail!("there is no voice `{v}`; leave the voice out, and the owner can choose one");
+        }
+    }
     let Some(existing) = store.get(&p.name).cloned() else {
         let waiting = store
             .personas
@@ -3008,13 +3015,21 @@ mod tests {
         assert!(still.state.locked, "a revision never unhides");
         assert_eq!(still.identity, core);
 
-        // An unknown template is named without the store's path.
+        // An unknown template, or voice, is named without the store's path.
         let mut bad = proposal(core);
         bad.name = "other".into();
         bad.relationships = vec!["nemesis".into()];
         let refused = format!("{:#}", propose(&store, &lib, bad).unwrap_err());
         assert!(
             refused.contains("nemesis") && !refused.contains(&*store.to_string_lossy()),
+            "{refused}"
+        );
+        let mut bad = proposal(core);
+        bad.name = "other".into();
+        bad.voice = Some("gravel".into());
+        let refused = format!("{:#}", propose(&store, &lib, bad).unwrap_err());
+        assert!(
+            refused.contains("gravel") && !refused.contains(&*store.to_string_lossy()),
             "{refused}"
         );
 

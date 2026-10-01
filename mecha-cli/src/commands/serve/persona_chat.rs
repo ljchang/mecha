@@ -929,7 +929,10 @@ impl PersonaChats {
     /// Approve a waiting persona as it was shown, and, with
     /// `character_shown`, the waiting character it links. Both signatures
     /// are checked before anything is written; the character goes first, so
-    /// an approved persona never points at a character still waiting. The
+    /// an approved persona never points at a character it was shown still
+    /// waiting. (A locked character hidden from this page is not shown, so
+    /// not offered: #425's rule. The persona can then be approved pointing
+    /// at it, still unapproved for generation.) The
     /// persona's digest is checked once more at its own write, so a
     /// revision landing in between refuses the persona and leaves the
     /// character approved — what the owner had read of it, still.
