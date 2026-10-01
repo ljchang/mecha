@@ -496,6 +496,21 @@ fn api() -> gate::Owned {
             axum::routing::post(persona_chat::lock),
         )
         .at(
+            "/api/personas/{name}/review",
+            Owner::Of(Feature::Personas),
+            get(persona_chat::review),
+        )
+        .at(
+            "/api/personas/{name}/approve",
+            Owner::Of(Feature::Personas),
+            axum::routing::post(persona_chat::approve),
+        )
+        .at(
+            "/api/personas/{name}/reject",
+            Owner::Of(Feature::Personas),
+            axum::routing::post(persona_chat::reject),
+        )
+        .at(
             "/api/personas/{name}/frame",
             Owner::Of(Feature::Personas),
             axum::routing::post(persona_chat::frame),

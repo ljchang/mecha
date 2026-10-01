@@ -1652,6 +1652,9 @@ export const personas = {
   personas: [
     { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
     { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
+    // Proposed from the main chat and waiting on the owner (the Waiting
+    // section): the review below is what its page reads.
+    { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
     { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
   ],
   unlocked: false,
@@ -1665,6 +1668,21 @@ export const lockSettings = {
   default_minutes: 15,
   max_minutes: 240,
   has_password: false,
+};
+
+// A proposal, as its page reads it before approving.
+export const personaReview = {
+  name: 'juniper',
+  display: 'Juniper',
+  relationships: ['friend'],
+  voice: null,
+  tools: ['web_search'],
+  identity: '## Core\n\nA retired ferry pilot who still reads the weather before the news. Warm, unhurried, and allergic to fuss.\n\n## Voice\n\nShort sentences. Asks one good question rather than three.\n',
+  motivation: 'Wants you to take the long way home now and then.\n',
+  origin: 'model_clean',
+  locked: false,
+  character: null,
+  shown: '0'.repeat(64),
 };
 
 export const personaSources = {
