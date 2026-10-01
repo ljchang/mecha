@@ -64,9 +64,9 @@ skipped for good; a section was cut to nothing with its heading gone. Each
 was fixed with a test that fails on the old code, and the key ones were
 mutation-checked.
 
-**2026-10-01 — the persona page locks itself, and a portrait can be framed
-(#469, #473, #480).** The owner's asks from a phone, each through its own
-review loop.
+**2026-10-01 — the persona page locks itself, a portrait can be framed,
+and every reply can be copied or saved (#469, #473, #480, #484).** The
+owner's asks from a phone, each through its own review loop.
 - **Autolock (#469):** `imagelib::autolock_minutes` reads `autolock.toml`,
   beside `lock.toml` (15 minutes unless set, 1 to 240; a damaged file grants
   no unlock). It is set from Settings → Lock or `mecha imagelib
@@ -86,6 +86,12 @@ review loop.
   so no setting leaves a gap. Unplaced, a portrait leans to the top.
   `dragFrame` inverts `X = z·u + p·(S − z·R)`, so the picture follows the
   finger and an axis with nothing hidden does not move.
+- **Copy and Download on every reply (#484):** `ChatProse` takes `actions`
+  for a finished reply. Copy writes the reply as written; Download saves a
+  `.md` from a Blob made in the page. Each code block gets its own Copy.
+  `download` defaults off and each call site opts in, and an incognito chat
+  never does: a file on the device outlives the room (INCOGNITO-DESIGN R2).
+  `reply-export.mjs` pins the call sites by counting them first.
 
 **2026-10-01 — personas read their files: folders, checked citations,
 search, saving (#459, #465, #467, #475), and a page that reads well (#479).**

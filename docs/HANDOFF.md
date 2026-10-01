@@ -73,8 +73,9 @@ verified against `8c563538`:
 **2026-10-01 — persona autolock and avatar framing are live; persona
 creation from the main chat is next (mecha-69).** #469, #473 and #480 are in
 HISTORY under 2026-10-01 and live: #469 in mecha-d7's `997a2894`, #473 in
-mecha-69's `36ff7573`, #480's page in `37fec515`. #484 (Copy and Download on
-every chat reply) is open. What is open, verified against `37fec515`:
+mecha-69's `36ff7573`, #480's page in `37fec515`, #484 (Copy and Download
+on every chat reply) in `d352536b`. What is open, verified against
+`d352536b`:
 
 - **`persona_propose` from the main chat: the owner asked for it; unbuilt.**
   The assistant can stage library characters (`image_library_propose`), but
@@ -91,6 +92,10 @@ every chat reply) is open. What is open, verified against `37fec515`:
     child against the real home;
   - `loadHistory`'s failure branch does not check the generation after
     `res.text()` (benign: its note is discarded).
+  - #484: a reply's "Copied" and a refused copy are visual only (no live
+    region, as `ModelChip` has); INCOGNITO-DESIGN §3.1's table of what the
+    page leaves on the device has no row for the reply download its R2 now
+    refuses.
 
 **2026-10-01 — persona files (§10) done and live, and reading a chat is
 easier; what is open.** Steps 3a–3d (#459, #465, #467, #475) and the
@@ -3820,6 +3825,12 @@ start, from the journal:
   restarted. Verified at 18:27Z: the 8443 door serves `index-BFEgTJhm.js`,
   serve has been up since 17:44:37Z, and the binary probe above still
   prints 1.
+- **18:56Z, `d352536b`** (#484, with #482 and #485's docs). Dist only: the
+  range since `37fec515` is docs, the update skill and `web/`. The checkout
+  was fast-forwarded and nothing was restarted. Verified at 19:18Z: the
+  door serves `index-DMCoOD_n.js`, and serve is still the 17:44:37Z start.
+  Download was clicked under serve's live CSP header
+  (`media-src 'self' blob:`, no `blob:` elsewhere) with no violation.
 
 **Test residue** from every lane's suite (#471's leak) was moved, never deleted, to
 `~/.mecha/test-residue-backup-20261001`: 251 `provider: test` sessions and
