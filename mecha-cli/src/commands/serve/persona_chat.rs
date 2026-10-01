@@ -751,6 +751,25 @@ impl PersonaChats {
         Ok(serde_json::json!({ "locked": state.locked }))
     }
 
+    /// Place the portrait in a persona's avatar, or centre it again. The lock
+    /// holds as for every write: a hidden persona answers as a missing one.
+    pub fn frame(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        frame: Option<mecha_core::persona::Frame>,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        if let Some(f) = frame {
+            f.checked().map_err(|e| Refusal::Bad(format!("{e:#}")))?;
+        }
+        let state = mecha_core::persona::set_frame(&self.store, &p.name, frame).map_err(failed)?;
+        Ok(serde_json::json!({ "frame": state.frame }))
+    }
+
     /// The personas a browsing surface may list, with what is wrong with each.
     /// `tz` is `[agent] timezone`; `None` is the machine's own zone, as
     /// `Config::timezone` documents — not UTC (review of #418).
@@ -796,6 +815,8 @@ impl PersonaChats {
                     "relationship": p.settings.relationship.0,
                     "character": character,
                     "portrait": portrait,
+                    // Where the owner placed it in the circle; null is centred.
+                    "frame": p.state.frame,
                     "version": p.state.version,
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     "locked": p.state.locked,
@@ -2627,6 +2648,31 @@ pub struct LockBody {
     unlock: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+pub struct FrameBody {
+    /// Absent or null centres the portrait again.
+    #[serde(default)]
+    frame: Option<mecha_core::persona::Frame>,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// POST /api/personas/{name}/frame
+pub async fn frame(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<FrameBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(
+        chat.personas
+            .frame(&state.library, &name, body.frame, body.unlock.as_deref()),
+    )
+}
+
 #[derive(serde::Deserialize, Default)]
 pub struct UnlockBody {
     #[serde(default)]
@@ -3756,6 +3802,50 @@ mod tests {
                 && first.contains("Urchins graze kelp."),
             "{first}"
         );
+    }
+
+    /// The avatar's framing: set and cleared from the page, carried by the
+    /// list, refused out of range, and behind the lock like every write.
+    #[tokio::test]
+    async fn a_frame_is_placed_listed_checked_and_locked_like_any_write() {
+        use mecha_core::persona::Frame;
+        let w = world();
+        let row = |token: Option<&str>| {
+            w.personas().list(&w.library, token, Some(chrono_tz::UTC))["personas"][0].clone()
+        };
+        assert!(row(None)["frame"].is_null(), "centred until placed");
+        let frame = Frame {
+            x: 0.5,
+            y: 0.25,
+            zoom: 1.5,
+        };
+        let set = w
+            .personas()
+            .frame(&w.library, "mara", Some(frame), None)
+            .unwrap();
+        assert_eq!(set["frame"]["zoom"], 1.5);
+        assert_eq!(row(None)["frame"]["y"], 0.25);
+        assert!(matches!(
+            w.personas()
+                .frame(&w.library, "mara", Some(Frame { zoom: 9.0, ..frame }), None),
+            Err(Refusal::Bad(_))
+        ));
+        assert_eq!(
+            row(None)["frame"]["zoom"],
+            1.5,
+            "a refused frame changes nothing"
+        );
+        // Locked: a hidden persona answers as a missing one, framing included.
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        assert!(matches!(
+            w.personas().frame(&w.library, "mara", None, None),
+            Err(Refusal::NotFound)
+        ));
+        let token = w.library.grant_for_tests();
+        w.personas()
+            .frame(&w.library, "mara", None, Some(&token))
+            .unwrap();
+        assert!(row(Some(&token))["frame"].is_null(), "centred again");
     }
 
     #[tokio::test]
