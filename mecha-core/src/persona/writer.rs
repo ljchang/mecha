@@ -121,12 +121,18 @@ pub fn read_chat(text: &str) -> Chat {
                 extendable = true;
             }
             Some("extend") => {
-                let blocks = match serde_json::from_value(value) {
-                    Ok(crate::session::Record::Extend { blocks, .. }) => blocks,
+                let (index, blocks) = match serde_json::from_value(value) {
+                    Ok(crate::session::Record::Extend { index, blocks }) => (index, blocks),
                     _ => continue,
                 };
                 let at = chat.turns.len().wrapping_sub(1);
-                if !extendable || at == usize::MAX {
+                // Only an extension of the last message on file, as the
+                // other two readers of this record apply it
+                // (`TaintTimeline::from_records`, `Session::parse`). Before
+                // any rewrite a list position is a file ordinal, so `index`
+                // can be checked against the count; after one it cannot, and
+                // nothing is folded (review of #468).
+                if !extendable || at == usize::MAX || index != at {
                     continue;
                 }
                 let turn = &mut chat.turns[at];
@@ -153,6 +159,24 @@ pub fn read_chat(text: &str) -> Chat {
         }
     }
     chat
+}
+
+impl Chat {
+    /// The chat up to its last turn a checkpoint covers. A conversation still
+    /// going has a tail no checkpoint has reached yet; written now, that tail
+    /// would classify untrusted and the ledger would keep it so for good. For
+    /// a chat named explicitly while it may be live (`--chat`); the nightly
+    /// keeps the whole chat, since a crashed run's tail never gets its
+    /// checkpoint and would wait forever (review of #468).
+    pub fn settled(mut self) -> Chat {
+        let keep = self
+            .turns
+            .iter()
+            .rposition(|t| t.taint.is_some())
+            .map_or(0, |i| i + 1);
+        self.turns.truncate(keep);
+        self
+    }
 }
 
 /// A stretch of a chat with one provenance: turns `from..to`.
@@ -476,7 +500,8 @@ pub fn apply(
     // A prefix two shown facts share names neither: an edit to the wrong
     // fact would be silent.
     let mut by_short: HashMap<&str, Option<&Fact>> = HashMap::new();
-    for f in known {
+    // Only what the model was shown can be named back.
+    for f in known.iter().take(KNOWN_SHOWN) {
         by_short
             .entry(short(&f.uid))
             .and_modify(|e| *e = None)

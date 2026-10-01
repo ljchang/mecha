@@ -1019,6 +1019,12 @@ impl Memory {
     }
 
     /// Delete every record whose source is `chat`; (episodes, facts) removed.
+    ///
+    /// **The writer's ledger row stays, on purpose.** The transcript is still
+    /// in `sessions/`; with the row gone, the next nightly would read the chat
+    /// from turn 0 and remember again everything the owner just forgot. A
+    /// tidy-looking cleanup of that row is a privacy regression —
+    /// `a_forgotten_chat_is_not_remembered_again` holds it (review of #468).
     fn forget_chat(&self, chat: &str) -> Result<(usize, usize)> {
         self.writable()?;
         let tx = self.conn.unchecked_transaction()?;
