@@ -188,8 +188,8 @@ fn yes() -> bool {
     true
 }
 
-/// `[safety]` (§12): every switch on by default, break reminders excepted.
-/// The owner turns one off, per persona; a template or a model never does.
+/// `[safety]` (§12): every switch on by default. The owner turns one off, per
+/// persona; a template or a model never does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Safety {
@@ -199,12 +199,16 @@ pub struct Safety {
     pub crisis: bool,
     #[serde(default = "yes")]
     pub dose: bool,
-    #[serde(default)]
-    pub breaks: bool,
-    #[serde(default = "yes")]
-    pub farewell: bool,
     #[serde(default = "yes")]
     pub reanchor: bool,
+    /// Break reminders and the farewell check, dropped by the owner on
+    /// 2026-10-01 before either was built (§12.3, §12.4). Still accepted, so a
+    /// `persona.toml` written before then loads; read by nothing, and named in
+    /// the persona's notes ([`retired_keys`]).
+    #[serde(default, skip_serializing)]
+    breaks: Option<bool>,
+    #[serde(default, skip_serializing)]
+    farewell: Option<bool>,
 }
 
 impl Default for Safety {
@@ -213,9 +217,9 @@ impl Default for Safety {
             disclosure: true,
             crisis: true,
             dose: true,
-            breaks: false,
-            farewell: true,
             reanchor: true,
+            breaks: None,
+            farewell: None,
         }
     }
 }
@@ -228,7 +232,6 @@ impl Safety {
             ("disclosure", self.disclosure),
             ("crisis", self.crisis),
             ("dose", self.dose),
-            ("farewell", self.farewell),
             ("reanchor", self.reanchor),
         ]
         .into_iter()
@@ -328,6 +331,31 @@ fn unknown_values(raw: &toml::Table) -> Vec<String> {
         }
     }
     out
+}
+
+/// Keys this binary still accepts but no longer reads, each with why — so a
+/// file that carries one is told, rather than believed to have the feature.
+const RETIRED: [(&str, &str, &str); 2] = [
+    (
+        "safety",
+        "breaks",
+        "break reminders were dropped (2026-10-01)",
+    ),
+    (
+        "safety",
+        "farewell",
+        "the farewell check was dropped (2026-10-01)",
+    ),
+];
+
+fn retired_keys(raw: &toml::Table) -> Vec<String> {
+    RETIRED
+        .iter()
+        .filter(|(table, key, _)| raw.get(*table).and_then(|t| t.get(*key)).is_some())
+        .map(|(table, key, why)| {
+            format!("[{table}] {key} is read by nothing: {why}; the line can go")
+        })
+        .collect()
 }
 
 // ─── state.toml: the harness's ─────────────────────────────────────────────
@@ -983,7 +1011,9 @@ fn load_persona(dir: &Path, name: &str) -> Result<Persona> {
     validate_persona_name(name)?;
     let raw = read_prose(&dir.join("persona.toml"))?;
     let settings: Settings = parse_toml(&raw)?;
-    let mut notes = unknown_values(&toml::from_str(&raw)?);
+    let table: toml::Table = toml::from_str(&raw)?;
+    let mut notes = unknown_values(&table);
+    notes.extend(retired_keys(&table));
     if settings.display.chars().count() > MAX_DISPLAY || settings.display.contains(['\n', '\t']) {
         bail!("display is one line of at most {MAX_DISPLAY} characters");
     }
@@ -1259,8 +1289,6 @@ fn render_settings(new: &NewPersona, tools: &[String], answers: Answers) -> Stri
          disclosure = true\n\
          crisis     = true\n\
          dose       = true\n\
-         breaks     = false\n\
-         farewell   = true\n\
          reanchor   = true\n\
          \n\
          [files]\n\
@@ -1774,16 +1802,6 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
                 .field(
                     Field::toggle("safety.dose", "Time spent")
                         .help("Counts turns per day and late at night, shown on the persona."),
-                )
-                .field(
-                    Field::toggle("safety.breaks", "Break reminders")
-                        .help(UNBUILT)
-                        .unbuilt(),
-                )
-                .field(
-                    Field::toggle("safety.farewell", "Farewell check")
-                        .help(UNBUILT)
-                        .unbuilt(),
                 ),
             Section::new("Memory")
                 .help(UNBUILT)
@@ -2284,6 +2302,43 @@ mod tests {
         assert_eq!(p.settings.memory.user_facts, UserFacts::Off);
         assert_eq!(p.notes.len(), 2, "{:?}", p.notes);
         assert!(p.notes[0].contains("opne"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_file_naming_a_retired_switch_still_loads_and_says_it_is_read_by_nothing() {
+        let dir = scratch();
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        let path = dir.join("mara/persona.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("breaks") && !text.contains("farewell"),
+            "{text}"
+        );
+        // As every persona.toml written before 2026-10-01 has it.
+        std::fs::write(
+            &path,
+            text.replace(
+                "dose       = true\n",
+                "dose       = true\nbreaks     = false\nfarewell   = true\n",
+            ),
+        )
+        .unwrap();
+        let store = Store::load(&dir);
+        assert!(store.errors().is_empty(), "{:?}", store.errors());
+        let p = store.get("mara").unwrap();
+        assert_eq!(
+            p.settings.safety,
+            Safety {
+                breaks: Some(false),
+                farewell: Some(true),
+                ..Safety::default()
+            }
+        );
+        assert!(p.settings.safety.switched_off().is_empty());
+        assert_eq!(p.notes.len(), 2, "{:?}", p.notes);
+        assert!(p.notes[0].starts_with("[safety] breaks is read by nothing"));
+        assert!(p.notes[1].contains("farewell check was dropped"));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -2893,7 +2948,7 @@ mod tests {
         assert_eq!(values["memory.user_facts"], json!("shared"));
 
         let starter = choices.relationships[0].clone();
-        let changes = json!({ "safety.breaks": true, "relationship": [starter] });
+        let changes = json!({ "safety.dose": false, "relationship": [starter] });
         let state = edit_settings(
             &dir,
             "mara",
@@ -2907,7 +2962,7 @@ mod tests {
         let comments = |t: &str| t.lines().filter(|l| l.contains('#')).count();
         assert_eq!(comments(&after), comments(&before), "{after}");
         let v = settings_values(&form, &after).unwrap();
-        assert_eq!(v["safety.breaks"], json!(true));
+        assert_eq!(v["safety.dose"], json!(false));
         assert_eq!(v["relationship"], json!([starter]));
 
         // Opened before that save: refused, and the file is as it was.
