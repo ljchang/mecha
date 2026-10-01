@@ -2864,7 +2864,9 @@ impl PersonaChats {
             // is answered with the pause's plain words, as a typed one shows
             // them, never with the half-reply it was cut off in.
             if let Some(after) = after_tap {
-                if stopped_by_judge && outcome.is_ok() {
+                // Whatever the run ended in: a judge stop that the run then
+                // errored on still owes the call the plain words.
+                if stopped_by_judge {
                     // Streaming cannot un-say what was already spoken, so
                     // the plain words follow it.
                     let _ = after.send(AgentEvent::TextDelta(format!(
@@ -2875,7 +2877,7 @@ impl PersonaChats {
             }
             if let Some(done) = hosted_done {
                 let _ = done.send(match &outcome {
-                    Ok(_) if stopped_by_judge => Ok(spoken_answer(safety::SAFE_MESSAGE)),
+                    _ if stopped_by_judge => Ok(spoken_answer(safety::SAFE_MESSAGE)),
                     Ok(o) => Ok(crate::voice::HostedAnswer {
                         text: o.text.clone(),
                         input_tokens: o.usage.input_tokens,
@@ -7567,5 +7569,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(&body[..], b"RIFF:ada");
+    }
+
+    /// An offer the worker refuses is no call: the binding the offer made is
+    /// released, so the chat takes no spoken words on it (review of #483).
+    #[tokio::test]
+    async fn an_offer_the_worker_refuses_releases_its_binding() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let app = axum::Router::new().route(
+            "/api/offer",
+            axum::routing::post(|| async { (StatusCode::SERVICE_UNAVAILABLE, "busy") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+        let state = super::super::WebState {
+            owner_login: Arc::new("owner@example.com".into()),
+            chat: Some(Arc::clone(&w.chat)),
+            offer_target: Some(Arc::new(format!("http://{addr}/api/offer"))),
+            voices_dir: None,
+            library: Arc::new(LibraryState::new(w.root.join("imagelib"))),
+            features_at_start: Arc::default(),
+            gate: Arc::default(),
+            review: Arc::new(super::super::review::ReviewState {
+                outbox_root: w.root.join("outbox"),
+                sessions_dir: None,
+            }),
+        };
+        let offer = axum::body::Bytes::from(
+            serde_json::json!({"sdp": "x", "type": "offer", "request_data": {"session": key}})
+                .to_string(),
+        );
+        let answered = super::super::offer_proxy(State(state), offer).await;
+        assert_eq!(answered.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            !w.personas().calls.lock().unwrap().contains_key(&key),
+            "a refused offer left its binding"
+        );
     }
 }
