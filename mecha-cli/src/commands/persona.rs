@@ -299,7 +299,16 @@ async fn write_memory(
         .as_ref()
         .and_then(|b| seen.iter().find(|s| &s.base_url == b));
     let on_router = follows && here.is_some();
-    let unanswered = follows && here.is_none();
+    // Not seen is two things: a router that would not say what it has
+    // loaded, where naming a model could be the swap, and a plain server
+    // marked `follow_loaded`, which serves one model whatever is named. Only
+    // the first waits (review of #468).
+    let unanswered = follows
+        && here.is_none()
+        && match &base {
+            Some(b) => router::is_router(b).await != Some(false),
+            None => false,
+        };
     let mut resident: Option<String> = here.and_then(|s| s.resident.clone());
     if unanswered {
         eprintln!(
@@ -316,7 +325,7 @@ async fn write_memory(
         eprintln!("writing persona memory with {fallback} ({provider_name})");
     }
 
-    let idle = std::time::Duration::from_secs(idle_minutes * 60);
+    let idle = std::time::Duration::from_secs(idle_minutes.saturating_mul(60));
     let (mut chats, mut failed, mut waiting, mut marked) = (0usize, 0usize, 0usize, 0usize);
     for p in personas {
         let pending = writer::pending_chats(&store.sessions_dir(&p.name), chat.as_deref(), idle);
@@ -364,7 +373,13 @@ async fn write_memory(
                 }
             };
             // Only wait for a model seat when there is something to ask.
-            let parsed = writer::read_chat(&text);
+            // A chat named explicitly may still be going: its tail waits for
+            // the checkpoint rather than being written as untrusted.
+            let parsed = if chat.is_some() {
+                writer::read_chat(&text).settled()
+            } else {
+                writer::read_chat(&text)
+            };
             match m.written_upto(&id) {
                 Ok(upto) if upto as usize >= parsed.turns.len() => continue,
                 Ok(_) => {}

@@ -825,3 +825,67 @@ fn an_owner_correction_during_the_model_call_is_not_undone() {
         ["Teaches on Fridays."]
     );
 }
+
+#[tokio::test]
+async fn a_forgotten_chat_is_not_remembered_again() {
+    let w = world();
+    let m = Memory::open(&w.dir, "mara").unwrap();
+    let chat = read_chat(&two_clean_then_untrusted());
+    let (writer, _) = scripted(&[
+        r#"{"episode": {"summary": "Named the project."}, "facts": []}"#,
+        r#"{"episode": null, "facts": []}"#,
+    ]);
+    write_chat(&writer, &m, &w.persona, "c1", &chat)
+        .await
+        .unwrap();
+    assert_eq!(m.episodes(Filter::All).unwrap().len(), 1);
+
+    crate::persona::memory::forget_chat(&w.dir, "mara", "c1").unwrap();
+    // The transcript is still there; the nightly runs again.
+    let (again, seen) = scripted(&[]);
+    write_chat(&again, &m, &w.persona, "c1", &chat)
+        .await
+        .unwrap();
+    assert!(seen.lock().unwrap().is_empty(), "nothing re-read");
+    assert!(m.episodes(Filter::All).unwrap().is_empty());
+}
+
+#[test]
+fn a_live_chats_unchecked_tail_waits_and_an_extension_must_name_its_turn() {
+    let live = [
+        META.to_string(),
+        owner("hello"),
+        persona_says("hi"),
+        checkpoint(false),
+        owner("still typing"),
+    ]
+    .concat();
+    let chat = read_chat(&live).settled();
+    assert_eq!(chat.turns.len(), 2);
+    assert_eq!(stretches(&chat, 0).len(), 1, "all clean, nothing untrusted");
+
+    let misnamed = [
+        META.to_string(),
+        owner("one"),
+        persona_says("two"),
+        line(&Record::Extend {
+            index: 0,
+            blocks: vec![Block::text("folded")],
+        }),
+        checkpoint(false),
+    ]
+    .concat();
+    let chat = read_chat(&misnamed);
+    assert!(!chat.turns[0]
+        .message
+        .as_ref()
+        .unwrap()
+        .text()
+        .contains("folded"));
+    assert!(!chat.turns[1]
+        .message
+        .as_ref()
+        .unwrap()
+        .text()
+        .contains("folded"));
+}
