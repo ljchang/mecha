@@ -54,8 +54,9 @@ pub const MAX_FACT_CHARS: usize = 500;
 /// An episode's summary.
 pub const MAX_SUMMARY_CHARS: usize = 4000;
 
-/// `PRAGMA user_version` this binary writes. Migrations are additive.
-const SCHEMA: i64 = 1;
+/// `PRAGMA user_version` this binary writes. Migrations are additive:
+/// 1 is the records, 2 the writer's ledger (`written`).
+const SCHEMA: i64 = 2;
 
 /// Which table of `memory.db` a fact lives in. A closed set mapped to fixed
 /// names, so no caller's string ever reaches SQL as an identifier.
@@ -358,9 +359,22 @@ fn connect(path: &Path, create: bool) -> Result<Option<Connection>> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     if create {
         // Per connection: a delete overwrites the freed page, so `forget`
-        // means it (§9.10).
+        // means it (§9.10). Both are read back rather than trusted: on a
+        // filesystem without shared memory WAL does not engage, and
+        // `wal_checkpoint` on a database not in WAL mode is a no-op that
+        // reports `busy = 0` — so `scrub` would pass having checked nothing
+        // (review of #463).
         conn.pragma_update(None, "secure_delete", "ON")?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        let secure: i64 = conn.pragma_query_value(None, "secure_delete", |r| r.get(0))?;
+        let mode: String =
+            conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))?;
+        if secure != 1 || !mode.eq_ignore_ascii_case("wal") {
+            bail!(
+                "{} cannot forget safely here (secure_delete {secure}, journal mode {mode}); \
+                 memory needs a local filesystem",
+                path.display()
+            );
+        }
     }
     Ok(Some(conn))
 }
@@ -385,9 +399,30 @@ fn fact_columns(extra: &str) -> String {
 
 fn migrate_memory(conn: &Connection) -> Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if version >= 1 {
-        return Ok(());
+    if version < 1 {
+        migrate_memory_v1(conn)?;
     }
+    if version < 2 {
+        // The writer's ledger (§9.6): how many of a chat's messages it has
+        // written up to. Messages are counted as `message` records in the
+        // transcript file, which is append-only, so the count never moves
+        // under a compaction.
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS written (
+                chat TEXT PRIMARY KEY,
+                upto INTEGER NOT NULL,
+                at TEXT NOT NULL
+             );
+             PRAGMA user_version = 2;
+             COMMIT;",
+        )?;
+        debug_assert_eq!(SCHEMA, 2, "a new step goes above, and this moves with it");
+    }
+    Ok(())
+}
+
+fn migrate_memory_v1(conn: &Connection) -> Result<()> {
     let mut sql = String::from(
         "CREATE TABLE IF NOT EXISTS episodes (
             uid TEXT PRIMARY KEY,
@@ -424,7 +459,7 @@ fn migrate_memory(conn: &Connection) -> Result<()> {
             ),
         ));
     }
-    sql.push_str(&format!("PRAGMA user_version = {SCHEMA};"));
+    sql.push_str("PRAGMA user_version = 1;");
     conn.execute_batch(&format!("BEGIN; {sql} COMMIT;"))?;
     Ok(())
 }
@@ -439,7 +474,7 @@ fn migrate_shared(conn: &Connection) -> Result<()> {
          CREATE TABLE IF NOT EXISTS shared_facts ({cols});
          CREATE INDEX IF NOT EXISTS shared_chat ON shared_facts(learned_by, source_chat);
          CREATE INDEX IF NOT EXISTS shared_audience ON shared_facts(audience);
-         PRAGMA user_version = {SCHEMA};
+         PRAGMA user_version = 1;
          COMMIT;",
         cols = fact_columns(
             "audience TEXT NOT NULL,
@@ -469,9 +504,9 @@ fn scrub(conns: &[&Connection]) -> Result<()> {
     }
     if busy > 0 {
         bail!(
-            "deleted, but the write-ahead log could not be truncated while a chat \
-             or the page was reading memory; the text may stay in the log until \
-             the next delete"
+            "done, but the write-ahead log could not be truncated while a chat \
+             or the page was reading memory; the old text may stay in the log \
+             until the next delete"
         );
     }
     Ok(())
@@ -961,14 +996,12 @@ impl Memory {
         tx.commit()?;
         // Two files cannot share one commit, so a failure here is said, not
         // swallowed; `forget` walks `replaces` either way, so a copy left
-        // behind can never outlive the fact it copied.
+        // behind can never outlive the fact it copied. Each failure is
+        // worded where it happens (review of #463): a failed update leaves
+        // the copy stale, a busy log leaves the copy right and the old
+        // wording only in the log.
         if let Some(shared) = self.shared()? {
-            shared
-                .follow_correction(&self.persona, &old.uid, &new)
-                .context(
-                    "corrected, but a shared copy still has the old wording — \
-                 `mecha persona memory shared` lists it",
-                )?;
+            shared.follow_correction(&self.persona, &old.uid, &new)?;
         }
         Ok(new)
     }
@@ -986,6 +1019,12 @@ impl Memory {
     }
 
     /// Delete every record whose source is `chat`; (episodes, facts) removed.
+    ///
+    /// **The writer's ledger row stays, on purpose.** The transcript is still
+    /// in `sessions/`; with the row gone, the next nightly would read the chat
+    /// from turn 0 and remember again everything the owner just forgot. A
+    /// tidy-looking cleanup of that row is a privacy regression —
+    /// `a_forgotten_chat_is_not_remembered_again` holds it (review of #468).
     fn forget_chat(&self, chat: &str) -> Result<(usize, usize)> {
         self.writable()?;
         let tx = self.conn.unchecked_transaction()?;
@@ -999,6 +1038,94 @@ impl Memory {
         }
         tx.commit()?;
         Ok((episodes, facts))
+    }
+
+    /// How many of `chat`'s messages the writer has written up to — `0` for
+    /// a chat it has never read (§9.6), and on a store from before the
+    /// ledger, which a read-only handle does not upgrade.
+    pub fn written_upto(&self, chat: &str) -> Result<u32> {
+        let ledger: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'written'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if ledger.is_none() {
+            return Ok(0);
+        }
+        Ok(self
+            .conn
+            .query_row("SELECT upto FROM written WHERE chat = ?1", [chat], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .unwrap_or(0))
+    }
+
+    /// Write one stretch of a chat: `f`'s records and the ledger's advance
+    /// from `from` to `upto`, in one transaction — or nothing, when another
+    /// writer advanced the ledger past `from` while this one was asking the
+    /// model (`Ok(None)`). The model call happens before this, with no lock
+    /// held; the check here is what keeps two writers from recording one
+    /// stretch twice.
+    ///
+    /// The transaction is `memory.db`'s. A withdrawal inside `f` also drops
+    /// the fact's shared copies from `shared.db`, which it does not cover: if
+    /// a later step fails and this rolls back, those copies stay gone — two
+    /// files cannot share one commit (review of #468).
+    pub fn write_stretch<T>(
+        &self,
+        chat: &str,
+        from: u32,
+        upto: u32,
+        f: impl FnOnce(&Memory) -> Result<T>,
+    ) -> Result<Option<T>> {
+        self.writable()?;
+        if upto < from {
+            bail!("a stretch cannot end before it starts");
+        }
+        // IMMEDIATE: the write lock is taken before the ledger is read, so a
+        // second writer waits here and then sees the first one's advance,
+        // rather than both reading `from` and racing to write.
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        if self.written_upto(chat)? != from {
+            return Ok(None);
+        }
+        let out = f(self)?;
+        tx.execute(
+            "INSERT INTO written (chat, upto, at) VALUES (?1, ?2, ?3)
+             ON CONFLICT (chat) DO UPDATE SET upto = excluded.upto, at = excluded.at",
+            params![chat, upto, now()],
+        )?;
+        tx.commit()?;
+        Ok(Some(out))
+    }
+
+    /// The writer's update (§9.3): `old` is withdrawn and `new` replaces it,
+    /// pointing back — Mem0's update as an invalidation plus an addition, so
+    /// what was believed before stays answerable. Unlike [`Self::correct`]
+    /// this opens no transaction of its own, so it runs inside
+    /// [`Self::write_stretch`]; the new row's origin is the writer's, not the
+    /// owner's.
+    pub(super) fn supersede(&self, old: &Fact, new: NewFact) -> Result<Fact> {
+        let replacement = self.add_fact(old.table, new)?;
+        self.invalidate(&old.uid)?;
+        self.conn.execute(
+            &format!(
+                "UPDATE {} SET replaces = ?2 WHERE uid = ?1",
+                old.table.sql()
+            ),
+            params![replacement.uid, old.uid],
+        )?;
+        Ok(Fact {
+            replaces: Some(old.uid.clone()),
+            ..replacement
+        })
     }
 
     /// Everything, as JSON lines in a fixed order — what `cat` was for the
@@ -1231,13 +1358,19 @@ impl Shared {
     /// owner's wording.
     fn follow_correction(&self, persona: &str, old_uid: &str, new: &Fact) -> Result<usize> {
         self.writable()?;
-        let n = self.conn.execute(
-            "UPDATE shared_facts SET from_uid = ?3, text = ?4, origin = ?5
-             WHERE learned_by = ?1 AND from_uid = ?2",
-            params![persona, old_uid, new.uid, new.text, wire(&new.origin)],
-        )?;
+        let n = self
+            .conn
+            .execute(
+                "UPDATE shared_facts SET from_uid = ?3, text = ?4, origin = ?5
+                 WHERE learned_by = ?1 AND from_uid = ?2",
+                params![persona, old_uid, new.uid, new.text, wire(&new.origin)],
+            )
+            .context(
+                "corrected, but a shared copy still has the old wording — \
+                 `mecha persona memory shared` lists it",
+            )?;
         // The old wording was overwritten in place: scrub it from the log.
-        scrub(&[&self.conn])?;
+        scrub(&[&self.conn]).context("corrected, and the shared copy follows")?;
         Ok(n)
     }
 

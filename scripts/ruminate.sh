@@ -124,6 +124,11 @@ echo "· reflect (catches whatever the session_end hook missed; live mining is l
 echo "· distill (episodes → the knowledge graph; catches whatever a hook missed)"
 "$MECHA" distill ${PIN[@]+"${PIN[@]}"}
 
+echo "· persona memory (each persona's chats → its own memory.db, PERSONA-DESIGN §9.6;"
+echo "  nothing writes after a chat yet, so this is the only writer; chats changed in"
+echo "  the last 15 minutes wait for tomorrow)"
+"$MECHA" persona memory write ${PIN[@]+"${PIN[@]}"}
+
 echo "· validate (the measurement: held-out + fresh, before learn consumes them;"
 echo "  --cover 1 buys one probe per (rule, region) pair never graded on this model,"
 echo "  so a widened rule is measured in each sub-region it widened over — and the"

@@ -25,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Personas start remembering.** `mecha persona memory write` reads each
+  persona's chats and records an episode and facts per stretch of
+  conversation, in the persona's own memory. The nightly runs it. Each chat
+  is written on this machine by the model it ran on, and only while that model
+  is loaded — it never swaps out the one in use. Chats changed in the last 15
+  minutes, and test chats, are left alone, and each turn is read once. A stretch after the chat read anything from
+  outside — a search, a file — is kept apart: what it produced waits for
+  your approval (`mecha persona memory approve`), and it can never change or
+  withdraw what the persona already knew. Nothing yet brings memories back
+  into a chat; that is the next step.
+
 - **The library and personas lock themselves again.** After 15 minutes with
   no one touching the page, the Library and Personas tabs relock on their
   own, and the unlock ends on the server too. Change the span under
