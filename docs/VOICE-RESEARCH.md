@@ -1675,6 +1675,29 @@ ever feels laggy. `scripts/voice/llama-voxtral.service` is written and
 ready; installing it is the one step needing sudo, and until then :8082
 runs under nohup.
 
+**How the container is run, and how to restart it (2026-10-02).** The
+`docker run` line is not in a unit file, so it is written here:
+
+```bash
+docker run -d --name chatterbox --restart unless-stopped \
+  --device nvidia.com/gpu=all -p 127.0.0.1:8881:8881 \
+  -v ~/models/voices:/voices:ro \
+  -v ~/models/hf-cache:/root/.cache/huggingface \
+  -v ~/Github/mecha/scripts/voice:/srv:ro \
+  mecha/chatterbox:serve \
+  uvicorn --app-dir /srv chatterbox_server:app --host 0.0.0.0 --port 8881
+```
+
+`CHATTERBOX_MODEL` (`turbo`, the default, or `original`) is read at
+start, so switching models means recreating the container with
+`-e CHATTERBOX_MODEL=original`: `docker restart` keeps the old
+environment. The server serves the shared checkout, as the voice worker
+does, and the two must move together in one order: **restart the worker
+first, then the container.** A new server refuses a control its model
+drops, and an old worker sends `exaggeration` / `cfg_weight` on every
+sentence, so a new server under an old worker refuses every sentence; a
+new worker under an old server sends nothing optional and is safe.
+
 Phase 1 status: **speech servers done** (:8082 ears, :8881 launch voice,
 :8880 fallback voice, all measured). Next: Phase 2, the facade — where
 mecha itself enters.
@@ -1982,6 +2005,26 @@ and sent on every request from `TTS_EXAGGERATION` / `TTS_CFG_WEIGHT`
 two places holding an opinion about how mecha sounds is one too many, and
 the worker is the one that should hold it.
 
+**Correction (2026-10-02): none of that reached the voice.** The live
+model is Chatterbox **Turbo**, and Turbo accepts `exaggeration` and
+`cfg_weight` and then drops both: its config sets `emotion_adv = False`,
+so the emotion input is never built, and CFG is never passed to
+`inference_turbo` (read from the installed `chatterbox-tts` 0.1.7, the
+newest release). It logs "CFG, min_p and exaggeration are not supported by
+Turbo version and will be ignored" on every request, inside the container
+and nowhere a caller looks. So the 0.8 / 0.3 above, and the affect nudge
+on `cfg_weight` (`AFFECT_CFG_WEIGHT_DELTA`), changed nothing; whatever
+improvement was heard came from the references, which the next paragraph
+is about. The finding stands as a description of the *original* model and
+of the zero-is-not-neutral shape. Since this correction, the server lists
+the controls its model honours (`/v1/voices` `controls`), refuses one it
+would drop, and the worker sends only those (`optional_controls`).
+`CHATTERBOX_MODEL=original` loads the 500M model that does honour the pair.
+On Turbo the per-request levers are `temperature` (and the sampling
+parameters, not plumbed), speed (the WSOLA stretch), and about nine audible
+non-verbal tags such as `[laugh]` and `[sigh]`; emotion tags such as
+`[whispering]` are ignored ([resemble-ai/chatterbox#557](https://github.com/resemble-ai/chatterbox/issues/557)).
+
 **And a Kokoro reference caps expressiveness however high the knob goes.**
 Chatterbox clones prosodic *style*, not only timbre, so a voice built from
 `make-voices.py` is conditioned on an 82M preset TTS reading deliberately
@@ -2023,7 +2066,8 @@ does not replace the TTS leg, it replaces *mecha* — the thing generating
 audio would no longer be the local model running the agent loop with tools,
 taint and the outbox. Cascaded is the price of an assistant that can read
 your mail, and the ceiling comes with it. The cascaded approximation, not
-built: `exaggeration` is a per-request scalar and the model authored the
+built: `exaggeration` is a per-request scalar (on the original model; Turbo
+drops it — the correction under "The voice was flat") and the model authored the
 sentence, so it could set expressiveness per reply — as a **bounded value
 the harness parses and clamps**, never inline tags, on `parse_answer`'s rule,
 since reply text can quote untrusted content.
