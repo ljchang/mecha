@@ -310,8 +310,10 @@ is open:
   `81b74494`): 3,917 passed, 0 failed. Clippy with `RUSTFLAGS=-D warnings
   --all-features` and `fmt --check` were clean.
 
-**2026-10-01 — modular installs: steps 0–4 shipped and live, 5–8 open.**
-The last of step 4, #476, went live in mecha-69's deploy of `36ff7573`.
+**2026-10-01/02 — modular installs: steps 0–5 shipped and live, 6–8 open.**
+Step 5, #503 (`[voice]` and `[personas]`), went live in mecha-d7's deploy of
+`7663b9a8` (2026-10-02, machine state below); the last of step 4, #476, in
+mecha-69's deploy of `36ff7573`.
 `FEATURES-DESIGN.md` is the authority (§7 the owner's rulings, plus L1 and
 M1 in its status header; §9 the build order); `ARCHITECTURE.md` §Features
 holds the invariants and the "Adding a feature" checklist; what shipped is in
@@ -319,15 +321,30 @@ HISTORY under 2026-09-30, 2026-09-30/10-01 and 2026-10-01 (step 4, with the
 owner's five rulings of that day). Every feature now follows its
 switch on every surface — tools, servers, web routes (404 `feature_off`),
 CLI verbs and the TUI's own drivers. This machine reads 21 of 21 on
-(`mecha features --json` from the installed `36ff7573` build, 2026-10-01,
-which carries #476's refusal text — checked with `strings`), so nothing
-refuses here. Workspace at `d19995fa` (`cargo test --workspace
---no-fail-fast`, summed over every `test result` line): 4,053 passed, 0
-failed, 5 ignored. Open, cheapest first:
+(`mecha features --json` from the installed `7663b9a8` build, 2026-10-02,
+run by mecha-ce and again by mecha-d7), so nothing refuses here. mecha-ce
+measured the workspace at `7663b9a8` (`cargo test --workspace
+--no-fail-fast` in a detached worktree, summed over every `test result`
+line): 4132 passed, 0 failed, 5 ignored. Open, cheapest first:
 
-- **Step 5: `[voice]` and `[personas]` settings tables**, each four places
-  plus a decision on `trial_env`'s lists (§9 says both go on
-  `OPERATOR_ONLY_TABLES`).
+- **For the owner: move `[web] voices_dir` into `[voice]` on this
+  machine.** Unruled. `WebLayer::voices_dir_moved` keeps the old key
+  working for one release and warns once per process. Install before
+  moving it: an older binary cannot parse `[voice]`.
+- **Minor, left for the owner by #503's reviews:**
+  - the Voice row's sentence names `mecha voice-serve` beside `[voice]
+    voice_port`, which only `mecha serve` reads; `voice-serve` takes its own
+    `--port`;
+  - "`[voice]` wins" over the `[web]` alias holds within a file; across
+    layers it is ordinary precedence, unreachable while `[voice]` is
+    global-only;
+  - `VoiceConfig::validate`'s doc claims parity with `[image]` and
+    `[documents]`, but those refuse at registration, while `[voice]` is a
+    load error (stricter);
+  - `operator_only_tables_are_what_a_project_layer_is_stripped_of` reads
+    `merge_file`'s strips by one textual idiom (`trust ==
+    LayerTrust::Project && layer.<t>.take()`), so a strip spelled
+    differently is invisible to it.
 - **Steps 6–8:** model recommendations as data with `hardware.md` in F5's
   two columns; per-feature installers with `--remove`; and the one
   `CLAUDE.md` bullet pointing at `ARCHITECTURE.md` §Features (the checklist
