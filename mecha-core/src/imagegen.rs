@@ -799,9 +799,6 @@ impl ComfyUi {
         Ok((status, res.text().await?))
     }
 
-    /// Every file the graph names is one the server can load, checked before
-    /// submitting: a missing file otherwise fails deep in a run as a node
-    /// validation error the model cannot act on.
     /// Wait out a server that is restarting: the first request after one
     /// meets a closed port or a slow answer, and that is a few seconds of
     /// start, not a server that is gone. ComfyUI is restarted on purpose when
@@ -839,6 +836,9 @@ impl ComfyUi {
         }
     }
 
+    /// Every file the graph names is one the server can load, checked before
+    /// submitting: a missing file otherwise fails deep in a run as a node
+    /// validation error the model cannot act on.
     async fn preflight(&self, cfg: &ImageConfig) -> Result<()> {
         let checks = [
             ("UnetLoaderGGUF", "unet_name", &cfg.diffusion_model),
