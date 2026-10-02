@@ -3062,7 +3062,13 @@ impl PersonaChats {
                     let _ = session.record_run(&before, &conversation);
                     let _ = session.record_outcome(o);
                     if let Some(earlier) = earlier {
-                        record_echo(&chats.store, &persona, &session.meta.id, earlier, &conversation);
+                        record_echo(
+                            &chats.store,
+                            &persona,
+                            &session.meta.id,
+                            earlier,
+                            &conversation,
+                        );
                     }
                 }
                 // The record agrees with the rollback, or a resume replays
@@ -4623,6 +4629,34 @@ mod tests {
                 other => panic!("no Done event: {other:?}"),
             }
         }
+    }
+
+    /// The echo's wiring: earlier replies are read *before* the run is
+    /// recorded, so a first reply has nothing to compare and writes nothing,
+    /// and a second that repeats it reads 1.0 — in the persona store. Read
+    /// after `record_run` instead, every reply would be in its own comparison
+    /// set and the meter would read a copy on every turn, with no error.
+    #[tokio::test]
+    async fn a_repeated_reply_is_measured_against_the_replies_before_it() {
+        let w = world_with(Mode::Say(
+            "The kelp line runs north of the second buoy today".into(),
+        ));
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let since = chrono::Utc::now() - chrono::Duration::hours(1);
+        let read = || mecha_core::persona::echo::echoes(&w.store(), "mara", since).unwrap();
+
+        turn(&w, &key, "Where is the kelp?").await;
+        assert_eq!(read().replies, 0, "a first reply has nothing to echo");
+
+        turn(&w, &key, "mm").await;
+        let e = read();
+        assert_eq!((e.replies, e.repeated, e.max), (1, 1, Some(1.0)));
+        assert!(!w.root.join("work").join("echo.jsonl").exists());
     }
 
     #[tokio::test]
