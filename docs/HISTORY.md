@@ -39,7 +39,11 @@ ruling of 2026-10-01: "[voice] holds everything voice".
   still take an absent target as "voice calls are not wired on this
   serve". They are `settings::speak` (Listen), `library_voice_sample`, and
   `library_voices`' worker list. HANDOFF carries it; found by #506's
-  review, by the rule of the sentinel trap below.
+  review, by the rule of the sentinel trap below. Settled the same day by
+  the owner's choice, "Say it honestly", over splitting the address in
+  two: empty means `mecha serve` reaches no voice worker, and the Calls
+  row, the three refusals and the docs now say so (no call relay, no
+  Listen, no voice previews).
 - **Seven review passes,** counted from the PR's comments. Pass 3 found the
   empty-`offer_target` sentinel unmounting the voice facade (Traps →
   Review process). mecha-d7 merged it at mecha-ce's named head and
