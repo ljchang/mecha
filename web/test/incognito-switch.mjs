@@ -44,10 +44,11 @@ function page(start) {
      const dropRing = (k) => dropped.push(k);
      const INCOGNITO_PREFIX = 'incognito-';
      let vEntries = [{ who: 'user', text: 'KUMQUAT' }];
+     let vTyped = 'KUMQUAT typed';
      let hungUp = 0;
      const endVoice = () => hungUp++;
      ${switchToSrc}
-     return { switchTo, dropped, call: () => ({ hungUp, vEntries }), now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom, editing, pictureNote }) };`,
+     return { switchTo, dropped, call: () => ({ hungUp, vEntries }), typed: () => vTyped, now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom, editing, pictureNote }) };`,
   )(start);
 }
 
@@ -76,6 +77,7 @@ function is(actual, expected, what) {
   is([s.gone, s.goneNote], [null, null], 'and the gone screen with its note');
   is(p.dropped, ['incognito-ab'], "and the audio its call buffered, by the chat's own key");
   is(p.call(), { hungUp: 1, vEntries: [] }, 'and a call still speaking into it, with its words');
+  is(p.typed(), '', 'and a line typed into that call and not sent (review of #499)');
 }
 {
   // Into an incognito chat with a recorded call live: the call ends rather
@@ -122,16 +124,18 @@ function is(actual, expected, what) {
      let pictureNote = { path: 'images/a.png', why: 'no such file' };
      let usage = 1, taint = 1, affect = 1, valence = 1;
      let vEntries = [{ who: 'user', text: 'KUMQUAT' }];
+     let vTyped = 'KUMQUAT typed';
      let ended = 0;
      const dropped = [];
      const endVoice = () => ended++;
      const dropRing = (k) => dropped.push(k);
      ${forgetSrc}
      forget();
-     return { ended, vEntries, dropped, entries, editing, pictureNote };`,
+     return { ended, vEntries, vTyped, dropped, entries, editing, pictureNote };`,
   )();
   is(s.ended, 1, 'ending an incognito chat hangs up its call');
   is(s.vEntries, [], "and clears the call's words from the overlay");
+  is(s.vTyped, '', 'and a line typed into the call and not sent (review of #499)');
   is(s.dropped, ['incognito-ab'], 'and drops the audio it buffered');
   is(s.editing, null, 'and closes an open edit modal');
   is(s.pictureNote, null, "and forgets a download's note, which names one of its pictures");

@@ -464,6 +464,34 @@ class AcrossAGap(unittest.TestCase):
         self.assertTrue(text.startswith("[delivered late — said at 08:19 while the connection was down] "), text)
 
 
+class HandedOver(unittest.TestCase):
+    """With the call's queue of turns wired (`deliver`), a late turn is
+    handed to it rather than pushed from the uplink's own task, so it can
+    never land inside a typed turn's answer (review of #499, pass 5)."""
+
+    def test_a_late_turn_goes_to_the_calls_one_queue(self):
+        handed = []
+
+        async def scenario():
+            inp, stt = FakeInput(), FakeSTT("what I said in the tunnel")
+            up = UplinkAudio(inp, LinkWatch(), stt)
+            up.deliver = handed.append
+            await up.on_start({"tz_offset_min": 0})
+            await up.on_audio(opus_batch(0, 300_000, 200_000, n_frames=25))
+            await up.flush_late()
+            await up.drain()
+            pushed_before = len(inp.frames)
+            for send in handed:
+                await send()
+            return inp, pushed_before
+
+        inp, pushed_before = run(scenario())
+        self.assertEqual(pushed_before, 0, "the uplink pushed the late turn itself")
+        self.assertEqual(len(handed), 1)
+        self.assertEqual(len(inp.frames), 1)
+        self.assertIn("what I said in the tunnel", inp.frames[0].messages[0]["content"])
+
+
 class Injection(unittest.TestCase):
     """Real Opus packets through the real decoder into fakes on both ends."""
 
