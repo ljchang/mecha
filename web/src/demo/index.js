@@ -338,6 +338,7 @@ export const ROUTES = [
           'settings/rules/(retire|restore)',
           'settings/voice/clone(/delete)?',
           'library/voices/sample',
+          'speak',
           'settings/lock',
           'model/(use|cancel)',
           'resume',

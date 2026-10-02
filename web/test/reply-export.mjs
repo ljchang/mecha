@@ -136,6 +136,11 @@ const REPLY = '# Plan\n\n- **one** [p. 2: "a quote"]\n\n```\ncode\n```\n';
   }
   // ChatProse itself defaults Download off, so a new surface fails closed.
   assert.match(read('ChatProse.svelte'), /download = false \} = \$props\(\)/);
+
+  // A reply read aloud stops when its button goes: the player is one per page,
+  // and a remounted reply mints a new id, so nothing else could stop it
+  // (review of #502).
+  assert.match(read('ChatProse.svelte'), /onDestroy\(\(\) => \{\s*if \(player\.id === me\) stopPlaying\(\);/);
 }
 
 console.log('reply-export: ok');

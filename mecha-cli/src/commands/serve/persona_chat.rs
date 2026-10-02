@@ -8212,4 +8212,119 @@ mod tests {
             );
         }
     }
+
+    /// The play button's speech (the owner's ask, 2026-10-01): a persona
+    /// chat's reply in the persona's voice whatever the page asks, behind its
+    /// lock; the assistant's in the voice the page names; an older worker
+    /// told apart from a refusal.
+    #[tokio::test]
+    async fn a_reply_is_spoken_in_its_chats_voice() {
+        let w = world();
+        give_voice(&w, "ada", Some(1.2));
+        let key = open_chat(&w).await;
+        let seen = Arc::new(StdMutex::new(Vec::<serde_json::Value>::new()));
+        let kept = Arc::clone(&seen);
+        let app = axum::Router::new().route(
+            "/mecha/speak",
+            axum::routing::post(move |Json(body): Json<serde_json::Value>| {
+                let kept = Arc::clone(&kept);
+                async move {
+                    kept.lock().unwrap().push(body);
+                    ([("content-type", "audio/wav")], "RIFF")
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+        let library = Arc::new(LibraryState::new(w.root.join("imagelib")));
+        let state = |target: String| super::super::WebState {
+            owner_login: Arc::new("owner@example.com".into()),
+            chat: Some(Arc::clone(&w.chat)),
+            offer_target: Some(Arc::new(target)),
+            voices_dir: None,
+            library: Arc::clone(&library),
+            features_at_start: Arc::default(),
+            gate: Arc::default(),
+            review: Arc::new(super::super::review::ReviewState {
+                outbox_root: w.root.join("outbox"),
+                sessions_dir: None,
+            }),
+        };
+        let target = format!("http://{addr}/api/offer");
+        let speak_at = |chat: Option<String>,
+                        unlock: Option<String>,
+                        voice: Option<String>,
+                        speed: Option<f64>,
+                        target: String| {
+            super::super::settings::speak(
+                State(state(target)),
+                Json(super::super::settings::SpeakBody {
+                    text: "The dig went well.".into(),
+                    chat,
+                    unlock,
+                    voice,
+                    speed,
+                }),
+            )
+        };
+        let speak = |chat, unlock, voice, target| speak_at(chat, unlock, voice, None, target);
+        // A persona chat: the persona's voice and rate, never the page's.
+        let r = speak_at(
+            Some(key.clone()),
+            None,
+            Some("page".into()),
+            Some(1.9),
+            target.clone(),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(
+            seen.lock().unwrap().pop().unwrap(),
+            serde_json::json!({"text": "The dig went well.", "voice": "ada", "speed": 1.2})
+        );
+        // Locked, it is refused as its page is — and nothing is spoken.
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        let r = speak(Some(key.clone()), None, None, target.clone()).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        assert!(seen.lock().unwrap().is_empty());
+        let r = speak(
+            Some(key.clone()),
+            Some(library.grant_for_tests()),
+            None,
+            target.clone(),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        seen.lock().unwrap().clear();
+        // The assistant's chat: the voice the page names, the owner's choice.
+        let r = speak(
+            Some("main".into()),
+            None,
+            Some("bm_george".into()),
+            target.clone(),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(seen.lock().unwrap().pop().unwrap()["voice"], "bm_george");
+        // And the rate the owner set beside it, as an assistant call has it
+        // (review of #502); out of range is refused before anything speaks.
+        let r = speak_at(Some("main".into()), None, None, Some(1.4), target.clone()).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(seen.lock().unwrap().pop().unwrap()["speed"], 1.4);
+        let r = speak_at(Some("main".into()), None, None, Some(3.0), target.clone()).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        assert!(seen.lock().unwrap().is_empty());
+        // A worker without the route: named, not a bare 404.
+        let old = axum::Router::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let old_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, old).await.ok() });
+        let r = speak(None, None, None, format!("http://{old_addr}/api/offer")).await;
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+        let why = axum::body::to_bytes(r.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&why).contains("predates the play button"));
+    }
 }
