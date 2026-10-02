@@ -269,8 +269,10 @@ fn sum_text(name: &str, s: &Sum) -> String {
             mb as f64 * 100.0 / s.total_mb.max(1) as f64
         ),
         None => format!(
-            "unknown of {} — a figure in it is unmeasured",
-            gib(s.total_mb)
+            "unknown of {} — unmeasured: {}; the rest add up to {}",
+            gib(s.total_mb),
+            s.unknown.join(", "),
+            gib(s.known_mb)
         ),
     };
     let band = s
@@ -486,7 +488,7 @@ mod tests {
         assert!(text.contains("The card\n"), "{text}");
         assert!(text.contains("System memory\n"), "{text}");
         assert!(
-            text.contains("unknown of 64.0 GiB — a figure in it is unmeasured"),
+            text.contains("unknown of 64.0 GiB — unmeasured: chat; the rest add up to 0.9 GiB"),
             "{text}"
         );
         assert!(text.contains("host: unmeasured"), "{text}");
