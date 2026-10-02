@@ -1,5 +1,11 @@
 # Personas — design
 
+> **Addendum (2026-10-02, memory timescales):** the owner ruled four tiers of
+> memory, mood labels allowed as short-term states, rebuild-on-forget for
+> derived facts, and measurement in use (§9.13, D26–D28). Memories are now
+> dated by when they were said (#514). The evidence is
+> `PERSONA-MEMORY-TIMESCALES-RESEARCH.md`.
+>
 > **Addendum (2026-10-01, memory):** §9 / §17 step 5 is partly built and
 > live: the store (#463), the nightly writer (#468) and recall at chat start
 > (#477); break reminders and the farewell check were dropped (D25, #462).
@@ -870,7 +876,10 @@ What may be recorded about the owner:
   effect is measured (§13) rather than assumed, and the separation is what
   makes turning them off, or comparing with and without them, one switch.
 - **Never**: a relationship score, a mood label, or the owner's reactions
-  used as a signal.
+  used as a signal. *(Amended by the owner, 2026-10-02, D26: a mood the
+  owner states or shows may be kept as a short-term state that expires,
+  §9.13. The other two stand. The usage log's curation acts are read by the
+  owner in a report, never by a persona or by recall.)*
 
 How they shape a chat: rendered as dated, sourced context in the first user
 turn, under a standing line in the base block — *facts about the owner are
@@ -1092,6 +1101,42 @@ This is a lane promoting its own changes, which `CLAUDE.md` names as the
 thing no lane does — and, like config rumination and learned rules, it is
 allowed here by the owner's written ruling, with a measurement and a brake,
 not as a precedent.
+
+
+### 9.13 Timescales, and measuring them (owner rulings, 2026-10-02)
+
+The first real night wrote mostly passing states as facts ("driving home",
+"[removed]"), and dated all of them by the night of the write.
+The second is fixed (#514: dated by the source chat, in the owner's zone).
+The first is a question of what a fact is; the research is
+`PERSONA-MEMORY-TIMESCALES-RESEARCH.md`. The owner's rulings:
+
+- **Four tiers** (D26). *Momentary* — kept in the episode only, never a
+  record of its own. *Short-term state* — days to weeks. *Ongoing situation*
+  — months. *Lasting fact* — no expiry; it changes only when superseded.
+  The writer gives a state a coarse expected duration from a closed set,
+  which sets `valid_to`; never a free number.
+- **Expiry is a recall rule, not deletion.** Past `valid_to`, a state stops
+  riding at chat start; it stays in the store, reachable by `memory_search`
+  and labelled past. States render in the past tense with their date.
+- **Moods may be stored** as short-term states (D26, amending §9.5). An
+  inferred mood goes to the inferred table, behind its own switch (D18).
+- **Facts are updated as needed**: supersession, as built (§9.3).
+- **Recurring states become a proposed fact.** The same state across
+  separate, spaced chats is proposed as a lasting fact for the owner to
+  accept. A fact derived from several chats is **rebuilt from the rest**
+  when one of them is forgotten, and goes back to a proposal if too few
+  remain (D27).
+- **Measure in use, and revisit** (D28). Every access to a memory is logged —
+  at chat start, per turn, by `memory_search`, by `memory_read` — with the
+  chat, the turn and the time, beside the owner's curation acts (approve,
+  correct, pin, forget). The log **records only**: it never strengthens
+  recall, because use-driven strengthening is how a persona fixates, and it
+  would make the data its own cause. A report (`mecha persona memory
+  report`, and the web curation page, §9.8) reads it per tier: how often,
+  how old at use, what the owner corrected or forgot. Ranking by age, by use
+  or by both is an experiment judged against that report (§13), never a
+  default.
 
 ---
 
@@ -1699,6 +1744,9 @@ Every row is ruled; the ruling is the owner's, in §1 where it was said in words
 | D23 | Self-portraits | **Ruled (R23):** yes — `image_generate` in a persona chat knows "self" as its linked character (§8.6) |
 | D24 | Documents in a persona chat | **Ruled 2026-09-30:** `document_read` is persona-eligible, jailed to the chat's workspace, so a file dropped into the chat can be read before the §10 file tools exist. Given only when the owner lists it in `[tools] allow`; withheld by `answers = "files"` with the web tools, since its results are third-party content. Beside `web_search` it is §10.6's three legs, and the owner's per-persona switch closes it |
 | D25 | Break reminders and the farewell check | **Ruled 2026-10-01:** both dropped before either was built. The dose meters already show the time spent; the farewell evidence is about engagement-tuned apps, and the one goodbye in the owner's chats got a clean reply. `breaks` and `farewell` in an older `persona.toml` still load, are read by nothing, and are named in the persona's notes (§12.3, §12.4) |
+| D26 | What a memory is | **Ruled 2026-10-02:** four tiers — momentary (episode only), short-term state, ongoing situation, lasting fact; states expire from recall, never from the store; moods may be kept as short-term states, amending §9.5 (§9.13) |
+| D27 | Forgetting a chat behind a derived fact | **Ruled 2026-10-02:** rebuild the fact from the chats that remain; back to a proposal if too few do (§9.13) |
+| D28 | Measuring memory | **Ruled 2026-10-02:** log every access and the owner's curation acts, record-only; revisit what works and what annoys from a report before any ranking change (§9.13) |
 
 ---
 
