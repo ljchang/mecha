@@ -14,6 +14,99 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-10-02 — modular installs, step 5: `[voice]` and `[personas]`
+(#503).** Everything voice is in one operator-only table, by the owner's
+ruling of 2026-10-01: "[voice] holds everything voice".
+- **`VoiceConfig`** has `stt_url`, `offer_target`, `voice_port` and
+  `voices_dir`, with `DEFAULT_STT_URL`, `DEFAULT_OFFER_TARGET` and
+  `DEFAULT_VOICE_PORT`. `VoiceConfig::validate`, run from
+  `Config::validate`, refuses a non-loopback address as a load error.
+  Serve's `VoiceWiring::of` lets the flags override the table and checks
+  `--offer-target` the same way.
+- **`[web] voices_dir`** still works for one release through
+  `WebLayer::voices_dir_moved`, which warns once per process.
+- **`PersonasConfig::crisis_cooldown`** makes the window after a crisis
+  pause configurable (`crisis_cooldown_minutes`, default
+  `persona::safety::CRISIS_COOLDOWN`), by the owner's ruling: "Fully
+  configurable". The four cooldown checks in `persona_chat` read it.
+- **Both tables are operator-only:** `merge_file` strips them from project
+  layers, and `trial_env::OPERATOR_ONLY_TABLES` lists them.
+  `operator_only_tables_are_what_a_project_layer_is_stripped_of` reads the
+  strips out of `config.rs` and requires the two lists to agree.
+- **The features rows:** Dictate names `stt_url`; Calls stays on with
+  "no proxy" when `offer_target` is empty; Cloning reads `[voice]
+  voices_dir`. The sentinel is not settled everywhere: three other readers
+  still take an absent target as "voice calls are not wired on this
+  serve". They are `settings::speak` (Listen), `library_voice_sample`, and
+  `library_voices`' worker list. HANDOFF carries it; found by #506's
+  review, by the rule of the sentinel trap below.
+- **Seven review passes,** counted from the PR's comments. Pass 3 found the
+  empty-`offer_target` sentinel unmounting the voice facade (Traps →
+  Review process). mecha-d7 merged it at mecha-ce's named head and
+  deployed it the same night.
+
+**2026-10-02 — typing into a call (#499), and Listen: a play button on
+each reply (#502).** The owner's read-aloud ask of 2026-10-01: type and
+hear replies spoken. Both work in the assistant's chat and persona chats,
+with no speak-replies switch, by the owner's choice.
+- **Typing into a call (#499):** a text box in both call overlays. A line
+  goes over the call's data channel (`{"t": "typed"}`, voice-core's
+  `sendText`), and the worker's `typed_turn` makes it a user turn on the
+  same context as speech (`LLMMessagesAppendFrame`). So it sits behind the
+  hosted door, the persona lock and the crisis layer by construction. The
+  channel's comment was widened to name the one field that reaches the
+  agent.
+- **One consumer for every turn outside live audio** (`TypedTurns`, VOICE-LINK-DESIGN
+  §2.5). Typed lines and late spans are delivered in order, never over an
+  answer under way:
+  - `answer_pending` counts the model answering, the bot speaking, and the
+    `TYPED_SETTLE_SECS` gap before a short answer's first audio, stamped
+    where the answer ends (`Answering.ended_at`);
+  - a late turn goes first, and its `deliver` future resolves at the send,
+    so the live audio queued behind its flush follows it, as §2.5 requires;
+  - a turn just pushed whose answer has not begun still counts as in the
+    way (`_unstarted_until`).
+- **The mic pauses while the box has focus**, derived in one place
+  (`applyMic`: `!muted && !typing`) and re-applied after every
+  `connect()`. `web/test/call-mic.mjs` drives it on both panes.
+- **Listen (#502):** beside Copy and Download, a reply is read aloud a
+  sentence at a time (`reply-player.svelte.js`), with the next piece
+  fetched while one plays. It goes through `POST /api/speak`
+  (`settings::speak`, `Owner::Of(Feature::Calls)`) to the worker's
+  `/mecha/speak` (`speak_request`), which logs no text.
+  - The page tidies the reply for speech (`speech.js`'s `speakable`): no
+    marks, no URLs, a code block named rather than read, and a persona's
+    citation spoken as "from <file>".
+  - A persona chat is spoken in the persona's voice and rate, behind its
+    lock (`check_call`, `call_voice`), whatever the page sends. The
+    assistant's replies use the voice and rate saved in Settings → Voice,
+    as an assistant call does.
+- **What the loops found:** nine passes on #499 and three on #502, counted
+  from the PRs' comments. On #499, pass 5 joined late turns to the typed
+  queue, and pass 6 found that this broke §2.5's ordering: the late
+  turn's flush returned at once, so live audio overtook it. The test that
+  pinned the ordering still passed, because its fake left the new hook
+  unset (Traps → Review process). On #502, pass 2 found Listen ignoring
+  the owner's saved speed.
+
+**2026-10-02 — a files-only persona reads the words, not the tool output
+(#505).** The owner's ruling C on #498's `answers = "files"` exemption,
+2026-10-02: "lets go with C". The memory tools stay offered. A files-only
+persona's `memory_read` returns only the owner's and the persona's words.
+Tool results read as `LEFT_OUT` where they stood, and the tool calls and
+the harness's folded blocks (`agent::is_harness_voice`) are dropped
+(`memory_tools::words_only`).
+- `read_episode` now cuts once, keeping the end:
+  `writer::render` was split into `writer::named` and `writer::bound`, and
+  a long conversation keeps `READ_HEAD_CHARS` (2000) of its opening and
+  the rest of `MAX_READ_CHARS` (8000) from its end.
+  `a_long_conversation_is_cut_once_and_keeps_its_end` fails on the old
+  double cut.
+- **Not a seal:** summaries still paraphrase tool output (HANDOFF carries
+  it).
+- Two review passes, counted from the PR's comments. Pass 1's medium finding
+  narrowed the code comment to what C actually guarantees.
+
 **2026-10-02 — a persona can search its memory and open a past
 conversation (#498).** PERSONA-DESIGN §9.7's `recall` and `recall_open`,
 named `memory_search` and `memory_read` (`persona::memory_tools`). Owner
@@ -30,8 +123,8 @@ id in the recall blocks.
   tool list cannot change mid-chat, and read the switches live on each call.
 - Two workflow review passes, counted from the PR's comments. Pass 1 caught
   a description naming `memory_read` in a chat that had not been given it.
-  Pass 2 raised the `answers = "files"` exemption, now an open owner
-  decision in HANDOFF.
+  Pass 2 raised the `answers = "files"` exemption, ruled C by the owner
+  and built in #505 (above).
 
 **2026-10-01 — calling a persona (#483), and a voice library (#490).**
 - **Calls (#483):** a call into a persona chat is answered by the persona
@@ -9617,6 +9710,21 @@ and is what finally exercised the path.)
 
 ### Review process
 
+**A fix that adds an optional hook leaves the old test on the branch
+production no longer takes.** On #499, late turns were handed to a new
+queue through `UplinkAudio.deliver`, which `run_bot` always sets. The test
+pinning §2.5's ordering, that a late turn reaches the model before the
+live audio that closed it, built its uplink without the hook. So it kept
+passing on the unwired path while the wired one let live audio overtake
+the late turn. Pass 6 found it from the code, not from a red test. When a
+change wires something in, re-point the invariant's test at the wired
+shape and keep the old one named for what it now covers
+(`test_unwired_…`). And check that the fix's own futures resolve where the
+invariant needs them: a first cut of pass 8's fix resolved the hand-off
+after the answer instead of at the send. It was caught on rereading the
+diff, before the push, and `test_delivered_before_the_answer_is_over` now
+fails on that shape (2026-10-02).
+
 **Read every review posted since your push, not since a time you guessed.**
 On #468 a cut-off of "comments after 13:40" dropped the 13:39 pass outright,
 and the 14:07 pass was not yet posted when the check ran — so a merge was one
@@ -9644,6 +9752,31 @@ environment digest, and the real gap was one switch; the question was put
 again before any code was written. A ruling is only as good as the picture
 it was given, and the cheapest place to check that picture is before it is
 sent.
+
+It recurred on 2026-10-01 with a direction of safety at stake. In #503,
+`[personas]`' crisis cooldown was described to the owner as a pause
+length, so "allow longer" sounded like the safe choice. It is the window
+in which a further crisis hit does *not* re-pause, so longer is weaker.
+The owner ruled on the wrong framing, and the question was put again
+before any code. Before asking which way is safer, read the constant's
+own doc and its call site.
+
+**Trace a sentinel value through every reader, not just the one you
+wrote it for.** In #503, `[voice] offer_target = ""` was made to mean "no
+proxy", and the features row read it as calls OFF. But serve mounts the
+voice facade only when Calls is on, so "no proxy" silently became "no
+facade", which is the thing the worker calls. Review pass 3 caught it, and
+Calls now stays on with "no proxy" in its row (`feature::own_state`).
+Before an empty or zero value takes on a meaning, grep for every reader
+of the field (2026-10-02).
+
+**Do not regrade a reviewer's severity to hand off a head.** On #474,
+pass 3 named "one substantive issue … nothing else at the bar". The
+reviewer's own words put it at the bar, but it was called minor and the
+head was named clean under "merge everything". It merged with the issue
+open, and #476 fixed it. The bar is the reviewer's grading until the
+artifact is checked and shows otherwise. A merge authorization is not a
+reason to read a finding down (2026-10-01).
 
 **Every check failing at once, with zero steps, is the runners, not the
 code.** #446's first CI run showed 13 jobs failed, rustfmt included,

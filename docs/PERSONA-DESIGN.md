@@ -466,7 +466,8 @@ rule:
   motivation, character and voice and nothing else; it may revise its own
   candidate until approved; a still-waiting linked character is approved in
   the same tap; and an incognito chat may propose, staged locked
-  (`ToolCtx::stage_locked`).*
+  (`ToolCtx::stage_locked`). A proposal may be revised from either kind of
+  chat, and the lock only rises (owner, 2026-10-01).*
 - **An imported character card is untrusted text.** The V2/V3 specs put a
   card's `system_prompt`, `post_history_instructions` and `@@decorators` into
   the most privileged slots *by design*; an importer keeps the descriptive
@@ -1391,10 +1392,10 @@ persona's own voice**, to keep it simple. §12.2's "a plain voice" governs the
 words: the safe message, never the persona's. It does not govern the TTS
 voice, so the worker needs no per-utterance voice switch.
 
-Open for the owner (ARCHITECTURE §Personas): a judge verdict that lands
-after a spoken reply has finished reaches only the page. The call's turn
-has already closed, and waiting for the verdict would hold every turn open
-for up to 90 s.
+**A judge verdict that lands after a spoken reply has finished reaches only
+the page, by the owner's ruling of 2026-10-02.** The call's turn has
+already closed, and waiting for the verdict would hold every turn open for
+up to `JUDGE_WAIT` (90 s). The call does not wait (ARCHITECTURE §Personas).
 
 The voice stack already takes everything a profile needs. The worker's TTS
 leg is Chatterbox Turbo (`scripts/voice/worker.py`): voice name, speed,
