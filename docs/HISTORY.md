@@ -85,6 +85,22 @@ with no speak-replies switch, by the owner's choice.
   unset (Traps → Review process). On #502, pass 2 found Listen ignoring
   the owner's saved speed.
 
+**2026-10-02 — a files-only persona reads the words, not the tool output
+(#505).** The owner's ruling C on #498's `answers = "files"` exemption,
+2026-10-02: "lets go with C". The memory tools stay offered. A files-only
+persona's `memory_read` returns only the owner's and the persona's words,
+and tool output is replaced by `LEFT_OUT` (`memory_tools::words_only`).
+- `read_episode` now cuts once, keeping the end:
+  `writer::render` was split into `writer::named` and `writer::bound`, and
+  a long conversation keeps `READ_HEAD_CHARS` (2000) of its opening and
+  the rest of `MAX_READ_CHARS` (8000) from its end.
+  `a_long_conversation_is_cut_once_and_keeps_its_end` fails on the old
+  double cut.
+- **Not a seal:** summaries still paraphrase tool output (HANDOFF carries
+  it).
+- Two review passes, from mecha-5d's report. Pass 1's medium finding
+  narrowed the code comment to what C actually guarantees.
+
 **2026-10-02 — a persona can search its memory and open a past
 conversation (#498).** PERSONA-DESIGN §9.7's `recall` and `recall_open`,
 named `memory_search` and `memory_read` (`persona::memory_tools`). Owner
@@ -101,8 +117,8 @@ id in the recall blocks.
   tool list cannot change mid-chat, and read the switches live on each call.
 - Two workflow review passes, counted from the PR's comments. Pass 1 caught
   a description naming `memory_read` in a chat that had not been given it.
-  Pass 2 raised the `answers = "files"` exemption, now an open owner
-  decision in HANDOFF.
+  Pass 2 raised the `answers = "files"` exemption, ruled C by the owner
+  and built in #505 (above).
 
 **2026-10-01 — calling a persona (#483), and a voice library (#490).**
 - **Calls (#483):** a call into a persona chat is answered by the persona
