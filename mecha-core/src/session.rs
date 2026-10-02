@@ -1760,6 +1760,40 @@ impl Session {
             .collect())
     }
 
+    /// The text of every assistant reply the transcript ever recorded, once
+    /// each, in the order first seen — compacted history included.
+    ///
+    /// Not [`load`](Session::load): that returns the conversation as it now
+    /// stands, where a compaction has put one summary in place of every turn
+    /// before its cut. A reader asking "has this been said before in this
+    /// chat" needs what was said, so this reads the `Message` records and
+    /// the messages inside each `Rewrite` (the turns a compacting run added
+    /// are only there). An `Extend` adds blocks to a message by index and is
+    /// rare; its text is not read.
+    pub fn assistant_replies(path: &Path) -> Result<Vec<String>> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        let mut keep = |m: &Message| {
+            let reply = m.text();
+            if m.role == crate::message::Role::Assistant
+                && !reply.trim().is_empty()
+                && seen.insert(reply.clone())
+            {
+                out.push(reply);
+            }
+        };
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str(line) {
+                Ok(Record::Message(m)) => keep(&m),
+                Ok(Record::Rewrite { messages }) => messages.iter().for_each(&mut keep),
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
     /// The most recent outcome, without parsing the transcript that precedes
     /// it.
     ///
@@ -3140,6 +3174,49 @@ mod tests {
             serde_json::from_str(r#"{"record":"goal_anchor","goal":"future:unread"}"#).unwrap();
         session.append(&unknown).unwrap();
         assert_eq!(Session::load(&session.path).unwrap().1.goal_anchor, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn assistant_replies_reads_what_compaction_took_out_of_the_conversation() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-replies")).unwrap();
+        let reply = |t: &str| Message::assistant(vec![Block::text(t)]);
+        let mut convo = Conversation::user("hi");
+        convo.push(reply("first"));
+        session.record_run(&[], &convo).unwrap();
+        // A compacting run: "first" is summarised away and "second" is
+        // only ever written inside the rewrite.
+        let before = convo.messages.clone();
+        convo.messages = vec![
+            Message::user("[summary]"),
+            Message::user("mm"),
+            reply("second"),
+        ];
+        session.record_run(&before, &convo).unwrap();
+        let before = convo.messages.clone();
+        convo.push(Message::user("again"));
+        convo.push(reply("first"));
+        session.record_run(&before, &convo).unwrap();
+
+        // What the live conversation holds: the original "first" is gone,
+        // and "second" is nowhere among the file's message records.
+        let (_, now) = Session::load(&session.path).unwrap();
+        assert_eq!(now.messages[0].text(), "[summary]");
+        assert_eq!(
+            now.messages.iter().filter(|m| m.text() == "first").count(),
+            1
+        );
+        assert_eq!(
+            Session::assistant_replies(&session.path).unwrap(),
+            ["first", "second"],
+            "every reply once, the summarised one included"
+        );
+        let file = std::fs::read_to_string(&session.path).unwrap();
+        assert!(
+            file.contains("\"record\":\"rewrite\""),
+            "the compacting run rewrote"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
