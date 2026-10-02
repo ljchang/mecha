@@ -572,7 +572,9 @@ Global file only. See [The web surface](/docs/features/interfaces/web) for insta
 ## `[voice]`
 
 Global file only: a project's `mecha.toml` and an experiment environment
-cannot set it, because `stt_url` is where your audio goes. Every key has a
+cannot set it, because `stt_url` is where your audio goes. For the same
+reason both addresses must be on this machine (`127.0.0.1`, `::1` or
+`localhost`): mecha refuses to start with one that isn't. Every key has a
 default that matches the setup in [Voice](/docs/features/interfaces/voice),
 so set only what differs on your machine.
 
