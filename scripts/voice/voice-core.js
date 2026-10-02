@@ -798,6 +798,9 @@ export function createVoiceSession(opts = {}) {
         // account of why. An unrecognised reason still ends the call, with
         // the server's own word in it.
         else if (msg.data?.t === "call-ending") endLabel = endingLabel(msg.data);
+        // A typed line the worker could not take (too many waiting): it was
+        // shown as sent, so the call says it was not.
+        else if (msg.data?.t === "typed-dropped") cfg.onTranscript({ who: "bot", text: "(that typed line was not sent — too many were waiting)", interim: false });
         break;
       case "error":
         cfg.onTranscript({ who: "bot", text: "something went wrong: " + (msg.data?.message || "unknown error"), interim: false });

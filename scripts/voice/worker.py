@@ -48,6 +48,8 @@ from pipecat.frames.frames import (
     DataFrame,
     EndFrame,
     InputAudioRawFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
     StartFrame,
     SystemFrame,
     TranscriptionFrame,
@@ -407,6 +409,26 @@ class LinkResumedFrame(SystemFrame):
     hold was keeping back may now be decided."""
 
     after_secs: float = 0.0
+
+
+class Answering(FrameProcessor):
+    """Whether the model is answering: between an LLM response's start and
+    end frames. Sits behind the LLM. The typed-turn consumer waits on this
+    as well as on speech, because an answer can end without a word spoken
+    (a refusal, an error, a tool-only turn) - waiting for speech alone held
+    the next typed line for the whole start bound (review of #499)."""
+
+    def __init__(self):
+        super().__init__()
+        self.busy = False
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMFullResponseStartFrame):
+            self.busy = True
+        elif isinstance(frame, (LLMFullResponseEndFrame, EndFrame, CancelFrame)):
+            self.busy = False
+        await self.push_frame(frame, direction)
 
 
 class LinkWatch(FrameProcessor):
@@ -2181,10 +2203,11 @@ def typed_turn(data) -> str | None:
     return text or None
 
 
-# How long a typed turn waits for the answer before it to begin being spoken,
-# and then to finish: bounds, so a turn that errored and never speaks cannot
-# hold the next line forever.
-TYPED_ANSWER_START_SECS = 60.0
+# How long a typed turn waits for the answer before it to begin (the model
+# starting, or speech), and then to finish: bounds, so an answer that never
+# starts cannot hold the next line long. The model's own response frames end
+# an answer that speaks nothing (`Answering`).
+TYPED_ANSWER_START_SECS = 10.0
 TYPED_ANSWER_END_SECS = 180.0
 # The most typed lines waiting at once.
 TYPED_QUEUE_MAX = 20
@@ -2406,6 +2429,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
         transport.input().on_stop = uplink.close
         transport.input().announce = rtvi.send_server_message
 
+    answering = Answering()
     pipeline = Pipeline(
         [
             transport.input(),
@@ -2414,6 +2438,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
             stt,
             user_aggregator,
             llm,
+            answering,
             tts,
             transport.output(),
             assistant_aggregator,
@@ -2481,9 +2506,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
             LLMMessagesAppendFrame(messages=[{"role": "user", "content": text}], run_llm=True)
         )
 
+    # Busy while the model answers or the bot speaks: an answer is over when
+    # both are done, spoken or not.
     typed = TypedTurns(
         push_typed,
-        lambda: getattr(stt, "_bot_speaking", False),
+        lambda: answering.busy or getattr(stt, "_bot_speaking", False),
         log=lambda line: print(line, flush=True),
     )
     typed_task = asyncio.create_task(typed.run())
@@ -2501,8 +2528,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
             transport.input().note_channel()
         if msg.type == "typed":
             # Decided and enqueued before any await: one consumer delivers
-            # them in order (`TypedTurns`).
-            typed.put(msg.data)
+            # them in order (`TypedTurns`). A line that is a turn and was not
+            # taken (the queue is full) is said to the page, which has
+            # already shown it as sent (review of #499).
+            if not typed.put(msg.data) and typed_turn(msg.data) is not None:
+                await rtvi.send_server_message({"t": "typed-dropped"})
             return
         if msg.type == "heartbeat":
             return
