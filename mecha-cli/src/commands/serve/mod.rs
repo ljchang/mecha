@@ -64,11 +64,12 @@ pub struct Args {
     /// Override `[web] assets` (the built web app, `web/dist`) for this run.
     #[arg(long)]
     pub assets: Option<PathBuf>,
-    /// Loopback port for the mounted voice facade — the OpenAI endpoint
-    /// the Pipecat worker calls, sharing this process's agent and prompt
-    /// cache (the unification's whole argument). 0 disables it.
-    #[arg(long, default_value_t = 8990)]
-    pub voice_port: u16,
+    /// Override `[voice] voice_port` for this run: the loopback port for the
+    /// mounted voice facade — the OpenAI endpoint the Pipecat worker calls,
+    /// sharing this process's agent and prompt cache (the unification's
+    /// whole argument). 0 disables it.
+    #[arg(long)]
+    pub voice_port: Option<u16>,
 
     /// Voice runs act without per-call approval — the owner-present
     /// posture the standalone voice-serve had via --yes. Without it a
@@ -84,10 +85,48 @@ pub struct Args {
     /// that predate the `[web]` section.
     #[arg(long)]
     pub owner_login: Option<String>,
-    /// Where the voice runner accepts WebRTC offers; `/api/offer` proxies
-    /// to it. Loopback by construction of the default; empty disables.
-    #[arg(long, default_value = "http://127.0.0.1:7860/api/offer")]
-    pub offer_target: String,
+    /// Override `[voice] offer_target` for this run: where the voice runner
+    /// accepts WebRTC offers, which `/api/offer` proxies to. Empty disables.
+    #[arg(long)]
+    pub offer_target: Option<String>,
+}
+
+/// What `serve` wires from `[voice]` and the two flags that override it for
+/// a run. One function, so the resolution is measured where it happens
+/// (review of #503, pass 4: a test building `WebState` directly graded the
+/// handler, not this read).
+#[derive(Debug)]
+struct VoiceWiring {
+    /// `None` is no proxy: empty, from the flag or the table.
+    offer_target: Option<Arc<String>>,
+    voice_port: u16,
+    stt_url: Arc<String>,
+}
+
+impl VoiceWiring {
+    fn of(args: &Args, config: &mecha_core::config::Config) -> Result<Self> {
+        // The flag meets the key's rule: a call's audio goes there, so it is
+        // on this machine however it was set (review of #503, pass 3).
+        if let Some(flag) = &args.offer_target {
+            mecha_core::config::VoiceConfig {
+                offer_target: Some(flag.clone()),
+                ..Default::default()
+            }
+            .validate()
+            .context("--offer-target")?;
+        }
+        // A flag overrides `[voice]` for this run; empty is no proxy either way.
+        let offer_target = match &args.offer_target {
+            Some(flag) => Some(flag.trim()).filter(|t| !t.is_empty()),
+            None => config.voice.offer_target(),
+        }
+        .map(|t| Arc::new(t.to_string()));
+        Ok(VoiceWiring {
+            offer_target,
+            voice_port: args.voice_port.unwrap_or(config.voice.voice_port()),
+            stt_url: Arc::new(config.voice.stt_url().to_string()),
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -100,9 +139,11 @@ struct WebState {
     review: Arc<review::ReviewState>,
     /// The voice runner's offer endpoint, or None when disabled.
     offer_target: Option<Arc<String>>,
-    /// Host directory of TTS cloning references (`[web] voices_dir`), or
+    /// Host directory of TTS cloning references (`[voice] voices_dir`), or
     /// None when cloning is not configured on this box.
     voices_dir: Option<Arc<PathBuf>>,
+    /// `[voice] stt_url`: the speech-to-text server dictation posts to.
+    stt_url: Arc<String>,
     /// The image library's directory and the unlocks granted to it.
     library: Arc<library::LibraryState>,
     /// The features whose switch was on when this process loaded its
@@ -164,6 +205,9 @@ pub async fn execute(args: Args) -> Result<()> {
     };
 
     let port = args.port.unwrap_or(config.web.port);
+    // Before anything moves out of `args`, and before anything starts: a
+    // flag off this machine refuses the start.
+    let wiring = VoiceWiring::of(&args, &config)?;
     let assets = args.assets.or(config.web.assets.clone());
 
     let chat = match chat::ChatState::build().await {
@@ -179,15 +223,14 @@ pub async fn execute(args: Args) -> Result<()> {
         }
     };
     let review = Arc::new(review::review_state(&config)?);
-    let offer_target = Some(args.offer_target.trim())
-        .filter(|t| !t.is_empty())
-        .map(|t| Arc::new(t.to_string()));
+    let voice_port = wiring.voice_port;
     let state = WebState {
         owner_login: Arc::new(owner),
         chat,
         review,
-        offer_target,
-        voices_dir: config.web.voices_dir.clone().map(Arc::new),
+        offer_target: wiring.offer_target,
+        voices_dir: config.voice.voices_dir.clone().map(Arc::new),
+        stt_url: wiring.stt_url,
         library: Arc::new(library::LibraryState::new(
             mecha_core::imagelib::Library::default_dir()?,
         )),
@@ -207,13 +250,13 @@ pub async fn execute(args: Args) -> Result<()> {
     // refuse per request, so it is not mounted at all when calls are off at
     // start (the voice call's other half, `/api/offer`, refuses per request).
     let calls = crate::commands::features::require(mecha_core::feature::Feature::Calls);
-    if let (Err(e), port) = (&calls, args.voice_port) {
+    if let (Err(e), port) = (&calls, voice_port) {
         // Only where it would otherwise have been mounted (review of #452).
         if port != 0 && state.chat.is_some() {
             eprintln!("note: the voice facade is not mounted — {e:#}");
         }
     }
-    let voice = match (&state.chat, args.voice_port) {
+    let voice = match (&state.chat, voice_port) {
         (Some(chat), port) if port != 0 && calls.is_ok() => {
             let (follower, outbox_root) = chat.voice_parts();
             match crate::voice::Facade::new(
@@ -1200,11 +1243,11 @@ fn error_chain(e: &dyn std::error::Error) -> String {
 /// The page encodes 16 kHz mono WAV itself, so no transcoder runs here; the
 /// audio never leaves the box, which is the whole argument against the
 /// browser speech APIs that ship the clip to a third party.
-async fn dictate(State(_state): State<WebState>, body: axum::body::Bytes) -> Response {
+async fn dictate(State(state): State<WebState>, body: axum::body::Bytes) -> Response {
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty audio\n").into_response();
     }
-    // Multipart by hand: one part, one fixed server, and the workspace's
+    // Multipart by hand: one part, one server (`[voice] stt_url`), and the workspace's
     // reqwest deliberately carries few features. The boundary needs no
     // randomness — nothing in a WAV clip can contain it.
     let boundary = "mecha-dictate-7f3a9c51e2b8";
@@ -1219,7 +1262,10 @@ async fn dictate(State(_state): State<WebState>, body: axum::body::Bytes) -> Res
     form.extend_from_slice(&body);
     form.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     let sent = reqwest::Client::new()
-        .post("http://127.0.0.1:8992/v1/audio/transcriptions")
+        .post(format!(
+            "{}/audio/transcriptions",
+            state.stt_url.trim_end_matches('/')
+        ))
         .header(
             "content-type",
             format!("multipart/form-data; boundary={boundary}"),
@@ -1737,6 +1783,7 @@ mod tests {
                 chat: None,
                 offer_target: None,
                 voices_dir: None,
+                stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
                 library: library::state_for_tests(
                     std::env::temp_dir()
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
@@ -2505,6 +2552,7 @@ mod tests {
                 chat: None,
                 offer_target: None,
                 voices_dir: Some(Arc::new(dir.to_path_buf())),
+                stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
                 library: library::state_for_tests(
                     std::env::temp_dir()
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
@@ -2537,6 +2585,7 @@ mod tests {
                 chat: None,
                 offer_target: None,
                 voices_dir: None,
+                stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
                 library: library::state_for_tests(
                     std::env::temp_dir()
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
@@ -3098,6 +3147,7 @@ mod boundary_tests {
                 }),
                 offer_target: None,
                 voices_dir: None,
+                stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
                 library: library::state_for_tests(
                     std::env::temp_dir()
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
@@ -3560,6 +3610,114 @@ mod boundary_tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.ok() });
         (format!("http://{addr}/api/offer"), offers)
+    }
+
+    /// `serve` wires `[voice]` — read, not the old literals — and each flag
+    /// overrides its key for the run; an empty `--offer-target` is no proxy,
+    /// and one off this machine refuses the start (review of #503, pass 4:
+    /// nothing measured this read, only the handler downstream of it).
+    #[test]
+    fn serve_wires_the_voice_table_and_flags_override_it() {
+        #[derive(clap::Parser)]
+        struct Line {
+            #[command(flatten)]
+            args: Args,
+        }
+        let args = |argv: &[&str]| {
+            <Line as clap::Parser>::try_parse_from(
+                std::iter::once("serve").chain(argv.iter().copied()),
+            )
+            .unwrap()
+            .args
+        };
+        let mut config = mecha_core::config::Config::default();
+        config.voice.stt_url = Some("http://127.0.0.1:1111/v1".into());
+        config.voice.offer_target = Some("http://127.0.0.1:2222/api/offer".into());
+        config.voice.voice_port = Some(3333);
+
+        let w = VoiceWiring::of(&args(&[]), &config).unwrap();
+        assert_eq!(w.stt_url.as_str(), "http://127.0.0.1:1111/v1");
+        assert_eq!(
+            w.offer_target.as_deref().map(String::as_str),
+            Some("http://127.0.0.1:2222/api/offer")
+        );
+        assert_eq!(w.voice_port, 3333);
+
+        let w = VoiceWiring::of(
+            &args(&[
+                "--offer-target",
+                "http://localhost:4444/api/offer",
+                "--voice-port",
+                "0",
+            ]),
+            &config,
+        )
+        .unwrap();
+        assert_eq!(
+            w.offer_target.as_deref().map(String::as_str),
+            Some("http://localhost:4444/api/offer")
+        );
+        assert_eq!(w.voice_port, 0);
+        let w = VoiceWiring::of(&args(&["--offer-target", ""]), &config).unwrap();
+        assert_eq!(w.offer_target, None, "empty is no proxy");
+
+        let err = VoiceWiring::of(
+            &args(&["--offer-target", "http://10.0.0.5:7860/api/offer"]),
+            &config,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("--offer-target"), "{err:#}");
+    }
+
+    /// Dictation posts the clip to `[voice] stt_url` — the address that is
+    /// the reason `[voice]` is operator-only and loopback-checked — and
+    /// relays the server's answer. A stand-in speech server records what
+    /// reached it (review of #503, pass 3: nothing measured that the address
+    /// was read rather than the old literal).
+    #[tokio::test]
+    async fn dictation_posts_the_clip_to_the_configured_stt_url() {
+        let heard = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let got = heard.clone();
+        let stt = Router::new().route(
+            "/v1/audio/transcriptions",
+            axum::routing::post(move |body: axum::body::Bytes| {
+                let got = got.clone();
+                async move {
+                    *got.lock().unwrap() = body.to_vec();
+                    Json(serde_json::json!({"text": "heard you"}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, stt).await.ok() });
+
+        let state = WebState {
+            owner_login: Arc::new("owner@example.com".into()),
+            chat: None,
+            features_at_start: Arc::default(),
+            gate: Arc::default(),
+            review: Arc::new(review::ReviewState {
+                outbox_root: PathBuf::new(),
+                sessions_dir: None,
+            }),
+            offer_target: None,
+            voices_dir: None,
+            stt_url: Arc::new(format!("http://{addr}/v1/")),
+            library: library::state_for_tests(
+                std::env::temp_dir().join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
+            ),
+        };
+        let clip = b"RIFF-a-clip-of-audio".to_vec();
+        let (status, body) =
+            answer_of(dictate(State(state), axum::body::Bytes::from(clip.clone())).await).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        assert!(String::from_utf8_lossy(&body).contains("heard you"));
+        let sent = heard.lock().unwrap().clone();
+        assert!(
+            sent.windows(clip.len()).any(|w| w == clip.as_slice()),
+            "the clip did not reach the configured server"
+        );
     }
 
     async fn answer_of(resp: Response) -> (StatusCode, Vec<u8>) {

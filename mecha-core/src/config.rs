@@ -68,6 +68,12 @@ pub struct Config {
     /// through the door. (Replaces the opaque `toml::Value` bridge main
     /// carried while this arc was in flight.)
     pub web: WebConfig,
+    /// Talking to mecha: the voice parts' addresses and the cloning
+    /// references. Global-file only; see [`VoiceConfig`].
+    pub voice: VoiceConfig,
+    /// The persona chats' safety settings. Global-file only; see
+    /// [`PersonasConfig`].
+    pub personas: PersonasConfig,
     /// Where the harness diagnostician may read this program's own source.
     /// Global-file only; see [`HarnessConfig`].
     pub harness: HarnessConfig,
@@ -403,6 +409,8 @@ impl Default for Config {
             slack: SlackConfig::default(),
             messages: MessagesConfig::default(),
             web: WebConfig::default(),
+            voice: VoiceConfig::default(),
+            personas: PersonasConfig::default(),
         }
     }
 }
@@ -1210,7 +1218,10 @@ impl ConfigLayer {
         }
         if let Some(w) = self.web.as_mut() {
             opt(&mut w.assets);
-            opt(&mut w.voices_dir);
+            opt(&mut w.voices_dir_moved);
+        }
+        if let Some(v) = self.voice.as_mut() {
+            opt(&mut v.voices_dir);
         }
         if let Some(h) = self.harness.as_mut() {
             opt(&mut h.source_dir);
@@ -1321,6 +1332,7 @@ impl Config {
     /// wrong zone with the only notice on a stderr nobody reads at 03:00. A
     /// name that does not parse is now a load error naming the fix.
     pub fn validate(&self) -> Result<()> {
+        self.voice.validate()?;
         // A rule that does not do what its author believes fails on every
         // start, not on the run that needed it. See `policy::ExecPolicy`.
         crate::policy::ExecPolicy::from_config(&self.rules, self.approval.strict_inline_eval)
@@ -1434,6 +1446,23 @@ impl Config {
         if trust == LayerTrust::Project && layer.image.take().is_some() {
             tracing::warn!(
                 "[image] in {} is ignored — image generation loads from the \
+                 global config only",
+                path.display()
+            );
+        }
+        // `[voice]` names where the owner's audio goes and the cloning
+        // directory; `[personas]` holds a safety setting. Both are the
+        // operator's (FEATURES-DESIGN.md §5); `[voice]`'s addresses are also
+        // refused off this machine at load (`VoiceConfig::validate`).
+        if trust == LayerTrust::Project && layer.voice.take().is_some() {
+            tracing::warn!(
+                "[voice] in {} is ignored — voice settings load from the global config only",
+                path.display()
+            );
+        }
+        if trust == LayerTrust::Project && layer.personas.take().is_some() {
+            tracing::warn!(
+                "[personas] in {} is ignored — persona safety settings load from the \
                  global config only",
                 path.display()
             );
@@ -1723,14 +1752,6 @@ pub struct WebConfig {
     /// Directory holding the built web app (`web/dist`). Unset serves the
     /// API routes only, which is what tests and a headless box want.
     pub assets: Option<PathBuf>,
-    /// Where the TTS server's voice references live — the host side of the
-    /// directory the Chatterbox container mounts read-only as `/voices`
-    /// (each `<name>.wav` is a cloning reference; the file *is* the voice).
-    /// Unset disables voice cloning from the settings page, which is the
-    /// honest default: nothing here can guess where a container's mount
-    /// points, and writing WAVs into a wrong directory would litter it
-    /// silently.
-    pub voices_dir: Option<PathBuf>,
 }
 
 impl Default for WebConfig {
@@ -1740,7 +1761,6 @@ impl Default for WebConfig {
             port: 63242,
             owner_login: None,
             assets: None,
-            voices_dir: None,
         }
     }
 }
@@ -1751,7 +1771,148 @@ struct WebLayer {
     port: Option<u16>,
     owner_login: Option<String>,
     assets: Option<PathBuf>,
+    /// Moved to `[voice] voices_dir` (FEATURES-DESIGN.md §5). Read for one
+    /// release and applied *into* `[voice]`, so there is one runtime answer;
+    /// `[voice]`'s own value wins where both are set. Named apart from
+    /// `VoiceLayer::voices_dir` in Rust, so the by-name guard
+    /// `every_field_a_nested_layer_can_read_is_a_field_apply_reads` still
+    /// sees each field applied (review of #503).
+    #[serde(rename = "voices_dir")]
+    voices_dir_moved: Option<PathBuf>,
+}
+
+/// Talking to mecha (FEATURES-DESIGN.md §5): what was serve flags, a literal
+/// in `serve::dictate` and `[web] voices_dir`, in one table — the addresses a
+/// new install needs to set, since theirs will not be this machine's.
+/// Global-file only, and on `trial_env::OPERATOR_ONLY_TABLES`, for
+/// `[image]`'s reason: `stt_url` is where the owner's audio goes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VoiceConfig {
+    /// The OpenAI-compatible speech-to-text server dictation posts to, up to
+    /// its `/v1` (`…/audio/transcriptions` is appended). Unset is
+    /// [`VoiceConfig::DEFAULT_STT_URL`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_url: Option<String>,
+    /// Where the voice worker accepts WebRTC offers; `/api/offer` proxies
+    /// to it. Unset is [`VoiceConfig::DEFAULT_OFFER_TARGET`]; empty turns
+    /// the proxy off (calls stay on: a browser can reach the worker's own
+    /// door). `mecha serve --offer-target` overrides it per run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offer_target: Option<String>,
+    /// The loopback port `mecha serve` mounts the voice facade on — the
+    /// OpenAI endpoint the worker calls. Unset is
+    /// [`VoiceConfig::DEFAULT_VOICE_PORT`]; 0 does not mount it.
+    /// `mecha serve --voice-port` overrides it per run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice_port: Option<u16>,
+    /// Where the TTS server's voice references live — the host side of the
+    /// directory the Chatterbox container mounts read-only as `/voices`
+    /// (each `<name>.wav` is a cloning reference; the file *is* the voice).
+    /// Unset disables voice cloning, which is the honest default: nothing
+    /// here can guess where a container's mount points, and writing WAVs
+    /// into a wrong directory would litter it silently.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voices_dir: Option<PathBuf>,
+}
+
+impl VoiceConfig {
+    /// Parakeet on this machine; a new install sets its own.
+    pub const DEFAULT_STT_URL: &'static str = "http://127.0.0.1:8992/v1";
+    pub const DEFAULT_OFFER_TARGET: &'static str = "http://127.0.0.1:7860/api/offer";
+    pub const DEFAULT_VOICE_PORT: u16 = 8990;
+
+    /// Trimmed, as `offer_target` is: `Url::parse` accepts surrounding
+    /// spaces, so an untrimmed value would validate and then post to
+    /// `…/v1%20/…` (review of #503, pass 4).
+    pub fn stt_url(&self) -> &str {
+        self.stt_url
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or(Self::DEFAULT_STT_URL)
+    }
+
+    /// The offer target, or `None` when it is set empty: no proxy.
+    pub fn offer_target(&self) -> Option<&str> {
+        Some(
+            self.offer_target
+                .as_deref()
+                .unwrap_or(Self::DEFAULT_OFFER_TARGET)
+                .trim(),
+        )
+        .filter(|t| !t.is_empty())
+    }
+
+    pub fn voice_port(&self) -> u16 {
+        self.voice_port.unwrap_or(Self::DEFAULT_VOICE_PORT)
+    }
+
+    /// Both addresses must be on this machine, refused at load like
+    /// `[image] url` and `[documents] ocr_url` (review of #503): the owner's
+    /// audio goes to `stt_url` and a call's media to `offer_target`, and
+    /// dictation's whole argument is that the clip never leaves the box. An
+    /// empty `offer_target` stays legal — it turns the proxy off.
+    pub fn validate(&self) -> Result<()> {
+        let loopback = |key: &str, raw: &str, why: &str| -> Result<()> {
+            let url = reqwest::Url::parse(raw).with_context(|| format!("[voice] {key} `{raw}`"))?;
+            anyhow::ensure!(
+                matches!(url.scheme(), "http" | "https"),
+                "[voice] {key} `{raw}` must be http or https"
+            );
+            anyhow::ensure!(
+                crate::imagegen::is_loopback(&url),
+                "[voice] {key} `{raw}` is not on this machine — {why}, so it must be loopback \
+                 (127.0.0.1, ::1 or localhost)"
+            );
+            Ok(())
+        };
+        if let Some(raw) = self.stt_url.as_deref() {
+            loopback("stt_url", raw, "dictation sends your recorded audio to it")?;
+        }
+        if let Some(raw) = self.offer_target() {
+            loopback("offer_target", raw, "a voice call's audio goes to it")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VoiceLayer {
+    stt_url: Option<String>,
+    offer_target: Option<String>,
+    voice_port: Option<u16>,
     voices_dir: Option<PathBuf>,
+}
+
+/// The persona chats' safety settings (FEATURES-DESIGN.md §5). Global-file
+/// only, and on `trial_env::OPERATOR_ONLY_TABLES`: configuration supplied
+/// with a checkout may only narrow, and a safety setting is the operator's —
+/// a study that needs a different value asks the operator.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PersonasConfig {
+    /// After a crisis pause, how many minutes a further crisis message in
+    /// the same chat does **not** pause again — so talking through something
+    /// hard is not stopped at every message. Longer pauses less often;
+    /// 0 pauses on every hit. Unset is `persona::safety::CRISIS_COOLDOWN`
+    /// (15). Fully the owner's to set (the owner's ruling, 2026-10-01).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crisis_cooldown_minutes: Option<u64>,
+}
+
+impl PersonasConfig {
+    pub fn crisis_cooldown(&self) -> std::time::Duration {
+        self.crisis_cooldown_minutes
+            .map(|m| std::time::Duration::from_secs(m.saturating_mul(60)))
+            .unwrap_or(crate::persona::safety::CRISIS_COOLDOWN)
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersonasLayer {
+    crisis_cooldown_minutes: Option<u64>,
 }
 
 /// A partially-specified config file. Every field is optional so a project file
@@ -1784,6 +1945,8 @@ struct ConfigLayer {
     messages: Option<MessagesLayer>,
     skills: Option<SkillsLayer>,
     web: Option<WebLayer>,
+    voice: Option<VoiceLayer>,
+    personas: Option<PersonasLayer>,
     harness: Option<HarnessLayer>,
     features: Option<BTreeMap<String, bool>>,
 }
@@ -2259,8 +2422,40 @@ impl ConfigLayer {
             if x.assets.is_some() {
                 t.assets = x.assets;
             }
+            // The one-release alias: into `[voice]`, unless this file also
+            // sets `[voice] voices_dir`, which wins (applied below).
+            if x.voices_dir_moved.is_some() {
+                // Once per process: a long-lived `serve` re-reads the global
+                // file every turn (`Follower::follow`), and the owner's own
+                // file is the one with the old key (review of #503).
+                static MOVED: std::sync::Once = std::sync::Once::new();
+                MOVED.call_once(|| {
+                    tracing::warn!(
+                        "[web] voices_dir has moved to [voice] voices_dir; the old key is read \
+                         for one release"
+                    )
+                });
+                cfg.voice.voices_dir = x.voices_dir_moved;
+            }
+        }
+        if let Some(x) = self.voice {
+            let t = &mut cfg.voice;
+            if x.stt_url.is_some() {
+                t.stt_url = x.stt_url;
+            }
+            if x.offer_target.is_some() {
+                t.offer_target = x.offer_target;
+            }
+            if x.voice_port.is_some() {
+                t.voice_port = x.voice_port;
+            }
             if x.voices_dir.is_some() {
                 t.voices_dir = x.voices_dir;
+            }
+        }
+        if let Some(x) = self.personas {
+            if x.crisis_cooldown_minutes.is_some() {
+                cfg.personas.crisis_cooldown_minutes = x.crisis_cooldown_minutes;
             }
         }
     }
@@ -2797,6 +2992,114 @@ mod tests {
         assert_eq!(cfg.messages.enabled, Some(false));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `[voice]` and `[personas]` (FEATURES-DESIGN.md §9 step 5): the
+    /// global file sets them and a project file cannot; unset, each reads
+    /// the value the code carried before; and `[web] voices_dir`, the old
+    /// key, lands in `[voice]` for one release, where `[voice]`'s own value
+    /// wins.
+    #[test]
+    fn voice_and_personas_are_the_global_files_and_web_voices_dir_is_an_alias() {
+        let dir = std::env::temp_dir().join(format!("mecha-voice-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, text: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+
+        let unset = Config::default();
+        assert_eq!(unset.voice.stt_url(), VoiceConfig::DEFAULT_STT_URL);
+        assert_eq!(
+            unset.voice.offer_target(),
+            Some(VoiceConfig::DEFAULT_OFFER_TARGET)
+        );
+        assert_eq!(unset.voice.voice_port(), VoiceConfig::DEFAULT_VOICE_PORT);
+        assert_eq!(unset.voice.voices_dir, None);
+        assert_eq!(
+            unset.personas.crisis_cooldown(),
+            crate::persona::safety::CRISIS_COOLDOWN
+        );
+
+        let set = file(
+            "set.toml",
+            "[voice]\nstt_url = \"http://127.0.0.1:9/v1\"\noffer_target = \"\"\n\
+             voice_port = 0\nvoices_dir = \"/srv/voices\"\n\
+             [personas]\ncrisis_cooldown_minutes = 0\n",
+        );
+        let mut global = Config::default();
+        global.merge_file(&set, LayerTrust::Global).unwrap();
+        assert_eq!(global.voice.stt_url(), "http://127.0.0.1:9/v1");
+        global
+            .validate()
+            .expect("loopback, and an empty offer target, are fine");
+        assert_eq!(global.voice.offer_target(), None, "empty turns calls off");
+        assert_eq!(global.voice.voice_port(), 0);
+        assert_eq!(
+            global.voice.voices_dir.as_deref(),
+            Some(Path::new("/srv/voices"))
+        );
+        assert_eq!(global.personas.crisis_cooldown(), std::time::Duration::ZERO);
+
+        let mut project = Config::default();
+        project.merge_file(&set, LayerTrust::Project).unwrap();
+        assert_eq!(
+            project.voice,
+            VoiceConfig::default(),
+            "a project file sets no voice"
+        );
+        assert_eq!(
+            project.personas,
+            PersonasConfig::default(),
+            "nor a safety setting"
+        );
+
+        // The alias: the old key alone lands in `[voice]`…
+        let old = file("old.toml", "[web]\nvoices_dir = \"/srv/old\"\n");
+        let mut aliased = Config::default();
+        aliased.merge_file(&old, LayerTrust::Global).unwrap();
+        assert_eq!(
+            aliased.voice.voices_dir.as_deref(),
+            Some(Path::new("/srv/old"))
+        );
+        // …and beside the new one, the new one wins.
+        let both = file(
+            "both.toml",
+            "[web]\nvoices_dir = \"/srv/old\"\n[voice]\nvoices_dir = \"/srv/new\"\n",
+        );
+        let mut winner = Config::default();
+        winner.merge_file(&both, LayerTrust::Global).unwrap();
+        assert_eq!(
+            winner.voice.voices_dir.as_deref(),
+            Some(Path::new("/srv/new"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `[voice]`'s addresses are refused off this machine at load, as
+    /// `[image] url` and `[documents] ocr_url` are (review of #503): the
+    /// owner's audio goes to them.
+    #[test]
+    fn voice_addresses_off_this_machine_are_refused() {
+        for (key, raw) in [
+            ("stt_url", "http://stt.example:8992/v1"),
+            ("stt_url", "ftp://127.0.0.1/v1"),
+            ("offer_target", "http://10.0.0.5:7860/api/offer"),
+        ] {
+            let mut cfg = Config::default();
+            match key {
+                "stt_url" => cfg.voice.stt_url = Some(raw.into()),
+                _ => cfg.voice.offer_target = Some(raw.into()),
+            }
+            let err = format!("{:#}", cfg.validate().unwrap_err());
+            assert!(err.contains(&format!("[voice] {key}")), "{err}");
+        }
+        for ok in ["http://localhost:8992/v1", "http://[::1]:8992/v1"] {
+            let mut cfg = Config::default();
+            cfg.voice.stt_url = Some(ok.into());
+            cfg.validate().unwrap_or_else(|e| panic!("{ok}: {e:#}"));
+        }
     }
 
     #[test]

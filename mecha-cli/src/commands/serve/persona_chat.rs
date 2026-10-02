@@ -155,7 +155,8 @@ struct PersonaSession {
     /// on the first turn of a resumed chat.
     anchor_due: bool,
     /// When the crisis sensor last paused this chat: a hit inside
-    /// `safety::CRISIS_COOLDOWN` of it does not pause again (§12.2).
+    /// `[personas] crisis_cooldown_minutes` of it (default
+    /// `safety::CRISIS_COOLDOWN`) does not pause again (§12.2).
     crisis_paused_at: Option<std::time::Instant>,
     /// An owner message that tripped the crisis sensor while a run was live:
     /// the run is stopped, and its hand-back records this so the words are
@@ -2483,9 +2484,9 @@ impl PersonaChats {
             let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
             let early_pause = switches.crisis
                 && safety::keyword_hit(&text)
-                && !ps
-                    .crisis_paused_at
-                    .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
+                && !ps.crisis_paused_at.is_some_and(|t| {
+                    t.elapsed() < chat.follower.current().config.personas.crisis_cooldown()
+                });
             // The persona's files ride before the chat's first reply (§10.4),
             // listed here and read outside the lock.
             let wants_files = ps
@@ -2650,9 +2651,9 @@ impl PersonaChats {
         // `said`, not `text`: a goal typed at open rides in the first turn,
         // and is the owner's words as much as the message is.
         let hit = switches.crisis && safety::keyword_hit(&said);
-        let cooling = ps
-            .crisis_paused_at
-            .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
+        let cooling = ps.crisis_paused_at.is_some_and(|t| {
+            t.elapsed() < chat.follower.current().config.personas.crisis_cooldown()
+        });
         // An early decision binds: it skipped the agent this turn would need.
         let pause = hit && (!cooling || early_pause);
         // The Core, handed back near the newest turn on a cadence, after a
@@ -3267,7 +3268,7 @@ impl PersonaChats {
         if switches.crisis && safety::keyword_hit(&text) {
             let cooling = ps
                 .crisis_paused_at
-                .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
+                .is_some_and(|t| t.elapsed() < bound.config.personas.crisis_cooldown());
             if let Err(e) =
                 safety::record_crisis(&self.store, "web", safety::Tier::Keyword, !cooling)
             {
@@ -3295,7 +3296,7 @@ impl PersonaChats {
         // the keywords missed stops that run and pauses the persona.
         let cooling = ps
             .crisis_paused_at
-            .is_some_and(|t| t.elapsed() < safety::CRISIS_COOLDOWN);
+            .is_some_and(|t| t.elapsed() < bound.config.personas.crisis_cooldown());
         if switches.crisis && !cooling {
             let chats = Arc::clone(self);
             let key = key.to_string();
@@ -6149,6 +6150,31 @@ mod tests {
         assert!(counted.contains("\"paused\":false"), "{counted}");
     }
 
+    /// The cooldown is `[personas] crisis_cooldown_minutes`, the owner's to
+    /// set (ruling, 2026-10-01): at 0 a second crisis message pauses again,
+    /// where the default's 15 minutes lets it through (the test above).
+    #[tokio::test]
+    async fn the_crisis_cooldown_is_the_owners_setting() {
+        let w = world_tuned(Mode::Answer, |c| {
+            c.personas.crisis_cooldown_minutes = Some(0)
+        });
+        let key = open_chat(&w).await;
+        for message in ["honestly I want to die", "I still want to die"] {
+            let answered = w
+                .personas()
+                .send(&w.chat, &w.library, &key, message, None, None)
+                .await
+                .unwrap();
+            assert_eq!(answered["paused"], true, "{message}: {answered}");
+        }
+        assert!(
+            w.seen.lock().unwrap().is_empty(),
+            "the persona answered a crisis turn"
+        );
+        let counted = std::fs::read_to_string(w.store().join("safety.jsonl")).unwrap();
+        assert_eq!(counted.matches("\"paused\":true").count(), 2, "{counted}");
+    }
+
     /// A pause starts no run, so nothing else arms the chat for a picture
     /// the paused turn carried (review of #438): the chip, the pause's
     /// `Done`, and the session file a resume reads all say private. Reached
@@ -7888,6 +7914,7 @@ mod tests {
             chat: Some(Arc::clone(&w.chat)),
             offer_target: Some(Arc::new(target)),
             voices_dir: None,
+            stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
             library: Arc::clone(&library),
             features_at_start: Arc::default(),
             gate: Arc::default(),
@@ -8074,6 +8101,7 @@ mod tests {
             chat: Some(Arc::clone(&w.chat)),
             offer_target: Some(Arc::new(target)),
             voices_dir: Some(Arc::new(clones)),
+            stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
             library: Arc::clone(&library),
             features_at_start: Arc::default(),
             gate: Arc::default(),
@@ -8192,6 +8220,7 @@ mod tests {
                 chat: Some(Arc::clone(&w.chat)),
                 offer_target: Some(Arc::new(format!("http://{addr}/api/offer"))),
                 voices_dir: None,
+                stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
                 library: Arc::new(LibraryState::new(w.root.join("imagelib"))),
                 features_at_start: Arc::default(),
                 gate: Arc::default(),
@@ -8243,6 +8272,7 @@ mod tests {
             chat: Some(Arc::clone(&w.chat)),
             offer_target: Some(Arc::new(target)),
             voices_dir: None,
+            stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
             library: Arc::clone(&library),
             features_at_start: Arc::default(),
             gate: Arc::default(),

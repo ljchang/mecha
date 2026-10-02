@@ -25,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Voice and persona settings in the config file.** A new `[voice]`
+  table holds the speech-to-text address dictation uses (`stt_url`, until
+  now fixed in the code), the voice worker's address and the voice facade's
+  port (until now only `mecha serve` flags, which still override them for
+  one run), and `voices_dir`. A new `[personas]` table sets
+  `crisis_cooldown_minutes`: after a crisis pause, how long a further crisis
+  message in the same chat does not pause again (15 by default). Both are
+  read from your global config only. `[web] voices_dir` has moved to
+  `[voice] voices_dir`; the old key still works for one release. The
+  speech-to-text and voice worker addresses must be on this machine, in
+  `[voice]` or in `mecha serve --offer-target`: a voice worker on another
+  host is now refused at start rather than reached.
 - **Type during a call.** A call, with the assistant or a persona, has a text
   box under its transcript. A typed line is a turn like a spoken one, and the
   answer is spoken in the call's voice. The microphone pauses while the box

@@ -29,9 +29,15 @@
 > levers keep one field (ARCHITECTURE §Features says why). **Step 4 is split
 > too: 4a — `mecha setup` iterates the registry, `mecha setup <feature>` and
 > `--minimal` — is built, and so is 4b** (a run records the feature set
-> on its session record, and an environment's `requires`); steps 5–8 are
-> unbuilt. The feature set rides on the session record and, since the
-> owner's ruling of 2026-10-01, in every experiment row's condition hash —
+> on its session record, and an environment's `requires`). **Step 5 is
+> built** (2026-10-01): `[voice]` holds `stt_url`, `offer_target`,
+> `voice_port` and `voices_dir` (the owner chose all four; `[web]
+> voices_dir` is a one-release alias, and the two serve flags override per
+> run), and `[personas] crisis_cooldown_minutes` is fully the owner's to set
+> (the owner's ruling — the cooldown is the window in which a further hit
+> does *not* re-pause, so longer is weaker). Steps 6–8 are unbuilt. The
+> feature set rides on the session record and, since the owner's ruling
+> of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
 > the operator's (ARCHITECTURE §Features). The owner
 > ruled F1–F6 the same day (§7): the switch is a `[features]` table of
@@ -124,7 +130,7 @@ in whichever way the code underneath happens to fail:
 | **503** | chat, personas, `/api/today`, `/api/entity/{create,merge}` |
 | **502** | mail reads, graph reads, the graph queue, `/api/dictate`, `/api/offer` |
 | **409** | every write that runs a child verb — `review::verb_output` maps any failed child to CONFLICT |
-| **501** | voice cloning without `[web] voices_dir` |
+| **501** | voice cloning without `[voice] voices_dir` (formerly `[web] voices_dir`) |
 | **200, empty** | `/api/mail` (no triage store), `/api/questions`, `/api/frontdoor` — which also **creates** `~/.mecha/requests` as a side effect |
 
 `/api/library*` never checks `[image]` at all: the Library tab works as a

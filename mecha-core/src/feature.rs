@@ -1211,16 +1211,33 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         } else {
             "~/.mecha/personas ([tools] withholds persona_propose from the model)".to_string()
         }),
-        Feature::Voice => on("`mecha voice-serve`, and `mecha serve`'s voice flags"),
-        Feature::Dictate => {
-            on("the web app's speech to text, at a fixed address — not yet configurable")
-        }
-        Feature::Calls => on("`mecha serve`'s --offer-target"),
-        Feature::Cloning => match &cfg.web.voices_dir {
+        // `voice` stays on at port 0: `mecha voice-serve` is its own surface,
+        // with its own `--port`. The sentence says only what `mecha serve`
+        // mounts (review of #503).
+        Feature::Voice => on(match cfg.voice.voice_port() {
+            0 => "`mecha voice-serve`; `mecha serve` mounts no facade ([voice] voice_port = 0)"
+                .to_string(),
+            port => format!(
+                "`mecha voice-serve`, and the facade `mecha serve` mounts on [voice] voice_port \
+                 {port}"
+            ),
+        }),
+        Feature::Dictate => on(format!("speech to text at {}", cfg.voice.stt_url())),
+        // Empty is no proxy, not calls off: the browser can reach the
+        // worker's own door, which calls the facade `mecha serve` mounts —
+        // and that mount gates on this row, so reading empty as off would
+        // take the facade down too (review of #503, pass 3).
+        Feature::Calls => on(match cfg.voice.offer_target() {
+            Some(target) => format!("offers to {target}"),
+            None => "no proxy ([voice] offer_target is empty): the browser reaches the voice \
+                     worker directly"
+                .to_string(),
+        }),
+        Feature::Cloning => match &cfg.voice.voices_dir {
             Some(dir) => on(dir.display().to_string()),
             None => off(
-                "no [web] voices_dir",
-                "set [web] voices_dir to the directory the TTS container mounts as /voices",
+                "no [voice] voices_dir",
+                "set [voice] voices_dir to the directory the TTS container mounts as /voices",
             ),
         },
         Feature::Incognito => match crate::config::provider_is_local(cfg, &cfg.default_provider) {
@@ -1738,6 +1755,50 @@ mod tests {
         assert_eq!(state(&at(&cfg, &facts), Feature::Documents).word(), "on");
         assert_eq!(state(&at(&cfg, &facts), Feature::Ocr).word(), "on");
         assert_eq!(state(&at(&cfg, &facts), Feature::Layout).word(), "off");
+    }
+
+    /// Voice's parts read `[voice]` (step 5): dictation names the address it
+    /// posts to, an empty `offer_target` reads "no proxy" with calls still on,
+    /// and cloning reads `[voice] voices_dir` — not `[web]`'s, which is
+    /// applied into it at load.
+    #[test]
+    fn the_voice_parts_read_the_voice_table() {
+        let mut cfg = Config::default();
+        switch_all(&mut cfg, true);
+        // The parts need `web` ready, which needs its owner.
+        cfg.web.owner_login = Some("owner@example.com".into());
+        let facts = |cfg: &Config| Facts {
+            config: cfg.clone(),
+            ..empty_machine()
+        };
+        let State::On { detail } = state(&facts(&cfg), Feature::Dictate) else {
+            panic!("dictation is on with the default address")
+        };
+        assert!(
+            detail.contains(crate::config::VoiceConfig::DEFAULT_STT_URL),
+            "{detail}"
+        );
+        assert_eq!(state(&facts(&cfg), Feature::Calls).word(), "on");
+        // Empty is no proxy, and calls stay on: the facade the worker calls
+        // mounts on this row (review of #503, pass 3).
+        cfg.voice.offer_target = Some(" ".into());
+        let State::On { detail } = state(&facts(&cfg), Feature::Calls) else {
+            panic!("an empty offer target is no proxy, not calls off")
+        };
+        assert!(detail.contains("no proxy"), "{detail}");
+        let State::Off { reason, .. } = state(&facts(&cfg), Feature::Cloning) else {
+            panic!("no voices_dir is cloning off")
+        };
+        assert!(reason.contains("[voice] voices_dir"), "{reason}");
+        cfg.voice.voices_dir = Some("/srv/voices".into());
+        assert_eq!(state(&facts(&cfg), Feature::Cloning).word(), "on");
+        // Port 0 mounts no facade, and the row says so rather than naming
+        // port 0 as a mount (review of #503).
+        cfg.voice.voice_port = Some(0);
+        let State::On { detail } = state(&facts(&cfg), Feature::Voice) else {
+            panic!("voice stays on: `mecha voice-serve` is its own surface")
+        };
+        assert!(detail.contains("mounts no facade"), "{detail}");
     }
 
     /// The owner's switch comes first: absent and `false` are both off,
