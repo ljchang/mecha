@@ -1218,7 +1218,7 @@ impl ConfigLayer {
         }
         if let Some(w) = self.web.as_mut() {
             opt(&mut w.assets);
-            opt(&mut w.voices_dir);
+            opt(&mut w.voices_dir_moved);
         }
         if let Some(v) = self.voice.as_mut() {
             opt(&mut v.voices_dir);
@@ -1773,8 +1773,12 @@ struct WebLayer {
     assets: Option<PathBuf>,
     /// Moved to `[voice] voices_dir` (FEATURES-DESIGN.md §5). Read for one
     /// release and applied *into* `[voice]`, so there is one runtime answer;
-    /// `[voice]`'s own value wins where both are set.
-    voices_dir: Option<PathBuf>,
+    /// `[voice]`'s own value wins where both are set. Named apart from
+    /// `VoiceLayer::voices_dir` in Rust, so the by-name guard
+    /// `every_field_a_nested_layer_can_read_is_a_field_apply_reads` still
+    /// sees each field applied (review of #503).
+    #[serde(rename = "voices_dir")]
+    voices_dir_moved: Option<PathBuf>,
 }
 
 /// Talking to mecha (FEATURES-DESIGN.md §5): what was serve flags, a literal
@@ -2413,7 +2417,7 @@ impl ConfigLayer {
             }
             // The one-release alias: into `[voice]`, unless this file also
             // sets `[voice] voices_dir`, which wins (applied below).
-            if x.voices_dir.is_some() {
+            if x.voices_dir_moved.is_some() {
                 // Once per process: a long-lived `serve` re-reads the global
                 // file every turn (`Follower::follow`), and the owner's own
                 // file is the one with the old key (review of #503).
@@ -2424,7 +2428,7 @@ impl ConfigLayer {
                          for one release"
                     )
                 });
-                cfg.voice.voices_dir = x.voices_dir;
+                cfg.voice.voices_dir = x.voices_dir_moved;
             }
         }
         if let Some(x) = self.voice {
