@@ -368,15 +368,22 @@ machine from starting is one people turn off.
   from `~/.local/lib` — whose copies are stale and load nothing. Ask the
   stub, don't trust this line: `readelf -d ~/.local/bin/llama-server | grep
   RUNPATH`. On 2026-10-02 it named **`~/llama.cpp-next/build/bin`**
-  (`95887577`); `~/llama.cpp` (`c841aee`) is the tree before it. So `cmake
+  (`95887577`); `~/llama.cpp` (`c841aeeb`) is the tree before it. So `cmake
   --build` in the named tree replaces what a restart will run, and "rebuild"
-  and "deploy" are not separable steps here. **Roll back by restoring
-  `~/.local/bin/llama-server.prev`** — a stub whose RUNPATH names the
-  previous tree, which is kept whole for that reason (check it with the same
-  `readelf`). An in-place rebuild of one tree keeps its old libraries as
-  `build/bin.prev` with a `VERSION.txt` naming the commit, as
-  `~/llama.cpp/build/bin.prev` still does. Either way a rollback has to be a
-  file you restore, not a commit you would have to rebuild under pressure.
+  and "deploy" are not separable steps here. **Which rollback applies is one
+  `readelf` away** — compare the RUNPATH of `~/.local/bin/llama-server.prev`
+  with the live stub's:
+  - **they differ** — the last upgrade was a new tree: restore the `.prev`
+    stub, which loads the previous tree's `build/bin`. That tree must still
+    be whole; it is kept for this reason, so never delete or rebuild it
+    while its stub is the rollback.
+  - **they match** — the last upgrade rebuilt one tree in place: restore that
+    tree's `build/bin.prev` (the whole library set, with a `VERSION.txt`
+    naming the commit). Restoring the `.prev` stub here would go back two
+    generations.
+
+  Either way a rollback has to be a file you restore, not a commit you would
+  have to rebuild under pressure.
 
   **Replace the stub with `mv`, never `cp`.** Every llama-server here —
   `llama-local` (:8080) and the on-demand backends behind :8081 and :8085 —
