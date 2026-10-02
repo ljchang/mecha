@@ -64,6 +64,9 @@ class StartRouter(unittest.TestCase):
         self.stub = base / "llama-server"
         self.stub.write_text("#!/bin/sh\necho started \"$@\"\n")
         self.stub.chmod(0o755)
+        # Never the operator's ~/models: a real graft there must not decide a case.
+        self.grafts = base / "grafts"
+        self.grafts.mkdir()
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -74,6 +77,7 @@ class StartRouter(unittest.TestCase):
             HF_HUB=str(self.cache.root),
             XDG_RUNTIME_DIR=str(self.runtime),
             LLAMA_SERVER=str(self.stub),
+            MECHA_GRAFT_DIR=str(self.grafts),
         )
         out = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=30)
         ini = self.runtime / "mecha-router" / "models.ini"
@@ -212,6 +216,49 @@ class StartRouter(unittest.TestCase):
         preset = self.section(ini, "gemma-4-26b-a4b")
         self.assertTrue(preset.get("model", "").endswith("/old/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"), err)
         self.assertTrue(preset.get("model-draft", "").endswith("/old/mtp-gemma-4-26B-A4B-it.gguf"), err)
+
+    HH36 = "HauhauCS--Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive"
+    HH36_FILE = "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
+
+    def uncensored36(self, rev="r"):
+        self.cache.production()
+        self.cache.put(self.HH36, rev, self.HH36_FILE)
+        self.cache.put(self.HH36, rev, "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf")
+
+    def graft_for(self, rev):
+        """The name start-router.sh expects for a graft of this cache's blobs."""
+        b = f"{rev}-{self.HH36_FILE}"[:12]
+        d = f"r1-{PROD_FILE}"[:12]
+        return self.grafts / f"{self.HH36_FILE[:-5]}+mtp-{b}-{d}.gguf"
+
+    def test_the_uncensored_qwen36_speculates_only_from_a_graft_of_its_own_blobs(self):
+        self.uncensored36()
+        _, _, err, ini = self.run_script()
+        preset = self.section(ini, "qwen3.6-35b-a3b-uncensored")
+        self.assertTrue(preset.get("model", "").endswith(f"/r/{self.HH36_FILE}"), err)
+        self.assertNotIn("spec-type", preset, "the downloaded file has no head; draft-mtp fails its start")
+        self.assertIn("mtp-graft.py", err, "the fallback must say how to build the head")
+        self.assertIn(str(self.graft_for("r")), err, "the build line must write the name that will be looked up")
+
+        self.graft_for("r").write_bytes(b"")
+        _, _, err, ini = self.run_script()
+        preset = self.section(ini, "qwen3.6-35b-a3b-uncensored")
+        self.assertEqual(preset.get("model"), str(self.graft_for("r")), err)
+        self.assertEqual(preset.get("spec-type"), "draft-mtp", err)
+        self.assertEqual(preset.get("spec-draft-n-max"), "2", err)
+        self.assertNotIn("serving without MTP", err)
+
+    def test_a_graft_of_superseded_weights_is_not_served(self):
+        # A re-upload under the same file name is a new blob: the graft built
+        # from the old one must not ride on under the unchanged alias.
+        self.uncensored36(rev="old")
+        self.graft_for("old").write_bytes(b"")
+        self.cache.put(self.HH36, "new", self.HH36_FILE)
+        _, _, err, ini = self.run_script()
+        preset = self.section(ini, "qwen3.6-35b-a3b-uncensored")
+        self.assertTrue(preset.get("model", "").endswith(f"/new/{self.HH36_FILE}"), err)
+        self.assertNotIn("spec-type", preset, err)
+        self.assertIn(str(self.graft_for("new")), err)
 
     def test_the_two_uncensored_qwen38_builds_get_their_own_presets(self):
         hh = "HauhauCS--Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF"

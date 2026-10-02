@@ -91,6 +91,25 @@ hub_mmproj() {
 }
 warn() { echo "$(basename "$0"): $*" >&2; }
 
+# Where a grafted file lives (scripts/mtp-graft.py), named for the two blobs it
+# was built from — or nothing when either input is not a blob symlink, with no
+# content hash to pin it to. A graft is *derived*, not downloaded: without the
+# hashes in its name, a re-upload of either input would leave the old graft
+# served under an unchanged alias. Keyed by blob, a re-upload names a file not
+# built yet, and the preset falls back with the line that builds it.
+# Always succeeds, like hub_file.
+graft_path() {
+  local b d
+  b=$(readlink "$1" 2>/dev/null || true)
+  d=$(readlink "$2" 2>/dev/null || true)
+  case "$b" in */blobs/*) ;; *) return 0 ;; esac
+  case "$d" in */blobs/*) ;; *) return 0 ;; esac
+  b=$(basename "$b")
+  d=$(basename "$d")
+  echo "${MECHA_GRAFT_DIR:-$HOME/models/mtp-graft}/$(basename "$1" .gguf)+mtp-${b:0:12}-${d:0:12}.gguf"
+  return 0
+}
+
 # Every Qwen preset's sampling, as the Qwen model cards give it; temp differs.
 # Deliberately not in [*]: Gemma runs on llama-server's defaults, and a shared
 # line would silently retune it.
@@ -144,6 +163,7 @@ printf '%s\n' "version = 1" "" "[*]" "n-gpu-layers = 999" "jinja = true" >"$OUT"
 F=$(hub_file unsloth--Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf)
 [ -n "$F" ] || { warn "production model missing: hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"; exit 1; }
 MP=$(hub_mmproj unsloth--Qwen3.6-35B-A3B-MTP-GGUF)
+PROD_MODEL=$F
 cat >>"$OUT" <<EOF
 
 [qwen3.6-35b-a3b]
@@ -158,13 +178,34 @@ load-on-startup = true
 $(qwen_sampling 0.6)
 EOF
 
-# The HauhauCS abliteration: production's geometry and sampling, and no MTP
-# head in the GGUF (block_count 40, no nextn), so no spec-type — passing it
-# fails the child's start. Its projector ships under its own name.
+# The HauhauCS abliteration: production's geometry and sampling. Its GGUF
+# dropped the MTP head (block_count 40, no nextn), so spec-type on the file as
+# downloaded fails the child's start; the head is grafted back from
+# production's own file (scripts/mtp-graft.py — blk.40.* is the only
+# difference). Its projector ships under its own name.
+#
+# Measured 2026-10-02 on 95887577, single stream, -c 32768, thinking off,
+# warm, temp 0.6: no speculation 69.9 tok/s; draft-mtp n-max 3 98.9 at 0.74
+# acceptance; n-max 2 99.8 at 0.81 — prose +15%, code and reasoning +50%.
+# n-max 2 drafts less into the abliterated model's prose, where the stock head
+# guesses worst (0.47–0.52 at 3, 0.58–0.66 at 2).
+#
+# No graft, or one built from other blobs: the plain file, no speculation,
+# and the line that builds it — slower, never wrong.
 R=HauhauCS--Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive
 F=$(hub_file "$R" Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf)
 MP=$(hub_file "$R" mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf)
 if [ -n "$F" ] && [ -n "$MP" ]; then
+  G=$(graft_path "$F" "$PROD_MODEL")
+  SPEC=""
+  if [ -n "$G" ] && [ -f "$G" ]; then
+    F=$G
+    SPEC=$(printf '%s\n' "spec-type = draft-mtp" "spec-draft-n-max = 2")
+  elif [ -n "$G" ]; then
+    warn "qwen3.6-35b-a3b-uncensored: serving without MTP; to graft its head: mkdir -p '$(dirname "$G")' && uv run '$(cd "$(dirname "$0")" && pwd)/mtp-graft.py' '$F' '$PROD_MODEL' '$G'"
+  else
+    warn "qwen3.6-35b-a3b-uncensored: serving without MTP; its weights are not blob symlinks, so no graft can be pinned to them"
+  fi
   cat >>"$OUT" <<EOF
 
 [qwen3.6-35b-a3b-uncensored]
@@ -174,6 +215,7 @@ $(qwen_vision)
 ctx-size = ${MECHA_LLAMA_CTX:-1048576}
 parallel = ${MECHA_LLAMA_NP:-4}
 cache-ram = ${MECHA_LLAMA_CRAM:-16384}
+$SPEC
 $(qwen_sampling 0.6)
 EOF
 else
