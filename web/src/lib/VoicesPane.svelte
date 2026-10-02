@@ -143,7 +143,7 @@
     <VoiceRecorder onsaved={load} />
   {:else}
     <div class="barnote">
-      Recording a voice needs <code>[web] voices_dir</code> — the directory the TTS reads its
+      Recording a voice needs <code>[voice] voices_dir</code> — the directory the TTS reads its
       references from — and a restart of serve.
     </div>
   {/if}

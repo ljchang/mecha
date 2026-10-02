@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Voice and persona settings in the config file.** A new `[voice]`
+  table holds the speech-to-text address dictation uses (`stt_url`, until
+  now fixed in the code), the voice worker's address and the voice facade's
+  port (until now only `mecha serve` flags, which still override them for
+  one run), and `voices_dir`. A new `[personas]` table sets
+  `crisis_cooldown_minutes`: after a crisis pause, how long a further crisis
+  message in the same chat does not pause again (15 by default). Both are
+  read from your global config only. `[web] voices_dir` has moved to
+  `[voice] voices_dir`; the old key still works for one release.
 - **Library → Voices.** Every voice the voice server can speak is listed in
   the library. Tap one to hear a sentence spoken in it, record or upload (WAV)
   a new one, delete a clone, and see which personas speak in each. Recording

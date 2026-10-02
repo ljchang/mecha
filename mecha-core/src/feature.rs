@@ -1211,16 +1211,25 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         } else {
             "~/.mecha/personas ([tools] withholds persona_propose from the model)".to_string()
         }),
-        Feature::Voice => on("`mecha voice-serve`, and `mecha serve`'s voice flags"),
-        Feature::Dictate => {
-            on("the web app's speech to text, at a fixed address — not yet configurable")
-        }
-        Feature::Calls => on("`mecha serve`'s --offer-target"),
-        Feature::Cloning => match &cfg.web.voices_dir {
+        Feature::Voice => on(format!(
+            "`mecha voice-serve`, and the facade `mecha serve` mounts on port {}",
+            cfg.voice.voice_port()
+        )),
+        Feature::Dictate => on(format!("speech to text at {}", cfg.voice.stt_url())),
+        // Empty is how `[voice] offer_target` turns calls off: no worker to
+        // offer to, so the call button would refuse every tap.
+        Feature::Calls => match cfg.voice.offer_target() {
+            Some(target) => on(format!("offers to {target}")),
+            None => off(
+                "[voice] offer_target is empty",
+                "set [voice] offer_target to the voice worker's offer URL",
+            ),
+        },
+        Feature::Cloning => match &cfg.voice.voices_dir {
             Some(dir) => on(dir.display().to_string()),
             None => off(
-                "no [web] voices_dir",
-                "set [web] voices_dir to the directory the TTS container mounts as /voices",
+                "no [voice] voices_dir",
+                "set [voice] voices_dir to the directory the TTS container mounts as /voices",
             ),
         },
         Feature::Incognito => match crate::config::provider_is_local(cfg, &cfg.default_provider) {
@@ -1738,6 +1747,42 @@ mod tests {
         assert_eq!(state(&at(&cfg, &facts), Feature::Documents).word(), "on");
         assert_eq!(state(&at(&cfg, &facts), Feature::Ocr).word(), "on");
         assert_eq!(state(&at(&cfg, &facts), Feature::Layout).word(), "off");
+    }
+
+    /// Voice's parts read `[voice]` (step 5): dictation names the address it
+    /// posts to, an empty `offer_target` turns calls off (no worker to offer
+    /// to), and cloning reads `[voice] voices_dir` — not `[web]`'s, which is
+    /// applied into it at load.
+    #[test]
+    fn the_voice_parts_read_the_voice_table() {
+        let mut cfg = Config::default();
+        switch_all(&mut cfg, true);
+        // The parts need `web` ready, which needs its owner.
+        cfg.web.owner_login = Some("owner@example.com".into());
+        let facts = |cfg: &Config| Facts {
+            config: cfg.clone(),
+            ..empty_machine()
+        };
+        let State::On { detail } = state(&facts(&cfg), Feature::Dictate) else {
+            panic!("dictation is on with the default address")
+        };
+        assert!(
+            detail.contains(crate::config::VoiceConfig::DEFAULT_STT_URL),
+            "{detail}"
+        );
+        assert_eq!(state(&facts(&cfg), Feature::Calls).word(), "on");
+        cfg.voice.offer_target = Some(" ".into());
+        let State::Off { reason, fix } = state(&facts(&cfg), Feature::Calls) else {
+            panic!("an empty offer target is calls off")
+        };
+        assert!(reason.contains("[voice] offer_target"), "{reason}");
+        assert!(fix.is_some_and(|f| f.contains("[voice] offer_target")));
+        let State::Off { reason, .. } = state(&facts(&cfg), Feature::Cloning) else {
+            panic!("no voices_dir is cloning off")
+        };
+        assert!(reason.contains("[voice] voices_dir"), "{reason}");
+        cfg.voice.voices_dir = Some("/srv/voices".into());
+        assert_eq!(state(&facts(&cfg), Feature::Cloning).word(), "on");
     }
 
     /// The owner's switch comes first: absent and `false` are both off,

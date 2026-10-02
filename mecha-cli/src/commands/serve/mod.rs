@@ -64,11 +64,12 @@ pub struct Args {
     /// Override `[web] assets` (the built web app, `web/dist`) for this run.
     #[arg(long)]
     pub assets: Option<PathBuf>,
-    /// Loopback port for the mounted voice facade — the OpenAI endpoint
-    /// the Pipecat worker calls, sharing this process's agent and prompt
-    /// cache (the unification's whole argument). 0 disables it.
-    #[arg(long, default_value_t = 8990)]
-    pub voice_port: u16,
+    /// Override `[voice] voice_port` for this run: the loopback port for the
+    /// mounted voice facade — the OpenAI endpoint the Pipecat worker calls,
+    /// sharing this process's agent and prompt cache (the unification's
+    /// whole argument). 0 disables it.
+    #[arg(long)]
+    pub voice_port: Option<u16>,
 
     /// Voice runs act without per-call approval — the owner-present
     /// posture the standalone voice-serve had via --yes. Without it a
@@ -84,10 +85,10 @@ pub struct Args {
     /// that predate the `[web]` section.
     #[arg(long)]
     pub owner_login: Option<String>,
-    /// Where the voice runner accepts WebRTC offers; `/api/offer` proxies
-    /// to it. Loopback by construction of the default; empty disables.
-    #[arg(long, default_value = "http://127.0.0.1:7860/api/offer")]
-    pub offer_target: String,
+    /// Override `[voice] offer_target` for this run: where the voice runner
+    /// accepts WebRTC offers, which `/api/offer` proxies to. Empty disables.
+    #[arg(long)]
+    pub offer_target: Option<String>,
 }
 
 #[derive(Clone)]
@@ -100,9 +101,11 @@ struct WebState {
     review: Arc<review::ReviewState>,
     /// The voice runner's offer endpoint, or None when disabled.
     offer_target: Option<Arc<String>>,
-    /// Host directory of TTS cloning references (`[web] voices_dir`), or
+    /// Host directory of TTS cloning references (`[voice] voices_dir`), or
     /// None when cloning is not configured on this box.
     voices_dir: Option<Arc<PathBuf>>,
+    /// `[voice] stt_url`: the speech-to-text server dictation posts to.
+    stt_url: Arc<String>,
     /// The image library's directory and the unlocks granted to it.
     library: Arc<library::LibraryState>,
     /// The features whose switch was on when this process loaded its
@@ -179,15 +182,20 @@ pub async fn execute(args: Args) -> Result<()> {
         }
     };
     let review = Arc::new(review::review_state(&config)?);
-    let offer_target = Some(args.offer_target.trim())
-        .filter(|t| !t.is_empty())
-        .map(|t| Arc::new(t.to_string()));
+    // A flag overrides `[voice]` for this run; empty turns calls off either way.
+    let offer_target = match &args.offer_target {
+        Some(flag) => Some(flag.trim()).filter(|t| !t.is_empty()),
+        None => config.voice.offer_target(),
+    }
+    .map(|t| Arc::new(t.to_string()));
+    let voice_port = args.voice_port.unwrap_or(config.voice.voice_port());
     let state = WebState {
         owner_login: Arc::new(owner),
         chat,
         review,
         offer_target,
-        voices_dir: config.web.voices_dir.clone().map(Arc::new),
+        voices_dir: config.voice.voices_dir.clone().map(Arc::new),
+        stt_url: Arc::new(config.voice.stt_url().to_string()),
         library: Arc::new(library::LibraryState::new(
             mecha_core::imagelib::Library::default_dir()?,
         )),
@@ -207,13 +215,13 @@ pub async fn execute(args: Args) -> Result<()> {
     // refuse per request, so it is not mounted at all when calls are off at
     // start (the voice call's other half, `/api/offer`, refuses per request).
     let calls = crate::commands::features::require(mecha_core::feature::Feature::Calls);
-    if let (Err(e), port) = (&calls, args.voice_port) {
+    if let (Err(e), port) = (&calls, voice_port) {
         // Only where it would otherwise have been mounted (review of #452).
         if port != 0 && state.chat.is_some() {
             eprintln!("note: the voice facade is not mounted — {e:#}");
         }
     }
-    let voice = match (&state.chat, args.voice_port) {
+    let voice = match (&state.chat, voice_port) {
         (Some(chat), port) if port != 0 && calls.is_ok() => {
             let (follower, outbox_root) = chat.voice_parts();
             match crate::voice::Facade::new(
@@ -1195,11 +1203,11 @@ fn error_chain(e: &dyn std::error::Error) -> String {
 /// The page encodes 16 kHz mono WAV itself, so no transcoder runs here; the
 /// audio never leaves the box, which is the whole argument against the
 /// browser speech APIs that ship the clip to a third party.
-async fn dictate(State(_state): State<WebState>, body: axum::body::Bytes) -> Response {
+async fn dictate(State(state): State<WebState>, body: axum::body::Bytes) -> Response {
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty audio\n").into_response();
     }
-    // Multipart by hand: one part, one fixed server, and the workspace's
+    // Multipart by hand: one part, one server (`[voice] stt_url`), and the workspace's
     // reqwest deliberately carries few features. The boundary needs no
     // randomness — nothing in a WAV clip can contain it.
     let boundary = "mecha-dictate-7f3a9c51e2b8";
@@ -1214,7 +1222,10 @@ async fn dictate(State(_state): State<WebState>, body: axum::body::Bytes) -> Res
     form.extend_from_slice(&body);
     form.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     let sent = reqwest::Client::new()
-        .post("http://127.0.0.1:8992/v1/audio/transcriptions")
+        .post(format!(
+            "{}/audio/transcriptions",
+            state.stt_url.trim_end_matches('/')
+        ))
         .header(
             "content-type",
             format!("multipart/form-data; boundary={boundary}"),
@@ -1732,6 +1743,7 @@ mod tests {
                 chat: None,
                 offer_target: None,
                 voices_dir: None,
+                stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
                 library: library::state_for_tests(
                     std::env::temp_dir()
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
@@ -2499,6 +2511,7 @@ mod tests {
                 chat: None,
                 offer_target: None,
                 voices_dir: Some(Arc::new(dir.to_path_buf())),
+                stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
                 library: library::state_for_tests(
                     std::env::temp_dir()
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
@@ -2531,6 +2544,7 @@ mod tests {
                 chat: None,
                 offer_target: None,
                 voices_dir: None,
+                stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
                 library: library::state_for_tests(
                     std::env::temp_dir()
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
@@ -3092,6 +3106,7 @@ mod boundary_tests {
                 }),
                 offer_target: None,
                 voices_dir: None,
+                stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
                 library: library::state_for_tests(
                     std::env::temp_dir()
                         .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),

@@ -590,7 +590,7 @@ pub async fn voice(State(state): St) -> Json<serde_json::Value> {
         // from "wired and down", and the page shows them differently.
         "offer_target": target,
         "worker_reachable": reachable,
-        // None = cloning unconfigured ([web] voices_dir unset); an empty
+        // None = cloning unconfigured ([voice] voices_dir unset); an empty
         // list = configured, nothing cloned yet. Opposite findings.
         "cloned": cloned,
         // Set only when the configured directory could not be listed; the
@@ -943,7 +943,7 @@ pub async fn voice_clone(
     let Some(dir) = state.voices_dir.as_ref() else {
         return (
             StatusCode::NOT_IMPLEMENTED,
-            "voice cloning is not configured — set [web] voices_dir to the host directory the TTS container mounts as /voices\n",
+            "voice cloning is not configured — set [voice] voices_dir to the host directory the TTS container mounts as /voices\n",
         )
             .into_response();
     };

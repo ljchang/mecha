@@ -62,19 +62,31 @@ pub const MACHINE_TABLES: [&str; 7] = [
     "search",
 ];
 
-/// Tables a checked-out file may never set: the six a project layer is
+/// Tables a checked-out file may never set: the eight a project layer is
 /// stripped of (`Config::merge_file`), for the reason given there — a file
 /// that arrives with a cloned repository must not name the Slack surface,
 /// the web surface, the mailbox, the image server model-written prompts go
 /// to, the OCR server the owner's documents go to or the PDF parser's
 /// confinement (`[documents]`: its `ocr_url` and `confine`, missing from this
-/// list while `merge_file` stripped it — FEATURES-DESIGN.md §5.1), or
+/// list while `merge_file` stripped it — FEATURES-DESIGN.md §5.1),
 /// `[harness] source_dir`, the authority a `ruminate` stage's
-/// diagnostician reads on which protections are load-bearing. An environment directory is resolved against a checkout,
+/// diagnostician reads on which protections are load-bearing, the speech
+/// server the owner's audio goes to (`[voice]`), or a persona safety
+/// setting (`[personas]`: configuration supplied with a checkout may only
+/// narrow, and a safety setting is the operator's — FEATURES-DESIGN.md §9
+/// step 5). An environment directory is resolved against a checkout,
 /// so it is refused them outright rather than stripped with a warning
 /// (found on review).
-pub const OPERATOR_ONLY_TABLES: [&str; 6] =
-    ["documents", "harness", "image", "messages", "slack", "web"];
+pub const OPERATOR_ONLY_TABLES: [&str; 8] = [
+    "documents",
+    "harness",
+    "image",
+    "messages",
+    "personas",
+    "slack",
+    "voice",
+    "web",
+];
 
 /// Marks a finished store build, so a crash mid-build is a rebuild, not a
 /// half-seeded world.
@@ -1460,6 +1472,29 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         )
         .unwrap();
         env.resolve(tmp.path()).unwrap();
+    }
+
+    /// The tables an environment may never set are the tables a project
+    /// layer is stripped of, read out of `Config::merge_file` itself — less
+    /// `[features]`, which an environment may set per key
+    /// (`switchable_from_environment`). `[documents]` was stripped there and
+    /// missing here, so an environment could point OCR anywhere (#441); a
+    /// table added to one list and not the other now fails here.
+    #[test]
+    fn operator_only_tables_are_what_a_project_layer_is_stripped_of() {
+        let src = include_str!("config.rs");
+        let mut stripped: Vec<&str> = src
+            .match_indices("trust == LayerTrust::Project && layer.")
+            .filter_map(|(at, m)| {
+                let rest = &src[at + m.len()..];
+                let name = &rest[..rest.find('.')?];
+                rest[name.len()..].starts_with(".take()").then_some(name)
+            })
+            .filter(|t| *t != "features")
+            .collect();
+        stripped.sort_unstable();
+        assert!(stripped.len() >= 8, "the walk found {stripped:?}");
+        assert_eq!(stripped, OPERATOR_ONLY_TABLES);
     }
 
     /// An environment that is, contains or sits inside the real home is

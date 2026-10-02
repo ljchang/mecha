@@ -1118,6 +1118,7 @@ mod route_tests {
                 chat,
                 offer_target: None,
                 voices_dir: None,
+                stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
                 library: Arc::new(LibraryState::new(dir.clone())),
                 features_at_start: Arc::default(),
                 gate: Arc::default(),

@@ -1442,7 +1442,7 @@ module.
 - **The voice library** (Library → Voices) is served from
   `settings::library_voices`. It merges three sources and names each one it
   cannot read rather than showing an empty list: the worker's `/mecha/voices`
-  list, the clones in `[web] voices_dir` (`cloned_voices`), and the persona
+  list, the clones in `[voice] voices_dir` (`cloned_voices`), and the persona
   store (`voices_in_use`, behind the library lock). A voice's preview is
   `/mecha/sample` on the worker, proxied by `library_voice_sample`. It is a
   fixed sentence, so the route cannot be made to say anything, and the worker
@@ -8744,6 +8744,19 @@ in five different ways. The design and its open steps are
   backend passes, and it runs once per environment, before an arm's
   `levers_off` — `levers_off = ["mcp"]` under `requires = ["graph"]` is not
   caught (review of #466).
+- **`[voice]` and `[personas]` are the operator's** (step 5). `[voice]`
+  holds what was two `mecha serve` flags, a literal in `serve::dictate` and
+  `[web] voices_dir`; `[personas]` holds the crisis cooldown that was
+  `persona::safety::CRISIS_COOLDOWN` (still the default). Both are stripped
+  from project layers and on `trial_env::OPERATOR_ONLY_TABLES`, and
+  `operator_only_tables_are_what_a_project_layer_is_stripped_of` reads that
+  list out of `merge_file` itself, since `[documents]` once sat on one and
+  not the other. `[web] voices_dir` is applied *into* `[voice]` for one
+  release — one runtime answer, as `[features] messages` is — and
+  `[voice]`'s own value wins. The registry's dictation, calls and cloning
+  rows read `[voice]`, so `offer_target = ""` reads calls off.
+  `[voice] stt_url` is serve's alone: the voice worker reads its own
+  `MECHA_VOICE_*` environment.
 
 ### Adding a feature
 
