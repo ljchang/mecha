@@ -82,7 +82,7 @@ they are placed into are not.
 
 | Tier | Unified memory | Separate GPU, with system RAM beside it |
 |---|---|---|
-| 16 GB | An 8B at Q4, or a 14B at Q4 with little else running; 32k context. ~5–9 GB of weights plus the cache, *Arithmetic* | **GPU**: a 14B at Q4 with its context, ~9 GB of weights plus the cache, *Arithmetic*. **System RAM**: embeddings and OCR on the CPU plus the CPU-side models, ~10 GiB, *Arithmetic* |
+| 16 GB | An 8B at Q4, or a 14B at Q4 with little else running; 32k context. ~5–9 GB of weights plus the cache, *Arithmetic* | **GPU**: a 14B at Q4 with its context, ~9 GB of weights plus the cache, *Arithmetic*; or a 35B-A3B with its experts in system RAM (`--n-cpu-moe`), *Unmeasured*. **System RAM**: embeddings and OCR on the CPU plus the CPU-side models, ~10 GiB, *Arithmetic* |
 | 32 GB | A 14B at Q4–Q6, or a ~27–35B MoE at Q4 with modest context. ~24 GB for the MoE at 128k, *Arithmetic* | **GPU**: a 35B MoE at Q4 with 128k context, ~24 GB, *Arithmetic*. **System RAM**: as at 16 GB, ~10 GiB, *Arithmetic* |
 | 64 GB | A 30–35B MoE at Q4–Q5 with 128k–256k context, and an embeddings server. ~30–37 GB, *Arithmetic* | **GPU**: the same model and context, with image generation's ~15 GB and speech's ~5 GB beside it, ~50 GB, *Arithmetic*. **System RAM**: embeddings and OCR on the CPU, the CPU-side models and the GPU servers' host memory, ~14 GiB, *Arithmetic* |
 | 128 GB | A 35B-class MoE at Q4 with four slots of 262k: 41.5 GiB, *Measured — GB10, 2026-10-02*. Every other feature's model beside it: ~76 GiB in all with everything loaded, up to ~92 with a full prompt cache, *Arithmetic* ([the sum](#beside-the-chat-model)) | **GPU**: the unified row's GPU models, ~47–70 GiB, *Arithmetic*. **System RAM**: the CPU-side models and the prompt cache, ~6–22 GiB, *Arithmetic* |
@@ -133,6 +133,10 @@ Where a dedicated box stops making you choose.
 - **Context**: 256k per slot, and multiple slots.
 - **Also fits**: embeddings, a vision projector, and a second model for
   comparison, all resident at once.
+- **With a separate GPU**: a 128 GB card (or several adding up to it) holds
+  everything the unified row does on the card, and the CPU-side models stay
+  in system RAM; the prompt cache is host memory either way. No separate
+  GPU at this size has been measured here.
 
 **Measured on the machine these docs were written on** — a DGX Spark (GB10,
 128 GB unified), Qwen3.6-35B-A3B at Q4_K_M. It runs four slots of 262,144
@@ -169,7 +173,7 @@ it after ten idle minutes, and **per request** holds it only while working.
 | Feature | Model | Runs on | How it holds memory | Cost on the GB10 (GiB) | Evidence |
 |---|---|---|---|---|---|
 | Chat — every feature | Qwen3.6-35B-A3B Q4_K_M, with its vision projector | GPU | Resident | 41.5 at four 262k slots — the server process's GPU memory only; the router's prompt cache is host memory on top (below), which is why whole-machine readings of the same flags run higher | Measured 2026-10-02 |
-| `graph`, and `personas` file search when `[documents] embed_url` is set | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.1 loaded | Measured 2026-10-02 |
+| `graph`, and `personas` file search | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.1 loaded | Measured 2026-10-02 |
 | `ocr` | PaddleOCR-VL 1.6 (GGUF and projector) | GPU | On demand | 2.6 loaded | Measured 2026-09-29 |
 | `layout` | PP-DocLayoutV3 (ONNX) | CPU | Per request | 1.1 peak | Measured 2026-09-29 |
 | `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | On demand — mecha asks ComfyUI to free its models after ten idle minutes (`[image] unload_after_secs`) | ~15 peak at 1024²; the ComfyUI process keeps 1.4 of system memory | Measured 2026-09-25 (peak), 2026-10-02 (system memory) |
