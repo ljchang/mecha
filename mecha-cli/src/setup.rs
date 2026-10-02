@@ -2030,6 +2030,10 @@ pub fn persona_agent(
     // the pinned version's memory is on, so the tool list — the front of the
     // cached prefix — never changes mid-chat; each call reads the switches
     // live, so turning memory off reaches the chat at its next call.
+    // Inserted past `registry_as`, so `answers = "files"` does not withhold
+    // them: the `[memory]` switches are memory's control, and a files-only
+    // `memory_read` returns the owner's words and the persona's, never what
+    // a tool brought back (owner ruling 2026-10-02).
     use mecha_core::persona::memory_tools;
     if memory_tools::offers_search(&pinned.settings) {
         let search = memory_tools::MemorySearch::new(
