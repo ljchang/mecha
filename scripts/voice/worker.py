@@ -97,15 +97,15 @@ TTS_SPEED = float(os.environ.get("MECHA_VOICE_TTS_SPEED", "1.0"))
 # that cannot ask.
 MIN_SPEED, MAX_SPEED = 0.5, 2.0
 
-# Chatterbox's expressiveness pair, and the whole reason the voice sounded
-# flat: the serving wrapper defaulted `exaggeration` to 0.0 - the monotone
-# end of the scale, not the neutral middle - and nothing here sent the
-# field at all, so every utterance since launch went out at the minimum.
-# Resemble's expressive recipe raises exaggeration against a *lowered*
-# cfg_weight, because a high one rushes the cadence. Sent on every request
-# rather than left to the server's default: two places holding an opinion
-# about how mecha sounds is one place too many, and the server's is now
-# the library's neutral rather than this one.
+# Chatterbox's expressiveness pair. Resemble's expressive recipe raises
+# exaggeration against a *lowered* cfg_weight, because a high one rushes
+# the cadence. **Honoured by the original Chatterbox only**: Turbo, the
+# live voice, accepts both and drops them (chatterbox_server.py `CONTROLS`),
+# so these were sent to a model that ignored them from 2026-08-26 until the
+# server began saying so - and the "flat voice" this was credited with
+# fixing was the references (docs/VOICE-RESEARCH.md, the correction under
+# "The voice was flat"). Sent only when the server lists them as controls
+# (`tts_controls`): an unlisted one is refused there, not ignored.
 TTS_EXAGGERATION = float(os.environ.get("MECHA_VOICE_TTS_EXAGGERATION", "0.8"))
 TTS_CFG_WEIGHT = float(os.environ.get("MECHA_VOICE_TTS_CFG_WEIGHT", "0.3"))
 
@@ -959,6 +959,12 @@ class ParakeetSTT(SegmentGatedSTT):
 
 
 _voices_cache = None
+# The per-request controls the TTS's loaded model honours, as its
+# `/v1/voices` lists them; fetched with the voice list and dropped with it.
+# None is "unknown" - a server that predates the list, or one that could
+# not be asked - and nothing optional is sent then: the old server was
+# always Turbo, which ignores every control this would send.
+_controls_cache = None
 
 
 def available_voices(refresh=False):
@@ -980,7 +986,7 @@ def available_voices(refresh=False):
     until a worker restart nobody was told to do. Refetching only on a miss
     keeps the happy path at zero extra requests - a known voice never pays.
     """
-    global _voices_cache
+    global _voices_cache, _controls_cache
     if refresh:
         _voices_cache = None
     if _voices_cache is not None:
@@ -992,11 +998,30 @@ def available_voices(refresh=False):
 
     try:
         with urllib.request.urlopen(f"{TTS_URL}/voices", timeout=5) as r:
-            _voices_cache = json.load(r).get("voices") or None
+            listed = json.load(r)
+        _voices_cache = listed.get("voices") or None
+        controls = listed.get("controls")
+        _controls_cache = frozenset(controls) if isinstance(controls, list) else None
     except Exception as e:  # noqa: BLE001 - any failure is the same answer
         logger.debug(f"voice list unavailable at {TTS_URL}/voices: {e}")
         _voices_cache = None
+        _controls_cache = None
     return _voices_cache
+
+
+def tts_controls() -> frozenset | None:
+    """The controls the TTS honours (see `_controls_cache`), asking it if
+    nothing has yet. None is unknown, and sends nothing optional."""
+    if _voices_cache is None:
+        available_voices()
+    return _controls_cache
+
+
+def optional_controls(controls: frozenset | None, **wanted: float) -> dict:
+    """The subset of `wanted` the TTS honours - what rides in the request's
+    `extra_body`. A control the model would drop is never sent, because the
+    server refuses it rather than speaking as if it had landed."""
+    return {k: v for k, v in wanted.items() if controls and k in controls}
 
 
 class LocalTTS(OpenAITTSService):
@@ -1131,10 +1156,13 @@ class LocalTTS(OpenAITTSService):
         # fact the chat promised not to leave (review of #376).
         if names_incognito(self._affect_key):
             return
+        # Whether the TTS honours cfg_weight at all: on Turbo the nudge is
+        # computed and never sent, and the line must not read as applied.
+        honoured = "cfg_weight" in (await asyncio.to_thread(tts_controls) or ())
         logger.debug(
             f"voice affect latch: context={context_id} key={self._affect_key} "
             f"cfg_weight={self._affect_params[1]:.3f} (baseline "
-            f"{self._cfg_weight:.3f})"
+            f"{self._cfg_weight:.3f}, honoured={honoured})"
         )
 
     async def _poll_affect_params(self) -> tuple[float, float]:
@@ -1181,20 +1209,26 @@ class LocalTTS(OpenAITTSService):
                 "voice": self._settings.voice,
                 "speed": self._speed,
                 "response_format": "pcm",
-                # Not fields of OpenAI's speech API, so they ride in
-                # extra_body rather than being silently dropped by the
-                # typed client - which is how a knob gets plumbed to a
-                # server that accepts it and still never arrives.
-                "extra_body": {
-                    "exaggeration": exaggeration,
-                    "cfg_weight": cfg_weight,
-                },
             }
+            # Not fields of OpenAI's speech API, so they ride in extra_body
+            # rather than being silently dropped by the typed client - and
+            # only those the TTS's model honours (`optional_controls`).
+            extra = optional_controls(
+                await asyncio.to_thread(tts_controls),
+                exaggeration=exaggeration,
+                cfg_weight=cfg_weight,
+            )
+            if extra:
+                create_params["extra_body"] = extra
             async with self._client.audio.speech.with_streaming_response.create(
                 **create_params
             ) as r:
                 if r.status_code != 200:
                     error = await r.text()
+                    # A TTS restarted under another model refuses what the
+                    # old one honoured: ask it again, so the next sentence
+                    # sends what this one lists.
+                    await asyncio.to_thread(available_voices, True)
                     yield ErrorFrame(error=f"TTS error {r.status_code}: {error}")
                     return
                 await self.start_tts_usage_metrics(text)
@@ -1204,6 +1238,9 @@ class LocalTTS(OpenAITTSService):
                         await self.stop_ttfb_metrics()
                         yield TTSAudioRawFrame(chunk, self.sample_rate, 1, context_id=context_id)
         except Exception as e:
+            # The typed client raises on a 4xx before the branch above sees
+            # it, so the same re-ask, here.
+            await asyncio.to_thread(available_voices, True)
             yield ErrorFrame(error=f"TTS failed: {e}")
 
 
