@@ -115,21 +115,23 @@ first real night. What is open, verified against `a1645e96`:
     while shared copies of the whole chain go.
   - `correct` on an inferred fact keeps `kind = Inferred` with
     `origin = Owner`.
-  - **`answers = "files"` and the memory tools: ruled C, fix in review
-    (#505).** #498 inserted the tools past `registry_as`'s refusal of
-    `untrusted_input` tools, so a files-only persona could `memory_read` a
-    past chat with its raw tool output. The owner chose among exempting it,
-    withholding `memory_read`, or C: keeping the tools while a files-only
-    read returns only the owner's and the persona's words. Owner, 2026-10-02:
-    "lets go with C". #505 (`persona::memory_tools::words_only`) builds it;
-    it is unmerged at the time of writing. C is not a seal (#505's review, pass 1).
-    Episode summaries are written from `writer::render`, which keeps tool
-    results, clipped. `memory_search` and the recall folds return those
-    summaries with no `answers` gate, so a files-only persona can still
-    read a paraphrase of old tool output. Only `memory_read`'s verbatim
-    transcript is filtered, and the taint still marks it. A stricter bar,
-    a files-only persona skipping summaries of untrusted origin, is a
-    separate owner decision, not yet asked.
+  - **`answers = "files"` and the memory tools: ruled C, built (#505,
+    `a51e1c01`), not installed.** HISTORY has it under 2026-10-02. It is
+    binary-only; to check once installed: `strings ~/.cargo/bin/mecha |
+    grep -cF "you answer from your files, not from what a tool brought
+    back"` → 1. C is not a seal (#505's review, pass 1). Episode summaries
+    are written from `writer::render`, which keeps tool results, clipped.
+    `memory_search` and the recall folds return those summaries with no
+    `answers` gate, so a files-only persona can still read a paraphrase of
+    old tool output. Only `memory_read`'s verbatim transcript is filtered,
+    and the taint still marks it. A stricter bar, a files-only persona
+    skipping summaries of untrusted origin, is a separate owner decision,
+    not yet asked. #505's pass-2 minors:
+    - the exemption is recorded in prose but not pinned by a test:
+      `offers_search` and `offers_read` read only `s.memory`, so a later
+      `answers` gate would pass the suite;
+    - a past tool error now reads as `[tool result] (left out…)`, not
+      `[tool error]`.
 - **Review minors carried:**
   - #468: `Op::Invalidate` is not gated by the `[memory]` switches;
     `--chat` on a chat with no checkpoint exits without saying so.
@@ -147,10 +149,6 @@ first real night. What is open, verified against `a1645e96`:
       `embed_memory` is quadratic in batches. That shows exactly on a first
       night over a large store; read a slow embed stage that way before
       blaming the writer.
-  - #498, fix in review (#505, `writer::named` / `writer::bound`):
-    `read_episode` cuts twice. `render` keeps a long conversation's
-    tail, then the `MAX_READ_CHARS` cut keeps the head of that, so the end
-    of a very long conversation can be lost.
 
 **2026-10-01 — persona autolock, framing, and personas from the main chat
 are live (mecha-69).** #469, #473, #480, #484 and #493–#496 are in HISTORY
