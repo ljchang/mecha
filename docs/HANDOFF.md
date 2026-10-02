@@ -22,62 +22,66 @@ maps which document holds what.
 
 ## Where the work is
 
-**2026-10-02 — persona calls, the voice library and the persona page are
-live; typing in a call and a play button are in flight; what is open
-(mecha-d7).** #483, #490, #491, #492 and #497 are in HISTORY under
-2026-10-01. All are live in mecha-d7's `45d47822`, installed 2026-10-01
-23:53Z with a voice-worker restart (machine state below).
+**2026-10-02 — calls, the voice library, typing in a call and Listen are
+live; what is open (mecha-d7).** #483, #490, #491, #492 and #497 are in
+HISTORY under 2026-10-01; #499 and #502 under 2026-10-02. All are live:
+#499 and #502 in mecha-d7's `810d2804` (02:04Z, machine state below).
+Verified against `7663b9a8`.
 
-In flight, the owner's read-aloud ask (2026-10-01, confirmed directly):
-- **Typing inside a live call**, in the assistant's chat and persona chats,
-  answered aloud: #499, in review.
-- **A play button on each reply**, spoken in the chat's voice (the
-  persona's, or the owner's chosen one), the text tidied for speech:
-  building. It goes through the worker, with no config field (agreed with
-  mecha-ce).
-- No speak-replies switch: the owner chose against it.
-
-Open:
-- **For the owner:** whether a call should wait, up to `JUDGE_WAIT` (90 s),
-  for a crisis verdict that lands after a spoken reply has finished. Today
-  it reaches only the page (PERSONA-DESIGN §11). The pause's voice is ruled:
-  the persona's own.
+- **Typing into a call has not been tried on a real call.** Everything
+  around it was checked live except the WebRTC path itself, which needs a
+  phone and a mic. Try typing a line while the persona is speaking. It
+  should wait for that answer to end, then be answered aloud, with "mic
+  paused while you type" shown and true while the box has focus.
 - **`imagelib update`'s reframe predicate is untested** (#497):
-  `updated.portrait != e.portrait` at the call site. A test can drive
-  `Cmd::Update` under `testenv::HomeGuard`; #497's body first said it could
-  not, and was corrected.
-- **The `persona.toml` template says an unset `voice_speed` is "the
-  listener's rate"**; it is the worker's `MECHA_VOICE_TTS_SPEED` (review of
-  #490). To fix with the play-button PR.
-- **Minors from #490's reviews, for the owner to weigh:**
+  `updated.portrait != e.portrait` in `commands::imagelib`. A test can drive
+  `Cmd::Update` under `testenv::HomeGuard`.
+- **Minors from #502's reviews, for the owner to weigh:**
+  - `/api/speak` sends an incognito chat's reply text to the worker with no
+    `/mecha/unlogged` vouch first. The route's existence is the vouch: a
+    worker old enough to log has no route, and serve says so (`CONFLICT`,
+    "predates the play button"). So the silence is version-coupled, which
+    is the assumption #376 removed from the offer path.
+  - Listen shows on a reply with nothing to speak (an image or a rule
+    alone), and the tap does nothing.
+  - The action row is not gated on the run finishing, so Listen (like Copy
+    and Download) reads a partial reply mid-stream.
+  - `MAX_SPEAK_CHARS` (1200) is defined in both serve and the worker,
+    unchecked against each other, as `MIN/MAX_SPEED` already are.
+  - `speakable` adds a full stop to a hard-wrapped line, and its italics
+    rule eats an underscore inside an identifier.
+- **Minors from #499's reviews:** a typed line the worker accepted and then
+  failed to push is logged (`voice typed turn failed`) but not told to the
+  page. Only a full queue sends `typed-dropped`.
+- **Minors from #490's reviews, for the owner to weigh,** all still true on
+  `7663b9a8`:
   - `/api/library/voices` serves persona names (`used_by`) under
     `Feature::Voice`, not `Feature::Personas`;
-  - the recorder shows when `[web] voices_dir` is set, not when
-    `Feature::Cloning` is on;
+  - the recorder shows when `voices_dir` is set (`"cloning":
+    state.voices_dir.is_some()`), not when `Feature::Cloning` is on;
   - with the image library off, Library → Voices has no unlock control, so
     locked personas stay unnamed there;
-  - `/api/settings/voice` still computes the clone list its pane no longer
-    shows.
+  - `/api/settings/voice` still computes the clone list (`cloned_voices`)
+    its pane no longer shows.
 - **The Voices pane needs the Library tab**, which needs the `library`
   feature (image generation). It opens anyway from Settings → Voice's link
   (`OPENS_ANYWAY`), but has no tab of its own.
 
 **2026-10-01/02 — persona memory: written nightly, recalled at chat start
-and on every turn, live; the memory tools merged, not yet installed
-(mecha-5d).** #462, #463, #468, #477 and #481 are in HISTORY under
-2026-10-01, #498 under 2026-10-02. All but #498 are live: #481 went in with
-mecha-d7's `72e404ca` (20:48Z), and `strings ~/.cargo/bin/mecha | grep -cF
+and on every turn, and searchable by the persona, all live (mecha-5d).**
+#462, #463, #468, #477 and #481 are in HISTORY under 2026-10-01, #498 under
+2026-10-02. All are live: #498 went in with mecha-d7's `810d2804` (02:04Z),
+and `strings ~/.cargo/bin/mecha | grep -cF "Read a remembered conversation
+in full"` → 1; #481 went in with mecha-d7's `72e404ca` (20:48Z), and `strings ~/.cargo/bin/mecha | grep -cF
 "what this message brought to mind"` → 1 on 2026-10-02. The
 `mecha-ruminate` timer runs the writer from 03:30 UTC on 2026-10-02, its
 first real night. What is open, verified against `a1645e96`:
 
-- **#498 (`memory_search` / `memory_read`) is merged as `c496bb99` and not
-  installed** (`strings ~/.cargo/bin/mecha | grep -cF "Read a remembered
-  conversation in full"` → 0 on 2026-10-02). It is binary-only, handed to
-  mecha-d7. Installing it adds `memory_search` to every persona chat whose
-  memory is on, and `memory_read` where `episodic` is on, from each chat's
-  next resume — registration reads the pinned version's `[memory]`, so no
-  re-pin is needed.
+- **#498's tools have not run in a live persona chat yet.** Since the
+  install they are offered from each chat's next resume: `memory_search`
+  wherever memory is on, and `memory_read` where `episodic` is on.
+  Registration reads the pinned version's `[memory]`, so no re-pin is
+  needed.
 - **Meaning-based recall needs `[documents]` switched on**: it reuses that
   feature's embedder, and with Documents off recall is by words alone. It
   also stays words-only until the nightly has embedded at least half the
@@ -111,15 +115,14 @@ first real night. What is open, verified against `a1645e96`:
     while shared copies of the whole chain go.
   - `correct` on an inferred fact keeps `kind = Inferred` with
     `origin = Owner`.
-  - **`answers = "files"` does not withhold the memory tools (#498).**
-    `setup::persona_agent` inserts them after `registry_as`, past its refusal
-    of `untrusted_input` tools, so a files-only persona can still
-    `memory_read` a past chat, raw tool output included. The interlock still
-    holds: both tools are `Egress::None`, and a read of a chat from outside
-    returns `.from_outside()`. Either record "memory is exempt, the
-    `[memory]` switches are the control" in the code comment and the
-    ARCHITECTURE bullet, or gate `offers_read` (or both) on
-    `answers != Answers::Files`. Put to the owner on 2026-10-02, unruled.
+  - **`answers = "files"` and the memory tools: ruled C, fix in review
+    (#505).** #498 inserted the tools past `registry_as`'s refusal of
+    `untrusted_input` tools, so a files-only persona could `memory_read` a
+    past chat with its raw tool output. The owner chose among exempting it,
+    withholding `memory_read`, or C: keeping the tools while a files-only
+    read returns only the owner's and the persona's words. Owner, 2026-10-02:
+    "lets go with C". #505 (`persona::memory_tools::words_only`) builds it;
+    it is unmerged at the time of writing.
 - **Review minors carried:**
   - #468: `Op::Invalidate` is not gated by the `[memory]` switches;
     `--chat` on a chat with no checkpoint exits without saying so.
@@ -137,7 +140,8 @@ first real night. What is open, verified against `a1645e96`:
       `embed_memory` is quadratic in batches. That shows exactly on a first
       night over a large store; read a slow embed stage that way before
       blaming the writer.
-  - #498: `read_episode` cuts twice. `render` keeps a long conversation's
+  - #498, fix in review (#505, `writer::named` / `writer::bound`):
+    `read_episode` cuts twice. `render` keeps a long conversation's
     tail, then the `MAX_READ_CHARS` cut keeps the head of that, so the end
     of a very long conversation can be lost.
 
@@ -3943,6 +3947,43 @@ tree. `mecha-mail` was not touched.
   `index-Ckls1Bf3.js`.
   - Checked: `"the voice worker predates previews"` → 1; worker `GET
     /mecha/sample?voice=default` → 200 `audio/wav`, 463 KB.
+
+**2026-10-02 02:04Z and ~02:50Z, mecha-d7: `mecha` from `main`, twice;
+the voice worker restarted the first time.** Both times the shared
+checkout was on `main` with only `trial.pid` untracked, no lane was
+mid-merge, and both `HEAD` and `refs/heads/main` fast-forwarded. Serve was
+restarted through `serve_held` with no hold, and the dist was built from
+the checkout and rsynced after it. `mecha-mail` was not touched: it does
+not link `mecha-core`.
+- **02:04Z, `810d2804`** (#498 persona memory tools, #499 typing in a call,
+  #502 Listen). Fast-forwarded `45d47822` → `810d2804`. The router, mmproj,
+  MoE and Parakeet scripts were unchanged; `scripts/voice/` changed, so the
+  worker was restarted. Dist `index-02k88SJu.js`.
+  - Checked: `strings ~/.cargo/bin/mecha | grep -c 'predates the play
+    button'` → 1 (0 in `45d47822`'s source); `| grep -c memory_read` → 5.
+  - Checked live: worker `POST /mecha/speak` → 200 `audio/wav`; an unknown
+    voice → 404 with an `error` body; the journal kept none of the words.
+    Serve `POST /api/speak` on loopback with the owner header → 200
+    `audio/wav`; `speed` 3.0 → 400; no owner header → 403.
+  - Not checked: typing into a call, which needs a real WebRTC session.
+- **~02:50Z, `7663b9a8`** (#503, `[voice]` and `[personas]`, merged by
+  mecha-d7 at mecha-ce's named head `c5503767`). Fast-forwarded `810d2804` →
+  `7663b9a8`. No scripts changed, so the worker was not restarted. Dist
+  `index-DrbTmGGd.js`.
+  - Checked before installing, because the new binary refuses a non-loopback
+    voice address: the live config sets neither `offer_target` nor
+    `stt_url`, and the unit passes no `--offer-target`. So the defaults
+    apply: `127.0.0.1:7860/api/offer` and `127.0.0.1:8992/v1`, both
+    listening. `:8992` is the STT address serve hardcoded before.
+  - Probe: `strings ~/.cargo/bin/mecha | grep -c stt_url` → 3; `stt_url`
+    appears in no file of `810d2804`'s source. (`'::1 or localhost'` is not
+    a probe: it was already in two files.)
+  - Checked live: `/api/speak` → 200 `audio/wav`; `/api/library/voices` →
+    200. mecha-ce confirmed independently: `mecha features --json` gives
+    21 on, with dictate at `:8992/v1`, calls to `:7860/api/offer`, and
+    cloning reading `[web] voices_dir` through the alias.
+  - `~/.mecha/config.toml` was not touched. `[web] voices_dir` keeps
+    working through the alias; moving it into `[voice]` is the owner's call.
 
 **Test residue** from every lane's suite (#471's leak) was moved, never deleted, to
 `~/.mecha/test-residue-backup-20261001`: 251 `provider: test` sessions and
