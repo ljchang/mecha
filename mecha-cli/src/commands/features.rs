@@ -14,6 +14,7 @@ use mecha_core::feature::{self, Feature, Row, State, Switch};
 use mecha_core::recommend::{self, Budget, Floor, Machine, Peak, Sum};
 
 #[derive(clap::Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct Args {
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
@@ -329,7 +330,7 @@ fn render_budget(b: &Budget) -> String {
         }
         if !l.own_row && l.model.is_some() {
             out.push_str(&format!(
-                "  {:<16}   (no row for this machine: the GB10's figure, carried)\n",
+                "  {:<16}   (no row for this machine: the nearest row's figure, carried as arithmetic)\n",
                 ""
             ));
         }
@@ -499,7 +500,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("host: unmeasured"), "{text}");
-        assert!(text.contains("the GB10's figure, carried"), "{text}");
+        assert!(text.contains("the nearest row's figure, carried"), "{text}");
         assert!(!text.contains(" 0.0 GiB of 64"), "{text}");
     }
 
