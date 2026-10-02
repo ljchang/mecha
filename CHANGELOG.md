@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An idle image server gives its memory back.** A new user timer
+  (`scripts/comfyui/install.sh`) restarts ComfyUI once it has held a model
+  for ten idle minutes, with nothing queued and nobody connected. That takes
+  it from ~13.6 GB to ~1.1 GB with its port still up. The next picture loads
+  the model again, ~15–22 s. mecha's own unload timer dies whenever
+  `mecha serve` restarts, and on unified memory it only moved the weights
+  into the server's process memory.
+
 - **A persona's voice is picked in its settings.** The settings form has a
   Voice field listing the voices the voice worker has, so `voice = "…"` no
   longer has to be typed into `persona.toml`. A save is checked against the
@@ -651,6 +659,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The owner's amendment to `INCOGNITO-DESIGN.md` §6.1 (2026-09-28).
 
 ### Fixed
+
+- **A picture asked for while the image server restarts waits for it.** The
+  first request of a job now waits up to 90 seconds for a server that is not
+  answering yet, and stops at once if the picture is cancelled. Before, it
+  failed straight away with "Is the image server running?".
+- **The image tool's memory check matches what a generation costs.** It now
+  asks the image server what it holds first. A server that has loaded
+  nothing (just restarted, or unreadable) needs the full `min_available_mb`,
+  now 19 GB, up from 16. A generation from an idle server needs ~18.5 GB above
+  its idle footprint, and the old figure counted only the GPU side. A server
+  that has already loaded the model needs 12 GB, so a second picture soon
+  after the first is no longer refused for memory it would not use.
 
 - **A persona's earlier chats no longer vanish after a restart.** An unlock
   lives in `mecha serve`'s memory, so a restart ended it while the page still

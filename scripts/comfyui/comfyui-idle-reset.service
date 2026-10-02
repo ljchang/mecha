@@ -1,0 +1,10 @@
+[Unit]
+Description=Restart ComfyUI when it has held a model unused for 10 minutes
+Documentation=file:%h/Github/mecha/docs/ARCHITECTURE.md
+
+[Service]
+Type=oneshot
+# nvidia-smi, curl, ss and python3 are system binaries; a user manager's PATH
+# without a login is not to be trusted (2026-09-05).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=%h/.local/bin/comfyui-idle-reset
