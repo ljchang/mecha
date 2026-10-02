@@ -3,6 +3,7 @@ lists them (worker.py `tts_controls`, `optional_controls`); unknown sends
 nothing optional. Run in the worker's venv:
 `~/models/voice-worker-venv/bin/python scripts/voice/test_tts_controls.py`."""
 
+import asyncio
 import json
 import sys
 import threading
@@ -15,16 +16,28 @@ import worker  # noqa: E402
 from worker import available_voices, optional_controls, tts_controls  # noqa: E402
 
 
-def tts_server(listing):
-    """A stand-in TTS whose `/v1/voices` answers `listing`."""
+def tts_server(listing, spoken=None, asked=None):
+    """A stand-in TTS whose `/v1/voices` answers `listing`, counting each ask
+    in `asked`, and whose speech route keeps each body in `spoken`."""
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 - the stdlib's name
+            if asked is not None:
+                asked.append(self.path)
             body = json.dumps(listing).encode()
             self.send_response(200)
             self.send_header("content-type", "application/json")
             self.end_headers()
             self.wfile.write(body)
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("content-length", 0))
+            if spoken is not None:
+                spoken.append(json.loads(self.rfile.read(length)))
+            self.send_response(200)
+            self.send_header("content-type", "audio/wav")
+            self.end_headers()
+            self.wfile.write(b"RIFF")
 
         def log_message(self, *args):
             pass
@@ -63,12 +76,45 @@ class Controls(unittest.TestCase):
         self.assertIsNone(controls)
         self.assertEqual(optional_controls(controls, exaggeration=0.8), {})
 
-    def test_an_unreachable_server_is_unknown(self):
+    def test_an_unreachable_server_is_unknown_and_asked_once(self):
         old = worker.TTS_URL
         worker.TTS_URL = "http://127.0.0.1:9/v1"
         self.addCleanup(setattr, worker, "TTS_URL", old)
         available_voices(refresh=True)
         self.assertIsNone(tts_controls())
+        # Asked again per sentence, a dead TTS would cost a timeout each:
+        # point the URL at a live listing and the cached "unknown" stands.
+        asked = []
+        httpd, url = tts_server({"voices": ["default"], "controls": ["temperature"]}, asked=asked)
+        self.addCleanup(httpd.shutdown)
+        worker.TTS_URL = url
+        self.assertIsNone(tts_controls())
+        self.assertEqual(asked, [])
+
+    def wav_body(self, listing):
+        """The body `tts_wav` (the library preview, the play button) sends
+        to a TTS listing `listing`."""
+        spoken = []
+        httpd, url = tts_server(listing, spoken=spoken)
+        self.addCleanup(httpd.shutdown)
+        old = worker.TTS_URL
+        worker.TTS_URL = url
+        self.addCleanup(setattr, worker, "TTS_URL", old)
+        available_voices(refresh=True)
+        asyncio.run(worker.tts_wav("Hello.", "default"))
+        return spoken[-1]
+
+    def test_the_preview_sends_turbo_neither_of_the_pair(self):
+        body = self.wav_body({"voices": ["default"], "controls": ["temperature"]})
+        self.assertNotIn("exaggeration", body)
+        self.assertNotIn("cfg_weight", body)
+
+    def test_the_preview_sends_the_original_both(self):
+        body = self.wav_body(
+            {"voices": ["default"], "controls": ["temperature", "exaggeration", "cfg_weight"]}
+        )
+        self.assertEqual(body["exaggeration"], worker.TTS_EXAGGERATION)
+        self.assertEqual(body["cfg_weight"], worker.TTS_CFG_WEIGHT)
 
 
 if __name__ == "__main__":
