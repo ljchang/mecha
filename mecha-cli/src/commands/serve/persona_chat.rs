@@ -627,7 +627,12 @@ impl PersonaChats {
     /// What the settings form offers, from the stores as they stand — built
     /// the same way for the page's GET and for checking its save, so a save
     /// is held to the choices the page was shown.
-    fn form(&self, library: &LibraryState, token: Option<&str>) -> mecha_core::tomlform::Form {
+    fn form(
+        &self,
+        library: &LibraryState,
+        token: Option<&str>,
+        voices: &mecha_core::persona::VoiceChoices,
+    ) -> mecha_core::tomlform::Form {
         let store = Store::load(&self.store);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
         mecha_core::persona::settings_form(&mecha_core::persona::FormChoices {
@@ -640,6 +645,7 @@ impl PersonaChats {
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
+            voices: voices.clone(),
         })
     }
 
@@ -669,13 +675,27 @@ impl PersonaChats {
         Ok(serde_json::json!({ "name": p.name, "version": p.state.version }))
     }
 
-    /// A persona's owner files as they stand, each with the digest a save
-    /// hands back so an edit made elsewhere meanwhile is refused, not lost.
+    /// [`Personas::files_in`] with no voice list, which is what the tests
+    /// that are not about voices need.
+    #[cfg(test)]
     pub fn files(
         &self,
         library: &LibraryState,
         name: &str,
         token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        self.files_in(library, name, token, &Default::default())
+    }
+
+    /// A persona's owner files as they stand, each with the digest a save
+    /// hands back so an edit made elsewhere meanwhile is refused, not lost.
+    /// `voices` is what the settings form offers for `voice` ([`form_voices`]).
+    pub fn files_in(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        token: Option<&str>,
+        voices: &mecha_core::persona::VoiceChoices,
     ) -> Result<serde_json::Value, Refusal> {
         let p = self
             .visible(library, name, token)
@@ -700,7 +720,7 @@ impl PersonaChats {
             // read (a hand edit that does not load) comes without it, and
             // why: the page edits it as text until it loads again.
             let form = if file == mecha_core::persona::OwnerFile::Settings {
-                let form = self.form(library, token);
+                let form = self.form(library, token, voices);
                 match mecha_core::persona::settings_values(&form, &text) {
                     Ok(values) => serde_json::json!({ "form": form, "values": values }),
                     Err(e) => serde_json::json!({ "problem": format!("{e:#}") }),
@@ -730,12 +750,28 @@ impl PersonaChats {
         Ok(serde_json::Value::Object(out))
     }
 
-    /// Save one owner file, verbatim, and take a version (`write_owner_file`).
+    /// [`Personas::save_in`] with no voice list, which is what the tests
+    /// that are not about voices need.
+    #[cfg(test)]
     pub fn save(
         &self,
         library: &LibraryState,
         name: &str,
         body: SaveBody,
+    ) -> Result<serde_json::Value, Refusal> {
+        self.save_in(library, name, body, &Default::default())
+    }
+
+    /// Save one owner file, verbatim, and take a version (`write_owner_file`).
+    /// A form save is held to the voices listed now, not when the page
+    /// loaded: a voice the worker has since lost is refused here rather than
+    /// at the next call.
+    pub fn save_in(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        body: SaveBody,
+        voices: &mecha_core::persona::VoiceChoices,
     ) -> Result<serde_json::Value, Refusal> {
         let p = self
             .visible(library, name, body.unlock.as_deref())
@@ -796,7 +832,7 @@ impl PersonaChats {
                 if hidden.is_some() && changes.get("character").is_some_and(|v| v.is_null()) {
                     changes.remove("character");
                 }
-                let form = self.form(library, body.unlock.as_deref());
+                let form = self.form(library, body.unlock.as_deref(), voices);
                 mecha_core::persona::edit_settings(&self.store, &p.name, &form, &changes, &base)
             }
             (None, Some(_), None) => {
@@ -3732,9 +3768,10 @@ pub async fn files(
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    let voices = form_voices(&state).await;
     respond(
         chat.personas
-            .files(&state.library, &name, q.unlock.as_deref()),
+            .files_in(&state.library, &name, q.unlock.as_deref(), &voices),
     )
 }
 
@@ -3748,7 +3785,33 @@ pub async fn save(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    respond(chat.personas.save(&state.library, &name, body))
+    let voices = form_voices(&state).await;
+    respond(chat.personas.save_in(&state.library, &name, body, &voices))
+}
+
+/// The voices the settings form offers: the worker's list
+/// (`runner_voices`, as Library → Voices reads it), or why it could not be
+/// had. Bounded tighter than the worker's own wait, because the editor
+/// waits on it and the field is one of many: a slow worker costs the voice
+/// choice, not the page.
+async fn form_voices(state: &super::WebState) -> mecha_core::persona::VoiceChoices {
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+    let listed = match &state.offer_target {
+        None => Err("voice calls are not wired on this serve"),
+        Some(target) => tokio::time::timeout(WAIT, super::runner_voices(target))
+            .await
+            .unwrap_or(Err("the voice worker did not answer in time")),
+    };
+    match listed {
+        Ok(names) => mecha_core::persona::VoiceChoices {
+            names,
+            unread: None,
+        },
+        Err(why) => mecha_core::persona::VoiceChoices {
+            names: Vec::new(),
+            unread: Some(why.to_string()),
+        },
+    }
 }
 
 /// POST /api/personas/{name}/lock
@@ -7896,6 +7959,108 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.ok() });
         (format!("http://{addr}/api/offer"), bodies)
+    }
+
+    /// The settings form offers the voices the worker lists, and a save is
+    /// held to them: a listed voice is written, an unlisted one refused, and
+    /// with no worker to ask the field says why rather than offering none.
+    #[tokio::test]
+    async fn the_settings_form_picks_a_voice_the_worker_lists() {
+        let w = world();
+        let (target, _) = voice_runner(&["default", "vctk_p297"]).await;
+        let library = Arc::new(LibraryState::new(w.root.join("imagelib")));
+        let state = |offer_target: Option<String>| super::super::WebState {
+            owner_login: Arc::new("owner@example.com".into()),
+            chat: Some(Arc::clone(&w.chat)),
+            offer_target: offer_target.map(Arc::new),
+            voices_dir: None,
+            stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
+            library: Arc::clone(&library),
+            features_at_start: Arc::default(),
+            gate: Arc::default(),
+            review: Arc::new(super::super::review::ReviewState {
+                outbox_root: w.root.join("outbox"),
+                sessions_dir: None,
+            }),
+        };
+        let read = |resp: axum::response::Response| async move {
+            let status = resp.status();
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, String::from_utf8_lossy(&bytes).to_string())
+        };
+        let open = |st| async {
+            let resp = super::files(
+                State(st),
+                axum::extract::Path("mara".to_string()),
+                Query(body(serde_json::json!({}))),
+            )
+            .await;
+            let (status, text) = read(resp).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            serde_json::from_str::<serde_json::Value>(&text).unwrap()
+        };
+        let voice_field = |files: &serde_json::Value| {
+            files["settings"]["form"]["form"]["sections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|s| s["fields"].as_array().unwrap().clone())
+                .find(|f| f["path"] == "voice")
+                .expect("the settings form has no voice field")
+        };
+
+        let files = open(state(Some(target.clone()))).await;
+        let field = voice_field(&files);
+        let offered: Vec<&str> = field["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(offered, ["default", "vctk_p297"]);
+        assert_eq!(
+            files["settings"]["form"]["values"]["voice"],
+            serde_json::Value::Null
+        );
+
+        let save = |st, voice: &str, base: &serde_json::Value| {
+            super::save(
+                State(st),
+                axum::extract::Path("mara".to_string()),
+                Json(body(serde_json::json!({
+                    "file": "settings", "changes": { "voice": voice }, "base": base,
+                }))),
+            )
+        };
+        let base = &files["settings"]["digest"];
+        let (status, why) = read(save(state(Some(target.clone())), "nobody", base).await).await;
+        assert_ne!(status, StatusCode::OK, "an unlisted voice was saved");
+        assert!(why.contains("nobody"), "{why}");
+
+        let (status, text) = read(save(state(Some(target.clone())), "vctk_p297", base).await).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let toml = std::fs::read_to_string(w.store().join("mara/persona.toml")).unwrap();
+        assert!(toml.contains("voice = \"vctk_p297\""), "{toml}");
+        assert_eq!(
+            w.personas().call_voice("mara"),
+            Ok(Some(CallVoice {
+                voice: "vctk_p297".into(),
+                speed: None,
+            }))
+        );
+
+        // No worker to ask: nothing to pick, the reason said, and the voice
+        // already set still shown.
+        let files = open(state(None)).await;
+        let field = voice_field(&files);
+        assert_eq!(field["options"], serde_json::json!([]));
+        assert!(
+            field["help"].as_str().unwrap().contains("not wired"),
+            "{field}"
+        );
+        assert_eq!(files["settings"]["form"]["values"]["voice"], "vctk_p297");
     }
 
     /// An offer to a persona chat (§11): refused as the page is while the
