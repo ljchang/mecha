@@ -82,10 +82,10 @@ they are placed into are not.
 
 | Tier | Unified memory | Separate GPU, with system RAM beside it |
 |---|---|---|
-| 16 GB | An 8B at Q4, or a 14B at Q4 with little else running; 32k context. ~5–9 GB of weights plus the cache, *Arithmetic* | **GPU**: a 14B at Q4 with its context, ~9 GB of weights plus the cache, *Arithmetic*. **System RAM**: embeddings and OCR on the CPU plus the CPU-side models, ~10 GB, *Arithmetic* |
-| 32 GB | A 14B at Q4–Q6, or a ~27–35B MoE at Q4 with modest context. ~24 GB for the MoE at 128k, *Arithmetic* | **GPU**: a 35B MoE at Q4 with 128k context, ~24 GB, *Arithmetic*. **System RAM**: as at 16 GB, ~10 GB, *Arithmetic* |
-| 64 GB | A 30–35B MoE at Q4–Q5 with 128k–256k context, and an embeddings server. ~30–37 GB, *Arithmetic* | **GPU**: the same model and context, with image generation's ~15 GB and speech's ~5 GB beside it, ~50 GB, *Arithmetic*. **System RAM**: the CPU-side models and the GPU servers' host memory, ~6 GB, *Arithmetic* |
-| 128 GB | A 35B-class MoE at Q4 with four slots of 262k: 41.5 GiB, *Measured — GB10, 2026-10-02*. Every other feature's model beside it: ~73 GiB in all, up to ~89 with a full prompt cache, *Arithmetic* ([the sum](#beside-the-chat-model)) | **GPU**: the unified row's GPU models, ~67–70 GiB, *Arithmetic*. **System RAM**: the CPU-side models and the prompt cache, ~6–22 GiB, *Arithmetic* |
+| 16 GB | An 8B at Q4, or a 14B at Q4 with little else running; 32k context. ~5–9 GB of weights plus the cache, *Arithmetic* | **GPU**: a 14B at Q4 with its context, ~9 GB of weights plus the cache, *Arithmetic*. **System RAM**: embeddings and OCR on the CPU plus the CPU-side models, ~10 GiB, *Arithmetic* |
+| 32 GB | A 14B at Q4–Q6, or a ~27–35B MoE at Q4 with modest context. ~24 GB for the MoE at 128k, *Arithmetic* | **GPU**: a 35B MoE at Q4 with 128k context, ~24 GB, *Arithmetic*. **System RAM**: as at 16 GB, ~10 GiB, *Arithmetic* |
+| 64 GB | A 30–35B MoE at Q4–Q5 with 128k–256k context, and an embeddings server. ~30–37 GB, *Arithmetic* | **GPU**: the same model and context, with image generation's ~15 GB and speech's ~5 GB beside it, ~50 GB, *Arithmetic*. **System RAM**: the CPU-side models and the GPU servers' host memory, ~6 GiB, *Arithmetic* |
+| 128 GB | A 35B-class MoE at Q4 with four slots of 262k: 41.5 GiB, *Measured — GB10, 2026-10-02*. Every other feature's model beside it: ~76 GiB in all with everything loaded, up to ~92 with a full prompt cache, *Arithmetic* ([the sum](#beside-the-chat-model)) | **GPU**: the unified row's GPU models, ~47–70 GiB, *Arithmetic*. **System RAM**: the CPU-side models and the prompt cache, ~6–22 GiB, *Arithmetic* |
 
 ### 16 GB
 
@@ -170,25 +170,32 @@ it after ten idle minutes, and **per request** holds it only while working.
 | Feature | Model | Runs on | How it holds memory | Cost on the GB10 (GiB) | Evidence |
 |---|---|---|---|---|---|
 | Chat — every feature | Qwen3.6-35B-A3B Q4_K_M, with its vision projector | GPU | Resident | 41.5 at four 262k slots — the server process's GPU memory; the router's prompt cache is host memory on top (below) | Measured 2026-10-02 |
-| `graph` — embeddings; persona file search | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.1 loaded | Measured 2026-10-02 |
+| `graph`, and `personas` file search when `[documents] embed_url` is set | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.1 loaded | Measured 2026-10-02 |
 | `ocr` | PaddleOCR-VL 1.6 (GGUF and projector) | GPU | On demand | 2.6 loaded | Measured 2026-09-29 |
 | `layout` | PP-DocLayoutV3 (ONNX) | CPU | Per request | 1.1 peak | Measured 2026-09-29 |
-| `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | Resident — ComfyUI keeps its models between pictures | ~15 peak at 1024²; 11.9 held while idle, and 1.4 of system memory | Measured 2026-09-25 (peak), 2026-10-02 (idle) |
+| `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | On demand — mecha asks ComfyUI to free its models after ten idle minutes (`[image] unload_after_secs`) | ~15 peak at 1024²; the ComfyUI process keeps 1.4 of system memory | Measured 2026-09-25 (peak), 2026-10-02 (system memory) |
 | `voice` — speech to text | Parakeet TDT 0.6B v3 int8 | CPU | Resident | 0.7 | Measured 2026-10-02 |
 | `voice` — speech | Chatterbox Turbo | GPU | Resident | 5.4, and 2.5 of system memory | Measured 2026-10-02 |
 | `voice` — turn detection | Silero VAD and smart-turn v3, in the voice worker | CPU | Resident | 0.5 | Measured 2026-10-02 |
 
 Added up — which is *arithmetic*, since nobody has seen every row loaded at
-the same moment — that is about 67 GiB of GPU memory with image generation
-idle (70 at its peak), and about 6 GiB of host memory for the processes
-around them. **The router's prompt cache comes on top**: `cache-ram` lets it
-keep up to 16 GiB of saved prompt prefixes in host memory
-(`scripts/start-router.sh`). On a unified pool all of it is the same memory —
-73 GiB, and up to 89 GiB with a full prompt cache, of the GB10's 121 GiB
-usable, before the operating system.
+the same moment — the resident models hold about 47 GiB of GPU memory, and
+everything loaded at once with an image generating about 70, plus about 6
+GiB of host memory for the processes around them. **The router's prompt
+cache comes on top**: `cache-ram` lets it keep up to 16 GiB of saved prompt
+prefixes in host memory (`scripts/start-router.sh`). On a unified pool all
+of it is the same memory — 76 GiB, and up to 92 GiB with a full prompt
+cache, of the GB10's 121.7 GiB (`MemTotal` in `/proc/meminfo`), before the
+operating system.
 
-Image generation's peak sits ~3 GiB above its idle figure, and by default
-`image_generate` refuses to start with less than 16 GiB available (`[image]
+**The on-demand release has one leak.** The ten-minute timer lives in the
+mecha process that drew the picture, so a one-shot `mecha run`, or a `mecha
+serve` restarted inside the window, exits before it fires and the models
+stay loaded until the next long-lived generation or a ComfyUI restart — on
+the GB10, 11.9 GiB was still held nine hours after a picture drawn just
+before a restart. Count image generation's peak if you use it at all.
+
+By default `image_generate` refuses to start with less than 16 GiB available (`[image]
 min_available_mb`), so on a smaller
 unified machine it refuses while the chat model is loaded rather than taking
 the machine down.
