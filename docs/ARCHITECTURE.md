@@ -1516,7 +1516,12 @@ module.
     `repeat_last_n`) is 64 tokens, too short to see an earlier turn, and
     this build refuses `-1`.
   - `persona::echo` records each reply's overlap with the closest earlier
-    reply as a number in `echo.jsonl`, never the words. It has its own file
+    reply as a number in `echo.jsonl`, never the words. The earlier replies
+    come from the session file (`Session::assistant_replies`), read before
+    the run is recorded. They never come from the live conversation: by the
+    late stretch of a chat compaction has summarised most turns away, and a
+    copy of one of them would score as new. `Rewrite` records are read too,
+    because the turns a compacting run adds exist only there. It has its own file
     for the same reason `calls.jsonl` does. When there is nothing to compare
     the result is `None` and nothing is written. `mecha persona show` reads
     the last `SHOWN_DAYS` days, and an unreadable file is reported as such,
