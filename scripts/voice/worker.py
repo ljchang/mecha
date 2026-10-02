@@ -2124,10 +2124,12 @@ def speak_request(body, known, default_voice=TTS_VOICE, default_speed=TTS_SPEED)
     """A play button's request (`POST /mecha/speak`), checked: `(text, voice,
     speed)`, or `(None, status, why)` refused. The voice must be one the TTS
     lists when named; none named is this worker's own, and so is a speed
-    left unset - `MECHA_VOICE_TTS_SPEED`, the rate a call speaks at
-    (`run_bot`'s `bound.get("speed", TTS_SPEED)`), so Listen and a call
-    sound alike (review of #502). Pure, so it is tested without a server
-    (`test_speak.py`)."""
+    left unset - `MECHA_VOICE_TTS_SPEED`, the rate a call opens at
+    (`run_bot`'s `bound.get("speed", TTS_SPEED)`), never a hardcoded 1.0.
+    A rate the owner chose arrives named, as a call's opening patch does:
+    serve sends the persona's own, or the owner's from Settings → Voice
+    for the assistant's replies (review of #502). Pure, so it is tested
+    without a server (`test_speak.py`)."""
     if not isinstance(body, dict):
         return None, 400, "not a request"
     text = body.get("text")
@@ -2212,9 +2214,12 @@ def install(app) -> None:
         if named and (known is None or body.get("voice") not in known):
             # A voice cloned since the last ask: one refetch before refusing.
             known = available_voices(refresh=True)
-        text, voice, speed = speak_request(body, known)
-        if text is None:
-            return JSONResponse({"error": speed}, voice)
+        checked = speak_request(body, known)
+        if checked[0] is None:
+            # A refusal is `(None, status, why)`.
+            _, status, why = checked
+            return JSONResponse({"error": why}, status)
+        text, voice, speed = checked
         try:
             wav = await tts_wav(text, voice, speed)
         except Exception as e:  # noqa: BLE001 - said, not raised: the page shows it

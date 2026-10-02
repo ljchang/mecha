@@ -8252,10 +8252,11 @@ mod tests {
             }),
         };
         let target = format!("http://{addr}/api/offer");
-        let speak = |chat: Option<String>,
-                     unlock: Option<String>,
-                     voice: Option<String>,
-                     target: String| {
+        let speak_at = |chat: Option<String>,
+                        unlock: Option<String>,
+                        voice: Option<String>,
+                        speed: Option<f64>,
+                        target: String| {
             super::super::settings::speak(
                 State(state(target)),
                 Json(super::super::settings::SpeakBody {
@@ -8263,11 +8264,20 @@ mod tests {
                     chat,
                     unlock,
                     voice,
+                    speed,
                 }),
             )
         };
-        // A persona chat: the persona's voice, never the page's.
-        let r = speak(Some(key.clone()), None, Some("page".into()), target.clone()).await;
+        let speak = |chat, unlock, voice, target| speak_at(chat, unlock, voice, None, target);
+        // A persona chat: the persona's voice and rate, never the page's.
+        let r = speak_at(
+            Some(key.clone()),
+            None,
+            Some("page".into()),
+            Some(1.9),
+            target.clone(),
+        )
+        .await;
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(
             seen.lock().unwrap().pop().unwrap(),
@@ -8297,6 +8307,14 @@ mod tests {
         .await;
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(seen.lock().unwrap().pop().unwrap()["voice"], "bm_george");
+        // And the rate the owner set beside it, as an assistant call has it
+        // (review of #502); out of range is refused before anything speaks.
+        let r = speak_at(Some("main".into()), None, None, Some(1.4), target.clone()).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(seen.lock().unwrap().pop().unwrap()["speed"], 1.4);
+        let r = speak_at(Some("main".into()), None, None, Some(3.0), target.clone()).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        assert!(seen.lock().unwrap().is_empty());
         // A worker without the route: named, not a bare 404.
         let old = axum::Router::new();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

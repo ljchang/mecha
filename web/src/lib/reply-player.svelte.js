@@ -46,11 +46,13 @@ export function stopPlaying() {
 /**
  * Speak `text` (a reply's Markdown) as `id`'s — or stop it, if it is the one
  * playing. `chat` is the chat the reply is in: a persona chat is spoken in
- * the persona's voice, which serve decides; `voice` is the owner's own
- * choice for the assistant's replies. Called from the tap itself.
+ * the persona's voice and rate, which serve decides; `voice` and `speed` are
+ * the owner's own choice for the assistant's replies. Called from the tap
+ * itself. A reply whose read failed is retried by the same tap, not stopped:
+ * there is nothing playing to stop (review of #502).
  */
-export async function playReply(id, text, { chat = null, unlock = null, voice = null } = {}) {
-  if (player.id === id) return stopPlaying();
+export async function playReply(id, text, { chat = null, unlock = null, voice = null, speed = null } = {}) {
+  if (player.id === id && player.state !== 'error') return stopPlaying();
   stopPlaying();
   const mine = gen;
   const audio = element();
@@ -66,7 +68,13 @@ export async function playReply(id, text, { chat = null, unlock = null, voice = 
     const res = await fetch('/api/speak', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: t, chat, unlock: unlock ?? undefined, voice: voice ?? undefined }),
+      body: JSON.stringify({
+        text: t,
+        chat,
+        unlock: unlock ?? undefined,
+        voice: voice ?? undefined,
+        speed: speed ?? undefined,
+      }),
     });
     if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
     const url = URL.createObjectURL(await res.blob());
