@@ -121,14 +121,22 @@ pub struct MemorySearch {
     store: PathBuf,
     persona: String,
     embedder: Option<Embedder>,
+    /// `[agent] timezone`, for the day each memory is dated by.
+    tz: Option<chrono_tz::Tz>,
 }
 
 impl MemorySearch {
-    pub fn new(store: PathBuf, persona: String, embedder: Option<Embedder>) -> MemorySearch {
+    pub fn new(
+        store: PathBuf,
+        persona: String,
+        embedder: Option<Embedder>,
+        tz: Option<chrono_tz::Tz>,
+    ) -> MemorySearch {
         MemorySearch {
             store,
             persona,
             embedder,
+            tz,
         }
     }
 }
@@ -234,7 +242,7 @@ impl Tool for MemorySearch {
         }];
         for r in found {
             untrusted |= r.origin == Origin::ModelUntrusted;
-            let day = r.date.get(..10).unwrap_or(&r.date);
+            let day = super::recall::local_day(&r.date, self.tz);
             lines.push(match r.kind {
                 Recallable::Episodes => {
                     format!("- {day} · a conversation [{}]: {}", short(&r.uid), r.text)
@@ -256,11 +264,12 @@ impl Tool for MemorySearch {
 pub struct MemoryRead {
     store: PathBuf,
     persona: String,
+    tz: Option<chrono_tz::Tz>,
 }
 
 impl MemoryRead {
-    pub fn new(store: PathBuf, persona: String) -> MemoryRead {
-        MemoryRead { store, persona }
+    pub fn new(store: PathBuf, persona: String, tz: Option<chrono_tz::Tz>) -> MemoryRead {
+        MemoryRead { store, persona, tz }
     }
 }
 
@@ -284,6 +293,7 @@ pub fn read_episode(
     store: &std::path::Path,
     persona: &Persona,
     id: &str,
+    tz: Option<chrono_tz::Tz>,
 ) -> std::result::Result<Read, String> {
     let id = id.trim().to_ascii_lowercase();
     if id.len() < 4 || id.len() > 32 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -342,12 +352,7 @@ pub fn read_episode(
         messages = words_only(messages);
     }
     let rendered = named(&messages, persona.display());
-    let day = ep
-        .started_at
-        .as_deref()
-        .unwrap_or(&ep.ingested_at)
-        .get(..10)
-        .unwrap_or("");
+    let day = super::recall::local_day(&ep.said_at(), tz);
     let body = bound(&rendered, READ_HEAD_CHARS, MAX_READ_CHARS - READ_HEAD_CHARS);
     Ok(Read {
         text: format!(
@@ -444,8 +449,9 @@ impl Tool for MemoryRead {
                 "Remembering past conversations is switched off.",
             ));
         }
-        let store = self.store.clone();
-        let read = tokio::task::spawn_blocking(move || read_episode(&store, &persona, &id)).await;
+        let (store, tz) = (self.store.clone(), self.tz);
+        let read =
+            tokio::task::spawn_blocking(move || read_episode(&store, &persona, &id, tz)).await;
         Ok(match read {
             Ok(Ok(r)) if r.untrusted => ToolOutput::ok(r.text).from_outside(),
             Ok(Ok(r)) => ToolOutput::ok(r.text),

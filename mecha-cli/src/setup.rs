@@ -2054,6 +2054,7 @@ pub fn persona_agent(
             store.to_path_buf(),
             pinned.name.clone(),
             file_embedder(&bound.config),
+            bound.config.agent.timezone(),
         );
         if mecha_core::tool::Tool::capabilities(&search).egress == mecha_core::tool::Egress::None {
             tools.registry.insert(Arc::new(search));
@@ -2062,7 +2063,11 @@ pub fn persona_agent(
         }
     }
     if memory_tools::offers_read(&pinned.settings) {
-        let read = memory_tools::MemoryRead::new(store.to_path_buf(), pinned.name.clone());
+        let read = memory_tools::MemoryRead::new(
+            store.to_path_buf(),
+            pinned.name.clone(),
+            bound.config.agent.timezone(),
+        );
         if mecha_core::tool::Tool::capabilities(&read).egress == mecha_core::tool::Egress::None {
             tools.registry.insert(Arc::new(read));
         } else {

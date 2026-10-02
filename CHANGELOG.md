@@ -659,6 +659,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A persona's memories are dated by when they were said.** Everything a
+  persona remembered was dated by the night it was written, so something you
+  mentioned on Tuesday read as Friday's news. Memories now carry the day of
+  the conversation they came from, in your timezone, and "recent" means
+  recently said.
+
 - **A persona no longer sends the same reply again when a turn adds
   little.** Late in a long chat, a short owner message ("mm") could bring
   back an earlier reply word for word. Persona chats now send no fixed
