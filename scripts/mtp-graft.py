@@ -40,26 +40,42 @@ def layer(name):
     return int(name.split(".")[1]) if name.startswith("blk.") else None
 
 
+def read(path):
+    """A GGUFReader, or a one-line refusal: like every other check here, a
+    wrong input is a message, never a traceback."""
+    try:
+        return GGUFReader(path)
+    except Exception as e:  # gguf raises bare ValueError/OSError on a non-GGUF
+        sys.exit(f"{path}: not a readable GGUF ({e})")
+
+
+def key(r, path, name):
+    f = r.fields.get(name)
+    if f is None:
+        sys.exit(f"{path} has no {name}; not a model this script can graft")
+    return f.contents()
+
+
 def main():
     if len(sys.argv) != 4:
         sys.exit(__doc__.split("\n\n")[1])
     base_p, donor_p, out_p = sys.argv[1:]
-    base, donor = GGUFReader(base_p), GGUFReader(donor_p)
+    base, donor = read(base_p), read(donor_p)
     # A shard holds a subset of the tensors and names its siblings in split.*;
     # grafting one would carry those keys onto a file that has no siblings.
     for p, r in ((base_p, base), (donor_p, donor)):
         if "split.count" in r.fields:
             sys.exit(f"{p} is one shard of a split GGUF; merge it first (llama-gguf-split --merge)")
-    arch = base.fields["general.architecture"].contents()
-    if donor.fields["general.architecture"].contents() != arch:
-        sys.exit(f"architectures differ: {arch} vs {donor.fields['general.architecture'].contents()}")
+    arch = key(base, base_p, "general.architecture")
+    if key(donor, donor_p, "general.architecture") != arch:
+        sys.exit(f"architectures differ: {arch} vs {key(donor, donor_p, 'general.architecture')}")
     if f"{arch}.nextn_predict_layers" in base.fields:
         sys.exit(f"{base_p} already declares an MTP head; nothing to graft")
     nextn_field = donor.fields.get(f"{arch}.nextn_predict_layers")
     if nextn_field is None:
         sys.exit(f"{donor_p} has no MTP head to give")
-    n_base = base.fields[f"{arch}.block_count"].contents()
-    n_donor = donor.fields[f"{arch}.block_count"].contents()
+    n_base = key(base, base_p, f"{arch}.block_count")
+    n_donor = key(donor, donor_p, f"{arch}.block_count")
     nextn = nextn_field.contents()
     if n_donor != n_base + nextn:
         sys.exit(f"block counts do not line up: base {n_base} + nextn {nextn} != donor {n_donor}")
