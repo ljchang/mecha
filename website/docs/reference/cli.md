@@ -202,7 +202,7 @@ copy of `web/dist`.
 | `--owner-login <LOGIN>` | Override the permitted Tailscale identity. |
 | `--voice-port <PORT>` | Override `[voice] voice_port` for this run: the mounted voice facade's port; `0` disables. `mecha features` reports `[voice]`, not a run's flags. |
 | `--voice-yes` | Allow voice calls without per-call approval; configured outbound actions still stage. |
-| `--offer-target <URL>` | Override `[voice] offer_target` for this run: the voice worker's offer endpoint, on this machine. Empty disables proxying. |
+| `--offer-target <URL>` | Override `[voice] offer_target` for this run: the voice worker's offer endpoint, on this machine. Empty means serve doesn't reach the worker: no call relay, Listen or voice previews. |
 
 ```bash
 mecha serve --assets ./web/dist
