@@ -1350,6 +1350,15 @@ module.
       `RECALL_EMBED_WAIT` (8 s, past the on-demand server's cold start);
       slower or down, recall is by words. `persona memory write` embeds what
       has no vector after writing.
+  - **The curation page** (§9.8): the editor's Memories tab, over
+    `GET`/`POST /api/personas/{name}/memory` (`PersonaChats::memory`,
+    `memory_act`). Acts are a closed set (`MemoryAct`: approve, pin, unpin,
+    correct, forget, share, unshare), each the same core call the CLI's
+    owner door makes, and each answers with the page as it now stands. The
+    lock holds as for every persona route (hidden answers as missing), and
+    a page shows and unshares only copies its own persona learned, so a
+    locked persona's shared facts never surface through another's page. No
+    tool reaches the route, so no model edits memory.
   - **The memory tools** (`persona::memory_tools`, §9.7 "on demand"):
     `memory_search` and `memory_read`, inserted in `setup::persona_agent`
     beside the file tools, and only if they can never send.

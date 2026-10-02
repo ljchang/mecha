@@ -1758,6 +1758,24 @@ export const personaAuthoring = {
   characters: ['maya', 'john'],
 };
 
+// What Mara remembers, for the memory page — the fictional cast only.
+export const personaMemory = {
+  episodes: [
+    { uid: 'e1a2b3c4d5e6f708', day: '2026-09-29', said_at: '2026-09-30T02:49:59Z', summary: 'Worked through the reviewer\'s second comment and agreed to rerun the model without site 4.', open_threads: ['the revision deadline'], chat: '20260930T024959-1a2b3c4d', origin: 'model_clean', status: 'active', pinned: false },
+  ],
+  facts: {
+    persona: [
+      { uid: 'f1a2b3c4d5e6f708', day: '2026-09-28', said_at: '2026-09-28T15:00:00Z', text: 'Mara grew up on the coast.', kind: 'stated', origin: 'model_clean', status: 'active', pinned: true, shared: [] },
+    ],
+    user: [
+      { uid: 'u1a2b3c4d5e6f708', day: '2026-09-29', said_at: '2026-09-30T02:49:59Z', text: 'Teaches a methods seminar on Thursdays.', kind: 'stated', origin: 'model_clean', status: 'active', pinned: false, shared: [{ uid: 's1a2b3c4d5e6f708', group: null }] },
+      { uid: 'u2a2b3c4d5e6f708', day: '2026-09-30', said_at: '2026-09-30T18:00:00Z', text: 'Read that kelp forests can grow half a metre a day.', kind: 'observed', origin: 'model_untrusted', status: 'candidate', pinned: false, shared: [] },
+    ],
+    inferred: [],
+  },
+  groups: ['work'],
+};
+
 export const personaFiles = {
   identity: {
     file: 'identity.md',
