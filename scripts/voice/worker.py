@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import threading
+import time
 import traceback
 import uuid
 from dataclasses import dataclass
@@ -48,6 +49,9 @@ from pipecat.frames.frames import (
     DataFrame,
     EndFrame,
     InputAudioRawFrame,
+    InterruptionFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
     StartFrame,
     SystemFrame,
     TranscriptionFrame,
@@ -271,6 +275,9 @@ UPLINK_DRAIN_SPEED = 4.0
 # anyway: live speech queues behind it, and a listener would rather hear a
 # reply cut than wait half a minute for their own words.
 LATE_BOT_WAIT_SECS = 10.0
+# Beyond that wait, how long a flush waits for the turn queue before giving
+# up on it and letting the live audio behind it go (`flush_late`).
+LATE_HANDOFF_SLACK_SECS = 5.0
 # pipecat's VAD controller forces a speech stop `audio_idle_timeout` (1.0 s,
 # wall clock) after frames stop arriving. On the buffered uplink frames stop
 # arriving exactly when the link stalls, the hold already keeps the *turn*
@@ -407,6 +414,52 @@ class LinkResumedFrame(SystemFrame):
     hold was keeping back may now be decided."""
 
     after_secs: float = 0.0
+
+
+class Answering(FrameProcessor):
+    """Whether the model is answering: between an LLM response's start and
+    end frames. Sits behind the LLM. The typed-turn consumer waits on this
+    as well as on speech, because an answer can end without a word spoken
+    (a refusal, an error, a tool-only turn) - waiting for speech alone held
+    the next typed line for the whole start bound (review of #499)."""
+
+    def __init__(self):
+        super().__init__()
+        self.busy = False
+        # When the last answer ended (`time.monotonic`), for `answer_pending`.
+        self.ended_at: float | None = None
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMFullResponseStartFrame):
+            self.busy = True
+        # An interrupted answer may never send its end frame: the
+        # interruption ends it, or `busy` would latch and every later typed
+        # line wait out the whole bound (review of #499, pass 4). pipecat
+        # queues exactly `InterruptionFrame()` downstream on every
+        # interruption (`PipelineWorker`); the task-side request is a
+        # different class that never reaches this processor.
+        elif isinstance(frame, (LLMFullResponseEndFrame, InterruptionFrame, EndFrame, CancelFrame)):
+            if self.busy:
+                self.ended_at = time.monotonic()
+            self.busy = False
+        await self.push_frame(frame, direction)
+
+
+def answer_pending(answering, bot_speaking, settle=None, now=time.monotonic) -> bool:
+    """Whether an answer is still under way: the model answering, the bot
+    speaking, or the model done less than `settle` ago. The last is the gap
+    between the model's end frame and the first spoken audio of a short
+    answer; a turn delivered in it barges in on speech about to start. It
+    is timestamped where the answer ends, so the gap is seen whoever waits
+    on it and from whichever turn - a spoken question's answer as much as a
+    typed one's (review of #499, pass 5) - and an idle call waits not at
+    all."""
+    if settle is None:
+        settle = TYPED_SETTLE_SECS
+    if answering.busy or bot_speaking():
+        return True
+    return answering.ended_at is not None and now() - answering.ended_at < settle
 
 
 class LinkWatch(FrameProcessor):
@@ -1607,6 +1660,11 @@ class UplinkAudio:
         self._rtp_fallback_warned = False
         self.batches = 0
         self.late_turns = 0
+        # Where a late turn goes once transcribed: the call's one queue of
+        # turns (`TypedTurns.deliver`), set by `run_bot` once it exists, so a
+        # late turn never lands inside a typed turn's answer. Unset (the
+        # tests' fakes), the turn waits for speech and is pushed here.
+        self.deliver = None
 
     async def on_start(self, d: dict):
         """`audio-start`: the page's zone and where its live capture begins,
@@ -1722,7 +1780,8 @@ class UplinkAudio:
             self._arm_late_settle()
             return
         # Live: a span that was being assembled is closed first, so its turn
-        # precedes the speech that ended it — both are queue items, in order.
+        # precedes the speech that ended it — both are queue items, in order,
+        # and the flush returns only once its turn is delivered (§2.5).
         self._work.put_nowait(self.flush_late)
         if dropped_ms:
             logger.warning(f"uplink: the page dropped {dropped_ms / 1000:.0f}s of audio before batch {seq}")
@@ -1794,17 +1853,38 @@ class UplinkAudio:
         if not text:
             logger.info(f"uplink: late span {from_ms:.0f}–{to_ms:.0f} ms held no speech")
             return
+        prefix = late_prefix(wall_from, wall_to, self._tz_offset_min, dropped_ms)
+        logger.info(
+            f"uplink: late turn ({(to_ms - from_ms) / 1000:.0f}s of audio): {prefix}{spoken_words(text, 80)}"
+        )
+        if self.deliver is not None:
+            # Handed to the call's one consumer of turns, and awaited: the
+            # live audio that closed this span is the next item on this
+            # queue, and §2.5 puts the turn before it. The consumer bounds
+            # its own wait at `LATE_BOT_WAIT_SECS`; this bound is only for a
+            # consumer that is gone (the call ending), so live audio is never
+            # held behind nothing.
+            done = self.deliver(lambda: self._send_late(prefix + text))
+            try:
+                await asyncio.wait_for(asyncio.shield(done), LATE_BOT_WAIT_SECS + LATE_HANDOFF_SLACK_SECS)
+            except asyncio.TimeoutError:
+                logger.warning("uplink: the late turn was not delivered in time; live audio goes on behind it")
+            return
         # Never interrupts — within reason: the queue behind this holds live
         # speech, so the wait for the bot to finish is bounded.
         for _ in range(int(LATE_BOT_WAIT_SECS * 10)):
             if not getattr(self._stt, "_bot_speaking", False):
                 break
             await asyncio.sleep(0.1)
-        prefix = late_prefix(wall_from, wall_to, self._tz_offset_min, dropped_ms)
+        await self._send_late(prefix + text)
+
+    async def _send_late(self, turn: str):
+        from loguru import logger
+
+        # Counted where it is sent, not where it was transcribed: a turn the
+        # consumer never got to (the call ending) is not one that landed
+        # (review of #499, pass 8).
         self.late_turns += 1
-        logger.info(
-            f"uplink: late turn ({(to_ms - from_ms) / 1000:.0f}s of audio): {prefix}{spoken_words(text, 80)}"
-        )
         # Appended to the context and run at once — not a `TranscriptionFrame`.
         # A transcript-only turn has no VAD edge for any stop strategy to
         # rule on, so it sat on the aggregator's 15 s wall-clock timeout
@@ -1813,11 +1893,11 @@ class UplinkAudio:
         # its transcript shows what the model was given.
         if self._announce:
             try:
-                await self._announce({"t": "late-turn", "text": prefix + text})
+                await self._announce({"t": "late-turn", "text": turn})
             except Exception as e:  # noqa: BLE001 - display, not delivery
                 logger.warning(f"uplink: could not show the late turn ({e})")
         await self._input.push_frame(
-            LLMMessagesAppendFrame(messages=[{"role": "user", "content": prefix + text}], run_llm=True)
+            LLMMessagesAppendFrame(messages=[{"role": "user", "content": turn}], run_llm=True)
         )
 
     async def _transcribe(self, pcm: bytes) -> str:
@@ -2089,25 +2169,70 @@ SAMPLE_LINE = (
 )
 
 
-async def tts_sample(voice: str) -> bytes:
-    """`SAMPLE_LINE` in `voice`, as a WAV, from the TTS server - the same
-    expressiveness a call opens with, so the preview is the voice as it
-    will be heard. Raises on any failure; the route says which."""
+async def tts_wav(text: str, voice: str, speed: float = 1.0) -> bytes:
+    """`text` in `voice`, as a WAV, from the TTS server - the expressiveness a
+    call opens with, so what is heard here is the voice as a call sounds.
+    Raises on any failure; the route says which."""
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
             f"{TTS_URL}/audio/speech",
             json={
-                "input": SAMPLE_LINE,
+                "input": text,
                 "model": "tts",
                 "voice": voice,
                 "response_format": "wav",
-                "speed": 1.0,
+                "speed": speed,
                 "exaggeration": TTS_EXAGGERATION,
                 "cfg_weight": TTS_CFG_WEIGHT,
             },
         )
         r.raise_for_status()
         return r.content
+
+
+async def tts_sample(voice: str) -> bytes:
+    """`SAMPLE_LINE` in `voice`: the library's preview."""
+    return await tts_wav(SAMPLE_LINE, voice)
+
+
+# The most a single speak request carries: a piece of a reply, which the page
+# cuts at sentences (`speech.js`), not a document.
+MAX_SPEAK_CHARS = 1200
+
+
+def speak_request(body, known, default_voice=TTS_VOICE, default_speed=TTS_SPEED):
+    """A play button's request (`POST /mecha/speak`), checked: `(text, voice,
+    speed)`, or `(None, status, why)` refused. The voice must be one the TTS
+    lists when named; none named is this worker's own, and so is a speed
+    left unset - `MECHA_VOICE_TTS_SPEED`, the rate a call opens at
+    (`run_bot`'s `bound.get("speed", TTS_SPEED)`), never a hardcoded 1.0.
+    A rate the owner chose arrives named, as a call's opening patch does:
+    serve sends the persona's own, or the owner's from Settings → Voice
+    for the assistant's replies (review of #502). Pure, so it is tested
+    without a server (`test_speak.py`)."""
+    if not isinstance(body, dict):
+        return None, 400, "not a request"
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None, 400, "nothing to say"
+    text = text.strip()
+    if len(text) > MAX_SPEAK_CHARS:
+        return None, 400, f"more than {MAX_SPEAK_CHARS} characters at once"
+    voice = body.get("voice")
+    if voice is None:
+        voice = default_voice
+    elif not isinstance(voice, str):
+        return None, 400, "a voice is a name"
+    elif known is None:
+        return None, 503, "the TTS server could not say which voices it has"
+    elif voice not in known:
+        return None, 404, f"no voice named {voice!r}"
+    speed = body.get("speed")
+    if speed is None:
+        speed = default_speed
+    if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not MIN_SPEED <= speed <= MAX_SPEED:
+        return None, 400, f"speed is {MIN_SPEED}-{MAX_SPEED}"
+    return text, voice, float(speed)
 
 
 def install(app) -> None:
@@ -2150,6 +2275,37 @@ def install(app) -> None:
             return JSONResponse({"error": f"the TTS server did not speak: {e.__class__.__name__}"}, 502)
         return Response(content=wav, media_type="audio/wav")
 
+    # A play button on a reply (the owner's ask, 2026-10-01): a piece of a
+    # reply spoken in a voice. Nothing of the text is logged - not even its
+    # length beside the voice - so an incognito chat's reply leaves no trace
+    # here; the TTS server logs none either.
+    from fastapi import Request
+
+    @app.post("/mecha/speak")
+    async def speak(request: Request):
+        from fastapi.responses import JSONResponse, Response
+
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - a body that is not JSON is refused, as any bad one
+            body = None
+        named = isinstance(body, dict) and body.get("voice") is not None
+        known = available_voices(refresh=False) if named else None
+        if named and (known is None or body.get("voice") not in known):
+            # A voice cloned since the last ask: one refetch before refusing.
+            known = available_voices(refresh=True)
+        checked = speak_request(body, known)
+        if checked[0] is None:
+            # A refusal is `(None, status, why)`.
+            _, status, why = checked
+            return JSONResponse({"error": why}, status)
+        text, voice, speed = checked
+        try:
+            wav = await tts_wav(text, voice, speed)
+        except Exception as e:  # noqa: BLE001 - said, not raised: the page shows it
+            return JSONResponse({"error": f"the TTS server did not speak: {e.__class__.__name__}"}, 502)
+        return Response(content=wav, media_type="audio/wav")
+
     app.add_middleware(OfferSilence)
 
 
@@ -2161,6 +2317,197 @@ def session_line(session_key: str, named: str | None) -> str:
     if named and not is_incognito(named):
         return f"voice session key: {session_key} (speaking into chat session {named!r})"
     return f"voice session key: {session_key}"
+
+
+# The longest typed turn a call takes: a message, not a document.
+MAX_TYPED_CHARS = 4000
+
+
+def typed_turn(data) -> str | None:
+    """The text a page typed into a live call (`{"t": "typed", "d":
+    {"text": ...}}`), as the turn the model is given, or None for nothing
+    worth a turn. Trimmed and capped; anything that is not a string is
+    nothing. A typed line enters exactly as heard speech does - a user turn,
+    with the trust the audio on this same channel already has - and is
+    answered aloud, since that is what being in a call means."""
+    text = data.get("text") if isinstance(data, dict) else None
+    if not isinstance(text, str):
+        return None
+    text = text.strip()[:MAX_TYPED_CHARS]
+    return text or None
+
+
+# How long a typed turn waits for the answer before it to begin (the model
+# starting, or speech), and then to finish: bounds, so an answer that never
+# starts cannot hold the next line long. The model's own response frames end
+# an answer that speaks nothing (`Answering`).
+TYPED_ANSWER_START_SECS = 10.0
+TYPED_ANSWER_END_SECS = 180.0
+# The most typed lines waiting at once.
+TYPED_QUEUE_MAX = 20
+# How long after the model's answer ends it still counts as under way
+# (`answer_pending`). The model's end frame and the first spoken audio are
+# not adjacent for a short answer; a turn sent in that gap would barge in on
+# speech about to start (review of #499, passes 4 and 5).
+TYPED_SETTLE_SECS = 1.5
+
+
+class TypedTurns:
+    """The turns a call puts to the model outside its live audio - typed
+    lines, and late spans the uplink transcribed (`UplinkAudio.deliver`) -
+    delivered one at a time (review of #499).
+
+    `docs/VOICE-LINK-DESIGN.md` §2.3: every delivery goes through one ordered
+    queue with one consumer and nothing is cancelled. Each client message
+    runs as its own task, so two lines typed in quick succession would each
+    push a turn and the second would take the conversation's slot - a
+    barge-in on the first answer before a word of it was spoken; and a late
+    turn pushed from the uplink's own task could land inside a typed turn's
+    answer the same way (pass 5). Here a turn waits until the answer before
+    it is over (`busy`, which is `answer_pending`; bounded), and only then
+    is given to the model.
+
+    A late turn goes first and waits least. §2.5 puts it *before* the live
+    audio that closed its span, and that audio is queued behind the flush
+    on the uplink's own queue, so the flush waits for this delivery
+    (`deliver` returns when it is pushed): a late turn jumps the typed
+    lines, waits for the answer under way only as long as the uplink always
+    has (`late_secs`, `LATE_BOT_WAIT_SECS`), and a typed line waiting on an
+    answer steps aside for it rather than hold live speech for minutes
+    (review of #499, pass 6)."""
+
+    def __init__(self, push, busy, log=print,
+                 start_secs=TYPED_ANSWER_START_SECS, end_secs=TYPED_ANSWER_END_SECS,
+                 late_secs=LATE_BOT_WAIT_SECS):
+        self._push = push
+        self._busy = busy
+        self._log = log
+        self._start_secs = start_secs
+        self._end_secs = end_secs
+        self._late_secs = late_secs
+        # Typed lines, bounded at `TYPED_QUEUE_MAX` - a page pasting in a
+        # loop is not a conversation; late turns, never refused - each is
+        # something the owner said.
+        self._typed: collections.deque[str] = collections.deque()
+        self._late: collections.deque = collections.deque()
+        self._ready = asyncio.Event()
+        # Until when a turn just pushed may still be about to be answered:
+        # between the push and the model's first frame `busy` reads false,
+        # and a turn that stepped aside for a late one must not have that
+        # gap taken as the answer being over (review of #499, pass 6).
+        self._unstarted_until: float | None = None
+
+    def put(self, data) -> str:
+        """Enqueue a client message's payload: "queued", "not-a-turn", or
+        "full" (said in the journal, without the words) - one reading of
+        the payload, so the caller need not read it again."""
+        text = typed_turn(data)
+        if text is None:
+            return "not-a-turn"
+        if len(self._typed) >= TYPED_QUEUE_MAX:
+            self._log(f"voice typed turn dropped: {TYPED_QUEUE_MAX} already waiting")
+            return "full"
+        self._typed.append(text)
+        self._ready.set()
+        return "queued"
+
+    def deliver(self, send) -> asyncio.Future:
+        """Enqueue a late turn: `send` is awaited ahead of any typed line,
+        once the answer under way is over or `late_secs` has passed. The
+        future is done when it has been sent (or failed): what the uplink
+        awaits before the live audio behind it moves."""
+        done = asyncio.get_running_loop().create_future()
+        self._late.append((send, done))
+        self._ready.set()
+        return done
+
+    def _pushed(self):
+        self._unstarted_until = time.monotonic() + self._start_secs
+
+    def _answering(self) -> bool:
+        """`busy`, noting that an answer asked for has begun - whoever looks."""
+        if self._busy():
+            self._unstarted_until = None
+            return True
+        return False
+
+    def _in_the_way(self) -> bool:
+        """Whether a turn about to be pushed would barge in: an answer under
+        way, or one just asked for that has not begun (bounded)."""
+        if self._answering():
+            return True
+        return self._unstarted_until is not None and time.monotonic() < self._unstarted_until
+
+    async def _until(self, want: bool, secs: float, yield_to_late: bool = False, ahead: bool = False):
+        """True when `busy` reads `want` (with `ahead`, when nothing is in
+        the way of the next push), False at the bound - and None the moment
+        a late turn is waiting, if asked to step aside for one."""
+        for _ in range(int(secs * 10)):
+            if yield_to_late and self._late:
+                return None
+            if bool(self._in_the_way() if ahead else self._answering()) == want:
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
+    async def _answered(self):
+        """This answer, begun and over, before the next turn goes: bounded
+        either way, and never in a late turn's way - which then waits on
+        the same answer itself (`_in_the_way`)."""
+        if await self._until(True, self._start_secs, yield_to_late=True):
+            await self._until(False, self._end_secs, yield_to_late=True)
+
+    async def run(self):
+        while True:
+            if not self._late and not self._typed:
+                self._ready.clear()
+                await self._ready.wait()
+                continue
+            if self._late:
+                send, done = self._late.popleft()
+                try:
+                    try:
+                        await self._until(False, self._late_secs, ahead=True)
+                        await send()
+                        self._pushed()
+                    finally:
+                        # Resolved the moment the turn is sent, so the live
+                        # audio behind the flush moves then, not after the
+                        # answer; and resolved, never cancelled, even at
+                        # teardown: a cancelled future would raise
+                        # `CancelledError` in the flush, which the uplink's
+                        # consumer does not catch (review of #499, pass 8).
+                        if not done.done():
+                            done.set_result(None)
+                    await self._answered()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001 - one bad turn must not end the call's turns
+                    # Covers the wait after the send too: anything raised
+                    # there would end the call's one consumer, and every
+                    # later line would be shown and never answered (pass 8).
+                    self._log(f"voice late turn failed: {e.__class__.__name__}")
+                continue
+            text = self._typed.popleft()
+            try:
+                # Not over an answer under way - a turn here is not a
+                # barge-in; but a late turn arriving meanwhile goes first.
+                if await self._until(False, self._end_secs, yield_to_late=True, ahead=True) is None:
+                    self._typed.appendleft(text)
+                    continue
+                # The words go to the journal only through `spoken_words`, so
+                # an incognito call keeps none of them.
+                self._log(f"voice typed turn: {spoken_words(text, 80)}")
+                await self._push(text)
+                self._pushed()
+                await self._answered()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 - one bad turn must not end the call's typing
+                # Said, without the words, and the next turn still goes: a
+                # consumer that died here would leave every later line shown
+                # on the page and never answered (review of #499).
+                self._log(f"voice typed turn failed: {e.__class__.__name__}")
 
 
 def spoken_words(text: str, limit: int) -> str:
@@ -2314,6 +2661,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
         transport.input().on_stop = uplink.close
         transport.input().announce = rtvi.send_server_message
 
+    answering = Answering()
     pipeline = Pipeline(
         [
             transport.input(),
@@ -2322,6 +2670,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
             stt,
             user_aggregator,
             llm,
+            answering,
             tts,
             transport.output(),
             assistant_aggregator,
@@ -2373,12 +2722,35 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
     # for "what is the voice now" and cannot render a control that
     # disagrees with the server.
     #
-    # This is a *presentation* channel and nothing else: it can pick a
-    # voice and a rate, and there is deliberately no field here that
-    # reaches the agent, the workspace or the posture. The remote-control
-    # rule - inbound text is a prompt, never a command - is what keeps a
-    # data channel from becoming a control plane, and the way to keep it
-    # true is that the only settable things are how the answer sounds.
+    # This is a *presentation* channel: it can pick a voice and a rate, and
+    # there is deliberately no field here that reaches the workspace or the
+    # posture. The remote-control rule - inbound text is a prompt, never a
+    # command - is what keeps a data channel from becoming a control plane.
+    # The one way in to the agent is a typed turn (`typed`, 2026-10-01): it
+    # is a prompt in exactly that sense, the owner's words as a user turn
+    # with the trust the audio on this channel already has (the buffered
+    # uplink carries that audio here too), and never a field, a setting or
+    # a command.
+    # Typed lines (`typed`): appended and run at once, as a late turn is -
+    # a transcript-only turn has no VAD edge for a stop strategy to rule on.
+    async def push_typed(text: str):
+        await transport.input().push_frame(
+            LLMMessagesAppendFrame(messages=[{"role": "user", "content": text}], run_llm=True)
+        )
+
+    # Busy while the model answers, the bot speaks, or the gap between the
+    # two has not passed: an answer is over when all are done, spoken or not.
+    typed = TypedTurns(
+        push_typed,
+        lambda: answer_pending(answering, lambda: getattr(stt, "_bot_speaking", False)),
+        log=lambda line: print(line, flush=True),
+    )
+    # Late turns join the same queue: one consumer for every turn put to the
+    # model outside live audio (review of #499, pass 5).
+    if uplink is not None:
+        uplink.deliver = typed.deliver
+    typed_task = asyncio.create_task(typed.run())
+
     @rtvi.event_handler("on_client_message")
     async def on_client_message(rtvi, msg):
         # The uplink's own messages: audio, and the clock it is stamped on.
@@ -2390,6 +2762,14 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
         # everything but audio.
         if uplink is not None:
             transport.input().note_channel()
+        if msg.type == "typed":
+            # Decided and enqueued before any await: one consumer delivers
+            # them in order (`TypedTurns`). A line that is a turn and was not
+            # taken (the queue is full) is said to the page, which has
+            # already shown it as sent (review of #499).
+            if typed.put(msg.data) == "full":
+                await rtvi.send_server_message({"t": "typed-dropped"})
+            return
         if msg.type == "heartbeat":
             return
         if msg.type == "uplink":
@@ -2517,6 +2897,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
     try:
         await runner.run()
     finally:
+        # Awaited, not only cancelled: an exception it held would otherwise
+        # surface only as a GC-time warning (the review of #386's rule).
+        typed_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await typed_task
         await settle_deadline(deadline, fired)
 
 

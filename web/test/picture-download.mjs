@@ -103,7 +103,7 @@ const PNG = new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })
     `'use strict';
      let key = 'incognito-ab', gone = null, running = true, pictureNote = null;
      let entries = [], streaming = '', draft = '', attachments = [], editing = null;
-     let todo = [], usage = null, taint = null, affect = null, valence = null, vEntries = [];
+     let todo = [], usage = null, taint = null, affect = null, valence = null, vEntries = [], vTyped = '';
      const endVoice = () => {}, dropRing = () => {}, loadRail = () => {};
      const workspaceFile = (p) => '/api/chat/' + key + '/file?path=' + p;
      const fetch = () => {};
