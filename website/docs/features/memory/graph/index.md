@@ -39,9 +39,11 @@ checkout, and what runs is a copy of it in `~/.local/bin`, never the
 checkout's own file (a `git checkout` would otherwise change a running
 service). On the machine these docs were written on it runs on demand (the port is held from
 boot, the model loads on the first request and stops after ten idle
-minutes). Started by hand, it needs `--port 8081` — the script defaults to
-:18081, the port the on-demand proxy forwards to — and the rest of its
-flags as they are: `-m` the model, `-ngl 999`, `-c 32768`, and
+minutes). To start it by hand, run the script with `MECHA_EMBED_PORT=8081`
+— it takes no arguments, and otherwise listens on :18081, the port the
+on-demand proxy forwards to — or run `llama-server` yourself with its
+flags: `-m` the model, `--alias harrier-oss-v1-0.6b` (the name mecha-graph
+asks for), `--host 127.0.0.1 --port 8081 -ngl 999 -c 32768`, and
 `--embeddings --pooling last --embd-normalize 2`. `--pooling last` is not
 optional for this model: the default pooling returns plausible vectors that
 retrieve worse, with nothing to say so. The repository has no installer that sets the server up

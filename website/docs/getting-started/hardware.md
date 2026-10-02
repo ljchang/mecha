@@ -164,11 +164,15 @@ you have switched on**.
 What each costs on the GB10 above, read from the running servers —
 `nvidia-smi` for GPU memory, `ps` for the rest — in **GiB**, the base both
 tools report. Two figures carried from earlier measurements (layout, and
-image generation's peak) were written down in GB without saying which; the
+image generation's peak) were written down in GB without saying which, and
+OCR's was recorded both ways (2,639 MiB in one note, 2.6 GB in another); the
 two bases differ by 7%. *How it
 holds memory* is the part that decides the sum: **resident** holds it from
 start to stop, **on demand** holds nothing until the first request and frees
 it after ten idle minutes, and **per request** holds it only while working.
+It describes how each is installed here: the embeddings and OCR servers sit
+behind a systemd socket, and started by hand instead they are resident,
+which puts the resident sum near 55 GiB rather than 47.
 
 | Feature | Model | Runs on | How it holds memory | Cost on the GB10 (GiB) | Evidence |
 |---|---|---|---|---|---|
