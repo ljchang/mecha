@@ -48,6 +48,7 @@ from pipecat.frames.frames import (
     DataFrame,
     EndFrame,
     InputAudioRawFrame,
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     StartFrame,
@@ -426,7 +427,10 @@ class Answering(FrameProcessor):
         await super().process_frame(frame, direction)
         if isinstance(frame, LLMFullResponseStartFrame):
             self.busy = True
-        elif isinstance(frame, (LLMFullResponseEndFrame, EndFrame, CancelFrame)):
+        # An interrupted answer may never send its end frame: the
+        # interruption ends it, or `busy` would latch and every later typed
+        # line wait out the whole bound (review of #499, pass 4).
+        elif isinstance(frame, (LLMFullResponseEndFrame, InterruptionFrame, EndFrame, CancelFrame)):
             self.busy = False
         await self.push_frame(frame, direction)
 
@@ -2211,6 +2215,11 @@ TYPED_ANSWER_START_SECS = 10.0
 TYPED_ANSWER_END_SECS = 180.0
 # The most typed lines waiting at once.
 TYPED_QUEUE_MAX = 20
+# How long an answer must stay quiet - the model done and nothing spoken -
+# before it counts as over. The model's end frame and the first spoken audio
+# are not adjacent for a short answer; a line sent in that gap would barge
+# in on speech about to start (review of #499, pass 4).
+TYPED_SETTLE_SECS = 1.5
 
 
 class TypedTurns:
@@ -2225,31 +2234,46 @@ class TypedTurns:
     only then is given to the model."""
 
     def __init__(self, push, bot_speaking, log=print,
-                 start_secs=TYPED_ANSWER_START_SECS, end_secs=TYPED_ANSWER_END_SECS):
+                 start_secs=TYPED_ANSWER_START_SECS, end_secs=TYPED_ANSWER_END_SECS,
+                 settle_secs=TYPED_SETTLE_SECS):
         self._push = push
         self._bot_speaking = bot_speaking
         self._log = log
         self._start_secs = start_secs
         self._end_secs = end_secs
+        self._settle_secs = settle_secs
         # Bounded: a page pasting in a loop is not a conversation.
         self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=TYPED_QUEUE_MAX)
 
-    def put(self, data) -> bool:
-        """Enqueue a client message's payload; False when it is no turn, or
-        the queue is full (said in the journal, without the words)."""
+    def put(self, data) -> str:
+        """Enqueue a client message's payload: "queued", "not-a-turn", or
+        "full" (said in the journal, without the words) - one reading of
+        the payload, so the caller need not read it again."""
         text = typed_turn(data)
         if text is None:
-            return False
+            return "not-a-turn"
         try:
             self._queue.put_nowait(text)
         except asyncio.QueueFull:
             self._log(f"voice typed turn dropped: {TYPED_QUEUE_MAX} already waiting")
-            return False
-        return True
+            return "full"
+        return "queued"
 
     async def _until(self, want: bool, secs: float):
         for _ in range(int(secs * 10)):
             if bool(self._bot_speaking()) == want:
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
+    async def _quiet(self, secs: float):
+        """Until the answer has been quiet for `settle_secs` running - not
+        merely quiet for an instant - bounded by `secs`."""
+        need = max(1, int(self._settle_secs * 10))
+        still = 0
+        for _ in range(int(secs * 10)):
+            still = 0 if self._bot_speaking() else still + 1
+            if still >= need:
                 return True
             await asyncio.sleep(0.1)
         return False
@@ -2265,10 +2289,11 @@ class TypedTurns:
                 # an incognito call keeps none of them.
                 self._log(f"voice typed turn: {spoken_words(text, 80)}")
                 await self._push(text)
-                # This answer, begun and finished, before the next line goes:
-                # bounded either way.
+                # This answer, begun and finished - quiet for the settle
+                # window, so speech about to start counts - before the next
+                # line goes: bounded either way.
                 if await self._until(True, self._start_secs):
-                    await self._until(False, self._end_secs)
+                    await self._quiet(self._end_secs)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 - one bad turn must not end the call's typing
@@ -2531,7 +2556,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
             # them in order (`TypedTurns`). A line that is a turn and was not
             # taken (the queue is full) is said to the page, which has
             # already shown it as sent (review of #499).
-            if not typed.put(msg.data) and typed_turn(msg.data) is not None:
+            if typed.put(msg.data) == "full":
                 await rtvi.send_server_message({"t": "typed-dropped"})
             return
         if msg.type == "heartbeat":
