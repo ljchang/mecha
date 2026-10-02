@@ -4505,8 +4505,18 @@ mod tests {
             "the assistant's prompt leaked:\n{system}"
         );
         let tools: Vec<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
-        // `file_read` is every persona's (§10), whatever `[tools] allow` says.
-        assert_eq!(tools, vec!["file_read", "file_search", "image_view"]);
+        // `file_read` is every persona's (§10), whatever `[tools] allow` says;
+        // the memory pair, every persona whose memory is on (§9.7).
+        assert_eq!(
+            tools,
+            vec![
+                "file_read",
+                "file_search",
+                "image_view",
+                "memory_read",
+                "memory_search"
+            ]
+        );
         // The goal rode in the first turn, not the system prompt.
         let first = req.messages[0].text();
         assert!(first.starts_with("(What I want from this conversation: Plan the kelp survey)"));
@@ -4828,6 +4838,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(t["taint"]["untrusted"], true, "armed by the recall: {t}");
+    }
+
+    /// §9.7: a persona whose memory is switched off is offered neither memory
+    /// tool, so the tool list never promises what the store will refuse.
+    #[tokio::test]
+    async fn a_persona_with_memory_off_is_offered_no_memory_tools() {
+        let w = world();
+        let toml = w.store().join("mara/persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        let off = text
+            .replace("episodic    = true", "episodic    = false")
+            .replace("semantic    = true", "semantic    = false")
+            .replace("user_facts  = \"shared\"", "user_facts  = \"off\"");
+        assert_ne!(off, text, "the template's spelling moved");
+        std::fs::write(&toml, off).unwrap();
+        mecha_core::persona::snapshot(&w.store(), "mara").unwrap();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        turn(&w, &key, "Hello again.").await;
+        let seen = w.seen.lock().unwrap().clone();
+        let tools: Vec<&str> = seen[0].tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            !tools.contains(&"memory_search") && !tools.contains(&"memory_read"),
+            "{tools:?}"
+        );
     }
 
     /// §10.4: a citation is checked against what the chat received, sent to
