@@ -207,7 +207,7 @@ which brings it to ~1.1 GB; the next picture reloads the model in ~15–22 s.
 Without it, count image generation's peak if you use it at all.
 
 By default `image_generate` refuses to start with less than 19 GiB available
-when ComfyUI holds no model (`[image] min_available_mb`), and 12 GiB once it
+when ComfyUI holds no model (`[image] min_available_mb`), and ~7 GiB less (12 GiB at the default) once it
 has loaded one, since most of that cost is already paid. So on a smaller
 unified machine it refuses while the chat model is loaded rather than taking
 the machine down.
