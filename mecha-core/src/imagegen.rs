@@ -116,6 +116,7 @@ impl Default for ImageConfig {
             vae: "qwen_image_2.1_vae_bf16.safetensors".into(),
             steps: 40,
             timeout_secs: 600,
+            // `LOAD_COST_MB` is derived from this figure; change both.
             min_available_mb: 19_456,
             unload_after_secs: 600,
             server_temp_dir: None,
@@ -562,7 +563,11 @@ pub fn memory_need_mb(loaded: Option<bool>, min_mb: u64) -> u64 {
         // What a load costs is what a loaded server has already paid; the
         // rest of the operator's figure is their margin, theirs to keep
         // (review of #515).
-        Some(true) => min_mb.saturating_sub(LOAD_COST_MB),
+        // Never computed down to 0: `memory_verdict` reads 0 as "check off",
+        // which would also drop its refusal on an unreadable gauge. Only the
+        // operator's own 0 switches the check off.
+        Some(true) if min_mb == 0 => 0,
+        Some(true) => min_mb.saturating_sub(LOAD_COST_MB).max(1),
         Some(false) | None => min_mb,
     }
 }
@@ -570,7 +575,9 @@ pub fn memory_need_mb(loaded: Option<bool>, min_mb: u64) -> u64 {
 /// What loading the model costs, which a server that has loaded it has
 /// already paid: the default cold figure (19 GiB) less what a reload from a
 /// `/free`d state still needs (~12 GiB, the worse of the two states
-/// `/system_stats` cannot tell apart).
+/// `/system_stats` cannot tell apart). **The 19_456 is `ImageConfig`'s default
+/// `min_available_mb`**, written out because a `Default` impl is not const:
+/// change one, change both.
 pub const LOAD_COST_MB: u64 = 19_456 - 12_288;
 
 /// Whether ComfyUI's `/system_stats` says it has loaded a model since it
@@ -3300,7 +3307,11 @@ mod tests {
         assert_eq!(memory_need_mb(Some(true), 19_456), 12_288);
         // An operator's raised margin is kept, not capped at the default's.
         assert_eq!(memory_need_mb(Some(true), 30_000), 30_000 - LOAD_COST_MB);
-        assert_eq!(memory_need_mb(Some(true), 4_000), 0);
+        // A small figure is not computed into the "check off" sentinel: the
+        // unreadable-gauge refusal must survive it.
+        assert_eq!(memory_need_mb(Some(true), 4_000), 1);
+        assert!(memory_verdict(None, memory_need_mb(Some(true), 4_000)).is_err());
+        // Only the operator's own 0 switches it off.
         assert_eq!(memory_need_mb(Some(true), 0), 0);
     }
 

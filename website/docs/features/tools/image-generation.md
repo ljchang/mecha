@@ -155,7 +155,8 @@ versions of them) it used.
   machine running the `mecha-comfyui-idle-reset` timer (`scripts/comfyui/install.sh`),
   the server is also restarted after ten idle minutes, which returns nearly
   all of its memory, and a picture asked for during a restart waits for it
-  instead of failing.
+  instead of failing. An open ComfyUI page in a browser keeps a connection to
+  the server and counts as use, so close it to let the memory go.
 - **Leaving copies on the image server.** The server's record of each job
   (the prompt, the file names) is deleted when the job ends, however it ends.
   Set `server_temp_dir` and the uploaded pictures and the server's preview
