@@ -233,6 +233,12 @@ class StartRouter(unittest.TestCase):
         g = hashlib.sha256(SCRIPT.with_name("mtp-graft.py").read_bytes()).hexdigest()[:8]
         return self.grafts / f"{self.HH36_FILE[:-5]}+mtp-{b}-{d}-g{g}.gguf"
 
+    def assertNoBlankInside(self, ini, name, err):
+        # section() tolerates blanks; the preset parser is not shown to, and a
+        # blank read as a break would drop every key after it unnoticed.
+        body = ini.split(f"[{name}]\n", 1)[1].split("\n[", 1)[0].rstrip("\n")
+        self.assertNotIn("\n\n", body, err)
+
     def test_the_uncensored_qwen36_speculates_only_from_a_graft_of_its_own_blobs(self):
         self.uncensored36()
         _, _, err, ini = self.run_script()
@@ -240,6 +246,8 @@ class StartRouter(unittest.TestCase):
         self.assertTrue(preset.get("model", "").endswith(f"/r/{self.HH36_FILE}"), err)
         self.assertNotIn("spec-type", preset, "the downloaded file has no head; draft-mtp fails its start")
         self.assertNotIn("spec-draft-n-max", preset, err)
+        self.assertEqual(preset.get("reasoning-preserve"), "true", "keys after the spec lines survive")
+        self.assertNoBlankInside(ini, "qwen3.6-35b-a3b-uncensored", err)
         self.assertIn("mtp-graft.py", err, "the fallback must say how to build the head")
         self.assertIn(str(self.graft_for("r")), err, "the build line must write the name that will be looked up")
 
@@ -257,7 +265,21 @@ class StartRouter(unittest.TestCase):
         self.assertEqual(preset.get("model"), str(self.graft_for("r")), err)
         self.assertEqual(preset.get("spec-type"), "draft-mtp", err)
         self.assertEqual(preset.get("spec-draft-n-max"), "2", err)
+        self.assertEqual(preset.get("reasoning-preserve"), "true", err)
+        self.assertNoBlankInside(ini, "qwen3.6-35b-a3b-uncensored", err)
         self.assertNotIn("serving without MTP", err)
+
+    def test_a_requant_of_production_retires_the_graft_too(self):
+        # The donor is the half the head comes from: a re-quant of
+        # production's file under the same name must not keep the old head.
+        self.uncensored36()
+        self.graft_for("r").write_bytes(b"GGUF")
+        self.cache.put(PROD, "r2", PROD_FILE)
+        _, _, err, ini = self.run_script()
+        preset = self.section(ini, "qwen3.6-35b-a3b-uncensored")
+        self.assertTrue(preset.get("model", "").endswith(f"/r/{self.HH36_FILE}"), err)
+        self.assertNotIn("spec-type", preset, err)
+        self.assertIn(f"+mtp-r-Qwen3.6-35-r2-Qwen3.6-3", err, "the build line names the new donor blob")
 
     def test_a_graft_of_superseded_weights_is_not_served(self):
         # A re-upload under the same file name is a new blob: the graft built

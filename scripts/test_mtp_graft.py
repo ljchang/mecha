@@ -27,9 +27,12 @@ GRAFT = Path(__file__).with_name("mtp-graft.py")
 ARCH = "qwen35moe"
 
 
-def write(path, blocks, nextn=None, fill=0.0, tensors=None, arch=ARCH, embd_rows=8):
+def write(path, blocks, nextn=None, fill=0.0, tensors=None, arch=ARCH, embd_rows=8, split=False):
     w = GGUFWriter(str(path), arch=arch)
     w.add_key_value(f"{arch}.block_count", blocks, GGUFValueType.UINT32)
+    if split:
+        w.add_key_value("split.no", 0, GGUFValueType.UINT16)
+        w.add_key_value("split.count", 2, GGUFValueType.UINT16)
     w.add_key_value("general.name", f"fill-{fill}", GGUFValueType.STRING)
     if nextn is not None:
         w.add_key_value(f"{arch}.nextn_predict_layers", nextn, GGUFValueType.UINT32)
@@ -98,6 +101,15 @@ class Graft(unittest.TestCase):
         write(self.base, 2)
         write(self.donor, 4, nextn=1)
         self.assertIn("do not line up", self.refused("the head would land on the wrong layer"))
+
+    def test_a_shard_of_a_split_file_is_refused_on_either_side(self):
+        # One shard passes every other check and would yield a tensor subset
+        # still naming siblings it no longer has.
+        for base_split in (True, False):
+            with self.subTest(base_split=base_split):
+                write(self.base, 2, split=base_split)
+                write(self.donor, 3, nextn=1, split=not base_split)
+                self.assertIn("split GGUF", self.refused("a shard is not a model"))
 
     def test_the_pins_here_are_the_scripts_pins(self):
         # The graft runs under *this* file's environment, so a drifted header
