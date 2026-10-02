@@ -117,10 +117,10 @@ against `a51e1c01`:
   - `correct` on an inferred fact keeps `kind = Inferred` with
     `origin = Owner`.
   - **`answers = "files"` and the memory tools: ruled C, built (#505,
-    `a51e1c01`), not installed.** HISTORY has it under 2026-10-02. It is
-    binary-only; to check once installed: `strings ~/.cargo/bin/mecha |
-    grep -cF "you answer from your files, not from what a tool brought
-    back"` → 1. C is not a seal (#505's review, pass 1). Episode summaries
+    `a51e1c01`), installed with `90833a12` (2026-10-02, ~03:25Z).** HISTORY has it under 2026-10-02. It is
+    binary-only; checked: `strings ~/.cargo/bin/mecha | grep -cF "you
+    answer from your files, not from what a tool brought back"` → 1, and
+    the same in the running serve's `/proc/<pid>/exe` → 1. C is not a seal (#505's review, pass 1). Episode summaries
     are written from `writer::render`, which keeps tool results, clipped.
     `memory_search` and the recall folds return those summaries with no
     `answers` gate, so a files-only persona can still read a paraphrase of
@@ -347,14 +347,6 @@ line): 4132 passed, 0 failed, 5 ignored. Open, cheapest first:
   - `VoiceConfig::validate`'s doc claims parity with `[image]` and
     `[documents]`, but those refuse at registration, while `[voice]` is a
     load error (stricter);
-  - **`offer_target = ""` ("no proxy") still reads as "not wired" in three
-    places** (found by #506's review, verified at `98cffc0d`):
-    `settings::speak`, `library_voice_sample` and `library_voices`' worker
-    list each answer "voice calls are not wired on this serve" when
-    `WebState.offer_target` is `None`. So on a no-proxy box the Calls row
-    says on, while Listen and the voice previews 404. This machine uses the
-    default target and is not affected. Whether those routes should reach
-    the worker without the call proxy is a design call (mecha-ce, owner).
   - `operator_only_tables_are_what_a_project_layer_is_stripped_of` reads
     `merge_file`'s strips by one textual idiom (`trust ==
     LayerTrust::Project && layer.<t>.take()`), so a strip spelled

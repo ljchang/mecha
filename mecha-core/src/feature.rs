@@ -1223,14 +1223,19 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             ),
         }),
         Feature::Dictate => on(format!("speech to text at {}", cfg.voice.stt_url())),
-        // Empty is no proxy, not calls off: the browser can reach the
-        // worker's own door, which calls the facade `mecha serve` mounts —
-        // and that mount gates on this row, so reading empty as off would
-        // take the facade down too (review of #503, pass 3).
+        // Empty means `mecha serve` does not reach the voice worker at all:
+        // `offer_target` is the worker's address for everything serve sends
+        // it — the call relay, Listen, the voice previews and lists
+        // (`settings::speak`, `library_voice_sample`, `library_voices`).
+        // Calls stay on — a browser can reach the worker's own door, and the
+        // facade the worker calls mounts on this row — and the row says what
+        // goes (the owner's choice, 2026-10-02: say it, rather than split
+        // the address in two).
         Feature::Calls => on(match cfg.voice.offer_target() {
             Some(target) => format!("offers to {target}"),
-            None => "no proxy ([voice] offer_target is empty): the browser reaches the voice \
-                     worker directly"
+            None => "`mecha serve` does not reach the voice worker ([voice] offer_target is \
+                     empty): no call relay, no Listen, no voice previews; calls only through \
+                     the worker's own door"
                 .to_string(),
         }),
         Feature::Cloning => match &cfg.voice.voices_dir {
@@ -1758,7 +1763,8 @@ mod tests {
     }
 
     /// Voice's parts read `[voice]` (step 5): dictation names the address it
-    /// posts to, an empty `offer_target` reads "no proxy" with calls still on,
+    /// posts to, an empty `offer_target` reads calls on and names what serve
+    /// no longer reaches,
     /// and cloning reads `[voice] voices_dir` — not `[web]`'s, which is
     /// applied into it at load.
     #[test]
@@ -1779,13 +1785,16 @@ mod tests {
             "{detail}"
         );
         assert_eq!(state(&facts(&cfg), Feature::Calls).word(), "on");
-        // Empty is no proxy, and calls stay on: the facade the worker calls
-        // mounts on this row (review of #503, pass 3).
+        // Empty: calls stay on (the facade the worker calls mounts on this
+        // row, review of #503 pass 3), and the row names everything serve no
+        // longer reaches through the worker.
         cfg.voice.offer_target = Some(" ".into());
         let State::On { detail } = state(&facts(&cfg), Feature::Calls) else {
-            panic!("an empty offer target is no proxy, not calls off")
+            panic!("an empty offer target is not calls off")
         };
-        assert!(detail.contains("no proxy"), "{detail}");
+        for gone in ["no call relay", "no Listen", "no voice previews"] {
+            assert!(detail.contains(gone), "{gone}: {detail}");
+        }
         let State::Off { reason, .. } = state(&facts(&cfg), Feature::Cloning) else {
             panic!("no voices_dir is cloning off")
         };
