@@ -1868,7 +1868,7 @@ class UplinkAudio:
             done = self.deliver(lambda: self._send_late(prefix + text))
             try:
                 await asyncio.wait_for(asyncio.shield(done), LATE_BOT_WAIT_SECS + LATE_HANDOFF_SLACK_SECS)
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 logger.warning("uplink: the late turn was not delivered in time; live audio goes on behind it")
             return
         # Never interrupts — within reason: the queue behind this holds live
