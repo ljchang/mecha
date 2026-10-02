@@ -1211,9 +1211,6 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         } else {
             "~/.mecha/personas ([tools] withholds persona_propose from the model)".to_string()
         }),
-        // `voice` stays on at port 0: `mecha voice-serve` is its own surface.
-        // The sentence just must not claim a mount that does not happen
-        // (review of #503).
         // `voice` stays on at port 0: `mecha voice-serve` is its own surface,
         // with its own `--port`. The sentence says only what `mecha serve`
         // mounts (review of #503).

@@ -91,6 +91,44 @@ pub struct Args {
     pub offer_target: Option<String>,
 }
 
+/// What `serve` wires from `[voice]` and the two flags that override it for
+/// a run. One function, so the resolution is measured where it happens
+/// (review of #503, pass 4: a test building `WebState` directly graded the
+/// handler, not this read).
+#[derive(Debug)]
+struct VoiceWiring {
+    /// `None` is no proxy: empty, from the flag or the table.
+    offer_target: Option<Arc<String>>,
+    voice_port: u16,
+    stt_url: Arc<String>,
+}
+
+impl VoiceWiring {
+    fn of(args: &Args, config: &mecha_core::config::Config) -> Result<Self> {
+        // The flag meets the key's rule: a call's audio goes there, so it is
+        // on this machine however it was set (review of #503, pass 3).
+        if let Some(flag) = &args.offer_target {
+            mecha_core::config::VoiceConfig {
+                offer_target: Some(flag.clone()),
+                ..Default::default()
+            }
+            .validate()
+            .context("--offer-target")?;
+        }
+        // A flag overrides `[voice]` for this run; empty is no proxy either way.
+        let offer_target = match &args.offer_target {
+            Some(flag) => Some(flag.trim()).filter(|t| !t.is_empty()),
+            None => config.voice.offer_target(),
+        }
+        .map(|t| Arc::new(t.to_string()));
+        Ok(VoiceWiring {
+            offer_target,
+            voice_port: args.voice_port.unwrap_or(config.voice.voice_port()),
+            stt_url: Arc::new(config.voice.stt_url().to_string()),
+        })
+    }
+}
+
 #[derive(Clone)]
 struct WebState {
     owner_login: Arc<String>,
@@ -167,6 +205,9 @@ pub async fn execute(args: Args) -> Result<()> {
     };
 
     let port = args.port.unwrap_or(config.web.port);
+    // Before anything moves out of `args`, and before anything starts: a
+    // flag off this machine refuses the start.
+    let wiring = VoiceWiring::of(&args, &config)?;
     let assets = args.assets.or(config.web.assets.clone());
 
     let chat = match chat::ChatState::build().await {
@@ -182,30 +223,14 @@ pub async fn execute(args: Args) -> Result<()> {
         }
     };
     let review = Arc::new(review::review_state(&config)?);
-    // A flag overrides `[voice]` for this run; empty turns calls off either way.
-    let offer_target = match &args.offer_target {
-        Some(flag) => Some(flag.trim()).filter(|t| !t.is_empty()),
-        None => config.voice.offer_target(),
-    }
-    .map(|t| Arc::new(t.to_string()));
-    // The flag meets the key's rule: a call's audio goes there, so it is on
-    // this machine however it was set (review of #503, pass 3).
-    if let Some(flag) = &args.offer_target {
-        mecha_core::config::VoiceConfig {
-            offer_target: Some(flag.clone()),
-            ..Default::default()
-        }
-        .validate()
-        .context("--offer-target")?;
-    }
-    let voice_port = args.voice_port.unwrap_or(config.voice.voice_port());
+    let voice_port = wiring.voice_port;
     let state = WebState {
         owner_login: Arc::new(owner),
         chat,
         review,
-        offer_target,
+        offer_target: wiring.offer_target,
         voices_dir: config.voice.voices_dir.clone().map(Arc::new),
-        stt_url: Arc::new(config.voice.stt_url().to_string()),
+        stt_url: wiring.stt_url,
         library: Arc::new(library::LibraryState::new(
             mecha_core::imagelib::Library::default_dir()?,
         )),
@@ -3579,6 +3604,63 @@ mod boundary_tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.ok() });
         (format!("http://{addr}/api/offer"), offers)
+    }
+
+    /// `serve` wires `[voice]` — read, not the old literals — and each flag
+    /// overrides its key for the run; an empty `--offer-target` is no proxy,
+    /// and one off this machine refuses the start (review of #503, pass 4:
+    /// nothing measured this read, only the handler downstream of it).
+    #[test]
+    fn serve_wires_the_voice_table_and_flags_override_it() {
+        #[derive(clap::Parser)]
+        struct Line {
+            #[command(flatten)]
+            args: Args,
+        }
+        let args = |argv: &[&str]| {
+            <Line as clap::Parser>::try_parse_from(
+                std::iter::once("serve").chain(argv.iter().copied()),
+            )
+            .unwrap()
+            .args
+        };
+        let mut config = mecha_core::config::Config::default();
+        config.voice.stt_url = Some("http://127.0.0.1:1111/v1".into());
+        config.voice.offer_target = Some("http://127.0.0.1:2222/api/offer".into());
+        config.voice.voice_port = Some(3333);
+
+        let w = VoiceWiring::of(&args(&[]), &config).unwrap();
+        assert_eq!(w.stt_url.as_str(), "http://127.0.0.1:1111/v1");
+        assert_eq!(
+            w.offer_target.as_deref().map(String::as_str),
+            Some("http://127.0.0.1:2222/api/offer")
+        );
+        assert_eq!(w.voice_port, 3333);
+
+        let w = VoiceWiring::of(
+            &args(&[
+                "--offer-target",
+                "http://localhost:4444/api/offer",
+                "--voice-port",
+                "0",
+            ]),
+            &config,
+        )
+        .unwrap();
+        assert_eq!(
+            w.offer_target.as_deref().map(String::as_str),
+            Some("http://localhost:4444/api/offer")
+        );
+        assert_eq!(w.voice_port, 0);
+        let w = VoiceWiring::of(&args(&["--offer-target", ""]), &config).unwrap();
+        assert_eq!(w.offer_target, None, "empty is no proxy");
+
+        let err = VoiceWiring::of(
+            &args(&["--offer-target", "http://10.0.0.5:7860/api/offer"]),
+            &config,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("--offer-target"), "{err:#}");
     }
 
     /// Dictation posts the clip to `[voice] stt_url` — the address that is
