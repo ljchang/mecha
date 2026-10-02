@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""OpenAI-compatible TTS server for Chatterbox Turbo.
+"""OpenAI-compatible TTS server for Chatterbox (Turbo by default).
 
 POST /v1/audio/speech  -> wav, or raw s16le pcm at 24 kHz for streaming
-GET  /v1/voices        -> what this server can actually speak as
+GET  /v1/voices        -> what this server can actually speak as, and which
+                          per-request controls the loaded model honours
 GET  /health
+
+`CHATTERBOX_MODEL` picks the model: `turbo` (the default, and the live
+voice) or `original`, the 500M model Turbo was distilled from - slower,
+and the only one of the two that honours `exaggeration` and `cfg_weight`.
 
 `voice` names a cloning reference in VOICES_DIR: "default" (or "")
 uses the model's built-in voice; any other name resolves to
@@ -34,6 +39,33 @@ VOICES_DIR = os.environ.get("VOICES_DIR", "/voices")
 # method smears consonants, and below 0.5x it sounds drugged.
 MIN_SPEED, MAX_SPEED = 0.5, 2.0
 
+MODEL_KIND = os.environ.get("CHATTERBOX_MODEL", "turbo")
+
+# What each model actually does with a request's controls, read from the
+# installed library (chatterbox-tts 0.1.7) rather than from its signature -
+# and the difference is the point. Turbo's `generate` accepts
+# `exaggeration` and `cfg_weight` and then drops both: its config sets
+# `emotion_adv = False`, so the emotion input is never built, and CFG is
+# never passed to `inference_turbo`. It logs a warning saying so, once per
+# request, inside this container and nowhere a caller looks - which is how
+# the worker sent 0.8 / 0.3 for five weeks to a model that ignored them.
+# So a control the loaded model would ignore is refused, and `/v1/voices`
+# says which ones it honours, so a client can send only those.
+CONTROLS = {
+    "turbo": ("temperature",),
+    "original": ("temperature", "exaggeration", "cfg_weight"),
+}
+# Checked here, at import, rather than at load: every lookup of
+# CONTROLS[MODEL_KIND] is then safe for anything that imports this module,
+# startup or not, and an unknown kind still fails the start - never a quiet
+# fallback to Turbo advertising controls its model drops.
+if MODEL_KIND not in CONTROLS:
+    raise RuntimeError(f"CHATTERBOX_MODEL must be turbo or original, not {MODEL_KIND!r}")
+
+# The original model's own documented ranges: exaggeration past 1.0 is
+# Resemble's expressive end, which the worker and a persona may ask for.
+BOUNDS = {"exaggeration": (0.0, 2.0), "cfg_weight": (0.0, 1.0)}
+
 app = FastAPI()
 model = None
 lock = threading.Lock()
@@ -44,15 +76,14 @@ class SpeechRequest(BaseModel):
     model: str = "chatterbox-turbo"  # accepted, ignored: one model per server
     voice: str = "default"
     response_format: str = "wav"  # wav, or pcm (raw s16le at 24 kHz) for streaming
-    # Chatterbox knobs. These are the *library's* own defaults, and the
-    # distinction cost something: 0.0 looks like "no opinion" and is in
-    # fact the most monotone setting on a 0-1 scale, so a wrapper picking
-    # it as a neutral-looking placeholder ships a flat voice that nothing
-    # errors about. Zero is not neutral. Resemble's expressive recipe is
-    # a high exaggeration against a *low* cfg_weight - the two interact,
-    # and cranking exaggeration alone rushes the cadence.
-    exaggeration: float = 0.5
-    cfg_weight: float = 0.5
+    # The original model's expressiveness pair: unset leaves the library's
+    # own default (0.5 / 0.5 - zero is not neutral, it is the monotone
+    # end). Resemble's expressive recipe is a high exaggeration against a
+    # *low* cfg_weight; the two interact. Set on a model that ignores them
+    # (`CONTROLS`), a request is refused rather than spoken as if they
+    # had landed.
+    exaggeration: float | None = None
+    cfg_weight: float | None = None
     temperature: float = 0.8
     # OpenAI's own speech API spells speed this way, so a generic client
     # gets it for free. Chatterbox itself has no speed parameter - see
@@ -136,14 +167,19 @@ def stretch(samples: np.ndarray, speed: float, sr: int = 24000,
 @app.on_event("startup")
 def load():
     global model
-    from chatterbox.tts_turbo import ChatterboxTurboTTS
-
     t0 = time.time()
-    model = ChatterboxTurboTTS.from_pretrained(device="cuda")
+    if MODEL_KIND == "turbo":
+        from chatterbox.tts_turbo import ChatterboxTurboTTS
+
+        model = ChatterboxTurboTTS.from_pretrained(device="cuda")
+    else:  # "original", the only other kind CONTROLS admits
+        from chatterbox.tts import ChatterboxTTS
+
+        model = ChatterboxTTS.from_pretrained(device="cuda")
     # Warm pass: the first generate pays kernel compilation; pay it at
     # boot, not on the first thing the owner says.
     model.generate("Warm up.")
-    print(f"chatterbox ready in {time.time() - t0:.1f}s", flush=True)
+    print(f"chatterbox-{MODEL_KIND} ready in {time.time() - t0:.1f}s", flush=True)
 
 
 @app.get("/health")
@@ -174,6 +210,8 @@ def voices():
         "default": "default",
         "voices": ["default"] + names,
         "speed": {"min": MIN_SPEED, "max": MAX_SPEED, "default": 1.0},
+        "model": f"chatterbox-{MODEL_KIND}",
+        "controls": list(CONTROLS[MODEL_KIND]),
     }
 
 
@@ -187,9 +225,19 @@ def speech(req: SpeechRequest):
         raise HTTPException(400, f"speed must be in [{MIN_SPEED}, {MAX_SPEED}]")
     # Clamp-and-refuse, never clamp-and-accept: the caller's UI would
     # otherwise show a value the voice is not using (worker.py set_speed).
-    for name, value in (("exaggeration", req.exaggeration), ("cfg_weight", req.cfg_weight)):
-        if not (0.0 <= value <= 1.0):
-            raise HTTPException(400, f"{name} must be in [0.0, 1.0]")
+    # And refuse-not-ignore for a control this model drops, for the same
+    # reason one level down.
+    controls = {}
+    for name, (lo, hi) in BOUNDS.items():
+        value = getattr(req, name)
+        if value is None:
+            continue
+        if name not in CONTROLS[MODEL_KIND]:
+            raise HTTPException(
+                400, f"{name} is not honoured by chatterbox-{MODEL_KIND}; refused, not ignored")
+        if not (lo <= value <= hi):
+            raise HTTPException(400, f"{name} must be in [{lo}, {hi}]")
+        controls[name] = value
     prompt_path = None
     if req.voice not in ("default", ""):
         prompt_path = os.path.join(VOICES_DIR, f"{req.voice}.wav")
@@ -201,9 +249,8 @@ def speech(req: SpeechRequest):
         wav = model.generate(
             req.input,
             audio_prompt_path=prompt_path,
-            exaggeration=req.exaggeration,
-            cfg_weight=req.cfg_weight,
             temperature=req.temperature,
+            **controls,
         )
     samples = wav.squeeze().cpu().numpy()
     samples = stretch(samples, req.speed)
