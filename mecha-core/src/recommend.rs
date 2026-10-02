@@ -217,8 +217,10 @@ const QWEN36_MODEL: &str = "Qwen3.6-35B-A3B Q4_K_M, with its vision projector";
 /// the KV cache at 22.0 KiB per token (`LLAMA-SERVER.md`, §What the KV
 /// cache actually costs) — every term binary, so nothing mixes bases.
 const QWEN36_FILES_MB: u32 = ((QWEN36_FILES[0].bytes + QWEN36_FILES[1].bytes) / 1_048_576) as u32;
-const fn qwen36_with_cache_mb(tokens: u32) -> u32 {
-    QWEN36_FILES_MB + tokens / 1024 * 22
+/// `slots` adds each slot's ~64 MiB of recurrent (SSM) state, the
+/// constant-size part of the cache beside the per-token figure.
+const fn qwen36_with_cache_mb(tokens: u32, slots: u32) -> u32 {
+    QWEN36_FILES_MB + tokens / 1024 * 22 + 64 * slots
 }
 
 const EMBED_SOURCES: &[Source] = &[Source::HuggingFace {
@@ -256,19 +258,18 @@ pub const SLOTS: &[Slot] = &[
         runs_on: RunsOn::Gpu,
         residency: Residency::Resident,
         rows: &[
-            // Read on the GB10 on 2026-10-02 (`nvidia-smi`, `-c 1048576 -np
-            // 4`) off the router's uncensored arm — HauhauCS's Q4_K_M of the
-            // same base, before #516 grafted an MTP head onto it — not off the
-            // file this row pins, so it is arithmetic for that file. A reading
-            // of the production file is owed; the grafted arm read 45,747 MiB
-            // the same evening.
+            // The pinned files and four 262k slots' cache, as the router
+            // runs it. No reading of this file exists yet: on 2026-10-02 the
+            // router's uncensored arm of the same base (HauhauCS Q4_K_M) read
+            // 42,461 MiB on the GPU before #516 grafted an MTP head onto it
+            // and 45,747 MiB after, which brackets this figure.
             Recommendation {
                 tier_gb: 128,
                 memory: Memory::Unified {
-                    peak: Peak::Arithmetic { mb: 42_461 },
+                    peak: Peak::Arithmetic { mb: qwen36_with_cache_mb(1_048_576, 4) },
                 },
                 model: QWEN36_MODEL,
-                counts: "the server's GPU memory at four 262k slots, read off the uncensored arm of the same base (HauhauCS Q4_K_M) on the GB10",
+                counts: "the pinned files and four 262k slots' cache; an uncensored build of the same base read 41.5 GiB on the GB10 before its MTP graft and 44.7 after",
                 sources: QWEN36,
                 excludes: Some(
                     "the chat server's process memory, and the router's prompt cache (`cache-ram`, up to 16 GiB)",
@@ -277,7 +278,7 @@ pub const SLOTS: &[Slot] = &[
             Recommendation {
                 tier_gb: 128,
                 memory: Memory::Discrete {
-                    gpu: Peak::Arithmetic { mb: 42_461 },
+                    gpu: Peak::Arithmetic { mb: qwen36_with_cache_mb(1_048_576, 4) },
                     host: Peak::Unmeasured,
                 },
                 model: QWEN36_MODEL,
@@ -288,16 +289,16 @@ pub const SLOTS: &[Slot] = &[
             // The pinned files and one 262,144-token slot's cache.
             Recommendation {
                 tier_gb: 64,
-                memory: Memory::Unified { peak: Peak::Arithmetic { mb: qwen36_with_cache_mb(262_144) } },
+                memory: Memory::Unified { peak: Peak::Arithmetic { mb: qwen36_with_cache_mb(262_144, 1) } },
                 model: QWEN36_MODEL,
                 counts: "weights, one 256k slot's cache and the projector",
                 sources: QWEN36,
-                excludes: Some("the router's prompt cache (`cache-ram`)"),
+                excludes: Some("the chat server's process memory, and the router's prompt cache (`cache-ram`)"),
             },
             Recommendation {
                 tier_gb: 64,
                 memory: Memory::Discrete {
-                    gpu: Peak::Arithmetic { mb: qwen36_with_cache_mb(262_144) },
+                    gpu: Peak::Arithmetic { mb: qwen36_with_cache_mb(262_144, 1) },
                     host: Peak::Unmeasured,
                 },
                 model: QWEN36_MODEL,
@@ -308,16 +309,16 @@ pub const SLOTS: &[Slot] = &[
             // The pinned files and a 131,072-token cache.
             Recommendation {
                 tier_gb: 32,
-                memory: Memory::Unified { peak: Peak::Arithmetic { mb: qwen36_with_cache_mb(131_072) } },
+                memory: Memory::Unified { peak: Peak::Arithmetic { mb: qwen36_with_cache_mb(131_072, 1) } },
                 model: QWEN36_MODEL,
                 counts: "weights, a 128k cache and the projector",
                 sources: QWEN36,
-                excludes: Some("the router's prompt cache (`cache-ram`)"),
+                excludes: Some("the chat server's process memory, and the router's prompt cache (`cache-ram`)"),
             },
             Recommendation {
                 tier_gb: 32,
                 memory: Memory::Discrete {
-                    gpu: Peak::Arithmetic { mb: qwen36_with_cache_mb(131_072) },
+                    gpu: Peak::Arithmetic { mb: qwen36_with_cache_mb(131_072, 1) },
                     host: Peak::Unmeasured,
                 },
                 model: QWEN36_MODEL,
@@ -465,7 +466,7 @@ pub const SLOTS: &[Slot] = &[
     Slot {
         id: "stt",
         label: "speech to text",
-        needed_by: &[Feature::Dictate, Feature::Calls],
+        needed_by: &[Feature::Voice],
         runs_on: RunsOn::Cpu,
         residency: Residency::Resident,
         rows: &[Recommendation {
@@ -488,7 +489,7 @@ pub const SLOTS: &[Slot] = &[
     Slot {
         id: "tts",
         label: "speech",
-        needed_by: &[Feature::Calls],
+        needed_by: &[Feature::Voice],
         runs_on: RunsOn::Gpu,
         residency: Residency::Resident,
         rows: &[Recommendation {
@@ -519,7 +520,7 @@ pub const SLOTS: &[Slot] = &[
     Slot {
         id: "turn",
         label: "turn detection",
-        needed_by: &[Feature::Calls],
+        needed_by: &[Feature::Voice],
         runs_on: RunsOn::Cpu,
         residency: Residency::Resident,
         rows: &[Recommendation {
@@ -1266,9 +1267,30 @@ mod tests {
     /// figure converted.
     #[test]
     fn the_arithmetic_chat_rows_add_up_in_one_base() {
-        assert_eq!(qwen36_with_cache_mb(262_144) - QWEN36_FILES_MB, 5_632);
-        assert_eq!(qwen36_with_cache_mb(131_072) - QWEN36_FILES_MB, 2_816);
+        assert_eq!(
+            qwen36_with_cache_mb(262_144, 1) - QWEN36_FILES_MB,
+            5_632 + 64
+        );
+        assert_eq!(
+            qwen36_with_cache_mb(131_072, 1) - QWEN36_FILES_MB,
+            2_816 + 64
+        );
+        assert_eq!(
+            qwen36_with_cache_mb(1_048_576, 4) - QWEN36_FILES_MB,
+            4 * (5_632 + 64)
+        );
         assert_eq!(QWEN36_FILES_MB, 22_474);
+    }
+
+    /// The voice models follow the switch that runs them: `mecha
+    /// voice-serve` needs only `voice`, so with the web app off — its parts
+    /// blocked — the worker's models are still counted.
+    #[test]
+    fn voice_without_the_web_app_still_counts_its_models() {
+        let ids: Vec<&str> = needed(&[Feature::Voice]).iter().map(|s| s.id).collect();
+        for id in ["stt", "tts", "turn"] {
+            assert!(ids.contains(&id), "{id} missing from {ids:?}");
+        }
     }
 
     #[test]
