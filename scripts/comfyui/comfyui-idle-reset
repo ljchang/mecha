@@ -30,8 +30,9 @@ proc="${MECHA_PROC:-/proc}"
 pid=$(systemctl --user show "$unit" -p MainPID --value 2>/dev/null)
 [ -n "$pid" ] && [ "$pid" != 0 ] || exit 0
 
+# Summed, so a process on several devices is one total rather than lines.
 gpu=$(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null \
-      | awk -F', *' -v p="$pid" '$1==p {print $2}')
+      | awk -F', *' -v p="$pid" '$1==p {s+=$2} END {print s+0}')
 gpu=${gpu:-0}
 rss=$(awk '/^VmRSS:/ {print int($2/1024)}' "$proc/$pid/status" 2>/dev/null)
 rss=${rss:-0}
@@ -47,12 +48,15 @@ sys.exit(0 if not q.get("queue_running") and not q.get("queue_pending") else 1)
 ' "$queue" 2>/dev/null || exit 0
 
 # An open connection is a client mid-call: mecha polls on a keep-alive
-# connection through a whole job and pools it ~90 s after.
-ss -Htn state established "( sport = :$port )" 2>/dev/null | grep -q . && exit 0
+# connection through a whole job and pools it ~90 s after - and it is the
+# only guard before a job is queued, while references upload. So, like the
+# queue: a check that cannot run means busy, never "nobody connected".
+conn=$(ss -Htn state established "( sport = :$port )" 2>/dev/null) || exit 0
+[ -z "$conn" ] || exit 0
 
-# Used within the window: not idle.
-journalctl --user -u "$unit" --since "-${idle_min}min" --no-pager -o cat 2>/dev/null \
-  | grep -qE 'got prompt|Prompt executed' && exit 0
+# Used within the window: not idle. An unreadable journal is not "unused".
+recent=$(journalctl --user -u "$unit" --since "-${idle_min}min" --no-pager -o cat 2>/dev/null) || exit 0
+grep -qE 'got prompt|Prompt executed' <<<"$recent" && exit 0
 
 free_mb=$(awk '/^MemFree:/ {print int($2/1024)}' "$meminfo" 2>/dev/null)
 if [ -z "$free_mb" ] || [ "$free_mb" -lt "$min_free_mb" ]; then
