@@ -15729,10 +15729,10 @@ justification = "this box never sends from an armed conversation"
         );
     }
 
-    /// Two turns on one conversation: a reply with thinking, then a turn
-    /// that calls a tool before answering. What each request carried, as
-    /// one string per request.
-    async fn sent_across_two_turns(prior: PriorThinking) -> (Vec<String>, Conversation) {
+    /// Three turns on one conversation: a reply with thinking, a turn that
+    /// calls a tool before answering, and a plain one after. What each
+    /// request carried, as one string per request.
+    async fn sent_across_turns(prior: PriorThinking) -> (Vec<String>, Conversation) {
         let think = |t: &str| Block::Thinking {
             text: t.into(),
             signature: None,
@@ -15755,6 +15755,7 @@ justification = "this box never sends from an armed conversation"
                     StopReason::ToolUse,
                 ),
                 assistant(vec![Block::text("second")], StopReason::EndTurn),
+                assistant(vec![Block::text("third")], StopReason::EndTurn),
             ],
             PermissionMode::Allow,
         );
@@ -15762,6 +15763,8 @@ justification = "this box never sends from an armed conversation"
         let mut convo = Conversation::from(vec![Message::user("hi")]);
         agent.run(&mut convo, None).await.unwrap();
         convo.push(Message::user("mm"));
+        agent.run(&mut convo, None).await.unwrap();
+        convo.push(Message::user("ok"));
         agent.run(&mut convo, None).await.unwrap();
         let sent = provider
             .seen
@@ -15775,13 +15778,16 @@ justification = "this box never sends from an armed conversation"
 
     #[tokio::test]
     async fn dropped_prior_thinking_leaves_the_wire_and_stays_in_the_transcript() {
-        let (sent, convo) = sent_across_two_turns(PriorThinking::Drop).await;
-        assert_eq!(sent.len(), 3);
-        // The second turn's requests no longer carry the first turn's plan…
+        let (sent, convo) = sent_across_turns(PriorThinking::Drop).await;
+        assert_eq!(sent.len(), 4);
+        // Later turns no longer carry the first reply's plan…
         assert!(!sent[1].contains("PLAN-A") && !sent[2].contains("PLAN-A"));
-        // …but the reasoning that chose this turn's call reaches the step
-        // that reads its result: a tool result is not a new turn.
-        assert!(sent[2].contains("PLAN-B"));
+        assert!(!sent[3].contains("PLAN-A"));
+        // …but the reasoning that chose a call reaches the step that reads
+        // its result (a tool result is not a new turn), and stays with that
+        // call in every later turn: a history of calls made without thinking
+        // teaches the model to call without thinking (`drops_thinking`).
+        assert!(sent[2].contains("PLAN-B") && sent[3].contains("PLAN-B"));
         // The reply it belonged to is still sent, and the record keeps all.
         assert!(sent[1].contains("first"));
         let recorded = serde_json::to_string(&convo.messages).unwrap();
@@ -15790,7 +15796,7 @@ justification = "this box never sends from an armed conversation"
 
     #[tokio::test]
     async fn kept_prior_thinking_is_sent_back_as_recorded() {
-        let (sent, _) = sent_across_two_turns(PriorThinking::Keep).await;
+        let (sent, _) = sent_across_turns(PriorThinking::Keep).await;
         assert!(sent[1].contains("PLAN-A") && sent[2].contains("PLAN-A"));
     }
 }

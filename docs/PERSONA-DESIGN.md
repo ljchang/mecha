@@ -1565,8 +1565,9 @@ with all its memory intact.
 A persona should not say the same thing twice. On 2026-10-02 a long chat
 repeated one reply several times, and the owner ruled on three things:
 
-- **Defaults, not tuning.** A persona chat sends no fixed seed and no earlier
-  turns' reasoning (`ARCHITECTURE.md` §Personas). Both put back what the
+- **Defaults, not tuning.** A persona chat sends no fixed seed, and no
+  earlier reply's reasoning (`ARCHITECTURE.md` §Personas). Tool-calling
+  turns keep theirs. Both put back what the
   model's own guidance and the purpose of a seed already say. Neither was
   fitted to the one chat that showed the problem.
 - **No DRY sampler.** It stopped the copies and garbled the text. The model
