@@ -13,18 +13,18 @@ bin="$HOME/.local/bin"
 units="$HOME/.config/systemd/user"
 
 if [ "${1:-}" = "--remove" ]; then
-  systemctl --user disable --now comfyui-idle-reset.timer 2>/dev/null || true
-  rm -f "$units/comfyui-idle-reset.timer" "$units/comfyui-idle-reset.service" \
+  systemctl --user disable --now mecha-comfyui-idle-reset.timer 2>/dev/null || true
+  rm -f "$units/mecha-comfyui-idle-reset.timer" "$units/mecha-comfyui-idle-reset.service" \
         "$bin/comfyui-idle-reset"
   systemctl --user daemon-reload
-  echo "removed comfyui-idle-reset"
+  echo "removed mecha-comfyui-idle-reset"
   exit 0
 fi
 
 mkdir -p "$bin" "$units"
 install -m 0755 "$here/comfyui-idle-reset" "$bin/comfyui-idle-reset"
-install -m 0644 "$here/comfyui-idle-reset.service" "$units/comfyui-idle-reset.service"
-install -m 0644 "$here/comfyui-idle-reset.timer" "$units/comfyui-idle-reset.timer"
+install -m 0644 "$here/mecha-comfyui-idle-reset.service" "$units/mecha-comfyui-idle-reset.service"
+install -m 0644 "$here/mecha-comfyui-idle-reset.timer" "$units/mecha-comfyui-idle-reset.timer"
 systemctl --user daemon-reload
-systemctl --user enable --now comfyui-idle-reset.timer
-systemctl --user --no-pager list-timers comfyui-idle-reset.timer | sed -n 1,3p
+systemctl --user enable --now mecha-comfyui-idle-reset.timer
+systemctl --user --no-pager list-timers mecha-comfyui-idle-reset.timer | sed -n 1,3p
