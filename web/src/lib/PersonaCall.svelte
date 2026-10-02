@@ -141,11 +141,17 @@
   let typing = $state(false);
   function typingStart() {
     typing = true;
-    if (session && !muted) session.setMicEnabled(false);
+    applyMic();
   }
   function typingEnd() {
     typing = false;
-    if (session && !muted) session.setMicEnabled(true);
+    applyMic();
+  }
+  // Both at once, wherever either changes: the hint is a privacy claim and
+  // must not rest on focus leaving the box when mute is tapped (review of
+  // #499, pass 5).
+  function applyMic() {
+    session?.setMicEnabled(!muted && !typing);
   }
   function sendTyped() {
     if (session?.sendText(typed)) typed = '';
@@ -154,7 +160,7 @@
   function toggleMute() {
     if (!session) return;
     muted = !muted;
-    session.setMicEnabled(!muted);
+    applyMic();
   }
 
   // A different chat, or none: the call was this one's and ends with it.

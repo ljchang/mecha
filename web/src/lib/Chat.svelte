@@ -664,6 +664,7 @@
     if (incognito || k.startsWith(INCOGNITO_PREFIX)) {
       endVoice();
       vEntries = [];
+      vTyped = ''; // a line typed into the call is the composer's kind (review of #499)
     }
     if (incognito) dropRing(key);
     key = k;
@@ -715,6 +716,7 @@
     // what it showed and buffered goes too.
     endVoice();
     vEntries = [];
+    vTyped = '';
     dropRing(key);
     entries = [];
     streaming = '';
@@ -1186,7 +1188,7 @@
   function toggleMute() {
     if (!vSession) return;
     vMuted = !vMuted;
-    vSession.setMicEnabled(!vMuted);
+    applyMic();
   }
 
   // Typing into the call (the owner's ask, 2026-10-01): a typed line is a
@@ -1198,11 +1200,17 @@
   let vTyping = $state(false);
   function typingStart() {
     vTyping = true;
-    if (vSession && !vMuted) vSession.setMicEnabled(false);
+    applyMic();
   }
   function typingEnd() {
     vTyping = false;
-    if (vSession && !vMuted) vSession.setMicEnabled(true);
+    applyMic();
+  }
+  // The mic from both at once, wherever either changes: "mic paused while
+  // you type" is a privacy claim, so it must not rest on the browser moving
+  // focus off the box when mute is tapped (review of #499, pass 5).
+  function applyMic() {
+    vSession?.setMicEnabled(!vMuted && !vTyping);
   }
   function sendTyped() {
     if (vSession?.sendText(vTyped)) vTyped = '';
