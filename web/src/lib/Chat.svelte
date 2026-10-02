@@ -664,6 +664,7 @@
     if (incognito || k.startsWith(INCOGNITO_PREFIX)) {
       endVoice();
       vEntries = [];
+      vTyped = ''; // a line typed into the call is the composer's kind (review of #499)
     }
     if (incognito) dropRing(key);
     key = k;
@@ -715,6 +716,7 @@
     // what it showed and buffered goes too.
     endVoice();
     vEntries = [];
+    vTyped = '';
     dropRing(key);
     entries = [];
     streaming = '';
@@ -1119,6 +1121,12 @@
   function startVoice({ keep = false } = {}) {
     // connect() inside the tap handler — the audio unlock needs the gesture.
     if (!keep) vEntries = [];
+    // A line typed into another call — another chat, or an incognito one —
+    // must not wait in this one's box (review of #499).
+    if (!keep) {
+      vTyped = '';
+      vTyping = false;
+    }
     vKey = key;
     vIncognito = incognito || key.startsWith(INCOGNITO_PREFIX);
     vState = { name: 'connecting', label: 'connecting' };
@@ -1151,12 +1159,18 @@
       onBotTurnEnd: () => {},
     });
     voiceOpen = true;
-    vSession.connect().catch((e) => {
-      vState = {
-        name: 'idle',
-        label: `could not connect: ${e?.message ?? e} — tap the logo to try again`,
-      };
-    });
+    // A fresh session's mic starts live; mute and typing carry over a
+    // reconnect, so the track is set from them once it exists (review of
+    // #499, pass 6).
+    vSession
+      .connect()
+      .then(applyMic)
+      .catch((e) => {
+        vState = {
+          name: 'idle',
+          label: `could not connect: ${e?.message ?? e} — tap the logo to try again`,
+        };
+      });
   }
 
   // The state label has said "tap to reconnect" since voice shipped and
@@ -1188,7 +1202,32 @@
   function toggleMute() {
     if (!vSession) return;
     vMuted = !vMuted;
-    vSession.setMicEnabled(!vMuted);
+    applyMic();
+  }
+
+  // Typing into the call (the owner's ask, 2026-10-01): a typed line is a
+  // turn answered aloud, as a spoken one is. The mic is paused while the box
+  // has focus — keys and a room are not words — and given back as it was;
+  // the mute button stays the owner's. Same as a persona call
+  // (`PersonaCall.svelte`).
+  let vTyped = $state('');
+  let vTyping = $state(false);
+  function typingStart() {
+    vTyping = true;
+    applyMic();
+  }
+  function typingEnd() {
+    vTyping = false;
+    applyMic();
+  }
+  // The mic from both at once, wherever either changes: "mic paused while
+  // you type" is a privacy claim, so it must not rest on the browser moving
+  // focus off the box when mute is tapped (review of #499, pass 5).
+  function applyMic() {
+    vSession?.setMicEnabled(!vMuted && !vTyping);
+  }
+  function sendTyped() {
+    if (vSession?.sendText(vTyped)) vTyped = '';
   }
 
   function endVoice() {
@@ -2293,6 +2332,22 @@
            they are preferences, not call controls, and a pane that is
            mostly a form is a worse call surface. voice-core still applies
            the remembered choice the moment the data channel opens. -->
+      <form class="typerow" onsubmit={(e) => { e.preventDefault(); sendTyped(); }}>
+        <input
+          class="typebox"
+          placeholder="Type instead of speaking"
+          aria-label="Type into the call"
+          bind:value={vTyped}
+          onfocus={typingStart}
+          onblur={typingEnd}
+          disabled={!vLinked}
+          maxlength="4000"
+        />
+        <button type="submit" class="typesend" aria-label="send" disabled={!vLinked || !vTyped.trim()}>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+        </button>
+      </form>
+      {#if vTyping && !vMuted}<div class="typehint">mic paused while you type</div>{/if}
       <div class="voice-controls">
         <button class="mutebtn" class:muted={vMuted} onclick={toggleMute} title={vMuted ? 'unmute' : 'mute'}>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -3506,12 +3561,55 @@
   .vanswer.interim {
     color: var(--text-muted);
   }
+  .typerow {
+    display: flex;
+    gap: 8px;
+    margin: 14px 20px 0;
+  }
+  .typebox {
+    flex: 1;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 14px;
+    border-radius: 22px;
+    border: 1px solid var(--accent-900);
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    font-size: 16px;
+  }
+  .typebox:focus {
+    outline: none;
+    border-color: var(--accent-500);
+  }
+  .typesend {
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--accent-400);
+    color: var(--void);
+    border: none;
+    cursor: pointer;
+  }
+  .typesend:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .typehint {
+    margin: 6px 20px 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
   .voice-controls {
     display: flex;
     justify-content: center;
     align-items: center;
     gap: 24px;
-    padding: 24px 0 34px;
+    padding: 16px 0 34px;
   }
   .mutebtn {
     width: 56px;
