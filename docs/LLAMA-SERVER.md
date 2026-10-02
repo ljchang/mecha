@@ -377,30 +377,30 @@ machine from starting is one people turn off.
   RUNPATH`. On 2026-10-02 it named **`~/llama.cpp-next/build/bin`**
   (`95887577`); `~/llama.cpp` (`c841aeeb`) is the tree before it. So `cmake
   --build` in the named tree replaces what a restart will run, and "rebuild"
-  and "deploy" are not separable steps here. **There are two kinds of
-  upgrade, and nothing lying around tells you which was last** — the
-  RUNPATHs of the live stub and `~/.local/bin/llama-server.prev` say whether
-  the stub was *ever* swapped, not what the last upgrade did, since an
-  in-place rebuild touches neither stub. So every upgrade appends one line to
-  **`~/.local/bin/llama-server.upgrades`**: the date, the kind, the commit
-  before and after, and the rollback that undoes it. **Until that file has a
-  line, the answer is the first branch**: the last upgrade (2026-10-02's
-  reading) was the new-tree swap to `-next`, so the `.prev` stub is the
-  rollback. Otherwise read its last line:
-  - **new tree** (the stub was swapped): restore the `.prev` stub, which
-    loads the previous tree's `build/bin`. That tree must still be whole;
-    never delete or rebuild it while its stub is the rollback.
-  - **in place** (one tree rebuilt): restore that tree's `build/bin.prev`
-    (the whole library set, with a `VERSION.txt` naming the commit).
-    Restoring the `.prev` stub here would go back two generations.
+  and "deploy" are not separable steps here. **Which rollback applies is
+  decided by the trees, never by a version string** — a stub's `--version`
+  names the commit it was compiled at, not the libraries it loads (on
+  2026-10-02 the `.prev` stub reported `a4ce259` while loading `c841aeeb`'s
+  libraries). Look in the tree the live stub's RUNPATH names:
+  - **it has a `build/bin.prev`** — that tree was last rebuilt in place:
+    restore `build/bin.prev` (the whole library set; its `VERSION.txt` names
+    the commit it holds). Restoring the `.prev` stub here would go back two
+    generations. An in-place rebuild must therefore always leave a
+    `build/bin.prev`, and a rollback that consumes it leaves none.
+  - **it has none** — the last upgrade swapped the stub to a new tree:
+    restore `~/.local/bin/llama-server.prev`, which loads the previous
+    tree's `build/bin`. That tree must still be whole; never delete or
+    rebuild it while its stub is the rollback.
 
-  Confirm against the commit, never an mtime: `VERSION.txt` and the record
-  name it. The record does not exist yet; the next upgrade starts it, with
-  the `-next` swap (`c841aeeb` → `95887577`, which `REMOTE-SURFACE-DESIGN.md`
-  records) as the line before it. Either way a
+  On 2026-10-02 `~/llama.cpp-next` had no `build/bin.prev`, so the `.prev`
+  stub (onto `~/llama.cpp`, `c841aeeb`) was the rollback. Every upgrade also
+  appends one line to **`~/.local/bin/llama-server.upgrades`** — the date,
+  the kind, the commits before and after — so the trees can be checked
+  against a record; it does not exist yet, and the next upgrade starts it.
+  It is the stopgap until FEATURES-DESIGN §10.3's side-by-side directories
+  and ledger (step 7b) retire both it and this procedure. Either way a
   rollback has to be a file you restore, not a commit you would have to
-  rebuild under pressure. (FEATURES-DESIGN §10.3 makes this structural:
-  side-by-side engine directories and a ledger.)
+  rebuild under pressure.
 
   **Replace the stub with `mv`, never `cp`.** Every llama-server here —
   `llama-local` (:8080) and the on-demand backends behind :8081 and :8085 —
