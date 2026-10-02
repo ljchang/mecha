@@ -937,6 +937,10 @@ All of it rides in the message stream; nothing touches the system prompt
   episode line carries a short id for `memory_read`. `memory_read` reads
   *another* conversation — what `tool::recall` forbids itself — so the turns
   it returns carry their own recorded taint (`persona::memory_tools`).
+  *Owner ruling 2026-10-02:* `answers = "files"` (§10.4) leaves both tools
+  in, since memory's control is `[memory]`; a files-only persona's
+  `memory_read` returns the owner's words and its own, with each tool result
+  left out where it stood.
 
 ### 9.8 The owner curates
 
