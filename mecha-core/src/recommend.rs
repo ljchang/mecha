@@ -193,13 +193,6 @@ pub struct Slot {
 
 const GB10: &str = "DGX Spark (GB10)";
 
-/// Tenths of a decimal GB → MiB, for the arithmetic rows written from
-/// `hardware.md`'s GB figures.
-const fn gb(tenths: u32) -> u32 {
-    // tenths of a decimal GB, as MiB: 10^9 / 2^20 ≈ 953.674
-    ((tenths as u64 * 100_000_000) / 1_048_576) as u32
-}
-
 const QWEN36_FILES: &[HubFile] = &[
     HubFile {
         path: "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
@@ -218,6 +211,15 @@ const QWEN36: &[Source] = &[Source::HuggingFace {
     files: QWEN36_FILES,
 }];
 const QWEN36_MODEL: &str = "Qwen3.6-35B-A3B Q4_K_M, with its vision projector";
+
+/// The arithmetic chat rows, in MiB from the pinned files themselves (the
+/// MTP file is larger than the ~20.7 GB generic figure on the page), plus
+/// the KV cache at 22.0 KiB per token (`LLAMA-SERVER.md`, §What the KV
+/// cache actually costs) — every term binary, so nothing mixes bases.
+const QWEN36_FILES_MB: u32 = ((QWEN36_FILES[0].bytes + QWEN36_FILES[1].bytes) / 1_048_576) as u32;
+const fn qwen36_with_cache_mb(tokens: u32) -> u32 {
+    QWEN36_FILES_MB + tokens / 1024 * 22
+}
 
 const EMBED_SOURCES: &[Source] = &[Source::HuggingFace {
     repo: "mradermacher/harrier-oss-v1-0.6b-GGUF",
@@ -283,10 +285,10 @@ pub const SLOTS: &[Slot] = &[
                 sources: QWEN36,
                 excludes: Some("the router's prompt cache (`cache-ram`, up to 16 GiB)"),
             },
-            // 20.7 weights + 5.5 cache (one 256k slot) + 0.9 projector.
+            // The pinned files and one 262,144-token slot's cache.
             Recommendation {
                 tier_gb: 64,
-                memory: Memory::Unified { peak: Peak::Arithmetic { mb: gb(271) } },
+                memory: Memory::Unified { peak: Peak::Arithmetic { mb: qwen36_with_cache_mb(262_144) } },
                 model: QWEN36_MODEL,
                 counts: "weights, one 256k slot's cache and the projector",
                 sources: QWEN36,
@@ -295,7 +297,7 @@ pub const SLOTS: &[Slot] = &[
             Recommendation {
                 tier_gb: 64,
                 memory: Memory::Discrete {
-                    gpu: Peak::Arithmetic { mb: gb(271) },
+                    gpu: Peak::Arithmetic { mb: qwen36_with_cache_mb(262_144) },
                     host: Peak::Unmeasured,
                 },
                 model: QWEN36_MODEL,
@@ -303,10 +305,10 @@ pub const SLOTS: &[Slot] = &[
                 sources: QWEN36,
                 excludes: Some("the router's prompt cache (`cache-ram`)"),
             },
-            // 20.7 weights + 2.7 cache (128k) + 0.9 projector.
+            // The pinned files and a 131,072-token cache.
             Recommendation {
                 tier_gb: 32,
-                memory: Memory::Unified { peak: Peak::Arithmetic { mb: gb(243) } },
+                memory: Memory::Unified { peak: Peak::Arithmetic { mb: qwen36_with_cache_mb(131_072) } },
                 model: QWEN36_MODEL,
                 counts: "weights, a 128k cache and the projector",
                 sources: QWEN36,
@@ -315,7 +317,7 @@ pub const SLOTS: &[Slot] = &[
             Recommendation {
                 tier_gb: 32,
                 memory: Memory::Discrete {
-                    gpu: Peak::Arithmetic { mb: gb(243) },
+                    gpu: Peak::Arithmetic { mb: qwen36_with_cache_mb(131_072) },
                     host: Peak::Unmeasured,
                 },
                 model: QWEN36_MODEL,
@@ -704,11 +706,15 @@ fn parse_nvidia_total(text: &str) -> GpuRead {
     // The GB10 answers `[N/A]`: its GPU has no memory of its own. Only when
     // every card says so is the machine one pool; a card that reports its
     // memory beside one that does not is still a card.
+    // Anything else unparseable (`[Insufficient Permissions]`, `[Unknown
+    // Error]`) is a reading not got, never a claim about the memory's shape.
     let cards: Vec<u64> = lines.iter().filter_map(|l| l.parse().ok()).collect();
-    if cards.is_empty() {
+    if !cards.is_empty() {
+        GpuRead::Cards(cards.iter().sum())
+    } else if lines.iter().all(|l| *l == "[N/A]") {
         GpuRead::Unified
     } else {
-        GpuRead::Cards(cards.iter().sum())
+        GpuRead::None
     }
 }
 
@@ -1073,6 +1079,14 @@ mod tests {
     fn nvidia_smi_reads_cards_or_says_unified() {
         assert!(matches!(parse_nvidia_total("[N/A]\n"), GpuRead::Unified));
         assert!(matches!(
+            parse_nvidia_total("[Insufficient Permissions]\n"),
+            GpuRead::None
+        ));
+        assert!(matches!(
+            parse_nvidia_total("[Unknown Error]\n"),
+            GpuRead::None
+        ));
+        assert!(matches!(
             parse_nvidia_total("[N/A]\n24576\n"),
             GpuRead::Cards(24_576)
         ));
@@ -1123,9 +1137,14 @@ mod tests {
         let resident: u64 = SLOTS
             .iter()
             .filter(|s| s.residency == Residency::Resident)
-            .map(|s| match s.rows[0].memory {
-                Memory::Unified { peak } => peak.mb().unwrap() as u64,
-                _ => unreachable!(),
+            .map(|s| {
+                s.rows
+                    .iter()
+                    .find_map(|r| match r.memory {
+                        Memory::Unified { peak } if r.tier_gb == 128 => peak.mb(),
+                        _ => None,
+                    })
+                    .expect("a 128 GB unified row") as u64
             })
             .sum();
         assert_eq!(b.gpu.resident_mb, Some(resident));
@@ -1240,6 +1259,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The arithmetic chat rows are the pinned files plus the cache, all in
+    /// binary units: a 256k slot's cache is 5,632 MiB, never a decimal-GB
+    /// figure converted.
+    #[test]
+    fn the_arithmetic_chat_rows_add_up_in_one_base() {
+        assert_eq!(qwen36_with_cache_mb(262_144) - QWEN36_FILES_MB, 5_632);
+        assert_eq!(qwen36_with_cache_mb(131_072) - QWEN36_FILES_MB, 2_816);
+        assert_eq!(QWEN36_FILES_MB, 22_474);
     }
 
     #[test]
