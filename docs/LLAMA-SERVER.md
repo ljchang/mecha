@@ -530,10 +530,15 @@ Measured on 2026-09-26 against `c841aee`, unless a bullet names another build:
   n-max 2 (0.81). The stock head guesses the abliterated model's prose worst
   (0.47–0.52 at 3), which is why it drafts 2. Speculation changes speed, never
   output: the target verifies every drafted token. **A graft is derived, not
-  downloaded**, so its file name carries the two input blobs' hashes
-  (`graft_path`): a re-upload of either names a file not built yet, and the
-  preset falls back to the plain file with the line that builds it, rather
-  than serving the old graft under an unchanged alias. **The first request of
+  downloaded**, so its file name carries all three inputs' hashes — both
+  blobs and `mtp-graft.py` itself (`graft_path`): a re-upload or a script fix
+  names a file not built yet, and the preset falls back to the plain file
+  with the line that builds it, rather than serving the old graft under an
+  unchanged alias. Grafts live in `MECHA_GRAFT_DIR` (default
+  `~/models/mtp-graft`). A damaged graft does not fall back: the graft *is*
+  the weights, so it fails the child's start; only an empty file is refused.
+  Four slots with MTP are unmeasured (two attempts contaminated by a busy
+  GPU); if they regress, drop the preset's two `SPEC` lines. **The first request of
   a fresh child is warmup** — 3–4× slower on the same prompts — so discard it
   before reading a rate.
 - **`reasoning-preserve` is pinned in every Qwen preset**, because the new

@@ -13,6 +13,7 @@ case below builds a cache of that shape and reads the generated models.ini.
 The weights are empty files: nothing is loaded, because `LLAMA_SERVER` is a
 stub that prints its arguments.
 """
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -229,7 +230,8 @@ class StartRouter(unittest.TestCase):
         """The name start-router.sh expects for a graft of this cache's blobs."""
         b = f"{rev}-{self.HH36_FILE}"[:12]
         d = f"r1-{PROD_FILE}"[:12]
-        return self.grafts / f"{self.HH36_FILE[:-5]}+mtp-{b}-{d}.gguf"
+        g = hashlib.sha256(SCRIPT.with_name("mtp-graft.py").read_bytes()).hexdigest()[:8]
+        return self.grafts / f"{self.HH36_FILE[:-5]}+mtp-{b}-{d}-g{g}.gguf"
 
     def test_the_uncensored_qwen36_speculates_only_from_a_graft_of_its_own_blobs(self):
         self.uncensored36()
@@ -237,10 +239,19 @@ class StartRouter(unittest.TestCase):
         preset = self.section(ini, "qwen3.6-35b-a3b-uncensored")
         self.assertTrue(preset.get("model", "").endswith(f"/r/{self.HH36_FILE}"), err)
         self.assertNotIn("spec-type", preset, "the downloaded file has no head; draft-mtp fails its start")
+        self.assertNotIn("spec-draft-n-max", preset, err)
         self.assertIn("mtp-graft.py", err, "the fallback must say how to build the head")
         self.assertIn(str(self.graft_for("r")), err, "the build line must write the name that will be looked up")
 
+        # An empty file under the name is a placeholder, not weights: the graft
+        # *is* the model here, so serving it would fail the child's start.
         self.graft_for("r").write_bytes(b"")
+        _, _, err, ini = self.run_script()
+        preset = self.section(ini, "qwen3.6-35b-a3b-uncensored")
+        self.assertTrue(preset.get("model", "").endswith(f"/r/{self.HH36_FILE}"), err)
+        self.assertNotIn("spec-type", preset, err)
+
+        self.graft_for("r").write_bytes(b"GGUF")
         _, _, err, ini = self.run_script()
         preset = self.section(ini, "qwen3.6-35b-a3b-uncensored")
         self.assertEqual(preset.get("model"), str(self.graft_for("r")), err)
@@ -252,7 +263,7 @@ class StartRouter(unittest.TestCase):
         # A re-upload under the same file name is a new blob: the graft built
         # from the old one must not ride on under the unchanged alias.
         self.uncensored36(rev="old")
-        self.graft_for("old").write_bytes(b"")
+        self.graft_for("old").write_bytes(b"GGUF")
         self.cache.put(self.HH36, "new", self.HH36_FILE)
         _, _, err, ini = self.run_script()
         preset = self.section(ini, "qwen3.6-35b-a3b-uncensored")

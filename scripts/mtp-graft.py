@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["gguf", "numpy"]
+# dependencies = ["gguf==0.19.0", "numpy==2.5.3"]
 # ///
 """Give a GGUF that lost its MTP head the head from another conversion of the same model.
 
@@ -23,6 +23,12 @@ the censored model costs acceptance, never behaviour.
 
 The output is written beside OUT and renamed into place only once complete,
 so an interrupted run can never leave a half file for start-router.sh to load.
+
+**gguf is pinned** because this leans on its reader/writer internals and the
+day it is next needed is a re-upload of an input, possibly months on. The
+graft's name also carries a hash of this file (start-router.sh `graft_path`),
+so an edit here retires every graft built by the old version.
+scripts/test_mtp_graft.py round-trips it on synthetic files under the same pins.
 """
 import os
 import sys
@@ -87,6 +93,8 @@ def main():
     w.write_kv_data_to_file()
     w.write_ti_data_to_file()
     for t in tensors:
+        # The endianness of the *data* (the reader's memmap), not the writer's:
+        # omitted, gguf assumes native and would byteswap a big-endian file.
         w.write_tensor_data(t.data, tensor_endianess=base.endianess)
     w.close()
     os.replace(tmp, out_p)
