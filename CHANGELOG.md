@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **See and edit what a persona remembers.** A persona's editor has a
+  Memories tab: its conversations, what it knows about itself and about you,
+  and anything waiting for your approval, each with the day it was said.
+  Keep what is waiting, edit a fact's wording, pin, share a fact about you
+  with everyone or a group, or forget something for good.
+
 - **The uncensored Qwen3.6 model is about 40% faster.** Its download lacks
   the multi-token-prediction head that lets production draft ahead;
   `scripts/mtp-graft.py` copies the head from production's file, and the
