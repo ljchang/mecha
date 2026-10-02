@@ -98,7 +98,7 @@ and tool output is replaced by `LEFT_OUT` (`memory_tools::words_only`).
   double cut.
 - **Not a seal:** summaries still paraphrase tool output (HANDOFF carries
   it).
-- Two review passes, from mecha-5d's report. Pass 1's medium finding
+- Two review passes, counted from the PR's comments. Pass 1's medium finding
   narrowed the code comment to what C actually guarantees.
 
 **2026-10-02 — a persona can search its memory and open a past
