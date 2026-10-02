@@ -58,7 +58,7 @@ class Delivery(unittest.TestCase):
 
         async def main():
             turns = TypedTurns(push, lambda: speaking["now"], log=logged.append,
-                               start_secs=1.0, end_secs=2.0)
+                               start_secs=1.0, end_secs=2.0, settle_secs=0.3)
             for line in lines:
                 turns.put({"text": line})
             task = asyncio.create_task(turns.run())
@@ -120,6 +120,75 @@ class AnsweringFrames(unittest.TestCase):
         self.assertEqual(states, [False, True, False])
         self.assertEqual(passed, 2, "a frame was swallowed")
 
+    def test_an_interruption_ends_the_answer(self):
+        from pipecat.frames.frames import InterruptionFrame, LLMFullResponseStartFrame
+        from pipecat.processors.frame_processor import FrameDirection
+
+        async def main():
+            a = Answering()
+
+            async def push(frame, direction=FrameDirection.DOWNSTREAM):
+                pass
+
+            a.push_frame = push
+            await a.process_frame(LLMFullResponseStartFrame(), FrameDirection.DOWNSTREAM)
+            await a.process_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
+            return a.busy
+
+        self.assertFalse(asyncio.run(main()), "an interrupted answer latched busy")
+
+
+class Gap(unittest.TestCase):
+    def test_the_quiet_between_the_model_and_its_speech_is_not_the_end(self):
+        """The model answers, finishes, and only then is the answer spoken:
+        a line sent in that gap would barge in on speech about to start
+        (review of #499, pass 4)."""
+        pushed, ended, busy = [], [], {"now": False}
+
+        async def push(text):
+            pushed.append((text, asyncio.get_running_loop().time()))
+
+            async def answer():
+                await asyncio.sleep(0.1)
+                busy["now"] = True   # the model answering
+                await asyncio.sleep(0.2)
+                busy["now"] = False  # done; no audio yet
+                await asyncio.sleep(0.4)
+                busy["now"] = True   # the speech
+                await asyncio.sleep(0.3)
+                busy["now"] = False
+                ended.append(asyncio.get_running_loop().time())
+
+            asyncio.get_running_loop().create_task(answer())
+
+        async def main():
+            turns = TypedTurns(push, lambda: busy["now"], log=lambda _: None, start_secs=2.0, end_secs=3.0,
+                               settle_secs=0.6)
+            turns.put({"text": "one"})
+            turns.put({"text": "two"})
+            task = asyncio.create_task(turns.run())
+            await asyncio.sleep(2.2)
+            task.cancel()
+
+        asyncio.run(main())
+        self.assertEqual([t for t, _ in pushed], ["one", "two"])
+        self.assertTrue(ended)
+        self.assertGreaterEqual(pushed[1][1], ended[0], "the second line went in the gap, before the speech")
+
+
+class Queue(unittest.TestCase):
+    def test_put_says_why_a_line_was_not_queued(self):
+        from worker import TYPED_QUEUE_MAX
+
+        async def main():
+            turns = TypedTurns(None, lambda: False, log=lambda _: None)
+            return [turns.put({"text": f"line {i}"}) for i in range(TYPED_QUEUE_MAX + 1)], turns.put({"text": " "})
+
+        results, empty = asyncio.run(main())
+        self.assertEqual(results[:-1], ["queued"] * TYPED_QUEUE_MAX)
+        self.assertEqual(results[-1], "full")
+        self.assertEqual(empty, "not-a-turn")
+
 
 class SilentAnswer(unittest.TestCase):
     def test_an_answer_that_speaks_nothing_releases_the_next_line_promptly(self):
@@ -139,7 +208,8 @@ class SilentAnswer(unittest.TestCase):
             asyncio.get_running_loop().create_task(answer())
 
         async def main():
-            turns = TypedTurns(push, lambda: busy["now"], log=lambda _: None, start_secs=5.0, end_secs=5.0)
+            turns = TypedTurns(push, lambda: busy["now"], log=lambda _: None, start_secs=5.0, end_secs=5.0,
+                               settle_secs=0.3)
             turns.put({"text": "one"})
             turns.put({"text": "two"})
             task = asyncio.create_task(turns.run())

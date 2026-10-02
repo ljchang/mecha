@@ -1121,7 +1121,10 @@
     if (!keep) vEntries = [];
     // A line typed into another call — another chat, or an incognito one —
     // must not wait in this one's box (review of #499).
-    if (!keep) vTyped = '';
+    if (!keep) {
+      vTyped = '';
+      vTyping = false;
+    }
     vKey = key;
     vIncognito = incognito || key.startsWith(INCOGNITO_PREFIX);
     vState = { name: 'connecting', label: 'connecting' };
