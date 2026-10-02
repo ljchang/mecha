@@ -1526,20 +1526,27 @@ module.
     same phrase. Its default window (`dry_penalty_last_n`, like
     `repeat_last_n`) is 64 tokens, too short to see an earlier turn, and
     this build refuses `-1`.
-  - `persona::echo` records each reply's overlap with the closest earlier
-    reply as a number in `echo.jsonl`, never the words. The earlier replies
-    come from the session file (`Session::assistant_replies`), read before
-    the run is recorded. They never come from the live conversation: by the
-    late stretch of a chat compaction has summarised most turns away, and a
-    copy of one of them would score as new. `Rewrite` records are read too,
-    because the turns a compacting run adds exist only there. Only a run
-    whose `stop_cause` is `Completed` is measured. A stopped run keeps a
-    partial reply, which would read low, and a judge-stopped reply is never
-    shown at all. It has its own file
-    for the same reason `calls.jsonl` does. When there is nothing to compare
-    the result is `None` and nothing is written. `mecha persona show` reads
-    the last `SHOWN_DAYS` days, and an unreadable file is reported as such,
-    never as zero.
+  - `persona::echo` measures how much each reply repeats the closest
+    earlier reply in its chat. It reads finished transcripts when asked,
+    never during a turn. Nothing acts on the number while a chat runs, and
+    the session file already holds every reply. So nothing is computed per
+    turn and nothing new is stored, and a better metric later can recompute
+    the whole history.
+    - `session_echoes` walks the records in order. Each run's last
+      assistant text before its `Outcome` is scored against every earlier
+      reply, including those inside `Rewrite` records. A compacting run's
+      own turns exist only there, and the live conversation has summarised
+      the early ones away.
+    - Only a run whose recorded `stop_cause` is `Completed` is scored. A
+      stopped run keeps a partial reply, which would read low, and a
+      judge-stopped reply was never shown. An unknown cause is not a
+      completed one.
+    - When there is nothing to compare, the result is `None` and the reply
+      is not counted.
+    - `mecha persona show` reads chats active in the last `SHOWN_DAYS` days
+      (by file modification time) and counts unreadable session files,
+      never reading them as empty.
+    - Deleted chats drop out of the history; archived ones stay.
 
 ## Security model
 

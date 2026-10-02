@@ -197,45 +197,6 @@ struct Live {
     working: Arc<StdMutex<Vec<serde_json::Value>>>,
 }
 
-/// Record how much the run's reply repeats one the persona already gave in
-/// this chat (`persona::echo`): the number, never the words.
-///
-/// `earlier` is every reply the session file held before this run was
-/// recorded (`Session::assistant_replies`), not the live conversation: by
-/// the late, long stretch of a chat where repetition shows, compaction has
-/// replaced most earlier turns with a summary, and a copy of one of them
-/// would read as a fresh reply. A file that could not be read writes
-/// nothing — no reading, rather than a low one. Nothing is written when
-/// there was nothing to compare, and a failed write is a warning: the reply
-/// has been sent either way.
-fn record_echo(
-    store: &Path,
-    persona: &str,
-    chat: &str,
-    earlier: Result<Vec<String>>,
-    after: &Conversation,
-) {
-    use mecha_core::message::Role;
-    let Some(reply) = after.messages.last().filter(|m| m.role == Role::Assistant) else {
-        return;
-    };
-    let earlier = match earlier {
-        Ok(earlier) => earlier,
-        Err(e) => {
-            tracing::warn!("a persona echo was not measured: {e:#}");
-            return;
-        }
-    };
-    let Some(echo) =
-        mecha_core::persona::echo::echo(&reply.text(), earlier.iter().map(String::as_str))
-    else {
-        return;
-    };
-    if let Err(e) = mecha_core::persona::echo::record_echo(store, persona, chat, echo) {
-        tracing::warn!("a persona echo record was not written: {e:#}");
-    }
-}
-
 /// Keep `slot` naming the tool a run is waiting on: every call that has
 /// started and not yet returned — tools in one turn run concurrently — and
 /// the transcript reports the latest of them.
@@ -2980,7 +2941,6 @@ impl PersonaChats {
         let context_window = bound.context_window;
         let chats = Arc::clone(self);
         let key = key.to_string();
-        let persona = name.clone();
         let stopping = chat.stopping.clone();
         // Spawned under the sessions lock, as the assistant's `begin_turn`
         // spawns under its map: `stop` takes this lock before it closes
@@ -3052,24 +3012,8 @@ impl PersonaChats {
             let _ = forwarder.await;
             match &outcome {
                 Ok(o) => {
-                    // Only a turn that ran to its own end is measured: a
-                    // stopped one (the owner's stop, the judge's concern)
-                    // keeps a partial reply, which would read low, and a
-                    // judge-stopped one is never shown. Read ahead of
-                    // `record_run`, so this reply is not among the earlier.
-                    let earlier = (o.stop_cause == mecha_core::agent::StopCause::Completed)
-                        .then(|| Session::assistant_replies(&session.path));
                     let _ = session.record_run(&before, &conversation);
                     let _ = session.record_outcome(o);
-                    if let Some(earlier) = earlier {
-                        record_echo(
-                            &chats.store,
-                            &persona,
-                            &session.meta.id,
-                            earlier,
-                            &conversation,
-                        );
-                    }
                 }
                 // The record agrees with the rollback, or a resume replays
                 // the failed turn (the assistant's rule, `chat::begin_turn`).
@@ -4643,13 +4587,12 @@ mod tests {
         }
     }
 
-    /// The echo's wiring: earlier replies are read *before* the run is
-    /// recorded, so a first reply has nothing to compare and writes nothing,
-    /// and a second that repeats it reads 1.0 — in the persona store. Read
-    /// after `record_run` instead, every reply would be in its own comparison
-    /// set and the meter would read a copy on every turn, with no error.
+    /// The echo is read from transcripts (`persona::echo`), so what a persona
+    /// chat records has to be enough: each reply, and an outcome saying the
+    /// run completed. A first reply has nothing to compare; a second that
+    /// repeats it reads 1.0.
     #[tokio::test]
-    async fn a_repeated_reply_is_measured_against_the_replies_before_it() {
+    async fn a_persona_chats_transcript_is_enough_to_read_its_echo() {
         let w = world_with(Mode::Say(
             "The kelp line runs north of the second buoy today".into(),
         ));
@@ -4659,16 +4602,19 @@ mod tests {
             .await
             .unwrap();
         let key = opened["key"].as_str().unwrap().to_string();
-        let since = chrono::Utc::now() - chrono::Duration::hours(1);
-        let read = || mecha_core::persona::echo::echoes(&w.store(), "mara", since).unwrap();
+        let sessions = w.store().join("mara/sessions");
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let read = || mecha_core::persona::echo::echoes(&sessions, since).unwrap();
 
         turn(&w, &key, "Where is the kelp?").await;
         assert_eq!(read().replies, 0, "a first reply has nothing to echo");
 
         turn(&w, &key, "mm").await;
         let e = read();
-        assert_eq!((e.replies, e.repeated, e.max), (1, 1, Some(1.0)));
-        assert!(!w.root.join("work").join("echo.jsonl").exists());
+        assert_eq!(
+            (e.chats, e.replies, e.repeated, e.max, e.unreadable),
+            (1, 1, 1, Some(1.0), 0)
+        );
     }
 
     /// A persona chat is built with `PriorThinking::Drop`: the second turn's
