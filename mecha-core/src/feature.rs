@@ -1211,10 +1211,18 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         } else {
             "~/.mecha/personas ([tools] withholds persona_propose from the model)".to_string()
         }),
-        Feature::Voice => on(format!(
-            "`mecha voice-serve`, and the facade `mecha serve` mounts on port {}",
-            cfg.voice.voice_port()
-        )),
+        // `voice` stays on at port 0: `mecha voice-serve` is its own surface.
+        // The sentence just must not claim a mount that does not happen
+        // (review of #503).
+        Feature::Voice => on(match cfg.voice.voice_port() {
+            0 => {
+                "`mecha voice-serve` only — `mecha serve` mounts no facade ([voice] voice_port = 0)"
+                    .to_string()
+            }
+            port => {
+                format!("`mecha voice-serve`, and the facade `mecha serve` mounts on port {port}")
+            }
+        }),
         Feature::Dictate => on(format!("speech to text at {}", cfg.voice.stt_url())),
         // Empty is how `[voice] offer_target` turns calls off: no worker to
         // offer to, so the call button would refuse every tap.
@@ -1783,6 +1791,13 @@ mod tests {
         assert!(reason.contains("[voice] voices_dir"), "{reason}");
         cfg.voice.voices_dir = Some("/srv/voices".into());
         assert_eq!(state(&facts(&cfg), Feature::Cloning).word(), "on");
+        // Port 0 mounts no facade, and the row says so rather than naming
+        // port 0 as a mount (review of #503).
+        cfg.voice.voice_port = Some(0);
+        let State::On { detail } = state(&facts(&cfg), Feature::Voice) else {
+            panic!("voice stays on: `mecha voice-serve` is its own surface")
+        };
+        assert!(detail.contains("mounts no facade"), "{detail}");
     }
 
     /// The owner's switch comes first: absent and `false` are both off,
