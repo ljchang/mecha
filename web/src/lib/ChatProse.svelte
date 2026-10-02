@@ -25,7 +25,7 @@
   import { parseBlocks, hiddenTarget } from './mail-markdown.js';
   import { citeNote, citeOpens, citeMark, citeUnmark } from './persona.js';
   import { replyFilename, copyText, downloadText } from './reply-export.js';
-  import { player, playReply } from './reply-player.svelte.js';
+  import { player, playReply, stopPlaying } from './reply-player.svelte.js';
 
   // `listen`: speak this reply aloud (the owner's ask, 2026-10-01) — `{ chat,
   // unlock, voice }`, or null where the call site does not offer it. The
@@ -38,6 +38,11 @@
   // copy buttons hit).
   const me = `reply-${Math.random().toString(36).slice(2)}`;
   const playing = $derived(player.id === me);
+  // Gone with its button: a remounted reply mints a new `me`, so a read left
+  // going here would have no Stop anywhere but a reload (review of #502).
+  onDestroy(() => {
+    if (player.id === me) stopPlaying();
+  });
   let raw = $state(false);
   // Which control just copied — 'reply' or the code block itself — for a
   // moment's "copied", or 'failed' when the phone refused. Raw, so a block

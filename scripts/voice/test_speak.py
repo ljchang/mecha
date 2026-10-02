@@ -17,8 +17,16 @@ from worker import MAX_SPEAK_CHARS, install, speak_request  # noqa: E402
 
 class Request(unittest.TestCase):
     def test_a_piece_in_a_listed_voice_is_taken(self):
-        self.assertEqual(speak_request({"text": " Hello. ", "voice": "ada"}, ["ada"]), ("Hello.", "ada", 1.0))
+        self.assertEqual(
+            speak_request({"text": " Hello. ", "voice": "ada"}, ["ada"], default_speed=1.0), ("Hello.", "ada", 1.0)
+        )
         self.assertEqual(speak_request({"text": "Hi", "speed": 1.2}, None, "default"), ("Hi", "default", 1.2))
+
+    def test_an_unset_speed_is_the_rate_a_call_speaks_at(self):
+        # Not 1.0: a box with MECHA_VOICE_TTS_SPEED=1.3 hears its calls at
+        # 1.3, and Listen must match (review of #502).
+        self.assertEqual(speak_request({"text": "Hi"}, None, "default", 1.3), ("Hi", "default", 1.3))
+        self.assertEqual(speak_request({"text": "Hi", "speed": None}, None, "default", 1.3)[2], 1.3)
 
     def test_refusals_say_why_and_never_default_a_named_voice(self):
         self.assertEqual(speak_request({"text": "Hi", "voice": "nobody"}, ["ada"])[:2], (None, 404))
