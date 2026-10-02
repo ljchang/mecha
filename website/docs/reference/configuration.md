@@ -574,14 +574,17 @@ Global file only. See [The web surface](/docs/features/interfaces/web) for insta
 Global file only: a project's `mecha.toml` and an experiment environment
 cannot set it, because `stt_url` is where your audio goes. For the same
 reason both addresses must be on this machine (`127.0.0.1`, `::1` or
-`localhost`): mecha refuses to start with one that isn't. Every key has a
+`localhost`), whether set here or by a `mecha serve` flag: mecha refuses to
+start with one that isn't. The voice worker reads its own addresses
+(`MECHA_VOICE_STT`, `MECHA_VOICE_TTS`, `MECHA_VOICE_LLM` in its environment),
+so a speech server moved to another port is set in both places. Every key has a
 default that matches the setup in [Voice](/docs/features/interfaces/voice),
 so set only what differs on your machine.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `stt_url` | string | `http://127.0.0.1:8992/v1` | The OpenAI-compatible speech-to-text server dictation sends audio to, up to its `/v1`. |
-| `offer_target` | string | `http://127.0.0.1:7860/api/offer` | Where the voice worker accepts calls; the web app's call button reaches it through `mecha serve`. Empty turns voice calls off, and a flag can't turn them back on for a run. `mecha serve --offer-target` overrides the address for one run. |
+| `offer_target` | string | `http://127.0.0.1:7860/api/offer` | Where the voice worker accepts calls; the web app's call button reaches it through `mecha serve`. Empty turns the proxy off, for a setup where the browser reaches the worker directly; calls stay on. `mecha serve --offer-target` overrides it for one run. |
 | `voice_port` | integer | `8990` | The loopback port `mecha serve` mounts the voice facade on, for the voice worker to call. `0` doesn't mount it. `mecha serve --voice-port` overrides it for one run. |
 | `voices_dir` | path | unset | Host directory of the TTS server's voice references (the directory its container mounts as `/voices`). Unset disables recording and cloning voices. |
 

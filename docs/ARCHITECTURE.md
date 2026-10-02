@@ -8771,7 +8771,9 @@ in five different ways. The design and its open steps are
   not the other. `[web] voices_dir` is applied *into* `[voice]` for one
   release — one runtime answer, as `[features] messages` is — and
   `[voice]`'s own value wins. The registry's dictation, calls and cloning
-  rows read `[voice]`, so `offer_target = ""` reads calls off.
+  rows read `[voice]`; `offer_target = ""` is no proxy, not calls off,
+  because the facade the worker calls mounts on the calls row (review of
+  #503, pass 3).
   `[voice] stt_url` is serve's alone: the voice worker reads its own
   `MECHA_VOICE_*` environment. Its two addresses are refused off this
   machine at load (`VoiceConfig::validate`), the second defence `[image]`

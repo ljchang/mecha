@@ -188,6 +188,16 @@ pub async fn execute(args: Args) -> Result<()> {
         None => config.voice.offer_target(),
     }
     .map(|t| Arc::new(t.to_string()));
+    // The flag meets the key's rule: a call's audio goes there, so it is on
+    // this machine however it was set (review of #503, pass 3).
+    if let Some(flag) = &args.offer_target {
+        mecha_core::config::VoiceConfig {
+            offer_target: Some(flag.clone()),
+            ..Default::default()
+        }
+        .validate()
+        .context("--offer-target")?;
+    }
     let voice_port = args.voice_port.unwrap_or(config.voice.voice_port());
     let state = WebState {
         owner_login: Arc::new(owner),
@@ -3569,6 +3579,57 @@ mod boundary_tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.ok() });
         (format!("http://{addr}/api/offer"), offers)
+    }
+
+    /// Dictation posts the clip to `[voice] stt_url` — the address that is
+    /// the reason `[voice]` is operator-only and loopback-checked — and
+    /// relays the server's answer. A stand-in speech server records what
+    /// reached it (review of #503, pass 3: nothing measured that the address
+    /// was read rather than the old literal).
+    #[tokio::test]
+    async fn dictation_posts_the_clip_to_the_configured_stt_url() {
+        let heard = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let got = heard.clone();
+        let stt = Router::new().route(
+            "/v1/audio/transcriptions",
+            axum::routing::post(move |body: axum::body::Bytes| {
+                let got = got.clone();
+                async move {
+                    *got.lock().unwrap() = body.to_vec();
+                    Json(serde_json::json!({"text": "heard you"}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, stt).await.ok() });
+
+        let state = WebState {
+            owner_login: Arc::new("owner@example.com".into()),
+            chat: None,
+            features_at_start: Arc::default(),
+            gate: Arc::default(),
+            review: Arc::new(review::ReviewState {
+                outbox_root: PathBuf::new(),
+                sessions_dir: None,
+            }),
+            offer_target: None,
+            voices_dir: None,
+            stt_url: Arc::new(format!("http://{addr}/v1/")),
+            library: library::state_for_tests(
+                std::env::temp_dir().join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
+            ),
+        };
+        let clip = b"RIFF-a-clip-of-audio".to_vec();
+        let (status, body) =
+            answer_of(dictate(State(state), axum::body::Bytes::from(clip.clone())).await).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        assert!(String::from_utf8_lossy(&body).contains("heard you"));
+        let sent = heard.lock().unwrap().clone();
+        assert!(
+            sent.windows(clip.len()).any(|w| w == clip.as_slice()),
+            "the clip did not reach the configured server"
+        );
     }
 
     async fn answer_of(resp: Response) -> (StatusCode, Vec<u8>) {

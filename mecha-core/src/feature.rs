@@ -1214,25 +1214,28 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         // `voice` stays on at port 0: `mecha voice-serve` is its own surface.
         // The sentence just must not claim a mount that does not happen
         // (review of #503).
+        // `voice` stays on at port 0: `mecha voice-serve` is its own surface,
+        // with its own `--port`. The sentence says only what `mecha serve`
+        // mounts (review of #503).
         Feature::Voice => on(match cfg.voice.voice_port() {
-            0 => {
-                "`mecha voice-serve` only — `mecha serve` mounts no facade ([voice] voice_port = 0)"
-                    .to_string()
-            }
-            port => {
-                format!("`mecha voice-serve`, and the facade `mecha serve` mounts on [voice] voice_port {port}")
-            }
+            0 => "`mecha voice-serve`; `mecha serve` mounts no facade ([voice] voice_port = 0)"
+                .to_string(),
+            port => format!(
+                "`mecha voice-serve`, and the facade `mecha serve` mounts on [voice] voice_port \
+                 {port}"
+            ),
         }),
         Feature::Dictate => on(format!("speech to text at {}", cfg.voice.stt_url())),
-        // Empty is how `[voice] offer_target` turns calls off: no worker to
-        // offer to, so the call button would refuse every tap.
-        Feature::Calls => match cfg.voice.offer_target() {
-            Some(target) => on(format!("offers to {target}")),
-            None => off(
-                "[voice] offer_target is empty",
-                "set [voice] offer_target to the voice worker's offer URL",
-            ),
-        },
+        // Empty is no proxy, not calls off: the browser can reach the
+        // worker's own door, which calls the facade `mecha serve` mounts —
+        // and that mount gates on this row, so reading empty as off would
+        // take the facade down too (review of #503, pass 3).
+        Feature::Calls => on(match cfg.voice.offer_target() {
+            Some(target) => format!("offers to {target}"),
+            None => "no proxy ([voice] offer_target is empty): the browser reaches the voice \
+                     worker directly"
+                .to_string(),
+        }),
         Feature::Cloning => match &cfg.voice.voices_dir {
             Some(dir) => on(dir.display().to_string()),
             None => off(
@@ -1758,8 +1761,8 @@ mod tests {
     }
 
     /// Voice's parts read `[voice]` (step 5): dictation names the address it
-    /// posts to, an empty `offer_target` turns calls off (no worker to offer
-    /// to), and cloning reads `[voice] voices_dir` — not `[web]`'s, which is
+    /// posts to, an empty `offer_target` reads "no proxy" with calls still on,
+    /// and cloning reads `[voice] voices_dir` — not `[web]`'s, which is
     /// applied into it at load.
     #[test]
     fn the_voice_parts_read_the_voice_table() {
@@ -1779,12 +1782,13 @@ mod tests {
             "{detail}"
         );
         assert_eq!(state(&facts(&cfg), Feature::Calls).word(), "on");
+        // Empty is no proxy, and calls stay on: the facade the worker calls
+        // mounts on this row (review of #503, pass 3).
         cfg.voice.offer_target = Some(" ".into());
-        let State::Off { reason, fix } = state(&facts(&cfg), Feature::Calls) else {
-            panic!("an empty offer target is calls off")
+        let State::On { detail } = state(&facts(&cfg), Feature::Calls) else {
+            panic!("an empty offer target is no proxy, not calls off")
         };
-        assert!(reason.contains("[voice] offer_target"), "{reason}");
-        assert!(fix.is_some_and(|f| f.contains("[voice] offer_target")));
+        assert!(detail.contains("no proxy"), "{detail}");
         let State::Off { reason, .. } = state(&facts(&cfg), Feature::Cloning) else {
             panic!("no voices_dir is cloning off")
         };
