@@ -18,6 +18,10 @@ The three legs are env-configurable base URLs (D6):
     MECHA_VOICE_TTS_EXAGGERATION  emotion intensity, 0.0-2.0
     MECHA_VOICE_TTS_CFG_WEIGHT    guidance weight, 0.0-1.0 (lower = more
                       expressive pacing; it moves *against* exaggeration)
+                      Both are sent only when the TTS lists them as
+                      honoured: the original Chatterbox does, Turbo (the
+                      default live model) drops them, and then they do
+                      nothing (see `TTS_EXAGGERATION`).
 """
 
 import asyncio
@@ -1022,11 +1026,15 @@ def tts_controls() -> frozenset | None:
     """The controls the TTS honours (see `_controls_cache`). An answer stands
     until a refresh; without one the TTS is asked, at most once per
     CONTROLS_RETRY_SECS. None is unknown, and sends nothing optional."""
-    if _voices_cache is None and (
+    # Keyed on the controls, not the voices: a server that listed voices but
+    # no controls (one that predates the list - which is what a worker
+    # restarted first, as the restart order says, finds) is unknown too,
+    # and must be asked again once the new server is up.
+    if _controls_cache is None and (
         _controls_asked_at is None
         or time.monotonic() - _controls_asked_at >= CONTROLS_RETRY_SECS
     ):
-        available_voices()
+        available_voices(refresh=True)
     return _controls_cache
 
 
@@ -1034,6 +1042,26 @@ def controls_label(controls: frozenset | None, name: str) -> str:
     """Whether `name` is honoured, for a log line: unknown is its own answer,
     never "no" - could not ask and does not honour are opposite findings."""
     return "unknown" if controls is None else str(name in controls)
+
+
+_noted_unsent_defaults = False
+
+
+def note_unsent_defaults(honoured: frozenset | None) -> None:
+    """Say once per process when the assistant's own TTS_EXAGGERATION /
+    TTS_CFG_WEIGHT are not reaching the voice - the persona path says so per
+    call, and the owner's environment deserves the same line, not silence."""
+    global _noted_unsent_defaults
+    if _noted_unsent_defaults or (honoured is not None and {"exaggeration", "cfg_weight"} <= honoured):
+        return
+    _noted_unsent_defaults = True
+    from loguru import logger
+
+    logger.info(
+        f"exaggeration={TTS_EXAGGERATION} / cfg_weight={TTS_CFG_WEIGHT} are not sent: "
+        + ("the TTS did not say which controls it honours" if honoured is None
+           else "the TTS's model does not honour them")
+    )
 
 
 async def reask_after_refusal(status: int | None) -> None:
@@ -2612,6 +2640,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
     # since refusing would end the call - but said, once, rather than
     # dropped where nobody looks (the server refuses it one level down).
     honoured = await asyncio.to_thread(tts_controls)
+    note_unsent_defaults(honoured)
     dropped = [
         k for k in ("exaggeration", "cfg_weight")
         if k in bound and (honoured is None or k not in honoured)
