@@ -8773,7 +8773,10 @@ in five different ways. The design and its open steps are
   `[voice]`'s own value wins. The registry's dictation, calls and cloning
   rows read `[voice]`, so `offer_target = ""` reads calls off.
   `[voice] stt_url` is serve's alone: the voice worker reads its own
-  `MECHA_VOICE_*` environment.
+  `MECHA_VOICE_*` environment. Its two addresses are refused off this
+  machine at load (`VoiceConfig::validate`), the second defence `[image]`
+  and `[documents]` carry beside the strip, since dictation's argument is
+  that the clip never leaves the box (review of #503).
 
 ### Adding a feature
 

@@ -1332,6 +1332,7 @@ impl Config {
     /// wrong zone with the only notice on a stderr nobody reads at 03:00. A
     /// name that does not parse is now a load error naming the fix.
     pub fn validate(&self) -> Result<()> {
+        self.voice.validate()?;
         // A rule that does not do what its author believes fails on every
         // start, not on the run that needed it. See `policy::ExecPolicy`.
         crate::policy::ExecPolicy::from_config(&self.rules, self.approval.strict_inline_eval)
@@ -1442,9 +1443,17 @@ impl Config {
         // model-written, from a conversation that may hold private data — to
         // whoever a cloned repository picked. `imagegen` also refuses a
         // non-loopback URL outright; this keeps a project from even trying.
+        if trust == LayerTrust::Project && layer.image.take().is_some() {
+            tracing::warn!(
+                "[image] in {} is ignored — image generation loads from the \
+                 global config only",
+                path.display()
+            );
+        }
         // `[voice]` names where the owner's audio goes and the cloning
         // directory; `[personas]` holds a safety setting. Both are the
-        // operator's, as `[image]` is (FEATURES-DESIGN.md §5).
+        // operator's (FEATURES-DESIGN.md §5); `[voice]`'s addresses are also
+        // refused off this machine at load (`VoiceConfig::validate`).
         if trust == LayerTrust::Project && layer.voice.take().is_some() {
             tracing::warn!(
                 "[voice] in {} is ignored — voice settings load from the global config only",
@@ -1454,13 +1463,6 @@ impl Config {
         if trust == LayerTrust::Project && layer.personas.take().is_some() {
             tracing::warn!(
                 "[personas] in {} is ignored — persona safety settings load from the \
-                 global config only",
-                path.display()
-            );
-        }
-        if trust == LayerTrust::Project && layer.image.take().is_some() {
-            tracing::warn!(
-                "[image] in {} is ignored — image generation loads from the \
                  global config only",
                 path.display()
             );
@@ -1832,6 +1834,34 @@ impl VoiceConfig {
 
     pub fn voice_port(&self) -> u16 {
         self.voice_port.unwrap_or(Self::DEFAULT_VOICE_PORT)
+    }
+
+    /// Both addresses must be on this machine, refused at load like
+    /// `[image] url` and `[documents] ocr_url` (review of #503): the owner's
+    /// audio goes to `stt_url` and a call's media to `offer_target`, and
+    /// dictation's whole argument is that the clip never leaves the box. An
+    /// empty `offer_target` stays legal — it turns calls off.
+    pub fn validate(&self) -> Result<()> {
+        let loopback = |key: &str, raw: &str, why: &str| -> Result<()> {
+            let url = reqwest::Url::parse(raw).with_context(|| format!("[voice] {key} `{raw}`"))?;
+            anyhow::ensure!(
+                matches!(url.scheme(), "http" | "https"),
+                "[voice] {key} `{raw}` must be http or https"
+            );
+            anyhow::ensure!(
+                crate::imagegen::is_loopback(&url),
+                "[voice] {key} `{raw}` is not on this machine — {why}, so it must be loopback \
+                 (127.0.0.1, ::1 or localhost)"
+            );
+            Ok(())
+        };
+        if let Some(raw) = self.stt_url.as_deref() {
+            loopback("stt_url", raw, "dictation sends your recorded audio to it")?;
+        }
+        if let Some(raw) = self.offer_target() {
+            loopback("offer_target", raw, "a voice call's audio goes to it")?;
+        }
+        Ok(())
     }
 }
 
@@ -2384,10 +2414,16 @@ impl ConfigLayer {
             // The one-release alias: into `[voice]`, unless this file also
             // sets `[voice] voices_dir`, which wins (applied below).
             if x.voices_dir.is_some() {
-                tracing::warn!(
-                    "[web] voices_dir has moved to [voice] voices_dir; the old key is read for \
-                     one release"
-                );
+                // Once per process: a long-lived `serve` re-reads the global
+                // file every turn (`Follower::follow`), and the owner's own
+                // file is the one with the old key (review of #503).
+                static MOVED: std::sync::Once = std::sync::Once::new();
+                MOVED.call_once(|| {
+                    tracing::warn!(
+                        "[web] voices_dir has moved to [voice] voices_dir; the old key is read \
+                         for one release"
+                    )
+                });
                 cfg.voice.voices_dir = x.voices_dir;
             }
         }
@@ -2977,13 +3013,16 @@ mod tests {
 
         let set = file(
             "set.toml",
-            "[voice]\nstt_url = \"http://stt.example:9/v1\"\noffer_target = \"\"\n\
+            "[voice]\nstt_url = \"http://127.0.0.1:9/v1\"\noffer_target = \"\"\n\
              voice_port = 0\nvoices_dir = \"/srv/voices\"\n\
              [personas]\ncrisis_cooldown_minutes = 0\n",
         );
         let mut global = Config::default();
         global.merge_file(&set, LayerTrust::Global).unwrap();
-        assert_eq!(global.voice.stt_url(), "http://stt.example:9/v1");
+        assert_eq!(global.voice.stt_url(), "http://127.0.0.1:9/v1");
+        global
+            .validate()
+            .expect("loopback, and an empty offer target, are fine");
         assert_eq!(global.voice.offer_target(), None, "empty turns calls off");
         assert_eq!(global.voice.voice_port(), 0);
         assert_eq!(
@@ -3025,6 +3064,31 @@ mod tests {
             Some(Path::new("/srv/new"))
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `[voice]`'s addresses are refused off this machine at load, as
+    /// `[image] url` and `[documents] ocr_url` are (review of #503): the
+    /// owner's audio goes to them.
+    #[test]
+    fn voice_addresses_off_this_machine_are_refused() {
+        for (key, raw) in [
+            ("stt_url", "http://stt.example:8992/v1"),
+            ("stt_url", "ftp://127.0.0.1/v1"),
+            ("offer_target", "http://10.0.0.5:7860/api/offer"),
+        ] {
+            let mut cfg = Config::default();
+            match key {
+                "stt_url" => cfg.voice.stt_url = Some(raw.into()),
+                _ => cfg.voice.offer_target = Some(raw.into()),
+            }
+            let err = format!("{:#}", cfg.validate().unwrap_err());
+            assert!(err.contains(&format!("[voice] {key}")), "{err}");
+        }
+        for ok in ["http://localhost:8992/v1", "http://[::1]:8992/v1"] {
+            let mut cfg = Config::default();
+            cfg.voice.stt_url = Some(ok.into());
+            cfg.validate().unwrap_or_else(|e| panic!("{ok}: {e:#}"));
+        }
     }
 
     #[test]

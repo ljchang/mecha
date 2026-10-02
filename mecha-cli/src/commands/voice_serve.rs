@@ -8,7 +8,7 @@ use anyhow::Result;
 pub struct Args {
     /// Port on 127.0.0.1. The bind address is deliberately not a flag:
     /// this surface is loopback-only (docs/VOICE-RESEARCH.md, D2).
-    #[arg(long, default_value_t = 8990)]
+    #[arg(long, default_value_t = mecha_core::config::VoiceConfig::DEFAULT_VOICE_PORT)]
     pub port: u16,
 
     /// Require this bearer token on every request. The loopback bind is
