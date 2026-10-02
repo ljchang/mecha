@@ -962,6 +962,13 @@ the owner pins, corrects, forgets, shares a user fact with everyone or a
 group, and approves candidates. A correction invalidates the old row and adds
 an owner-origin one; only forgetting deletes.
 
+*As built (2026-10-02):* the web page is the editor's **Memories** tab
+(`PersonaMemory.svelte`), over `GET`/`POST /api/personas/{name}/memory`
+(`PersonaChats::memory`, `memory_act`). What waits on the owner comes
+first; each record shows the day it was said. Withdrawn rows are not
+listed, and only this persona's own shared copies are shown or unshared.
+Plots of use over time wait for the usage log (§9.13).
+
 ### 9.9 Forget, delete, lock
 
 - **Deleting a chat** (`mecha_core::forget`) deletes every row whose
