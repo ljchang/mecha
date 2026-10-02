@@ -868,3 +868,43 @@ fn recent_means_recently_said_not_recently_written() {
     let eps = m.episodes(Filter::Recallable).unwrap();
     assert_eq!(eps[0].summary, "The newer talk.", "{eps:?}");
 }
+
+#[test]
+fn a_fact_said_long_ago_but_written_tonight_does_not_crowd_out_a_newer_one() {
+    let w = World::new(&["mara"]);
+    let m = w.memory("mara");
+    // Written newer-said first, so the write order is the wrong order.
+    for (chat, text) in [
+        ("20260920T150000-aaaaaaaa", "Mara keeps a tide clock."),
+        (
+            "20260910T150000-bbbbbbbb",
+            "Mara once lived by a lighthouse.",
+        ),
+    ] {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        m.add_fact(
+            Table::Persona,
+            NewFact {
+                source: Source {
+                    chat: chat.into(),
+                    from: 0,
+                    to: 1,
+                },
+                ..fact(text, Kind::Stated, Origin::ModelClean)
+            },
+        )
+        .unwrap();
+    }
+    let facts = m.facts(Table::Persona, Filter::Recallable).unwrap();
+    assert_eq!(facts[0].text, "Mara keeps a tide clock.", "{facts:?}");
+    let text = chat_start(&w.store(), &w.persona("mara"), Some(chrono_tz::UTC))
+        .unwrap()
+        .block
+        .unwrap()
+        .text;
+    let (newer, older) = (
+        text.find("tide clock").unwrap(),
+        text.find("lighthouse").unwrap(),
+    );
+    assert!(newer < older, "the newer-said first: {text}");
+}
