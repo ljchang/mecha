@@ -44,7 +44,9 @@ queue=$(curl -s --max-time 5 "$url/queue") || exit 0
 python3 -c '
 import json, sys
 q = json.loads(sys.argv[1])
-sys.exit(0 if not q.get("queue_running") and not q.get("queue_pending") else 1)
+# The keys are required: a reply that parses but is not a queue (a proxy'"'"'s
+# error envelope, a changed API) is unknown, and unknown is busy.
+sys.exit(0 if not q["queue_running"] and not q["queue_pending"] else 1)
 ' "$queue" 2>/dev/null || exit 0
 
 # An open connection is a client mid-call: mecha polls on a keep-alive

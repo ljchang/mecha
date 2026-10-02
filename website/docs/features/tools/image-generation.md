@@ -147,14 +147,15 @@ versions of them) it used.
 - **Starting without memory to spare.** On machines where the GPU shares
   system memory, a generation competes with everything else running, and
   running out takes more than the image down. Before each picture the tool
-  asks the image server whether it already holds the model. If it doesn't,
-  below `min_available_mb` (19 GB) the tool declines and says why; if it does,
-  12 GB is enough, since most of the cost is already paid; try again once a large build or
-  another model has finished. After ten idle minutes it asks the server to
-  unload its models. On a machine running the `comfyui-idle-reset` timer
-  (`scripts/comfyui/install.sh`), the server is also restarted after ten idle
-  minutes, which returns nearly all of its memory, and a picture asked for
-  during a restart waits for it instead of failing.
+  asks the image server whether it already holds the model. If it does,
+  12 GB free is enough, since most of the cost is already paid; if it
+  doesn't, the tool needs `min_available_mb` (19 GB). Below that it declines
+  and says why; try again once a large build or another model has finished.
+  After ten idle minutes it asks the server to unload its models. On a
+  machine running the `comfyui-idle-reset` timer (`scripts/comfyui/install.sh`),
+  the server is also restarted after ten idle minutes, which returns nearly
+  all of its memory, and a picture asked for during a restart waits for it
+  instead of failing.
 - **Leaving copies on the image server.** The server's record of each job
   (the prompt, the file names) is deleted when the job ends, however it ends.
   Set `server_temp_dir` and the uploaded pictures and the server's preview

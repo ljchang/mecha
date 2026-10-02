@@ -110,6 +110,9 @@ class IdleReset(unittest.TestCase):
         self.assertFalse(self.restarted(calls))
         calls = self.run_script(queue="not json")
         self.assertFalse(self.restarted(calls))
+        # Parses, but is not a queue: unknown, so busy.
+        calls = self.run_script(queue="{}")
+        self.assertFalse(self.restarted(calls))
 
     def test_an_open_connection_is_a_client_mid_call(self):
         self.assertFalse(self.restarted(self.run_script(FAKE_CONNECTED="1")))
