@@ -1255,8 +1255,10 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    first connection to a socket-activated server *is* its cold start: the
    systemd unit state for the on-demand servers (OCR, embeddings), whose
    socket unit existing and being enabled is enough; `served_props` /
-   `GET /models` for the router; ComfyUI's `/system_stats`, carrying §4.3's
-   "to be confirmed load-free" caveat until 7e confirms it; the voice
+   `GET /models` for the router; ComfyUI's `/system_stats`, which §4.3
+   requires to be confirmed load-free before step 6 relies on it (6b's
+   `--probe` is the first reader; 7e re-confirms it on the installed
+   ComfyUI); the voice
    servers' unit state. **An idle-stopped sidecar is provided, never
    absent** — a probe that read it as absent would plan an install over it,
    the llama-embed incident of 2026-08-19 that `llama-ocr.socket`'s header
@@ -1271,7 +1273,10 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    someone else's install. The third is what covers a stopped sidecar with no unit
    (ComfyUI here) and one with no probe at all (Chatterbox, a container).
    Models are the same: a recommended model the hub resolver (item 6)
-   already finds is priced at zero in the plan's download total. A file mecha
+   already finds **and whose sha256 matches the row's** is priced at zero in
+   the plan's download total; one that is present but does not match — a
+   truncated or different file — is neither provided nor handed to a
+   launcher, and the plan offers to fetch it. A file mecha
    did not write is never overwritten. On this machine every sidecar is
    provided, so setup installs nothing here. Moving this box onto managed
    copies is a separate, explicit step, later, and its first target is named:
@@ -1331,11 +1336,20 @@ pin that sits:
   feature id), then **measures before it promotes**. The measurement loads
   another engine's copy of the chat model, so in `hold.rs`'s terms it **is a
   switch**. It measures **one engine at a time** — the old engine, stop, the
-  new one, stop — so it never holds two copies of the chat model (two at
-  ~28.5 GB each is an out-of-memory failure on every tier below 128 GB),
-  and it refuses up front, with the number, when available memory cannot
-  hold the largest single step: the chat model plus whichever smoke-test
-  models are installed (§6's sum, applied to the measurement). As a switch,
+  new one, stop — and, since the router keeps its model resident from boot
+  (`load-on-startup`, and no idle eviction), it **stops the router first**,
+  once it owns the switch and has seen no run live, and restarts it at the
+  end on whichever engine won. So it never holds two copies of the chat
+  model (two at ~28.5 GB each is an out-of-memory failure on every tier
+  below 128 GB), and it refuses up front, with the number, when available
+  memory cannot hold the largest single step: the chat model plus whichever
+  smoke-test models are installed (§6's sum, applied to the measurement),
+  counting the router's resident copy too if it cannot be stopped.
+  **Every leg runs against a server the gate starts from the engine under
+  test, on a port of its own — never :8080, :8081 or :8085**, which reach
+  the live router and the socket-held backends on whatever engine they
+  already run, so a pass there would grade the predecessor and credit the
+  candidate. As a switch,
   it writes one with `begin_switch` — which makes runs that start
   meanwhile wait — and then checks `live()`. A hold alone would not do:
   `try_hold` is not exclusive and returns `Ok` beside other runs, so a
