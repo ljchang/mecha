@@ -35,7 +35,12 @@
 > voices_dir` is a one-release alias, and the two serve flags override per
 > run), and `[personas] crisis_cooldown_minutes` is fully the owner's to set
 > (the owner's ruling — the cooldown is the window in which a further hit
-> does *not* re-pause, so longer is weaker). Steps 6–8 are unbuilt. The
+> does *not* re-pause, so longer is weaker). **Step 6 is split in two**: 6a — `hardware.md` gains F5's separate-GPU
+column and a *Beside the chat model* table of every feature's model, cost,
+residency and evidence, measured on the GB10 on 2026-10-02, and the graph
+page names the embedder mecha-graph uses — is built; 6b, the
+`Recommendation` rows, `--probe` and the test holding the page to them, is
+next, and parses that table. Steps 7–8 are unbuilt. The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -934,8 +939,11 @@ Rules:
   that does not fit the card and fail an OCR server that fits host RAM with
   room to spare (found on review of #435). This is why
   `residency` is on the row: an on-demand OCR server costs nothing until a
-  PDF arrives; an image generation borrows ~15 GB for its duration (and
-  `[image] min_available_mb` already refuses one that would not fit).
+  PDF arrives. Image generation was first written here as borrowing ~15 GB
+  for its duration; measured on 2026-10-02 it is **resident** — ComfyUI held
+  11.9 GiB nine hours after its last picture, and its ~15 GB peak sits ~3 GB
+  above that (`[image] min_available_mb` refuses a start that would not fit).
+  The row says what the server does, not what the model needs.
 - **`hardware.md` is generated from the rows, or checked against them.** A
   test that fails when the page and the registry disagree ends the drift
   that §1.3 found.

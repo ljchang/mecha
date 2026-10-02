@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The hardware page covers a separate GPU, and every model beside the
+  chat model.** Each memory tier now has two columns — unified memory, and a
+  graphics card with system RAM beside it — and a new *Beside the chat model*
+  table gives what embeddings, OCR, layout, image generation and the three
+  voice models cost on the GB10, whether each holds its memory always, on
+  demand or per request, and where every number comes from. Only measured
+  cells say measured.
 - **A persona's voice is picked in its settings.** The settings form has a
   Voice field listing the voices the voice worker has, so `voice = "…"` no
   longer has to be typed into `persona.toml`. A save is checked against the
@@ -652,6 +659,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The knowledge-graph page names the embedder mecha-graph actually uses**:
+  `harrier-oss-v1-0.6b` on a llama-server at `:8081`, installed by
+  `scripts/llama/install-embed.sh` — not ollama with `nomic-embed-text`,
+  which mecha-graph dropped in 0.1.1.
 - **A persona's earlier chats no longer vanish after a restart.** An unlock
   lives in `mecha serve`'s memory, so a restart ended it while the page still
   showed the persona, and its earlier chats came back as an empty list. The
