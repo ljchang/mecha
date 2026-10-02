@@ -74,8 +74,10 @@ first real night. What is open, verified against `a1645e96`:
 - **#498 (`memory_search` / `memory_read`) is merged as `c496bb99` and not
   installed** (`strings ~/.cargo/bin/mecha | grep -cF "Read a remembered
   conversation in full"` → 0 on 2026-10-02). It is binary-only, handed to
-  mecha-d7. Installing it adds two tools to every persona chat whose memory
-  is on, from the chat's next pinned version.
+  mecha-d7. Installing it adds `memory_search` to every persona chat whose
+  memory is on, and `memory_read` where `episodic` is on, from each chat's
+  next resume — registration reads the pinned version's `[memory]`, so no
+  re-pin is needed.
 - **Meaning-based recall needs `[documents]` switched on**: it reuses that
   feature's embedder, and with Documents off recall is by words alone. It
   also stays words-only until the nightly has embedded at least half the
