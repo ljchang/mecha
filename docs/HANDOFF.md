@@ -117,17 +117,18 @@ against `a51e1c01`:
   - `correct` on an inferred fact keeps `kind = Inferred` with
     `origin = Owner`.
   - **`answers = "files"` and the memory tools: ruled C, built (#505,
-    `a51e1c01`), installed with `90833a12` (2026-10-02, ~03:25Z).** HISTORY has it under 2026-10-02. It is
-    binary-only; checked: `strings ~/.cargo/bin/mecha | grep -cF "you
-    answer from your files, not from what a tool brought back"` → 1, and
-    the same in the running serve's `/proc/<pid>/exe` → 1. C is not a seal (#505's review, pass 1). Episode summaries
-    are written from `writer::render`, which keeps tool results, clipped.
-    `memory_search` and the recall folds return those summaries with no
-    `answers` gate, so a files-only persona can still read a paraphrase of
-    old tool output. Only `memory_read`'s verbatim transcript is filtered,
-    and the taint still marks it. A stricter bar, a files-only persona
-    skipping summaries of untrusted origin, is a separate owner decision,
-    not yet asked. #505's pass-2 minors:
+    `a51e1c01`), installed with `90833a12` (2026-10-02, ~03:25Z).** HISTORY
+    has it under 2026-10-02. It is binary-only; checked: `strings
+    ~/.cargo/bin/mecha | grep -cF "you answer from your files, not from what
+    a tool brought back"` → 1, and the same in the running serve's
+    `/proc/<pid>/exe` → 1. C is not a seal (#505's review, pass 1). Episode
+    summaries are written from `writer::render`, which keeps tool results,
+    clipped. `memory_search` and the recall folds return those summaries
+    with no `answers` gate, so a files-only persona can still read a
+    paraphrase of old tool output. Only `memory_read`'s verbatim transcript
+    is filtered, and the taint still marks it. A stricter bar, a files-only
+    persona skipping summaries of untrusted origin, is a separate owner
+    decision, not yet asked. #505's pass-2 minors:
     - the exemption is recorded in prose but not pinned by a test:
       `offers_search` and `offers_read` read only `s.memory`, so a later
       `answers` gate would pass the suite;

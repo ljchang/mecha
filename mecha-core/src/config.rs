@@ -1855,7 +1855,7 @@ impl VoiceConfig {
     /// `[image] url` and `[documents] ocr_url` (review of #503): the owner's
     /// audio goes to `stt_url` and a call's media to `offer_target`, and
     /// dictation's whole argument is that the clip never leaves the box. An
-    /// empty `offer_target` stays legal — it turns the proxy off.
+    /// empty `offer_target` stays legal — serve then reaches no voice worker.
     pub fn validate(&self) -> Result<()> {
         let loopback = |key: &str, raw: &str, why: &str| -> Result<()> {
             let url = reqwest::Url::parse(raw).with_context(|| format!("[voice] {key} `{raw}`"))?;
@@ -3038,7 +3038,11 @@ mod tests {
         global
             .validate()
             .expect("loopback, and an empty offer target, are fine");
-        assert_eq!(global.voice.offer_target(), None, "empty turns calls off");
+        assert_eq!(
+            global.voice.offer_target(),
+            None,
+            "empty reaches no voice worker"
+        );
         assert_eq!(global.voice.voice_port(), 0);
         assert_eq!(
             global.voice.voices_dir.as_deref(),

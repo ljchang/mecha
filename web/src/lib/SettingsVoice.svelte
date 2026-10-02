@@ -44,7 +44,7 @@
 {#if voice === null}
   <div class="status"><span class="label">worker</span><span class="val">—</span></div>
 {:else if voice.offer_target === null}
-  <div class="status"><span class="label">worker</span><span class="val">not wired on this serve</span></div>
+  <div class="status"><span class="label">worker</span><span class="val">not reached: <code>[voice] offer_target</code> is empty</span></div>
 {:else}
   <div class="status">
     <span class="label">worker</span>

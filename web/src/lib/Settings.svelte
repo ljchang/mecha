@@ -100,7 +100,7 @@
 
   const voiceLine = $derived.by(() => {
     if (voice === null) return { text: '—' };
-    if (voice.offer_target === null) return { text: 'not wired on this serve' };
+    if (voice.offer_target === null) return { text: 'worker not reached ([voice] offer_target is empty)' };
     const worker = voice.worker_reachable ? 'worker up' : 'worker unreachable';
     if (voice.cloned === null || voice.cloned === undefined)
       return { text: `${worker} · cloning not configured`, bad: !voice.worker_reachable };
