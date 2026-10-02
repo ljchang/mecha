@@ -2091,6 +2091,11 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
                         },
                     )
                     .help(match &c.voices.unread {
+                        // Honest — the worker really has none — but it reads
+                        // like a misconfigured voices directory, so say it.
+                        None if c.voices.names.is_empty() => {
+                            "The voice worker lists no voices.".to_string()
+                        }
                         None => "How it sounds on a call. Each one plays in Library → Voices."
                             .to_string(),
                         Some(why) => format!(
