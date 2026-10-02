@@ -21,8 +21,9 @@ pub struct Args {
     /// on / off / blocked / unready / unknown it is.
     #[arg(long)]
     pub json: bool,
-    /// Add up the memory of every model the shown features need, against
-    /// this machine's (the card's and the host's, if it has a card).
+    /// Add up the memory of every model the shown features need — any not
+    /// off or blocked, so one switched on but not yet set up counts too —
+    /// against this machine's (the card's and the host's, if it has a card).
     /// Reads `/proc/meminfo` and `nvidia-smi`; asks no server.
     #[arg(long)]
     pub probe: bool,
