@@ -560,8 +560,9 @@ workspace**. Six decisions, each a bug if undone:
   what the server already holds** (`memory_need_mb`), because memory it holds
   is already gone from the available pool: a server that has loaded nothing
   since it started, or whose `/system_stats` cannot be read, is asked for the
-  whole `min_available_mb`; one that has loaded the model is asked for
-  `LOADED_NEED_MB` (12 GB). ComfyUI's `torch_vram_total` is 0 in a fresh
+  whole `min_available_mb`; one that has loaded the model is asked for that
+  figure less `LOAD_COST_MB` (~7 GB, what loading cost; 12 GB at the default),
+  so an operator's added margin is kept. ComfyUI's `torch_vram_total` is 0 in a fresh
   process and stays above 0 through a `/free`, so it cannot tell a server
   still holding the model (~2 GB more) from a freed one (~9-12 GB more to
   reload), and the larger is asked.
@@ -577,9 +578,11 @@ workspace**. Six decisions, each a bug if undone:
   dies with it: a `serve` restarted five minutes after the last picture left
   12.2 GB held for ten hours (2026-10-02), and on unified memory `/free` moves
   the weights into the server's RSS (6.9–8.9 GB) rather than releasing them.
-  The first request of a job waits up to 90 s for a server that is not
-  answering yet (`ComfyUi::await_server`), so a picture asked for during a
-  restart waits instead of reporting the server down.
+  The first request of a job waits for a server that is not answering yet
+  (`ComfyUi::await_server`), so a picture asked for during a restart waits
+  instead of reporting the server down: up to 90 s for a server this process
+  has had an answer from (it is restarting), 45 s for one it never has (the
+  slowest start measured was 40 s; a stopped service is reported after that).
 - **Read-only, by the owner's ruling (2026-09-25).** Web chats start
   read-only, and a picture should be one request in any of them. The tool
   changes nothing of the owner's: it creates new files under `images/` in the

@@ -682,16 +682,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A picture asked for while the image server restarts waits for it.** The
-  first request of a job now waits up to 90 seconds for a server that is not
-  answering yet, and stops at once if the picture is cancelled. Before, it
-  failed straight away with "Is the image server running?".
+  first request of a job now waits for a server that is not answering yet:
+  up to 90 seconds when this process has reached it before (it is
+  restarting), 45 when it never has. A cancel stops the wait at once. Before,
+  it failed straight away with "Is the image server running?", and a
+  genuinely stopped server is now reported after that wait.
 - **The image tool's memory check matches what a generation costs.** It now
   asks the image server what it holds first. A server that has loaded
   nothing (just restarted, or unreadable) needs the full `min_available_mb`,
   now 19 GB, up from 16. A generation from an idle server needs ~18.5 GB above
   its idle footprint, and the old figure counted only the GPU side. A server
-  that has already loaded the model needs 12 GB, so a second picture soon
-  after the first is no longer refused for memory it would not use.
+  that has already loaded the model needs ~7 GB less (12 GB at the default),
+  so a second picture soon after the first is no longer refused for memory
+  it would not use, and a raised `min_available_mb` keeps its margin.
 
 - **A persona's memories are dated by when they were said.** Everything a
   persona remembered was dated by the night it was written, so something you

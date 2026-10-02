@@ -21,6 +21,14 @@ if [ "${1:-}" = "--remove" ]; then
   exit 0
 fi
 
+# The timer restarts `comfyui.service` as a *user* unit. On a box where
+# ComfyUI is a system service it would say "not running" every minute, the
+# same words as a stopped server, so a wrong install is refused here instead.
+systemctl --user cat comfyui.service >/dev/null 2>&1 || {
+  echo "comfyui.service is not a user unit here; the idle reset restarts it with systemctl --user" >&2
+  exit 1
+}
+
 mkdir -p "$bin" "$units"
 install -m 0755 "$here/comfyui-idle-reset" "$bin/comfyui-idle-reset"
 install -m 0644 "$here/mecha-comfyui-idle-reset.service" "$units/mecha-comfyui-idle-reset.service"

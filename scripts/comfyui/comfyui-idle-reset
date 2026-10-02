@@ -11,6 +11,13 @@
 # here - so a server mecha has already /free'd (unload_after_secs) still
 # reads as holding memory and is still restarted.
 #
+# It acts only on a process that has served a picture since it started: one
+# that never has holds no model, whatever its baseline RSS, and restarting it
+# would loop a minute at a time once that baseline crossed the floor.
+#
+# An open ComfyUI browser tab holds a websocket on its port for as long as it
+# is open, which reads as a client mid-call: the reset waits while one is.
+#
 # Below COMFY_MIN_FREE_MB of MemFree it sends /free instead: a new CUDA
 # context failed to come up twice with ~1 GB free (and 35 GB "available"),
 # and a running process keeps its context through a /free.
@@ -48,6 +55,15 @@ rss=$(awk '/^VmRSS:/ {print int($2/1024)}' "$proc/$pid/status" 2>/dev/null)
 if [ -z "$rss" ]; then say "cannot read $proc/$pid/status, so what $unit holds is unknown"; exit 1; fi
 held=$((gpu + rss))
 if [ "$held" -lt "$held_mib" ]; then say "holds ${held} MiB (gpu ${gpu} + rss ${rss}), under ${held_mib}: nothing to release"; exit 0; fi
+
+# Served nothing since it started: no model is loaded, so there is nothing to
+# release - and this is the brake on a restart loop. The invocation id is
+# systemd's own mark for this run of the unit.
+inv=$(systemctl --user show "$unit" -p InvocationID --value 2>/dev/null)
+if [ -z "$inv" ]; then say "cannot read $unit's invocation id, so whether it has served anything is unknown"; exit 1; fi
+served=$(journalctl --user "_SYSTEMD_INVOCATION_ID=$inv" --no-pager -o cat 2>/dev/null) \
+  || { say "cannot read $unit's journal for this run, so whether it has served anything is unknown"; exit 1; }
+if ! grep -qE 'got prompt|Prompt executed' <<<"$served"; then say "holds ${held} MiB but has served nothing since it started: nothing to release"; exit 0; fi
 
 # Busy, or unreadable: leave it. Unknown is never idle. An unreachable queue
 # is the server's own state (often a restart in progress), so it is said,
