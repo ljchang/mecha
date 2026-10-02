@@ -77,7 +77,7 @@ Only one cell is measured.
 | 16 GB | An 8B at Q4, or a 14B at Q4 with little else running; 32k context. *Arithmetic* | A 14B at Q4 on the card with room for its context; OCR, embeddings and speech to text in system RAM. *Arithmetic* |
 | 32 GB | A 14B at Q4–Q6, or a ~27–35B MoE at Q4 with modest context. *Arithmetic* | A 35B MoE at Q4 with 128k context (~24 GB) on the card. *Arithmetic* |
 | 64 GB | A 30–35B MoE at Q4–Q5 with 128k–256k context, and an embeddings server. *Arithmetic* | The same model and context, with image generation's ~15 GB beside it on the card. *Arithmetic* |
-| 128 GB | A 35B-class MoE at Q4, four slots of 262k, and every feature's model resident at once. *Measured — DGX Spark (GB10)* | The 128 GB unified row, with the smaller models moved to system RAM. *Arithmetic* |
+| 128 GB | A 35B-class MoE at Q4 with four slots of 262k, *Measured — DGX Spark (GB10)*; every other feature's model beside it, *Arithmetic* (the sum under [Beside the chat model](#beside-the-chat-model)) | The 128 GB unified row, with the smaller models moved to system RAM. *Arithmetic* |
 
 ### 16 GB
 
@@ -137,7 +137,6 @@ cache on top of the single-slot reservation below:
 | KV cache, f16 | 22.0 KiB/token |
 | Vision projector | ~0.9 GB |
 | Total reservation, one 262,144-token slot (`-c 262144 -np 1`) | ~28.5 GB |
-| Total reservation, four slots (`-c 1048576 -np 4`), measured 2026-10-02 | ~41.5 GB |
 | Generation, 1k prompt | ~92 tok/s |
 | Generation, 108k prompt | ~63 tok/s |
 | Prefill | ~1,570 tok/s |
@@ -150,28 +149,38 @@ own, each in its own server, and the question is never whether one fits on
 its own — it is whether it fits **beside the chat model and everything else
 you have switched on**.
 
-What each costs on the GB10 above, read from the running servers (`nvidia-smi`
-for GPU memory, `ps` for the rest, both in GiB). *How it
+What each costs on the GB10 above, read from the running servers —
+`nvidia-smi` for GPU memory, `ps` for the rest — in **GiB**, the base both
+tools report. The three figures carried from earlier measurements (OCR,
+layout, and image generation's peak) were written down in GB without saying
+which; the two bases differ by 7%. *How it
 holds memory* is the part that decides the sum: **resident** holds it from
 start to stop, **on demand** holds nothing until the first request and frees
 it after ten idle minutes, and **per request** holds it only while working.
 
-| Feature | Model | Runs on | How it holds memory | Cost on the GB10 | Evidence |
+| Feature | Model | Runs on | How it holds memory | Cost on the GB10 (GiB) | Evidence |
 |---|---|---|---|---|---|
-| Chat — every feature | Qwen3.6-35B-A3B Q4_K_M, with its vision projector | GPU | Resident | 41.5 GB at four 262k slots | Measured 2026-10-02 |
-| `graph` — embeddings; persona file search | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.1 GB loaded | Measured 2026-10-02 |
-| `documents` — OCR | PaddleOCR-VL 1.6 (GGUF and projector) | GPU | On demand | 2.6 GB loaded | Measured 2026-09-29 |
-| `documents` — layout | PP-DocLayoutV3 (ONNX) | CPU | Per request | 1.1 GB peak | Measured 2026-09-29 |
-| `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | Resident — ComfyUI keeps its models between pictures | ~15 GB peak at 1024²; 11.9 GB held while idle | Measured 2026-09-25 (peak), 2026-10-02 (idle) |
-| `voice` — speech to text | Parakeet TDT 0.6B v3 int8 | CPU | Resident | 0.7 GB | Measured 2026-10-02 |
-| `voice` — speech | Chatterbox Turbo | GPU | Resident | 5.4 GB, and 2.5 GB of system memory | Measured 2026-10-02 |
-| `voice` — turn detection | Silero VAD and smart-turn v3, in the voice worker | CPU | Resident | 0.5 GB | Measured 2026-10-02 |
+| Chat — every feature | Qwen3.6-35B-A3B Q4_K_M, with its vision projector | GPU | Resident | 41.5 at four 262k slots — the server process's GPU memory; the router's prompt cache is host memory on top (below) | Measured 2026-10-02 |
+| `graph` — embeddings; persona file search | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.1 loaded | Measured 2026-10-02 |
+| `documents` — OCR | PaddleOCR-VL 1.6 (GGUF and projector) | GPU | On demand | 2.6 loaded | Measured 2026-09-29 |
+| `documents` — layout | PP-DocLayoutV3 (ONNX) | CPU | Per request | 1.1 peak | Measured 2026-09-29 |
+| `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | Resident — ComfyUI keeps its models between pictures | ~15 peak at 1024²; 11.9 held while idle | Measured 2026-09-25 (peak), 2026-10-02 (idle) |
+| `voice` — speech to text | Parakeet TDT 0.6B v3 int8 | CPU | Resident | 0.7 | Measured 2026-10-02 |
+| `voice` — speech | Chatterbox Turbo | GPU | Resident | 5.4, and 2.5 of system memory | Measured 2026-10-02 |
+| `voice` — turn detection | Silero VAD and smart-turn v3, in the voice worker | CPU | Resident | 0.5 | Measured 2026-10-02 |
 
-Everything in that table loaded at once is about 66 GB of GPU allocations
-and 5 GB more for the processes around them — 71 GB of the GB10's 121 GB
-usable, before the operating system. Image generation's peak sits ~3 GB
-above its idle figure, and by default `image_generate` refuses to start with
-less than 16 GB available (`[image] min_available_mb`), so on a smaller
+Added up — which is *arithmetic*, since nobody has seen every row loaded at
+the same moment — that is about 67 GiB of GPU memory with image generation
+idle (70 at its peak), and about 6 GiB of host memory for the processes
+around them. **The router's prompt cache comes on top**: `cache-ram` lets it
+keep up to 16 GiB of saved prompt prefixes in host memory
+(`scripts/start-router.sh`). On a unified pool all of it is the same memory —
+73 GiB, and up to 89 GiB with a full prompt cache, of the GB10's 121 GiB
+usable, before the operating system.
+
+Image generation's peak sits ~3 GiB above its idle figure, and by default
+`image_generate` refuses to start with less than 16 GiB available (`[image]
+min_available_mb`), so on a smaller
 unified machine it refuses while the chat model is loaded rather than taking
 the machine down.
 

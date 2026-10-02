@@ -38,7 +38,8 @@ model and the chat model's port must not answer embedding requests.
 the port is held from boot and the model loads on the first request and
 stops after ten idle minutes. What it costs is under [Beside the chat
 model](/docs/getting-started/hardware#beside-the-chat-model).
-`MECHA_GRAPH_EMBED_URL` points elsewhere; everything else is
+To point it elsewhere, set `[llm] embed_url` in mecha-graph's config or
+`MECHA_GRAPH_EMBED_URL`; everything else is
 self-contained. To see it work with no
 personal data at all, a checkout's `eval/synthetic/run.sh` builds a
 throwaway graph from a fictional corpus and grades 24 retrieval queries
