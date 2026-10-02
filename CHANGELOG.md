@@ -659,6 +659,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A persona's memories are dated by when they were said.** Everything a
+  persona remembered was dated by the night it was written, so something you
+  mentioned on Tuesday read as Friday's news. Memories now carry the day of
+  the conversation they came from, in your timezone, and "recent" means
+  recently said.
+
 - **The knowledge-graph page names the embedder mecha-graph actually uses**:
   `harrier-oss-v1-0.6b` on a llama-server at `:8081`, launched by
   `scripts/llama/mecha-embed-server` — not ollama with `nomic-embed-text`,
