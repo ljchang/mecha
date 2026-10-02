@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Listen to a reply.** Under each finished reply, beside Copy and Download,
+  Listen reads it aloud: a persona's in its own voice, the assistant's in the
+  voice you chose in Settings → Voice. Code, links and formatting are not read
+  out; a code block is said to be there. It starts after the first sentence
+  and stops when tapped again.
+
 - **Library → Voices.** Every voice the voice server can speak is listed in
   the library. Tap one to hear a sentence spoken in it, record or upload (WAV)
   a new one, delete a clone, and see which personas speak in each. Recording

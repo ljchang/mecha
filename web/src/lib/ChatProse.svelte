@@ -25,8 +25,19 @@
   import { parseBlocks, hiddenTarget } from './mail-markdown.js';
   import { citeNote, citeOpens, citeMark, citeUnmark } from './persona.js';
   import { replyFilename, copyText, downloadText } from './reply-export.js';
+  import { player, playReply } from './reply-player.svelte.js';
 
-  let { text = '', cites = null, onCite = null, actions = null, download = false } = $props();
+  // `listen`: speak this reply aloud (the owner's ask, 2026-10-01) — `{ chat,
+  // unlock, voice }`, or null where the call site does not offer it. The
+  // voice is the chat's: serve speaks a persona chat's reply in the
+  // persona's voice whatever is sent here (`settings::speak`).
+  let { text = '', cites = null, onCite = null, actions = null, listen = null, download = false } = $props();
+  // This reply, to the one player: which button says Stop. A string, never
+  // an object: the player's state is deep `$state`, which would store a
+  // proxy of an object and never compare `===` to it again (the trap #484's
+  // copy buttons hit).
+  const me = `reply-${Math.random().toString(36).slice(2)}`;
+  const playing = $derived(player.id === me);
   let raw = $state(false);
   // Which control just copied — 'reply' or the code block itself — for a
   // moment's "copied", or 'failed' when the phone refused. Raw, so a block
@@ -95,6 +106,23 @@
       <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2" /></svg>
       {copied === 'reply' ? 'Copied' : 'Copy'}
     </button>
+    {#if listen}
+      <button
+        type="button"
+        class="ract"
+        aria-label={playing ? 'Stop reading this reply' : 'Read this reply aloud'}
+        title={player.id === me && player.state === 'error' ? `could not read it: ${player.error}` : undefined}
+        onclick={() => playReply(me, text, listen)}
+      >
+        {#if playing && player.state !== 'error'}
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+          {player.state === 'loading' ? 'Reading…' : 'Stop'}
+        {:else}
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H3v6h3l5 4V5z" /><path d="M15.5 8.5a5 5 0 010 7M18.5 5.5a9 9 0 010 13" /></svg>
+          {playing && player.state === 'error' ? 'Could not read' : 'Listen'}
+        {/if}
+      </button>
+    {/if}
     {#if download}
       <button type="button" class="ract" aria-label="Download this reply as Markdown" onclick={() => downloadText(replyFilename(actions), text)}>
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>

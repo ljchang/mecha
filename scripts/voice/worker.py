@@ -2089,25 +2089,63 @@ SAMPLE_LINE = (
 )
 
 
-async def tts_sample(voice: str) -> bytes:
-    """`SAMPLE_LINE` in `voice`, as a WAV, from the TTS server - the same
-    expressiveness a call opens with, so the preview is the voice as it
-    will be heard. Raises on any failure; the route says which."""
+async def tts_wav(text: str, voice: str, speed: float = 1.0) -> bytes:
+    """`text` in `voice`, as a WAV, from the TTS server - the expressiveness a
+    call opens with, so what is heard here is the voice as a call sounds.
+    Raises on any failure; the route says which."""
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
             f"{TTS_URL}/audio/speech",
             json={
-                "input": SAMPLE_LINE,
+                "input": text,
                 "model": "tts",
                 "voice": voice,
                 "response_format": "wav",
-                "speed": 1.0,
+                "speed": speed,
                 "exaggeration": TTS_EXAGGERATION,
                 "cfg_weight": TTS_CFG_WEIGHT,
             },
         )
         r.raise_for_status()
         return r.content
+
+
+async def tts_sample(voice: str) -> bytes:
+    """`SAMPLE_LINE` in `voice`: the library's preview."""
+    return await tts_wav(SAMPLE_LINE, voice)
+
+
+# The most a single speak request carries: a piece of a reply, which the page
+# cuts at sentences (`speech.js`), not a document.
+MAX_SPEAK_CHARS = 1200
+
+
+def speak_request(body, known, default_voice=TTS_VOICE):
+    """A play button's request (`POST /mecha/speak`), checked: `(text, voice,
+    speed)`, or `(None, status, why)` refused. The voice must be one the TTS
+    lists when named; none named is this worker's own. Pure, so it is tested
+    without a server (`test_speak.py`)."""
+    if not isinstance(body, dict):
+        return None, 400, "not a request"
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None, 400, "nothing to say"
+    text = text.strip()
+    if len(text) > MAX_SPEAK_CHARS:
+        return None, 400, f"more than {MAX_SPEAK_CHARS} characters at once"
+    voice = body.get("voice")
+    if voice is None:
+        voice = default_voice
+    elif not isinstance(voice, str):
+        return None, 400, "a voice is a name"
+    elif known is None:
+        return None, 503, "the TTS server could not say which voices it has"
+    elif voice not in known:
+        return None, 404, f"no voice named {voice!r}"
+    speed = body.get("speed", 1.0)
+    if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not MIN_SPEED <= speed <= MAX_SPEED:
+        return None, 400, f"speed is {MIN_SPEED}-{MAX_SPEED}"
+    return text, voice, float(speed)
 
 
 def install(app) -> None:
@@ -2146,6 +2184,34 @@ def install(app) -> None:
             return JSONResponse({"error": f"no voice named {voice!r}"}, 404)
         try:
             wav = await tts_sample(voice)
+        except Exception as e:  # noqa: BLE001 - said, not raised: the page shows it
+            return JSONResponse({"error": f"the TTS server did not speak: {e.__class__.__name__}"}, 502)
+        return Response(content=wav, media_type="audio/wav")
+
+    # A play button on a reply (the owner's ask, 2026-10-01): a piece of a
+    # reply spoken in a voice. Nothing of the text is logged - not even its
+    # length beside the voice - so an incognito chat's reply leaves no trace
+    # here; the TTS server logs none either.
+    from fastapi import Request
+
+    @app.post("/mecha/speak")
+    async def speak(request: Request):
+        from fastapi.responses import JSONResponse, Response
+
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - a body that is not JSON is refused, as any bad one
+            body = None
+        named = isinstance(body, dict) and body.get("voice") is not None
+        known = available_voices(refresh=False) if named else None
+        if named and (known is None or body.get("voice") not in known):
+            # A voice cloned since the last ask: one refetch before refusing.
+            known = available_voices(refresh=True)
+        text, voice, speed = speak_request(body, known)
+        if text is None:
+            return JSONResponse({"error": speed}, voice)
+        try:
+            wav = await tts_wav(text, voice, speed)
         except Exception as e:  # noqa: BLE001 - said, not raised: the page shows it
             return JSONResponse({"error": f"the TTS server did not speak: {e.__class__.__name__}"}, 502)
         return Response(content=wav, media_type="audio/wav")

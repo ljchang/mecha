@@ -166,8 +166,9 @@ pub struct Settings {
     /// worker's own voice.
     #[serde(default)]
     pub voice: Option<String>,
-    /// How fast the persona speaks on a call, 0.5–2.0; unset leaves the
-    /// listener's rate.
+    /// How fast the persona speaks on a call, 0.5–2.0; unset is the voice
+    /// worker's own rate (`MECHA_VOICE_TTS_SPEED`), never the listener's
+    /// remembered one (review of #490).
     #[serde(default)]
     pub voice_speed: Option<f64>,
     /// Groups declared in `groups.toml` this persona belongs to (§4.5).
@@ -1289,7 +1290,7 @@ fn render_settings(new: &NewPersona, tools: &[String], answers: Answers) -> Stri
          {relationship}\
          {character}\
          {voice}\
-         # voice_speed = 1.0   # 0.5–2.0 on a call; unset is the listener's rate\n\
+         # voice_speed = 1.0   # 0.5–2.0 on a call; unset is the voice worker's\n\
          groups       = {groups}   # declared in ../groups.toml\n\
          # model      = \"local\"      # pin a model; unset is the default\n\
          \n\

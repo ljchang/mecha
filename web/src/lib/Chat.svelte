@@ -21,7 +21,7 @@
   // travels in the WebRTC offer, the facade resolves it against the same
   // conversation this view is rendering, and spoken turns arrive here over
   // the ordinary SSE feed like any other.
-  import { createVoiceSession, dropRing } from '../../../scripts/voice/voice-core.js';
+  import { createVoiceSession, dropRing, readVoicePrefs } from '../../../scripts/voice/voice-core.js';
 
   let key = $state('main');
   let mode = $state('read_only');
@@ -1844,7 +1844,7 @@
              (`reply-export.js`), so the server keeps no trace, and a reply
              saved to the device is the owner's own act, like text copied
              out (INCOGNITO-DESIGN §1, R2's refinement). -->
-        <div class="answer"><ChatProse text={entry.text} actions="mecha" download /></div>
+        <div class="answer"><ChatProse text={entry.text} actions="mecha" listen={isShown(features.rows, 'calls') ? { chat: key, voice: readVoicePrefs().voice ?? null } : null} download /></div>
       {:else if entry.kind === 'tool'}
         <!-- The chip names the call and says which one it was; the tap opens
              the whole of it — what it was called with, then what came back,
