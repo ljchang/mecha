@@ -9,8 +9,10 @@ import unittest
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
 import asyncio  # noqa: E402
+import time  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
 
-from worker import MAX_TYPED_CHARS, UNLOGGED, Answering, TypedTurns, typed_turn  # noqa: E402
+from worker import MAX_TYPED_CHARS, UNLOGGED, Answering, TypedTurns, answer_pending, typed_turn  # noqa: E402
 
 
 class TypedTurn(unittest.TestCase):
@@ -58,7 +60,7 @@ class Delivery(unittest.TestCase):
 
         async def main():
             turns = TypedTurns(push, lambda: speaking["now"], log=logged.append,
-                               start_secs=1.0, end_secs=2.0, settle_secs=0.3)
+                               start_secs=1.0, end_secs=2.0)
             for line in lines:
                 turns.put({"text": line})
             task = asyncio.create_task(turns.run())
@@ -133,37 +135,48 @@ class AnsweringFrames(unittest.TestCase):
             a.push_frame = push
             await a.process_frame(LLMFullResponseStartFrame(), FrameDirection.DOWNSTREAM)
             await a.process_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
-            return a.busy
+            return a.busy, a.ended_at
 
-        self.assertFalse(asyncio.run(main()), "an interrupted answer latched busy")
+        busy, ended_at = asyncio.run(main())
+        self.assertFalse(busy, "an interrupted answer latched busy")
+        self.assertIsNotNone(ended_at, "an interrupted answer has no end for the settle window")
 
 
 class Gap(unittest.TestCase):
+    """The model's end frame and its first spoken audio are not adjacent;
+    `answer_pending` keeps the gap busy, timestamped where the answer ends,
+    so whichever turn the answer was to (reviews of #499, passes 4 and 5)."""
+
+    def call(self, settle=0.6):
+        model = SimpleNamespace(busy=False, ended_at=None)
+        speaking = {"now": False}
+        events = {"ended": []}
+
+        async def answer(think=0.2, gap=0.4, speak=0.3, lead=0.1):
+            await asyncio.sleep(lead)
+            model.busy = True    # the model answering
+            await asyncio.sleep(think)
+            model.busy = False   # done; no audio yet
+            model.ended_at = time.monotonic()
+            await asyncio.sleep(gap)
+            speaking["now"] = True   # the speech
+            await asyncio.sleep(speak)
+            speaking["now"] = False
+            events["ended"].append(asyncio.get_running_loop().time())
+
+        busy = lambda: answer_pending(model, lambda: speaking["now"], settle=settle)  # noqa: E731
+        return busy, answer, events
+
     def test_the_quiet_between_the_model_and_its_speech_is_not_the_end(self):
-        """The model answers, finishes, and only then is the answer spoken:
-        a line sent in that gap would barge in on speech about to start
-        (review of #499, pass 4)."""
-        pushed, ended, busy = [], [], {"now": False}
+        busy, answer, events = self.call()
+        pushed = []
 
         async def push(text):
             pushed.append((text, asyncio.get_running_loop().time()))
-
-            async def answer():
-                await asyncio.sleep(0.1)
-                busy["now"] = True   # the model answering
-                await asyncio.sleep(0.2)
-                busy["now"] = False  # done; no audio yet
-                await asyncio.sleep(0.4)
-                busy["now"] = True   # the speech
-                await asyncio.sleep(0.3)
-                busy["now"] = False
-                ended.append(asyncio.get_running_loop().time())
-
             asyncio.get_running_loop().create_task(answer())
 
         async def main():
-            turns = TypedTurns(push, lambda: busy["now"], log=lambda _: None, start_secs=2.0, end_secs=3.0,
-                               settle_secs=0.6)
+            turns = TypedTurns(push, busy, log=lambda _: None, start_secs=2.0, end_secs=3.0)
             turns.put({"text": "one"})
             turns.put({"text": "two"})
             task = asyncio.create_task(turns.run())
@@ -172,8 +185,81 @@ class Gap(unittest.TestCase):
 
         asyncio.run(main())
         self.assertEqual([t for t, _ in pushed], ["one", "two"])
-        self.assertTrue(ended)
-        self.assertGreaterEqual(pushed[1][1], ended[0], "the second line went in the gap, before the speech")
+        self.assertTrue(events["ended"])
+        self.assertGreaterEqual(pushed[1][1], events["ended"][0], "the second line went in the gap, before the speech")
+
+    def test_a_line_typed_as_a_spoken_answer_finishes_waits_for_its_speech(self):
+        """The answer is to something said aloud, not typed: a line typed
+        just after the model finishes still waits for the speech (pass 5)."""
+        busy, answer, events = self.call()
+        pushed = []
+
+        async def push(text):
+            pushed.append((text, asyncio.get_running_loop().time()))
+
+        async def main():
+            spoken = asyncio.create_task(answer(lead=0.0, think=0.1))
+            await asyncio.sleep(0.15)  # the model is done; nothing spoken yet
+            turns = TypedTurns(push, busy, log=lambda _: None, start_secs=0.5, end_secs=3.0)
+            turns.put({"text": "and another thing"})
+            task = asyncio.create_task(turns.run())
+            await asyncio.sleep(1.5)
+            task.cancel()
+            await spoken
+
+        asyncio.run(main())
+        self.assertEqual([t for t, _ in pushed], ["and another thing"])
+        self.assertGreaterEqual(pushed[0][1], events["ended"][0], "the line went in the gap of a spoken answer")
+
+    def test_a_late_turn_handed_over_mid_answer_waits_for_its_speech(self):
+        """A late span transcribed while a spoken answer is under way goes
+        after that answer's speech, not in the gap before it."""
+        busy, answer, events = self.call()
+        sent = []
+
+        async def late():
+            sent.append(("late", asyncio.get_running_loop().time()))
+
+        async def main():
+            spoken = asyncio.create_task(answer(lead=0.0, think=0.1))
+            await asyncio.sleep(0.15)
+            turns = TypedTurns(None, busy, log=lambda _: None, start_secs=0.5, end_secs=3.0)
+            turns.deliver(late)
+            task = asyncio.create_task(turns.run())
+            await asyncio.sleep(1.5)
+            task.cancel()
+            await spoken
+
+        asyncio.run(main())
+        self.assertEqual([t for t, _ in sent], ["late"])
+        self.assertGreaterEqual(sent[0][1], events["ended"][0], "the late turn went in the gap of a spoken answer")
+
+    def test_a_late_turn_waits_for_a_typed_turns_answer(self):
+        """One queue for every turn outside live audio: a late span handed
+        over while a typed line is being answered goes after that answer,
+        never into it (pass 5)."""
+        busy, answer, events = self.call()
+        sent = []
+
+        async def push(text):
+            sent.append((text, asyncio.get_running_loop().time()))
+            asyncio.get_running_loop().create_task(answer())
+
+        async def late():
+            sent.append(("late", asyncio.get_running_loop().time()))
+
+        async def main():
+            turns = TypedTurns(push, busy, log=lambda _: None, start_secs=2.0, end_secs=3.0)
+            turns.put({"text": "typed"})
+            task = asyncio.create_task(turns.run())
+            await asyncio.sleep(0.05)
+            turns.deliver(late)
+            await asyncio.sleep(2.0)
+            task.cancel()
+
+        asyncio.run(main())
+        self.assertEqual([t for t, _ in sent], ["typed", "late"])
+        self.assertGreaterEqual(sent[1][1], events["ended"][0], "the late turn landed inside the typed turn's answer")
 
 
 class Queue(unittest.TestCase):
@@ -194,22 +280,24 @@ class SilentAnswer(unittest.TestCase):
     def test_an_answer_that_speaks_nothing_releases_the_next_line_promptly(self):
         """Busy (the model answering) and then not, with no speech at all:
         the next line goes when the answer ends, not at the start bound."""
-        pushed, busy = [], {"now": False}
+        pushed = []
+        model = SimpleNamespace(busy=False, ended_at=None)
 
         async def push(text):
             pushed.append((text, asyncio.get_running_loop().time()))
 
             async def answer():
                 await asyncio.sleep(0.1)
-                busy["now"] = True
+                model.busy = True
                 await asyncio.sleep(0.2)
-                busy["now"] = False
+                model.busy = False
+                model.ended_at = time.monotonic()
 
             asyncio.get_running_loop().create_task(answer())
 
         async def main():
-            turns = TypedTurns(push, lambda: busy["now"], log=lambda _: None, start_secs=5.0, end_secs=5.0,
-                               settle_secs=0.3)
+            busy = lambda: answer_pending(model, lambda: False, settle=0.3)  # noqa: E731
+            turns = TypedTurns(push, busy, log=lambda _: None, start_secs=5.0, end_secs=5.0)
             turns.put({"text": "one"})
             turns.put({"text": "two"})
             task = asyncio.create_task(turns.run())
