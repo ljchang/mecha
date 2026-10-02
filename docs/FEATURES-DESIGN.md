@@ -1419,22 +1419,33 @@ pin that sits:
   `Measured` row never covers more than was measured; requiring all three
   would make an engine upgrade depend on enabling features the owner
   declined.
-- **A promotion swaps the link, stops the two on-demand backends** (their
-  sockets stay, so the next request starts them on the new engine — a warm
-  OCR or embeddings server would otherwise answer on the old one for up to
-  ten idle minutes), **then restarts the router under the same gate.** If a run holds the model by then, the output and the ledger row
-  say the promotion is **partial** — the link and, at their next cold
-  start, the two on-demand servers are on the new engine while the router
-  still serves the old one — and print the command that finishes it. A
-  half-applied promotion must not read as complete, for the same reason a
-  half-applied rollback must not.
-- **`--rollback` undoes all three.** It swaps the link back, stops the two
-  on-demand backends (their sockets stay, so the next request starts them
-  on the restored engine), and restarts the router under the same
-  `hold.rs` gate as a promotion. If a run holds the model, it says the
-  router is **still on the rolled-back engine** and prints the command that
-  finishes the job — a rollback that half-applied must not read as one that
-  completed, and a bad engine is exactly the one a run may be holding.
+- **The switch is held from before the measurement to the end of the
+  promotion.** `begin_switch` is taken before the first load and withdrawn
+  only after the router answers on the winning engine, so no run starts on
+  either engine in between, and no run is answered by the old engine while
+  the link already names the new one. Inside it, a promotion swaps the
+  link, stops the two on-demand backends (their sockets stay, so the next
+  request starts them on the new engine — a warm OCR or embeddings server
+  would otherwise answer on the old one for up to ten idle minutes), and
+  restarts the router. A runs-live refusal happens only at the start, before
+  anything moved; after that, the one way to a **partial** promotion is a
+  step that fails — the router does not come back, a backend will not
+  stop — and the output and the ledger row say so, name the step and its
+  error, and print the command that finishes it. A half-applied promotion
+  must not read as complete.
+- **`--rollback` undoes all three, under the same switch.** It takes
+  `begin_switch` — and, unlike the measurement, **waits** for live runs as
+  any switch does (`hold.rs`'s ruling), because a rollback is the one change
+  the owner wants even when the box is busy; `--now` is the way out, as it
+  is for `mecha model use` (`request_now` cancels the holders). Once clear,
+  it swaps the link back, stops the two on-demand backends, restarts the
+  router, and withdraws the switch. A step that fails is reported the same
+  way as a promotion's: named, with the command that finishes it, never as
+  a rollback that completed.
+- **`--adopt` is terminal-only too.** It downloads only the reviewed pin, so
+  F10's trust is not at stake, but it changes what every server runs on a
+  hand-installed machine, so it refuses without a tty like `--upgrade`, and
+  runs under the same held switch as a promotion.
 
 ### 10.4 Choosing a model
 
@@ -1447,7 +1458,7 @@ the list it can fetch. The type, so 6b and 7a cannot read it differently:
 /// one exception, and it never constructs one of these.
 pub enum Source {
     /// A release asset, per platform. A bump carries one sha256 per asset it
-    /// pins — six for an engine release (CUDA arm64/x64, Metal, Vulkan, CPU…).
+    /// pins — one per platform asset §10.3 lists for an engine release.
     ReleaseAsset { repo: &'static str, tag: &'static str, asset: &'static str, sha256: &'static str, bytes: u64 },
     /// A clone; `bytes` is the reviewed size of the checkout, for the plan.
     GitCommit { url: &'static str, commit: &'static str, bytes: u64 },
@@ -1463,8 +1474,8 @@ pub enum Source {
 pub struct HubFile { pub path: &'static str, pub sha256: &'static str, pub bytes: u64 }
 ```
 
-Every variant carries a size, so the plan's download total is a sum, never
-an estimate.
+Every variant carries a size — `HuggingFace`'s is the sum of its files' —
+so the plan's download total is a sum, never an estimate.
 For each feature the plan shows the rows for this machine's tier and memory
 shape, **the default preselected**, each with its evidence and whether it
 fits beside what is already enabled (the sum, §6), and rows that do not fit
@@ -1530,4 +1541,7 @@ it guards against:
   confirmation of tag *A* never fetches tag *B*: the tag resolved at fetch
   time is re-checked against the tag confirmed, and a mismatch stops;
 - `--upgrade` on a provided engine refuses and names `--adopt`, writing no
-  ledger row.
+  ledger row; `--adopt` without a tty refuses;
+- a run that tries to start mid-promotion waits for the switch and is
+  answered by the winning engine, never by the old one through a link that
+  already names the new.
