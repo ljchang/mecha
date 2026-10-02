@@ -58,11 +58,13 @@ MAX_UTTERANCES = 8
 # among the five oldest women in the corpus (29; the median is 23), which
 # is what a lower, settled register needs and what the corpus mostly does
 # not have - it is university students reading newspaper sentences.
+# p297 (American, New York) was added by the owner on 2026-10-02 after
+# listening to her clip; she is the second American voice, beside p362.
 #
 # Pinned rather than left as an audition list so this script reproduces
 # the installed set, and so the set is reviewable: a voice mecha speaks in
 # is a decision, and one that lives only on somebody's disk is not one.
-CURATED = ["p362", "p229", "p277", "p276"]
+CURATED = ["p362", "p229", "p277", "p276", "p297"]
 
 
 def get(url, tries=6):
