@@ -1506,7 +1506,7 @@ impl Agent {
     /// reading measures, so thinking that never reaches the model never
     /// counts toward compacting it away.
     fn wire_bytes(&self, messages: &[Message]) -> usize {
-        crate::pressure::message_bytes(&self.wire(messages))
+        self.prior_thinking.wire_bytes(messages)
     }
 
     /// What this agent thinks the time is, now.

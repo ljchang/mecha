@@ -458,6 +458,27 @@ impl PriorThinking {
                 .collect(),
         )
     }
+
+    /// `pressure::message_bytes` of [`PriorThinking::wire`], without building
+    /// it: every pressure reading asks this, several times a request, and a
+    /// whole-history clone per reading is the cost the walk is kept cheap to
+    /// avoid. The total less the thinking the cut leaves out.
+    pub fn wire_bytes(self, messages: &[Message]) -> usize {
+        let total = crate::pressure::message_bytes(messages);
+        let cut = match (self, answering(messages)) {
+            (PriorThinking::Drop, Some(cut)) => cut,
+            _ => return total,
+        };
+        let dropped: usize = messages
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| drops_thinking(m, *i, cut))
+            .flat_map(|(_, m)| &m.content)
+            .filter(|b| matches!(b, Block::Thinking { .. }))
+            .map(crate::pressure::block_bytes)
+            .sum();
+        total - dropped
+    }
 }
 
 #[cfg(test)]
@@ -504,6 +525,16 @@ mod tests {
         ];
         let wire = PriorThinking::Drop.wire(&history);
         assert_eq!(thoughts(&wire), ["alone", "now"]);
+        // The pressure reading measures exactly what is sent, both ways.
+        for prior in [PriorThinking::Drop, PriorThinking::Keep] {
+            assert_eq!(
+                prior.wire_bytes(&history),
+                crate::pressure::message_bytes(&prior.wire(&history))
+            );
+        }
+        assert!(
+            PriorThinking::Drop.wire_bytes(&history) < PriorThinking::Keep.wire_bytes(&history)
+        );
         assert_eq!(wire[1].text(), "hello");
         assert_eq!(wire.len(), history.len());
         // Keep borrows: no copy of a long history on every request.

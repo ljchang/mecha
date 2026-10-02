@@ -194,21 +194,34 @@ struct Live {
 }
 
 /// Record how much the run's reply repeats one the persona already gave in
-/// this chat (`persona::echo`): the number, never the words. Read off the
-/// conversation as the run left it, against the history it started from,
-/// so a compaction mid-run cannot hide an earlier reply. Nothing is written
-/// when there was nothing to compare, and a failed write is a warning — the
-/// reply has been sent either way.
-fn record_echo(store: &Path, persona: &str, chat: &str, before: &[Message], after: &Conversation) {
+/// this chat (`persona::echo`): the number, never the words.
+///
+/// `earlier` is every reply the session file held before this run was
+/// recorded (`Session::assistant_replies`), not the live conversation: by
+/// the late, long stretch of a chat where repetition shows, compaction has
+/// replaced most earlier turns with a summary, and a copy of one of them
+/// would read as a fresh reply. A file that could not be read writes
+/// nothing — no reading, rather than a low one. Nothing is written when
+/// there was nothing to compare, and a failed write is a warning: the reply
+/// has been sent either way.
+fn record_echo(
+    store: &Path,
+    persona: &str,
+    chat: &str,
+    earlier: Result<Vec<String>>,
+    after: &Conversation,
+) {
     use mecha_core::message::Role;
     let Some(reply) = after.messages.last().filter(|m| m.role == Role::Assistant) else {
         return;
     };
-    let earlier: Vec<String> = before
-        .iter()
-        .filter(|m| m.role == Role::Assistant)
-        .map(Message::text)
-        .collect();
+    let earlier = match earlier {
+        Ok(earlier) => earlier,
+        Err(e) => {
+            tracing::warn!("a persona echo was not measured: {e:#}");
+            return;
+        }
+    };
     let Some(echo) =
         mecha_core::persona::echo::echo(&reply.text(), earlier.iter().map(String::as_str))
     else {
@@ -3031,9 +3044,12 @@ impl PersonaChats {
             let _ = forwarder.await;
             match &outcome {
                 Ok(o) => {
+                    // Read ahead of `record_run`, so this run's reply is not
+                    // among the ones it is compared with.
+                    let earlier = Session::assistant_replies(&session.path);
                     let _ = session.record_run(&before, &conversation);
                     let _ = session.record_outcome(o);
-                    record_echo(&chats.store, &persona, &session.meta.id, &before, &conversation);
+                    record_echo(&chats.store, &persona, &session.meta.id, earlier, &conversation);
                 }
                 // The record agrees with the rollback, or a resume replays
                 // the failed turn (the assistant's rule, `chat::begin_turn`).
