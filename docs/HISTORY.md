@@ -9730,7 +9730,7 @@ again before any code was written. A ruling is only as good as the picture
 it was given, and the cheapest place to check that picture is before it is
 sent.
 
-It recurred on 2026-10-02 with a direction of safety at stake. In #503,
+It recurred on 2026-10-01 with a direction of safety at stake. In #503,
 `[personas]`' crisis cooldown was described to the owner as a pause
 length, so "allow longer" sounded like the safe choice. It is the window
 in which a further crisis hit does *not* re-pause, so longer is weaker.
