@@ -410,8 +410,9 @@ pub enum PriorThinking {
     /// and where keeping it makes each prompt a prefix of the next.
     #[default]
     Keep,
-    /// Left out, as Qwen's templates do by default: a persona chat. Replayed
-    /// on 2026-10-02, a persona answering a four-character owner turn
+    /// Left out of earlier *replies* (a turn that called a tool keeps its
+    /// reasoning; see `drops_thinking`): a persona chat. Replayed on
+    /// 2026-10-02, a persona answering a four-character owner turn
     /// re-derived its earlier plan from its own preserved thinking and sent
     /// an earlier reply again word for word; with old thinking left out
     /// (and no fixed seed) 0 of 8 replies copied one.
@@ -427,9 +428,16 @@ fn answering(messages: &[Message]) -> Option<usize> {
 }
 
 /// Whether `message` loses its thinking under [`PriorThinking::Drop`]: an
-/// assistant message ahead of the turn being answered that has something
-/// besides thinking to keep — one that is all thinking stays whole, since an
-/// empty assistant message is a 400 on every provider.
+/// assistant *reply* ahead of the turn being answered.
+///
+/// - **Never a turn that called a tool.** With reasoning stripped from
+///   tool-calling turns in the history, llama-server's model emitted a bare
+///   `<tool_call>` with no think block, 6 of 6, and the turn arrived empty
+///   (2026-08-10, `provider::openai::encode_message`): shown its own calls
+///   without thinking, it obliged. The replies that came back word for word
+///   were plain text, so the repetition this cut is for is not there.
+/// - **Never an all-thinking message**, which would be left empty — a 400 on
+///   every provider.
 fn drops_thinking(message: &Message, index: usize, cut: usize) -> bool {
     index < cut
         && message.role == Role::Assistant
@@ -437,6 +445,10 @@ fn drops_thinking(message: &Message, index: usize, cut: usize) -> bool {
             .content
             .iter()
             .any(|b| matches!(b, Block::Thinking { .. }))
+        && !message
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::ToolUse { .. }))
         && message
             .content
             .iter()
@@ -509,8 +521,22 @@ mod tests {
 
     #[test]
     fn dropping_prior_thinking_cuts_at_the_turn_being_answered() {
+        let call = |id: &str| Block::ToolUse {
+            id: id.into(),
+            name: "echo".into(),
+            input: json!({}),
+        };
         let history = vec![
             Message::user("hi"),
+            // An earlier turn's tool call keeps its reasoning: stripped, the
+            // model learns to call without thinking (`drops_thinking`).
+            Message::assistant(vec![think("chose"), call("t0")]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t0".into(),
+                content: "ok".into(),
+                is_error: false,
+            }]),
+            // An earlier reply does not.
             Message::assistant(vec![think("old"), Block::text("hello")]),
             // All thinking: kept whole, or the message would be empty.
             Message::assistant(vec![think("alone")]),
@@ -530,7 +556,7 @@ mod tests {
             }]),
         ];
         let wire = PriorThinking::Drop.wire(&history);
-        assert_eq!(thoughts(&wire), ["alone", "now"]);
+        assert_eq!(thoughts(&wire), ["chose", "alone", "now"]);
         // The pressure reading measures exactly what is sent, both ways.
         for prior in [PriorThinking::Drop, PriorThinking::Keep] {
             assert_eq!(
@@ -541,14 +567,14 @@ mod tests {
         assert!(
             PriorThinking::Drop.wire_bytes(&history) < PriorThinking::Keep.wire_bytes(&history)
         );
-        assert_eq!(wire[1].text(), "hello");
+        assert_eq!(wire[3].text(), "hello");
         assert_eq!(wire.len(), history.len());
         // Keep borrows: no copy of a long history on every request.
         assert!(matches!(
             PriorThinking::Keep.wire(&history),
             std::borrow::Cow::Borrowed(_)
         ));
-        assert_eq!(thoughts(&history), ["old", "alone", "now"]);
+        assert_eq!(thoughts(&history), ["chose", "old", "alone", "now"]);
     }
 
     #[test]
