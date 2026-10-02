@@ -1008,7 +1008,7 @@ impl Memory {
         Ok(ep)
     }
 
-    /// Facts in one table: pinned first, then newest first.
+    /// Facts in one table: pinned first, then the most recently said first.
     pub fn facts(&self, table: Table, filter: Filter) -> Result<Vec<Fact>> {
         let (filter_sql, binds) = filter.sql();
         let sql = format!(
@@ -1017,7 +1017,12 @@ impl Memory {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(binds), |r| fact_of(table, r))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let mut out: Vec<Fact> = rows.collect::<rusqlite::Result<_>>()?;
+        // By when it was said, as `episodes` is: a budget cuts in this order,
+        // so a fact said long ago but written tonight must not crowd out one
+        // said since (review of #514).
+        out.sort_by_cached_key(|f| (std::cmp::Reverse(f.pinned), std::cmp::Reverse(f.said_at())));
+        Ok(out)
     }
 
     /// Episodes, pinned first, then the most recent chat first.
