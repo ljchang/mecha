@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Personas can look things up in their own memory.** Two new persona
+  tools, offered whenever a persona's memory is on: `memory_search` finds
+  what it remembers when it needs something you did not just mention, and
+  `memory_read` opens a remembered conversation in full, so it can quote what
+  was actually said rather than the summary. Conversations in its memory now
+  show a short id in brackets for that. Reading a past conversation that took
+  in outside content marks the current chat the same way.
+
 - **Library → Voices.** Every voice the voice server can speak is listed in
   the library. Tap one to hear a sentence spoken in it, record or upload (WAV)
   a new one, delete a clone, and see which personas speak in each. Recording
