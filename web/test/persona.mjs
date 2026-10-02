@@ -32,7 +32,7 @@ assert.equal(withUnlock('/x?a=1', 'z'), '/x?a=1&unlock=z');
 assert.throws(() => personaUrl('mara', '/delete', null));
 assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 25);
+assert.equal(ENDPOINTS.length, 26);
 // A proposal is read, approved and turned away through the persona door.
 for (const s of ['review', 'approve', 'reject']) assert.ok(ENDPOINTS.includes(`/api/personas/X/${s}`), s);
 assert.ok(ENDPOINTS.includes('/api/personas/X/frame'));

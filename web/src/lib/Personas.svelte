@@ -1,6 +1,7 @@
 <script>
   import { onDestroy, tick, untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
+  import PersonaMemory from './PersonaMemory.svelte';
   import TomlForm from './TomlForm.svelte';
   import MdForm from './MdForm.svelte';
   import ModelChip from './ModelChip.svelte';
@@ -115,6 +116,9 @@
   let authoring = $state(null);
   let making = $state(null);
   let editing = $state(null);
+  // The editor's Memories tab: not an owner file, so it sits beside the file
+  // tabs rather than in `OWNER_FILES`, whose every entry is saved as a file.
+  let memoryOpen = $state(false);
   // A relationship or group being added from the form: { kind, name, text }.
   let adding = $state(null);
   // How many runs this page has seen end, so a `done` that overtakes
@@ -990,6 +994,7 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       const files = await res.json();
       editing = { files, file, text: files[file].text, base: files[file].digest, saved: null };
+      memoryOpen = false;
     } catch (e) {
       error = String(e?.message ?? e);
     }
@@ -1469,9 +1474,15 @@
       {#if editing}
         <div class="chips">
           {#each OWNER_FILES as [file, label]}
-            <button class="chipbtn" class:active={editing.file === file} onclick={() => pickFile(file)}>{label}</button>
+            <button class="chipbtn" class:active={!memoryOpen && editing.file === file} onclick={() => { memoryOpen = false; pickFile(file); }}>{label}</button>
           {/each}
+          <button class="chipbtn" class:active={memoryOpen} onclick={() => (memoryOpen = true)}>Memories</button>
         </div>
+        {#if memoryOpen}
+          <!-- Close leaves the Memories tab, never the editor: closing the editor
+               would drop unsaved file drafts out of sight (review of #519). -->
+          <PersonaMemory name={chosen.name} {token} onclose={() => (memoryOpen = false)} />
+        {:else}
         <div class="modeline">
           {#if current.form?.problem}
             <span class="warnline">The form can't read this file — {current.form.problem}. Fix it as text.</span>
@@ -1559,6 +1570,7 @@
             <button class="abtn" onclick={() => (editing = null)}>Close</button>
             <button class="abtn primary" disabled={busy || !textDirty} onclick={saveText}>Save</button>
           </div>
+        {/if}
         {/if}
       {:else if !key}
         <!-- A profile: the persona first, one primary action, and the rest
