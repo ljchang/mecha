@@ -39,7 +39,10 @@ checkout, and what runs is a copy of it in `~/.local/bin`, never the
 checkout's own file (a `git checkout` would otherwise change a running
 service). On the machine these docs were written on it runs on demand (the port is held from
 boot, the model loads on the first request and stops after ten idle
-minutes). On a machine without that socket unit, start it by hand: run the
+minutes). On a machine without that socket unit, start it by hand. First
+fetch the model — `hf download mradermacher/harrier-oss-v1-0.6b-GGUF
+harrier-oss-v1-0.6b.f16.gguf` — since the script looks for it in the
+Hugging Face cache and starts with no model if it is missing; then run the
 script with `MECHA_EMBED_PORT=8081`
 — it takes no arguments, and otherwise listens on :18081, the port the
 on-demand proxy forwards to — or run `llama-server` yourself with its
