@@ -800,6 +800,124 @@ pub async fn library_voice_sample(
     }
 }
 
+#[derive(Deserialize)]
+pub struct SpeakBody {
+    pub(super) text: String,
+    /// The chat the reply is in: a persona chat speaks in the persona's
+    /// voice, whatever the page asks.
+    #[serde(default)]
+    pub(super) chat: Option<String>,
+    #[serde(default)]
+    pub(super) unlock: Option<String>,
+    /// The owner's chosen voice, for the assistant's replies.
+    #[serde(default)]
+    pub(super) voice: Option<String>,
+}
+
+/// The most a speak request carries, as the worker takes it
+/// (`MAX_SPEAK_CHARS`): a piece of a reply, cut at sentences by the page.
+const MAX_SPEAK_CHARS: usize = 1200;
+
+/// POST /api/speak — a piece of a reply spoken aloud (the owner's ask,
+/// 2026-10-01: a play button on each reply), as the worker's `/mecha/speak`
+/// answers it. A persona chat's reply is spoken in the persona's voice —
+/// serve's to say, behind its lock, as a call's is (`call_voice`) — and the
+/// assistant's in the voice the page names, the owner's own choice. Nothing
+/// of the text is logged here, as nothing is at the worker.
+pub async fn speak(State(state): St, Json(body): Json<SpeakBody>) -> Response {
+    let Some(target) = state.offer_target.as_ref() else {
+        return (
+            StatusCode::NOT_FOUND,
+            "voice calls are not wired on this serve\n",
+        )
+            .into_response();
+    };
+    let text = body.text.trim();
+    if text.is_empty() || text.chars().count() > MAX_SPEAK_CHARS {
+        return (
+            StatusCode::BAD_REQUEST,
+            "a piece of a reply, 1–1200 characters\n",
+        )
+            .into_response();
+    }
+    let mut request = serde_json::json!({ "text": text });
+    match body
+        .chat
+        .as_deref()
+        .filter(|k| super::persona_chat::is_persona_key(k))
+    {
+        Some(key) => {
+            let Some(chat) = state.chat.as_ref() else {
+                return (StatusCode::NOT_FOUND, "no such persona chat\n").into_response();
+            };
+            let name = match chat
+                .personas
+                .check_call(&state.library, key, body.unlock.as_deref())
+                .await
+            {
+                Ok(name) => name,
+                Err(r) => return r.into_response(),
+            };
+            match chat.personas.call_voice(&name) {
+                Ok(Some(v)) => {
+                    request["voice"] = serde_json::json!(v.voice);
+                    if let Some(speed) = v.speed {
+                        request["speed"] = serde_json::json!(speed);
+                    }
+                }
+                // No voice set: the worker's own, as a call has.
+                Ok(None) => {}
+                Err(why) => return (StatusCode::CONFLICT, format!("{why}\n")).into_response(),
+            }
+        }
+        None => {
+            if let Some(v) = body.voice.as_deref().filter(|v| !v.is_empty()) {
+                if v.len() > 64 || v.chars().any(char::is_control) {
+                    return (StatusCode::BAD_REQUEST, "not a voice name\n").into_response();
+                }
+                request["voice"] = serde_json::json!(v);
+            }
+        }
+    }
+    let Ok(url) = reqwest::Url::parse(target).and_then(|t| t.join("/mecha/speak")) else {
+        return (StatusCode::BAD_GATEWAY, "no voice worker address\n").into_response();
+    };
+    let resp = match reqwest::Client::new()
+        .post(url)
+        .json(&request)
+        // The TTS may be loading its model, and speaks the piece whole.
+        .timeout(std::time::Duration::from_secs(90))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => {
+            return (StatusCode::BAD_GATEWAY, "the voice worker did not answer\n").into_response()
+        }
+    };
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let Ok(bytes) = resp.bytes().await else {
+        return (StatusCode::BAD_GATEWAY, "reading the speech\n").into_response();
+    };
+    if status.is_success() {
+        return ([("content-type", "audio/wav")], bytes.to_vec()).into_response();
+    }
+    // The worker's own refusal carries `error`; a 404 without one is the
+    // route missing — a worker older than the play button.
+    let why = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|v| v["error"].as_str().map(str::to_string));
+    match why {
+        Some(why) => (status, format!("{why}\n")).into_response(),
+        None if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED => (
+            StatusCode::CONFLICT,
+            "the voice worker predates the play button — restart it on a current checkout\n",
+        )
+            .into_response(),
+        None => (status, format!("the voice worker answered {status}\n")).into_response(),
+    }
+}
+
 /// A voice name is a bare filename stem, and the alphabet is closed rather
 /// than denylisted: this string becomes `<voices_dir>/<name>.wav` on one
 /// side and a `voice` field the TTS resolves on the other, so anything
