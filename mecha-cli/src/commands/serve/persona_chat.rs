@@ -1287,6 +1287,162 @@ impl PersonaChats {
         }))
     }
 
+    /// What `name` remembers, for the owner's curation page (§9.8): every
+    /// episode and fact still standing — candidates waiting on the owner
+    /// included, withdrawn ones not — each dated by when it was said, in
+    /// `tz`, with this persona's shared copies of its facts about the owner.
+    /// Read-only and never created: no store yet is an empty page. Only this
+    /// persona's own rows, so a locked persona's facts shared with everyone
+    /// can never surface through another's page.
+    pub fn memory(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        token: Option<&str>,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::memory::{Filter, Memory, Shared, Status, Table};
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let groups: Vec<String> = Store::load(&self.store).groups().keys().cloned().collect();
+        let Some(m) = Memory::open_existing(&self.store, &p.name).map_err(failed)? else {
+            return Ok(serde_json::json!({
+                "episodes": [], "facts": {"persona": [], "user": [], "inferred": []},
+                "groups": groups,
+            }));
+        };
+        let standing = |s: Status| s != Status::Invalidated;
+        let day = |at: &str| mecha_core::persona::recall::local_day(at, tz);
+        let mut shared: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+        if let Some(sh) = Shared::open_existing(&self.store).map_err(failed)? {
+            for f in sh.all().map_err(failed)?.facts {
+                if f.learned_by == p.name {
+                    // `group: null` is everyone.
+                    let group = match &f.audience {
+                        mecha_core::persona::memory::Audience::Everyone => None,
+                        mecha_core::persona::memory::Audience::Group(g) => Some(g.clone()),
+                    };
+                    shared
+                        .entry(f.from_uid.clone())
+                        .or_default()
+                        .push(serde_json::json!({
+                            "uid": f.uid, "group": group,
+                        }));
+                }
+            }
+        }
+        let episodes: Vec<serde_json::Value> = m
+            .episodes(Filter::All)
+            .map_err(failed)?
+            .into_iter()
+            .filter(|e| standing(e.status))
+            .map(|e| {
+                let said = e.said_at();
+                serde_json::json!({
+                    "uid": e.uid, "day": day(&said), "said_at": said,
+                    "summary": e.summary, "open_threads": e.open_threads,
+                    "chat": e.source.chat, "origin": e.origin,
+                    "status": e.status, "pinned": e.pinned,
+                })
+            })
+            .collect();
+        let mut facts = serde_json::Map::new();
+        for (key, table) in [
+            ("persona", Table::Persona),
+            ("user", Table::User),
+            ("inferred", Table::Inferred),
+        ] {
+            let rows: Vec<serde_json::Value> = m
+                .facts(table, Filter::All)
+                .map_err(failed)?
+                .into_iter()
+                .filter(|f| standing(f.status))
+                .map(|f| {
+                    let said = f.said_at();
+                    serde_json::json!({
+                        "uid": f.uid, "day": day(&said), "said_at": said,
+                        "text": f.text, "kind": f.kind, "origin": f.origin,
+                        "status": f.status, "pinned": f.pinned,
+                        "shared": shared.remove(&f.uid).unwrap_or_default(),
+                    })
+                })
+                .collect();
+            facts.insert(key.into(), rows.into());
+        }
+        Ok(serde_json::json!({ "episodes": episodes, "facts": facts, "groups": groups }))
+    }
+
+    /// One curation act on `name`'s memory (§9.8), then the page as it now
+    /// stands. The lock holds as for every write. `forget` is the only real
+    /// delete, and takes the shared copies with it.
+    pub fn memory_act(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        act: MemoryAct,
+        token: Option<&str>,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::memory::{self, Audience, Memory, Shared};
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let bad = |e: anyhow::Error| Refusal::Bad(format!("{e:#}"));
+        let m = Memory::open_to_edit(&self.store, &p.name).map_err(bad)?;
+        match act {
+            MemoryAct::Approve { id } => m.approve(&m.resolve(&id).map_err(bad)?).map_err(bad)?,
+            MemoryAct::Pin { id } => m.pin(&m.resolve(&id).map_err(bad)?, true).map_err(bad)?,
+            MemoryAct::Unpin { id } => m.pin(&m.resolve(&id).map_err(bad)?, false).map_err(bad)?,
+            MemoryAct::Correct { id, text } => {
+                m.correct(&m.resolve(&id).map_err(bad)?, text.trim())
+                    .map_err(bad)?;
+            }
+            MemoryAct::Forget { id } => {
+                let uid = m.resolve(&id).map_err(bad)?;
+                drop(m);
+                memory::forget(&self.store, &p.name, &uid).map_err(failed)?;
+            }
+            MemoryAct::Share { id, group } => {
+                let uid = m.resolve(&id).map_err(bad)?;
+                let fact = m
+                    .fact(&uid)
+                    .map_err(failed)?
+                    .ok_or_else(|| Refusal::Bad("only a fact can be shared".into()))?;
+                let declared: Vec<String> =
+                    Store::load(&self.store).groups().keys().cloned().collect();
+                let audience = match group {
+                    Some(g) => Audience::Group(g),
+                    None => Audience::Everyone,
+                };
+                Shared::open(&self.store)
+                    .map_err(failed)?
+                    .share(&fact, audience, &declared)
+                    .map_err(bad)?;
+            }
+            MemoryAct::Unshare { id } => {
+                let sh = Shared::open(&self.store).map_err(failed)?;
+                let uid = sh.resolve(&id).map_err(bad)?;
+                // Only a copy this persona learned: another's is not this
+                // page's to touch, and answers as missing.
+                let mine = sh
+                    .all()
+                    .map_err(failed)?
+                    .facts
+                    .iter()
+                    .any(|f| f.uid == uid && f.learned_by == p.name);
+                if !mine {
+                    return Err(Refusal::Bad(format!(
+                        "{} shared nothing with that id",
+                        p.name
+                    )));
+                }
+                sh.unshare(&uid).map_err(bad)?;
+            }
+        }
+        self.memory(library, name, token, tz)
+    }
+
     /// Earlier chats with `name`, newest first.
     pub fn history(
         &self,
@@ -3890,6 +4046,92 @@ pub async fn open(
     )
 }
 
+/// One act on a persona's memory, from its curation page: a closed set, so
+/// the page can ask for nothing the CLI's owner door does not also offer.
+#[derive(serde::Deserialize, Debug)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum MemoryAct {
+    Approve {
+        id: String,
+    },
+    Pin {
+        id: String,
+    },
+    Unpin {
+        id: String,
+    },
+    Correct {
+        id: String,
+        text: String,
+    },
+    Forget {
+        id: String,
+    },
+    Share {
+        id: String,
+        /// A group's name; absent is everyone.
+        #[serde(default)]
+        group: Option<String>,
+    },
+    Unshare {
+        id: String,
+    },
+}
+
+#[derive(serde::Deserialize)]
+pub struct MemoryBody {
+    #[serde(flatten)]
+    act: MemoryAct,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// GET /api/personas/{name}/memory
+pub async fn memory(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(q): Query<UnlockQuery>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    let tz = chat.follower.current().config.agent.timezone();
+    match tokio::task::spawn_blocking(move || {
+        personas.memory(&library, &name, q.unlock.as_deref(), tz)
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("reading a persona's memory: {e}")).into_response(),
+    }
+}
+
+/// POST /api/personas/{name}/memory
+pub async fn memory_act(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<MemoryBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    let tz = chat.follower.current().config.agent.timezone();
+    match tokio::task::spawn_blocking(move || {
+        personas.memory_act(&library, &name, body.act, body.unlock.as_deref(), tz)
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("changing a persona's memory: {e}")).into_response(),
+    }
+}
+
 /// GET /api/personas/{name}/chats
 pub async fn history(
     State(state): Web,
@@ -5130,6 +5372,274 @@ mod tests {
 
     /// The avatar's framing: set and cleared from the page, carried by the
     /// list, refused out of range, and behind the lock like every write.
+    /// A fact in `who`'s memory from a chat begun at `chat`'s stamp.
+    fn remember(
+        w: &World,
+        who: &str,
+        table: mecha_core::persona::memory::Table,
+        text: &str,
+        origin: Origin,
+    ) -> String {
+        use mecha_core::persona::memory::{Kind, Memory, NewFact, Source};
+        Memory::open(&w.store(), who)
+            .unwrap()
+            .add_fact(
+                table,
+                NewFact {
+                    text: text.into(),
+                    kind: Kind::Stated,
+                    source: Source {
+                        chat: "20260930T024959-1a2b3c4d".into(),
+                        from: 0,
+                        to: 1,
+                    },
+                    origin,
+                    model: "m".into(),
+                    valid_from: None,
+                    valid_to: None,
+                },
+            )
+            .unwrap()
+            .uid
+    }
+
+    #[tokio::test]
+    async fn the_memory_page_lists_what_stands_dated_by_when_it_was_said() {
+        use mecha_core::persona::memory::{Memory, Table};
+        let w = world();
+        let page = |w: &World| {
+            w.personas()
+                .memory(&w.library, "mara", None, Some(chrono_tz::UTC))
+                .unwrap()
+        };
+        // Nothing remembered: an empty page, and no store made by looking.
+        let empty = page(&w);
+        assert_eq!(empty["episodes"].as_array().unwrap().len(), 0);
+        assert!(!w.store().join("mara/memory.db").exists());
+
+        let kept = remember(
+            &w,
+            "mara",
+            Table::User,
+            "Teaches on Thursdays.",
+            Origin::ModelClean,
+        );
+        let waiting = remember(
+            &w,
+            "mara",
+            Table::User,
+            "Read about kelp.",
+            Origin::ModelUntrusted,
+        );
+        let gone = remember(
+            &w,
+            "mara",
+            Table::Persona,
+            "Grew up inland.",
+            Origin::ModelClean,
+        );
+        Memory::open_to_edit(&w.store(), "mara")
+            .unwrap()
+            .invalidate(&gone)
+            .unwrap();
+
+        let got = page(&w);
+        let user = got["facts"]["user"].as_array().unwrap();
+        let row = |uid: &str| user.iter().find(|f| f["uid"] == uid).cloned();
+        assert_eq!(
+            row(&kept).unwrap()["day"],
+            "2026-09-30",
+            "the chat's day: {got}"
+        );
+        assert_eq!(
+            row(&waiting).unwrap()["status"],
+            "candidate",
+            "waiting on the owner is shown"
+        );
+        assert!(
+            got["facts"]["persona"].as_array().unwrap().is_empty(),
+            "a withdrawn fact is not: {got}"
+        );
+        let ny = w
+            .personas()
+            .memory(&w.library, "mara", None, "America/New_York".parse().ok())
+            .unwrap();
+        assert_eq!(
+            ny["facts"]["user"][0]["day"], "2026-09-29",
+            "in the owner's zone"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_owner_curates_from_the_page_and_the_lock_holds_for_every_act() {
+        use mecha_core::persona::memory::Table;
+        let w = world();
+        let act = |w: &World, a: MemoryAct, token: Option<&str>| {
+            w.personas()
+                .memory_act(&w.library, "mara", a, token, Some(chrono_tz::UTC))
+        };
+        let user = |v: &serde_json::Value| v["facts"]["user"].as_array().unwrap().clone();
+        let uid = remember(
+            &w,
+            "mara",
+            Table::User,
+            "Teaches on Thursdays.",
+            Origin::ModelClean,
+        );
+        let cand = remember(
+            &w,
+            "mara",
+            Table::User,
+            "Read about kelp.",
+            Origin::ModelUntrusted,
+        );
+        let short = |u: &str| u[..8].to_string();
+
+        let v = act(&w, MemoryAct::Approve { id: short(&cand) }, None).unwrap();
+        assert!(user(&v).iter().all(|f| f["status"] == "active"), "{v}");
+        let v = act(&w, MemoryAct::Pin { id: short(&uid) }, None).unwrap();
+        assert!(
+            user(&v)
+                .iter()
+                .any(|f| f["uid"] == uid && f["pinned"] == true),
+            "{v}"
+        );
+        let v = act(
+            &w,
+            MemoryAct::Correct {
+                id: short(&uid),
+                text: "Teaches on Tuesdays.".into(),
+            },
+            None,
+        )
+        .unwrap();
+        let texts: Vec<_> = user(&v).iter().map(|f| f["text"].clone()).collect();
+        assert!(texts.contains(&"Teaches on Tuesdays.".into()), "{v}");
+        assert!(
+            !texts.contains(&"Teaches on Thursdays.".into()),
+            "the old wording is withdrawn: {v}"
+        );
+        let new = user(&v)
+            .into_iter()
+            .find(|f| f["text"] == "Teaches on Tuesdays.")
+            .unwrap()["uid"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let v = act(
+            &w,
+            MemoryAct::Share {
+                id: short(&new),
+                group: None,
+            },
+            None,
+        )
+        .unwrap();
+        let copy = user(&v).iter().find(|f| f["uid"] == new).unwrap()["shared"][0].clone();
+        assert!(copy["group"].is_null(), "shared with everyone: {v}");
+        let v = act(
+            &w,
+            MemoryAct::Unshare {
+                id: copy["uid"].as_str().unwrap()[..8].to_string(),
+            },
+            None,
+        )
+        .unwrap();
+        assert!(
+            user(&v)
+                .iter()
+                .all(|f| f["shared"].as_array().unwrap().is_empty()),
+            "{v}"
+        );
+        assert!(matches!(
+            act(
+                &w,
+                MemoryAct::Share {
+                    id: short(&new),
+                    group: Some("nowhere".into())
+                },
+                None
+            ),
+            Err(Refusal::Bad(_))
+        ));
+        assert!(matches!(
+            act(&w, MemoryAct::Pin { id: "zz".into() }, None),
+            Err(Refusal::Bad(_))
+        ));
+
+        // Locked: every read and act answers as a missing persona.
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        assert!(matches!(
+            w.personas().memory(&w.library, "mara", None, None),
+            Err(Refusal::NotFound)
+        ));
+        assert!(matches!(
+            act(&w, MemoryAct::Forget { id: short(&new) }, None),
+            Err(Refusal::NotFound)
+        ));
+        let token = w.library.grant_for_tests();
+        let v = act(&w, MemoryAct::Forget { id: short(&new) }, Some(&token)).unwrap();
+        assert!(user(&v).iter().all(|f| f["uid"] != new), "forgotten: {v}");
+    }
+
+    #[tokio::test]
+    async fn one_personas_page_never_shows_or_touches_anothers_shared_facts() {
+        use mecha_core::persona::memory::{Audience, Memory, Shared, Table};
+        let w = world();
+        let lib = mecha_core::imagelib::Library::load(&w.root.join("imagelib")).0;
+        store::create(
+            &w.store(),
+            &lib,
+            NewPersona {
+                name: "tau".into(),
+                display: "Tau".into(),
+                relationships: vec!["colleague".into()],
+                origin: Origin::Owner,
+                ..NewPersona::default()
+            },
+        )
+        .unwrap();
+        let theirs = remember(&w, "tau", Table::User, "Swims at dawn.", Origin::ModelClean);
+        let fact = Memory::open(&w.store(), "tau")
+            .unwrap()
+            .fact(&theirs)
+            .unwrap()
+            .unwrap();
+        let copy = Shared::open(&w.store())
+            .unwrap()
+            .share(&fact, Audience::Everyone, &[])
+            .unwrap();
+        remember(
+            &w,
+            "mara",
+            Table::User,
+            "Teaches on Thursdays.",
+            Origin::ModelClean,
+        );
+
+        let v = w
+            .personas()
+            .memory(&w.library, "mara", None, Some(chrono_tz::UTC))
+            .unwrap();
+        assert!(!v.to_string().contains("Swims at dawn"), "{v}");
+        assert!(matches!(
+            w.personas().memory_act(
+                &w.library,
+                "mara",
+                MemoryAct::Unshare {
+                    id: copy.uid[..8].to_string()
+                },
+                None,
+                None
+            ),
+            Err(Refusal::Bad(_))
+        ));
+        assert_eq!(
+            Shared::open(&w.store()).unwrap().all().unwrap().facts.len(),
+            1
+        );
+    }
+
     #[tokio::test]
     async fn a_frame_is_placed_listed_checked_and_locked_like_any_write() {
         use mecha_core::persona::Frame;
