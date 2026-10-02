@@ -193,6 +193,32 @@ struct Live {
     working: Arc<StdMutex<Vec<serde_json::Value>>>,
 }
 
+/// Record how much the run's reply repeats one the persona already gave in
+/// this chat (`persona::echo`): the number, never the words. Read off the
+/// conversation as the run left it, against the history it started from,
+/// so a compaction mid-run cannot hide an earlier reply. Nothing is written
+/// when there was nothing to compare, and a failed write is a warning — the
+/// reply has been sent either way.
+fn record_echo(store: &Path, persona: &str, chat: &str, before: &[Message], after: &Conversation) {
+    use mecha_core::message::Role;
+    let Some(reply) = after.messages.last().filter(|m| m.role == Role::Assistant) else {
+        return;
+    };
+    let earlier: Vec<String> = before
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .map(Message::text)
+        .collect();
+    let Some(echo) =
+        mecha_core::persona::echo::echo(&reply.text(), earlier.iter().map(String::as_str))
+    else {
+        return;
+    };
+    if let Err(e) = mecha_core::persona::echo::record_echo(store, persona, chat, echo) {
+        tracing::warn!("a persona echo record was not written: {e:#}");
+    }
+}
+
 /// Keep `slot` naming the tool a run is waiting on: every call that has
 /// started and not yet returned — tools in one turn run concurrently — and
 /// the transcript reports the latest of them.
@@ -2927,6 +2953,7 @@ impl PersonaChats {
         let context_window = bound.context_window;
         let chats = Arc::clone(self);
         let key = key.to_string();
+        let persona = name.clone();
         let stopping = chat.stopping.clone();
         // Spawned under the sessions lock, as the assistant's `begin_turn`
         // spawns under its map: `stop` takes this lock before it closes
@@ -3000,6 +3027,7 @@ impl PersonaChats {
                 Ok(o) => {
                     let _ = session.record_run(&before, &conversation);
                     let _ = session.record_outcome(o);
+                    record_echo(&chats.store, &persona, &session.meta.id, &before, &conversation);
                 }
                 // The record agrees with the rollback, or a resume replays
                 // the failed turn (the assistant's rule, `chat::begin_turn`).
