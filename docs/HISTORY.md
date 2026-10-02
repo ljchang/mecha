@@ -33,13 +33,17 @@ ruling of 2026-10-01: "[voice] holds everything voice".
   layers, and `trial_env::OPERATOR_ONLY_TABLES` lists them.
   `operator_only_tables_are_what_a_project_layer_is_stripped_of` reads the
   strips out of `config.rs` and requires the two lists to agree.
-- **The features rows:** Dictate names `stt_url`; Calls stays on with
-  "no proxy" when `offer_target` is empty; Cloning reads `[voice]
-  voices_dir`. The sentinel is not settled everywhere: three other readers
-  still take an absent target as "voice calls are not wired on this
-  serve". They are `settings::speak` (Listen), `library_voice_sample`, and
-  `library_voices`' worker list. HANDOFF carries it; found by #506's
-  review, by the rule of the sentinel trap below.
+- **The features rows:** Dictate names `stt_url`; Calls stays on when
+  `offer_target` is empty (#503 first worded it "no proxy"); Cloning reads
+  `[voice] voices_dir`. The sentinel was not settled everywhere: three other
+  readers took an absent target as "voice calls are not wired on this
+  serve". They were `settings::speak` (Listen), `library_voice_sample`, and
+  `library_voices`' worker list. HANDOFF carried it; found by #506's review,
+  by the rule of the sentinel trap below. Settled the same day by the
+  owner's choice, "Say it honestly", over splitting the address in two:
+  empty means `mecha serve` reaches no voice worker, and the Calls row, the
+  three refusals and the docs now say so (no call relay, no Listen, no voice
+  previews).
 - **Seven review passes,** counted from the PR's comments. Pass 3 found the
   empty-`offer_target` sentinel unmounting the voice facade (Traps →
   Review process). mecha-d7 merged it at mecha-ce's named head and

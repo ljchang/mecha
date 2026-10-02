@@ -584,7 +584,7 @@ so set only what differs on your machine.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `stt_url` | string | `http://127.0.0.1:8992/v1` | The OpenAI-compatible speech-to-text server dictation sends audio to, up to its `/v1`. |
-| `offer_target` | string | `http://127.0.0.1:7860/api/offer` | Where the voice worker accepts calls; the web app's call button reaches it through `mecha serve`. Empty turns the proxy off, for a setup where the browser reaches the worker directly; calls stay on. `mecha serve --offer-target` overrides it for one run. |
+| `offer_target` | string | `http://127.0.0.1:7860/api/offer` | Where the voice worker accepts calls, and its address for everything else `mecha serve` sends it: the call relay, Listen, and voice previews. Empty means `mecha serve` doesn't reach the worker at all, so those three stop; a browser can still call the worker's own door. `mecha serve --offer-target` overrides it for one run. |
 | `voice_port` | integer | `8990` | The loopback port `mecha serve` mounts the voice facade on, for the voice worker to call. `0` doesn't mount it. `mecha serve --voice-port` overrides it for one run. |
 | `voices_dir` | path | unset | Host directory of the TTS server's voice references (the directory its container mounts as `/voices`). Unset disables recording and cloning voices. |
 

@@ -8780,9 +8780,12 @@ in five different ways. The design and its open steps are
   not the other. `[web] voices_dir` is applied *into* `[voice]` for one
   release — one runtime answer, as `[features] messages` is — and
   `[voice]`'s own value wins. The registry's dictation, calls and cloning
-  rows read `[voice]`; `offer_target = ""` is no proxy, not calls off,
-  because the facade the worker calls mounts on the calls row (review of
-  #503, pass 3).
+  rows read `[voice]`. `offer_target` is the worker's address for all of
+  serve's traffic to it — the call relay, Listen (`settings::speak`), the
+  voice previews and lists — so `offer_target = ""` reaches no worker at
+  all; the calls row stays on (the facade the worker calls mounts on it,
+  review of #503 pass 3) and names what stops, by the owner's choice of
+  2026-10-02 over splitting the address in two.
   `[voice] stt_url` is serve's alone: the voice worker reads its own
   `MECHA_VOICE_*` environment. Its two addresses are refused off this
   machine at load (`VoiceConfig::validate`), the second defence `[image]`

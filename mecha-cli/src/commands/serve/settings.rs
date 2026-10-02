@@ -667,7 +667,7 @@ pub async fn library_voices(
     axum::extract::Query(q): axum::extract::Query<VoicesQuery>,
 ) -> Json<serde_json::Value> {
     let listed = match &state.offer_target {
-        None => Err("voice calls are not wired on this serve"),
+        None => Err("this serve does not reach the voice worker ([voice] offer_target is empty)"),
         Some(target) => super::runner_voices(target).await,
     };
     let (cloned, cloned_error) = match state.voices_dir.as_ref() {
@@ -752,7 +752,7 @@ pub async fn library_voice_sample(
     let Some(target) = state.offer_target.as_ref() else {
         return (
             StatusCode::NOT_FOUND,
-            "voice calls are not wired on this serve\n",
+            "this serve does not reach the voice worker ([voice] offer_target is empty)\n",
         )
             .into_response();
     };
@@ -834,7 +834,7 @@ pub async fn speak(State(state): St, Json(body): Json<SpeakBody>) -> Response {
     let Some(target) = state.offer_target.as_ref() else {
         return (
             StatusCode::NOT_FOUND,
-            "voice calls are not wired on this serve\n",
+            "this serve does not reach the voice worker ([voice] offer_target is empty)\n",
         )
             .into_response();
     };

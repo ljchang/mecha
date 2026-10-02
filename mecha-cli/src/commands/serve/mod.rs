@@ -86,7 +86,9 @@ pub struct Args {
     #[arg(long)]
     pub owner_login: Option<String>,
     /// Override `[voice] offer_target` for this run: where the voice runner
-    /// accepts WebRTC offers, which `/api/offer` proxies to. Empty disables.
+    /// accepts WebRTC offers, which `/api/offer` proxies to, and the worker's
+    /// address for Listen and voice previews. Empty means serve reaches no
+    /// voice worker: no call relay, no Listen, no voice previews.
     #[arg(long)]
     pub offer_target: Option<String>,
 }
@@ -97,7 +99,8 @@ pub struct Args {
 /// handler, not this read).
 #[derive(Debug)]
 struct VoiceWiring {
-    /// `None` is no proxy: empty, from the flag or the table.
+    /// `None`: serve does not reach the voice worker — empty, from the flag
+    /// or the table.
     offer_target: Option<Arc<String>>,
     voice_port: u16,
     stt_url: Arc<String>,
@@ -115,7 +118,8 @@ impl VoiceWiring {
             .validate()
             .context("--offer-target")?;
         }
-        // A flag overrides `[voice]` for this run; empty is no proxy either way.
+        // A flag overrides `[voice]` for this run; empty means serve does not
+        // reach the worker, either way.
         let offer_target = match &args.offer_target {
             Some(flag) => Some(flag.trim()).filter(|t| !t.is_empty()),
             None => config.voice.offer_target(),
@@ -3613,7 +3617,7 @@ mod boundary_tests {
     }
 
     /// `serve` wires `[voice]` — read, not the old literals — and each flag
-    /// overrides its key for the run; an empty `--offer-target` is no proxy,
+    /// overrides its key for the run; an empty `--offer-target` reaches no worker,
     /// and one off this machine refuses the start (review of #503, pass 4:
     /// nothing measured this read, only the handler downstream of it).
     #[test]
@@ -3659,7 +3663,7 @@ mod boundary_tests {
         );
         assert_eq!(w.voice_port, 0);
         let w = VoiceWiring::of(&args(&["--offer-target", ""]), &config).unwrap();
-        assert_eq!(w.offer_target, None, "empty is no proxy");
+        assert_eq!(w.offer_target, None, "empty reaches no worker");
 
         let err = VoiceWiring::of(
             &args(&["--offer-target", "http://10.0.0.5:7860/api/offer"]),
