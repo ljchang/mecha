@@ -6,11 +6,19 @@
 > - **Four tiers** (§4.3's table): momentary (episode only), short-term state
 >   (days–weeks), ongoing situation (months), lasting fact.
 > - **Mood labels about the owner may be stored**, temporarily, as short-term
->   states. This reverses §4.7's "not allowed, even when stated" and §9.5's
->   "never a mood label".
+>   states. This reverses §4.7's "not allowed, even when stated" and its
+>   "never `inferred` states" (a mood read from how the owner seems goes to
+>   the inferred table and expires), and §9.5's "never a mood label".
 > - **Facts are updated as needed** (supersession, §4.2), as built.
 > - **A fact derived from several chats is rebuilt** from the chats that
 >   remain when one is forgotten (§4.4's open question).
+> - **§5.2's tier default is reversed**: a row with no tier, or one this
+>   binary cannot read, reads as *lasting* (it over-retains, visibly), not
+>   as a state that silently expires. See the note at §5.
+> - **Shipped since this pass:** dating from the source chat, in the owner's
+>   timezone (#514, `persona::memory::said_at`, `recall::local_day`), so
+>   §4.0's second bullet and §4.5's "the fix in progress" describe what is
+>   now built. Rendering the *age* and setting `valid_from` are not.
 > - **Measure in use and revisit**: every access to a memory is logged with
 >   its time, so age-based decay and retrieval frequency can be compared on
 >   real use (§1.2's ACT-R form needs the timestamps, not a count) before
@@ -327,7 +335,9 @@ relevance-and-recency mix. No product found states a TTL for states.
   - ChatGPT's memory "tended to overwrite crucial information as the chat
     continues".
 - **LoCoMo** (✅ ACL 2024, [arXiv:2402.17753](https://arxiv.org/abs/2402.17753)):
-  LLMs lag humans by 56% overall, and **by 73% on temporal reasoning**.
+  LLMs lag humans by 56% overall, and **by 73% on temporal reasoning**
+  (the paper's §1 findings list; the abstract states the temporal weakness
+  only qualitatively).
 - **Knowledge updates and selective forgetting are the weak spots.**
   - MemoryAgentBench (✅ ICLR 2026, [arXiv:2507.05257](https://arxiv.org/abs/2507.05257)):
     every method reached **at most 28%** on multi-hop fact consolidation, and
@@ -622,8 +632,14 @@ compatible:
    a closed timescale bucket that sets `valid_to`; lasting facts never
    decay.**
    - Add a closed enum `lasting | state` on facts, with a `state` duration
-     bucket (`days | weeks | months`). Unknown degrades to `state`, the
-     cautious side, following the wire-format rule.
+     bucket (`days | weeks | months`). *(Corrected on review: an unknown or
+     missing tier reads as `lasting`, not `state`. Degrading to `state`
+     would let a durable fact written by a newer binary silently stop
+     riding when an older one reads it — ScrubJay's mislabelled-medical
+     caution, §2 — and would leave its `valid_to` undefined. Over-retention
+     is visible on the curation page; silent expiry is not. The tier is
+     therefore best stored as an `Option`, with none rendered as lasting
+     until a writer classifies it.)*
    - Expiry is a *recall* rule, never deletion: past `valid_to`, a state is
      not at chat start and is labelled "past" when searched.
    - The writer prompt gets Chaplin et al.'s three questions (would it be true
