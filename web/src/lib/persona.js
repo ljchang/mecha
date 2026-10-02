@@ -31,7 +31,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call'];
 
 export const ENDPOINTS = [
@@ -662,4 +662,48 @@ export function citeUnmark(v, marks) {
   }
   if (pos < v.length) out.push({ text: v.slice(pos) });
   return out;
+}
+
+// What a persona remembers, as its curation page shows it (§9.8): what is
+// waiting on the owner first, across every kind, then each kind's kept
+// records. `data` is `GET /api/personas/{name}/memory`; a missing list is
+// an empty one, so an older server never breaks the page.
+export const MEMORY_KINDS = [
+  ['episodes', 'Conversations'],
+  ['persona', 'About itself'],
+  ['user', 'About you'],
+  ['inferred', 'Its guesses about you'],
+];
+
+export function memorySections(data) {
+  const lists = {
+    episodes: data?.episodes ?? [],
+    persona: data?.facts?.persona ?? [],
+    user: data?.facts?.user ?? [],
+    inferred: data?.facts?.inferred ?? [],
+  };
+  const waiting = [];
+  const kept = {};
+  for (const [kind] of MEMORY_KINDS) {
+    kept[kind] = [];
+    for (const r of lists[kind]) {
+      // `section`, not `kind`: the server's `kind` is stated/observed/inferred.
+      (r.status === 'candidate' ? waiting : kept[kind]).push({ ...r, section: kind });
+    }
+  }
+  return { waiting, kept, empty: !waiting.length && MEMORY_KINDS.every(([k]) => !kept[k].length) };
+}
+
+// A record's line of text, whichever kind it is.
+export function memoryText(r) {
+  return r.section === 'episodes' ? r.summary : r.text;
+}
+
+const MEMORY_ACTIONS = ['approve', 'pin', 'unpin', 'correct', 'forget', 'share', 'unshare'];
+
+// The body of one curation act. An action the server does not take is
+// refused here, so the page can never send one.
+export function memoryActBody(action, id, extra = {}, token = null) {
+  if (!MEMORY_ACTIONS.includes(action)) throw new Error(`not a memory action: ${action}`);
+  return { action, id, ...extra, unlock: token ?? undefined };
 }

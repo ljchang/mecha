@@ -157,6 +157,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: python3 scripts/test_model_idle.py
+      # The ComfyUI idle reset: its one act is a restart, so when it may and
+      # may not restart is the contract (a wrong one kills a picture mid-render).
+      - run: python3 scripts/test_comfyui_idle_reset.py
       # The same kind of contract for the helper the bench scripts ask a
       # router through: its answer, and that asking never loads a model.
       - run: python3 scripts/test_served_props.py
