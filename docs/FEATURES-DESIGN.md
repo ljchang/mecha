@@ -41,7 +41,7 @@
 > residency and evidence, measured on the GB10 (each row dated), and the graph
 > page names the embedder mecha-graph uses — is built; 6b, the
 > `Recommendation` rows, `--probe` and the test holding the page to them, is
-> next, and parses that table. Steps 7–8 are unbuilt. The
+> next, and parses that table. Steps 7–8 are unbuilt (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1227,8 +1227,15 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    its parent (`switch_owner`) — offers that part's sidecars alone. Switching a feature
    off never uninstalls; `mecha setup <feature> --remove` does, and keeps
    downloaded models unless `--models` is given, because the cache is shared.
-   Even then it keeps any model file another enabled feature's chosen row
-   names, and says which, so removing one feature never breaks another.
+   Even then it keeps any model file another enabled feature has claimed,
+   and says which, so removing one feature never breaks another. **A claim
+   is a manifest record, not a written file**: when setup resolves a
+   feature's model — downloaded, found already in the cache, or a path the
+   owner brought — it records `(feature, row, file)`, so a model mecha did
+   not download (item 4 prices it at zero) is still claimed by the feature
+   that uses it. Without the claim, the order of enablement would decide
+   whether a shared file survives. The claim is setup's own record and
+   writes nothing into config, so §6's rule stands.
    Installing runs only from a terminal: the web app still shows the command
    and never runs it (§8), and no tool exposes it to a model. **Without a
    tty, nothing installs and nothing is silently skipped**: `features enable`
@@ -1323,7 +1330,13 @@ pin that sits:
   engine (`engine` is a reserved noun in `setup`'s feature position, never a
   feature id), then **measures before it promotes**. The measurement loads
   another engine's copy of the chat model, so in `hold.rs`'s terms it **is a
-  switch**: it writes one with `begin_switch` — which makes runs that start
+  switch**. It measures **one engine at a time** — the old engine, stop, the
+  new one, stop — so it never holds two copies of the chat model (two at
+  ~28.5 GB each is an out-of-memory failure on every tier below 128 GB),
+  and it refuses up front, with the number, when available memory cannot
+  hold the largest single step: the chat model plus whichever smoke-test
+  models are installed (§6's sum, applied to the measurement). As a switch,
+  it writes one with `begin_switch` — which makes runs that start
   meanwhile wait — and then checks `live()`. A hold alone would not do:
   `try_hold` is not exclusive and returns `Ok` beside other runs, so a
   benchmark behind it would run under contention and write the number this
@@ -1331,7 +1344,10 @@ pin that sits:
   the switch and declines**, saying so, rather than waiting — a deliberate
   departure from the module's ruling that a switch waits without limit,
   because nobody wants an upgrade benchmark holding the router back
-  indefinitely; the owner reruns it when the box is quiet. Then: the chat model loaded on
+  indefinitely; the owner reruns it when the box is quiet. If
+  `begin_switch` finds a switch already pending (a `mecha model use`
+  waiting on runs), it declines the same way and names it — it never
+  queues behind, or cancels, someone else's switch. Then: the chat model loaded on
   both engines with the router's flags, one completion and one embedding
   as a smoke test, then single-stream generation and prefill at fixed
   prompt lengths (`scripts/bench-slots.sh`'s method). It promotes when the
@@ -1397,8 +1413,23 @@ pin that sits:
 
 ### 10.4 Choosing a model
 
-Step 6b's `Recommendation` row gains its source — repository, file(s),
-revision, sha256, size — so the list setup shows is the list it can fetch.
+Step 6b's `Recommendation` row gains its source, so the list setup shows is
+the list it can fetch. The type, so 6b and 7a cannot read it differently:
+
+```rust
+/// Where a pinned sidecar or model comes from. Every variant carries a hash
+/// or commit a reviewer committed (§10.2 item 1); F10's upgrade path is the
+/// one exception, and it never constructs one of these.
+pub enum Source {
+    /// A release asset, per platform. A bump carries one sha256 per asset it
+    /// pins — six for an engine release (CUDA arm64/x64, Metal, Vulkan, CPU…).
+    ReleaseAsset { repo: &'static str, tag: &'static str, asset: &'static str, sha256: &'static str, bytes: u64 },
+    GitCommit { url: &'static str, commit: &'static str },
+    HuggingFace { repo: &'static str, revision: &'static str, file: &'static str, sha256: &'static str, bytes: u64 },
+    /// A `--require-hashes` lock, shipped in the binary.
+    PythonLock { lock: &'static str },
+}
+```
 For each feature the plan shows the rows for this machine's tier and memory
 shape, **the default preselected**, each with its evidence and whether it
 fits beside what is already enabled (the sum, §6), and rows that do not fit
@@ -1456,7 +1487,10 @@ it guards against:
 - `--upgrade` against a slower engine (a stub that answers slowly) declines
   to promote and says so with both numbers;
 - without a tty, `features enable <id>` installs nothing and `setup engine
-  --upgrade` refuses — with and without `--to`;
+  --upgrade` refuses — with and without `--to`. (Plain `mecha setup` is
+  covered already: without a terminal it prints the outstanding list and
+  exits 1 before offering anything.) The install tests themselves drive a
+  pty with a size, since the tty rule is what they cross;
 - bare `--upgrade` with the confirmation declined downloads no byte, and a
   confirmation of tag *A* never fetches tag *B*: the tag resolved at fetch
   time is re-checked against the tag confirmed, and a mismatch stops;
