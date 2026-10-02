@@ -586,7 +586,8 @@ memory from a page load. So:
   `?probe=1` could use exactly the load-free probes named below and nothing
   else; it is not in this design. Its states are `Off`, `Blocked`, `Unready`, `On` and `Unknown` —
   every state but `Down`, which only a probe can produce.
-- `mecha features --probe` and `mecha setup` may probe, using only calls that
+- `mecha features --probe`, `mecha setup` and `mecha features enable` (§10.2
+  item 4's provided-detection) may probe, using only calls that
   load nothing: `served_props` / `GET /models` against the router, the
   systemd unit state for a socket-activated server, ComfyUI's
   `/system_stats` (to be confirmed load-free on this install before step 6
@@ -1213,7 +1214,10 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
 3. **Enable offers the install (F7).** `mecha features enable image` prints
    the plan — each sidecar with its source and size, the model choice (10.4),
    the total download and disk — and installs on one yes; `--no-install`
-   only flips the switch. The switch is written **after** a successful
+   only flips the switch, and **answering no to the plan writes nothing** —
+   the feature stays as it was, with `--no-install` named for an owner who
+   wants the switch without the download. The switch is written **after** a
+   successful
    install and its health check — a check that belongs to installing, never
    to enabling, so a provided sidecar (item 4) reaches the switch without
    one and nothing is woken. A failed download leaves the feature as it
@@ -1227,8 +1231,13 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    its parent (`switch_owner`) — offers that part's sidecars alone. Switching a feature
    off never uninstalls; `mecha setup <feature> --remove` does, and keeps
    downloaded models unless `--models` is given, because the cache is shared.
-   Even then it keeps any model file another enabled feature has claimed,
-   and says which, so removing one feature never breaks another. **A claim
+   Even then it keeps any model file another enabled feature has claimed —
+   **or could use**: any file that any `Recommendation` row of any switched-on
+   feature names, and the chat model's files always, since every feature
+   needs it. Over-keeping is the safe direction, because a switch can be on
+   with no claim behind it (`--no-install`, F6's offer, a feature
+   re-enabled after a failed install). It says which files it kept and why,
+   so removing one feature never breaks another. **A claim
    is a manifest record, not a written file**: when setup resolves a
    feature's model — downloaded, found already in the cache, or a path the
    owner brought — it records `(feature, row, file)`, so a model mecha did
@@ -1410,8 +1419,10 @@ pin that sits:
   `Measured` row never covers more than was measured; requiring all three
   would make an engine upgrade depend on enabling features the owner
   declined.
-- **A promotion swaps the link, then restarts the router under the same
-  gate.** If a run holds the model by then, the output and the ledger row
+- **A promotion swaps the link, stops the two on-demand backends** (their
+  sockets stay, so the next request starts them on the new engine — a warm
+  OCR or embeddings server would otherwise answer on the old one for up to
+  ten idle minutes), **then restarts the router under the same gate.** If a run holds the model by then, the output and the ledger row
   say the promotion is **partial** — the link and, at their next cold
   start, the two on-demand servers are on the new engine while the router
   still serves the old one — and print the command that finishes it. A
@@ -1438,12 +1449,22 @@ pub enum Source {
     /// A release asset, per platform. A bump carries one sha256 per asset it
     /// pins — six for an engine release (CUDA arm64/x64, Metal, Vulkan, CPU…).
     ReleaseAsset { repo: &'static str, tag: &'static str, asset: &'static str, sha256: &'static str, bytes: u64 },
-    GitCommit { url: &'static str, commit: &'static str },
-    HuggingFace { repo: &'static str, revision: &'static str, file: &'static str, sha256: &'static str, bytes: u64 },
-    /// A `--require-hashes` lock, shipped in the binary.
-    PythonLock { lock: &'static str },
+    /// A clone; `bytes` is the reviewed size of the checkout, for the plan.
+    GitCommit { url: &'static str, commit: &'static str, bytes: u64 },
+    /// One repository at one revision, and every file the row needs from it —
+    /// a GGUF and its projector, or a diffusion model's three files. A row is
+    /// never a projector-less model.
+    HuggingFace { repo: &'static str, revision: &'static str, files: &'static [HubFile] },
+    /// A `--require-hashes` lock, shipped in the binary; `bytes` is the
+    /// reviewed download size of the packages it pins.
+    PythonLock { lock: &'static str, bytes: u64 },
 }
+
+pub struct HubFile { pub path: &'static str, pub sha256: &'static str, pub bytes: u64 }
 ```
+
+Every variant carries a size, so the plan's download total is a sum, never
+an estimate.
 For each feature the plan shows the rows for this machine's tier and memory
 shape, **the default preselected**, each with its evidence and whether it
 fits beside what is already enabled (the sum, §6), and rows that do not fit
