@@ -65,19 +65,23 @@ each:
   sized to the card, and the smaller models other features use (OCR,
   embeddings, speech to text) can run from system RAM on the CPU instead, so
   a 24 GB card in a 64 GB computer is not a 24 GB machine. A card between two
-  tiers takes the row below it.
+  tiers takes the row at or below it for the model family; whether it fits
+  is the card's actual memory against the sum, never the row's label.
 
-Each cell says where its numbers come from. **Measured** means on a real
-machine, named; **Arithmetic** means from the formula above, which is
-architectural and transfers; **Unmeasured** means nobody here has tried it.
-Only one cell is measured.
+Each figure says where it comes from. **Measured** names the machine and
+the date; **Arithmetic** is the formula above, or measured costs added up
+for a machine nobody here has run — it transfers, because it is
+architectural; **Unmeasured** means there is no number at all. A separate
+GPU has two pools, so its cells carry two figures, one per pool, each with
+its own marker. One figure on this page is measured: the chat model on the
+GB10.
 
 | Tier | Unified memory | Separate GPU, with system RAM beside it |
 |---|---|---|
-| 16 GB | An 8B at Q4, or a 14B at Q4 with little else running; 32k context. *Arithmetic* | A 14B at Q4 on the card with room for its context; OCR, embeddings and speech to text in system RAM. *Arithmetic* |
-| 32 GB | A 14B at Q4–Q6, or a ~27–35B MoE at Q4 with modest context. *Arithmetic* | A 35B MoE at Q4 with 128k context (~24 GB) on the card. *Arithmetic* |
-| 64 GB | A 30–35B MoE at Q4–Q5 with 128k–256k context, and an embeddings server. *Arithmetic* | The same model and context, with image generation's ~15 GB beside it on the card. *Arithmetic* |
-| 128 GB | A 35B-class MoE at Q4 with four slots of 262k, *Measured — DGX Spark (GB10)*; every other feature's model beside it, *Arithmetic* (the sum under [Beside the chat model](#beside-the-chat-model)) | The 128 GB unified row, with the smaller models moved to system RAM. *Arithmetic* |
+| 16 GB | An 8B at Q4, or a 14B at Q4 with little else running; 32k context. ~5–9 GiB of weights plus the cache, *Arithmetic* | **GPU**: a 14B at Q4 with its context, ~9 GiB of weights plus the cache, *Arithmetic*. **System RAM**: embeddings and OCR on the CPU plus the CPU-side models, ~10 GiB, *Arithmetic* |
+| 32 GB | A 14B at Q4–Q6, or a ~27–35B MoE at Q4 with modest context. ~24 GiB for the MoE at 128k, *Arithmetic* | **GPU**: a 35B MoE at Q4 with 128k context, ~24 GiB, *Arithmetic*. **System RAM**: as at 16 GB, ~10 GiB, *Arithmetic* |
+| 64 GB | A 30–35B MoE at Q4–Q5 with 128k–256k context, and an embeddings server. ~30–37 GiB, *Arithmetic* | **GPU**: the same model and context, with image generation's ~15 GiB and speech's ~5 GiB beside it, ~50 GiB, *Arithmetic*. **System RAM**: the CPU-side models and the GPU servers' host memory, ~6 GiB, *Arithmetic* |
+| 128 GB | A 35B-class MoE at Q4 with four slots of 262k: 41.5 GiB, *Measured — GB10, 2026-10-02*. Every other feature's model beside it: ~73 GiB in all, up to ~89 with a full prompt cache, *Arithmetic* ([the sum](#beside-the-chat-model)) | **GPU**: the unified row's GPU models, ~67–70 GiB, *Arithmetic*. **System RAM**: the CPU-side models and the prompt cache, ~6–22 GiB, *Arithmetic* |
 
 ### 16 GB
 
@@ -164,7 +168,7 @@ it after ten idle minutes, and **per request** holds it only while working.
 | `graph` — embeddings; persona file search | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.1 loaded | Measured 2026-10-02 |
 | `documents` — OCR | PaddleOCR-VL 1.6 (GGUF and projector) | GPU | On demand | 2.6 loaded | Measured 2026-09-29 |
 | `documents` — layout | PP-DocLayoutV3 (ONNX) | CPU | Per request | 1.1 peak | Measured 2026-09-29 |
-| `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | Resident — ComfyUI keeps its models between pictures | ~15 peak at 1024²; 11.9 held while idle | Measured 2026-09-25 (peak), 2026-10-02 (idle) |
+| `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | Resident — ComfyUI keeps its models between pictures | ~15 peak at 1024²; 11.9 held while idle, and 1.4 of system memory | Measured 2026-09-25 (peak), 2026-10-02 (idle) |
 | `voice` — speech to text | Parakeet TDT 0.6B v3 int8 | CPU | Resident | 0.7 | Measured 2026-10-02 |
 | `voice` — speech | Chatterbox Turbo | GPU | Resident | 5.4, and 2.5 of system memory | Measured 2026-10-02 |
 | `voice` — turn detection | Silero VAD and smart-turn v3, in the voice worker | CPU | Resident | 0.5 | Measured 2026-10-02 |
