@@ -693,11 +693,13 @@ const SERVER_WAIT: Duration = Duration::from_secs(90);
 #[cfg(test)]
 const SERVER_WAIT: Duration = Duration::from_secs(2);
 const SERVER_WAIT_STEP: Duration = Duration::from_millis(500);
-/// The wait for a server this process has never had an answer from: an idle
-/// reset takes 4-10 s, so a restart in progress is still met, while a stopped
-/// service is reported in seconds rather than after [`SERVER_WAIT`].
+/// The wait for a server this process has never had an answer from. The
+/// processes that meet a restart are the unseen ones - a one-shot `mecha
+/// run`, the first picture after a `serve` restart - so it covers the slowest
+/// start measured (40 s once; 4-10 s usually), while a stopped service is
+/// still reported in half of [`SERVER_WAIT`] (review of #515).
 #[cfg(not(test))]
-const UNSEEN_WAIT: Duration = Duration::from_secs(12);
+const UNSEEN_WAIT: Duration = Duration::from_secs(45);
 #[cfg(test)]
 const UNSEEN_WAIT: Duration = Duration::from_secs(1);
 
@@ -1314,10 +1316,11 @@ impl ComfyUi {
             .send()
             .await
             .ok()?;
+        // Any answer, even an error, is a server that is up.
+        self.answered.store(true, Ordering::Relaxed);
         if !res.status().is_success() {
             return None;
         }
-        self.answered.store(true, Ordering::Relaxed);
         let stats: Value = res.json().await.ok()?;
         loaded_from_stats(&stats)
     }
@@ -3334,7 +3337,7 @@ mod tests {
     async fn a_restarting_server_is_waited_for_not_reported_down() {
         let addr = closed_port();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(700)).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             while let Ok((mut sock, _)) = listener.accept().await {
                 tokio::spawn(async move {
@@ -3352,7 +3355,7 @@ mod tests {
         let waited = server_at(addr).await_server(None, SERVER_WAIT).await;
         assert!(waited.is_ok(), "a server that came up was reported down");
         assert!(
-            started.elapsed() >= Duration::from_millis(600),
+            started.elapsed() >= Duration::from_millis(250),
             "answered before the server existed"
         );
     }
@@ -3901,6 +3904,39 @@ mod tests {
         assert_eq!(sniff_image(b"RIFF\0\0\0\0WEBPVP8 "), Some("webp"));
         assert_eq!(sniff_image(b"<svg xmlns=..."), None);
         assert_eq!(sniff_image(b"#!/bin/sh"), None);
+    }
+
+    /// The memory check asks the server what it holds when the check is on,
+    /// and not when it is off. Every other tool test switches the check off
+    /// (`min_available_mb: 0`), which is the blind spot review of #303 found:
+    /// a check reachable from no test can be miswired with the suite green.
+    #[tokio::test]
+    async fn the_memory_check_asks_the_server_what_it_holds() {
+        let ask = |min_available_mb: u64| async move {
+            let (url, seen) = fake(vec![json!({}), done()], "200 OK").await;
+            let dir = tempdir();
+            ImageGenerate::new(ImageConfig {
+                url,
+                min_available_mb,
+                unload_after_secs: 0,
+                ..Default::default()
+            })
+            .unwrap()
+            .polling_every(Duration::from_millis(10))
+            .call(json!({"prompt": "a fox", "seed": 7}), &ctx(&dir))
+            .await
+            .unwrap();
+            let asked = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("GET /system_stats"));
+            asked
+        };
+        // 1 MB is available on any machine, so the verdict passes and only
+        // the question is measured.
+        assert!(ask(1).await, "the check never asked the server");
+        assert!(!ask(0).await, "a switched-off check still asked");
     }
 
     #[tokio::test]
