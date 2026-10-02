@@ -548,16 +548,38 @@ workspace**. Six decisions, each a bug if undone:
   image generation keeps working in a conversation holding mail. `[image]` is
   stripped from project layers, loudly, like `[web]`: a cloned repository must
   not choose where model-written prompts go.
-- **Refuse to start without memory headroom** (`min_available_mb`, 16 GB). On
+- **Refuse to start without memory headroom** (`min_available_mb`, 19 GB). On
   the GB10 the GPU allocates from the one pool everything else uses; the first
   generation on this box, beside `llama-server` and a parallel link, was a
   global OOM that killed `llama-server` and took the machine down. An
-  unreadable `/proc/meminfo` refuses rather than passes. After
-  `unload_after_secs` of idleness the tool asks the server to `/free` its
-  models, so ~15 GB is not held between requests. The timer lives in the
-  mecha process, so it serves `mecha serve` and the TUI; a one-shot
-  `mecha run` exits first and leaves the models loaded until the next
-  long-lived generation or a server restart.
+  unreadable `/proc/meminfo` refuses rather than passes. The figure is the
+  measured cost of a generation from a server holding no model: ~18.5 GB above
+  its idle footprint, where a footprint on this unified-memory box is GPU-used
+  **plus** RSS, which do not overlap (2026-10-02; the earlier 16 GB rested on a
+  "15 GB peak" that counted the GPU side alone). **What a job asks for follows
+  what the server already holds** (`memory_need_mb`), because memory it holds
+  is already gone from the available pool: a server that has loaded nothing
+  since it started, or whose `/system_stats` cannot be read, is asked for the
+  whole `min_available_mb`; one that has loaded the model is asked for
+  `LOADED_NEED_MB` (12 GB). ComfyUI's `torch_vram_total` is 0 in a fresh
+  process and stays above 0 through a `/free`, so it cannot tell a server
+  still holding the model (~2 GB more) from a freed one (~9-12 GB more to
+  reload), and the larger is asked.
+- **Idle memory is released beside the server, not by mecha.** A loaded
+  ComfyUI holds ~13.6 GB. `scripts/comfyui/comfyui-idle-reset` (a one-minute
+  user timer, installed by `scripts/comfyui/install.sh`) restarts
+  `comfyui.service` once it has held a model for 10 idle minutes with an
+  empty queue and no open connection, leaving a 1.1 GB process with its port
+  up; below 4 GB of `MemFree` it sends `/free` instead, because a new CUDA
+  context failed to come up there. A restart also empties the server's temp
+  directory, whoever left files in it. mecha's own `unload_after_secs` timer
+  stays as a best-effort early `/free`, but it lives in the mecha process and
+  dies with it: a `serve` restarted five minutes after the last picture left
+  12.2 GB held for ten hours (2026-10-02), and on unified memory `/free` moves
+  the weights into the server's RSS (6.9–8.9 GB) rather than releasing them.
+  The first request of a job waits up to 90 s for a server that is not
+  answering yet (`ComfyUi::await_server`), so a picture asked for during a
+  restart waits instead of reporting the server down.
 - **Read-only, by the owner's ruling (2026-09-25).** Web chats start
   read-only, and a picture should be one request in any of them. The tool
   changes nothing of the owner's: it creates new files under `images/` in the
