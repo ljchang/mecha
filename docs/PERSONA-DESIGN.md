@@ -1369,9 +1369,10 @@ Two known edges:
   against the lock like every door here, so a call to a persona that was
   locked during it records no seconds. The turns spoken before the relock are
   counted.
-- **Speed is fixed only when the profile sets it.** A profile's `voice` is
-  always the persona's, but its rate stays the listener's unless the profile
-  sets one. Nothing on the page changes it today.
+- **Speed is the persona's only when it sets one.** Its voice is always its
+  own; its rate is `voice_speed`, and unset is the voice worker's rate
+  (`MECHA_VOICE_TTS_SPEED`), never the listener's remembered one — a
+  persona call sends no listener preference (`rememberVoice: false`).
 
 **Ruled (owner, 2026-10-01): on a call, the crisis pause is spoken in the
 persona's own voice**, to keep it simple. §12.2's "a plain voice" governs the
