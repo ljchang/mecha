@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Type during a call.** A call, with the assistant or a persona, has a text
+  box under its transcript. A typed line is a turn like a spoken one, and the
+  answer is spoken in the call's voice. The microphone pauses while the box
+  has focus and comes back as it was; the mute button stays yours.
+
 - **Personas can look things up in their own memory.** Two new persona
   tools, offered whenever a persona's memory is on: `memory_search` finds
   what it remembers when it needs something you did not just mention, and

@@ -50,6 +50,11 @@
 
   export function start({ keep = false } = {}) {
     if (!keep) entries = [];
+    // A line typed into another persona's call must not wait in this one's.
+    if (!keep) {
+      typed = '';
+      typing = false;
+    }
     // Read at the tap, never bound: a chat switched mid-call must not have
     // the words being spoken redirected into it.
     callKey = chatKey;
@@ -80,9 +85,15 @@
       },
       onBotTurnEnd: () => {},
     });
-    session.connect().catch((e) => {
-      callState = { name: 'idle', label: `could not connect: ${e?.message ?? e} — tap to try again` };
-    });
+    // A redial keeps `typing`, and a fresh session's mic starts live: the
+    // track is set from mute and typing once it exists (review of #499,
+    // pass 7 - the same as the assistant's call).
+    session
+      .connect()
+      .then(applyMic)
+      .catch((e) => {
+        callState = { name: 'idle', label: `could not connect: ${e?.message ?? e} — tap to try again` };
+      });
   }
 
   // The call's length to the meter, and its binding let go — once per
@@ -128,10 +139,34 @@
     start({ keep: true });
   }
 
+  // Typing into the call (the owner's ask, 2026-10-01): a typed line is a
+  // turn the persona answers aloud. The mic is paused while the box has
+  // focus — keys and a room are not words — and given back as it was; the
+  // mute button stays the owner's.
+  let typed = $state('');
+  let typing = $state(false);
+  function typingStart() {
+    typing = true;
+    applyMic();
+  }
+  function typingEnd() {
+    typing = false;
+    applyMic();
+  }
+  // Both at once, wherever either changes: the hint is a privacy claim and
+  // must not rest on focus leaving the box when mute is tapped (review of
+  // #499, pass 5).
+  function applyMic() {
+    session?.setMicEnabled(!muted && !typing);
+  }
+  function sendTyped() {
+    if (session?.sendText(typed)) typed = '';
+  }
+
   function toggleMute() {
     if (!session) return;
     muted = !muted;
-    session.setMicEnabled(!muted);
+    applyMic();
   }
 
   // A different chat, or none: the call was this one's and ends with it.
@@ -178,6 +213,22 @@
         <div class={entry.who === 'user' ? 'said' : 'heard'} class:interim={entry.interim}>{entry.text}</div>
       {/each}
     </div>
+    <form class="typerow" onsubmit={(e) => { e.preventDefault(); sendTyped(); }}>
+      <input
+        class="typebox"
+        placeholder={`Type to ${display}`}
+        aria-label={`Type to ${display}`}
+        bind:value={typed}
+        onfocus={typingStart}
+        onblur={typingEnd}
+        disabled={!linked}
+        maxlength="4000"
+      />
+      <button type="submit" class="typesend" aria-label="send" disabled={!linked || !typed.trim()}>
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+      </button>
+    </form>
+    {#if typing && !muted}<div class="typehint">mic paused while you type</div>{/if}
     <div class="call-controls">
       <button class="mutebtn" class:muted onclick={toggleMute} title={muted ? 'unmute' : 'mute'} aria-label={muted ? 'unmute' : 'mute'}>
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -324,12 +375,55 @@
   .interim {
     color: var(--text-muted);
   }
+  .typerow {
+    display: flex;
+    gap: 8px;
+    margin: 14px 16px 0;
+  }
+  .typebox {
+    flex: 1;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 14px;
+    border-radius: 22px;
+    border: 1px solid var(--accent-900);
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    font-size: 16px;
+  }
+  .typebox:focus {
+    outline: none;
+    border-color: var(--accent-500);
+  }
+  .typesend {
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--accent-400);
+    color: var(--void);
+    border: none;
+    cursor: pointer;
+  }
+  .typesend:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .typehint {
+    margin: 6px 16px 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
   .call-controls {
     display: flex;
     justify-content: center;
     align-items: center;
     gap: 24px;
-    padding: 24px 0 34px;
+    padding: 16px 0 34px;
   }
   .mutebtn,
   .endcall {
