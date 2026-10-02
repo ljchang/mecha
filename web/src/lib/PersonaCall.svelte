@@ -85,9 +85,15 @@
       },
       onBotTurnEnd: () => {},
     });
-    session.connect().catch((e) => {
-      callState = { name: 'idle', label: `could not connect: ${e?.message ?? e} — tap to try again` };
-    });
+    // A redial keeps `typing`, and a fresh session's mic starts live: the
+    // track is set from mute and typing once it exists (review of #499,
+    // pass 7 - the same as the assistant's call).
+    session
+      .connect()
+      .then(applyMic)
+      .catch((e) => {
+        callState = { name: 'idle', label: `could not connect: ${e?.message ?? e} — tap to try again` };
+      });
   }
 
   // The call's length to the meter, and its binding let go — once per
