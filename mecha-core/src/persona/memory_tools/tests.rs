@@ -3,6 +3,7 @@ use super::super::tests_support::{fill_core, new, no_lib, scratch};
 use super::*;
 use crate::agent::Taint;
 use crate::message::{Block, Message};
+use crate::persona::Answers;
 use crate::session::Record;
 use std::path::Path;
 
@@ -261,18 +262,86 @@ fn an_id_or_a_record_that_could_reach_elsewhere_is_refused() {
 }
 
 #[test]
-fn a_long_conversation_is_cut_and_says_so() {
+fn a_long_conversation_is_cut_once_and_keeps_its_end() {
     let dir = world();
     let long = "We went on about kelp. ".repeat(600);
     transcript(
         &dir,
         "c1",
-        &[owner(&long), says("Indeed."), checkpoint(false)],
+        &[
+            owner(&long),
+            says("So we settle on Holdfast."),
+            checkpoint(false),
+        ],
     );
     let uid = episode(&dir, "c1", 0, 1, "A long talk.", Origin::ModelClean);
     let r = read_episode(&dir, &persona(&dir), short(&uid)).unwrap();
     assert!(r.text.chars().count() < MAX_READ_CHARS + 400);
-    assert!(r.text.contains("is cut here"));
+    assert!(r.text.contains("of the middle omitted"), "{}", r.text);
+    // The end is where it landed: one cut, not the head of a cut.
+    assert!(r.text.contains("So we settle on Holdfast."), "{}", r.text);
+}
+
+/// A chat from when the persona answered from anything: it searched the
+/// web, and the harness folded its files in beside the owner's words.
+fn a_chat_that_used_the_web(dir: &Path) -> String {
+    let call = Message::assistant(vec![Block::ToolUse {
+        id: "t1".into(),
+        name: "web_search".into(),
+        input: json!({"query": "kelp song"}),
+    }]);
+    let result = Message::tool_results(vec![Block::ToolResult {
+        tool_use_id: "t1".into(),
+        content: "A page says kelp sings at dawn.".into(),
+        is_error: false,
+    }]);
+    let mut first = Message::user("What does kelp sound like?");
+    first.content.push(Block::text(format!(
+        "{} — notes.md: tidepools at low water.)",
+        crate::persona::files::FILES_STEM
+    )));
+    transcript(
+        dir,
+        "c1",
+        &[
+            line(&Record::Message(first)),
+            line(&Record::Message(call)),
+            line(&Record::Message(result)),
+            says("They say it hums at dawn."),
+            checkpoint(true),
+        ],
+    );
+    episode(dir, "c1", 0, 3, "Asked about kelp.", Origin::ModelUntrusted)
+}
+
+#[test]
+fn a_files_only_persona_reads_the_words_and_never_what_a_tool_brought_back() {
+    let dir = world();
+    let uid = a_chat_that_used_the_web(&dir);
+    let mut p = persona(&dir);
+
+    p.settings.files.answers = Answers::Open;
+    let open = read_episode(&dir, &p, short(&uid)).unwrap();
+    assert!(open.text.contains("kelp sings at dawn"), "{}", open.text);
+
+    p.settings.files.answers = Answers::Files;
+    let r = read_episode(&dir, &p, short(&uid)).unwrap();
+    for gone in ["kelp sings at dawn", "kelp song", "web_search", "tidepools"] {
+        assert!(!r.text.contains(gone), "`{gone}` came back: {}", r.text);
+    }
+    assert!(
+        r.text.contains("[owner] What does kelp sound like?"),
+        "{}",
+        r.text
+    );
+    assert!(r.text.contains("They say it hums at dawn."), "{}", r.text);
+    assert!(
+        r.text.contains("[tool result] (left out"),
+        "said where: {}",
+        r.text
+    );
+    // The persona's words may still carry what it read: the turns' taint stands.
+    assert!(r.untrusted);
 }
 
 #[test]
