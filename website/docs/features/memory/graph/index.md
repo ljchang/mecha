@@ -39,7 +39,8 @@ checkout, and what runs is a copy of it in `~/.local/bin`, never the
 checkout's own file (a `git checkout` would otherwise change a running
 service). On the machine these docs were written on it runs on demand (the port is held from
 boot, the model loads on the first request and stops after ten idle
-minutes). To start it by hand, run the script with `MECHA_EMBED_PORT=8081`
+minutes). On a machine without that socket unit, start it by hand: run the
+script with `MECHA_EMBED_PORT=8081`
 — it takes no arguments, and otherwise listens on :18081, the port the
 on-demand proxy forwards to — or run `llama-server` yourself with its
 flags: `-m` the model, `--alias harrier-oss-v1-0.6b` (the name mecha-graph
