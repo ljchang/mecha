@@ -50,6 +50,8 @@
 
   export function start({ keep = false } = {}) {
     if (!keep) entries = [];
+    // A line typed into another persona's call must not wait in this one's.
+    if (!keep) typed = '';
     // Read at the tap, never bound: a chat switched mid-call must not have
     // the words being spoken redirected into it.
     callKey = chatKey;

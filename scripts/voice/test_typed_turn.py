@@ -10,7 +10,7 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
 import asyncio  # noqa: E402
 
-from worker import MAX_TYPED_CHARS, UNLOGGED, TypedTurns, typed_turn  # noqa: E402
+from worker import MAX_TYPED_CHARS, UNLOGGED, Answering, TypedTurns, typed_turn  # noqa: E402
 
 
 class TypedTurn(unittest.TestCase):
@@ -90,6 +90,65 @@ class Delivery(unittest.TestCase):
     def test_a_turn_that_never_speaks_does_not_hold_the_next_forever(self):
         pushed, _, _ = self.run_turns(["one", "two"], answer=None)
         self.assertEqual([t for t, _ in pushed], ["one", "two"])
+
+
+class AnsweringFrames(unittest.TestCase):
+    """The model's answer, as the consumer sees it: busy from an LLM
+    response's start frame to its end, every frame passed on - so an answer
+    that speaks nothing still ends (review of #499, pass 3)."""
+
+    def test_busy_from_start_to_end_and_frames_pass(self):
+        from pipecat.frames.frames import LLMFullResponseEndFrame, LLMFullResponseStartFrame
+        from pipecat.processors.frame_processor import FrameDirection
+
+        async def main():
+            a = Answering()
+            passed = []
+
+            async def push(frame, direction=FrameDirection.DOWNSTREAM):
+                passed.append(frame)
+
+            a.push_frame = push
+            states = [a.busy]
+            await a.process_frame(LLMFullResponseStartFrame(), FrameDirection.DOWNSTREAM)
+            states.append(a.busy)
+            await a.process_frame(LLMFullResponseEndFrame(), FrameDirection.DOWNSTREAM)
+            states.append(a.busy)
+            return states, len(passed)
+
+        states, passed = asyncio.run(main())
+        self.assertEqual(states, [False, True, False])
+        self.assertEqual(passed, 2, "a frame was swallowed")
+
+
+class SilentAnswer(unittest.TestCase):
+    def test_an_answer_that_speaks_nothing_releases_the_next_line_promptly(self):
+        """Busy (the model answering) and then not, with no speech at all:
+        the next line goes when the answer ends, not at the start bound."""
+        pushed, busy = [], {"now": False}
+
+        async def push(text):
+            pushed.append((text, asyncio.get_running_loop().time()))
+
+            async def answer():
+                await asyncio.sleep(0.1)
+                busy["now"] = True
+                await asyncio.sleep(0.2)
+                busy["now"] = False
+
+            asyncio.get_running_loop().create_task(answer())
+
+        async def main():
+            turns = TypedTurns(push, lambda: busy["now"], log=lambda _: None, start_secs=5.0, end_secs=5.0)
+            turns.put({"text": "one"})
+            turns.put({"text": "two"})
+            task = asyncio.create_task(turns.run())
+            await asyncio.sleep(1.0)
+            task.cancel()
+
+        asyncio.run(main())
+        self.assertEqual([t for t, _ in pushed], ["one", "two"])
+        self.assertLess(pushed[1][1] - pushed[0][1], 1.0, "the next line waited out the start bound")
 
 
 if __name__ == "__main__":
