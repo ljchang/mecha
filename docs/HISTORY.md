@@ -88,8 +88,10 @@ with no speak-replies switch, by the owner's choice.
 **2026-10-02 — a files-only persona reads the words, not the tool output
 (#505).** The owner's ruling C on #498's `answers = "files"` exemption,
 2026-10-02: "lets go with C". The memory tools stay offered. A files-only
-persona's `memory_read` returns only the owner's and the persona's words,
-and tool output is replaced by `LEFT_OUT` (`memory_tools::words_only`).
+persona's `memory_read` returns only the owner's and the persona's words.
+Tool results read as `LEFT_OUT` where they stood, and the tool calls and
+the harness's folded blocks (`agent::is_harness_voice`) are dropped
+(`memory_tools::words_only`).
 - `read_episode` now cuts once, keeping the end:
   `writer::render` was split into `writer::named` and `writer::bound`, and
   a long conversation keeps `READ_HEAD_CHARS` (2000) of its opening and
