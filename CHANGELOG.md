@@ -682,7 +682,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the turns that copied, copies went from 4 of 4 to 0 of 8 with no
   damage to the text; DRY sampling also stopped the copies but garbled
   2–5 replies in 8, so it is not used. The assistant's own chats are
-  unchanged: they keep the seed and their reasoning. Each persona reply's
+  unchanged: they keep the seed and their reasoning, and so does the
+  persona's crisis judge, whose verdict should not vary. Each persona reply's
   overlap with its earlier ones is now recorded as a number in
   `echo.jsonl`, and `mecha persona show` reports it.
 
