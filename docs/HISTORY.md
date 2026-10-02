@@ -14,6 +14,67 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-10-02 — a persona can search its memory and open a past
+conversation (#498).** PERSONA-DESIGN §9.7's `recall` and `recall_open`,
+named `memory_search` and `memory_read` (`persona::memory_tools`). Owner
+approval 2026-10-01: offer them whenever memory is on, and give episodes an
+id in the recall blocks.
+- `memory_search` runs `Memory::recall_search`, the same fusion per-turn
+  recall uses, and shares its `[memory]` switches through
+  `memory_tools::kinds`.
+- `memory_read` opens the turns an episode's `source` names, by id only.
+  The chat name comes from the stored record and `is_chat_id` refuses
+  anything else before a path is joined. A conversation any of whose turns
+  is untrusted or unreadable comes back `.from_outside()`.
+- Both tools are `Egress::None`, are offered from the pinned settings so the
+  tool list cannot change mid-chat, and read the switches live on each call.
+- Two workflow review passes, counted from the PR's comments. Pass 1 caught
+  a description naming `memory_read` in a chat that had not been given it.
+  Pass 2 raised the `answers = "files"` exemption, now an open owner
+  decision in HANDOFF.
+
+**2026-10-01 — calling a persona (#483), and a voice library (#490).**
+- **Calls (#483):** a call into a persona chat is answered by the persona
+  (`PersonaChats::speak`), through the typed turn's own door, so the lock,
+  the crisis layer, the dose meter and the record are one code path. A
+  spoken turn never steers; it barges in after the lock check.
+- **The call note** is a harness-voice block (`persona::call`), re-armed
+  after a failed turn, a compaction or a typed steer.
+- **The crisis pause** is spoken: as text deltas on the tap, since a
+  streaming call never speaks `HostedAnswer.text`.
+- **Serve vouches at the offer** (`persona_offer`): it checks and strips the
+  unlock token, resolves the voice itself, and binds last, with an id that
+  only that call's hang-up can release.
+- **The page:** a call button beside send (`PersonaCall.svelte`), and call
+  minutes in their own `calls.jsonl`, never `dose.jsonl`, which an older
+  binary would read as turns.
+- **The library (#490):** Library → Voices lists every voice the worker
+  speaks, with a spoken sample (`/mecha/sample`, a fixed sentence), clone
+  status, and who speaks in each, behind the lock. Recording moved there
+  from Settings.
+- **A persona names a library voice directly** (`voice` plus an optional
+  `voice_speed`, `persona::VOICE_SPEED`), and the `voices/` profiles are
+  gone, by the owner's rulings.
+- **What the loops found:** eight passes on #483 and seven on #490. #483's
+  first pass found the pause was silent on a real call, because the tests
+  read the answer field the streaming path discards. Most later findings
+  were lifecycle: a binding released by the wrong call, a hang-up from a
+  closing tab, a refused offer unbinding a live call.
+
+**2026-10-01 — the persona page: tap the picture to frame it, and the lock
+moves into settings (#491, #497).** The ⋯ menu went. The hero picture opens
+framing, and a new portrait opens it at the default: the server clears a
+stale frame when the character changes (`write_owner_file`) or its picture
+is replaced (`clear_frames_for`, from `imagelib update`). Locking is a
+switch at the top of the Settings tab. It waits while any tab holds unsaved
+edits (`persona.js` `lockWaits`), since locking without the unlock closes
+the editor.
+
+**2026-10-01 — the macOS `serve_lifecycle` flake was a port reuse (#492).**
+Four test sites reserved two ports one at a time. macOS hands a just-dropped
+port straight back, so both got 49287 and serve bound one address twice.
+Both listeners are now held until both ports are read.
+
 **2026-10-01 — personas remember: a store, a nightly writer, and recall at
 chat start and on every turn (#462, #463, #468, #477, #481).**
 PERSONA-DESIGN §9 / §17 step 5, each through its own review loop.
