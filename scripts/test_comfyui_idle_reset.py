@@ -39,10 +39,12 @@ case "$*" in *POST*) exit 0;; esac
 echo "$FAKE_QUEUE"
 """,
     "ss": """#!/bin/bash
+[ -n "${FAKE_SS_BROKEN:-}" ] && exit 1
 [ -n "${FAKE_CONNECTED:-}" ] && echo "ESTAB 0 0 127.0.0.1:8188 127.0.0.1:51234"
 exit 0
 """,
     "journalctl": """#!/bin/bash
+[ -n "${FAKE_JOURNAL_BROKEN:-}" ] && exit 1
 [ -n "${FAKE_RECENT:-}" ] && echo "got prompt"
 exit 0
 """,
@@ -111,6 +113,13 @@ class IdleReset(unittest.TestCase):
 
     def test_an_open_connection_is_a_client_mid_call(self):
         self.assertFalse(self.restarted(self.run_script(FAKE_CONNECTED="1")))
+
+    def test_a_connection_check_that_cannot_run_is_busy(self):
+        # The only guard while references upload, before anything is queued.
+        self.assertFalse(self.restarted(self.run_script(FAKE_SS_BROKEN="1")))
+
+    def test_a_journal_that_cannot_be_read_is_not_unused(self):
+        self.assertFalse(self.restarted(self.run_script(FAKE_JOURNAL_BROKEN="1")))
 
     def test_use_within_the_window_is_not_idle(self):
         self.assertFalse(self.restarted(self.run_script(FAKE_RECENT="1")))
