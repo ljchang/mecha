@@ -51,7 +51,7 @@ INDEX = os.path.expanduser("~/.cache/mecha-vctk-index.json")
 TARGET_SECONDS = 12.0
 MAX_UTTERANCES = 8
 
-# The four kept after auditioning all 63 women in the corpus - chosen by
+# The first four were kept after auditioning all 63 women in the corpus - chosen by
 # ear, which is the only way this can be chosen: VCTK tags *region* and
 # never register, so "which of these sounds posh" is not a query. p276 is
 # the one speaker labelled Oxford rather than a broad region, and p362 is
