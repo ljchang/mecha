@@ -11,6 +11,7 @@
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
 use mecha_core::feature::{self, Feature, Row, State, Switch};
+use mecha_core::recommend::{self, Budget, Machine, Peak, Sum};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -20,6 +21,11 @@ pub struct Args {
     /// on / off / blocked / unready / unknown it is.
     #[arg(long)]
     pub json: bool,
+    /// Add up the memory of every model the shown features need, against
+    /// this machine's (the card's and the host's, if it has a card).
+    /// Reads `/proc/meminfo` and `nvidia-smi`; asks no server.
+    #[arg(long)]
+    pub probe: bool,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -54,6 +60,16 @@ pub fn execute(args: Args) -> Result<()> {
     let cfg = Config::load_global()?;
     let facts = feature::Facts::read(&home, &cfg);
     let rows = feature::all(&facts);
+    if args.probe {
+        let shown: Vec<Feature> = rows.iter().filter(|r| r.shown).map(|r| r.id).collect();
+        let budget = recommend::budget(recommend::Machine::read()?, &shown);
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&budget)?);
+        } else {
+            print!("{}", render_budget(&budget));
+        }
+        return Ok(());
+    }
     if args.json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
@@ -230,6 +246,110 @@ fn notice_line(announced: &[feature::Announcement]) -> Option<String> {
 
 /// Depth under the top level: a part of a part (`layout` under `ocr`)
 /// indents twice.
+fn gib(mb: u64) -> String {
+    format!("{:.1} GiB", mb as f64 / 1024.0)
+}
+
+fn peak_text(p: &Peak) -> String {
+    match p {
+        Peak::Measured { mb, machine, date } => {
+            format!("{}  measured on {machine}, {date}", gib(*mb as u64))
+        }
+        Peak::Arithmetic { mb } => format!("{}  arithmetic", gib(*mb as u64)),
+        Peak::Unmeasured => "unmeasured".to_string(),
+    }
+}
+
+fn sum_text(name: &str, s: &Sum) -> String {
+    let part = |v: Option<u64>| match v {
+        Some(mb) => format!(
+            "{} of {} ({:.0}%)",
+            gib(mb),
+            gib(s.total_mb),
+            mb as f64 * 100.0 / s.total_mb.max(1) as f64
+        ),
+        None => format!(
+            "unknown of {} — a figure in it is unmeasured",
+            gib(s.total_mb)
+        ),
+    };
+    let band = s
+        .band
+        .map(|b| format!(" — {}", b.word()))
+        .unwrap_or_default();
+    format!(
+        "{name}\n  resident:          {}\n  everything loaded: {}{band}\n",
+        part(s.resident_mb),
+        part(s.loaded_mb)
+    )
+}
+
+/// `mecha features --probe`: every model the shown features need, what each
+/// holds and on what evidence, and the sums against this machine.
+fn render_budget(b: &Budget) -> String {
+    let mut out = String::new();
+    let tier = match b.tier_gb {
+        Some(t) => format!("the {t} GB tier"),
+        None => "below the smallest tier (16 GB)".to_string(),
+    };
+    match b.machine {
+        Machine::Unified {
+            total_mb,
+            gpu_unread,
+        } => {
+            out.push_str(&format!("One memory pool, {} — {tier}.\n", gib(total_mb)));
+            if gpu_unread {
+                out.push_str(
+                    "  (Only `nvidia-smi` is asked about a card, and it did not answer; a card \
+                     it cannot see is counted as part of this pool.)\n",
+                );
+            }
+        }
+        Machine::Discrete { gpu_mb, host_mb } => out.push_str(&format!(
+            "A separate GPU: {} on the card, {} of system memory — {tier}.\n",
+            gib(gpu_mb),
+            gib(host_mb)
+        )),
+    }
+    out.push('\n');
+    for l in &b.lines {
+        let model = l.model.unwrap_or("no model recommended at this tier");
+        out.push_str(&format!(
+            "  {:<16} {model} — {}\n",
+            l.label,
+            l.residency.word().to_lowercase()
+        ));
+        match &l.host {
+            None => out.push_str(&format!("  {:<16}   {}\n", "", peak_text(&l.gpu))),
+            Some(h) => {
+                out.push_str(&format!("  {:<16}   card: {}\n", "", peak_text(&l.gpu)));
+                out.push_str(&format!("  {:<16}   host: {}\n", "", peak_text(h)));
+            }
+        }
+        if !l.own_row && l.model.is_some() {
+            out.push_str(&format!(
+                "  {:<16}   (no row for this machine: the GB10's figure, carried)\n",
+                ""
+            ));
+        }
+    }
+    out.push('\n');
+    match &b.host {
+        None => out.push_str(&sum_text("The pool", &b.gpu)),
+        Some(h) => {
+            out.push_str(&sum_text("The card", &b.gpu));
+            out.push_str(&sum_text("System memory", h));
+        }
+    }
+    if !b.not_counted.is_empty() {
+        out.push_str("\nNot in these sums:\n");
+        for n in &b.not_counted {
+            out.push_str(&format!("  {n}\n"));
+        }
+    }
+    out
+}
+
 fn depth(f: Feature) -> usize {
     std::iter::successors(f.part_of(), |p| p.part_of()).count()
 }
@@ -342,5 +462,56 @@ mod tests {
         assert!(!text.contains("blocked"), "{text}");
         assert!(text.contains("→ add a [documents] table"), "{text}");
         assert!(text.contains("→ add an [image] table"), "{text}");
+    }
+
+    /// A card: two sums, the host one unknown because the chat row's host
+    /// figure is unmeasured — said in words, never printed as a zero — and a
+    /// model with no row of its own says its figure is carried.
+    #[test]
+    fn the_probe_on_a_card_shows_two_sums_and_says_what_it_does_not_know() {
+        let b = recommend::budget(
+            Machine::Discrete {
+                gpu_mb: 32_768,
+                host_mb: 65_536,
+            },
+            &[Feature::Ocr],
+        );
+        let text = render_budget(&b);
+        assert!(
+            text.contains(
+                "A separate GPU: 32.0 GiB on the card, 64.0 GiB of system memory — the 32 GB tier."
+            ),
+            "{text}"
+        );
+        assert!(text.contains("The card\n"), "{text}");
+        assert!(text.contains("System memory\n"), "{text}");
+        assert!(
+            text.contains("unknown of 64.0 GiB — a figure in it is unmeasured"),
+            "{text}"
+        );
+        assert!(text.contains("host: unmeasured"), "{text}");
+        assert!(text.contains("the GB10's figure, carried"), "{text}");
+        assert!(!text.contains(" 0.0 GiB of 64"), "{text}");
+    }
+
+    /// One pool: one sum, with its band, and the exclusions named.
+    #[test]
+    fn the_probe_on_one_pool_names_what_it_leaves_out() {
+        let b = recommend::budget(
+            Machine::Unified {
+                total_mb: 124_610,
+                gpu_unread: false,
+            },
+            &[],
+        );
+        let text = render_budget(&b);
+        assert!(
+            text.contains("One memory pool, 121.7 GiB — the 128 GB tier."),
+            "{text}"
+        );
+        assert!(text.contains("The pool\n"), "{text}");
+        assert!(text.contains("— comfortable"), "{text}");
+        assert!(text.contains("Not in these sums:\n  chat: "), "{text}");
+        assert!(!text.contains("System memory"), "{text}");
     }
 }

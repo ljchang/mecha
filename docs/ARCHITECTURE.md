@@ -8872,6 +8872,15 @@ the full checklist this grows into as each build step lands.
    `serve::api()`, and its verbs starting with `features::require(Feature::X)`
    — except what only reads a store, deletes data, or is shared with another
    feature. Its `gated` arm says whether all of that is on.
+8. If it runs a model: a `Slot` in `recommend::SLOTS` naming **every**
+   feature that needs the model (a model is loaded once however many need
+   it — the embedder serves `graph`, `documents` and `personas`), with a 128
+   GB unified row whose figure says what it counts and carries its evidence
+   (`Peak::Measured` with machine and date, `Arithmetic`, or `Unmeasured`,
+   never a zero standing in for unknown), and a `Source` pinned by a hash a
+   reviewer read. `hardware.md`'s *Beside the chat model* table is generated
+   from these rows; `the_hardware_page_holds_the_registry_table` prints the
+   new table when they disagree.
 
 ## Context, and knowing how much is left
 

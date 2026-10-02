@@ -230,6 +230,8 @@ onboarding.rs what a new install still needs, and the one command that fixes eac
              never writes down a number the user merely believes
 feature.rs   which optional parts are on: a closed registry, five states, read
              from the global config and the disk — never a server
+recommend.rs what each model costs, by slot not feature: pinned sources, evidence
+             on every figure, and the sum `features --probe` reports — no server
 ```
 
 `RunContext` is what one *run* gets: the path jail, the approver, its budget,
