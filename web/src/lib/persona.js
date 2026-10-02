@@ -687,7 +687,8 @@ export function memorySections(data) {
   for (const [kind] of MEMORY_KINDS) {
     kept[kind] = [];
     for (const r of lists[kind]) {
-      (r.status === 'candidate' ? waiting : kept[kind]).push({ ...r, kind });
+      // `section`, not `kind`: the server's `kind` is stated/observed/inferred.
+      (r.status === 'candidate' ? waiting : kept[kind]).push({ ...r, section: kind });
     }
   }
   return { waiting, kept, empty: !waiting.length && MEMORY_KINDS.every(([k]) => !kept[k].length) };
@@ -695,7 +696,7 @@ export function memorySections(data) {
 
 // A record's line of text, whichever kind it is.
 export function memoryText(r) {
-  return r.kind === 'episodes' ? r.summary : r.text;
+  return r.section === 'episodes' ? r.summary : r.text;
 }
 
 const MEMORY_ACTIONS = ['approve', 'pin', 'unpin', 'correct', 'forget', 'share', 'unshare'];

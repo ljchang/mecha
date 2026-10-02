@@ -79,7 +79,7 @@
         <span class="mday">{r.day}</span>
         <span class="mtext">{memoryText(r)}</span>
       </div>
-      {#if r.kind === 'episodes' && r.open_threads?.length}
+      {#if r.section === 'episodes' && r.open_threads?.length}
         <div class="mnote">Left open: {r.open_threads.join('; ')}</div>
       {/if}
       {#if r.origin === 'model_untrusted'}
@@ -114,13 +114,13 @@
           {#if r.status === 'candidate'}
             <button class="linkbtn strong" disabled={busy} onclick={() => act('approve', r.uid)}>Keep it</button>
           {/if}
-          {#if r.kind !== 'episodes' && r.status !== 'candidate'}
+          {#if r.section !== 'episodes' && r.status !== 'candidate'}
             <button class="linkbtn" disabled={busy} onclick={() => start('edit', r.uid, r.text)}>Edit</button>
           {/if}
           {#if r.status !== 'candidate'}
             <button class="linkbtn" disabled={busy} onclick={() => act(r.pinned ? 'unpin' : 'pin', r.uid)}>{r.pinned ? 'Unpin' : 'Pin'}</button>
           {/if}
-          {#if (r.kind === 'user' || r.kind === 'inferred') && r.status === 'active'}
+          {#if (r.section === 'user' || r.section === 'inferred') && r.status === 'active'}
             <button class="linkbtn" disabled={busy} onclick={() => start('share', r.uid)}>Share</button>
           {/if}
           <button class="linkbtn" disabled={busy} onclick={() => start('forget', r.uid)}>Forget</button>
@@ -132,6 +132,9 @@
 
 <div class="memory">
   {#if error}<div class="warnline">{error}</div>{/if}
+  {#if data?.shared_problem}
+    <div class="warnline">What is shared could not be read ({data.shared_problem}), so share marks are missing here.</div>
+  {/if}
   {#if data?.shared_unreadable}
     <div class="warnline">{data.shared_unreadable} shared {data.shared_unreadable === 1 ? 'copy' : 'copies'} this version cannot read — what is shared may be more than shown here. <code>mecha persona memory shared</code> lists them.</div>
   {/if}

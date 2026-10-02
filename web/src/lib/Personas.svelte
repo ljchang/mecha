@@ -1479,7 +1479,9 @@
           <button class="chipbtn" class:active={memoryOpen} onclick={() => (memoryOpen = true)}>Memories</button>
         </div>
         {#if memoryOpen}
-          <PersonaMemory name={chosen.name} {token} onclose={() => { memoryOpen = false; editing = null; }} />
+          <!-- Close leaves the Memories tab, never the editor: closing the editor
+               would drop unsaved file drafts out of sight (review of #519). -->
+          <PersonaMemory name={chosen.name} {token} onclose={() => (memoryOpen = false)} />
         {:else}
         <div class="modeline">
           {#if current.form?.problem}
