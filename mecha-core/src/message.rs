@@ -388,10 +388,144 @@ pub struct Refusal {
     pub explanation: Option<String>,
 }
 
+/// What happens to reasoning from before the turn being answered when the
+/// history goes back to the model. The transcript keeps every thinking
+/// block either way; this decides only what is sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PriorThinking {
+    /// Sent back as recorded — the assistant's runs, where a follow-up
+    /// ("now the other file") leans on the analysis behind the last answer,
+    /// and where keeping it makes each prompt a prefix of the next.
+    #[default]
+    Keep,
+    /// Left out, as Qwen's templates do by default: a persona chat. Replayed
+    /// on 2026-10-02, a persona answering a four-character owner turn
+    /// re-derived its earlier plan from its own preserved thinking and sent
+    /// an earlier reply again word for word; with old thinking left out
+    /// (and no fixed seed) 0 of 8 replies copied one.
+    Drop,
+}
+
+/// The newest user message that carries no tool result — the turn the model
+/// is answering now. Tool results come back as user messages, so "the last
+/// user message" would move the cut inside a run and take the reasoning that
+/// chose a call away from the step that reads its result.
+fn answering(messages: &[Message]) -> Option<usize> {
+    messages.iter().rposition(|m| {
+        m.role == Role::User
+            && !m
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult { .. }))
+    })
+}
+
+/// Whether `message` loses its thinking under [`PriorThinking::Drop`]: an
+/// assistant message ahead of the turn being answered that has something
+/// besides thinking to keep — one that is all thinking stays whole, since an
+/// empty assistant message is a 400 on every provider.
+fn drops_thinking(message: &Message, index: usize, cut: usize) -> bool {
+    index < cut
+        && message.role == Role::Assistant
+        && message
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::Thinking { .. }))
+        && message
+            .content
+            .iter()
+            .any(|b| !matches!(b, Block::Thinking { .. }))
+}
+
+impl PriorThinking {
+    /// The history as it goes on the wire.
+    pub fn wire<'a>(self, messages: &'a [Message]) -> std::borrow::Cow<'a, [Message]> {
+        let cut = match (self, answering(messages)) {
+            (PriorThinking::Drop, Some(cut)) => cut,
+            _ => return std::borrow::Cow::Borrowed(messages),
+        };
+        std::borrow::Cow::Owned(
+            messages
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let mut m = m.clone();
+                    if drops_thinking(&m, i, cut) {
+                        m.content.retain(|b| !matches!(b, Block::Thinking { .. }));
+                    }
+                    m
+                })
+                .collect(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn think(t: &str) -> Block {
+        Block::Thinking {
+            text: t.into(),
+            signature: None,
+        }
+    }
+
+    fn thoughts(messages: &[Message]) -> Vec<String> {
+        messages
+            .iter()
+            .map(Message::thinking)
+            .filter(|t| !t.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn dropping_prior_thinking_cuts_at_the_turn_being_answered() {
+        let history = vec![
+            Message::user("hi"),
+            Message::assistant(vec![think("old"), Block::text("hello")]),
+            // All thinking: kept whole, or the message would be empty.
+            Message::assistant(vec![think("alone")]),
+            Message::user("mm"),
+            Message::assistant(vec![
+                think("now"),
+                Block::ToolUse {
+                    id: "t1".into(),
+                    name: "echo".into(),
+                    input: json!({}),
+                },
+            ]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+            }]),
+        ];
+        let wire = PriorThinking::Drop.wire(&history);
+        assert_eq!(thoughts(&wire), ["alone", "now"]);
+        assert_eq!(wire[1].text(), "hello");
+        assert_eq!(wire.len(), history.len());
+        // Keep borrows: no copy of a long history on every request.
+        assert!(matches!(
+            PriorThinking::Keep.wire(&history),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(thoughts(&history), ["old", "alone", "now"]);
+    }
+
+    #[test]
+    fn with_no_owner_turn_nothing_is_dropped() {
+        let only_results = vec![Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: "t1".into(),
+            content: "ok".into(),
+            is_error: false,
+        }])];
+        assert!(matches!(
+            PriorThinking::Drop.wire(&only_results),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
 
     #[test]
     fn message_text_ignores_thinking_and_tool_traffic() {

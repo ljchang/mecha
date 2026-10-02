@@ -579,7 +579,36 @@ fn summary_json(store: &Store, lib: &Library, p: &Persona) -> serde_json::Value 
         "sessions": store.sessions_dir(&p.name),
         "notes": p.notes,
         "problems": store.problems(p, lib),
+        // `null` when unreadable — never an empty reading.
+        "echo": recent_echoes(store, p).ok(),
     })
+}
+
+/// How much `p`'s replies repeated earlier ones, over the window
+/// `mecha persona show` reads (`persona::echo`).
+fn recent_echoes(store: &Store, p: &Persona) -> anyhow::Result<persona::echo::Echoes> {
+    let since = chrono::Utc::now() - chrono::Duration::days(persona::echo::SHOWN_DAYS);
+    persona::echo::echoes(store.dir(), &p.name, since)
+}
+
+/// One line for `describe`: the echo reading in words.
+fn echo_line(echoes: &anyhow::Result<persona::echo::Echoes>) -> String {
+    let days = persona::echo::SHOWN_DAYS;
+    let e = match echoes {
+        Err(e) => return format!("unreadable — {e:#}"),
+        Ok(e) => e,
+    };
+    let skipped = match e.skipped {
+        0 => String::new(),
+        n => format!(" ({n} unreadable line(s) skipped)"),
+    };
+    match e.max {
+        None => format!("no replies measured in the last {days} days{skipped}"),
+        Some(max) => format!(
+            "{} of {} replies in the last {days} days repeated an earlier one (highest {max:.2}){skipped}",
+            e.repeated, e.replies
+        ),
+    }
 }
 
 fn describe(store: &Store, lib: &Library, p: &Persona) {
@@ -633,6 +662,7 @@ fn describe(store: &Store, lib: &Library, p: &Persona) {
         ),
         _ => {}
     }
+    println!("  echo:         {}", echo_line(&recent_echoes(store, p)));
     for n in &p.notes {
         println!("  note:         {n}");
     }

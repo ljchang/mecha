@@ -145,7 +145,7 @@ pub struct CrisisRecord {
     pub paused: bool,
 }
 
-fn append_line(path: &Path, line: &str) -> Result<()> {
+pub(super) fn append_line(path: &Path, line: &str) -> Result<()> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
     options.create(true).append(true);

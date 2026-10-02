@@ -1926,11 +1926,25 @@ fn build_subagent(
 /// a persona chat follows the router's loaded model exactly as the
 /// assistant's chats do. No fallbacks — a persona answering on a different
 /// model than the one named is the silent swap §12.6 exists to prevent.
+///
+/// **Without the provider's `seed`.** A pinned seed is how a measured run
+/// repeats exactly; in a conversation it restarts the sampler's draws at the
+/// same state every turn, and a turn that adds little ("mm") comes back as
+/// an earlier reply word for word — 7 of 7 in the 2026-10-02 replay. The
+/// server picks a fresh seed per request when none is sent.
 pub fn persona_provider(
     bound: &crate::follow::Bound,
 ) -> Result<Box<dyn mecha_core::provider::Provider>> {
     let (_, provider_cfg) = bound.config.provider(Some(&bound.provider_name))?;
-    mecha_core::provider::build(provider_cfg)
+    mecha_core::provider::build(&unseeded(provider_cfg))
+}
+
+/// `cfg` with no seed, for a provider that converses rather than measures.
+fn unseeded(cfg: &mecha_core::config::ProviderConfig) -> mecha_core::config::ProviderConfig {
+    mecha_core::config::ProviderConfig {
+        seed: None,
+        ..cfg.clone()
+    }
 }
 
 /// A persona chat's agent (`docs/PERSONA-DESIGN.md` §3.4): one per persona
@@ -2074,7 +2088,10 @@ pub fn persona_agent(
         Some(bound.model.clone()),
     )?
     .with_context_window(bound.context_window)
-    .with_clock(run_clock()?);
+    .with_clock(run_clock()?)
+    // A persona answers the turn in front of it from what was said, not
+    // from its own earlier plans, which it otherwise re-reads and re-sends.
+    .with_prior_thinking(mecha_core::message::PriorThinking::Drop);
     Ok((agent, tools.refused))
 }
 
@@ -2410,6 +2427,28 @@ pub fn surface_only_registry() -> Registry {
     // — the TUI's — asks the switch.
     r.insert(Arc::new(crate::slack::show::ShowFileTool::new(0)));
     r
+}
+
+#[cfg(test)]
+mod persona_provider_tests {
+    use super::*;
+
+    #[test]
+    fn a_persona_provider_converses_unseeded_and_keeps_everything_else() {
+        let cfg = mecha_core::config::ProviderConfig {
+            kind: "local".into(),
+            model: Some("m".into()),
+            temperature: Some(0.6),
+            seed: Some(42),
+            ..Default::default()
+        };
+        let p = unseeded(&cfg);
+        assert_eq!(p.seed, None);
+        assert_eq!(
+            (p.kind, p.model, p.temperature),
+            (cfg.kind, cfg.model, cfg.temperature)
+        );
+    }
 }
 
 #[cfg(test)]
