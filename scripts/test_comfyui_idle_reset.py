@@ -71,7 +71,8 @@ class IdleReset(unittest.TestCase):
                 f.write_text(body)
                 f.chmod(0o755)
             (d / "proc" / PID).mkdir(parents=True)
-            (d / "proc" / PID / "status").write_text(f"Name:\tpython\nVmRSS:\t{rss_mib * 1024} kB\n")
+            if rss_mib is not None:
+                (d / "proc" / PID / "status").write_text(f"Name:\tpython\nVmRSS:\t{rss_mib * 1024} kB\n")
             (d / "meminfo").write_text(f"MemTotal: 127000000 kB\nMemFree: {memfree_mib * 1024} kB\n")
             calls = d / "calls"
             calls.touch()
@@ -137,6 +138,11 @@ class IdleReset(unittest.TestCase):
 
     def test_a_journal_that_cannot_be_read_is_not_unused_and_fails_the_unit(self):
         self.assertFalse(self.restarted(self.run_script(FAKE_JOURNAL_BROKEN="1", rc=1)))
+
+    def test_an_unreadable_process_status_is_unknown_and_fails_the_unit(self):
+        calls = self.run_script(rss_mib=None, rc=1)
+        self.assertFalse(self.restarted(calls))
+        self.assertIn("unknown", self.last_said)
 
     def test_an_unreadable_gpu_figure_is_unknown_not_zero(self):
         # Read as zero, a loaded server (12.2 GPU + 1.4 RSS) would fall under
