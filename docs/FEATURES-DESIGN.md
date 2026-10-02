@@ -1294,6 +1294,14 @@ pin that sits:
   that names what is missing. **Whether the arm64 CUDA asset runs on the
   GB10's sm_121 is unmeasured** — 7b's first measurement; this box was
   built from source because nothing else was known to.
+- **Self-contained, so a link can move it.** A build from source bakes the
+  build tree's absolute path into the binary's RUNPATH (§10.1's stub, and
+  `-next` after it), so copying `build/bin` somewhere and swapping a link
+  would change nothing that runs. The build fallback therefore installs
+  with `cmake --install` into the engine's directory with an
+  `$ORIGIN`-relative RUNPATH, and 7b asserts it with the `readelf -d` check
+  `LLAMA-SERVER.md` prescribes; a release asset is checked the same way
+  rather than assumed.
 - **Side by side:** each engine lives in `~/.mecha/sidecars/llama/<tag>/`,
   with the **resolved commit sha** recorded in the manifest and the ledger
   (a tag is a label; a rollback and an audit need the build), and the units
@@ -1335,8 +1343,21 @@ pin that sits:
   serving channel's own hash, and it is acceptable only because the owner,
   at a terminal, chose the tag — not config, not a project file, not a
   model. Every other source still needs review.
-- **One engine serves three servers.** The router, the embeddings server and
-  the OCR server all run the `current` link (`LLAMA-SERVER.md`, the bullet *Upgrading llama.cpp: the build tree is the deployment*),
+- **Adopting a provided engine is the explicit step F8 deferred.** Today
+  all three launchers run `${LLAMA_SERVER:-llama-server}` from `PATH`
+  (`path.conf` puts `~/.local/bin` first), so nothing reads a `current` link
+  until the units' `LLAMA_SERVER` names it — which is 7c's unit templates on
+  a clean machine. On a machine whose engine is *provided* (this one),
+  `setup engine --upgrade` **refuses**, naming `mecha setup engine --adopt`:
+  a promotion no server reads would write a `Measured` row for an upgrade
+  that reached nothing — a half-applied promotion reading as complete.
+  `--adopt` installs the shipped pin side by side, points the three units'
+  `LLAMA_SERVER` at `current` under the same gate as a promotion, and keeps
+  the hand-installed stub untouched as the first rollback. It runs only when
+  the owner asks; nothing adopts by default.
+- **One engine serves three servers.** Once adopted (or installed by 7c),
+  the router, the embeddings server and the OCR server all run the
+  `current` link (`LLAMA-SERVER.md`, the bullet *Upgrading llama.cpp: the build tree is the deployment*),
   so a promotion reaches all three: the router at the gated restart, the
   two on-demand servers at their next cold start, ungated. So the gate's
   smoke test covers each — a chat completion, an embedding, **and an OCR
@@ -1395,7 +1416,7 @@ Step 7 becomes these, each a PR that leaves every feature working:
   and the native downloader with its resume and hash tests. Layout's
   installer moves in as the first entry, since it is already pinned.
 - **7b.** The engine: release-asset fetch, the build fallback, side-by-side
-  directories, `--upgrade` with its measurement, `--rollback`.
+  directories, `--upgrade` with its measurement, `--rollback`, and `--adopt` for a provided engine.
 - **7c.** The router unit and chat model choice; the embeddings and OCR
   servers on demand from nothing.
 - **7d.** `uv` and the voice venv, Parakeet and the voice worker.
@@ -1422,4 +1443,11 @@ it guards against:
 - `--remove` deletes exactly the manifest's files and leaves a file mecha
   did not write in the same directory;
 - `--upgrade` against a slower engine (a stub that answers slowly) declines
-  to promote and says so with both numbers.
+  to promote and says so with both numbers;
+- without a tty, `features enable <id>` installs nothing and `setup engine
+  --upgrade` refuses — with and without `--to`;
+- bare `--upgrade` with the confirmation declined downloads no byte, and a
+  confirmation of tag *A* never fetches tag *B*: the tag resolved at fetch
+  time is re-checked against the tag confirmed, and a mismatch stops;
+- `--upgrade` on a provided engine refuses and names `--adopt`, writing no
+  ledger row.
