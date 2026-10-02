@@ -110,11 +110,19 @@ you are still finding out whether you like it.
 
 ## The controls
 
-**The call pane holds call controls only** — mute, and end the call. Voice and
+**The call pane holds call controls only** — mute, end the call, and a
+text box for when you would rather type: a typed line is a turn like a
+spoken one, answered aloud in the call's voice, and the microphone pauses
+while the box has focus (it comes back as it was; mute stays yours). Voice and
 rate were preferences wearing call-control clothes, so they live on
 [the settings page](/docs/features/interfaces/web#settings-and-what-a-browser-may-write)
 now, reading and writing the voice stack's own preference store — the one store
 every page reads. A choice made there is the choice the next call opens with.
+
+**Listen** under a finished reply reads it aloud without a call — a
+persona's reply in its voice, the assistant's in yours — with code, links
+and Markdown marks left out. It goes through the same worker, and keeps no
+trace of the text there.
 
 **Voice.** Six generated references plus Chatterbox's own built-in voice, and
 any you have cloned. **Library → Voices** lists them all: tap one to hear a
