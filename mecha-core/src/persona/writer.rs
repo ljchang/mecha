@@ -220,7 +220,7 @@ pub fn stretches(chat: &Chat, from: u32) -> Vec<Stretch> {
     out
 }
 
-fn messages_in(chat: &Chat, s: Stretch) -> Vec<Message> {
+pub(crate) fn messages_in(chat: &Chat, s: Stretch) -> Vec<Message> {
     chat.turns[s.from as usize..s.to as usize]
         .iter()
         .filter_map(|t| t.message.clone())
@@ -241,8 +241,18 @@ pub fn has_reply(chat: &Chat, s: Stretch) -> bool {
 /// (tool results clipped, harness text labelled as the harness, reasoning
 /// dropped), with the two speakers named as who they are, then bounded.
 pub fn render(chat: &Chat, s: Stretch, display: &str) -> String {
-    let full = crate::compact::render_for_summary(&messages_in(chat, s), 300);
-    let named: String = full
+    bound(
+        &named(&messages_in(chat, s), display),
+        HEAD_CHARS,
+        TAIL_CHARS,
+    )
+}
+
+/// `messages` as the summariser renders them, with `[user]` and
+/// `[assistant]` named as the owner and `display`. Unbounded: the caller
+/// bounds it once, at its own size.
+pub(crate) fn named(messages: &[Message], display: &str) -> String {
+    crate::compact::render_for_summary(messages, 300)
         .lines()
         .map(|l| {
             if let Some(rest) = l.strip_prefix("[user] ") {
@@ -253,16 +263,21 @@ pub fn render(chat: &Chat, s: Stretch, display: &str) -> String {
                 format!("{l}\n")
             }
         })
-        .collect();
-    let total = named.chars().count();
-    if total <= HEAD_CHARS + TAIL_CHARS {
-        return named;
+        .collect()
+}
+
+/// `text` kept to its first `head` and last `tail` characters, with the cut
+/// said where it falls; the end of a stretch is usually where it landed.
+pub(crate) fn bound(text: &str, head: usize, tail: usize) -> String {
+    let total = text.chars().count();
+    if total <= head + tail {
+        return text.to_string();
     }
-    let head: String = named.chars().take(HEAD_CHARS).collect();
-    let tail: String = named.chars().skip(total - TAIL_CHARS).collect();
+    let first: String = text.chars().take(head).collect();
+    let last: String = text.chars().skip(total - tail).collect();
     format!(
-        "{head}\n… [{} characters of the middle omitted] …\n{tail}",
-        total - HEAD_CHARS - TAIL_CHARS
+        "{first}\n… [{} characters of the middle omitted] …\n{last}",
+        total - head - tail
     )
 }
 

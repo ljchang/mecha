@@ -1357,6 +1357,15 @@ module.
       unreadable counts as untrusted). The chat comes from the stored
       episode, never from the model, and a chat id that is not a session id
       is refused before it can become a path.
+    - `answers = "files"` does not withhold them: they are inserted past
+      `registry_as`, and the `[memory]` switches are memory's control. A
+      files-only `memory_read` returns the owner's words and the
+      persona's; each tool result reads as left out where it stood, and its
+      call and the harness's folded blocks are dropped (`words_only`, owner
+      ruling 2026-10-02). The turns' taint still stands, since the persona's
+      own replies may restate what it read.
+    - A long conversation is bounded once (`writer::bound`), keeping its
+      end.
     - Episode lines in the recall blocks carry `memory_tools::short` ids.
   - **The writer** (`persona::writer`, §9.6) runs from `mecha persona memory
     write`, which `scripts/ruminate.sh` calls nightly; nothing writes after a

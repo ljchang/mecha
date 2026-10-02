@@ -31,6 +31,18 @@
 //! open chat at its next call. Registration follows the chat's pinned
 //! version, so the tool list — the front of the cached prefix — never
 //! changes mid-chat.
+//!
+//! **Files only still remembers** (owner ruling 2026-10-02). `answers =
+//! "files"` withholds the tools that bring third-party content in (§10.4);
+//! these are memory, whose own switches are its control, so they stay. What
+//! changes is what `memory_read` returns: the owner's words and the
+//! persona's, with each tool result left out where it stood
+//! ([`words_only`]), so reading a chat from when the persona answered from
+//! anything does not hand it that chat's tool output verbatim. It is not a
+//! seal: an episode's summary was written from a rendering with tool results
+//! in it, and `memory_search` and the recall folds return summaries
+//! unfiltered, as the persona's own kept replies may restate what it read.
+//! The ruling accepted that level; the taint still marks all of it.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -39,9 +51,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::memory::{Filter, Memory, Recallable, Table, MEMORY_DB};
-use super::writer::{read_chat, render, Stretch};
-use super::{Origin, Persona, Settings, Store, UserFacts};
+use super::writer::{bound, messages_in, named, read_chat, Stretch};
+use super::{Answers, Origin, Persona, Settings, Store, UserFacts};
 use crate::embed::Embedder;
+use crate::message::{Block, Message, Role};
 use crate::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
 
 /// Records `memory_search` returns by default, and at most.
@@ -49,6 +62,13 @@ const DEFAULT_HITS: usize = 6;
 const MAX_HITS: usize = 12;
 /// The most of a past conversation one `memory_read` returns.
 pub const MAX_READ_CHARS: usize = 8000;
+
+/// How much of `MAX_READ_CHARS` goes to a long conversation's opening; the
+/// rest keeps its end, where it usually landed.
+const READ_HEAD_CHARS: usize = 2000;
+
+/// What a tool result reads as for a persona that answers from its files.
+const LEFT_OUT: &str = "(left out: you answer from your files, not from what a tool brought back)";
 /// How long a search waits for the embeddings server; slower, and it is by
 /// words (`persona_chat`'s `RECALL_EMBED_WAIT`, for the same cold start).
 const EMBED_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
@@ -306,7 +326,7 @@ pub fn read_episode(
     let untrusted = chat.turns[from as usize..to as usize]
         .iter()
         .any(|t| t.message.is_none() || t.taint.is_none_or(|t| t.untrusted));
-    let rendered = render(
+    let mut messages = messages_in(
         &chat,
         Stretch {
             from,
@@ -317,18 +337,18 @@ pub fn read_episode(
                 Origin::ModelClean
             },
         },
-        persona.display(),
     );
+    if persona.settings.files.answers == Answers::Files {
+        messages = words_only(messages);
+    }
+    let rendered = named(&messages, persona.display());
     let day = ep
         .started_at
         .as_deref()
         .unwrap_or(&ep.ingested_at)
         .get(..10)
         .unwrap_or("");
-    let mut body: String = rendered.chars().take(MAX_READ_CHARS).collect();
-    if rendered.chars().count() > MAX_READ_CHARS {
-        body.push_str("\n… (the rest of this conversation is cut here)");
-    }
+    let body = bound(&rendered, READ_HEAD_CHARS, MAX_READ_CHARS - READ_HEAD_CHARS);
     Ok(Read {
         text: format!(
             "The conversation behind [{}] ({day}): {}\n\n{body}",
@@ -337,6 +357,41 @@ pub fn read_episode(
         ),
         untrusted,
     })
+}
+
+/// An earlier conversation as a files-only persona may read it (§10.4,
+/// owner ruling 2026-10-02): the owner's words and its own. What a tool
+/// brought back is left out where it stood, and its call with it; what the
+/// words themselves restate stays (see the module header). The orphaned
+/// results are fine here only because these messages are rendered to prose
+/// and never sent. The harness's folded text (files, memory, notices) is dropped:
+/// the persona reaches its files and its memory through their own tools.
+fn words_only(messages: Vec<Message>) -> Vec<Message> {
+    messages
+        .into_iter()
+        .map(|mut m| {
+            let role = m.role;
+            m.content = m
+                .content
+                .into_iter()
+                .filter_map(|b| match b {
+                    Block::ToolUse { .. } => None,
+                    Block::ToolResult { tool_use_id, .. } => Some(Block::ToolResult {
+                        tool_use_id,
+                        content: LEFT_OUT.into(),
+                        is_error: false,
+                    }),
+                    Block::Text { text }
+                        if role == Role::User && crate::agent::is_harness_voice(&text) =>
+                    {
+                        None
+                    }
+                    b => Some(b),
+                })
+                .collect();
+            m
+        })
+        .collect()
 }
 
 #[async_trait]
