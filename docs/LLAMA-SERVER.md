@@ -544,6 +544,11 @@ Measured on 2026-09-26 against `c841aee`, unless a bullet names another build:
   unchanged alias. Grafts live in `MECHA_GRAFT_DIR` (default
   `~/models/mtp-graft`). A damaged graft does not fall back: the graft *is*
   the weights, so it fails the child's start; only an empty file is refused.
+  **After any edit to `mtp-graft.py`, rebuild before restarting the router**
+  — the edit retires the graft, and a restart without the rebuild drops the
+  arm to ~70 tok/s with only a `warn` in `llama-local`'s journal. Nothing
+  prunes retired grafts or `.partial` leftovers (~21 GB each): delete by hand
+  every file in `MECHA_GRAFT_DIR` but the one the router's line names.
   Four slots with MTP are unmeasured (two attempts contaminated by a busy
   GPU); if they regress, drop the preset's two `SPEC` lines. **The first request of
   a fresh child is warmup** — 3–4× slower on the same prompts — so discard it

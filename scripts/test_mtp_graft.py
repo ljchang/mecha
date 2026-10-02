@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-from gguf import GGUFReader, GGUFValueType, GGUFWriter
+from gguf import GGMLQuantizationType, GGUFReader, GGUFValueType, GGUFWriter, quants
 
 GRAFT = Path(__file__).with_name("mtp-graft.py")
 ARCH = "qwen35moe"
@@ -39,6 +39,14 @@ def write(path, blocks, nextn=None, fill=0.0, tensors=None, arch=ARCH, embd_rows
     names = tensors if tensors is not None else (
         [f"blk.{i}.attn_q.weight" for i in range(blocks)] + ["token_embd.weight", "output.weight"])
     for i, name in enumerate(names):
+        if name.endswith("ffn_down_exps.weight"):
+            # Quantized, as every tensor of the real Q4_K_M is: byte-shaped
+            # uint8 data whose logical shape gguf recovers from the type — the
+            # other branch of the reader and writer from the F32 ones here.
+            data = np.arange(4 * 64, dtype=np.float32).reshape(4, 64) * 0.01 + fill + i
+            w.add_tensor(name, quants.quantize(data, GGMLQuantizationType.Q8_0),
+                         raw_dtype=GGMLQuantizationType.Q8_0)
+            continue
         rows = embd_rows if name in ("token_embd.weight", "output.weight") else 4
         w.add_tensor(name, np.full((rows, 4), fill + i, dtype=np.float32))
     w.write_header_to_file()
@@ -68,10 +76,13 @@ class Graft(unittest.TestCase):
         return r.stderr
 
     def test_the_head_is_added_and_the_base_is_kept_byte_for_byte(self):
-        write(self.base, 2, fill=0.0)
+        quant = ["blk.1.ffn_down_exps.weight"]
+        write(self.base, 2, fill=0.0,
+              tensors=["blk.0.attn_q.weight", "blk.1.attn_q.weight", *quant, "token_embd.weight", "output.weight"])
         write(self.donor, 3, nextn=1, fill=100.0,
-              tensors=["blk.0.attn_q.weight", "blk.1.attn_q.weight", "blk.2.attn_q.weight",
-                       "blk.2.nextn.eh_proj.weight", "token_embd.weight", "output.weight"])
+              tensors=["blk.0.attn_q.weight", "blk.1.attn_q.weight", *quant, "blk.2.attn_q.weight",
+                       "blk.2.ffn_down_exps.weight", "blk.2.nextn.eh_proj.weight",
+                       "token_embd.weight", "output.weight"])
         r = self.graft()
         self.assertEqual(r.returncode, 0, r.stderr)
         out, base, donor = GGUFReader(self.out), GGUFReader(self.base), GGUFReader(self.donor)
@@ -79,12 +90,16 @@ class Graft(unittest.TestCase):
         self.assertEqual(out.fields[f"{ARCH}.nextn_predict_layers"].contents(), 1)
         self.assertEqual(out.fields["general.name"].contents(), "fill-0.0", "the base's keys, not the donor's")
         got = {t.name: t for t in out.tensors}
-        self.assertEqual(set(got), {t.name for t in base.tensors} | {"blk.2.attn_q.weight", "blk.2.nextn.eh_proj.weight"})
-        for t in base.tensors:
-            self.assertTrue(np.array_equal(got[t.name].data, t.data), t.name)
-        for t in donor.tensors:
-            if t.name.startswith("blk.2."):
-                self.assertTrue(np.array_equal(got[t.name].data, t.data), t.name)
+        self.assertEqual(set(got), {t.name for t in base.tensors}
+                         | {"blk.2.attn_q.weight", "blk.2.ffn_down_exps.weight", "blk.2.nextn.eh_proj.weight"})
+        kept = list(base.tensors) + [t for t in donor.tensors if t.name.startswith("blk.2.")]
+        for t in kept:
+            g = got[t.name]
+            self.assertTrue(np.array_equal(g.data, t.data), t.name)
+            self.assertEqual(g.tensor_type, t.tensor_type, t.name)
+            self.assertEqual(list(g.shape), list(t.shape), t.name)
+        self.assertEqual(got["blk.2.ffn_down_exps.weight"].tensor_type, GGMLQuantizationType.Q8_0,
+                         "the quantized branch was exercised")
         self.assertFalse(Path(str(self.out) + ".partial").exists())
 
     def test_a_base_that_already_has_a_head_is_refused(self):
