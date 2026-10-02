@@ -1421,8 +1421,9 @@ them per session. Chatterbox clones from a reference clip in `VOICES_DIR`, and
   converting other formats is not built. The take plays back before it is
   saved.
 - **The TTS server has to see it.** Chatterbox reads references from
-  `VOICES_DIR`. *Chosen (2026-10-01):* a clone is written there (`[web]
-  voices_dir`, the directory the TTS mounts), so the library and the server
+  `VOICES_DIR`. *Chosen (2026-10-01):* a clone is written there (`[voice]
+  voices_dir`, formerly `[web] voices_dir`, the directory the TTS mounts), so
+  the library and the server
   read one store and a persona names a voice the server already has.
 - **An unknown voice refuses the call by name.** A persona naming a voice the
   server does not list must not fall back to `default` — that is a persona

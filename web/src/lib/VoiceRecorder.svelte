@@ -1,6 +1,6 @@
 <script>
   // Recording or uploading a voice for the voice library (Library → Voices):
-  // a reference clip the local TTS clones from, written to `[web] voices_dir`
+  // a reference clip the local TTS clones from, written to `[voice] voices_dir`
   // through `/api/settings/voice/clone`. Moved here from the settings pane
   // with the library (owner, 2026-10-01); what it records is unchanged.
   import { apiFetch as fetch } from './api.js';
