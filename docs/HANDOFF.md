@@ -122,7 +122,14 @@ first real night. What is open, verified against `a1645e96`:
     withholding `memory_read`, or C: keeping the tools while a files-only
     read returns only the owner's and the persona's words. Owner, 2026-10-02:
     "lets go with C". #505 (`persona::memory_tools::words_only`) builds it;
-    it is unmerged at the time of writing.
+    it is unmerged at the time of writing. C is not a seal (#505's review, pass 1).
+    Episode summaries are written from `writer::render`, which keeps tool
+    results, clipped. `memory_search` and the recall folds return those
+    summaries with no `answers` gate, so a files-only persona can still
+    read a paraphrase of old tool output. Only `memory_read`'s verbatim
+    transcript is filtered, and the taint still marks it. A stricter bar,
+    a files-only persona skipping summaries of untrusted origin, is a
+    separate owner decision, not yet asked.
 - **Review minors carried:**
   - #468: `Op::Invalidate` is not gated by the `[memory]` switches;
     `--chat` on a chat with no checkpoint exits without saying so.
