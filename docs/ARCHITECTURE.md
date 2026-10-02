@@ -1480,6 +1480,38 @@ module.
   the length when a call ends (`/call`, sent with `keepalive`, so a tab that
   closes still sends it), and serve clamps it to `MAX_CALL_SECS`. The same
   request releases the call's unlock.
+- **A persona chat samples unseeded and sends no earlier thinking.** On
+  2026-10-02 a persona sent one reply again, word for word, after a
+  four-character owner turn. Both changes sit at the persona's own seams, so
+  the assistant's runs keep their seed, their reasoning and their cached
+  prefix.
+  - `setup::persona_provider` builds from `unseeded(cfg)`. A pinned seed
+    makes a measured run repeat exactly. In a conversation it makes every
+    request reuse the same sampler draws, and a turn that adds little comes
+    back as an earlier reply. With no `seed` sent, llama-server draws a fresh
+    one per request.
+  - `persona_agent` sets `PriorThinking::Drop` (`message.rs`). The cut is
+    the newest user message that carries no tool result, which is the cut
+    Qwen's own templates use. A tool result is a user message too, so "the
+    last user message" would cut inside a run, and the reasoning that chose
+    a call would never reach the step that reads its result.
+    - An all-thinking assistant message is kept whole, because an empty
+      message is a 400.
+    - The transcript records every thinking block; only the wire is cut.
+    - Every pressure reading goes through `Agent::wire_bytes`, never
+      `message_bytes(messages)`. Measuring thinking that is never sent
+      would compact early and spend the context the cut saves.
+  - The DRY sampler is not used. It ended the copies but garbled replies
+    at every setting tried, and the model got around it by misspelling the
+    same phrase. Its default window (`dry_penalty_last_n`, like
+    `repeat_last_n`) is 64 tokens, too short to see an earlier turn, and
+    this build refuses `-1`.
+  - `persona::echo` records each reply's overlap with the closest earlier
+    reply as a number in `echo.jsonl`, never the words. It has its own file
+    for the same reason `calls.jsonl` does. When there is nothing to compare
+    the result is `None` and nothing is written. `mecha persona show` reads
+    the last `SHOWN_DAYS` days, and an unreadable file is reported as such,
+    never as zero.
 
 ## Security model
 

@@ -1560,6 +1560,28 @@ model it was written under. A model change is shown to the owner at the next
 chat, never silent: Replika's users read a model swap as the companion dying,
 with all its memory intact.
 
+### 12.7 Repetition
+
+A persona should not say the same thing twice. On 2026-10-02 a long chat
+repeated one reply several times, and the owner ruled on three things:
+
+- **Defaults, not tuning.** A persona chat sends no fixed seed and no earlier
+  turns' reasoning (`ARCHITECTURE.md` §Personas). Both put back what the
+  model's own guidance and the purpose of a seed already say. Neither was
+  fitted to the one chat that showed the problem.
+- **No DRY sampler.** It stopped the copies and garbled the text. The model
+  got around it by misspelling the same phrase.
+- **Measure before fitting more.** One persona's sessions are too small a
+  sample to tune on, so each reply's overlap with the earlier ones is
+  recorded (`echo.jsonl`, read by `mecha persona show`).
+  - A second pattern was found but not acted on: the same opener every
+    reply, traced to the call note's "the first one short". Its wording, and
+    any harness nudge for variety, wait until the readings show the pattern
+    beyond one persona.
+  - A persona's unsaid intentions are better as explicit state, written down
+    and visible to the owner, than as surviving reasoning. That belongs with
+    planning, later.
+
 ---
 
 ## 13. Experiments (R11)

@@ -659,6 +659,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A persona no longer sends the same reply again when a turn adds
+  little.** Late in a long chat, a short owner message ("mm") could bring
+  back an earlier reply word for word. Persona chats now send no fixed
+  `seed` — the provider's pinned seed restarted the sampler at the same
+  draws every turn — and leave earlier turns' reasoning out of what goes
+  back to the model, which it had been re-reading and re-sending. Replayed
+  on the turns that copied, copies went from 4 of 4 to 0 of 8 with no
+  damage to the text; DRY sampling also stopped the copies but garbled
+  2–5 replies in 8, so it is not used. The assistant's own chats are
+  unchanged: they keep the seed and their reasoning. Each persona reply's
+  overlap with its earlier ones is now recorded as a number in
+  `echo.jsonl`, and `mecha persona show` reports it.
+
 - **The knowledge-graph page names the embedder mecha-graph actually uses**:
   `harrier-oss-v1-0.6b` on a llama-server at `:8081`, launched by
   `scripts/llama/mecha-embed-server` — not ollama with `nomic-embed-text`,
