@@ -334,6 +334,69 @@ class LateFirst(unittest.TestCase):
         self.assertEqual(order, ["sent", "awaited"])
 
 
+class LateSurvives(unittest.TestCase):
+    def test_a_failure_waiting_on_a_late_turns_answer_does_not_end_the_queue(self):
+        """The wait after a late turn is sent can raise too: the next turn
+        must still go, and the uplink must have been released at the send,
+        not held behind the answer (review of #499, pass 8)."""
+        sent, logged = [], []
+        calls = {"n": 0}
+
+        def busy():
+            calls["n"] += 1
+            if sent == ["late"] and calls["n"] < 1000:
+                calls["n"] = 1000
+                raise RuntimeError("the pipeline is going away")
+            return False
+
+        async def push(text):
+            sent.append(text)
+
+        async def late():
+            sent.append("late")
+
+        async def main():
+            turns = TypedTurns(push, busy, log=logged.append, start_secs=0.3, end_secs=0.3)
+            done = turns.deliver(late)
+            turns.put({"text": "after"})
+            task = asyncio.create_task(turns.run())
+            await asyncio.wait_for(done, 2.0)
+            await asyncio.sleep(1.0)
+            task.cancel()
+
+        asyncio.run(main())
+        self.assertEqual(sent, ["late", "after"], "the consumer died after the late turn")
+        self.assertTrue(any("late turn failed: RuntimeError" in l for l in logged), logged)
+
+    def test_delivered_before_the_answer_is_over(self):
+        """`done` resolves at the send: the live audio queued behind the
+        flush must not wait for the whole answer."""
+        times = {}
+
+        async def late():
+            times["sent"] = asyncio.get_running_loop().time()
+
+        async def main():
+            loop = asyncio.get_running_loop()
+            answering = {"until": None}
+
+            def busy():
+                return answering["until"] is not None and loop.time() < answering["until"]
+
+            async def send():
+                await late()
+                answering["until"] = loop.time() + 1.0  # a long answer begins
+
+            turns = TypedTurns(None, busy, log=lambda _: None, start_secs=1.0, end_secs=3.0)
+            task = asyncio.create_task(turns.run())
+            await turns.deliver(send)
+            times["done"] = loop.time()
+            task.cancel()
+
+        asyncio.run(main())
+        self.assertLess(times["done"] - times["sent"], 0.5, "the flush was held behind the answer")
+
+
 class Queue(unittest.TestCase):
     def test_put_says_why_a_line_was_not_queued(self):
         from worker import TYPED_QUEUE_MAX
