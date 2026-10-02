@@ -45,7 +45,7 @@ fn fact(text: &str, kind: Kind, origin: Origin) -> NewFact {
 }
 
 fn block(w: &World, p: &Persona) -> Option<MemoryBlock> {
-    let r = chat_start(&w.store(), p).unwrap();
+    let r = chat_start(&w.store(), p, None).unwrap();
     assert!(r.problems.is_empty(), "{:?}", r.problems);
     r.block
 }
@@ -371,7 +371,7 @@ fn an_about_me_that_cannot_be_read_is_said_not_taken_for_empty() {
     let w = World::new(&["mara"]);
     let big = "x".repeat((crate::persona::MAX_PROSE_BYTES + 1) as usize);
     std::fs::write(w.dir.join("about-me.md"), big).unwrap();
-    let r = chat_start(&w.store(), &w.persona("mara")).unwrap();
+    let r = chat_start(&w.store(), &w.persona("mara"), None).unwrap();
     assert!(r.block.is_none());
     assert_eq!(r.problems.len(), 1, "{:?}", r.problems);
     assert!(r.problems[0].contains("not read"));
@@ -480,7 +480,7 @@ fn a_shared_fact_this_version_cannot_read_is_said() {
         [],
     )
     .unwrap();
-    let r = chat_start(&w.store(), &w.persona("mara")).unwrap();
+    let r = chat_start(&w.store(), &w.persona("mara"), None).unwrap();
     assert!(r.block.unwrap().text.contains("Has a cat."));
     assert_eq!(r.problems.len(), 1, "{:?}", r.problems);
     assert!(r.problems[0].contains("cannot read"), "{:?}", r.problems);
@@ -491,7 +491,7 @@ fn a_memory_that_will_not_open_still_lets_the_about_me_notes_ride() {
     let w = World::new(&["mara"]);
     std::fs::write(w.dir.join("about-me.md"), "I study kelp.\n").unwrap();
     std::fs::write(w.dir.join("mara").join("memory.db"), "not a database").unwrap();
-    let r = chat_start(&w.store(), &w.persona("mara")).unwrap();
+    let r = chat_start(&w.store(), &w.persona("mara"), None).unwrap();
     assert!(r.block.unwrap().text.contains("I study kelp."));
     assert_eq!(r.problems.len(), 1, "{:?}", r.problems);
     assert!(r.problems[0].starts_with("its memory"), "{:?}", r.problems);
@@ -516,9 +516,16 @@ fn a_message_recalls_what_it_names_and_not_what_the_chat_already_holds() {
     )
     .unwrap();
     let p = w.persona("mara");
-    let b = per_turn(&w.dir, &p, "How is the Holdfast work going?", None, "")
-        .unwrap()
-        .unwrap();
+    let b = per_turn(
+        &w.dir,
+        &p,
+        "How is the Holdfast work going?",
+        None,
+        "",
+        None,
+    )
+    .unwrap()
+    .unwrap();
     assert!(b.text.starts_with(MEMORY_STEM), "{}", b.text);
     assert!(b
         .text
@@ -531,14 +538,17 @@ fn a_message_recalls_what_it_names_and_not_what_the_chat_already_holds() {
         &p,
         "How is the Holdfast work going?",
         None,
-        "We call the kelp project Holdfast."
+        "We call the kelp project Holdfast.",
+        None
     )
     .unwrap()
     .is_none());
     // "ok" calls nothing up, and neither does a word too short to be a
     // message, even one that names something remembered.
-    assert!(per_turn(&w.dir, &p, "ok", None, "").unwrap().is_none());
-    assert!(per_turn(&w.dir, &p, "Holdfast?", None, "")
+    assert!(per_turn(&w.dir, &p, "ok", None, "", None)
+        .unwrap()
+        .is_none());
+    assert!(per_turn(&w.dir, &p, "Holdfast?", None, "", None)
         .unwrap()
         .is_none());
 }
@@ -558,20 +568,24 @@ fn a_recalled_record_from_outside_arms_its_turn_and_off_is_off() {
         )
         .unwrap();
     let p = w.persona("mara");
-    assert!(per_turn(&w.dir, &p, "Tell me about Holdfast", None, "")
-        .unwrap()
-        .is_none());
+    assert!(
+        per_turn(&w.dir, &p, "Tell me about Holdfast", None, "", None)
+            .unwrap()
+            .is_none()
+    );
     m.approve(&f.uid).unwrap();
-    let b = per_turn(&w.dir, &p, "Tell me about Holdfast", None, "")
+    let b = per_turn(&w.dir, &p, "Tell me about Holdfast", None, "", None)
         .unwrap()
         .unwrap();
     assert!(b.untrusted && b.text.starts_with(UNTRUSTED_MEMORY_STEM));
 
     let mut off = p.clone();
     off.settings.memory.semantic = false;
-    assert!(per_turn(&w.dir, &off, "Tell me about Holdfast", None, "")
-        .unwrap()
-        .is_none());
+    assert!(
+        per_turn(&w.dir, &off, "Tell me about Holdfast", None, "", None)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -582,7 +596,8 @@ fn a_persona_with_no_memory_recalls_nothing_per_turn_and_creates_nothing() {
         &w.persona("mara"),
         "Tell me about Holdfast",
         None,
-        ""
+        "",
+        None
     )
     .unwrap()
     .is_none());
@@ -635,7 +650,7 @@ fn a_shared_store_that_will_not_read_costs_only_its_own_facts() {
         )
         .unwrap();
     std::fs::write(w.dir.join("shared.db"), "not a database").unwrap();
-    let r = chat_start(&w.store(), &w.persona("mara")).unwrap();
+    let r = chat_start(&w.store(), &w.persona("mara"), None).unwrap();
     let t = r.block.unwrap().text;
     assert!(
         t.contains("I study kelp.") && t.contains("Has a cat."),
@@ -661,11 +676,16 @@ fn a_common_word_never_arms_a_turn_untrusted() {
         .unwrap();
     m.approve(&f.uid).unwrap();
     let p = w.persona("mara");
-    assert!(
-        per_turn(&w.dir, &p, "Thanks, that is all for the day", None, "")
-            .unwrap()
-            .is_none()
-    );
+    assert!(per_turn(
+        &w.dir,
+        &p,
+        "Thanks, that is all for the day",
+        None,
+        "",
+        None
+    )
+    .unwrap()
+    .is_none());
 }
 
 #[test]
@@ -695,7 +715,8 @@ fn an_episode_shown_cut_short_at_chat_start_is_not_folded_again() {
         &w.persona("mara"),
         "How is the Holdfast grant?",
         None,
-        &already
+        &already,
+        None
     )
     .unwrap()
     .is_none());
@@ -723,4 +744,127 @@ fn a_turn_that_will_not_search_is_known_before_anything_is_embedded() {
         !would_search(&w.dir, &off, "How is the Holdfast work going?"),
         "all off"
     );
+}
+
+/// A fact from a late-evening chat, written by tonight's run.
+fn said_late(chat: &str, text: &str) -> NewFact {
+    NewFact {
+        source: Source {
+            chat: chat.into(),
+            from: 0,
+            to: 1,
+        },
+        ..fact(text, Kind::Stated, Origin::ModelClean)
+    }
+}
+
+#[test]
+fn a_record_is_dated_by_the_owners_day_of_its_chat_not_the_night_it_was_written() {
+    let w = World::new(&["mara"]);
+    let m = w.memory("mara");
+    // 02:49 UTC on the 30th is 22:49 on the 29th in New York.
+    m.add_fact(
+        Table::User,
+        said_late("20260930T024959-1a2b3c4d", "Is repainting the porch."),
+    )
+    .unwrap();
+    m.add_episode(NewEpisode {
+        // A stretch past the first turn has no start of its own.
+        source: Some(Source {
+            chat: "20260930T024959-1a2b3c4d".into(),
+            from: 12,
+            to: 20,
+        }),
+        summary: "Talked about the porch.".into(),
+        origin: Origin::ModelClean,
+        model: "m".into(),
+        ..NewEpisode::default()
+    })
+    .unwrap();
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let ny: chrono_tz::Tz = "America/New_York".parse().unwrap();
+    let p = w.persona("mara");
+
+    let text = chat_start(&w.store(), &p, Some(ny))
+        .unwrap()
+        .block
+        .unwrap()
+        .text;
+    assert!(
+        text.contains("- 2026-09-29 · Is repainting the porch."),
+        "{text}"
+    );
+    assert!(text.contains("- 2026-09-29 · ["), "the episode too: {text}");
+    assert!(!text.contains(&today), "never the write night: {text}");
+
+    let utc = chat_start(&w.store(), &p, Some(chrono_tz::UTC))
+        .unwrap()
+        .block
+        .unwrap()
+        .text;
+    assert!(
+        utc.contains("- 2026-09-30 · Is repainting the porch."),
+        "{utc}"
+    );
+
+    let turn = per_turn(
+        &w.dir,
+        &p,
+        "how is the porch coming along",
+        None,
+        "",
+        Some(ny),
+    )
+    .unwrap()
+    .unwrap()
+    .text;
+    assert!(turn.contains("2026-09-29"), "{turn}");
+}
+
+#[test]
+fn a_chat_id_that_is_not_a_session_id_falls_back_to_the_write() {
+    let s = |chat: &str| Source {
+        chat: chat.into(),
+        from: 0,
+        to: 0,
+    };
+    assert_eq!(
+        s("20260930T024959-1a2b3c4d").chat_began().as_deref(),
+        Some("2026-09-30T02:49:59Z")
+    );
+    for odd in ["c1", "2026-09-30", "20261399T000000-x", ""] {
+        assert_eq!(s(odd).chat_began(), None, "`{odd}`");
+    }
+    assert_eq!(
+        local_day("2026-10-02T03:34:12.123Z", Some(chrono_tz::UTC)),
+        "2026-10-02"
+    );
+    assert_eq!(local_day("2026-10-02 sometime", None), "2026-10-02");
+}
+
+#[test]
+fn recent_means_recently_said_not_recently_written() {
+    let w = World::new(&["mara"]);
+    let m = w.memory("mara");
+    // Written in the opposite order to when they were said.
+    for (chat, summary) in [
+        ("20261001T120000-aaaaaaaa", "The newer talk."),
+        ("20260901T120000-bbbbbbbb", "The older talk."),
+    ] {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        m.add_episode(NewEpisode {
+            source: Some(Source {
+                chat: chat.into(),
+                from: 3,
+                to: 4,
+            }),
+            summary: summary.into(),
+            origin: Origin::ModelClean,
+            model: "m".into(),
+            ..NewEpisode::default()
+        })
+        .unwrap();
+    }
+    let eps = m.episodes(Filter::Recallable).unwrap();
+    assert_eq!(eps[0].summary, "The newer talk.", "{eps:?}");
 }

@@ -652,6 +652,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A persona's memories are dated by when they were said.** Everything a
+  persona remembered was dated by the night it was written, so something you
+  mentioned on Tuesday read as Friday's news. Memories now carry the day of
+  the conversation they came from, in your timezone, and "recent" means
+  recently said.
 - **A persona's earlier chats no longer vanish after a restart.** An unlock
   lives in `mecha serve`'s memory, so a restart ended it while the page still
   showed the persona, and its earlier chats came back as an empty list. The
