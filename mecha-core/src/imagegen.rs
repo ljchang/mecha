@@ -559,14 +559,19 @@ pub fn comfy_graph(
 /// unknown is never warm.
 pub fn memory_need_mb(loaded: Option<bool>, min_mb: u64) -> u64 {
     match loaded {
-        Some(true) => min_mb.min(LOADED_NEED_MB),
+        // What a load costs is what a loaded server has already paid; the
+        // rest of the operator's figure is their margin, theirs to keep
+        // (review of #515).
+        Some(true) => min_mb.saturating_sub(LOAD_COST_MB),
         Some(false) | None => min_mb,
     }
 }
 
-/// What [`memory_need_mb`] asks of a server that has loaded the model: the
-/// reload from a `/free`d state, the worse of the two it cannot tell apart.
-pub const LOADED_NEED_MB: u64 = 12_288;
+/// What loading the model costs, which a server that has loaded it has
+/// already paid: the default cold figure (19 GiB) less what a reload from a
+/// `/free`d state still needs (~12 GiB, the worse of the two states
+/// `/system_stats` cannot tell apart).
+pub const LOAD_COST_MB: u64 = 19_456 - 12_288;
 
 /// Whether ComfyUI's `/system_stats` says it has loaded a model since it
 /// started. Its `torch_vram_total` is 0 in a fresh process and stays above 0
@@ -3282,8 +3287,8 @@ mod tests {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\nfake-pixels";
 
     /// What a job asks for follows what the server holds: cold after a
-    /// restart or when unknown, less once it has loaded the model, and never
-    /// more than the operator's own figure.
+    /// restart or when unknown, and less by the load's cost once it has loaded
+    /// the model, keeping whatever margin the operator added.
     #[test]
     fn the_memory_asked_for_follows_what_the_server_holds() {
         assert_eq!(memory_need_mb(Some(false), 19_456), 19_456);
@@ -3292,8 +3297,10 @@ mod tests {
             19_456,
             "unknown is never warm"
         );
-        assert_eq!(memory_need_mb(Some(true), 19_456), LOADED_NEED_MB);
-        assert_eq!(memory_need_mb(Some(true), 8_000), 8_000);
+        assert_eq!(memory_need_mb(Some(true), 19_456), 12_288);
+        // An operator's raised margin is kept, not capped at the default's.
+        assert_eq!(memory_need_mb(Some(true), 30_000), 30_000 - LOAD_COST_MB);
+        assert_eq!(memory_need_mb(Some(true), 4_000), 0);
         assert_eq!(memory_need_mb(Some(true), 0), 0);
     }
 

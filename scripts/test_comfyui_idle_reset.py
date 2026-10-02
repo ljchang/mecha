@@ -26,7 +26,10 @@ BUSY_QUEUE = '{"queue_running": [[0, "x"]], "queue_pending": []}'
 FAKES = {
     "systemctl": """#!/bin/bash
 echo "systemctl $*" >> "$CALLS"
-case "$*" in *show*) echo "${FAKE_PID-4242}";; esac
+case "$*" in
+  *InvocationID*) echo "${FAKE_INVOCATION-inv-1}";;
+  *show*) echo "${FAKE_PID-4242}";;
+esac
 """,
     "nvidia-smi": """#!/bin/bash
 [ -n "${FAKE_SMI_BROKEN:-}" ] && exit 9
@@ -46,7 +49,12 @@ exit 0
 """,
     "journalctl": """#!/bin/bash
 [ -n "${FAKE_JOURNAL_BROKEN:-}" ] && exit 1
-[ -n "${FAKE_RECENT:-}" ] && echo "got prompt"
+case "$*" in
+  # This run of the unit: it has served a picture unless told it never has.
+  *_SYSTEMD_INVOCATION_ID=*) [ -z "${FAKE_NEVER_SERVED:-}" ] && echo "Prompt executed in 80 seconds";;
+  # The idle window.
+  *--since*) [ -n "${FAKE_RECENT:-}" ] && echo "got prompt";;
+esac
 exit 0
 """,
 }
@@ -138,6 +146,13 @@ class IdleReset(unittest.TestCase):
         self.assertIn("unknown", self.last_said)
         calls = self.run_script(FAKE_SMI_BROKEN="1", rc=1)
         self.assertFalse(self.restarted(calls))
+
+    def test_a_process_that_has_served_nothing_is_never_restarted(self):
+        # A baseline above the floor with no model loaded: without this brake
+        # it would restart every minute, forever.
+        calls = self.run_script(gpu=None, rss_mib=3500, FAKE_NEVER_SERVED="1")
+        self.assertFalse(self.restarted(calls), calls)
+        self.assertIn("served nothing", self.last_said)
 
     def test_use_within_the_window_is_not_idle(self):
         self.assertFalse(self.restarted(self.run_script(FAKE_RECENT="1")))
