@@ -127,14 +127,21 @@ class IdleReset(unittest.TestCase):
     def test_use_within_the_window_is_not_idle(self):
         self.assertFalse(self.restarted(self.run_script(FAKE_RECENT="1")))
 
-    def test_low_free_memory_frees_instead_of_restarting(self):
+    def test_low_free_memory_is_judged_after_the_restart_returns_what_is_held(self):
+        # 1 GB free now, but the restart gives back ~13.9 GB first: restart.
         calls = self.run_script(memfree_mib=1000)
+        self.assertTrue(self.restarted(calls), calls)
+        self.assertFalse(self.freed(calls))
+
+    def test_too_little_even_after_the_restart_frees_instead(self):
+        # 3.1 GB held + 0.5 GB free < 4 GB: a new CUDA context may not come up.
+        calls = self.run_script(gpu=1100, rss_mib=2000, memfree_mib=500)
         self.assertFalse(self.restarted(calls), calls)
         self.assertTrue(self.freed(calls), calls)
 
-    def test_low_free_memory_with_nothing_on_the_gpu_does_nothing(self):
+    def test_too_little_with_nothing_on_the_gpu_does_nothing(self):
         # /free cannot release RSS, so asking would only add a request.
-        calls = self.run_script(gpu=350, rss_mib=7000, memfree_mib=1000)
+        calls = self.run_script(gpu=100, rss_mib=3000, memfree_mib=500)
         self.assertFalse(self.restarted(calls))
         self.assertFalse(self.freed(calls))
 
