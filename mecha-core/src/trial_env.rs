@@ -1482,9 +1482,14 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
     /// table added to one list and not the other now fails here.
     #[test]
     fn operator_only_tables_are_what_a_project_layer_is_stripped_of() {
-        let src = include_str!("config.rs");
+        // Whitespace removed first, so a strip rustfmt splits across lines
+        // is still seen (review of #503, pass 3).
+        let src: String = include_str!("config.rs")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
         let mut stripped: Vec<&str> = src
-            .match_indices("trust == LayerTrust::Project && layer.")
+            .match_indices("trust==LayerTrust::Project&&layer.")
             .filter_map(|(at, m)| {
                 let rest = &src[at + m.len()..];
                 let name = &rest[..rest.find('.')?];
