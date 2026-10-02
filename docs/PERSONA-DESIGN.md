@@ -1408,7 +1408,11 @@ them per session. Chatterbox clones from a reference clip in `VOICES_DIR`, and
   described): `voice = "ada"` in `persona.toml` is a voice in Library →
   Voices, with an optional `voice_speed` (0.5–2.0). It is checked against
   the worker's list and bound when a call starts. Expressiveness stays the
-  worker's.
+  worker's. *As built (2026-10-02):* the settings form picks `voice` from the
+  worker's list (`form_voices`, read on open and again on save, so a save
+  is held to what is listed then); with no list it says why and offers
+  none, keeping a voice already set. `voice_speed` is still edited as text,
+  since the form has no number field.
 - **The voice library** (Library → Voices, ruled 2026-10-01) lists every voice
   the TTS can speak. Each one has a spoken sample (a fixed sentence, through
   the worker's `/mecha/sample`), shows whether it's a clone on this box, and
