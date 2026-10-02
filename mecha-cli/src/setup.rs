@@ -2026,6 +2026,31 @@ pub fn persona_agent(
     } else {
         eprintln!("mecha: file_search can send, so this persona chat goes without it");
     }
+    // Its own memory, on the same terms (§9.7, "on demand"): offered when
+    // the pinned version's memory is on, so the tool list — the front of the
+    // cached prefix — never changes mid-chat; each call reads the switches
+    // live, so turning memory off reaches the chat at its next call.
+    use mecha_core::persona::memory_tools;
+    if memory_tools::offers_search(&pinned.settings) {
+        let search = memory_tools::MemorySearch::new(
+            store.to_path_buf(),
+            pinned.name.clone(),
+            file_embedder(&bound.config),
+        );
+        if mecha_core::tool::Tool::capabilities(&search).egress == mecha_core::tool::Egress::None {
+            tools.registry.insert(Arc::new(search));
+        } else {
+            eprintln!("mecha: memory_search can send, so this persona chat goes without it");
+        }
+    }
+    if memory_tools::offers_read(&pinned.settings) {
+        let read = memory_tools::MemoryRead::new(store.to_path_buf(), pinned.name.clone());
+        if mecha_core::tool::Tool::capabilities(&read).egress == mecha_core::tool::Egress::None {
+            tools.registry.insert(Arc::new(read));
+        } else {
+            eprintln!("mecha: memory_read can send, so this persona chat goes without it");
+        }
+    }
     let system = persona::system_prompt(pinned)?;
     let ctx = bound.agent.ctx();
     let agent = Agent::new(

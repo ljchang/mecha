@@ -39,6 +39,7 @@ pub mod cite;
 pub mod files;
 pub mod judge;
 pub mod memory;
+pub mod memory_tools;
 pub mod recall;
 pub mod safety;
 pub mod search;
