@@ -2120,11 +2120,14 @@ async def tts_sample(voice: str) -> bytes:
 MAX_SPEAK_CHARS = 1200
 
 
-def speak_request(body, known, default_voice=TTS_VOICE):
+def speak_request(body, known, default_voice=TTS_VOICE, default_speed=TTS_SPEED):
     """A play button's request (`POST /mecha/speak`), checked: `(text, voice,
     speed)`, or `(None, status, why)` refused. The voice must be one the TTS
-    lists when named; none named is this worker's own. Pure, so it is tested
-    without a server (`test_speak.py`)."""
+    lists when named; none named is this worker's own, and so is a speed
+    left unset - `MECHA_VOICE_TTS_SPEED`, the rate a call speaks at
+    (`run_bot`'s `bound.get("speed", TTS_SPEED)`), so Listen and a call
+    sound alike (review of #502). Pure, so it is tested without a server
+    (`test_speak.py`)."""
     if not isinstance(body, dict):
         return None, 400, "not a request"
     text = body.get("text")
@@ -2142,7 +2145,9 @@ def speak_request(body, known, default_voice=TTS_VOICE):
         return None, 503, "the TTS server could not say which voices it has"
     elif voice not in known:
         return None, 404, f"no voice named {voice!r}"
-    speed = body.get("speed", 1.0)
+    speed = body.get("speed")
+    if speed is None:
+        speed = default_speed
     if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not MIN_SPEED <= speed <= MAX_SPEED:
         return None, 400, f"speed is {MIN_SPEED}-{MAX_SPEED}"
     return text, voice, float(speed)
