@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
 use mecha_core::feature::{self, Feature, Row, State, Switch};
-use mecha_core::recommend::{self, Budget, Machine, Peak, Sum};
+use mecha_core::recommend::{self, Budget, Floor, Machine, Peak, Sum};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -60,6 +60,9 @@ pub fn execute(args: Args) -> Result<()> {
     let cfg = Config::load_global()?;
     let facts = feature::Facts::read(&home, &cfg);
     let rows = feature::all(&facts);
+    for key in feature::unknown_switches(&cfg) {
+        eprintln!("mecha: `[features] {key}` is not a feature this build knows — a newer build's, or a typo; ignored");
+    }
     if args.probe {
         let shown: Vec<Feature> = rows.iter().filter(|r| r.shown).map(|r| r.id).collect();
         let budget = recommend::budget(recommend::Machine::read()?, &shown);
@@ -73,9 +76,6 @@ pub fn execute(args: Args) -> Result<()> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
-    }
-    for key in feature::unknown_switches(&cfg) {
-        eprintln!("mecha: `[features] {key}` is not a feature this build knows — a newer build's, or a typo; ignored");
     }
     print!("{}", render(&rows, &feature::announcements(&facts)));
     Ok(())
@@ -261,7 +261,7 @@ fn peak_text(p: &Peak) -> String {
 }
 
 fn sum_text(name: &str, s: &Sum) -> String {
-    let part = |v: Option<u64>| match v {
+    let part = |v: Option<u64>, floor: &Floor| match v {
         Some(mb) => format!(
             "{} of {} ({:.0}%)",
             gib(mb),
@@ -271,8 +271,8 @@ fn sum_text(name: &str, s: &Sum) -> String {
         None => format!(
             "unknown of {} — unmeasured: {}; the rest add up to {}",
             gib(s.total_mb),
-            s.unknown.join(", "),
-            gib(s.known_mb)
+            floor.unknown.join(", "),
+            gib(floor.known_mb)
         ),
     };
     let band = s
@@ -281,8 +281,8 @@ fn sum_text(name: &str, s: &Sum) -> String {
         .unwrap_or_default();
     format!(
         "{name}\n  resident:          {}\n  everything loaded: {}{band}\n",
-        part(s.resident_mb),
-        part(s.loaded_mb)
+        part(s.resident_mb, &s.resident_floor),
+        part(s.loaded_mb, &s.loaded_floor)
     )
 }
 
@@ -487,8 +487,14 @@ mod tests {
         );
         assert!(text.contains("The card\n"), "{text}");
         assert!(text.contains("System memory\n"), "{text}");
+        // Each line's floor is its own: the on-demand OCR server's process
+        // memory is on the everything-loaded line, never the resident one.
         assert!(
-            text.contains("unknown of 64.0 GiB — unmeasured: chat; the rest add up to 0.9 GiB"),
+            text.contains("  resident:          unknown of 64.0 GiB — unmeasured: chat; the rest add up to 0.0 GiB\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  everything loaded: unknown of 64.0 GiB — unmeasured: chat; the rest add up to 0.9 GiB\n"),
             "{text}"
         );
         assert!(text.contains("host: unmeasured"), "{text}");
