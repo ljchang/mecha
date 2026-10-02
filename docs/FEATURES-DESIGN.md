@@ -1183,8 +1183,10 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
 1. **A closed `Sidecar` registry in `mecha-core`, beside `Feature`.** Each
    entry names the features that need it, the port and health check that
    prove it is running, its install method, its disk size, and its sources —
-   every one pinned: a release asset by sha256 (GitHub publishes a `digest`
-   per asset), a git commit, a Hugging Face file by revision and sha256, a
+   every one pinned: a release asset by a sha256 a reviewer read and
+   committed (GitHub's per-asset `digest` is how that pin is *authored*,
+   never what is trusted at install time — that is F10's exception alone),
+   a git commit, a Hugging Face file by revision and sha256, a
    requirements lock with `--require-hashes`. A source enters only by a
    reviewed change to the binary, like a feature (§8): no URL from config,
    a project file, or the model.
@@ -1219,7 +1221,13 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    refuses with the `--no-install` hint (which still writes the switch, as
    today), and `setup engine --upgrade` refuses whether or not `--to` is
    given — a flag typed into a trigger, a hook or `ssh host …` is not the
-   owner at a terminal, which is what F10's trust rests on.
+   owner at a terminal, which is what F10's trust rests on. That is a
+   deliberate change for scripted callers of `features enable`, which today
+   is a plain config write; none in the repo calls it. **An install that
+   succeeds but fails its health check** leaves the switch unwritten and
+   says so — installed, not answering, with the check's error and the
+   command to retry it — so a manifest with the feature off is never a
+   silent half state.
 4. **What is already running is provided, not installed (F8).** Before
    planning, each sidecar is asked with **§4.3's load-free probes only, by
    install method** — never a uniform `/health` on its port, because the
@@ -1231,8 +1239,14 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    servers' unit state. **An idle-stopped sidecar is provided, never
    absent** — a probe that read it as absent would plan an install over it,
    the llama-embed incident of 2026-08-19 that `llama-ocr.socket`'s header
-   records. A running answer, or a unit of that name mecha did not write,
-   makes it *provided*, and the plan installs nothing for it. A file mecha
+   records. **Three things make a sidecar *provided***, and the plan
+   installs nothing for it: a running answer; a unit of that name mecha did
+   not write; or **a payload on disk that mecha's manifest does not claim**
+   — a hand-built clone or venv, a Docker image of the sidecar's name, an
+   engine tree. The third is what covers a stopped sidecar with no unit
+   (ComfyUI here) and one with no probe at all (Chatterbox, a container).
+   Models are the same: a recommended model the hub resolver (item 6)
+   already finds is priced at zero in the plan's download total. A file mecha
    did not write is never overwritten. On this machine every sidecar is
    provided, so setup installs nothing here. Moving this box onto managed
    copies is a separate, explicit step, later, and its first target is named:
@@ -1281,7 +1295,11 @@ pin that sits:
   copy, made structural).
 - **`mecha setup engine --upgrade [--to <tag>]`** fetches or builds the new
   engine (`engine` is a reserved noun in `setup`'s feature position, never a
-  feature id), then **measures before it promotes**: the chat model loaded on
+  feature id), then **measures before it promotes**. The measurement loads
+  the chat model the router is holding, so it **takes the model's hold
+  first** (`hold.rs`) and declines, saying so, while a run holds it — a
+  throughput number taken under contention must never reach the ledger as
+  `Measured`. Then: the chat model loaded on
   both engines with the router's flags, one completion and one embedding
   as a smoke test, then single-stream generation and prefill at fixed
   prompt lengths (`scripts/bench-slots.sh`'s method). It promotes when the
@@ -1317,6 +1335,13 @@ pin that sits:
   `Measured` row never covers more than was measured; requiring all three
   would make an engine upgrade depend on enabling features the owner
   declined.
+- **A promotion swaps the link, then restarts the router under the same
+  gate.** If a run holds the model by then, the output and the ledger row
+  say the promotion is **partial** — the link and, at their next cold
+  start, the two on-demand servers are on the new engine while the router
+  still serves the old one — and print the command that finishes it. A
+  half-applied promotion must not read as complete, for the same reason a
+  half-applied rollback must not.
 - **`--rollback` undoes all three.** It swaps the link back, stops the two
   on-demand backends (their sockets stay, so the next request starts them
   on the restored engine), and restarts the router under the same
