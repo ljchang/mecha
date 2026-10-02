@@ -660,9 +660,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **The knowledge-graph page names the embedder mecha-graph actually uses**:
-  `harrier-oss-v1-0.6b` on a llama-server at `:8081`, installed by
-  `scripts/llama/install-embed.sh` — not ollama with `nomic-embed-text`,
-  which mecha-graph dropped in 0.1.1.
+  `harrier-oss-v1-0.6b` on a llama-server at `:8081`, launched by
+  `scripts/llama/mecha-embed-server` — not ollama with `nomic-embed-text`,
+  which mecha-graph dropped in 0.1.1. The page says plainly that the
+  repository has no installer that sets the server up from nothing.
 - **A persona's earlier chats no longer vanish after a restart.** An unlock
   lives in `mecha serve`'s memory, so a restart ended it while the page still
   showed the persona, and its earlier chats came back as an empty list. The

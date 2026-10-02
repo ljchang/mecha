@@ -38,7 +38,7 @@
 > does *not* re-pause, so longer is weaker). **Step 6 is split in two**:
 > 6a — `hardware.md` gains F5's separate-GPU
 > column and a *Beside the chat model* table of every feature's model, cost,
-> residency and evidence, measured on the GB10 on 2026-10-02, and the graph
+> residency and evidence, measured on the GB10 (each row dated), and the graph
 > page names the embedder mecha-graph uses — is built; 6b, the
 > `Recommendation` rows, `--probe` and the test holding the page to them, is
 > next, and parses that table. Steps 7–8 are unbuilt. The
