@@ -1160,7 +1160,7 @@ model, not mecha's own, that a feature needs running.
 
 | Sidecar | Features | How it got here | In the repo |
 |---|---|---|---|
-| llama.cpp (`llama-server`) | chat, `graph`, `ocr` | built by hand from a clone (CUDA, sm_121, shared libs); `~/.local/bin/llama-server` is a stub whose RUNPATH names the build tree | no build commands, no pin; `LLAMA-SERVER.md` names `~/llama.cpp/build/bin` where the stub's RUNPATH is `~/llama.cpp-next/build/bin` |
+| llama.cpp (`llama-server`) | the chat model (every feature), `graph`, `ocr` | built by hand from a clone (CUDA, sm_121, shared libs); `~/.local/bin/llama-server` is a stub whose RUNPATH names the build tree | no build commands, no pin; `LLAMA-SERVER.md` names `~/llama.cpp/build/bin` where the stub's RUNPATH is `~/llama.cpp-next/build/bin` |
 | the router and its chat model | every feature | `llama-local.service`, box only; its drop-in runs the *working tree's* `scripts/start-router.sh` | the launcher; no unit; `start-router.sh` prints an `hf download` line when the model is missing |
 | embeddings server | `graph`, persona file search | the always-on unit is box only; `install-embed.sh` converts it to on demand and refuses to run without it | the launcher and the on-demand units |
 | OCR server | `ocr` | `scripts/llama/install.sh` | **yes** — units, launcher, `--remove`; the model is a comment, unpinned |
@@ -1199,7 +1199,13 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    to enabling, so a provided sidecar (item 4) reaches the switch without
    one and nothing is woken. A failed download leaves the feature as it
    was with the command that resumes, never `Unready` with a half-written
-   tree. `mecha setup` offers the same plan per feature. Switching a feature
+   tree. `mecha setup` offers the same plan per feature. **A part's
+   sidecars ride its parent's plan**, each as its own choice: a part has no
+   bool and `enable` refuses a part id (§4.2), so `mecha features enable
+   documents` offers the OCR server and the layout model separately, and
+   `enable voice` offers Parakeet (`dictate`), the worker and Chatterbox
+   (`calls`). Later, `mecha setup <part>` — which already resolves a part to
+   its parent (`switch_owner`) — offers that part's sidecars alone. Switching a feature
    off never uninstalls; `mecha setup <feature> --remove` does, and keeps
    downloaded models unless `--models` is given, because the cache is shared.
    Installing runs only from a terminal: the web app still shows the command
@@ -1230,12 +1236,16 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    CUDA arm64, Apple, CPU).
 6. **Models download natively, resumable and verified.** Rust fetches the
    pinned file from Hugging Face's resolve URL into the standard cache
-   layout, at the hub `scripts/start-router.sh` resolves — `HF_HUB`, else
-   `~/.cache/huggingface/hub` — through one resolver the unit templates
-   read too, so the download and the launcher cannot look in different
-   places (a verified download the launcher then calls missing; honouring
-   `HF_HOME` / `HF_HUB_CACHE` as well is a later decision, and nothing reads
-   them today). It resumes a partial file, and refuses one whose sha256 differs — no `hf`
+   layout, through **one hub resolver** that the unit templates and launchers
+   share, so the download and the launcher cannot look in different places
+   (a verified download the launcher then calls missing). Its order is
+   `HF_HUB` (mecha's own, which `start-router.sh` and the embed launcher
+   read today), then the `hf` CLI's `HF_HUB_CACHE`, then `HF_HOME/hub`, then
+   `~/.cache/huggingface/hub` — the `hf` CLI reads the middle two and not the
+   first, and it is still how layout's model and the router's missing-model
+   hint arrive, so with `HF_HOME` set today the two already disagree. 7a
+   brings the launchers onto the resolver's order. It resumes a partial
+   file, and refuses one whose sha256 differs — no `hf`
    CLI and no Python needed for a llama-only feature.
 
 ### 10.3 The engine, and keeping it current (F9)
@@ -1258,7 +1268,8 @@ pin that sits:
   a link swap, and the previous one stays for `--rollback` (today's `.prev`
   copy, made structural).
 - **`mecha setup engine --upgrade [--to <tag>]`** fetches or builds the new
-  engine, then **measures before it promotes**: the chat model loaded on
+  engine (`engine` is a reserved noun in `setup`'s feature position, never a
+  feature id), then **measures before it promotes**: the chat model loaded on
   both engines with the router's flags, one completion and one embedding
   as a smoke test, then single-stream generation and prefill at fixed
   prompt lengths (`scripts/bench-slots.sh`'s method). It promotes when the
@@ -1344,8 +1355,10 @@ Step 7 becomes these, each a PR that leaves every feature working:
   trouble is the case on record).
 
 **How to know it works:** a clean container (no `~/.mecha`, no `scripts/`)
-runs `cargo install` then `mecha features enable ocr`, answers yes, and gets
-a working `document_read`. Beside it, each of these fails on the behaviour
+runs `cargo install` then `mecha features enable documents`, answers yes to
+the OCR server, and gets a `document_read` that reads a scanned page through
+OCR (`ocr` is a part, so `enable` refuses it by name — its install rides
+`documents`' plan, item 3). Beside it, each of these fails on the behaviour
 it guards against:
 
 - the same run with the sidecar already provided — running, or **installed
