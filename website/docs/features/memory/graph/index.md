@@ -31,8 +31,15 @@ cargo install mecha-graph          # the CLI
 cargo install mecha-graph-mcp      # the MCP server
 ```
 
-Embeddings use [ollama](https://ollama.com) with `nomic-embed-text` on
-localhost; everything else is self-contained. To see it work with no
+Embeddings come from a second llama-server on `127.0.0.1:8081`, serving
+`harrier-oss-v1-0.6b` — its own port, because one llama-server holds one
+model and the chat model's port must not answer embedding requests.
+`scripts/llama/install-embed.sh` in a mecha checkout installs it on demand:
+the port is held from boot and the model loads on the first request and
+stops after ten idle minutes. What it costs is under [Beside the chat
+model](/docs/getting-started/hardware#beside-the-chat-model).
+`MECHA_GRAPH_EMBED_URL` points elsewhere; everything else is
+self-contained. To see it work with no
 personal data at all, a checkout's `eval/synthetic/run.sh` builds a
 throwaway graph from a fictional corpus and grades 24 retrieval queries
 against it.
