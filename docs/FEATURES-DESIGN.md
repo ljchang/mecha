@@ -940,11 +940,13 @@ Rules:
   that does not fit the card and fail an OCR server that fits host RAM with
   room to spare (found on review of #435). This is why
   `residency` is on the row: an on-demand OCR server costs nothing until a
-  PDF arrives. Image generation was first written here as borrowing ~15 GB
-  for its duration; measured on 2026-10-02 it is **resident** — ComfyUI held
-  11.9 GiB nine hours after its last picture, and its ~15 GB peak sits ~3 GB
-  above that (`[image] min_available_mb` refuses a start that would not fit).
-  The row says what the server does, not what the model needs.
+  PDF arrives, and image generation is the same class — mecha asks ComfyUI
+  to free its models after `[image] unload_after_secs` (600) — with one leak
+  the row must carry: the timer lives in the process that drew the picture,
+  so a one-shot `mecha run` or a serve restart inside the window leaves
+  ~12 GiB held (measured on 2026-10-02: 11.9 GiB nine hours after a picture
+  drawn five minutes before a serve restart). `[image] min_available_mb`
+  refuses a start that would not fit.
 - **`hardware.md` is generated from the rows, or checked against them.** A
   test that fails when the page and the registry disagree ends the drift
   that §1.3 found.
