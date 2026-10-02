@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The uncensored Qwen3.6 model is about 40% faster.** Its download lacks
+  the multi-token-prediction head that lets production draft ahead;
+  `scripts/mtp-graft.py` copies the head from production's file, and the
+  router speculates with it (99.8 against 69.9 tok/s, one stream; the
+  router's four slots are unmeasured). Without the grafted file the router
+  serves the model as before and prints the command that builds it. If four
+  slots turn out slower, removing the two `SPEC` lines from the preset in
+  `start-router.sh` turns speculation off again.
 - **The hardware page covers a separate GPU, and every model beside the
   chat model.** Each memory tier now has two columns — unified memory, and a
   graphics card with system RAM beside it — and a new *Beside the chat model*
@@ -658,6 +666,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The owner's amendment to `INCOGNITO-DESIGN.md` §6.1 (2026-09-28).
 
 ### Fixed
+
+- **A persona's memories are dated by when they were said.** Everything a
+  persona remembered was dated by the night it was written, so something you
+  mentioned on Tuesday read as Friday's news. Memories now carry the day of
+  the conversation they came from, in your timezone, and "recent" means
+  recently said.
 
 - **The knowledge-graph page names the embedder mecha-graph actually uses**:
   `harrier-oss-v1-0.6b` on a llama-server at `:8081`, launched by

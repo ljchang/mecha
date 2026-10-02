@@ -550,6 +550,32 @@ Measured on 2026-09-26 against `c841aee`, unless a bullet names another build:
   that pair is the build's +14%; the 21.1 above is the same file on the
   new build through a router, a separate run.
   The router serves the UD-Q4_K_XL and both uncensored builds.
+- **The Qwen3.6 uncensored arm speculates from a grafted head.** HauhauCS's
+  conversion dropped the MTP head; it differs from production's file by
+  exactly `blk.40.*` (20 tensors, 504 MiB), `block_count` and
+  `nextn_predict_layers`, so `scripts/mtp-graft.py` copies the head across
+  and `start-router.sh` serves the result with `draft-mtp`. Measured
+  2026-10-02 on `95887577`, single stream, `-c 32768`, thinking off, warm:
+  69.9 tok/s without speculation, 98.9 at n-max 3 (0.74 acceptance), 99.8 at
+  n-max 2 (0.81). The stock head guesses the abliterated model's prose worst
+  (0.47–0.52 at 3), which is why it drafts 2. Speculation changes speed, never
+  output: the target verifies every drafted token. **A graft is derived, not
+  downloaded**, so its file name carries all three inputs' hashes — both
+  blobs and `mtp-graft.py` itself (`graft_path`): a re-upload or a script fix
+  names a file not built yet, and the preset falls back to the plain file
+  with the line that builds it, rather than serving the old graft under an
+  unchanged alias. Grafts live in `MECHA_GRAFT_DIR` (default
+  `~/models/mtp-graft`). A damaged graft does not fall back: the graft *is*
+  the weights, so it fails the child's start; only an empty file is refused.
+  **After any edit to `mtp-graft.py`, rebuild before restarting the router**
+  — the edit retires the graft, and a restart without the rebuild drops the
+  arm to ~70 tok/s with only a `warn` in `llama-local`'s journal. Nothing
+  prunes retired grafts or `.partial` leftovers (~21 GB each): delete by hand
+  every file in `MECHA_GRAFT_DIR` but the one the router's line names.
+  Four slots with MTP are unmeasured (two attempts contaminated by a busy
+  GPU); if they regress, drop the preset's two `SPEC` lines. **The first request of
+  a fresh child is warmup** — 3–4× slower on the same prompts — so discard it
+  before reading a rate.
 - **`reasoning-preserve` is pinned in every Qwen preset**, because the new
   build flipped its default (#28174: "template default" → enabled) and the
   templates disagree about what unset means. Qwen3.6:
