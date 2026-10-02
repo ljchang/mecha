@@ -657,6 +657,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mentioned on Tuesday read as Friday's news. Memories now carry the day of
   the conversation they came from, in your timezone, and "recent" means
   recently said.
+
+- **Voice expressiveness settings the speech model ignored are no longer
+  sent as if they worked.** The live model, Chatterbox Turbo, drops
+  `exaggeration` and `cfg_weight`, so the worker's 0.8 / 0.3 and the mood
+  nudge changed nothing. The speech server now lists the controls its model
+  honours and refuses one it would ignore, and the worker sends only those.
+  `CHATTERBOX_MODEL=original` loads the slower model that does honour them.
+
 - **A persona's earlier chats no longer vanish after a restart.** An unlock
   lives in `mecha serve`'s memory, so a restart ended it while the page still
   showed the persona, and its earlier chats came back as an empty list. The
