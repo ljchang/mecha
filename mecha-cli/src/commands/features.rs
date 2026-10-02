@@ -244,8 +244,6 @@ fn notice_line(announced: &[feature::Announcement]) -> Option<String> {
     ))
 }
 
-/// Depth under the top level: a part of a part (`layout` under `ocr`)
-/// indents twice.
 fn gib(mb: u64) -> String {
     format!("{:.1} GiB", mb as f64 / 1024.0)
 }
@@ -352,6 +350,8 @@ fn render_budget(b: &Budget) -> String {
     out
 }
 
+/// Depth under the top level: a part of a part (`layout` under `ocr`)
+/// indents twice.
 fn depth(f: Feature) -> usize {
     std::iter::successors(f.part_of(), |p| p.part_of()).count()
 }

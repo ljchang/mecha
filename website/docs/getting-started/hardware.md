@@ -174,7 +174,9 @@ when the two disagree, so change the registry and paste the table it prints.
 *How it
 holds memory* is the part that decides the sum: **resident** holds it from
 start to stop, **on demand** holds nothing until the first request and frees
-it after ten idle minutes, and **per request** holds it only while working.
+it after ten idle minutes, **released on idle** holds it until a timer beside
+the server gives it back (below), and **per request** holds it only while
+working.
 It describes how each is installed here: the embeddings and OCR servers sit
 behind a systemd socket, and started by hand instead they are resident,
 which puts the resident sum near 60 GiB rather than 50.
