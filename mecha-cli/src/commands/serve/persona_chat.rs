@@ -1692,6 +1692,7 @@ impl PersonaChats {
         };
         let dir = self.store.clone();
         let message = message.to_owned();
+        let tz = bound.config.agent.timezone();
         let found = tokio::task::spawn_blocking(move || {
             mecha_core::persona::recall::per_turn(
                 &dir,
@@ -1699,6 +1700,7 @@ impl PersonaChats {
                 &message,
                 qvec.as_deref(),
                 &already,
+                tz,
             )
         })
         .await;
@@ -1721,11 +1723,12 @@ impl PersonaChats {
     async fn memory_block(
         &self,
         persona: mecha_core::persona::Persona,
+        tz: Option<chrono_tz::Tz>,
         notices: &tokio::sync::broadcast::Sender<WireEvent>,
     ) -> Option<String> {
         let dir = self.store.clone();
         let read = tokio::task::spawn_blocking(move || {
-            mecha_core::persona::recall::chat_start(&Store::load(&dir), &persona)
+            mecha_core::persona::recall::chat_start(&Store::load(&dir), &persona, tz)
         })
         .await;
         let unread = |why: &str| {
@@ -2650,7 +2653,10 @@ impl PersonaChats {
         // and with the memory switches as the persona stands now — turning
         // one off reaches an open chat, as the safety switches do.
         let memory_block = match (&ready, wants_memory, &live) {
-            (Some(_), true, Some(persona)) => self.memory_block(persona.clone(), &notices).await,
+            (Some((bound, _)), true, Some(persona)) => {
+                self.memory_block(persona.clone(), bound.config.agent.timezone(), &notices)
+                    .await
+            }
             _ => None,
         };
         // Or, past the first reply, what this message brings to mind.
