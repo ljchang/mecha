@@ -685,9 +685,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   damage to the text; DRY sampling also stopped the copies but garbled
   2–5 replies in 8, so it is not used. The assistant's own chats are
   unchanged: they keep the seed and their reasoning, and so does the
-  persona's crisis judge, whose verdict should not vary. Each persona reply's
-  overlap with its earlier ones is now recorded as a number in
-  `echo.jsonl`, and `mecha persona show` reports it.
+  persona's crisis judge, whose verdict should not vary. `mecha persona
+  show` now reports how many of a persona's replies over the last week
+  repeated an earlier one in the same chat, read from the chats themselves.
 
 - **The knowledge-graph page names the embedder mecha-graph actually uses**:
   `harrier-oss-v1-0.6b` on a llama-server at `:8081`, launched by

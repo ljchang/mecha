@@ -1574,7 +1574,10 @@ repeated one reply several times, and the owner ruled on three things:
   got around it by misspelling the same phrase.
 - **Measure before fitting more.** One persona's sessions are too small a
   sample to tune on, so each reply's overlap with the earlier ones is
-  recorded (`echo.jsonl`, read by `mecha persona show`).
+  measured (`persona::echo`, shown by `mecha persona show`). It is read
+  offline from the transcripts, never computed per turn (owner's choice,
+  2026-10-02). Nothing acts on it during a chat, and the transcripts let a
+  better metric recompute the whole history.
   - A second pattern was found but not acted on: the same opener every
     reply, traced to the call note's "the first one short". Its wording, and
     any harness nudge for variety, wait until the readings show the pattern
