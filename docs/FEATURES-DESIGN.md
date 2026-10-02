@@ -35,7 +35,13 @@
 > voices_dir` is a one-release alias, and the two serve flags override per
 > run), and `[personas] crisis_cooldown_minutes` is fully the owner's to set
 > (the owner's ruling — the cooldown is the window in which a further hit
-> does *not* re-pause, so longer is weaker). Steps 6–8 are unbuilt. The
+> does *not* re-pause, so longer is weaker). **Step 6 is split in two**:
+> 6a — `hardware.md` gains F5's separate-GPU
+> column and a *Beside the chat model* table of every feature's model, cost,
+> residency and evidence, measured on the GB10 (each row dated), and the graph
+> page names the embedder mecha-graph uses — is built; 6b, the
+> `Recommendation` rows, `--probe` and the test holding the page to them, is
+> next, and parses that table. Steps 7–8 are unbuilt. The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -149,7 +155,7 @@ machine runs*, never as advice:
 
 | Feature | Model | Where it is written down |
 |---|---|---|
-| Embeddings (graph) | `harrier-oss-v1-0.6b` f16 | `scripts/llama/mecha-embed-server`, `LLAMA-SERVER.md`. **Drift:** `website/docs/features/memory/graph/index.md` still says ollama with `nomic-embed-text` |
+| Embeddings (graph) | `harrier-oss-v1-0.6b` f16 | `scripts/llama/mecha-embed-server`, `LLAMA-SERVER.md`; `website/docs/features/memory/graph/index.md` names it as of step 6a (#512) |
 | OCR | PaddleOCR-VL 1.6 (GGUF + mmproj) | a comment in `scripts/llama/install.sh`, `DOCUMENT-EXTRACTION-DESIGN.md` §5–6 |
 | Layout | `PP-DocLayoutV3.onnx` | `scripts/layout/install.sh` |
 | Image generation | Qwen-Image 2.1 Q4, `qwen3vl_8b_w4a8`, the 2.1 VAE | `ImageConfig` defaults, `features/tools/image-generation.md` (~15 GB peak, measured) |
@@ -934,8 +940,13 @@ Rules:
   that does not fit the card and fail an OCR server that fits host RAM with
   room to spare (found on review of #435). This is why
   `residency` is on the row: an on-demand OCR server costs nothing until a
-  PDF arrives; an image generation borrows ~15 GB for its duration (and
-  `[image] min_available_mb` already refuses one that would not fit).
+  PDF arrives, and image generation is the same class — mecha asks ComfyUI
+  to free its models after `[image] unload_after_secs` (600) — with one leak
+  the row must carry: the timer lives in the process that drew the picture,
+  so a one-shot `mecha run` or a serve restart inside the window leaves
+  ~12 GiB held (measured on 2026-10-02: 11.9 GiB nine hours after a picture
+  drawn five minutes before a serve restart). `[image] min_available_mb`
+  refuses a start that would not fit.
 - **`hardware.md` is generated from the rows, or checked against them.** A
   test that fails when the page and the registry disagree ends the drift
   that §1.3 found.
