@@ -181,7 +181,7 @@ which puts the resident sum near 55 GiB rather than 47.
 | `documents` (`file_search`), `graph`, and `personas` file search | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.1 loaded | Measured 2026-10-02 |
 | `ocr` | PaddleOCR-VL 1.6 (GGUF and projector) | GPU | On demand | 2.6 loaded | Measured 2026-09-29 |
 | `layout` | PP-DocLayoutV3 (ONNX) | CPU | Per request | 1.1 peak | Measured 2026-09-29 |
-| `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | On demand — mecha asks ComfyUI to free its models after ten idle minutes (`[image] unload_after_secs`) | ~15 peak at 1024²; the ComfyUI process keeps 1.4 of system memory | Measured 2026-09-25 (peak), 2026-10-02 (system memory) |
+| `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | Released on idle — with the `comfyui-idle-reset` timer installed, ComfyUI is restarted after ten idle minutes and holds ~1.1 GB until the next picture | ~13.6 loaded and idle (GPU + process memory); ~15 peak warm, ~18.5 above idle from cold | Measured 2026-09-25 (peak), 2026-10-02 (footprints) |
 | `voice` — speech to text | Parakeet TDT 0.6B v3 int8 | CPU | Resident | 0.7 | Measured 2026-10-02 |
 | `voice` — speech | Chatterbox Turbo | GPU | Resident | 5.4, and 2.5 of system memory | Measured 2026-10-02 |
 | `voice` — turn detection | Silero VAD and smart-turn v3, in the voice worker | CPU | Resident | 0.5 | Measured 2026-10-02 |
@@ -196,15 +196,19 @@ of it is the same memory — 76 GiB, and up to 92 GiB with a full prompt
 cache, of the GB10's 121.7 GiB (`MemTotal` in `/proc/meminfo`), before the
 operating system.
 
-**The on-demand release has one leak.** The ten-minute timer lives in the
-mecha process that drew the picture, so a one-shot `mecha run`, or a `mecha
-serve` restarted inside the window, exits before it fires and the models
-stay loaded until the next long-lived generation or a ComfyUI restart — on
-the GB10, 11.9 GiB was still held nine hours after a picture drawn just
-before a restart. Count image generation's peak if you use it at all.
+**Release the memory beside the server, not from mecha.** mecha's own
+ten-minute unload timer lives in the mecha process that drew the picture, so a
+one-shot `mecha run`, or a `mecha serve` restarted inside the window, exits
+before it fires — on the GB10, 11.9 GiB was still held nine hours after a
+picture drawn just before a restart — and on unified memory its `/free` only
+moves the weights into ComfyUI's process memory. `scripts/comfyui/install.sh`
+installs a one-minute timer that restarts an idle ComfyUI holding a model,
+which brings it to ~1.1 GB; the next picture reloads the model in ~15–22 s.
+Without it, count image generation's peak if you use it at all.
 
-By default `image_generate` refuses to start with less than 16 GiB available (`[image]
-min_available_mb`), so on a smaller
+By default `image_generate` refuses to start with less than 19 GiB available
+when ComfyUI holds no model (`[image] min_available_mb`), and 12 GiB once it
+has loaded one, since most of that cost is already paid. So on a smaller
 unified machine it refuses while the chat model is loaded rather than taking
 the machine down.
 
