@@ -31,8 +31,33 @@ cargo install mecha-graph          # the CLI
 cargo install mecha-graph-mcp      # the MCP server
 ```
 
-Embeddings use [ollama](https://ollama.com) with `nomic-embed-text` on
-localhost; everything else is self-contained. To see it work with no
+Embeddings come from a second llama-server on `127.0.0.1:8081`, serving
+`harrier-oss-v1-0.6b` — its own port, because one llama-server holds one
+model and the chat model's port must not answer embedding requests. The
+launcher's source is `scripts/llama/mecha-embed-server` in a mecha
+checkout, and what runs is a copy of it in `~/.local/bin`, never the
+checkout's own file (a `git checkout` would otherwise change a running
+service). On the machine these docs were written on it runs on demand (the port is held from
+boot, the model loads on the first request and stops after ten idle
+minutes). On a machine without that socket unit, start it by hand. First
+fetch the model — `hf download mradermacher/harrier-oss-v1-0.6b-GGUF
+harrier-oss-v1-0.6b.f16.gguf` — since the script looks for it in the
+Hugging Face cache and starts with no model if it is missing; then run the
+script with `MECHA_EMBED_PORT=8081`
+— it takes no arguments, and otherwise listens on :18081, the port the
+on-demand proxy forwards to — or run `llama-server` yourself with its
+flags: `-m` the model, `--alias harrier-oss-v1-0.6b` (the name mecha-graph
+asks for), `--host 127.0.0.1 --port 8081 -ngl 999 -c 32768`, and
+`--embeddings --pooling last --embd-normalize 2`. `--pooling last` is not
+optional for this model: the default pooling returns plausible vectors that
+retrieve worse, with nothing to say so. The repository has no installer that sets the server up
+from nothing yet; `scripts/llama/install-embed.sh` only moves an existing
+always-on one to on demand.
+What it costs is under [Beside the chat
+model](/docs/getting-started/hardware#beside-the-chat-model).
+To point it elsewhere, set `[llm] embed_url` in mecha-graph's config or
+`MECHA_GRAPH_EMBED_URL` (mecha-graph 0.1.5); everything else is
+self-contained. To see it work with no
 personal data at all, a checkout's `eval/synthetic/run.sh` builds a
 throwaway graph from a fictional corpus and grades 24 retrieval queries
 against it.
