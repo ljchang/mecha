@@ -444,6 +444,16 @@ running on http://127.0.0.1:7860` line, from a journal window that opens
 *at* the restart (`--since "$since UTC"`, with `since` taken just before
 `systemctl restart`), or the old process's line passes the check.
 
+**The `chatterbox` container is not in the list either, and it moves with
+the worker in one order: the worker first, then `docker restart chatterbox`.**
+It serves `scripts/voice/chatterbox_server.py` from the same shared checkout,
+and a new server refuses a control its model drops while an old worker sends
+`exaggeration` / `cfg_weight` on every sentence, so a new server under an old
+worker is a whole-voice outage that reads as a TTS failure (#511). Restart it
+only when that file changed, with no call live; `docker restart` keeps the
+container's environment, so changing `CHATTERBOX_MODEL` means recreating it
+(the `docker run` line is in `VOICE-RESEARCH.md`, beside the serving wrapper).
+
 **`mecha-parakeet` is deliberately not in the list.** It runs
 `scripts/voice/parakeet_server.py`, so restart it when *that* file changes —
 and only then, because coming back costs a model load and voice is deaf

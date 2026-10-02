@@ -95,6 +95,26 @@ class Controls(unittest.TestCase):
         self.assertEqual(tts_controls(), frozenset({"temperature"}))
         self.assertEqual(len(asked), 1)
 
+    def test_a_worker_restarted_first_learns_the_new_servers_controls(self):
+        # The restart order: the worker comes up against the old server,
+        # which lists voices and no controls ...
+        listing = {"voices": ["default"]}
+        asked = []
+        httpd, url = tts_server(listing, asked=asked)
+        self.addCleanup(httpd.shutdown)
+        old = worker.TTS_URL
+        worker.TTS_URL = url
+        self.addCleanup(setattr, worker, "TTS_URL", old)
+        available_voices(refresh=True)
+        self.assertIsNone(tts_controls())
+        # ... then the container restarts on the new build. Listing voices
+        # must not have latched "unknown": after the interval it is asked.
+        listing["controls"] = ["temperature", "exaggeration", "cfg_weight"]
+        worker._controls_asked_at -= worker.CONTROLS_RETRY_SECS
+        self.assertEqual(
+            tts_controls(), frozenset({"temperature", "exaggeration", "cfg_weight"})
+        )
+
     def test_only_a_refusal_is_asked_again(self):
         asked = []
         httpd, url = tts_server({"voices": ["default"], "controls": ["temperature"]}, asked=asked)
