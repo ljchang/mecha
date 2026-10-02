@@ -4390,6 +4390,8 @@ mod tests {
         Fail,
         /// Answers with this text.
         Say(String),
+        /// Answers after reasoning this plan, as a thinking model does.
+        Think(String),
     }
 
     /// What the crisis judge answers in a test world.
@@ -4477,14 +4479,24 @@ mod tests {
                 Mode::Hang => std::future::pending::<()>().await,
                 Mode::Gate(open) => open.notified().await,
                 Mode::Fail => anyhow::bail!("the model is not loaded"),
-                Mode::Say(_) => {}
+                Mode::Say(_) | Mode::Think(_) => {}
             }
             let text = match &self.1 {
                 Mode::Say(text) => text.clone(),
                 _ => "Hello from Mara.".into(),
             };
+            let mut content = vec![Block::Text { text }];
+            if let Mode::Think(plan) = &self.1 {
+                content.insert(
+                    0,
+                    Block::Thinking {
+                        text: plan.clone(),
+                        signature: None,
+                    },
+                );
+            }
             Ok(CompletionResponse {
-                message: Message::assistant(vec![Block::Text { text }]),
+                message: Message::assistant(content),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage::default(),
                 refusal: None,
@@ -4657,6 +4669,32 @@ mod tests {
         let e = read();
         assert_eq!((e.replies, e.repeated, e.max), (1, 1, Some(1.0)));
         assert!(!w.root.join("work").join("echo.jsonl").exists());
+    }
+
+    /// A persona chat is built with `PriorThinking::Drop`: the second turn's
+    /// request carries the first reply but not the reasoning behind it, while
+    /// the transcript keeps both. Without `persona_agent`'s line, the plan
+    /// rides back and the persona re-reads it (§12.7).
+    #[tokio::test]
+    async fn a_persona_sends_no_earlier_replys_reasoning() {
+        let w = world_with(Mode::Think("PRIOR-PLAN".into()));
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        turn(&w, &key, "Hello, Mara").await;
+        turn(&w, &key, "mm").await;
+
+        let seen = w.seen.lock().unwrap().clone();
+        let second = serde_json::to_string(&seen.last().unwrap().messages).unwrap();
+        assert!(second.contains("Hello from Mara."), "the reply is sent");
+        assert!(!second.contains("PRIOR-PLAN"), "its reasoning is not");
+        let id = opened["session"].as_str().unwrap();
+        let file = w.store().join(format!("mara/sessions/{id}.jsonl"));
+        let recorded = std::fs::read_to_string(file).unwrap();
+        assert!(recorded.contains("PRIOR-PLAN"), "the transcript keeps it");
     }
 
     #[tokio::test]
